@@ -21,19 +21,19 @@ Compatibility is bidirectional, not import-only:
 
 Praxis follows the active Claude Code layout and path derivation for:
 
-| Data | Shared location |
-| --- | --- |
-| Config root | `CLAUDE_CONFIG_DIR` or `~/.claude` |
-| Sessions | `<config>/projects/<project-key>/<session-id>.jsonl` |
-| Global instructions | `<config>/CLAUDE.md` |
-| Project instructions | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/**/*.md` |
-| Auto memory | `<config>/projects/<project-key>/memory/MEMORY.md` and linked memory files |
-| Global skills | `<config>/skills/` |
-| Project skills | `.claude/skills/` |
-| Commands | `<config>/commands/`, `.claude/commands/` |
-| Agent definitions | `<config>/agents/`, `.claude/agents/` |
-| Settings and hooks | `<config>/settings.json`, `.claude/settings.json`, `.claude/settings.local.json` |
-| Project MCP | `.mcp.json` and Claude-compatible configured sources |
+| Data                 | Shared location                                                                  |
+| -------------------- | -------------------------------------------------------------------------------- |
+| Config root          | `CLAUDE_CONFIG_DIR` or `~/.claude`                                               |
+| Sessions             | `<config>/projects/<project-key>/<session-id>.jsonl`                             |
+| Global instructions  | `<config>/CLAUDE.md`                                                             |
+| Project instructions | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/**/*.md`                        |
+| Auto memory          | `<config>/projects/<project-key>/memory/MEMORY.md` and linked memory files       |
+| Global skills        | `<config>/skills/`                                                               |
+| Project skills       | `.claude/skills/`                                                                |
+| Commands             | `<config>/commands/`, `.claude/commands/`                                        |
+| Agent definitions    | `<config>/agents/`, `.claude/agents/`                                            |
+| Settings and hooks   | `<config>/settings.json`, `.claude/settings.json`, `.claude/settings.local.json` |
+| Project MCP          | `.mcp.json` and Claude-compatible configured sources                             |
 
 Praxis must reuse Claude Code's canonical project-path sanitization. A similar
 but independently invented directory name is not compatible.
@@ -119,10 +119,28 @@ Claude installation/version detection
 
 Support policy:
 
-- exact compatibility with explicitly tested Claude Code versions;
+- read-write compatibility with explicitly tested Claude Code `2.1.208`;
 - preserve unknown fields when round-tripping;
 - fail closed before writing an unsupported schema;
 - offer read-only recovery/export when write compatibility is unknown.
+
+Current write scope is deliberately smaller than read scope. Praxis reads any
+well-formed native entry as opaque data, but only appends validated `user` and
+`assistant` conversational entries. Summary, sidechain, attachment, image, and
+other entry writers remain disabled until their black-box fixtures pass.
+
+## Resource ownership and current access
+
+| Resource                               | Plane          | Praxis access                          |
+| -------------------------------------- | -------------- | -------------------------------------- |
+| Transcript                             | Shared         | Append only                            |
+| Auto memory                            | Shared         | Read/write                             |
+| Instructions, skills, commands, agents | Shared         | Read only until loaders pass fixtures  |
+| Settings, hooks, MCP                   | Shared         | Read only until semantic matrix passes |
+| Provider payloads, indexes, locks      | Praxis sidecar | Read/write                             |
+
+This matrix is also encoded in `src/compatibility/claude/ownership.ts`; runtime
+code must consult that policy instead of inventing ownership per feature.
 
 ## Verification gates
 

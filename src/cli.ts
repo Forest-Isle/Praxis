@@ -18,8 +18,8 @@ export interface CliIO {
 }
 
 const consoleIO: CliIO = {
-  stdout: message => process.stdout.write(message),
-  stderr: message => process.stderr.write(message),
+  stdout: (message) => process.stdout.write(message),
+  stderr: (message) => process.stderr.write(message),
 }
 
 export function run(argv: readonly string[], io: CliIO = consoleIO): number {

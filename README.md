@@ -10,7 +10,10 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Initial clean-room scaffold. Agent runtime implementation has not started.
+Sprint 0 compatibility kernel in progress. Claude 2.1.208 path mapping,
+versioned JSONL parsing, provider translation, and concurrent-write protection
+are implemented; broad agent runtime remains behind compatibility black-box
+gates.
 
 ## Product boundary
 
@@ -28,8 +31,8 @@ sessions, and Claude Code can resume sessions written by Praxis. Project
 instructions, auto memory, skills, agents, hooks, and MCP configuration are
 shared rather than copied into a separate Praxis ecosystem.
 
-See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for boundaries and safety
-rules.
+See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for protocol boundaries and
+[docs/ROADMAP.md](docs/ROADMAP.md) for implementation gates.
 
 ## Development
 
@@ -40,7 +43,18 @@ npm install
 npm run typecheck
 npm test
 npm run build
+npm run check
 node dist/cli.js --help
 ```
 
+With an authenticated Claude Code 2.1.208 installation, run the isolated live
+resume probe separately (it makes real model requests):
+
+```sh
+npm run test:compat
+```
+
 Architecture constraints live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Runtime semantics and trust boundaries live in
+[docs/RUNTIME_CONTRACT.md](docs/RUNTIME_CONTRACT.md) and
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).

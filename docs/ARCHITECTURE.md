@@ -19,6 +19,7 @@ src/
 ├── cli/           terminal UI and structured output
 ├── application/   run, resume, inspect, and configure use cases
 ├── core/          agent loop and provider-neutral domain types
+├── compatibility/ versioned Claude local-protocol adapters
 ├── providers/     capability-aware model adapters
 ├── tools/         local executable capabilities
 ├── extensions/    MCP, skills, and hooks

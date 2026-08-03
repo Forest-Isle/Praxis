@@ -6,8 +6,8 @@ function captureIO() {
   const stdout: string[] = []
   const stderr: string[] = []
   const io: CliIO = {
-    stdout: message => stdout.push(message),
-    stderr: message => stderr.push(message),
+    stdout: (message) => stdout.push(message),
+    stderr: (message) => stderr.push(message),
   }
 
   return { io, stdout, stderr }
