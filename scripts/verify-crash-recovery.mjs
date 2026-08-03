@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { ClaudeSessionService } from '../dist/application/session-service.js'
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
 import { AgentRunCancelledError } from '../dist/core/runtime.js'
+import { ClaudeHookRunner } from '../dist/hooks/claude-hooks.js'
 import { detectClaudeVersion, runClaudeJson } from './lib/claude-probe.mjs'
 
 const recoveryMarker = 'PRAXIS_RECOVERED_TOOL_4816'
@@ -76,15 +77,61 @@ try {
     sessionId: session.sessionId,
   }).sessionFile
   const beforeDecline = await readFile(sessionFile, 'utf8')
+  const recoveryHooks = new ClaudeHookRunner({
+    cwd,
+    settings: [
+      {
+        path: join(configRoot, 'recovery-hooks.json'),
+        scope: 'user',
+        value: {
+          hooks: {
+            SessionStart: [
+              { hooks: [{ type: 'command', command: 'session-start' }] },
+            ],
+            PreToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [{ type: 'command', command: 'pre-tool-use' }],
+              },
+            ],
+          },
+        },
+      },
+    ],
+    async executeCommand(_command, input) {
+      return input.hook_event_name === 'PreToolUse'
+        ? {
+            stdout: JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                updatedInput: { command: 'hook recovery command' },
+                additionalContext: 'RECOVERY_PRE_HOOK_CONTEXT',
+              },
+            }),
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        : {
+            stdout: 'RECOVERY_SESSION_HOOK_CONTEXT\n',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+    },
+  })
   const recoveryTools = {
     definitions: () => [
       { name: 'Bash', description: 'fixture', inputSchema: {} },
     ],
     async prepare(call) {
-      return { ...call, input: { command: 'prepared recovery command' } }
+      return {
+        ...call,
+        input: { command: `prepared:${String(call.input.command)}` },
+      }
     },
     async execute(call) {
-      if (call.input.command !== 'prepared recovery command') {
+      if (call.input.command !== 'prepared:hook recovery command') {
         throw new Error('Recovery executed the unprepared tool input')
       }
       return { content: recoveryMarker, isError: false }
@@ -102,6 +149,7 @@ try {
     },
     tools: recoveryTools,
     permissions: { resolve: () => ({ behavior: 'ask' }) },
+    hooks: recoveryHooks,
     approveRecovery: () => false,
   })
   await expectRejected(
@@ -134,9 +182,10 @@ try {
     },
     tools: recoveryTools,
     permissions: { resolve: () => ({ behavior: 'ask' }) },
+    hooks: recoveryHooks,
     approveRecovery(call) {
       approvals += 1
-      if (call.input.command !== 'prepared recovery command') {
+      if (call.input.command !== 'prepared:hook recovery command') {
         throw new Error('Recovery approval did not receive prepared input')
       }
       return true
@@ -145,6 +194,28 @@ try {
   const result = await recovered.resume(session.sessionId, 'Continue safely.')
   if (approvals !== 1 || result.text !== finalMarker) {
     throw new Error('Approved recovery did not complete exactly once')
+  }
+  const recoveredEntries = (await readFile(sessionFile, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((entry) => JSON.parse(entry))
+  const sessionStartIndex = recoveredEntries.findIndex(
+    (entry) => entry.attachment?.hookEvent === 'SessionStart',
+  )
+  const preToolUseIndex = recoveredEntries.findIndex(
+    (entry) => entry.attachment?.hookEvent === 'PreToolUse',
+  )
+  const toolResultIndex = recoveredEntries.findIndex(
+    (entry) =>
+      entry.message?.content?.[0]?.tool_use_id ===
+      'call_interrupted_recovery_probe',
+  )
+  if (
+    sessionStartIndex < 0 ||
+    preToolUseIndex <= sessionStartIndex ||
+    toolResultIndex <= preToolUseIndex
+  ) {
+    throw new Error('Approved recovery did not persist staged hooks in order')
   }
 
   const claude = await runClaudeJson(
@@ -177,7 +248,7 @@ try {
   }
 
   console.log(
-    `Claude ${claudeVersion} crash recovery passed: decline is append-free, prepared input is approved once, tool result persists, and Claude resumes it`,
+    `Claude ${claudeVersion} crash recovery passed: hook-producing decline is append-free, approved hooks persist in order, prepared input is approved once, tool result persists, and Claude resumes it`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

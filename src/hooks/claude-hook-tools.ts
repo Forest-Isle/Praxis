@@ -20,7 +20,11 @@ export interface ClaudeHookToolCoordinatorOptions {
   permissions: PermissionResolver
   hooks: ClaudeHookRunner
   session: ClaudeHookSessionInput
-  recordOutcome(outcome: ClaudeHookOutcome): Promise<void>
+  recordOutcome(
+    outcome: ClaudeHookOutcome,
+    deferUntilApproval?: boolean,
+  ): Promise<void>
+  deferPreToolUseOutcome?(call: ModelToolCall): boolean
 }
 
 interface PreparedHookCall {
@@ -55,7 +59,11 @@ export class ClaudeHookToolCoordinator
       call.name,
       context.signal,
     )
-    await this.options.recordOutcome(outcome)
+    if (this.options.deferPreToolUseOutcome?.(call)) {
+      await this.options.recordOutcome(outcome, true)
+    } else {
+      await this.options.recordOutcome(outcome)
+    }
     if (outcome.blockedReason) {
       throw new Error(
         `PreToolUse:${call.name} hook error: ${outcome.blockedReason}`,

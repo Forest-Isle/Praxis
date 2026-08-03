@@ -1734,21 +1734,62 @@ describe('ClaudeSessionService', () => {
     if (!summary) throw new Error('Interrupted session was not persisted')
     const recoveryTools: ToolRegistry = {
       ...tools,
-      async execute() {
+      async prepare(call) {
+        return {
+          ...call,
+          input: { command: `prepared:${String(call.input.command)}` },
+        }
+      },
+      async execute(call) {
+        expect(call.input.command).toBe('prepared:hook recovery command')
         return { content: 'recovered output', isError: false }
       },
     }
-    const requiresApproval = new ClaudeSessionService({
-      configRoot,
+    const recoveryHookEvents: string[] = []
+    const recoveryHooks = new ClaudeHookRunner({
       cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['must not run']),
-      tools: recoveryTools,
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      settings: [
+        {
+          path: join(configRoot, 'recovery-settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              SessionStart: [
+                { hooks: [{ type: 'command', command: 'session-start' }] },
+              ],
+              PreToolUse: [
+                {
+                  matcher: 'Bash',
+                  hooks: [{ type: 'command', command: 'pre-tool-use' }],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async (_command, input) => {
+        recoveryHookEvents.push(input.hook_event_name)
+        return input.hook_event_name === 'PreToolUse'
+          ? {
+              stdout: JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  updatedInput: { command: 'hook recovery command' },
+                  additionalContext: 'RECOVERY_PRE_HOOK_CONTEXT',
+                },
+              }),
+              stderr: '',
+              exitCode: 0,
+              durationMs: 1,
+            }
+          : {
+              stdout: 'RECOVERY_SESSION_HOOK_CONTEXT\n',
+              stderr: '',
+              exitCode: 0,
+              durationMs: 1,
+            }
+      },
     })
-    await expect(
-      requiresApproval.resume(summary.sessionId, 'continue'),
-    ).rejects.toThrow('requires explicit recovery approval')
     const { resolveClaudePaths } =
       await import('../compatibility/claude/paths.js')
     const paths = resolveClaudePaths({
@@ -1756,6 +1797,22 @@ describe('ClaudeSessionService', () => {
       cwd,
       sessionId: summary.sessionId,
     })
+    const beforeMissingApproval = await readFile(paths.sessionFile, 'utf8')
+    const requiresApproval = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+      tools: recoveryTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      hooks: recoveryHooks,
+    })
+    await expect(
+      requiresApproval.resume(summary.sessionId, 'continue'),
+    ).rejects.toThrow('requires explicit recovery approval')
+    expect(await readFile(paths.sessionFile, 'utf8')).toBe(
+      beforeMissingApproval,
+    )
     const beforeDecline = await readFile(paths.sessionFile, 'utf8')
     const declined = new ClaudeSessionService({
       configRoot,
@@ -1764,11 +1821,34 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['must not run']),
       tools: recoveryTools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      hooks: recoveryHooks,
       approveRecovery: () => false,
     })
     await expect(
       declined.resume(summary.sessionId, 'continue'),
     ).rejects.toThrow('recovery was declined')
+    expect(await readFile(paths.sessionFile, 'utf8')).toBe(beforeDecline)
+    const recoveryController = new AbortController()
+    const cancelled = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+      tools: recoveryTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      hooks: recoveryHooks,
+      approveRecovery: () => {
+        recoveryController.abort()
+        return true
+      },
+    })
+    await expect(
+      cancelled.resume(
+        summary.sessionId,
+        'continue',
+        recoveryController.signal,
+      ),
+    ).rejects.toBeInstanceOf(AgentRunCancelledError)
     expect(await readFile(paths.sessionFile, 'utf8')).toBe(beforeDecline)
     let recoveryApprovals = 0
     const resumed = new ClaudeSessionService({
@@ -1778,8 +1858,10 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['must not run']),
       tools: recoveryTools,
       permissions: { resolve: () => ({ behavior: 'ask' }) },
-      approveRecovery: () => {
+      hooks: recoveryHooks,
+      approveRecovery: (call) => {
         recoveryApprovals += 1
+        expect(call.input.command).toBe('prepared:hook recovery command')
         return true
       },
     })
@@ -1788,11 +1870,28 @@ describe('ClaudeSessionService', () => {
       resumed.resume(summary.sessionId, 'continue'),
     ).resolves.toMatchObject({ text: 'must not run' })
     expect(recoveryApprovals).toBe(1)
+    expect(recoveryHookEvents).toEqual([
+      'SessionStart',
+      'SessionStart',
+      'PreToolUse',
+      'SessionStart',
+      'PreToolUse',
+      'SessionStart',
+      'PreToolUse',
+    ])
     const entries = (await readFile(paths.sessionFile, 'utf8'))
       .trimEnd()
       .split('\n')
-    expect(entries).toHaveLength(6)
-    expect(JSON.parse(entries[2] ?? '{}').message.content).toEqual([
+      .map((entry) => JSON.parse(entry))
+    const recoveryEntries = entries.slice(
+      beforeDecline.trimEnd().split('\n').length,
+    )
+    expect(
+      recoveryEntries
+        .filter((entry) => entry.type === 'attachment')
+        .map((entry) => entry.attachment.hookEvent),
+    ).toEqual(['SessionStart', 'PreToolUse', 'PreToolUse'])
+    expect(recoveryEntries[3]?.message.content).toEqual([
       {
         type: 'tool_result',
         tool_use_id: 'call_interrupted',

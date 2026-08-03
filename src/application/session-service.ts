@@ -187,13 +187,20 @@ export class ClaudeSessionService {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
       const provider = this.provider()
+      const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
+        snapshot.entries,
+      )
+      const pendingRecoveryToolCallIds = new Set(
+        unresolvedToolCalls.map((call) => call.id),
+      )
+      const pendingRecoveryHookOutcomes: ClaudeHookOutcome[] = []
       const hookSession = {
         session_id: sessionId,
         transcript_path: this.paths(sessionId).sessionFile,
         cwd: this.options.cwd,
         permission_mode: 'default',
       }
-      const recordHookOutcome = async (outcome: ClaudeHookOutcome) => {
+      const appendHookOutcome = async (outcome: ClaudeHookOutcome) => {
         for (const entry of createClaudeHookAttachmentEntries(
           outcome,
           this.translationContext(sessionId, snapshot),
@@ -201,6 +208,44 @@ export class ClaudeSessionService {
           const tail = await this.append(lease, snapshot.tail, entry)
           snapshot = { entries: [...snapshot.entries, entry], tail }
         }
+      }
+      const recordHookOutcome = async (
+        outcome: ClaudeHookOutcome,
+        deferUntilApproval = false,
+      ) => {
+        if (deferUntilApproval) {
+          pendingRecoveryHookOutcomes.push(outcome)
+          return
+        }
+        await appendHookOutcome(outcome)
+      }
+      const flushRecoveryHookOutcomes = async () => {
+        const entries: ClaudeTranscriptEntry[] = []
+        let history = snapshot.entries
+        let parentUuid = snapshot.tail.lastUuid
+        for (const outcome of pendingRecoveryHookOutcomes) {
+          const outcomeEntries = createClaudeHookAttachmentEntries(outcome, {
+            ...this.translationContext(sessionId, snapshot),
+            parentUuid,
+            history,
+          })
+          entries.push(...outcomeEntries)
+          history = [...history, ...outcomeEntries]
+          const lastEntry = outcomeEntries.at(-1)
+          if (typeof lastEntry?.uuid === 'string') parentUuid = lastEntry.uuid
+        }
+        if (entries.length === 0) {
+          pendingRecoveryHookOutcomes.length = 0
+          return
+        }
+        const appendResult = await lease.appendMany(snapshot.tail, entries)
+        if (appendResult.status === 'conflict') {
+          throw new Error(
+            `Claude transcript append conflict: ${appendResult.reason}`,
+          )
+        }
+        snapshot = { entries: history, tail: appendResult.tail }
+        pendingRecoveryHookOutcomes.length = 0
       }
       const hookTools =
         this.options.hooks && this.options.tools && this.options.permissions
@@ -210,6 +255,8 @@ export class ClaudeSessionService {
               hooks: this.options.hooks,
               session: hookSession,
               recordOutcome: recordHookOutcome,
+              deferPreToolUseOutcome: (call) =>
+                pendingRecoveryToolCallIds.has(call.id),
             })
           : null
       const runtime = new AgentRuntime(provider, this.options.eventSink, {
@@ -338,7 +385,7 @@ export class ClaudeSessionService {
             requireExisting ? 'resume' : 'startup',
             signal,
           )
-          await recordHookOutcome(outcome)
+          await recordHookOutcome(outcome, pendingRecoveryToolCallIds.size > 0)
           if (outcome.blockedReason) {
             throw new Error(`SessionStart hook error: ${outcome.blockedReason}`)
           }
@@ -351,18 +398,20 @@ export class ClaudeSessionService {
           ...(approveRecovery
             ? {
                 approveRecovery: async (call: ModelToolCall) => {
-                  if (await approveRecovery(call)) return true
-                  throw new Error(
-                    `Claude session tool call ${call.id} recovery was declined`,
-                  )
+                  if (!(await approveRecovery(call))) {
+                    throw new Error(
+                      `Claude session tool call ${call.id} recovery was declined`,
+                    )
+                  }
+                  if (signal?.aborted) throw new AgentRunCancelledError()
+                  await flushRecoveryHookOutcomes()
+                  pendingRecoveryToolCallIds.delete(call.id)
+                  return true
                 },
                 approveTool: () => true,
               }
             : {}),
         }
-        const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
-          snapshot.entries,
-        )
         const unresolvedToolCall = unresolvedToolCalls[0]
         if (unresolvedToolCall && !approveRecovery) {
           throw new Error(
