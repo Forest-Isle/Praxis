@@ -6,6 +6,10 @@ import type {
   ClaudeSchemaAdapter,
   ClaudeTranscriptEntry,
 } from '../compatibility/claude/schema.js'
+import {
+  getClaudeContentBlocks,
+  indexClaudeToolLinks,
+} from '../compatibility/claude/tool-links.js'
 
 export interface TranscriptTail {
   byteLength: number
@@ -57,6 +61,23 @@ export interface ClaudeTranscriptStoreOptions {
   schema: ClaudeSchemaAdapter
 }
 
+export function classifyTranscriptAppend(
+  written: Uint8Array,
+  previousByteLength: number,
+  encodedLine: Uint8Array,
+): 'appended' | 'interleaved-write' {
+  const expectedEnd = previousByteLength + encodedLine.length
+  if (
+    written.length === expectedEnd &&
+    Buffer.from(written)
+      .subarray(previousByteLength, expectedEnd)
+      .equals(encodedLine)
+  ) {
+    return 'appended'
+  }
+  return 'interleaved-write'
+}
+
 function hashLine(line: string): string {
   return createHash('sha256').update(line).digest('hex')
 }
@@ -88,56 +109,19 @@ function findLogicalTailUuid(
   return null
 }
 
-function contentBlocks(
-  entry: ClaudeTranscriptEntry,
-): Record<string, unknown>[] {
-  if (
-    typeof entry.message !== 'object' ||
-    entry.message === null ||
-    Array.isArray(entry.message)
-  ) {
-    return []
-  }
-  const content = (entry.message as Record<string, unknown>).content
-  if (!Array.isArray(content)) return []
-  return content.filter(
-    (block): block is Record<string, unknown> =>
-      typeof block === 'object' && block !== null && !Array.isArray(block),
-  )
-}
-
 function validateToolPairing(
   history: readonly ClaudeTranscriptEntry[],
   entry: ClaudeTranscriptEntry,
 ): void {
-  const toolCalls = new Map<string, string>()
-  const completedToolCalls = new Set<string>()
+  const { toolCalls, completedToolCalls } = indexClaudeToolLinks(history)
 
-  for (const historicalEntry of history) {
-    const uuid = getEntryUuid(historicalEntry)
-    for (const block of contentBlocks(historicalEntry)) {
-      if (
-        historicalEntry.type === 'assistant' &&
-        block.type === 'tool_use' &&
-        typeof block.id === 'string' &&
-        uuid
-      ) {
-        toolCalls.set(block.id, uuid)
-      }
-      if (
-        historicalEntry.type === 'user' &&
-        block.type === 'tool_result' &&
-        typeof block.tool_use_id === 'string'
-      ) {
-        completedToolCalls.add(block.tool_use_id)
-      }
-    }
-  }
-
-  for (const block of contentBlocks(entry)) {
+  for (const block of getClaudeContentBlocks(entry)) {
     if (entry.type === 'assistant' && block.type === 'tool_use') {
       if (typeof block.id === 'string' && toolCalls.has(block.id)) {
         throw new Error(`Duplicate assistant tool_use id: ${block.id}`)
+      }
+      if (typeof block.id === 'string' && typeof entry.uuid === 'string') {
+        toolCalls.set(block.id, entry.uuid)
       }
       continue
     }
@@ -157,6 +141,7 @@ function validateToolPairing(
     if (completedToolCalls.has(toolUseId)) {
       throw new Error(`Tool result already exists: ${toolUseId}`)
     }
+    completedToolCalls.add(toolUseId)
   }
 }
 
@@ -284,12 +269,12 @@ export class ClaudeTranscriptStore {
       }
 
       const written = await readFile(this.sessionFile)
-      const expectedEnd = expectedTail.byteLength + encodedLine.length
       if (
-        written.length !== expectedEnd ||
-        !written
-          .subarray(expectedTail.byteLength, expectedEnd)
-          .equals(encodedLine)
+        classifyTranscriptAppend(
+          written,
+          expectedTail.byteLength,
+          encodedLine,
+        ) === 'interleaved-write'
       ) {
         return { status: 'conflict', reason: 'interleaved-write' }
       }

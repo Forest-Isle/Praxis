@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { ClaudeTranscriptEntry } from './schema.js'
+import { indexClaudeToolLinks } from './tool-links.js'
 
 export type ProviderPersistenceEvent =
   | { type: 'user-text'; text: string }
@@ -76,39 +77,6 @@ function assistantMessage(
   }
 }
 
-function collectToolSources(
-  history: readonly ClaudeTranscriptEntry[],
-): Map<string, string> {
-  const sources = new Map<string, string>()
-
-  for (const entry of history) {
-    if (
-      entry.type !== 'assistant' ||
-      typeof entry.uuid !== 'string' ||
-      typeof entry.message !== 'object' ||
-      entry.message === null
-    ) {
-      continue
-    }
-    const message = entry.message as Record<string, unknown>
-    if (message.role !== 'assistant' || !Array.isArray(message.content))
-      continue
-
-    for (const block of message.content) {
-      if (
-        typeof block === 'object' &&
-        block !== null &&
-        (block as Record<string, unknown>).type === 'tool_use' &&
-        typeof (block as Record<string, unknown>).id === 'string'
-      ) {
-        sources.set((block as Record<string, unknown>).id as string, entry.uuid)
-      }
-    }
-  }
-
-  return sources
-}
-
 export function translateProviderEvents(
   events: readonly ProviderPersistenceEvent[],
   context: TranslationContext,
@@ -116,7 +84,7 @@ export function translateProviderEvents(
   const createUuid = context.createUuid ?? randomUUID
   const now = context.now ?? (() => new Date().toISOString())
   const entries: ClaudeTranscriptEntry[] = []
-  const toolSources = collectToolSources(context.history ?? [])
+  const toolSources = indexClaudeToolLinks(context.history ?? []).toolCalls
   let parentUuid = context.parentUuid
 
   for (const event of events) {

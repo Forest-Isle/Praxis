@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import {
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -74,6 +75,8 @@ async function resume(configRoot, fixture, prompt) {
       'haiku',
       '--max-turns',
       '1',
+      '--tools',
+      '',
       '--output-format',
       'json',
       prompt,
@@ -246,14 +249,76 @@ try {
     await resume(
       configRoot,
       sidechain,
-      'Repeat exactly the marker from the prior main assistant response.',
+      'Reply with exactly MAIN_SIDECHAIN_FIXTURE.',
     ),
     'MAIN_SIDECHAIN_FIXTURE',
     'Claude main session resume with sidechain layout',
   )
 
+  const generatedSidechainDirectory = join(
+    probeRoot,
+    'work',
+    'generated-sidechain',
+  )
+  await mkdir(generatedSidechainDirectory, { recursive: true })
+  const generatedSidechainCwd = await realpath(generatedSidechainDirectory)
+  const { stdout: generatedSidechainStdout } = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '3',
+      '--output-format',
+      'json',
+      '--allowedTools',
+      'Agent',
+      '--dangerously-skip-permissions',
+      'Use the Agent tool exactly once with subagent_type general-purpose. Ask it to reply with exactly GENERATED_SIDECHAIN_FIXTURE, then report that same marker.',
+    ],
+    {
+      cwd: generatedSidechainCwd,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  const generatedResponse = JSON.parse(generatedSidechainStdout)
+  if (
+    generatedResponse.type !== 'result' ||
+    generatedResponse.is_error ||
+    typeof generatedResponse.session_id !== 'string'
+  ) {
+    throw new Error('Claude failed to generate a sidechain fixture')
+  }
+  const generatedPaths = resolveClaudePaths({
+    configDir: configRoot,
+    cwd: generatedSidechainCwd,
+    sessionId: generatedResponse.session_id,
+  })
+  const generatedSubagentDirectory = join(
+    generatedPaths.projectRoot,
+    generatedResponse.session_id,
+    'subagents',
+  )
+  const generatedSubagentFiles = (await readdir(generatedSubagentDirectory))
+    .filter((name) => name.startsWith('agent-') && name.endsWith('.jsonl'))
+    .map((name) => join(generatedSubagentDirectory, name))
+  if (generatedSubagentFiles.length === 0) {
+    throw new Error('Claude did not generate native subagent JSONL layout')
+  }
+  const generatedSidechainSources = await Promise.all(
+    generatedSubagentFiles.map((path) => readFile(path, 'utf8')),
+  )
+  assertContains(
+    generatedSidechainSources.join('\n'),
+    'GENERATED_SIDECHAIN_FIXTURE',
+    'Claude-generated sidechain',
+  )
+
   console.log(
-    `Claude ${version} advanced fixtures passed: compaction, media/error, interruption, and sidechain layout`,
+    `Claude ${version} advanced fixtures passed: compaction, media/error, interruption, captured sidechain layout, and Claude-generated sidechain`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

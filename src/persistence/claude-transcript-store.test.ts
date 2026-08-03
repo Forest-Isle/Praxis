@@ -13,7 +13,10 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { selectClaudeSchemaAdapter } from '../compatibility/claude/schema.js'
-import { ClaudeTranscriptStore } from './claude-transcript-store.js'
+import {
+  ClaudeTranscriptStore,
+  classifyTranscriptAppend,
+} from './claude-transcript-store.js'
 
 const fixtureUrl = new URL(
   '../../test/fixtures/claude-code/2.1.208/basic-session.jsonl',
@@ -56,6 +59,33 @@ afterEach(async () => {
 })
 
 describe('ClaudeTranscriptStore', () => {
+  it('classifies unexpected bytes around an append as interleaving', () => {
+    const before = Buffer.from('{"history":true}\n')
+    const line = Buffer.from('{"type":"user"}\n')
+
+    expect(
+      classifyTranscriptAppend(
+        Buffer.concat([before, line]),
+        before.length,
+        line,
+      ),
+    ).toBe('appended')
+    expect(
+      classifyTranscriptAppend(
+        Buffer.concat([before, line, Buffer.from('external\n')]),
+        before.length,
+        line,
+      ),
+    ).toBe('interleaved-write')
+    expect(
+      classifyTranscriptAppend(
+        Buffer.concat([before, Buffer.from('x'), line]),
+        before.length,
+        line,
+      ),
+    ).toBe('interleaved-write')
+  })
+
   it('loads native entries and identifies the append parent', async () => {
     const { store } = await createStore()
 
@@ -141,6 +171,70 @@ describe('ClaudeTranscriptStore', () => {
         },
       }),
     ).rejects.toThrow('no matching assistant tool_use')
+  })
+
+  it('refuses duplicate tool IDs within one appended entry', async () => {
+    const first = await createStore()
+    const firstSnapshot = await first.store.load()
+    const assistantTemplate = firstSnapshot.entries.find(
+      (entry) => entry.type === 'assistant',
+    )
+    if (!assistantTemplate) throw new Error('Fixture has no assistant entry')
+    const toolBlock = {
+      type: 'tool_use',
+      id: 'call_duplicate',
+      name: 'Bash',
+      input: { command: 'pwd' },
+    }
+
+    await expect(
+      first.store.append(firstSnapshot.tail, {
+        ...assistantTemplate,
+        uuid: '55555555-5555-4555-8555-555555555555',
+        parentUuid: firstSnapshot.tail.lastUuid,
+        message: {
+          ...(assistantTemplate.message as Record<string, unknown>),
+          content: [toolBlock, toolBlock],
+          stop_reason: 'tool_use',
+        },
+      }),
+    ).rejects.toThrow('Duplicate assistant tool_use id')
+
+    const second = await createStore()
+    const secondSnapshot = await second.store.load()
+    const appendedToolCall = {
+      ...assistantTemplate,
+      uuid: '66666666-6666-4666-8666-666666666666',
+      parentUuid: secondSnapshot.tail.lastUuid,
+      message: {
+        ...(assistantTemplate.message as Record<string, unknown>),
+        content: [toolBlock],
+        stop_reason: 'tool_use',
+      },
+    }
+    const toolCallResult = await second.store.append(
+      secondSnapshot.tail,
+      appendedToolCall,
+    )
+    if (toolCallResult.status !== 'appended') {
+      throw new Error('Could not append tool call fixture')
+    }
+    const resultBlock = {
+      type: 'tool_result',
+      tool_use_id: 'call_duplicate',
+      content: 'result',
+      is_error: false,
+    }
+
+    await expect(
+      second.store.append(toolCallResult.tail, {
+        ...firstEntry(secondSnapshot),
+        uuid: '77777777-7777-4777-8777-777777777777',
+        parentUuid: toolCallResult.tail.lastUuid,
+        sourceToolAssistantUUID: appendedToolCall.uuid,
+        message: { role: 'user', content: [resultBlock, resultBlock] },
+      }),
+    ).rejects.toThrow('Tool result already exists')
   })
 
   it('honors a Praxis advisory lock', async () => {

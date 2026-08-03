@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -12,14 +12,21 @@ const execFileAsync = promisify(execFile)
 const markers = {
   global: 'SHARED_GLOBAL_1041',
   project: 'SHARED_PROJECT_2052',
+  projectPackage: 'SHARED_PROJECT_PACKAGE_2163',
+  projectCwd: 'SHARED_PROJECT_CWD_2274',
+  nonGit: 'SHARED_NON_GIT_2385',
   memory: 'SHARED_MEMORY_3063',
   memoryDetail: 'SHARED_MEMORY_DETAIL_3174',
   skill: 'SHARED_SKILL_4074',
   hook: 'SHARED_HOOK_5085',
   mcp: 'SHARED_MCP_6096',
+  mcpCwd: 'SHARED_MCP_CWD_6207',
   command: 'SHARED_COMMAND_7107',
+  projectCommand: 'SHARED_PROJECT_COMMAND_7218',
   agent: 'SHARED_AGENT_8218',
+  projectAgent: 'SHARED_PROJECT_AGENT_8329',
   settings: 'SHARED_SETTINGS_9329',
+  rootSettings: 'SHARED_ROOT_SETTINGS_9430',
 }
 
 async function write(path, content) {
@@ -33,7 +40,14 @@ function assertContains(haystack, needle, label) {
   }
 }
 
+function assertNotContains(haystack, needle, label) {
+  if (haystack.includes(needle)) {
+    throw new Error(`${label} unexpectedly exposed marker ${needle}`)
+  }
+}
+
 const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-claude-shared-'))
+let nonGitRoot
 
 try {
   const { stdout: versionOutput } = await execFileAsync('claude', ['--version'])
@@ -43,15 +57,39 @@ try {
   }
 
   const configRoot = join(probeRoot, 'config')
-  const repository = join(probeRoot, 'work')
-  const workDirectory = join(repository, 'packages', 'fixture')
+  const mainRepository = join(probeRoot, 'main')
+  const repository = join(probeRoot, 'worktree')
+  await mkdir(mainRepository, { recursive: true })
+  await execFileAsync('git', ['init', '-q', mainRepository])
+  await write(join(mainRepository, '.gitkeep'), '')
+  await execFileAsync('git', ['add', '.gitkeep'], { cwd: mainRepository })
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.name=Praxis Fixture',
+      '-c',
+      'user.email=praxis-fixture@example.invalid',
+      'commit',
+      '-q',
+      '-m',
+      'fixture',
+    ],
+    { cwd: mainRepository },
+  )
+  await execFileAsync(
+    'git',
+    ['worktree', 'add', '-q', '-b', 'fixture-worktree', repository],
+    { cwd: mainRepository },
+  )
+  const packageDirectory = join(repository, 'packages')
+  const workDirectory = join(packageDirectory, 'fixture')
   await mkdir(workDirectory, { recursive: true })
-  await execFileAsync('git', ['init', '-q', repository])
   const cwd = await realpath(workDirectory)
   const projectMemoryDirectory = join(
     configRoot,
     'projects',
-    sanitizeClaudeProjectPath(await realpath(repository)),
+    sanitizeClaudeProjectPath(await realpath(mainRepository)),
     'memory',
   )
   const mcpServer = join(probeRoot, 'fixture-mcp.mjs')
@@ -66,6 +104,14 @@ try {
       `Project compatibility marker: ${markers.project}\n`,
     ),
     write(
+      join(packageDirectory, 'CLAUDE.md'),
+      `Package compatibility marker: ${markers.projectPackage}\n`,
+    ),
+    write(
+      join(cwd, 'CLAUDE.md'),
+      `Cwd compatibility marker: ${markers.projectCwd}\n`,
+    ),
+    write(
       join(projectMemoryDirectory, 'MEMORY.md'),
       `Auto-memory marker: ${markers.memory}\n\n- [Details](details.md)\n`,
     ),
@@ -75,20 +121,34 @@ try {
     ),
     write(
       join(repository, '.claude', 'skills', 'fixture-matrix', 'SKILL.md'),
-      `---\nname: fixture-matrix\ndescription: Verify the shared compatibility matrix.\n---\n\nSkill marker: ${markers.skill}. Call mcp__fixture__marker once, then reply with one JSON object containing exact global, project, memory, skill, hook, mcp, and agent marker strings visible in context.\n`,
+      `---\nname: fixture-matrix\ndescription: Verify the shared compatibility matrix.\n---\n\nSkill marker: ${markers.skill}. Read ${join(projectMemoryDirectory, 'details.md')}, call mcp__fixture_root__marker and mcp__fixture_cwd__marker once each, then reply with one JSON object containing every exact marker visible from global/root/package/cwd instructions, memory index/detail, skill, hooks/settings, both MCP tools, and active agent.\n`,
     ),
     write(
       join(configRoot, 'commands', 'fixture-command.md'),
       `Reply with exactly ${markers.command}.\n`,
     ),
     write(
+      join(packageDirectory, '.claude', 'commands', 'fixture-project.md'),
+      `Reply with exactly ${markers.projectCommand}.\n`,
+    ),
+    write(
       join(configRoot, 'agents', 'fixture-agent.md'),
       `---\nname: fixture-agent\ndescription: Shared agent fixture.\n---\nAgent compatibility marker: ${markers.agent}. Always include it in your response.\n`,
     ),
     write(
-      join(cwd, '.claude', 'settings.local.json'),
+      join(cwd, '.claude', 'agents', 'fixture-project-agent.md'),
+      `---\nname: fixture-project-agent\ndescription: Project agent fixture.\n---\nProject agent compatibility marker: ${markers.projectAgent}. Always include it in your response.\n`,
+    ),
+    write(
+      join(repository, '.claude', 'settings.json'),
       JSON.stringify({
         enableAllProjectMcpServers: true,
+        env: { PRAXIS_ROOT_SETTINGS_MARKER: markers.rootSettings },
+      }),
+    ),
+    write(
+      join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({
         env: { PRAXIS_SETTINGS_MARKER: markers.settings },
         hooks: {
           UserPromptSubmit: [
@@ -96,7 +156,7 @@ try {
               hooks: [
                 {
                   type: 'command',
-                  command: `printf "$PRAXIS_SETTINGS_MARKER:${markers.hook}"`,
+                  command: `printf "$PRAXIS_ROOT_SETTINGS_MARKER:$PRAXIS_SETTINGS_MARKER:${markers.hook}"`,
                 },
               ],
             },
@@ -105,16 +165,31 @@ try {
       }),
     ),
     write(
+      join(repository, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          fixture_root: {
+            command: process.execPath,
+            args: [mcpServer, markers.mcp],
+          },
+        },
+      }),
+    ),
+    write(
       join(cwd, '.mcp.json'),
       JSON.stringify({
         mcpServers: {
-          fixture: { command: process.execPath, args: [mcpServer] },
+          fixture_cwd: {
+            command: process.execPath,
+            args: [mcpServer, markers.mcpCwd],
+          },
         },
       }),
     ),
     write(
       mcpServer,
-      `let buffer = ''
+      `const marker = process.argv[2]
+let buffer = ''
 process.stdin.setEncoding('utf8')
 process.stdin.on('data', chunk => {
   buffer += chunk
@@ -141,7 +216,7 @@ process.stdin.on('data', chunk => {
         }],
       }
     } else if (request.method === 'tools/call') {
-      result = { content: [{ type: 'text', text: '${markers.mcp}' }] }
+      result = { content: [{ type: 'text', text: marker }] }
     } else {
       result = {}
     }
@@ -161,7 +236,17 @@ process.stdin.on('data', chunk => {
   assertContains(
     resources.instructions.map((item) => item.content).join('\n'),
     markers.project,
-    'Praxis project instructions',
+    'Praxis root instructions',
+  )
+  assertContains(
+    resources.instructions.map((item) => item.content).join('\n'),
+    markers.projectPackage,
+    'Praxis package instructions',
+  )
+  assertContains(
+    resources.instructions.map((item) => item.content).join('\n'),
+    markers.projectCwd,
+    'Praxis cwd instructions',
   )
   assertContains(
     resources.memory.map((item) => item.content).join('\n'),
@@ -178,22 +263,44 @@ process.stdin.on('data', chunk => {
     markers.skill,
     'Praxis skills',
   )
-  if (resources.commands.length !== 1 || resources.agents.length !== 1) {
+  if (resources.commands.length !== 2 || resources.agents.length !== 2) {
     throw new Error('Praxis did not discover shared commands and agents')
   }
   assertContains(
-    resources.commands[0]?.content ?? '',
+    resources.commands.map((item) => item.content).join('\n'),
     markers.command,
-    'Praxis commands',
+    'Praxis global commands',
   )
   assertContains(
-    resources.agents[0]?.content ?? '',
-    markers.agent,
-    'Praxis agents',
+    resources.commands.map((item) => item.content).join('\n'),
+    markers.projectCommand,
+    'Praxis project commands',
   )
-  if (resources.settings.length !== 1 || !resources.mcp) {
+  assertContains(
+    resources.agents.map((item) => item.content).join('\n'),
+    markers.agent,
+    'Praxis global agents',
+  )
+  assertContains(
+    resources.agents.map((item) => item.content).join('\n'),
+    markers.projectAgent,
+    'Praxis project agents',
+  )
+  if (resources.settings.length !== 2 || resources.mcp.length !== 2) {
     throw new Error('Praxis did not discover shared settings/hooks and MCP')
   }
+  const serializedSettings = JSON.stringify(
+    resources.settings.map((item) => item.value),
+  )
+  assertContains(
+    serializedSettings,
+    markers.rootSettings,
+    'Praxis root settings',
+  )
+  assertContains(serializedSettings, markers.settings, 'Praxis local settings')
+  const serializedMcp = JSON.stringify(resources.mcp.map((item) => item.value))
+  assertContains(serializedMcp, markers.mcp, 'Praxis root MCP')
+  assertContains(serializedMcp, markers.mcpCwd, 'Praxis cwd MCP')
 
   const { stdout } = await execFileAsync(
     'claude',
@@ -206,7 +313,7 @@ process.stdin.on('data', chunk => {
       '--output-format',
       'json',
       '--allowedTools',
-      'Skill,mcp__fixture__marker',
+      'Skill,Read,mcp__fixture_root__marker,mcp__fixture_cwd__marker',
       '--agent',
       'fixture-agent',
       '--dangerously-skip-permissions',
@@ -224,16 +331,25 @@ process.stdin.on('data', chunk => {
   for (const label of [
     'global',
     'project',
+    'projectPackage',
+    'projectCwd',
     'memory',
+    'memoryDetail',
     'skill',
     'hook',
     'mcp',
+    'mcpCwd',
     'agent',
     'settings',
   ]) {
     const marker = markers[label]
     assertContains(result, marker, `Claude ${label}`)
   }
+  assertNotContains(
+    result,
+    markers.rootSettings,
+    'Claude closer settings precedence',
+  )
 
   const { stdout: commandStdout } = await execFileAsync(
     'claude',
@@ -261,9 +377,109 @@ process.stdin.on('data', chunk => {
     'Claude command',
   )
 
+  const { stdout: projectCommandStdout } = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--output-format',
+      'json',
+      '/fixture-project',
+    ],
+    {
+      cwd,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  assertContains(
+    String(JSON.parse(projectCommandStdout).result),
+    markers.projectCommand,
+    'Claude project command',
+  )
+
+  const { stdout: projectAgentStdout } = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--output-format',
+      'json',
+      '--agent',
+      'fixture-project-agent',
+      'Reply with your exact project agent compatibility marker.',
+    ],
+    {
+      cwd,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  assertContains(
+    String(JSON.parse(projectAgentStdout).result),
+    markers.projectAgent,
+    'Claude project agent',
+  )
+
+  nonGitRoot = await realpath(
+    await mkdtemp(join(homedir(), '.praxis-claude-non-git-')),
+  )
+  const nonGitCwd = join(nonGitRoot, 'packages', 'fixture')
+  await Promise.all([
+    mkdir(nonGitCwd, { recursive: true }),
+    write(
+      join(nonGitRoot, 'CLAUDE.md'),
+      `Non-git hierarchy marker: ${markers.nonGit}\n`,
+    ),
+  ])
+  const nonGitResources = await loadClaudeSharedResources({
+    configRoot,
+    cwd: nonGitCwd,
+  })
+  assertContains(
+    nonGitResources.instructions.map((item) => item.content).join('\n'),
+    markers.nonGit,
+    'Praxis non-git hierarchy',
+  )
+  const { stdout: nonGitStdout } = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--output-format',
+      'json',
+      `Reply with exactly ${markers.nonGit}.`,
+    ],
+    {
+      cwd: nonGitCwd,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  assertContains(
+    String(JSON.parse(nonGitStdout).result),
+    markers.nonGit,
+    'Claude non-git hierarchy',
+  )
+
   console.log(
-    `Claude ${version} shared-resource compatibility passed: instructions, memory, skill, hook, MCP, commands, agents, and settings`,
+    `Claude ${version} shared-resource compatibility passed: worktree/non-git hierarchy, memory, skill, hook, MCP, commands, agents, and settings`,
   )
 } finally {
-  await rm(probeRoot, { recursive: true })
+  await Promise.all([
+    rm(probeRoot, { recursive: true }),
+    nonGitRoot ? rm(nonGitRoot, { recursive: true }) : Promise.resolve(),
+  ])
 }

@@ -1,5 +1,6 @@
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { readdir, readFile, realpath, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import { sanitizeClaudeProjectPath } from './paths.js'
 
@@ -24,12 +25,13 @@ export interface ClaudeSharedResources {
   commands: ClaudeTextResource[]
   agents: ClaudeTextResource[]
   settings: ClaudeJsonResource[]
-  mcp: ClaudeJsonResource | null
+  mcp: ClaudeJsonResource[]
 }
 
 export interface LoadClaudeSharedResourcesOptions {
   configRoot: string
   cwd: string
+  homeDirectory?: string
 }
 
 async function readOptionalText(
@@ -121,19 +123,122 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function findProjectDirectories(cwd: string): Promise<string[]> {
-  const resolvedCwd = resolve(cwd)
-  const directories = [resolvedCwd]
-  let current = resolvedCwd
-
-  while (!(await exists(join(current, '.git')))) {
+function directoriesFromRoot(root: string, cwd: string): string[] {
+  const directories = [cwd]
+  let current = cwd
+  while (current !== root) {
     const parent = dirname(current)
-    if (parent === current) return [resolvedCwd]
+    if (parent === current) return [cwd]
     directories.push(parent)
     current = parent
   }
-
   return directories.reverse()
+}
+
+function isWithin(root: string, path: string): boolean {
+  const pathFromRoot = relative(root, path)
+  return (
+    pathFromRoot === '' ||
+    (!pathFromRoot.startsWith('..') && !isAbsolute(pathFromRoot))
+  )
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  try {
+    return await realpath(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return resolve(path)
+    throw error
+  }
+}
+
+async function findGitRoot(cwd: string): Promise<string | null> {
+  let current = cwd
+  while (!(await exists(join(current, '.git')))) {
+    const parent = dirname(current)
+    if (parent === current) return null
+    current = parent
+  }
+  return current
+}
+
+async function readOptionalRaw(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+async function findMemoryIdentityRoot(gitRoot: string): Promise<string> {
+  const gitMarker = join(gitRoot, '.git')
+  const marker = await stat(gitMarker)
+  if (!marker.isFile()) return gitRoot
+
+  const gitFile = await readFile(gitMarker, 'utf8')
+  const match = /^gitdir:\s*(.+)\s*$/m.exec(gitFile)
+  if (!match?.[1]) return gitRoot
+  const gitDirectory = resolve(gitRoot, match[1])
+  const commonDirectory = await readOptionalRaw(join(gitDirectory, 'commondir'))
+  if (!commonDirectory) return gitRoot
+  const commonGitDirectory = await canonicalPath(
+    resolve(gitDirectory, commonDirectory.trim()),
+  )
+  return dirname(commonGitDirectory)
+}
+
+async function resolveProjectContext(
+  cwd: string,
+  homeDirectory: string,
+): Promise<{ directories: string[]; memoryIdentityRoot: string }> {
+  const canonicalCwd = await canonicalPath(cwd)
+  const gitRoot = await findGitRoot(canonicalCwd)
+  if (gitRoot) {
+    return {
+      directories: directoriesFromRoot(gitRoot, canonicalCwd),
+      memoryIdentityRoot: await findMemoryIdentityRoot(gitRoot),
+    }
+  }
+
+  const canonicalHome = await canonicalPath(homeDirectory)
+  return {
+    directories: isWithin(canonicalHome, canonicalCwd)
+      ? directoriesFromRoot(canonicalHome, canonicalCwd)
+      : [canonicalCwd],
+    memoryIdentityRoot: canonicalCwd,
+  }
+}
+
+async function loadProjectSettings(
+  configRoot: string,
+  projectDirectories: readonly string[],
+): Promise<ClaudeJsonResource[]> {
+  const userSettings = await readOptionalJson(
+    join(configRoot, 'settings.json'),
+    'user',
+  )
+  const projectSettings = await Promise.all(
+    projectDirectories.flatMap((directory) => [
+      readOptionalJson(join(directory, '.claude', 'settings.json'), 'project'),
+      readOptionalJson(
+        join(directory, '.claude', 'settings.local.json'),
+        'local',
+      ),
+    ]),
+  )
+  return [userSettings, ...projectSettings].filter(present)
+}
+
+async function loadProjectMcp(
+  projectDirectories: readonly string[],
+): Promise<ClaudeJsonResource[]> {
+  const resources = await Promise.all(
+    projectDirectories.map((directory) =>
+      readOptionalJson(join(directory, '.mcp.json'), 'project'),
+    ),
+  )
+  return resources.filter(present)
 }
 
 async function loadProjectInstructions(
@@ -162,13 +267,14 @@ function present<T>(value: T | null): value is T {
 export async function loadClaudeSharedResources({
   configRoot,
   cwd,
+  homeDirectory = homedir(),
 }: LoadClaudeSharedResourcesOptions): Promise<ClaudeSharedResources> {
-  const projectDirectories = await findProjectDirectories(cwd)
-  const projectClaudeRoot = join(cwd, '.claude')
+  const { directories: projectDirectories, memoryIdentityRoot } =
+    await resolveProjectContext(cwd, homeDirectory)
   const projectMemoryDirectory = join(
     configRoot,
     'projects',
-    sanitizeClaudeProjectPath(projectDirectories[0] ?? resolve(cwd)),
+    sanitizeClaudeProjectPath(memoryIdentityRoot),
     'memory',
   )
 
@@ -179,9 +285,7 @@ export async function loadClaudeSharedResources({
     skills,
     commands,
     agents,
-    userSettings,
-    projectSettings,
-    localSettings,
+    settings,
     mcp,
   ] = await Promise.all([
     readOptionalText(join(configRoot, 'CLAUDE.md'), 'user'),
@@ -204,10 +308,8 @@ export async function loadClaudeSharedResources({
       projectDirectories.map((path) => join(path, '.claude', 'agents')),
       (name) => name.endsWith('.md'),
     ),
-    readOptionalJson(join(configRoot, 'settings.json'), 'user'),
-    readOptionalJson(join(projectClaudeRoot, 'settings.json'), 'project'),
-    readOptionalJson(join(projectClaudeRoot, 'settings.local.json'), 'local'),
-    readOptionalJson(join(cwd, '.mcp.json'), 'project'),
+    loadProjectSettings(configRoot, projectDirectories),
+    loadProjectMcp(projectDirectories),
   ])
 
   return {
@@ -216,7 +318,7 @@ export async function loadClaudeSharedResources({
     skills,
     commands,
     agents,
-    settings: [userSettings, projectSettings, localSettings].filter(present),
+    settings,
     mcp,
   }
 }

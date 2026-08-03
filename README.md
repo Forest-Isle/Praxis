@@ -12,7 +12,8 @@ IDE surfaces, and telemetry control planes.
 
 Sprint 0 compatibility kernel complete for Claude Code 2.1.208. Bidirectional
 resume, versioned JSONL validation, concurrent-write protection, nested shared
-resources, and advanced transcript fixtures pass isolated black-box probes.
+resources across worktrees/non-git projects, and advanced transcript fixtures
+pass isolated black-box probes.
 Broad agent runtime has not started.
 
 ## Product boundary

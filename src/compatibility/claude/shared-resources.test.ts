@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -22,7 +22,9 @@ afterEach(async () => {
 
 describe('Claude shared resource discovery', () => {
   it('loads shared instructions, memory, extensions, settings, hooks, and MCP without copying', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-shared-resources-'))
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-resources-')),
+    )
     tempDirectories.push(root)
     const configRoot = join(root, 'config')
     const cwd = join(root, 'workspace')
@@ -113,13 +115,15 @@ describe('Claude shared resource discovery', () => {
       { permissions: { allow: ['Read'] } },
       { hooks: { UserPromptSubmit: [] } },
     ])
-    expect(resources.mcp?.value).toEqual({
-      mcpServers: { fixture: { command: 'node' } },
-    })
+    expect(resources.mcp.map((item) => item.value)).toEqual([
+      { mcpServers: { fixture: { command: 'node' } } },
+    ])
   })
 
   it('returns an empty view when optional shared files do not exist', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-shared-empty-'))
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-empty-')),
+    )
     tempDirectories.push(root)
 
     const resources = await loadClaudeSharedResources({
@@ -134,12 +138,14 @@ describe('Claude shared resource discovery', () => {
       commands: [],
       agents: [],
       settings: [],
-      mcp: null,
+      mcp: [],
     })
   })
 
   it('reports malformed JSON with its shared resource path', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-shared-invalid-'))
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-invalid-')),
+    )
     tempDirectories.push(root)
     const settingsPath = join(root, 'config', 'settings.json')
     await writeFixture(settingsPath, '{')
@@ -153,7 +159,9 @@ describe('Claude shared resource discovery', () => {
   })
 
   it('does not swallow filesystem errors other than missing resources', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-shared-io-error-'))
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-io-error-')),
+    )
     tempDirectories.push(root)
     const settingsPath = join(root, 'config', 'settings.json')
     await mkdir(settingsPath, { recursive: true })
@@ -167,7 +175,9 @@ describe('Claude shared resource discovery', () => {
   })
 
   it('loads project resources from the git root through a nested cwd', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-shared-hierarchy-'))
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-hierarchy-')),
+    )
     tempDirectories.push(root)
     const configRoot = join(root, 'config')
     const repository = join(root, 'repository')
@@ -198,6 +208,22 @@ describe('Claude shared resource discovery', () => {
         'PACKAGE_COMMAND',
       ),
       writeFixture(join(cwd, '.claude', 'agents', 'nested.md'), 'NESTED_AGENT'),
+      writeFixture(
+        join(repository, '.claude', 'settings.json'),
+        JSON.stringify({ env: { ROOT_SETTING: 'root' } }),
+      ),
+      writeFixture(
+        join(packageDirectory, '.claude', 'settings.local.json'),
+        JSON.stringify({ env: { PACKAGE_SETTING: 'package' } }),
+      ),
+      writeFixture(
+        join(repository, '.mcp.json'),
+        JSON.stringify({ mcpServers: { root: { command: 'root' } } }),
+      ),
+      writeFixture(
+        join(cwd, '.mcp.json'),
+        JSON.stringify({ mcpServers: { nested: { command: 'nested' } } }),
+      ),
       writeFixture(join(memoryDirectory, 'MEMORY.md'), 'MEMORY_INDEX'),
       writeFixture(
         join(memoryDirectory, 'topics', 'compatibility.md'),
@@ -222,6 +248,86 @@ describe('Claude shared resource discovery', () => {
     ])
     expect(resources.agents.map((item) => item.content)).toEqual([
       'NESTED_AGENT',
+    ])
+    expect(resources.settings.map((item) => item.value)).toEqual([
+      { env: { ROOT_SETTING: 'root' } },
+      { env: { PACKAGE_SETTING: 'package' } },
+    ])
+    expect(resources.mcp.map((item) => item.value)).toEqual([
+      { mcpServers: { root: { command: 'root' } } },
+      { mcpServers: { nested: { command: 'nested' } } },
+    ])
+  })
+
+  it('uses the canonical main repository key for worktree memory', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-worktree-')),
+    )
+    tempDirectories.push(root)
+    const configRoot = join(root, 'config')
+    const mainRepository = join(root, 'main')
+    const worktree = join(root, 'worktree')
+    const worktreeGitDirectory = join(
+      mainRepository,
+      '.git',
+      'worktrees',
+      'fixture-worktree',
+    )
+    const cwd = join(worktree, 'packages', 'app')
+    const memoryDirectory = join(
+      configRoot,
+      'projects',
+      sanitizeClaudeProjectPath(mainRepository),
+      'memory',
+    )
+
+    await Promise.all([
+      writeFixture(join(worktree, '.git'), `gitdir: ${worktreeGitDirectory}\n`),
+      writeFixture(join(worktreeGitDirectory, 'commondir'), '../..\n'),
+      writeFixture(join(worktree, 'CLAUDE.md'), 'WORKTREE_INSTRUCTION'),
+      writeFixture(
+        join(memoryDirectory, 'MEMORY.md'),
+        'SHARED_WORKTREE_MEMORY',
+      ),
+    ])
+
+    const resources = await loadClaudeSharedResources({ configRoot, cwd })
+
+    expect(resources.instructions.map((item) => item.content)).toEqual([
+      'WORKTREE_INSTRUCTION',
+    ])
+    expect(resources.memory.map((item) => item.content)).toEqual([
+      'SHARED_WORKTREE_MEMORY',
+    ])
+  })
+
+  it('walks from a configured home boundary through a non-git cwd', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-non-git-')),
+    )
+    tempDirectories.push(root)
+    const configRoot = join(root, 'config')
+    const homeDirectory = join(root, 'home')
+    const projectDirectory = join(homeDirectory, 'projects', 'fixture')
+    const cwd = join(projectDirectory, 'src')
+
+    await Promise.all([
+      writeFixture(join(root, 'CLAUDE.md'), 'OUTSIDE_HOME'),
+      writeFixture(join(homeDirectory, 'CLAUDE.md'), 'HOME_INSTRUCTION'),
+      writeFixture(join(projectDirectory, 'CLAUDE.md'), 'PROJECT_INSTRUCTION'),
+      writeFixture(join(cwd, 'CLAUDE.md'), 'CWD_INSTRUCTION'),
+    ])
+
+    const resources = await loadClaudeSharedResources({
+      configRoot,
+      cwd,
+      homeDirectory,
+    })
+
+    expect(resources.instructions.map((item) => item.content)).toEqual([
+      'HOME_INSTRUCTION',
+      'PROJECT_INSTRUCTION',
+      'CWD_INSTRUCTION',
     ])
   })
 })

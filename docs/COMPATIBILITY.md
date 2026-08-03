@@ -14,29 +14,37 @@ Compatibility is bidirectional, not import-only:
 
 1. Praxis can discover and resume a Claude Code session.
 2. Claude Code can discover and resume a Praxis session.
-3. Both load the same project instructions, memory, skills, hooks, agents, and
-   MCP definitions.
+3. Both discover the same project instructions, memory, skills, hooks, agents,
+   and project MCP definitions within the validated Sprint 0 profile.
 
 ## Shared authoritative data
 
 Praxis follows the active Claude Code layout and path derivation for:
 
-| Data                 | Shared location                                                                  |
-| -------------------- | -------------------------------------------------------------------------------- |
-| Config root          | `CLAUDE_CONFIG_DIR` or `~/.claude`                                               |
-| Sessions             | `<config>/projects/<project-key>/<session-id>.jsonl`                             |
-| Global instructions  | `<config>/CLAUDE.md`                                                             |
-| Project instructions | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/**/*.md` from git root to cwd   |
-| Auto memory          | `<config>/projects/<git-root-key>/memory/**/*.md`                                |
-| Global skills        | `<config>/skills/`                                                               |
-| Project skills       | `.claude/skills/`                                                                |
-| Commands             | `<config>/commands/`, `.claude/commands/`                                        |
-| Agent definitions    | `<config>/agents/`, `.claude/agents/`                                            |
-| Settings and hooks   | `<config>/settings.json`, `.claude/settings.json`, `.claude/settings.local.json` |
-| Project MCP          | `.mcp.json` and Claude-compatible configured sources                             |
+| Data                 | Shared location                                                                |
+| -------------------- | ------------------------------------------------------------------------------ |
+| Config root          | `CLAUDE_CONFIG_DIR` or `~/.claude`                                             |
+| Sessions             | `<config>/projects/<project-key>/<session-id>.jsonl`                           |
+| Global instructions  | `<config>/CLAUDE.md`                                                           |
+| Project instructions | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/**/*.md` from boundary to cwd |
+| Auto memory          | `<config>/projects/<canonical-repository-key>/memory/**/*.md`                  |
+| Global skills        | `<config>/skills/`                                                             |
+| Project skills       | `.claude/skills/`                                                              |
+| Commands             | `<config>/commands/`, `.claude/commands/`                                      |
+| Agent definitions    | `<config>/agents/`, `.claude/agents/`                                          |
+| Settings and hooks   | Ordered user and boundary-to-cwd `.claude/settings*.json` sources              |
+| Project MCP          | Boundary-to-cwd `.mcp.json` sources                                            |
 
 Praxis must reuse Claude Code's canonical project-path sanitization. A similar
 but independently invented directory name is not compatible.
+
+For git worktrees, project resources come from the active worktree while auto
+memory uses the canonical main-repository key. Outside git, project discovery
+walks from the user's home boundary through cwd. Settings and MCP resources are
+returned broad-to-specific as separate sources; Sprint 0 does not invent one
+generic JSON merge because hook, permission, environment, and server fields
+have different precedence semantics. User/local MCP registry formats beyond
+project `.mcp.json` remain a Sprint 3 compatibility subset.
 
 ## Transcript write profile
 
@@ -175,11 +183,12 @@ version matrix of installed Claude Code releases.
 
 For 2.1.208, `npm run test:compat` proves transcript creation/resume in both
 directions, including a Praxis-written tool chain. It also reopens captured
-compaction, image/error, and interruption fixtures and verifies native subagent
-layout beside a resumable main session. `npm run test:shared-compat` proves
-Claude and Praxis observe the same nested-project instructions, root-keyed
-memory, skill, hook, MCP, command, agent, and settings fixtures without copying
-or synchronization.
+compaction, image/error, and interruption fixtures, verifies native subagent
+layout beside a resumable main session, and requires a real Claude run to
+generate a sidechain. `npm run test:shared-compat` proves Claude and Praxis
+observe the same worktree/non-git hierarchy, canonical shared memory including
+a linked detail, skill, hook, layered project MCP, command, agent, and ordered
+settings sources without copying or synchronization.
 
 ## Explicit non-goals
 

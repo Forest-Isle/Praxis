@@ -95,6 +95,16 @@ describe('ClaudeSchemaAdapter', () => {
         },
       }),
     ).toThrow('invalid assistant tool_use block')
+
+    expect(
+      adapter.serializeForAppend({
+        ...user,
+        message: {
+          role: 'user',
+          content: 'Discuss the literal JSON {"type":"image"}.',
+        },
+      }),
+    ).toContain('literal JSON')
   })
 
   it('rejects malformed transcript lines', () => {

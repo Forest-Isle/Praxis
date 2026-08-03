@@ -100,6 +100,21 @@ function validateAssistantMessage(message: Record<string, unknown>): void {
   }
 }
 
+function hasImageContent(message: Record<string, unknown>): boolean {
+  if (!Array.isArray(message.content)) return false
+  return message.content.some((value) => {
+    if (!isRecord(value)) return false
+    if (value.type === 'image') return true
+    return (
+      value.type === 'tool_result' &&
+      Array.isArray(value.content) &&
+      value.content.some(
+        (nestedValue) => isRecord(nestedValue) && nestedValue.type === 'image',
+      )
+    )
+  })
+}
+
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   for (const field of ['uuid', 'sessionId', 'timestamp', 'cwd', 'version']) {
     if (typeof entry[field] !== 'string' || entry[field].length === 0) {
@@ -137,7 +152,7 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   if (entry.toolDenialKind !== undefined) {
     throw new Error('Praxis cannot append Claude tool denials yet')
   }
-  if (JSON.stringify(entry.message).includes('"type":"image"')) {
+  if (hasImageContent(entry.message)) {
     throw new Error('Praxis cannot append Claude image results yet')
   }
 
