@@ -204,6 +204,7 @@ describe('ClaudeSessionService', () => {
         return {
           content: `LARGE_TOOL_RESULT ${'contents '.repeat(500)}`,
           isError: false,
+          followUpUserMessages: ['EXACT_TOOL_FOLLOW_UP'],
         }
       },
     }
@@ -228,9 +229,40 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(requests[2]?.messages)).toContain(
       'Read the large result.',
     )
+    expect(JSON.stringify(requests[2]?.messages)).toContain(
+      'EXACT_TOOL_FOLLOW_UP',
+    )
     expect(JSON.stringify(requests[2]?.messages)).not.toContain(
       'LARGE_TOOL_RESULT',
     )
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const entries = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: result.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const originalPrompt = entries.find(
+      (entry) =>
+        entry.type === 'user' &&
+        entry.message?.content === 'Read the large result.',
+    )
+    const toolResult = entries.find(
+      (entry) => entry.type === 'user' && entry.sourceToolAssistantUUID,
+    )
+    const boundary = entries.find(
+      (entry) => entry.subtype === 'compact_boundary',
+    )
+    expect(boundary?.logicalParentUuid).toBe(originalPrompt?.uuid)
+    expect(boundary?.logicalParentUuid).not.toBe(toolResult?.uuid)
   })
 
   it('supports repeated compaction with cumulative dropped-token metadata', async () => {
@@ -492,6 +524,187 @@ describe('ClaudeSessionService', () => {
     )
     expect(JSON.stringify(requests[1]?.messages)).toContain(
       'Exact prompt text.',
+    )
+  })
+
+  it('rejects an irreducible replay prompt before calling the compactor', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-replay-limit-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['short history']),
+    })
+    const first = await origin.run('Initial task.')
+    let compactorCalled = false
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              UserPromptSubmit: [
+                { hooks: [{ type: 'command', command: 'prompt-hook' }] },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async () => ({
+        stdout: `HOOK_CONTEXT ${'x'.repeat(2_000)}`,
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      }),
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unexpected']),
+      hooks,
+      contextBudget: new ContextBudget({
+        contextWindowTokens: 400,
+        reserveTokens: 100,
+      }),
+      compactor: {
+        async compact() {
+          compactorCalled = true
+          return {
+            summary: 'summary',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+          }
+        },
+      },
+    })
+
+    await expect(
+      service.resume(first.sessionId, 'p'.repeat(950)),
+    ).rejects.toThrow(/estimated=.*window=400.*reserve=100/)
+    expect(compactorCalled).toBe(false)
+  })
+
+  it('deducts replay messages and compact envelope from the summary target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-target-limit-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['history '.repeat(300)]),
+    })
+    const first = await origin.run('Initial task.')
+    let targetTokens = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['done']),
+      contextBudget: new ContextBudget({
+        contextWindowTokens: 1_000,
+        reserveTokens: 400,
+      }),
+      compactor: {
+        async compact(request) {
+          targetTokens = request.targetTokens
+          return {
+            summary: 'summary',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+          }
+        },
+      },
+    })
+
+    await service.resume(first.sessionId, 'p'.repeat(1_600))
+
+    expect(targetTokens).toBeGreaterThan(0)
+    expect(targetTokens).toBeLessThan(150)
+  })
+
+  it('replays a Stop hook continuation after mid-turn compaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-stop-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let mainTurn = 0
+    const provider: ModelProvider = {
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 2_500,
+      },
+      async *complete(request) {
+        requests.push(request)
+        if (
+          JSON.stringify(request.messages).includes(
+            'You are compacting an agent conversation',
+          )
+        ) {
+          yield { type: 'text-delta', delta: 'STOP_CONTEXT_SUMMARY' }
+          return
+        }
+        yield {
+          type: 'text-delta',
+          delta:
+            mainTurn++ === 0
+              ? `draft ${'large-response '.repeat(400)}`
+              : 'revised',
+        }
+      },
+    }
+    let stopCalls = 0
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              Stop: [{ hooks: [{ type: 'command', command: 'stop-hook' }] }],
+            },
+          },
+        },
+      ],
+      executeCommand: async () =>
+        stopCalls++ === 0
+          ? {
+              stdout: '',
+              stderr: 'EXACT_STOP_CONTINUATION',
+              exitCode: 2,
+              durationMs: 1,
+            }
+          : { stdout: '', stderr: '', exitCode: 0, durationMs: 1 },
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      hooks,
+      contextReserveTokens: 1_500,
+    })
+
+    const result = await service.run('Improve the draft.')
+
+    expect(result.text).toBe('revised')
+    expect(requests).toHaveLength(3)
+    expect(JSON.stringify(requests[2]?.messages)).toContain(
+      'Stop hook error: EXACT_STOP_CONTINUATION',
+    )
+    expect(JSON.stringify(requests[2]?.messages)).toContain(
+      'Improve the draft.',
     )
   })
 

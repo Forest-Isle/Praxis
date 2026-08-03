@@ -369,10 +369,12 @@ export class ClaudeTranscriptStore {
         if (
           entry.subtype !== 'compact_boundary' ||
           entry.parentUuid !== null ||
-          entry.logicalParentUuid !== logicalTailUuid
+          !history.some(
+            (candidate) => candidate.uuid === entry.logicalParentUuid,
+          )
         ) {
           throw new Error(
-            'Compact boundary logicalParentUuid does not match transcript tail',
+            'Compact boundary logicalParentUuid does not reference transcript history',
           )
         }
       } else if (entry.type !== 'agent-setting') {

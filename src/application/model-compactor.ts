@@ -15,6 +15,20 @@ import {
 
 const COMPACTION_INSTRUCTIONS = `You are compacting an agent conversation so work can continue without the discarded messages. Preserve user intent, completed work, exact decisions, constraints, file paths, commands, errors, pending tasks, and the latest user request. Do not solve the task. Return only the durable summary as plain text. Do not call tools.`
 
+function compactionMessages(
+  messages: CompactionRequest['messages'],
+  targetTokens: number,
+) {
+  return [
+    { role: 'system' as const, content: COMPACTION_INSTRUCTIONS },
+    ...messages,
+    {
+      role: 'user' as const,
+      content: `Create a continuation summary no longer than ${targetTokens} estimated tokens.`,
+    },
+  ]
+}
+
 export class ModelCompactor implements Compactor {
   constructor(private readonly provider: ModelProvider) {}
 
@@ -32,29 +46,30 @@ export class ModelCompactor implements Compactor {
     }
     if (request.signal?.aborted) throw new AgentRunCancelledError()
 
+    let targetTokens = request.targetTokens
+    let messages = compactionMessages(request.messages, targetTokens)
+    let estimatedInputTokens = estimateModelRequestTokens(messages)
+    while (estimatedInputTokens + targetTokens > request.contextWindowTokens) {
+      const nextTarget = Math.min(
+        targetTokens - 1,
+        request.contextWindowTokens - estimatedInputTokens,
+      )
+      if (nextTarget < 1) {
+        throw new Error(
+          `Compaction input exceeds provider budget: estimated=${estimatedInputTokens}, window=${request.contextWindowTokens}, target=${targetTokens}, available=${Math.max(0, request.contextWindowTokens - targetTokens)}. Start a new session or use a provider with a larger context window.`,
+        )
+      }
+      targetTokens = nextTarget
+      messages = compactionMessages(request.messages, targetTokens)
+      estimatedInputTokens = estimateModelRequestTokens(messages)
+    }
+
     const startedAt = Date.now()
     let summary = ''
     let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
     const providerRequest = {
-      messages: [
-        { role: 'system' as const, content: COMPACTION_INSTRUCTIONS },
-        ...request.messages,
-        {
-          role: 'user' as const,
-          content: `Create a continuation summary no longer than ${request.targetTokens} estimated tokens.`,
-        },
-      ],
+      messages,
       ...(request.signal ? { signal: request.signal } : {}),
-    }
-    const estimatedInputTokens = estimateModelRequestTokens(
-      providerRequest.messages,
-    )
-    const availableInputTokens =
-      request.contextWindowTokens - request.targetTokens
-    if (estimatedInputTokens > availableInputTokens) {
-      throw new Error(
-        `Compaction input exceeds provider budget: estimated=${estimatedInputTokens}, window=${request.contextWindowTokens}, target=${request.targetTokens}, available=${availableInputTokens}. Start a new session or use a provider with a larger context window.`,
-      )
     }
 
     for await (const event of this.provider.complete(providerRequest)) {
@@ -71,9 +86,9 @@ export class ModelCompactor implements Compactor {
       throw new Error('Compaction model returned an empty summary')
     }
     const summaryTokens = estimateTextTokens(summary)
-    if (summaryTokens > request.targetTokens) {
+    if (summaryTokens > targetTokens) {
       throw new Error(
-        `Compaction summary exceeded ${request.targetTokens} tokens (estimated ${summaryTokens})`,
+        `Compaction summary exceeded ${targetTokens} tokens (estimated ${summaryTokens})`,
       )
     }
     return { summary, usage, durationMs: Date.now() - startedAt }

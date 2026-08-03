@@ -121,26 +121,27 @@ describe('ClaudeTranscriptStore', () => {
     const { sessionFile, store } = await createStore()
     const before = await readFile(sessionFile, 'utf8')
     const snapshot = await store.load()
+    const compactedPrefixUuid = firstEntry(snapshot).uuid
     const boundary = {
       type: 'system',
       subtype: 'compact_boundary',
       content: 'Conversation compacted',
       isMeta: false,
       level: 'info',
-      logicalParentUuid: snapshot.tail.lastUuid,
+      logicalParentUuid: compactedPrefixUuid,
       compactMetadata: {
         trigger: 'auto',
         preTokens: 100,
         durationMs: 2,
         preservedSegment: {
-          headUuid: snapshot.tail.lastUuid,
+          headUuid: compactedPrefixUuid,
           anchorUuid: 'compact-summary',
-          tailUuid: snapshot.tail.lastUuid,
+          tailUuid: compactedPrefixUuid,
         },
         preservedMessages: {
           anchorUuid: 'compact-summary',
-          uuids: [snapshot.tail.lastUuid],
-          allUuids: [snapshot.tail.lastUuid],
+          uuids: [compactedPrefixUuid],
+          allUuids: [compactedPrefixUuid],
         },
         postTokens: 20,
         cumulativeDroppedTokens: 80,

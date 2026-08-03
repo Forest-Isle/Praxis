@@ -5,6 +5,7 @@ import { basename, extname, isAbsolute, join, relative } from 'node:path'
 import type { ClaudeConditionalRuleResolver } from '../compatibility/claude/context.js'
 import {
   createClaudeCompactEntries,
+  formatClaudeCompactSummary,
   getCumulativeDroppedTokens,
 } from '../compatibility/claude/compaction.js'
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
@@ -223,6 +224,7 @@ export class ClaudeSessionService {
             }),
       })
       let lastAssistantUuid: string | null = null
+      let currentTurnUserMessages: string[] | null = null
       const observer = {
         assistantCompleted: async (message: {
           content: string
@@ -321,6 +323,7 @@ export class ClaudeSessionService {
               entries: [...snapshot.entries, followUpEntry],
               tail: followUpTail,
             }
+            currentTurnUserMessages?.push(content)
           }
         },
       }
@@ -407,6 +410,7 @@ export class ClaudeSessionService {
         const expansion = this.options.extensions?.expandPrompt(prompt) ?? {
           userMessages: [prompt],
         }
+        currentTurnUserMessages = [...expansion.userMessages]
         this.options.eventSink?.({
           type: 'state',
           state: 'assembling-context',
@@ -423,6 +427,7 @@ export class ClaudeSessionService {
           role: 'user' as const,
           content,
         }))
+        let compactionAnchorUuid = this.lastMessageUuid(snapshot.entries)
         const compactIfNeeded = async (
           pendingMessages: readonly {
             role: 'user'
@@ -437,12 +442,17 @@ export class ClaudeSessionService {
             definitions,
           )
           if (!predicted.shouldCompact) return
-          const irreducible = budget.evaluate(
-            [...contextMessages, ...pendingMessages],
-            definitions,
-          )
+          const irreducibleMessages = [
+            ...contextMessages,
+            ...pendingMessages,
+            ...preservedUserMessages.map((content) => ({
+              role: 'user' as const,
+              content,
+            })),
+          ]
+          const irreducible = budget.evaluate(irreducibleMessages, definitions)
           budget.assertFits(irreducible)
-          const logicalParentUuid = snapshot.tail.lastUuid
+          const logicalParentUuid = compactionAnchorUuid
           if (!logicalParentUuid || historyMessages.length === 0) {
             budget.assertFits(predicted)
             throw new Error('Cannot compact an empty Claude transcript')
@@ -453,10 +463,35 @@ export class ClaudeSessionService {
             )
           }
           this.options.eventSink?.({ type: 'state', state: 'compacting' })
-          const targetTokens = Math.max(
-            1,
-            Math.min(8192, Math.floor(predicted.availableTokens / 4)),
+          const compactEnvelope = budget.evaluate(
+            [
+              ...irreducibleMessages,
+              {
+                role: 'user',
+                content: formatClaudeCompactSummary(''),
+              },
+            ],
+            definitions,
           )
+          let targetTokens = Math.min(
+            8192,
+            compactEnvelope.availableTokens - compactEnvelope.estimatedTokens,
+          )
+          if (targetTokens < 1) {
+            budget.assertFits(
+              budget.evaluate(
+                [
+                  ...irreducibleMessages,
+                  {
+                    role: 'user',
+                    content: formatClaudeCompactSummary('a'),
+                  },
+                ],
+                definitions,
+              ),
+            )
+            targetTokens = 1
+          }
           const compacted = await (
             this.options.compactor ?? new ModelCompactor(provider)
           ).compact({
@@ -542,6 +577,7 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, ...entries],
             tail: appendResult.tail,
           }
+          compactionAnchorUuid = compactSummaryUuid
           compactionUsage = {
             inputTokens:
               compactionUsage.inputTokens + compacted.usage.inputTokens,
@@ -564,6 +600,7 @@ export class ClaudeSessionService {
           if (!userEntry) throw new Error('Could not translate user prompt')
           if (promptId === undefined && typeof userEntry.uuid === 'string') {
             promptId = userEntry.uuid
+            compactionAnchorUuid ??= userEntry.uuid
           }
           const userTail = await this.append(lease, snapshot.tail, userEntry)
           snapshot = {
@@ -591,7 +628,7 @@ export class ClaudeSessionService {
           }
         }
         if (budget) {
-          await compactIfNeeded([], expansion.userMessages)
+          await compactIfNeeded([], currentTurnUserMessages ?? [])
           budget.assertFits(
             budget.evaluate(
               [
@@ -612,7 +649,7 @@ export class ClaudeSessionService {
           cwd: this.options.cwd,
           observer,
           reloadMessages: async () => {
-            await compactIfNeeded([], expansion.userMessages)
+            await compactIfNeeded([], currentTurnUserMessages ?? [])
             return [
               ...contextMessages,
               ...projectClaudeModelMessages(snapshot.entries),
@@ -747,6 +784,24 @@ export class ClaudeSessionService {
       if (typeof path === 'string') paths.add(path)
     }
     return paths
+  }
+
+  private lastMessageUuid(
+    entries: readonly ClaudeTranscriptEntry[],
+  ): string | null {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index]
+      if (
+        entry &&
+        typeof entry.uuid === 'string' &&
+        typeof entry.message === 'object' &&
+        entry.message !== null &&
+        !Array.isArray(entry.message)
+      ) {
+        return entry.uuid
+      }
+    }
+    return null
   }
 
   private displayRulePath(rulePath: string): string {

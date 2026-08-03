@@ -81,7 +81,29 @@ describe('ModelCompactor', () => {
         targetTokens: 20,
         contextWindowTokens: 100,
       }),
-    ).rejects.toThrow(/estimated=.*window=100.*target=20.*available=80/)
+    ).rejects.toThrow(/estimated=.*window=100/)
     expect(called).toBe(false)
+  })
+
+  it('shrinks the summary target to fit ordinary default-reserve overflow', async () => {
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        yield { type: 'text-delta', delta: 'bounded summary' }
+      },
+    }
+
+    await new ModelCompactor(provider).compact({
+      messages: [{ role: 'user', content: 'history '.repeat(4_300) }],
+      targetTokens: 2_250,
+      contextWindowTokens: 10_000,
+    })
+
+    const instruction = requests[0]?.messages.at(-1)?.content ?? ''
+    const effectiveTarget = Number(instruction.match(/than (\d+)/)?.[1])
+    expect(effectiveTarget).toBeGreaterThan(0)
+    expect(effectiveTarget).toBeLessThan(2_250)
   })
 })
