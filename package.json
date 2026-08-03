@@ -1,0 +1,25 @@
+{
+  "name": "praxis-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first, single-user general agent for the command line.",
+  "type": "module",
+  "bin": {
+    "praxis": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
