@@ -10,11 +10,11 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 0 compatibility kernel complete for Claude Code 2.1.208. Bidirectional
-resume, versioned JSONL validation, concurrent-write protection, nested shared
-resources across worktrees/non-git projects, and advanced transcript fixtures
-pass isolated black-box probes.
-Broad agent runtime has not started.
+Sprint 1 headless runtime complete. Praxis can run, resume, fork, and list
+Claude-compatible sessions through a provider-neutral event loop and an
+OpenAI-compatible streaming provider. Cancellation, retry classification,
+usage accounting, JSON output, and bidirectional Claude Code 2.1.208 resume
+pass isolated probes.
 
 ## Product boundary
 
@@ -48,11 +48,27 @@ npm run check
 node dist/cli.js --help
 ```
 
+Configure the first provider adapter, then run a prompt:
+
+```sh
+export PRAXIS_API_KEY=...
+export PRAXIS_MODEL=...
+export PRAXIS_BASE_URL=https://api.openai.com/v1
+
+node dist/cli.js run "Inspect this project"
+node dist/cli.js sessions --json
+node dist/cli.js resume <session-id> "Continue"
+node dist/cli.js fork <session-id>
+```
+
+`PRAXIS_BASE_URL` is optional and defaults to OpenAI's `/v1` endpoint.
+
 With an authenticated Claude Code 2.1.208 installation, run the isolated live
 probes separately (they make real model requests):
 
 ```sh
 npm run test:compat
+npm run test:runtime-compat
 npm run test:shared-compat
 ```
 

@@ -117,6 +117,28 @@ describe('ClaudeTranscriptStore', () => {
     expect(after.slice(before.length)).toBe(`${JSON.stringify(entry)}\n`)
   })
 
+  it('creates a fork transcript exclusively without linearizing native entries', async () => {
+    const source = await createStore()
+    const snapshot = await source.store.load()
+    const targetRoot = await mkdtemp(join(tmpdir(), 'praxis-transcript-test-'))
+    tempDirectories.push(targetRoot)
+    const sessionFile = join(targetRoot, 'projects', 'fixture', 'fork.jsonl')
+    const target = new ClaudeTranscriptStore({
+      sessionFile,
+      lockFile: join(targetRoot, 'praxis', 'locks', 'fork.lock'),
+      schema: selectClaudeSchemaAdapter('2.1.208'),
+    })
+
+    const created = await target.create(snapshot.entries)
+
+    expect(created.status).toBe('created')
+    expect((await target.load()).entries).toEqual(snapshot.entries)
+    await expect(target.create(snapshot.entries)).resolves.toEqual({
+      status: 'conflict',
+      reason: 'already-exists',
+    })
+  })
+
   it('appends native last-prompt metadata without advancing the logical tail', async () => {
     const { sessionFile, store } = await createStore()
     const snapshot = await store.load()

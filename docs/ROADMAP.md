@@ -25,15 +25,16 @@ the same probes before write support is enabled.
 
 ## Sprint 1 — headless vertical slice
 
-Status: ready.
+Status: complete for the OpenAI-compatible text provider.
 
-- CLI `run`, `resume`, `fork`, `sessions`, and JSON output
-- runtime state machine and event stream
-- first provider adapter
-- text-only context assembly and shared transcript persistence
-- cancellation, retry classification, usage accounting
+- [x] CLI `run`, `resume`, `fork`, `sessions`, and JSON output
+- [x] runtime state machine and event stream
+- [x] OpenAI-compatible streaming provider adapter
+- [x] text-only context assembly and shared transcript persistence
+- [x] cancellation, retry classification, usage accounting
 
-Exit gate: complete and resume a text conversation from both CLIs.
+Exit gate passed against Claude Code 2.1.208: Claude resumes a Praxis runtime
+session, and Praxis resumes a Claude-created session that Claude can reopen.
 
 ## Sprint 2 — local tools and permissions
 

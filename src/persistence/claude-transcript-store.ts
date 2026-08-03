@@ -55,6 +55,10 @@ export type TranscriptAppendResult =
       reason: 'interleaved-write' | 'locked' | 'tail-changed'
     }
 
+export type TranscriptCreateResult =
+  | { status: 'created'; tail: TranscriptTail }
+  | { status: 'conflict'; reason: 'already-exists' }
+
 export interface ClaudeTranscriptStoreOptions {
   sessionFile: string
   lockFile: string
@@ -244,6 +248,34 @@ export class ClaudeTranscriptStore {
 
   async loadReadOnly(): Promise<TranscriptRecovery> {
     return this.parseSource(await this.readSource(), true)
+  }
+
+  async create(
+    entries: readonly ClaudeTranscriptEntry[],
+  ): Promise<TranscriptCreateResult> {
+    if (entries.length === 0) {
+      throw new Error('Cannot create an empty Claude transcript')
+    }
+    const source = `${entries.map((entry) => this.schema.serialize(entry)).join('\n')}\n`
+    await mkdir(dirname(this.sessionFile), { recursive: true })
+
+    let sessionHandle
+    try {
+      sessionHandle = await open(this.sessionFile, 'wx')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        return { status: 'conflict', reason: 'already-exists' }
+      }
+      throw error
+    }
+
+    try {
+      await sessionHandle.writeFile(source)
+      await sessionHandle.sync()
+    } finally {
+      await sessionHandle.close()
+    }
+    return { status: 'created', tail: (await this.load()).tail }
   }
 
   async append(
