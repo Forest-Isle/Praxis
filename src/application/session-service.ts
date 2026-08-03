@@ -6,21 +6,25 @@ import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import { createClaudeTextFork } from '../compatibility/claude/fork.js'
 import {
   getClaudeLastPrompt,
-  projectClaudeTextMessages,
+  projectClaudeModelMessages,
 } from '../compatibility/claude/projection.js'
 import {
   type ClaudeTranscriptEntry,
   selectClaudeSchemaAdapter,
 } from '../compatibility/claude/schema.js'
+import { findUnresolvedClaudeToolCalls } from '../compatibility/claude/tool-links.js'
 import {
   createClaudeLastPromptEntry,
   translateProviderEvents,
 } from '../compatibility/claude/translation.js'
 import {
   AgentRuntime,
+  type ModelToolCall,
   type ModelProvider,
   type ModelUsage,
+  type PermissionResolver,
   type RuntimeEventSink,
+  type ToolRegistry,
 } from '../core/runtime.js'
 import {
   ClaudeTranscriptStore,
@@ -34,6 +38,9 @@ export interface ClaudeSessionServiceOptions {
   cwd: string
   claudeVersion: string
   provider?: ModelProvider
+  tools?: ToolRegistry
+  permissions?: PermissionResolver
+  approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
   eventSink?: RuntimeEventSink
 }
 
@@ -149,6 +156,14 @@ export class ClaudeSessionService {
       if (requireExisting && snapshot.entries.length === 0) {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
+      const [unresolvedToolCall] = findUnresolvedClaudeToolCalls(
+        snapshot.entries,
+      )
+      if (unresolvedToolCall) {
+        throw new Error(
+          `Claude session has unresolved tool call ${unresolvedToolCall}; recover or fork before resume`,
+        )
+      }
 
       const [userEntry] = translateProviderEvents(
         [{ type: 'user-text', text: prompt }],
@@ -159,40 +174,76 @@ export class ClaudeSessionService {
       snapshot = { entries: [...snapshot.entries, userEntry], tail: userTail }
 
       const provider = this.provider()
-      const runtime = new AgentRuntime(provider, this.options.eventSink)
+      const runtime = new AgentRuntime(provider, this.options.eventSink, {
+        ...(this.options.tools ? { tools: this.options.tools } : {}),
+        ...(this.options.permissions
+          ? { permissions: this.options.permissions }
+          : {}),
+      })
+      const observer = {
+        assistantCompleted: async (message: {
+          content: string
+          toolCalls?: readonly ModelToolCall[]
+        }) => {
+          const [entry] = translateProviderEvents(
+            [
+              {
+                type: 'assistant-message',
+                text: message.content,
+                toolCalls: message.toolCalls ?? [],
+                providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
+                model: provider.model ?? 'praxis/provider',
+              },
+            ],
+            this.translationContext(sessionId, snapshot),
+          )
+          if (!entry) throw new Error('Could not translate assistant response')
+          const tail = await this.append(lease, snapshot.tail, entry)
+          snapshot = { entries: [...snapshot.entries, entry], tail }
+        },
+        toolCompleted: async (
+          call: ModelToolCall,
+          toolResult: { content: string; isError: boolean },
+        ) => {
+          const [entry] = translateProviderEvents(
+            [
+              {
+                type: 'tool-result',
+                toolCallId: call.id,
+                content: toolResult.content,
+                isError: toolResult.isError,
+              },
+            ],
+            this.translationContext(sessionId, snapshot),
+          )
+          if (!entry) throw new Error('Could not translate tool result')
+          const tail = await this.append(lease, snapshot.tail, entry)
+          snapshot = { entries: [...snapshot.entries, entry], tail }
+        },
+      }
       const runtimeRequest = {
-        messages: projectClaudeTextMessages(snapshot.entries),
+        messages: projectClaudeModelMessages(snapshot.entries),
+        cwd: this.options.cwd,
+        observer,
+        ...(this.options.approveTool
+          ? { approveTool: this.options.approveTool }
+          : {}),
       }
       const result = signal
         ? await runtime.run({ ...runtimeRequest, signal })
         : await runtime.run(runtimeRequest)
 
-      const [assistantEntry] = translateProviderEvents(
-        [
-          {
-            type: 'assistant-text',
-            text: result.text,
-            providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
-            model: provider.model ?? 'praxis/provider',
-          },
-        ],
-        this.translationContext(sessionId, snapshot),
-      )
-      if (!assistantEntry || typeof assistantEntry.uuid !== 'string') {
-        throw new Error('Could not translate assistant response')
+      const finalLeafUuid = snapshot.tail.lastUuid
+      if (!finalLeafUuid) {
+        throw new Error('Could not locate final assistant response')
       }
-      const assistantTail = await this.append(
-        lease,
-        snapshot.tail,
-        assistantEntry,
-      )
       await this.append(
         lease,
-        assistantTail,
+        snapshot.tail,
         createClaudeLastPromptEntry({
           sessionId,
           lastPrompt: prompt,
-          leafUuid: assistantEntry.uuid,
+          leafUuid: finalLeafUuid,
         }),
       )
 

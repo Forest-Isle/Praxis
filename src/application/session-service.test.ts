@@ -4,8 +4,12 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { ModelProvider } from '../core/runtime.js'
-import { ModelProviderError } from '../core/runtime.js'
+import type {
+  ModelProvider,
+  ModelRequest,
+  ToolRegistry,
+} from '../core/runtime.js'
+import { AgentRunCancelledError, ModelProviderError } from '../core/runtime.js'
 import { ClaudeSessionService } from './session-service.js'
 
 const roots: string[] = []
@@ -159,5 +163,175 @@ describe('ClaudeSessionService', () => {
     ).rejects.toThrow('conflict: locked')
     releaseProvider?.()
     await expect(activeTurn).resolves.toMatchObject({ text: 'finished' })
+  })
+
+  it('persists a complete native tool round trip before the final answer', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-tools-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let turn = 0
+    const provider: ModelProvider = {
+      model: 'fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_read',
+              name: 'Read',
+              input: { file_path: 'README.md' },
+            },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'The project is Praxis.' }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read a file',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return { content: '# Praxis', isError: false }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const result = await service.run('What is this project?')
+
+    expect(result.text).toBe('The project is Praxis.')
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'call_read',
+      content: '# Praxis',
+      isError: false,
+    })
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    const entries = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(entries.map((entry) => entry.type)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'last-prompt',
+    ])
+    expect(entries[1]?.message.content).toEqual([
+      {
+        type: 'tool_use',
+        id: 'call_read',
+        name: 'Read',
+        input: { file_path: 'README.md' },
+      },
+    ])
+    expect(entries[2]?.message.content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'call_read',
+        content: '# Praxis',
+        is_error: false,
+      },
+    ])
+    expect(entries[2]?.sourceToolAssistantUUID).toBe(entries[1]?.uuid)
+    expect(entries[4]?.leafUuid).toBe(entries[3]?.uuid)
+  })
+
+  it('refuses to resume an interrupted tool call without inventing a result', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-recovery-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const controller = new AbortController()
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Bash',
+          description: 'Run a command',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        controller.abort()
+        throw new DOMException('cancelled', 'AbortError')
+      },
+    }
+    const interrupted = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_interrupted',
+              name: 'Bash',
+              input: { command: 'sleep 10' },
+            },
+          }
+        },
+      },
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(
+      interrupted.run('run it', controller.signal),
+    ).rejects.toBeInstanceOf(AgentRunCancelledError)
+    const [summary] = await interrupted.sessions()
+    if (!summary) throw new Error('Interrupted session was not persisted')
+    const resumed = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(resumed.resume(summary.sessionId, 'continue')).rejects.toThrow(
+      'unresolved tool call call_interrupted',
+    )
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: summary.sessionId,
+    })
+    const entries = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+    expect(entries).toHaveLength(2)
   })
 })

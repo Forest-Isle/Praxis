@@ -116,6 +116,60 @@ describe('provider to Claude transcript translation', () => {
     })
   })
 
+  it('persists text and multiple tool calls as one native assistant message', () => {
+    const [entry] = translateProviderEvents(
+      [
+        {
+          type: 'assistant-message',
+          text: 'I will inspect both files.',
+          toolCalls: [
+            {
+              id: 'call_one',
+              name: 'Read',
+              input: { file_path: 'one.txt' },
+            },
+            {
+              id: 'call_two',
+              name: 'Read',
+              input: { file_path: 'two.txt' },
+            },
+          ],
+          providerMessageId: 'provider-message',
+          model: 'provider/model',
+        },
+      ],
+      {
+        sessionId: '20000000-0000-4000-8000-000000000001',
+        parentUuid: null,
+        cwd: '/tmp/project',
+        claudeVersion: '2.1.208',
+        gitBranch: null,
+        createUuid: () => '10000000-0000-4000-8000-000000000001',
+        now: () => '2026-08-03T08:00:00.000Z',
+      },
+    )
+
+    expect(entry?.message).toMatchObject({
+      role: 'assistant',
+      stop_reason: 'tool_use',
+      content: [
+        { type: 'text', text: 'I will inspect both files.' },
+        {
+          type: 'tool_use',
+          id: 'call_one',
+          name: 'Read',
+          input: { file_path: 'one.txt' },
+        },
+        {
+          type: 'tool_use',
+          id: 'call_two',
+          name: 'Read',
+          input: { file_path: 'two.txt' },
+        },
+      ],
+    })
+  })
+
   it('does not persist provider-native payloads or reasoning', () => {
     const [entry] = translateProviderEvents(
       [

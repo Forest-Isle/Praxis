@@ -1,0 +1,118 @@
+import { describe, expect, it } from 'vitest'
+
+import { ClaudePermissionResolver } from './claude-permission-resolver.js'
+
+describe('ClaudePermissionResolver', () => {
+  it('applies deny, ask, allow, and safe defaults to normalized tool calls', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [
+        {
+          path: '/config/settings.json',
+          scope: 'user',
+          value: {
+            permissions: {
+              allow: ['Read', 'Bash(git status)', 'Bash(npm test:*)'],
+              ask: ['Write'],
+              deny: ['Read(**/.env)', 'Bash(rm *)'],
+            },
+          },
+        },
+      ],
+    })
+
+    await expect(
+      resolver.resolve({
+        id: 'read_source',
+        name: 'Read',
+        input: { file_path: '/workspace/src/index.ts' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'npm_test',
+        name: 'Bash',
+        input: { command: 'npm test -- --run runtime.test.ts' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'read_secret',
+        name: 'Read',
+        input: { file_path: '/workspace/.env' },
+      }),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule Read(**/.env)',
+    })
+    await expect(
+      resolver.resolve({
+        id: 'write',
+        name: 'Write',
+        input: { file_path: '/workspace/output.txt' },
+      }),
+    ).resolves.toEqual({ behavior: 'ask' })
+    await expect(
+      resolver.resolve({
+        id: 'search',
+        name: 'Grep',
+        input: { path: '/workspace/src', pattern: 'TODO' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'git',
+        name: 'Bash',
+        input: { command: 'git status' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'shell',
+        name: 'Bash',
+        input: { command: 'node script.js' },
+      }),
+    ).resolves.toEqual({ behavior: 'ask' })
+    await expect(
+      resolver.resolve({
+        id: 'dangerous',
+        name: 'Bash',
+        input: { command: 'rm generated.txt' },
+      }),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule Bash(rm *)',
+    })
+  })
+
+  it('lets deny rules win across user, project, and local settings', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [
+        {
+          path: '/config/settings.json',
+          scope: 'user',
+          value: { permissions: { allow: ['Bash(npm *)'] } },
+        },
+        {
+          path: '/workspace/.claude/settings.json',
+          scope: 'project',
+          value: { permissions: { ask: ['Bash(npm publish)'] } },
+        },
+        {
+          path: '/workspace/.claude/settings.local.json',
+          scope: 'local',
+          value: { permissions: { deny: ['Bash(npm publish)'] } },
+        },
+      ],
+    })
+
+    await expect(
+      resolver.resolve({
+        id: 'publish',
+        name: 'Bash',
+        input: { command: 'npm publish' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+  })
+})

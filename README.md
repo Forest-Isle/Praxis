@@ -10,16 +10,17 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 1 headless runtime complete. Praxis can run, resume, fork, and list
+Sprint 2 headless tool runtime complete. Praxis can run, resume, fork, and list
 Claude-compatible sessions through a provider-neutral event loop and an
-OpenAI-compatible streaming provider. Cancellation, retry classification,
-usage accounting, JSON output, and bidirectional Claude Code 2.1.208 resume
-pass isolated probes.
+OpenAI-compatible streaming provider. Built-in read, write, edit, search, and
+shell tools execute behind Claude-compatible local permission rules with
+workspace path checks, timeouts, cancellation, and bounded output.
 
 Each run or resume holds one session lease through model completion and final
-persistence. Sprint 1 forks intentionally rebuild only visible user/assistant
-text through the validated Claude writer; provider reasoning, queue operations,
-tools, images, and compaction metadata are not copied into a text-only fork.
+persistence. Native tool calls and results append immediately to the shared
+Claude transcript, and Claude Code 2.1.208 can resume a Praxis tool session.
+Sprint 1 forks remain text-only: provider reasoning, queue operations, tools,
+images, and compaction metadata are not copied into a fork.
 
 ## Product boundary
 
@@ -67,6 +68,12 @@ node dist/cli.js fork <session-id>
 ```
 
 `PRAXIS_BASE_URL` is optional and defaults to OpenAI's `/v1` endpoint.
+
+Permissions load from the shared global and current-project Claude settings.
+`Read` and `Grep` default to `allow`; `Write`, `Edit`, and `Bash` default to
+`ask`. Until the interactive permission UI lands in Sprint 4, an `ask` decision
+without an approval callback returns a denied tool result; add an explicit
+compatible `allow` rule for trusted headless commands.
 
 With an authenticated Claude Code 2.1.208 installation, run the isolated live
 probes separately (they make real model requests):

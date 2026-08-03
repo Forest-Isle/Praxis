@@ -8,6 +8,8 @@ import { detectClaudeVersion, runClaudeJson } from './lib/claude-probe.mjs'
 const praxisCreatedMarker = 'PRAXIS_RUNTIME_CREATED_1742'
 const praxisResumedMarker = 'PRAXIS_RUNTIME_RESUMED_6835'
 const claudeOriginMarker = 'CLAUDE_RUNTIME_ORIGIN_9214'
+const toolResultMarker = 'PRAXIS_RUNTIME_TOOL_RESULT_3158'
+const toolFinalMarker = 'PRAXIS_RUNTIME_TOOL_FINAL_7462'
 
 function fixtureProvider(responses) {
   return {
@@ -66,6 +68,36 @@ async function assertClaudeRecalls(sessionId, marker, cwd, configRoot) {
   ) {
     throw new Error(
       `Claude did not recover Praxis runtime output: ${JSON.stringify(result)}`,
+    )
+  }
+}
+
+async function assertClaudeRecallsToolTurn(sessionId, cwd, configRoot) {
+  const result = await runClaude(
+    [
+      '-p',
+      '--resume',
+      sessionId,
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--tools',
+      '',
+      '--output-format',
+      'json',
+      'Reply with every distinct token matching PRAXIS_RUNTIME_TOOL_[A-Z0-9_]+ from the prior tool result and final assistant response.',
+    ],
+    cwd,
+    configRoot,
+  )
+  if (
+    result.session_id !== sessionId ||
+    !String(result.result).includes(toolResultMarker) ||
+    !String(result.result).includes(toolFinalMarker)
+  ) {
+    throw new Error(
+      `Claude did not recover Praxis runtime tool output: ${JSON.stringify(result)}`,
     )
   }
 }
@@ -142,8 +174,63 @@ try {
     configRoot,
   )
 
+  let toolTurn = 0
+  const toolService = new ClaudeSessionService({
+    configRoot,
+    cwd,
+    claudeVersion,
+    provider: {
+      model: 'praxis/fixture',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        if (toolTurn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_runtime_fixture',
+              name: 'Read',
+              input: { file_path: 'fixture.txt' },
+            },
+          }
+          return
+        }
+        if (
+          !request.messages.some(
+            (message) =>
+              message.role === 'tool' &&
+              message.content.includes(toolResultMarker),
+          )
+        ) {
+          throw new Error('Tool result did not reach the Praxis provider')
+        }
+        yield { type: 'text-delta', delta: toolFinalMarker }
+      },
+    },
+    tools: {
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read a fixture',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return { content: toolResultMarker, isError: false }
+      },
+    },
+    permissions: { resolve: () => ({ behavior: 'allow' }) },
+  })
+  const toolRuntime = await toolService.run('Execute the fixture tool.')
+  if (toolRuntime.text !== toolFinalMarker) {
+    throw new Error('Praxis tool runtime did not produce the final marker')
+  }
+  await assertClaudeRecallsToolTurn(toolRuntime.sessionId, cwd, configRoot)
+
   console.log(
-    `Claude ${claudeVersion} runtime compatibility passed: Praxis→Claude, fork→Claude, and Claude→Praxis→Claude`,
+    `Claude ${claudeVersion} runtime compatibility passed: Praxis→Claude, fork→Claude, Claude→Praxis→Claude, and Praxis tool loop→Claude`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

@@ -49,3 +49,10 @@ export function indexClaudeToolLinks(
 
   return { toolCalls, completedToolCalls }
 }
+
+export function findUnresolvedClaudeToolCalls(
+  entries: readonly ClaudeTranscriptEntry[],
+): string[] {
+  const { toolCalls, completedToolCalls } = indexClaudeToolLinks(entries)
+  return [...toolCalls.keys()].filter((id) => !completedToolCalls.has(id))
+}

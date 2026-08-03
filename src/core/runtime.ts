@@ -3,13 +3,37 @@ export type RuntimeState =
   | 'assembling-context'
   | 'awaiting-model'
   | 'streaming'
+  | 'awaiting-permission'
+  | 'executing-tools'
+  | 'persisting-results'
   | 'completed'
   | 'cancelled'
   | 'failed'
 
-export interface ModelMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
+export type ModelMessage =
+  | { role: 'system' | 'user'; content: string }
+  | {
+      role: 'assistant'
+      content: string
+      toolCalls?: readonly ModelToolCall[]
+    }
+  | {
+      role: 'tool'
+      toolCallId: string
+      content: string
+      isError: boolean
+    }
+
+export interface ModelToolCall {
+  id: string
+  name: string
+  input: Record<string, unknown>
+}
+
+export interface ModelToolDefinition {
+  name: string
+  description: string
+  inputSchema: Record<string, unknown>
 }
 
 export interface ModelUsage {
@@ -18,16 +42,20 @@ export interface ModelUsage {
 }
 
 export type ModelStreamEvent =
-  { type: 'text-delta'; delta: string } | { type: 'usage'; usage: ModelUsage }
+  | { type: 'text-delta'; delta: string }
+  | { type: 'tool-call'; call: ModelToolCall }
+  | { type: 'usage'; usage: ModelUsage }
 
 export interface ModelRequest {
   messages: readonly ModelMessage[]
+  tools?: readonly ModelToolDefinition[]
   signal?: AbortSignal
 }
 
 export interface ModelProviderCapabilities {
   streaming: boolean
   usage: boolean
+  tools?: boolean
 }
 
 export interface ModelProvider {
@@ -40,10 +68,72 @@ export type RuntimeEvent =
   | { type: 'state'; state: Exclude<RuntimeState, 'idle' | 'failed'> }
   | { type: 'text-delta'; delta: string }
   | { type: 'usage'; usage: ModelUsage }
+  | { type: 'tool-call'; call: ModelToolCall }
+  | {
+      type: 'permission-decision'
+      callId: string
+      behavior: PermissionBehavior
+    }
+  | {
+      type: 'tool-result'
+      callId: string
+      content: string
+      isError: boolean
+    }
   | { type: 'failed'; message: string; retryable: boolean }
+
+export interface ToolExecutionResult {
+  content: string
+  isError: boolean
+}
+
+export interface ToolExecutionContext {
+  cwd: string
+  signal?: AbortSignal
+}
+
+export interface ToolRegistry {
+  definitions(): readonly ModelToolDefinition[]
+  prepare(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ModelToolCall>
+  execute(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult>
+}
+
+export type PermissionBehavior = 'allow' | 'ask' | 'deny'
+
+export type PermissionDecision =
+  | { behavior: 'allow' }
+  | { behavior: 'ask'; reason?: string }
+  | { behavior: 'deny'; reason: string }
+
+export interface PermissionResolver {
+  resolve(call: ModelToolCall): PermissionDecision | Promise<PermissionDecision>
+}
+
+export interface AgentRunObserver {
+  assistantCompleted(message: {
+    content: string
+    toolCalls?: readonly ModelToolCall[]
+  }): Promise<void>
+  toolCompleted(call: ModelToolCall, result: ToolExecutionResult): Promise<void>
+}
+
+export interface AgentRuntimeOptions {
+  tools?: ToolRegistry
+  permissions?: PermissionResolver
+  maxModelTurns?: number
+}
 
 export interface AgentRunRequest {
   messages: readonly ModelMessage[]
+  cwd?: string
+  observer?: AgentRunObserver
+  approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
   signal?: AbortSignal
 }
 
@@ -82,39 +172,97 @@ export type RuntimeEventSink = (event: RuntimeEvent) => void
 
 const emptyUsage = (): ModelUsage => ({ inputTokens: 0, outputTokens: 0 })
 
+function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
+  return {
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+  }
+}
+
 export class AgentRuntime {
   constructor(
     private readonly provider: ModelProvider,
     private readonly emit: RuntimeEventSink = () => undefined,
+    private readonly options: AgentRuntimeOptions = {},
   ) {}
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     this.emit({ type: 'state', state: 'assembling-context' })
     if (request.signal?.aborted) return this.cancel()
 
-    this.emit({ type: 'state', state: 'awaiting-model' })
-    let text = ''
+    const messages = [...request.messages]
     let usage = emptyUsage()
-    let streaming = false
+    const definitions = this.options.tools?.definitions() ?? []
+    const maxModelTurns = this.options.maxModelTurns ?? 16
 
     try {
-      const providerRequest: ModelRequest = { messages: request.messages }
-      if (request.signal) providerRequest.signal = request.signal
+      for (let turn = 0; turn < maxModelTurns; turn += 1) {
+        this.emit({ type: 'state', state: 'awaiting-model' })
+        const providerRequest: ModelRequest = { messages: [...messages] }
+        if (definitions.length > 0) providerRequest.tools = definitions
+        if (request.signal) providerRequest.signal = request.signal
 
-      for await (const event of this.provider.complete(providerRequest)) {
-        if (request.signal?.aborted) return this.cancel()
-        if (!streaming) {
-          streaming = true
-          this.emit({ type: 'state', state: 'streaming' })
+        let text = ''
+        let turnUsage = emptyUsage()
+        let streaming = false
+        const toolCalls: ModelToolCall[] = []
+
+        for await (const event of this.provider.complete(providerRequest)) {
+          if (request.signal?.aborted) return this.cancel()
+          if (!streaming) {
+            streaming = true
+            this.emit({ type: 'state', state: 'streaming' })
+          }
+          if (event.type === 'text-delta') {
+            text += event.delta
+            this.emit(event)
+          } else if (event.type === 'tool-call') {
+            toolCalls.push(event.call)
+            this.emit(event)
+          } else {
+            turnUsage = event.usage
+            this.emit(event)
+          }
         }
-        if (event.type === 'text-delta') {
-          text += event.delta
-          this.emit(event)
-        } else {
-          usage = event.usage
-          this.emit(event)
+
+        if (!streaming) this.emit({ type: 'state', state: 'streaming' })
+        usage = addUsage(usage, turnUsage)
+        const assistantMessage =
+          toolCalls.length === 0
+            ? { role: 'assistant' as const, content: text }
+            : {
+                role: 'assistant' as const,
+                content: text,
+                toolCalls,
+              }
+        await request.observer?.assistantCompleted(assistantMessage)
+        messages.push(assistantMessage)
+
+        if (toolCalls.length === 0) {
+          this.emit({ type: 'state', state: 'completed' })
+          return { text, usage }
+        }
+
+        for (const call of toolCalls) {
+          const result = await this.executeTool(call, request)
+          this.emit({ type: 'state', state: 'persisting-results' })
+          await request.observer?.toolCompleted(call, result)
+          this.emit({
+            type: 'tool-result',
+            callId: call.id,
+            content: result.content,
+            isError: result.isError,
+          })
+          messages.push({
+            role: 'tool',
+            toolCallId: call.id,
+            content: result.content,
+            isError: result.isError,
+          })
         }
       }
+
+      throw new Error(`Agent exceeded ${maxModelTurns} model turns`)
     } catch (error) {
       if (request.signal?.aborted) return this.cancel()
       const message = error instanceof Error ? error.message : String(error)
@@ -123,10 +271,67 @@ export class AgentRuntime {
       this.emit({ type: 'failed', message, retryable })
       throw error
     }
+  }
 
-    if (!streaming) this.emit({ type: 'state', state: 'streaming' })
-    this.emit({ type: 'state', state: 'completed' })
-    return { text, usage }
+  private async executeTool(
+    call: ModelToolCall,
+    request: AgentRunRequest,
+  ): Promise<ToolExecutionResult> {
+    const tools = this.options.tools
+    const permissions = this.options.permissions
+    if (!tools || !permissions) {
+      return {
+        content: `Tool ${call.name} is unavailable`,
+        isError: true,
+      }
+    }
+
+    const context: ToolExecutionContext = { cwd: request.cwd ?? '' }
+    if (request.signal) context.signal = request.signal
+
+    let prepared: ModelToolCall
+    try {
+      prepared = await tools.prepare(call, context)
+    } catch (error) {
+      return {
+        content: error instanceof Error ? error.message : String(error),
+        isError: true,
+      }
+    }
+    if (request.signal?.aborted) return this.cancel()
+
+    const decision = await permissions.resolve(prepared)
+    this.emit({
+      type: 'permission-decision',
+      callId: call.id,
+      behavior: decision.behavior,
+    })
+    let allowed = decision.behavior === 'allow'
+    if (decision.behavior === 'ask') {
+      this.emit({ type: 'state', state: 'awaiting-permission' })
+      allowed = request.approveTool
+        ? await request.approveTool(prepared)
+        : false
+    }
+    if (!allowed) {
+      const reason =
+        decision.behavior === 'deny'
+          ? decision.reason
+          : 'Permission approval was not provided'
+      return { content: reason, isError: true }
+    }
+    if (request.signal?.aborted) return this.cancel()
+
+    this.emit({ type: 'state', state: 'executing-tools' })
+    try {
+      return await tools.execute(prepared, context)
+    } catch (error) {
+      if (request.signal?.aborted) return this.cancel()
+      return {
+        content: error instanceof Error ? error.message : String(error),
+        isError: true,
+      }
+    }
   }
 
   private cancel(): never {

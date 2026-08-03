@@ -1,8 +1,10 @@
 import {
   ModelProviderError,
+  type ModelMessage,
   type ModelProvider,
   type ModelRequest,
   type ModelStreamEvent,
+  type ModelToolCall,
 } from '../core/runtime.js'
 
 export interface OpenAICompatibleProviderOptions {
@@ -28,8 +30,48 @@ function readErrorMessage(value: unknown, status: number): string {
   return `Provider request failed with HTTP ${status}`
 }
 
-function parseSseEvent(data: string): ModelStreamEvent[] {
-  if (data === '[DONE]') return []
+interface PendingToolCall {
+  id: string
+  name: string
+  arguments: string
+}
+
+function completedToolCallEvents(
+  pending: Map<number, PendingToolCall>,
+): ModelStreamEvent[] {
+  const events = [...pending.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, call]): ModelStreamEvent => {
+      let input: unknown
+      try {
+        input = JSON.parse(call.arguments || '{}')
+      } catch (error) {
+        throw new ModelProviderError(
+          `Provider returned malformed tool arguments for ${call.name}`,
+          { retryable: false, cause: error },
+        )
+      }
+      if (!isRecord(input) || !call.id || !call.name) {
+        throw new ModelProviderError('Provider returned an invalid tool call', {
+          retryable: false,
+        })
+      }
+      const completed: ModelToolCall = {
+        id: call.id,
+        name: call.name,
+        input,
+      }
+      return { type: 'tool-call', call: completed }
+    })
+  pending.clear()
+  return events
+}
+
+function parseSseEvent(
+  data: string,
+  pendingToolCalls: Map<number, PendingToolCall>,
+): ModelStreamEvent[] {
+  if (data === '[DONE]') return completedToolCallEvents(pendingToolCalls)
 
   let value: unknown
   try {
@@ -51,6 +93,35 @@ function parseSseEvent(data: string): ModelStreamEvent[] {
       if (typeof content === 'string' && content.length > 0) {
         events.push({ type: 'text-delta', delta: content })
       }
+      const toolCalls = first.delta.tool_calls
+      if (Array.isArray(toolCalls)) {
+        for (const value of toolCalls) {
+          if (!isRecord(value) || typeof value.index !== 'number') continue
+          const pending = pendingToolCalls.get(value.index) ?? {
+            id: '',
+            name: '',
+            arguments: '',
+          }
+          if (typeof value.id === 'string') pending.id += value.id
+          if (isRecord(value.function)) {
+            if (typeof value.function.name === 'string') {
+              pending.name += value.function.name
+            }
+            if (typeof value.function.arguments === 'string') {
+              pending.arguments += value.function.arguments
+            }
+          }
+          pendingToolCalls.set(value.index, pending)
+        }
+      }
+    }
+    if (
+      isRecord(first) &&
+      first.finish_reason !== null &&
+      first.finish_reason !== undefined &&
+      pendingToolCalls.size > 0
+    ) {
+      events.push(...completedToolCallEvents(pendingToolCalls))
     }
   }
 
@@ -64,8 +135,33 @@ function parseSseEvent(data: string): ModelStreamEvent[] {
   return events
 }
 
+function serializeMessage(message: ModelMessage): Record<string, unknown> {
+  if (message.role === 'tool') {
+    return {
+      role: 'tool',
+      tool_call_id: message.toolCallId,
+      content: message.content,
+    }
+  }
+  if (message.role === 'assistant' && message.toolCalls?.length) {
+    return {
+      role: 'assistant',
+      content: message.content || null,
+      tool_calls: message.toolCalls.map((call) => ({
+        id: call.id,
+        type: 'function',
+        function: {
+          name: call.name,
+          arguments: JSON.stringify(call.input),
+        },
+      })),
+    }
+  }
+  return { role: message.role, content: message.content }
+}
+
 export class OpenAICompatibleProvider implements ModelProvider {
-  readonly capabilities = { streaming: true, usage: true } as const
+  readonly capabilities = { streaming: true, usage: true, tools: true } as const
   readonly model: string
   private readonly endpoint: string
   private readonly fetchImplementation: typeof fetch
@@ -85,9 +181,21 @@ export class OpenAICompatibleProvider implements ModelProvider {
       },
       body: JSON.stringify({
         model: this.options.model,
-        messages: request.messages,
+        messages: request.messages.map(serializeMessage),
         stream: true,
         stream_options: { include_usage: true },
+        ...(request.tools?.length
+          ? {
+              tools: request.tools.map((tool) => ({
+                type: 'function',
+                function: {
+                  name: tool.name,
+                  description: tool.description,
+                  parameters: tool.inputSchema,
+                },
+              })),
+            }
+          : {}),
       }),
     }
     if (request.signal) requestInit.signal = request.signal
@@ -123,6 +231,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    const pendingToolCalls = new Map<number, PendingToolCall>()
 
     try {
       while (true) {
@@ -140,7 +249,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
             .map((line) => line.slice(5).trimStart())
             .join('\n')
           if (data.length > 0) {
-            for (const event of parseSseEvent(data)) yield event
+            for (const event of parseSseEvent(data, pendingToolCalls)) {
+              yield event
+            }
           }
           boundary = buffer.indexOf('\n\n')
         }

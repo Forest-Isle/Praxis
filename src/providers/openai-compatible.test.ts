@@ -94,6 +94,101 @@ describe('OpenAICompatibleProvider', () => {
     expect(events).toEqual([{ type: 'text-delta', delta: 'ok' }])
   })
 
+  it('serializes tools and assembles fragmented tool call arguments', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"Read","arguments":"{\\"file_"}}]}}]}\n\n',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"path\\":\\"README.md\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+            'data: [DONE]\n\n',
+          ].join(''),
+        )
+      },
+    })
+
+    const events = []
+    for await (const event of provider.complete({
+      messages: [
+        { role: 'user', content: 'read it' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            {
+              id: 'previous_call',
+              name: 'Read',
+              input: { file_path: 'old.txt' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'previous_call',
+          content: 'old contents',
+          isError: false,
+        },
+      ],
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read a file',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      {
+        type: 'tool-call',
+        call: {
+          id: 'call_read',
+          name: 'Read',
+          input: { file_path: 'README.md' },
+        },
+      },
+    ])
+    expect(body?.tools).toEqual([
+      {
+        type: 'function',
+        function: {
+          name: 'Read',
+          description: 'Read a file',
+          parameters: { type: 'object' },
+        },
+      },
+    ])
+    expect(body?.messages).toEqual([
+      { role: 'user', content: 'read it' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'previous_call',
+            type: 'function',
+            function: {
+              name: 'Read',
+              arguments: '{"file_path":"old.txt"}',
+            },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'previous_call',
+        content: 'old contents',
+      },
+    ])
+  })
+
   it.each([
     ['connection', async () => Promise.reject(new TypeError('offline'))],
     [

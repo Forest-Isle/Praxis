@@ -6,6 +6,17 @@ import { indexClaudeToolLinks } from './tool-links.js'
 export type ProviderPersistenceEvent =
   | { type: 'user-text'; text: string }
   | {
+      type: 'assistant-message'
+      text: string
+      toolCalls: readonly {
+        id: string
+        name: string
+        input: Record<string, unknown>
+      }[]
+      providerMessageId: string
+      model: string
+    }
+  | {
       type: 'assistant-text'
       text: string
       providerMessageId: string
@@ -133,6 +144,35 @@ export function translateProviderEvents(
           message: { role: 'user', content: event.text },
         }
         break
+
+      case 'assistant-message': {
+        const content: Record<string, unknown>[] = []
+        if (event.text.length > 0) {
+          content.push({ type: 'text', text: event.text })
+        }
+        for (const call of event.toolCalls) {
+          toolSources.set(call.id, uuid)
+          content.push({
+            type: 'tool_use',
+            id: call.id,
+            name: call.name,
+            input: call.input,
+          })
+        }
+        if (content.length === 0) {
+          throw new Error('Assistant message has no text or tool calls')
+        }
+        entry = {
+          ...common,
+          type: 'assistant',
+          message: assistantMessage(
+            event,
+            content,
+            event.toolCalls.length > 0 ? 'tool_use' : 'end_turn',
+          ),
+        }
+        break
+      }
 
       case 'assistant-text':
         entry = {

@@ -5,7 +5,9 @@ import {
   AgentRuntime,
   ModelProviderError,
   type ModelProvider,
+  type ModelRequest,
   type RuntimeEvent,
+  type ToolRegistry,
 } from './runtime.js'
 
 function providerFrom(complete: ModelProvider['complete']): ModelProvider {
@@ -112,5 +114,154 @@ describe('AgentRuntime', () => {
     expect(events.at(-1)).toEqual({ type: 'state', state: 'cancelled' })
     expect(events).not.toContainEqual({ type: 'state', state: 'completed' })
     expect(events).not.toContainEqual({ type: 'text-delta', delta: 'ignored' })
+  })
+
+  it('runs an allowed tool call and returns its result to the provider', async () => {
+    const requests: ModelRequest[] = []
+    let turn = 0
+    const provider = providerFrom(async function* (request) {
+      requests.push(request)
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: {
+            id: 'call_read',
+            name: 'Read',
+            input: { file_path: 'README.md' },
+          },
+        }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 5, outputTokens: 3 },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'Praxis is local-first.' }
+      yield {
+        type: 'usage',
+        usage: { inputTokens: 8, outputTokens: 4 },
+      }
+    })
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read a file',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return {
+          ...call,
+          input: { file_path: '/workspace/README.md' },
+        }
+      },
+      async execute() {
+        return { content: '# Praxis', isError: false }
+      },
+    }
+    const persisted: string[] = []
+    const events: RuntimeEvent[] = []
+    const runtime = new AgentRuntime(provider, (event) => events.push(event), {
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const result = await runtime.run({
+      cwd: '/workspace',
+      messages: [{ role: 'user', content: 'What is this project?' }],
+      observer: {
+        async assistantCompleted(message) {
+          persisted.push(message.toolCalls?.[0]?.id ?? message.content)
+        },
+        async toolCompleted(call, toolResult) {
+          persisted.push(`${call.id}:${toolResult.content}`)
+        },
+      },
+    })
+
+    expect(result).toEqual({
+      text: 'Praxis is local-first.',
+      usage: { inputTokens: 13, outputTokens: 7 },
+    })
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.tools).toEqual(tools.definitions())
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'call_read',
+      content: '# Praxis',
+      isError: false,
+    })
+    expect(persisted).toEqual([
+      'call_read',
+      'call_read:# Praxis',
+      'Praxis is local-first.',
+    ])
+    expect(events).toContainEqual({
+      type: 'permission-decision',
+      callId: 'call_read',
+      behavior: 'allow',
+    })
+    expect(events).toContainEqual({
+      type: 'tool-result',
+      callId: 'call_read',
+      content: '# Praxis',
+      isError: false,
+    })
+  })
+
+  it('returns denied tools as error results without executing them', async () => {
+    let turn = 0
+    let executed = false
+    const provider = providerFrom(async function* () {
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: {
+            id: 'call_shell',
+            name: 'Bash',
+            input: { command: 'rm generated.txt' },
+          },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'I could not remove it.' }
+    })
+    const tools: ToolRegistry = {
+      definitions: () => [],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        executed = true
+        return { content: 'unexpected', isError: false }
+      },
+    }
+    const results: { content: string; isError: boolean }[] = []
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools,
+      permissions: {
+        resolve: () => ({
+          behavior: 'deny',
+          reason: 'Denied by local policy',
+        }),
+      },
+    })
+
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'remove it' }],
+      observer: {
+        async assistantCompleted() {},
+        async toolCompleted(_call, toolResult) {
+          results.push(toolResult)
+        },
+      },
+    })
+
+    expect(result.text).toBe('I could not remove it.')
+    expect(executed).toBe(false)
+    expect(results).toEqual([
+      { content: 'Denied by local policy', isError: true },
+    ])
   })
 })

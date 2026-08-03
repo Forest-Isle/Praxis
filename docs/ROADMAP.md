@@ -38,12 +38,15 @@ session, and Praxis resumes a Claude-created session that Claude can reopen.
 
 ## Sprint 2 — local tools and permissions
 
-- read, write, edit, search, and shell tools
-- allow/ask/deny engine and project/global compatible settings reads
-- timeouts, cancellation, output bounds, path normalization
-- native `tool_use`/`tool_result` persistence
+Status: complete for the headless OpenAI-compatible runtime.
 
-Exit gate: provider-independent tool scenario suite and denial tests.
+- [x] read, write, edit, search, and shell tools
+- [x] allow/ask/deny engine and project/global compatible settings reads
+- [x] timeouts, cancellation, output bounds, path normalization
+- [x] native `tool_use`/`tool_result` persistence
+
+Exit gate passed with provider-independent tool and denial scenarios plus a
+live Claude Code 2.1.208 reopen probe for a Praxis-created tool round trip.
 
 ## Sprint 3 — context ecosystem
 

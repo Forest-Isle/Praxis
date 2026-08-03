@@ -13,8 +13,11 @@ import {
   AgentRunCancelledError,
   type RuntimeEventSink,
 } from './core/runtime.js'
+import { loadClaudeSharedResources } from './compatibility/claude/shared-resources.js'
+import { ClaudePermissionResolver } from './permissions/claude-permission-resolver.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
+import { LocalToolRegistry } from './tools/local-tools.js'
 
 const VERSION = '0.1.0'
 
@@ -64,6 +67,10 @@ const consoleIO: CliIO = {
 const defaultDependencies: CliDependencies = {
   async createService({ eventSink, requireProvider }) {
     const claudeVersion = await detectInstalledClaudeVersion()
+    const cwd = process.cwd()
+    const configRoot = resolve(
+      process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
+    )
     let provider
     if (requireProvider) {
       const apiKey = process.env.PRAXIS_API_KEY
@@ -79,16 +86,23 @@ const defaultDependencies: CliDependencies = {
     }
 
     const options = {
-      configRoot: resolve(
-        process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
-      ),
-      cwd: process.cwd(),
+      configRoot,
+      cwd,
       claudeVersion,
       eventSink,
     }
-    return provider
-      ? new ClaudeSessionService({ ...options, provider })
-      : new ClaudeSessionService(options)
+    if (!provider) return new ClaudeSessionService(options)
+
+    const resources = await loadClaudeSharedResources({ configRoot, cwd })
+    return new ClaudeSessionService({
+      ...options,
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: new ClaudePermissionResolver({
+        cwd,
+        settings: resources.settings,
+      }),
+    })
   },
 }
 
