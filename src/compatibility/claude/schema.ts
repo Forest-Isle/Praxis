@@ -11,7 +11,7 @@ export interface ClaudeSchemaAdapter {
 }
 
 const SUPPORTED_VERSION = '2.1.208'
-const APPENDABLE_ENTRY_TYPES = new Set(['assistant', 'user'])
+const APPENDABLE_ENTRY_TYPES = new Set(['assistant', 'last-prompt', 'user'])
 
 function parseEntry(line: string): ClaudeTranscriptEntry {
   let value: unknown
@@ -116,6 +116,19 @@ function hasImageContent(message: Record<string, unknown>): boolean {
 }
 
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'last-prompt') {
+    if (!isNonEmptyString(entry.leafUuid)) {
+      throw new Error('Claude last-prompt entry has invalid leafUuid')
+    }
+    if (
+      !isNonEmptyString(entry.sessionId) ||
+      !isNonEmptyString(entry.lastPrompt)
+    ) {
+      throw new Error('Claude last-prompt entry has invalid metadata')
+    }
+    return
+  }
+
   for (const field of ['uuid', 'sessionId', 'timestamp', 'cwd', 'version']) {
     if (typeof entry[field] !== 'string' || entry[field].length === 0) {
       throw new Error(`Claude transcript entry is missing ${field}`)

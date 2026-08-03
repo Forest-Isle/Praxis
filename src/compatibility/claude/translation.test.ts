@@ -2,7 +2,10 @@ import { readFile } from 'node:fs/promises'
 
 import { describe, expect, it } from 'vitest'
 
-import { translateProviderEvents } from './translation.js'
+import {
+  createClaudeLastPromptEntry,
+  translateProviderEvents,
+} from './translation.js'
 
 const toolFixtureUrl = new URL(
   '../../../test/fixtures/claude-code/2.1.208/tool-session.jsonl',
@@ -10,6 +13,21 @@ const toolFixtureUrl = new URL(
 )
 
 describe('provider to Claude transcript translation', () => {
+  it('creates native last-prompt metadata for the final assistant leaf', () => {
+    expect(
+      createClaudeLastPromptEntry({
+        sessionId: '20000000-0000-4000-8000-000000000001',
+        lastPrompt: 'inspect the repo',
+        leafUuid: '10000000-0000-4000-8000-000000000004',
+      }),
+    ).toEqual({
+      type: 'last-prompt',
+      lastPrompt: 'inspect the repo',
+      sessionId: '20000000-0000-4000-8000-000000000001',
+      leafUuid: '10000000-0000-4000-8000-000000000004',
+    })
+  })
+
   it('creates a native parentUuid chain for text and tool events', () => {
     const uuids = [
       '10000000-0000-4000-8000-000000000001',

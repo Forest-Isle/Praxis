@@ -39,9 +39,9 @@ describe('ClaudeSchemaAdapter', () => {
     })
   })
 
-  it('accepts only native conversational entry types for new appends', async () => {
+  it('accepts only the native append profile', async () => {
     const source = await readFile(fixtureUrl, 'utf8')
-    const [userLine] = source.trimEnd().split('\n')
+    const [userLine, , lastPromptLine] = source.trimEnd().split('\n')
     const adapter = selectClaudeSchemaAdapter('2.1.208')
 
     expect(adapter.serializeForAppend(adapter.parse(userLine ?? ''))).toBe(
@@ -53,6 +53,32 @@ describe('ClaudeSchemaAdapter', () => {
     expect(() => adapter.serializeForAppend({ type: 'user' })).toThrow(
       'missing uuid',
     )
+    expect(
+      adapter.serializeForAppend(adapter.parse(lastPromptLine ?? '')),
+    ).toBe(lastPromptLine)
+    expect(() =>
+      adapter.serializeForAppend({
+        type: 'last-prompt',
+        sessionId: 'session',
+        lastPrompt: 'prompt',
+      }),
+    ).toThrow('invalid leafUuid')
+    expect(() =>
+      adapter.serializeForAppend({
+        type: 'last-prompt',
+        sessionId: '',
+        lastPrompt: 'prompt',
+        leafUuid: 'leaf',
+      }),
+    ).toThrow('invalid metadata')
+    expect(() =>
+      adapter.serializeForAppend({
+        type: 'last-prompt',
+        sessionId: 'session',
+        lastPrompt: '',
+        leafUuid: 'leaf',
+      }),
+    ).toThrow('invalid metadata')
 
     expect(() =>
       adapter.serializeForAppend({

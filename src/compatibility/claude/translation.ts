@@ -37,6 +37,25 @@ export interface TranslationContext {
   now?: () => string
 }
 
+export interface ClaudeLastPromptEntryOptions {
+  sessionId: string
+  lastPrompt: string
+  leafUuid: string
+}
+
+export function createClaudeLastPromptEntry({
+  sessionId,
+  lastPrompt,
+  leafUuid,
+}: ClaudeLastPromptEntryOptions): ClaudeTranscriptEntry {
+  return {
+    type: 'last-prompt',
+    lastPrompt,
+    sessionId,
+    leafUuid,
+  }
+}
+
 function emptyUsage() {
   return {
     input_tokens: 0,

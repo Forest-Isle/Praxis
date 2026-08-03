@@ -42,9 +42,6 @@ describe('Claude project path compatibility', () => {
     expect(paths.sessionFile).toBe(
       '/tmp/claude-config/projects/-Users-alice-dev-Praxis/bbd2f513-d9b7-4202-a632-32d33205b492.jsonl',
     )
-    expect(paths.memoryFile).toBe(
-      '/tmp/claude-config/projects/-Users-alice-dev-Praxis/memory/MEMORY.md',
-    )
     expect(paths.praxisRoot).toBe(join('/tmp/claude-config', 'praxis'))
   })
 

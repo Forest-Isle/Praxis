@@ -15,7 +15,6 @@ export interface ClaudePaths {
   configRoot: string
   projectRoot: string
   sessionFile: string
-  memoryFile: string
   praxisRoot: string
 }
 
@@ -60,7 +59,6 @@ export function resolveClaudePaths({
     configRoot,
     projectRoot,
     sessionFile: resolve(projectRoot, `${sessionId}.jsonl`),
-    memoryFile: resolve(projectRoot, 'memory', 'MEMORY.md'),
     praxisRoot: resolve(configRoot, 'praxis'),
   }
 }

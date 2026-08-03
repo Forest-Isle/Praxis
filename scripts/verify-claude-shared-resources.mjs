@@ -9,6 +9,7 @@ import {
   assertNotContains,
   detectClaudeVersion,
   execFileAsync,
+  runClaudeJson,
   writeFixture as write,
 } from './lib/claude-probe.mjs'
 
@@ -306,8 +307,7 @@ process.stdin.on('data', chunk => {
   assertContains(serializedMcp, markers.mcp, 'Praxis root MCP')
   assertContains(serializedMcp, markers.mcpCwd, 'Praxis cwd MCP')
 
-  const { stdout } = await execFileAsync(
-    'claude',
+  const response = await runClaudeJson(
     [
       '-p',
       '--model',
@@ -323,14 +323,9 @@ process.stdin.on('data', chunk => {
       '--dangerously-skip-permissions',
       '/fixture-matrix',
     ],
-    {
-      cwd,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 120_000,
-    },
+    cwd,
+    configRoot,
   )
-  const response = JSON.parse(stdout)
   const result = String(response.result)
   for (const label of [
     'global',
@@ -357,8 +352,7 @@ process.stdin.on('data', chunk => {
     'Claude closer settings precedence',
   )
 
-  const { stdout: commandStdout } = await execFileAsync(
-    'claude',
+  const commandResponse = await runClaudeJson(
     [
       '-p',
       '--model',
@@ -369,22 +363,16 @@ process.stdin.on('data', chunk => {
       'json',
       '/fixture-command',
     ],
-    {
-      cwd,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 120_000,
-    },
+    cwd,
+    configRoot,
   )
-  const commandResponse = JSON.parse(commandStdout)
   assertContains(
     String(commandResponse.result),
     markers.command,
     'Claude command',
   )
 
-  const { stdout: projectCommandStdout } = await execFileAsync(
-    'claude',
+  const projectCommandResponse = await runClaudeJson(
     [
       '-p',
       '--model',
@@ -395,21 +383,16 @@ process.stdin.on('data', chunk => {
       'json',
       '/fixture-project',
     ],
-    {
-      cwd,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 120_000,
-    },
+    cwd,
+    configRoot,
   )
   assertContains(
-    String(JSON.parse(projectCommandStdout).result),
+    String(projectCommandResponse.result),
     markers.projectCommand,
     'Claude project command',
   )
 
-  const { stdout: projectAgentStdout } = await execFileAsync(
-    'claude',
+  const projectAgentResponse = await runClaudeJson(
     [
       '-p',
       '--model',
@@ -422,15 +405,11 @@ process.stdin.on('data', chunk => {
       'fixture-project-agent',
       'Reply with your exact project agent compatibility marker.',
     ],
-    {
-      cwd,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 120_000,
-    },
+    cwd,
+    configRoot,
   )
   assertContains(
-    String(JSON.parse(projectAgentStdout).result),
+    String(projectAgentResponse.result),
     markers.projectAgent,
     'Claude project agent',
   )
@@ -482,8 +461,7 @@ process.stdin.on('data', chunk => {
     markers.nonGitAgent,
     'Praxis non-git project agent',
   )
-  const { stdout: nonGitStdout } = await execFileAsync(
-    'claude',
+  const nonGitResponse = await runClaudeJson(
     [
       '-p',
       '--model',
@@ -494,20 +472,15 @@ process.stdin.on('data', chunk => {
       'json',
       'Reply with exactly the marker declared by the nearest non-git CLAUDE.md instruction.',
     ],
-    {
-      cwd: nonGitCwd,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 120_000,
-    },
+    nonGitCwd,
+    configRoot,
   )
   assertContains(
-    String(JSON.parse(nonGitStdout).result),
+    String(nonGitResponse.result),
     markers.nonGit,
     'Claude non-git hierarchy',
   )
-  const { stdout: nonGitSkillStdout } = await execFileAsync(
-    'claude',
+  const nonGitSkillResponse = await runClaudeJson(
     [
       '-p',
       '--model',
@@ -518,20 +491,15 @@ process.stdin.on('data', chunk => {
       'json',
       '/non-git-skill',
     ],
-    {
-      cwd: nonGitCwd,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 120_000,
-    },
+    nonGitCwd,
+    configRoot,
   )
   assertContains(
-    String(JSON.parse(nonGitSkillStdout).result),
+    String(nonGitSkillResponse.result),
     markers.nonGitSkill,
     'Claude non-git project skill',
   )
-  const { stdout: nonGitCommandStdout } = await execFileAsync(
-    'claude',
+  const nonGitCommandResponse = await runClaudeJson(
     [
       '-p',
       '--model',
@@ -542,20 +510,15 @@ process.stdin.on('data', chunk => {
       'json',
       '/non-git-command',
     ],
-    {
-      cwd: nonGitCwd,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 120_000,
-    },
+    nonGitCwd,
+    configRoot,
   )
   assertContains(
-    String(JSON.parse(nonGitCommandStdout).result),
+    String(nonGitCommandResponse.result),
     markers.nonGitCommand,
     'Claude non-git project command',
   )
-  const { stdout: nonGitAgentStdout } = await execFileAsync(
-    'claude',
+  const nonGitAgentResponse = await runClaudeJson(
     [
       '-p',
       '--model',
@@ -568,15 +531,11 @@ process.stdin.on('data', chunk => {
       'non-git-agent',
       'Follow your agent instructions.',
     ],
-    {
-      cwd: nonGitCwd,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 120_000,
-    },
+    nonGitCwd,
+    configRoot,
   )
   assertContains(
-    String(JSON.parse(nonGitAgentStdout).result),
+    String(nonGitAgentResponse.result),
     markers.nonGitAgent,
     'Claude non-git project agent',
   )

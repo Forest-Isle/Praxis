@@ -49,6 +49,10 @@ generic JSON merge because hook, permission, environment, and server fields
 have different precedence semantics. User/local MCP registry formats beyond
 project `.mcp.json` remain a Sprint 3 compatibility subset.
 
+Memory location is resolved asynchronously by `loadClaudeSharedResources`
+because worktree identity requires reading Git metadata. Callers must not infer
+a memory path from the synchronous session-path resolver.
+
 ## Transcript write profile
 
 Shared session files contain only entries accepted by the supported Claude Code
@@ -60,7 +64,9 @@ version. Praxis must preserve:
   required by the active schema;
 - Anthropic-compatible user and assistant message envelopes;
 - strict `tool_use` and `tool_result` pairing;
-- compaction summary and resume metadata accepted by Claude Code.
+- native `last-prompt` metadata pointing at the final assistant leaf;
+- compaction summary and other resume metadata accepted by Claude Code when
+  their writers are enabled.
 
 Praxis may read optional Claude entry types it does not execute. It must retain
 them when continuing a session unless the active Claude schema explicitly marks
@@ -145,11 +151,13 @@ Support policy:
 
 Current write scope is deliberately smaller than read scope. Praxis reads any
 well-formed native entry as opaque data, but only appends validated `user` and
-`assistant` conversational entries for the selected adapter version. Message
-content blocks are validated before append, and every `tool_result` must match
-the historical `tool_use` plus `sourceToolAssistantUUID`. Summary, sidechain,
-attachment, image, and other entry writers remain disabled until their runtime
-implementations and write/resume probes pass.
+`assistant` conversational entries plus the physical `last-prompt` record
+required by Claude resume for the selected adapter version. `last-prompt` must
+name the current logical conversation leaf and does not advance that leaf.
+Message content blocks are validated before append, and every `tool_result`
+must match the historical `tool_use` plus `sourceToolAssistantUUID`. Summary,
+sidechain, attachment, image, and other entry writers remain disabled until
+their runtime implementations and write/resume probes pass.
 
 Claude 2.1.208 read fixtures now cover text, tool use/results, manual
 compaction, subagent sidechains, image results, non-zero tool errors, and user

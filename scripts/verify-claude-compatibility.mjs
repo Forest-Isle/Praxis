@@ -5,24 +5,22 @@ import { join } from 'node:path'
 
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
 import { selectClaudeSchemaAdapter } from '../dist/compatibility/claude/schema.js'
-import { translateProviderEvents } from '../dist/compatibility/claude/translation.js'
+import {
+  createClaudeLastPromptEntry,
+  translateProviderEvents,
+} from '../dist/compatibility/claude/translation.js'
 import { ClaudeTranscriptStore } from '../dist/persistence/claude-transcript-store.js'
-import { detectClaudeVersion, execFileAsync } from './lib/claude-probe.mjs'
+import { detectClaudeVersion, runClaudeJson } from './lib/claude-probe.mjs'
 
 const markerFromClaude = 'CLAUDE_ORIGIN_7319'
-const markerFromPraxisAppend = 'PRAXIS_APPEND_8427'
+const markerFromPraxisToolResult = 'PRAXIS_TOOL_RESULT_8427'
+const markerFromPraxisAssistant = 'PRAXIS_ASSISTANT_4671'
 const markerFromPraxisCreated = 'PRAXIS_CREATED_9538'
 
 async function runClaude(args, cwd, configRoot) {
-  const { stdout } = await execFileAsync('claude', args, {
-    cwd,
-    env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
-    maxBuffer: 4 * 1024 * 1024,
-    timeout: 120_000,
-  })
-  const result = JSON.parse(stdout)
+  const result = await runClaudeJson(args, cwd, configRoot)
   if (result.type !== 'result' || result.is_error) {
-    throw new Error(`Claude command failed: ${stdout}`)
+    throw new Error(`Claude command failed: ${JSON.stringify(result)}`)
   }
   return result
 }
@@ -99,12 +97,12 @@ try {
       {
         type: 'tool-result',
         toolCallId: praxisToolCallId,
-        content: 'praxis-tool-fixture',
+        content: markerFromPraxisToolResult,
         isError: false,
       },
       {
         type: 'assistant-text',
-        text: markerFromPraxisAppend,
+        text: markerFromPraxisAssistant,
         providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
         model: 'praxis/fixture',
       },
@@ -117,7 +115,18 @@ try {
       gitBranch: null,
     },
   )
-  await appendEntries(claudeStore, praxisContinuation)
+  const praxisContinuationLeaf = praxisContinuation.at(-1)?.uuid
+  if (typeof praxisContinuationLeaf !== 'string') {
+    throw new Error('Praxis continuation has no final assistant leaf')
+  }
+  await appendEntries(claudeStore, [
+    ...praxisContinuation,
+    createClaudeLastPromptEntry({
+      sessionId: claudeSessionId,
+      lastPrompt: 'Praxis continued this session.',
+      leafUuid: praxisContinuationLeaf,
+    }),
+  ])
 
   const claudeResume = await runClaude(
     [
@@ -128,15 +137,26 @@ try {
       'haiku',
       '--max-turns',
       '1',
+      '--tools',
+      '',
       '--output-format',
       'json',
-      `Repeat exactly the prior assistant marker ${markerFromPraxisAppend}`,
+      'Find every distinct token matching PRAXIS_[A-Z0-9_]+ in the immediately prior Praxis-authored tool result and final assistant response. Reply with both tokens and nothing else.',
     ],
     canonicalWorkDirectory,
     configRoot,
   )
-  if (!String(claudeResume.result).includes(markerFromPraxisAppend)) {
-    throw new Error('Claude did not resume the Praxis-appended context')
+  if (
+    claudeResume.session_id !== claudeSessionId ||
+    !String(claudeResume.result).includes(markerFromPraxisToolResult) ||
+    !String(claudeResume.result).includes(markerFromPraxisAssistant)
+  ) {
+    throw new Error(
+      `Claude did not resume the Praxis-appended context: ${JSON.stringify({
+        sessionId: claudeResume.session_id,
+        result: claudeResume.result,
+      })}`,
+    )
   }
 
   const praxisSessionId = randomUUID()
@@ -168,7 +188,18 @@ try {
       gitBranch: null,
     },
   )
-  await appendEntries(praxisStore, praxisOrigin)
+  const praxisOriginLeaf = praxisOrigin.at(-1)?.uuid
+  if (typeof praxisOriginLeaf !== 'string') {
+    throw new Error('Praxis-created session has no final assistant leaf')
+  }
+  await appendEntries(praxisStore, [
+    ...praxisOrigin,
+    createClaudeLastPromptEntry({
+      sessionId: praxisSessionId,
+      lastPrompt: 'Remember the following marker.',
+      leafUuid: praxisOriginLeaf,
+    }),
+  ])
 
   const praxisResume = await runClaude(
     [
@@ -193,7 +224,7 @@ try {
   }
 
   console.log(
-    `Claude ${version} compatibility passed: Claude→Praxis(tool chain)→Claude and Praxis→Claude discovery`,
+    `Claude ${version} compatibility passed: Claude→Praxis(tool + final response)→Claude and Praxis→Claude discovery`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

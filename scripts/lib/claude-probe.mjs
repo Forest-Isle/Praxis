@@ -16,6 +16,16 @@ export async function detectClaudeVersion(probeName) {
   return version
 }
 
+export async function runClaudeJson(args, cwd, configRoot) {
+  const { stdout } = await execFileAsync('claude', args, {
+    cwd,
+    env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+    maxBuffer: 4 * 1024 * 1024,
+    timeout: 120_000,
+  })
+  return JSON.parse(stdout)
+}
+
 export async function writeFixture(path, content) {
   await mkdir(dirname(path), { recursive: true })
   await writeFile(path, content)

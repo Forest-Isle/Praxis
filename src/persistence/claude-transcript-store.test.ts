@@ -117,6 +117,45 @@ describe('ClaudeTranscriptStore', () => {
     expect(after.slice(before.length)).toBe(`${JSON.stringify(entry)}\n`)
   })
 
+  it('appends native last-prompt metadata without advancing the logical tail', async () => {
+    const { sessionFile, store } = await createStore()
+    const snapshot = await store.load()
+    const entry = {
+      type: 'last-prompt',
+      lastPrompt: 'continue',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      leafUuid: snapshot.tail.lastUuid,
+    }
+
+    const result = await store.append(snapshot.tail, entry)
+    const after = await store.load()
+
+    expect(result).toMatchObject({
+      status: 'appended',
+      tail: { lastUuid: snapshot.tail.lastUuid },
+    })
+    expect(after.entries.at(-1)).toEqual(entry)
+    expect(
+      (await readFile(sessionFile, 'utf8')).endsWith(
+        `${JSON.stringify(entry)}\n`,
+      ),
+    ).toBe(true)
+  })
+
+  it('refuses last-prompt metadata for a non-tail leaf', async () => {
+    const { store } = await createStore()
+    const snapshot = await store.load()
+
+    await expect(
+      store.append(snapshot.tail, {
+        type: 'last-prompt',
+        lastPrompt: 'stale',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        leafUuid: '22222222-2222-4222-8222-222222222222',
+      }),
+    ).rejects.toThrow('leafUuid does not match transcript tail')
+  })
+
   it('refuses to append when an uncooperative writer advanced the tail', async () => {
     const { sessionFile, store } = await createStore()
     const snapshot = await store.load()

@@ -224,11 +224,17 @@ export class ClaudeTranscriptStore {
     expectedTail: TranscriptTail,
     entry: ClaudeTranscriptEntry,
   ): Promise<TranscriptAppendResult> {
-    if (entry.parentUuid !== expectedTail.lastUuid) {
-      throw new Error('Entry parentUuid does not match transcript tail')
-    }
-    if (typeof entry.uuid !== 'string' || entry.uuid.length === 0) {
-      throw new Error('Appended Claude transcript entry must have a uuid')
+    if (entry.type === 'last-prompt') {
+      if (entry.leafUuid !== expectedTail.lastUuid) {
+        throw new Error('Entry leafUuid does not match transcript tail')
+      }
+    } else {
+      if (entry.parentUuid !== expectedTail.lastUuid) {
+        throw new Error('Entry parentUuid does not match transcript tail')
+      }
+      if (typeof entry.uuid !== 'string' || entry.uuid.length === 0) {
+        throw new Error('Appended Claude transcript entry must have a uuid')
+      }
     }
 
     await mkdir(dirname(this.lockFile), { recursive: true })
