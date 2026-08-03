@@ -145,6 +145,32 @@ function validateToolPairing(
   }
 }
 
+function validateLastPromptLeaf(
+  history: readonly ClaudeTranscriptEntry[],
+  entry: ClaudeTranscriptEntry,
+): void {
+  if (entry.type !== 'last-prompt') return
+
+  let leaf: ClaudeTranscriptEntry | undefined
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const candidate = history[index]
+    if (candidate?.uuid === entry.leafUuid) {
+      leaf = candidate
+      break
+    }
+  }
+  if (leaf?.type !== 'assistant') {
+    throw new Error(
+      'Claude last-prompt must reference the final assistant leaf',
+    )
+  }
+  if (leaf.sessionId !== entry.sessionId) {
+    throw new Error(
+      'Claude last-prompt and leaf must belong to the same session',
+    )
+  }
+}
+
 export class ClaudeTranscriptStore {
   private readonly sessionFile: string
   private readonly lockFile: string
@@ -254,6 +280,7 @@ export class ClaudeTranscriptStore {
       if (!tailsMatch(current.tail, expectedTail)) {
         return { status: 'conflict', reason: 'tail-changed' }
       }
+      validateLastPromptLeaf(current.entries, entry)
       validateToolPairing(current.entries, entry)
       if (!current.tail.newlineTerminated) {
         throw new Error('Claude transcript is not newline-terminated')

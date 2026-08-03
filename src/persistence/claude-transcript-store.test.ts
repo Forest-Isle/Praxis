@@ -156,6 +156,43 @@ describe('ClaudeTranscriptStore', () => {
     ).rejects.toThrow('leafUuid does not match transcript tail')
   })
 
+  it('refuses last-prompt metadata unless the tail is an assistant in the same session', async () => {
+    const first = await createStore()
+    const firstSnapshot = await first.store.load()
+
+    await expect(
+      first.store.append(firstSnapshot.tail, {
+        type: 'last-prompt',
+        lastPrompt: 'wrong session',
+        sessionId: '99999999-9999-4999-8999-999999999999',
+        leafUuid: firstSnapshot.tail.lastUuid,
+      }),
+    ).rejects.toThrow('same session')
+
+    const second = await createStore()
+    const secondSnapshot = await second.store.load()
+    const userEntry = {
+      ...firstEntry(secondSnapshot),
+      uuid: '55555555-5555-4555-8555-555555555555',
+      parentUuid: secondSnapshot.tail.lastUuid,
+      timestamp: '2026-08-03T08:00:02.000Z',
+      message: { role: 'user', content: 'unfinished' },
+    }
+    const userResult = await second.store.append(secondSnapshot.tail, userEntry)
+    if (userResult.status !== 'appended') {
+      throw new Error('Could not append user fixture')
+    }
+
+    await expect(
+      second.store.append(userResult.tail, {
+        type: 'last-prompt',
+        lastPrompt: 'unfinished',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        leafUuid: userEntry.uuid,
+      }),
+    ).rejects.toThrow('final assistant leaf')
+  })
+
   it('refuses to append when an uncooperative writer advanced the tail', async () => {
     const { sessionFile, store } = await createStore()
     const snapshot = await store.load()
