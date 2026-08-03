@@ -99,6 +99,7 @@ npm run typecheck
 npm test
 npm run build
 npm run check
+npm run test:performance
 node dist/cli.js --help
 ```
 
@@ -149,6 +150,11 @@ npm run test:runtime-compat
 npm run test:recovery-compat
 npm run test:shared-compat
 ```
+
+`npm run test:performance` is a local, provider-free release gate covering CLI
+process startup, 500-session discovery, and large transcript load, heap, and
+append behavior. Exact fixtures and limits are documented in
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 Architecture constraints live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Runtime semantics and trust boundaries live in

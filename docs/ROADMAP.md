@@ -71,7 +71,9 @@ Status: in progress.
 - [x] Ink TUI over runtime events
 - [x] streaming, permission prompts, session picker, and basic diagnostics
 - [x] interrupted-tool crash recovery with prepared-input approval
-- [ ] performance budgets
+- [x] deterministic CLI/session/transcript time and memory budgets
 - [ ] packaging and upgrade compatibility matrix
 
-Exit gate: end-to-end release suite on macOS and Linux.
+Performance gate passes against the production build with a 500-session index
+and an 11 MiB/20,000-entry transcript. Sprint exit gate remains the end-to-end
+release suite on macOS and Linux.

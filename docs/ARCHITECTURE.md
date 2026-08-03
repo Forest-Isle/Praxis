@@ -54,6 +54,13 @@ actually execute. One explicit recovery approval satisfies an `ask` decision,
 while a current `deny` rule still produces an error result. Missing or declined
 approval leaves the unresolved transcript prefix untouched.
 
+Release performance is guarded at public storage and process boundaries rather
+than through implementation-specific microbenchmarks. A deterministic local
+probe budgets production CLI process startup, 500-session discovery, and
+20,000-entry transcript load, retained heap, and tail append. Provider,
+network, Claude Code, and hook latency remain separate integration concerns.
+See [PERFORMANCE.md](PERFORMANCE.md).
+
 ## Shared Claude data plane
 
 Praxis defaults to the same configuration root as Claude Code:

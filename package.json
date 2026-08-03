@@ -24,6 +24,7 @@
     "test:mcp-compat": "npm run build && node scripts/verify-mcp-compatibility.mjs",
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",
+    "test:performance": "npm run build && node --expose-gc scripts/verify-performance-budgets.mjs",
     "test:runtime-compat": "npm run build && node scripts/verify-runtime-compatibility.mjs",
     "test:recovery-compat": "npm run build && node scripts/verify-crash-recovery.mjs",
     "test:shared-compat": "npm run build && node scripts/verify-claude-shared-resources.mjs",
