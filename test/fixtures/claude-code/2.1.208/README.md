@@ -9,8 +9,9 @@ paths, timestamps, token counts, and human text with deterministic values.
 - `tool-session.jsonl`: Bash `tool_use` and matching user `tool_result`
   envelope, including `sourceToolAssistantUUID` and `toolUseResult`.
 - `compact-session.jsonl`: manual `compact_boundary` and compact-summary pair.
-- `sidechain-session.jsonl`: subagent transcript entries with `isSidechain`,
-  `agentId`, and attribution metadata.
+- `sidechain-layout/`: valid main session plus native
+  `<session-id>/subagents/agent-*.jsonl` entries with `isSidechain`, `agentId`,
+  and attribution metadata.
 - `media-error-session.jsonl`: image result and non-zero Bash error result.
 - `interrupted-session.jsonl`: Ctrl-C tool rejection and interruption message.
 

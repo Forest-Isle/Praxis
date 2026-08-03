@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { sanitizeClaudeProjectPath } from '../dist/compatibility/claude/paths.js'
+import { parseClaudeVersionOutput } from '../dist/compatibility/claude/schema.js'
 import { loadClaudeSharedResources } from '../dist/compatibility/claude/shared-resources.js'
 
 const execFileAsync = promisify(execFile)
@@ -12,9 +13,13 @@ const markers = {
   global: 'SHARED_GLOBAL_1041',
   project: 'SHARED_PROJECT_2052',
   memory: 'SHARED_MEMORY_3063',
+  memoryDetail: 'SHARED_MEMORY_DETAIL_3174',
   skill: 'SHARED_SKILL_4074',
   hook: 'SHARED_HOOK_5085',
   mcp: 'SHARED_MCP_6096',
+  command: 'SHARED_COMMAND_7107',
+  agent: 'SHARED_AGENT_8218',
+  settings: 'SHARED_SETTINGS_9329',
 }
 
 async function write(path, content) {
@@ -31,16 +36,23 @@ function assertContains(haystack, needle, label) {
 const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-claude-shared-'))
 
 try {
+  const { stdout: versionOutput } = await execFileAsync('claude', ['--version'])
+  const version = parseClaudeVersionOutput(versionOutput)
+  if (version !== '2.1.208') {
+    throw new Error(`Shared-resource probe does not support Claude ${version}`)
+  }
+
   const configRoot = join(probeRoot, 'config')
-  const workDirectory = join(probeRoot, 'work')
+  const repository = join(probeRoot, 'work')
+  const workDirectory = join(repository, 'packages', 'fixture')
   await mkdir(workDirectory, { recursive: true })
+  await execFileAsync('git', ['init', '-q', repository])
   const cwd = await realpath(workDirectory)
-  const projectMemory = join(
+  const projectMemoryDirectory = join(
     configRoot,
     'projects',
-    sanitizeClaudeProjectPath(cwd),
+    sanitizeClaudeProjectPath(await realpath(repository)),
     'memory',
-    'MEMORY.md',
   )
   const mcpServer = join(probeRoot, 'fixture-mcp.mjs')
 
@@ -50,33 +62,41 @@ try {
       `Global compatibility marker: ${markers.global}\n`,
     ),
     write(
-      join(cwd, 'CLAUDE.md'),
+      join(repository, 'CLAUDE.md'),
       `Project compatibility marker: ${markers.project}\n`,
     ),
-    write(projectMemory, `Auto-memory marker: ${markers.memory}\n`),
     write(
-      join(cwd, '.claude', 'skills', 'fixture-matrix', 'SKILL.md'),
-      `---\nname: fixture-matrix\ndescription: Verify the shared compatibility matrix.\n---\n\nSkill marker: ${markers.skill}. Call mcp__fixture__marker once, then reply with one JSON object containing exact global, project, memory, skill, hook, and mcp marker strings visible in context.\n`,
+      join(projectMemoryDirectory, 'MEMORY.md'),
+      `Auto-memory marker: ${markers.memory}\n\n- [Details](details.md)\n`,
+    ),
+    write(
+      join(projectMemoryDirectory, 'details.md'),
+      `Detailed memory marker: ${markers.memoryDetail}\n`,
+    ),
+    write(
+      join(repository, '.claude', 'skills', 'fixture-matrix', 'SKILL.md'),
+      `---\nname: fixture-matrix\ndescription: Verify the shared compatibility matrix.\n---\n\nSkill marker: ${markers.skill}. Call mcp__fixture__marker once, then reply with one JSON object containing exact global, project, memory, skill, hook, mcp, and agent marker strings visible in context.\n`,
     ),
     write(
       join(configRoot, 'commands', 'fixture-command.md'),
-      'Shared command fixture.\n',
+      `Reply with exactly ${markers.command}.\n`,
     ),
     write(
       join(configRoot, 'agents', 'fixture-agent.md'),
-      '---\nname: fixture-agent\ndescription: Shared agent fixture.\n---\nFixture agent.\n',
+      `---\nname: fixture-agent\ndescription: Shared agent fixture.\n---\nAgent compatibility marker: ${markers.agent}. Always include it in your response.\n`,
     ),
     write(
       join(cwd, '.claude', 'settings.local.json'),
       JSON.stringify({
         enableAllProjectMcpServers: true,
+        env: { PRAXIS_SETTINGS_MARKER: markers.settings },
         hooks: {
           UserPromptSubmit: [
             {
               hooks: [
                 {
                   type: 'command',
-                  command: `printf ${markers.hook}`,
+                  command: `printf "$PRAXIS_SETTINGS_MARKER:${markers.hook}"`,
                 },
               ],
             },
@@ -144,9 +164,14 @@ process.stdin.on('data', chunk => {
     'Praxis project instructions',
   )
   assertContains(
-    resources.memory?.content ?? '',
+    resources.memory.map((item) => item.content).join('\n'),
     markers.memory,
     'Praxis memory',
+  )
+  assertContains(
+    resources.memory.map((item) => item.content).join('\n'),
+    markers.memoryDetail,
+    'Praxis linked memory',
   )
   assertContains(
     resources.skills.map((item) => item.content).join('\n'),
@@ -156,6 +181,16 @@ process.stdin.on('data', chunk => {
   if (resources.commands.length !== 1 || resources.agents.length !== 1) {
     throw new Error('Praxis did not discover shared commands and agents')
   }
+  assertContains(
+    resources.commands[0]?.content ?? '',
+    markers.command,
+    'Praxis commands',
+  )
+  assertContains(
+    resources.agents[0]?.content ?? '',
+    markers.agent,
+    'Praxis agents',
+  )
   if (resources.settings.length !== 1 || !resources.mcp) {
     throw new Error('Praxis did not discover shared settings/hooks and MCP')
   }
@@ -172,6 +207,8 @@ process.stdin.on('data', chunk => {
       'json',
       '--allowedTools',
       'Skill,mcp__fixture__marker',
+      '--agent',
+      'fixture-agent',
       '--dangerously-skip-permissions',
       '/fixture-matrix',
     ],
@@ -184,12 +221,48 @@ process.stdin.on('data', chunk => {
   )
   const response = JSON.parse(stdout)
   const result = String(response.result)
-  for (const [label, marker] of Object.entries(markers)) {
+  for (const label of [
+    'global',
+    'project',
+    'memory',
+    'skill',
+    'hook',
+    'mcp',
+    'agent',
+    'settings',
+  ]) {
+    const marker = markers[label]
     assertContains(result, marker, `Claude ${label}`)
   }
 
+  const { stdout: commandStdout } = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--output-format',
+      'json',
+      '/fixture-command',
+    ],
+    {
+      cwd,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  const commandResponse = JSON.parse(commandStdout)
+  assertContains(
+    String(commandResponse.result),
+    markers.command,
+    'Claude command',
+  )
+
   console.log(
-    'Claude 2.1.208 shared-resource compatibility passed: instructions, memory, skill, hook, MCP, commands, and agents',
+    `Claude ${version} shared-resource compatibility passed: instructions, memory, skill, hook, MCP, commands, agents, and settings`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

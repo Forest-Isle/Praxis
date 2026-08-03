@@ -93,7 +93,9 @@ describe('Claude shared resource discovery', () => {
       'DOT_INSTRUCTION',
       'RULE_INSTRUCTION',
     ])
-    expect(resources.memory?.content).toBe('MEMORY_MARKER')
+    expect(resources.memory.map((item) => item.content)).toEqual([
+      'MEMORY_MARKER',
+    ])
     expect(resources.skills.map((item) => item.content)).toEqual([
       'GLOBAL_SKILL',
       'PROJECT_SKILL',
@@ -114,5 +116,112 @@ describe('Claude shared resource discovery', () => {
     expect(resources.mcp?.value).toEqual({
       mcpServers: { fixture: { command: 'node' } },
     })
+  })
+
+  it('returns an empty view when optional shared files do not exist', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shared-empty-'))
+    tempDirectories.push(root)
+
+    const resources = await loadClaudeSharedResources({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'workspace'),
+    })
+
+    expect(resources).toEqual({
+      instructions: [],
+      memory: [],
+      skills: [],
+      commands: [],
+      agents: [],
+      settings: [],
+      mcp: null,
+    })
+  })
+
+  it('reports malformed JSON with its shared resource path', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shared-invalid-'))
+    tempDirectories.push(root)
+    const settingsPath = join(root, 'config', 'settings.json')
+    await writeFixture(settingsPath, '{')
+
+    await expect(
+      loadClaudeSharedResources({
+        configRoot: join(root, 'config'),
+        cwd: join(root, 'workspace'),
+      }),
+    ).rejects.toThrow(`Invalid Claude JSON resource: ${settingsPath}`)
+  })
+
+  it('does not swallow filesystem errors other than missing resources', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shared-io-error-'))
+    tempDirectories.push(root)
+    const settingsPath = join(root, 'config', 'settings.json')
+    await mkdir(settingsPath, { recursive: true })
+
+    await expect(
+      loadClaudeSharedResources({
+        configRoot: join(root, 'config'),
+        cwd: join(root, 'workspace'),
+      }),
+    ).rejects.toMatchObject({ code: 'EISDIR' })
+  })
+
+  it('loads project resources from the git root through a nested cwd', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shared-hierarchy-'))
+    tempDirectories.push(root)
+    const configRoot = join(root, 'config')
+    const repository = join(root, 'repository')
+    const packageDirectory = join(repository, 'packages', 'app')
+    const cwd = join(packageDirectory, 'src')
+    const memoryDirectory = join(
+      configRoot,
+      'projects',
+      sanitizeClaudeProjectPath(repository),
+      'memory',
+    )
+
+    await Promise.all([
+      mkdir(join(repository, '.git'), { recursive: true }),
+      writeFixture(join(root, 'CLAUDE.md'), 'OUTSIDE_INSTRUCTION'),
+      writeFixture(join(repository, 'CLAUDE.md'), 'ROOT_INSTRUCTION'),
+      writeFixture(
+        join(packageDirectory, '.claude', 'CLAUDE.md'),
+        'PACKAGE_INSTRUCTION',
+      ),
+      writeFixture(join(cwd, '.claude', 'rules', 'nested.md'), 'NESTED_RULE'),
+      writeFixture(
+        join(repository, '.claude', 'skills', 'root-skill', 'SKILL.md'),
+        'ROOT_SKILL',
+      ),
+      writeFixture(
+        join(packageDirectory, '.claude', 'commands', 'package.md'),
+        'PACKAGE_COMMAND',
+      ),
+      writeFixture(join(cwd, '.claude', 'agents', 'nested.md'), 'NESTED_AGENT'),
+      writeFixture(join(memoryDirectory, 'MEMORY.md'), 'MEMORY_INDEX'),
+      writeFixture(
+        join(memoryDirectory, 'topics', 'compatibility.md'),
+        'MEMORY_DETAIL',
+      ),
+    ])
+
+    const resources = await loadClaudeSharedResources({ configRoot, cwd })
+
+    expect(resources.instructions.map((item) => item.content)).toEqual([
+      'ROOT_INSTRUCTION',
+      'PACKAGE_INSTRUCTION',
+      'NESTED_RULE',
+    ])
+    expect(resources.memory.map((item) => item.content)).toEqual([
+      'MEMORY_INDEX',
+      'MEMORY_DETAIL',
+    ])
+    expect(resources.skills.map((item) => item.content)).toEqual(['ROOT_SKILL'])
+    expect(resources.commands.map((item) => item.content)).toEqual([
+      'PACKAGE_COMMAND',
+    ])
+    expect(resources.agents.map((item) => item.content)).toEqual([
+      'NESTED_AGENT',
+    ])
   })
 })

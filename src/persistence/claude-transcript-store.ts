@@ -88,6 +88,78 @@ function findLogicalTailUuid(
   return null
 }
 
+function contentBlocks(
+  entry: ClaudeTranscriptEntry,
+): Record<string, unknown>[] {
+  if (
+    typeof entry.message !== 'object' ||
+    entry.message === null ||
+    Array.isArray(entry.message)
+  ) {
+    return []
+  }
+  const content = (entry.message as Record<string, unknown>).content
+  if (!Array.isArray(content)) return []
+  return content.filter(
+    (block): block is Record<string, unknown> =>
+      typeof block === 'object' && block !== null && !Array.isArray(block),
+  )
+}
+
+function validateToolPairing(
+  history: readonly ClaudeTranscriptEntry[],
+  entry: ClaudeTranscriptEntry,
+): void {
+  const toolCalls = new Map<string, string>()
+  const completedToolCalls = new Set<string>()
+
+  for (const historicalEntry of history) {
+    const uuid = getEntryUuid(historicalEntry)
+    for (const block of contentBlocks(historicalEntry)) {
+      if (
+        historicalEntry.type === 'assistant' &&
+        block.type === 'tool_use' &&
+        typeof block.id === 'string' &&
+        uuid
+      ) {
+        toolCalls.set(block.id, uuid)
+      }
+      if (
+        historicalEntry.type === 'user' &&
+        block.type === 'tool_result' &&
+        typeof block.tool_use_id === 'string'
+      ) {
+        completedToolCalls.add(block.tool_use_id)
+      }
+    }
+  }
+
+  for (const block of contentBlocks(entry)) {
+    if (entry.type === 'assistant' && block.type === 'tool_use') {
+      if (typeof block.id === 'string' && toolCalls.has(block.id)) {
+        throw new Error(`Duplicate assistant tool_use id: ${block.id}`)
+      }
+      continue
+    }
+    if (entry.type !== 'user' || block.type !== 'tool_result') continue
+
+    const toolUseId = block.tool_use_id
+    const sourceUuid = entry.sourceToolAssistantUUID
+    if (
+      typeof toolUseId !== 'string' ||
+      typeof sourceUuid !== 'string' ||
+      toolCalls.get(toolUseId) !== sourceUuid
+    ) {
+      throw new Error(
+        `Tool result has no matching assistant tool_use: ${String(toolUseId)}`,
+      )
+    }
+    if (completedToolCalls.has(toolUseId)) {
+      throw new Error(`Tool result already exists: ${toolUseId}`)
+    }
+  }
+}
+
 export class ClaudeTranscriptStore {
   private readonly sessionFile: string
   private readonly lockFile: string
@@ -191,6 +263,7 @@ export class ClaudeTranscriptStore {
       if (!tailsMatch(current.tail, expectedTail)) {
         return { status: 'conflict', reason: 'tail-changed' }
       }
+      validateToolPairing(current.entries, entry)
       if (!current.tail.newlineTerminated) {
         throw new Error('Claude transcript is not newline-terminated')
       }

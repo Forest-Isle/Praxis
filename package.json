@@ -16,7 +16,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:compat": "npm run build && node scripts/verify-claude-compatibility.mjs",
+    "test:compat": "npm run build && node scripts/verify-claude-compatibility.mjs && node scripts/verify-claude-advanced-fixtures.mjs",
     "test:shared-compat": "npm run build && node scripts/verify-claude-shared-resources.mjs",
     "typecheck": "tsc --noEmit"
   },

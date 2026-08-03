@@ -118,6 +118,31 @@ describe('ClaudeTranscriptStore', () => {
     ).rejects.toThrow('parentUuid does not match transcript tail')
   })
 
+  it('refuses a tool result without its matching assistant tool call', async () => {
+    const { store } = await createStore()
+    const snapshot = await store.load()
+
+    await expect(
+      store.append(snapshot.tail, {
+        ...firstEntry(snapshot),
+        uuid: '55555555-5555-4555-8555-555555555555',
+        parentUuid: snapshot.tail.lastUuid,
+        sourceToolAssistantUUID: snapshot.tail.lastUuid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_missing',
+              content: 'unexpected',
+              is_error: false,
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow('no matching assistant tool_use')
+  })
+
   it('honors a Praxis advisory lock', async () => {
     const { lockFile, store } = await createStore()
     const snapshot = await store.load()

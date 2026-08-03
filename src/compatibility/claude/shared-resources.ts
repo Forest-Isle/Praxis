@@ -1,5 +1,5 @@
-import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readdir, readFile, stat } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 
 import { sanitizeClaudeProjectPath } from './paths.js'
 
@@ -19,7 +19,7 @@ export interface ClaudeJsonResource {
 
 export interface ClaudeSharedResources {
   instructions: ClaudeTextResource[]
-  memory: ClaudeTextResource | null
+  memory: ClaudeTextResource[]
   skills: ClaudeTextResource[]
   commands: ClaudeTextResource[]
   agents: ClaudeTextResource[]
@@ -94,6 +94,67 @@ async function loadFiles(
   )
 }
 
+async function loadScopedFiles(
+  userDirectory: string,
+  projectDirectories: readonly string[],
+  matches: (name: string) => boolean,
+): Promise<ClaudeTextResource[]> {
+  const [userPaths, projectPathGroups] = await Promise.all([
+    findFiles(userDirectory, matches),
+    Promise.all(projectDirectories.map((path) => findFiles(path, matches))),
+  ])
+  const projectPaths = projectPathGroups.flat()
+  const [userResources, projectResources] = await Promise.all([
+    loadFiles(userPaths, 'user'),
+    loadFiles(projectPaths, 'project'),
+  ])
+  return [...userResources, ...projectResources]
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
+async function findProjectDirectories(cwd: string): Promise<string[]> {
+  const resolvedCwd = resolve(cwd)
+  const directories = [resolvedCwd]
+  let current = resolvedCwd
+
+  while (!(await exists(join(current, '.git')))) {
+    const parent = dirname(current)
+    if (parent === current) return [resolvedCwd]
+    directories.push(parent)
+    current = parent
+  }
+
+  return directories.reverse()
+}
+
+async function loadProjectInstructions(
+  projectDirectories: readonly string[],
+): Promise<ClaudeTextResource[]> {
+  const resourceGroups = await Promise.all(
+    projectDirectories.map(async (directory) => {
+      const claudeRoot = join(directory, '.claude')
+      const [rootInstruction, dotInstruction, rulePaths] = await Promise.all([
+        readOptionalText(join(directory, 'CLAUDE.md'), 'project'),
+        readOptionalText(join(claudeRoot, 'CLAUDE.md'), 'project'),
+        findFiles(join(claudeRoot, 'rules'), (name) => name.endsWith('.md')),
+      ])
+      const rules = await loadFiles(rulePaths, 'project')
+      return [rootInstruction, dotInstruction, ...rules].filter(present)
+    }),
+  )
+
+  return resourceGroups.flat()
+}
+
 function present<T>(value: T | null): value is T {
   return value !== null
 }
@@ -102,46 +163,46 @@ export async function loadClaudeSharedResources({
   configRoot,
   cwd,
 }: LoadClaudeSharedResourcesOptions): Promise<ClaudeSharedResources> {
+  const projectDirectories = await findProjectDirectories(cwd)
   const projectClaudeRoot = join(cwd, '.claude')
-  const memoryPath = join(
+  const projectMemoryDirectory = join(
     configRoot,
     'projects',
-    sanitizeClaudeProjectPath(cwd),
+    sanitizeClaudeProjectPath(projectDirectories[0] ?? resolve(cwd)),
     'memory',
-    'MEMORY.md',
   )
 
   const [
     globalInstruction,
-    projectInstruction,
-    dotInstruction,
-    rulePaths,
+    projectInstructions,
     memory,
-    globalSkillPaths,
-    projectSkillPaths,
-    globalCommandPaths,
-    projectCommandPaths,
-    globalAgentPaths,
-    projectAgentPaths,
+    skills,
+    commands,
+    agents,
     userSettings,
     projectSettings,
     localSettings,
     mcp,
   ] = await Promise.all([
     readOptionalText(join(configRoot, 'CLAUDE.md'), 'user'),
-    readOptionalText(join(cwd, 'CLAUDE.md'), 'project'),
-    readOptionalText(join(projectClaudeRoot, 'CLAUDE.md'), 'project'),
-    findFiles(join(projectClaudeRoot, 'rules'), (name) => name.endsWith('.md')),
-    readOptionalText(memoryPath, 'project'),
-    findFiles(join(configRoot, 'skills'), (name) => name === 'SKILL.md'),
-    findFiles(join(projectClaudeRoot, 'skills'), (name) => name === 'SKILL.md'),
-    findFiles(join(configRoot, 'commands'), (name) => name.endsWith('.md')),
-    findFiles(join(projectClaudeRoot, 'commands'), (name) =>
-      name.endsWith('.md'),
+    loadProjectInstructions(projectDirectories),
+    findFiles(projectMemoryDirectory, (name) => name.endsWith('.md')).then(
+      (paths) => loadFiles(paths, 'project'),
     ),
-    findFiles(join(configRoot, 'agents'), (name) => name.endsWith('.md')),
-    findFiles(join(projectClaudeRoot, 'agents'), (name) =>
-      name.endsWith('.md'),
+    loadScopedFiles(
+      join(configRoot, 'skills'),
+      projectDirectories.map((path) => join(path, '.claude', 'skills')),
+      (name) => name === 'SKILL.md',
+    ),
+    loadScopedFiles(
+      join(configRoot, 'commands'),
+      projectDirectories.map((path) => join(path, '.claude', 'commands')),
+      (name) => name.endsWith('.md'),
+    ),
+    loadScopedFiles(
+      join(configRoot, 'agents'),
+      projectDirectories.map((path) => join(path, '.claude', 'agents')),
+      (name) => name.endsWith('.md'),
     ),
     readOptionalJson(join(configRoot, 'settings.json'), 'user'),
     readOptionalJson(join(projectClaudeRoot, 'settings.json'), 'project'),
@@ -149,30 +210,12 @@ export async function loadClaudeSharedResources({
     readOptionalJson(join(cwd, '.mcp.json'), 'project'),
   ])
 
-  const [rules, globalSkills, projectSkills, globalCommands, projectCommands] =
-    await Promise.all([
-      loadFiles(rulePaths, 'project'),
-      loadFiles(globalSkillPaths, 'user'),
-      loadFiles(projectSkillPaths, 'project'),
-      loadFiles(globalCommandPaths, 'user'),
-      loadFiles(projectCommandPaths, 'project'),
-    ])
-  const [globalAgents, projectAgents] = await Promise.all([
-    loadFiles(globalAgentPaths, 'user'),
-    loadFiles(projectAgentPaths, 'project'),
-  ])
-
   return {
-    instructions: [
-      globalInstruction,
-      projectInstruction,
-      dotInstruction,
-      ...rules,
-    ].filter(present),
+    instructions: [globalInstruction, ...projectInstructions].filter(present),
     memory,
-    skills: [...globalSkills, ...projectSkills],
-    commands: [...globalCommands, ...projectCommands],
-    agents: [...globalAgents, ...projectAgents],
+    skills,
+    commands,
+    agents,
     settings: [userSettings, projectSettings, localSettings].filter(present),
     mcp,
   }

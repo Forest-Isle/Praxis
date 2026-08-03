@@ -15,6 +15,9 @@ Status: complete for Claude Code 2.1.208.
 - [x] Praxis-created → Claude discovery/resume probe
 - [x] shared instructions/memory/skill/hook/MCP black-box matrix
 - [x] schema fixtures for compaction, sidechains, images, interruption, and errors
+- [x] git-root-to-cwd resource hierarchy and root-keyed memory discovery
+- [x] strict append version/content/tool-result pairing validation
+- [x] real Claude reopen oracle for advanced fixtures and subagent layout
 
 Exit gate passed against installed Claude Code 2.1.208 in isolated config
 directories. Unknown versions stay read-only; each new Claude release must pass

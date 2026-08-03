@@ -37,11 +37,80 @@ function serializeEntry(entry: ClaudeTranscriptEntry): string {
   return JSON.stringify(entry)
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function validateUserContent(content: unknown): void {
+  if (typeof content === 'string') return
+  if (!Array.isArray(content) || content.length === 0) {
+    throw new Error('Claude transcript user message has invalid content')
+  }
+
+  for (const block of content) {
+    if (!isRecord(block)) {
+      throw new Error('Claude transcript has invalid user content block')
+    }
+    if (block.type === 'text' && typeof block.text === 'string') continue
+    if (
+      block.type === 'tool_result' &&
+      isNonEmptyString(block.tool_use_id) &&
+      typeof block.content === 'string' &&
+      (block.is_error === undefined || typeof block.is_error === 'boolean')
+    ) {
+      continue
+    }
+    throw new Error('Claude transcript has invalid user content block')
+  }
+}
+
+function validateAssistantMessage(message: Record<string, unknown>): void {
+  if (
+    message.type !== 'message' ||
+    !isNonEmptyString(message.id) ||
+    !isNonEmptyString(message.model) ||
+    !Array.isArray(message.content) ||
+    message.content.length === 0
+  ) {
+    throw new Error('Claude transcript has invalid assistant message')
+  }
+
+  for (const block of message.content) {
+    if (!isRecord(block)) {
+      throw new Error('Claude transcript has invalid assistant content block')
+    }
+    if (block.type === 'text' && typeof block.text === 'string') continue
+    if (block.type === 'tool_use') {
+      if (
+        !isNonEmptyString(block.id) ||
+        !isNonEmptyString(block.name) ||
+        !isRecord(block.input)
+      ) {
+        throw new Error(
+          'Claude transcript has invalid assistant tool_use block',
+        )
+      }
+      continue
+    }
+    throw new Error('Claude transcript has invalid assistant content block')
+  }
+}
+
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   for (const field of ['uuid', 'sessionId', 'timestamp', 'cwd', 'version']) {
     if (typeof entry[field] !== 'string' || entry[field].length === 0) {
       throw new Error(`Claude transcript entry is missing ${field}`)
     }
+  }
+
+  if (entry.version !== SUPPORTED_VERSION) {
+    throw new Error(
+      `Claude transcript append must target Claude Code ${SUPPORTED_VERSION}`,
+    )
   }
 
   if (
@@ -50,15 +119,11 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   ) {
     throw new Error('Claude transcript entry has invalid parentUuid')
   }
-  if (
-    typeof entry.message !== 'object' ||
-    entry.message === null ||
-    Array.isArray(entry.message)
-  ) {
+  if (!isRecord(entry.message)) {
     throw new Error('Claude transcript entry is missing message')
   }
 
-  const role = (entry.message as Record<string, unknown>).role
+  const role = entry.message.role
   if (role !== entry.type) {
     throw new Error('Claude transcript message role does not match entry type')
   }
@@ -74,6 +139,12 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   }
   if (JSON.stringify(entry.message).includes('"type":"image"')) {
     throw new Error('Praxis cannot append Claude image results yet')
+  }
+
+  if (entry.type === 'user') {
+    validateUserContent(entry.message.content)
+  } else {
+    validateAssistantMessage(entry.message)
   }
 }
 

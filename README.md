@@ -10,10 +10,10 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 0 compatibility kernel in progress. Claude 2.1.208 path mapping,
-versioned JSONL parsing, provider translation, and concurrent-write protection
-are implemented; broad agent runtime remains behind compatibility black-box
-gates.
+Sprint 0 compatibility kernel complete for Claude Code 2.1.208. Bidirectional
+resume, versioned JSONL validation, concurrent-write protection, nested shared
+resources, and advanced transcript fixtures pass isolated black-box probes.
+Broad agent runtime has not started.
 
 ## Product boundary
 

@@ -13,7 +13,7 @@ const fixtureUrl = new URL(
 )
 const advancedFixtureUrls = [
   'compact-session.jsonl',
-  'sidechain-session.jsonl',
+  'sidechain-layout/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/subagents/agent-fixture.jsonl',
   'media-error-session.jsonl',
   'interrupted-session.jsonl',
 ].map(
@@ -53,6 +53,13 @@ describe('ClaudeSchemaAdapter', () => {
     expect(() => adapter.serializeForAppend({ type: 'user' })).toThrow(
       'missing uuid',
     )
+
+    expect(() =>
+      adapter.serializeForAppend({
+        ...adapter.parse(userLine ?? ''),
+        version: '2.1.209',
+      }),
+    ).toThrow('must target Claude Code 2.1.208')
   })
 
   it('falls back to read-only parsing for unknown Claude versions', () => {
@@ -64,6 +71,30 @@ describe('ClaudeSchemaAdapter', () => {
     expect(() => adapter.serializeForAppend(entry)).toThrow(
       'Unsupported Claude Code transcript version',
     )
+  })
+
+  it('rejects malformed message content before append', async () => {
+    const source = await readFile(fixtureUrl, 'utf8')
+    const [userLine, assistantLine] = source.trimEnd().split('\n')
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+    const user = adapter.parse(userLine ?? '')
+    const assistant = adapter.parse(assistantLine ?? '')
+
+    expect(() =>
+      adapter.serializeForAppend({
+        ...user,
+        message: { role: 'user', content: [{ type: 'text' }] },
+      }),
+    ).toThrow('invalid user content block')
+    expect(() =>
+      adapter.serializeForAppend({
+        ...assistant,
+        message: {
+          ...(assistant.message as Record<string, unknown>),
+          content: [{ type: 'tool_use', id: '', name: 'Bash', input: {} }],
+        },
+      }),
+    ).toThrow('invalid assistant tool_use block')
   })
 
   it('rejects malformed transcript lines', () => {

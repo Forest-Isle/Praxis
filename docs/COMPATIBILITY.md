@@ -26,8 +26,8 @@ Praxis follows the active Claude Code layout and path derivation for:
 | Config root          | `CLAUDE_CONFIG_DIR` or `~/.claude`                                               |
 | Sessions             | `<config>/projects/<project-key>/<session-id>.jsonl`                             |
 | Global instructions  | `<config>/CLAUDE.md`                                                             |
-| Project instructions | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/**/*.md`                        |
-| Auto memory          | `<config>/projects/<project-key>/memory/MEMORY.md` and linked memory files       |
+| Project instructions | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/**/*.md` from git root to cwd   |
+| Auto memory          | `<config>/projects/<git-root-key>/memory/**/*.md`                                |
 | Global skills        | `<config>/skills/`                                                               |
 | Project skills       | `.claude/skills/`                                                                |
 | Commands             | `<config>/commands/`, `.claude/commands/`                                        |
@@ -134,9 +134,11 @@ Support policy:
 
 Current write scope is deliberately smaller than read scope. Praxis reads any
 well-formed native entry as opaque data, but only appends validated `user` and
-`assistant` conversational entries. Summary, sidechain, attachment, image, and
-other entry writers remain disabled until their runtime implementations and
-write/resume probes pass.
+`assistant` conversational entries for the selected adapter version. Message
+content blocks are validated before append, and every `tool_result` must match
+the historical `tool_use` plus `sourceToolAssistantUUID`. Summary, sidechain,
+attachment, image, and other entry writers remain disabled until their runtime
+implementations and write/resume probes pass.
 
 Claude 2.1.208 read fixtures now cover text, tool use/results, manual
 compaction, subagent sidechains, image results, non-zero tool errors, and user
@@ -172,8 +174,10 @@ Tests run against isolated temporary `CLAUDE_CONFIG_DIR` directories and a
 version matrix of installed Claude Code releases.
 
 For 2.1.208, `npm run test:compat` proves transcript creation/resume in both
-directions, including a Praxis-written tool chain. `npm run
-test:shared-compat` proves Claude and Praxis observe the same instructions,
+directions, including a Praxis-written tool chain. It also reopens captured
+compaction, image/error, and interruption fixtures and verifies native subagent
+layout beside a resumable main session. `npm run test:shared-compat` proves
+Claude and Praxis observe the same nested-project instructions, root-keyed
 memory, skill, hook, MCP, command, agent, and settings fixtures without copying
 or synchronization.
 
