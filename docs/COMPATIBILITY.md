@@ -225,6 +225,9 @@ in both Claude→Praxis and Praxis→Claude directions.
 PreToolUse input/permission changes, native success/error/context attachments,
 exit-code-2 blocking, non-persisted SessionEnd output, Praxis built-CLI
 execution, and Claude resume of the Praxis-written hook transcript.
+`npm run test:mcp-compat` proves Claude and Praxis share user/project-local
+precedence, then exercises Praxis stdio and Streamable HTTP discovery, tool
+calls, permission flow, and stdio subprocess cleanup through the built CLI.
 
 ## Explicit non-goals
 

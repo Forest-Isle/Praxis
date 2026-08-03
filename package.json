@@ -20,6 +20,7 @@
     "test:conditional-compat": "npm run build && node scripts/verify-conditional-rules.mjs",
     "test:extension-compat": "npm run build && node scripts/verify-extension-compatibility.mjs",
     "test:hook-compat": "npm run build && node scripts/verify-hook-compatibility.mjs",
+    "test:mcp-compat": "npm run build && node scripts/verify-mcp-compatibility.mjs",
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",
     "test:runtime-compat": "npm run build && node scripts/verify-runtime-compatibility.mjs",
@@ -30,6 +31,7 @@
     "node": ">=24"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

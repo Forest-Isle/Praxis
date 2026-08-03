@@ -47,6 +47,7 @@ export interface LoadClaudeSharedResourcesOptions {
   configRoot: string
   cwd: string
   homeDirectory?: string
+  claudeStatePath?: string
 }
 
 async function readOptionalText(
@@ -325,14 +326,54 @@ export async function loadClaudeSettings({
 }
 
 async function loadProjectMcp(
+  statePath: string,
   projectDirectories: readonly string[],
+  projectIdentity: string,
 ): Promise<ClaudeJsonResource[]> {
-  const resources = await Promise.all(
-    projectDirectories.map((directory) =>
-      readOptionalJson(join(directory, '.mcp.json'), 'project'),
+  const [state, projectResources] = await Promise.all([
+    readOptionalJson(statePath, 'user'),
+    Promise.all(
+      projectDirectories.map((directory) =>
+        readOptionalJson(join(directory, '.mcp.json'), 'project'),
+      ),
     ),
-  )
-  return resources.filter(present)
+  ])
+  const stateValue = isRecord(state?.value) ? state.value : null
+  const userServers = isRecord(stateValue?.mcpServers)
+    ? stateValue.mcpServers
+    : null
+  const projects = isRecord(stateValue?.projects) ? stateValue.projects : null
+  const localProject = isRecord(projects?.[projectIdentity])
+    ? projects[projectIdentity]
+    : null
+  const localServers = isRecord(localProject?.mcpServers)
+    ? localProject.mcpServers
+    : null
+  return [
+    ...(state && userServers
+      ? [
+          {
+            path: state.path,
+            scope: 'user' as const,
+            value: { mcpServers: userServers },
+          },
+        ]
+      : []),
+    ...projectResources.filter(present),
+    ...(state && localServers
+      ? [
+          {
+            path: state.path,
+            scope: 'local' as const,
+            value: { mcpServers: localServers },
+          },
+        ]
+      : []),
+  ]
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 interface ProjectResourceGroup<Rules> {
@@ -474,6 +515,7 @@ export async function loadClaudeSharedResources({
   configRoot,
   cwd,
   homeDirectory = homedir(),
+  claudeStatePath = join(configRoot, '.claude.json'),
 }: LoadClaudeSharedResourcesOptions): Promise<ClaudeSharedResources> {
   const {
     directories: projectDirectories,
@@ -520,7 +562,7 @@ export async function loadClaudeSharedResources({
       (name) => name.endsWith('.md'),
     ),
     loadClaudeSettings({ configRoot, cwd }),
-    loadProjectMcp(projectDirectories),
+    loadProjectMcp(claudeStatePath, projectDirectories, memoryIdentityRoot),
   ])
 
   return {

@@ -37,6 +37,9 @@ Rules:
    runs during successful or cancelled teardown without persisting output,
    matching Claude 2.1.208. Its teardown failure emits a warning without
    replacing the completed result or primary runtime error.
+9. Shared MCP tools use the same permission, hook, cancellation, observation,
+   and transcript path as local tools. Client transports close at turn end;
+   an unavailable server warns and does not hide healthy servers.
 
 ## Core ports
 

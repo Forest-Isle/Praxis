@@ -52,6 +52,12 @@ attachments before SessionEnd use the Claude 2.1.208 transcript profile and
 survive bidirectional resume; SessionEnd executes after `last-prompt` without
 writing its output to the transcript.
 
+MCP servers load from Claude's shared user, project, and project-local config
+with local-over-project-over-user precedence. Stdio, Streamable HTTP, and
+legacy SSE servers expose `mcp__<server>__<tool>` definitions through the same
+permission and hook pipeline as built-in tools. Unavailable servers emit a
+warning; connected clients and stdio subprocesses close after each CLI turn.
+
 ## Product boundary
 
 - CLI-only, including interactive and structured non-interactive output
@@ -118,6 +124,7 @@ npm run test:conditional-compat
 npm run test:context-compat
 npm run test:extension-compat
 npm run test:hook-compat
+npm run test:mcp-compat
 npm run test:permission-compat
 npm run test:runtime-compat
 npm run test:shared-compat

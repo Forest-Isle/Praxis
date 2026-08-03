@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import {
   ClaudeSessionService,
@@ -29,6 +29,7 @@ import {
 } from './extensions/claude-extension-tools.js'
 import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
 import { ClaudeHookRunner } from './hooks/claude-hooks.js'
+import { ClaudeMcpToolRegistry } from './mcp/claude-mcp-tools.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
@@ -72,6 +73,7 @@ export interface CliDependencies {
     requireProvider: boolean
     approveRecovery: boolean
     agent?: string
+    signal?: AbortSignal
   }): Promise<SessionCommands>
 }
 
@@ -81,12 +83,20 @@ const consoleIO: CliIO = {
 }
 
 const defaultDependencies: CliDependencies = {
-  async createService({ eventSink, requireProvider, approveRecovery, agent }) {
+  async createService({
+    eventSink,
+    requireProvider,
+    approveRecovery,
+    agent,
+    signal,
+  }) {
     const claudeVersion = await detectInstalledClaudeVersion()
     const cwd = process.cwd()
-    const configRoot = resolve(
-      process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
-    )
+    const configuredRoot = process.env.CLAUDE_CONFIG_DIR
+    const configRoot = resolve(configuredRoot ?? resolve(homedir(), '.claude'))
+    const claudeStatePath = configuredRoot
+      ? join(configRoot, '.claude.json')
+      : resolve(homedir(), '.claude.json')
     let provider
     if (requireProvider) {
       const apiKey = process.env.PRAXIS_API_KEY
@@ -110,21 +120,28 @@ const defaultDependencies: CliDependencies = {
     if (!provider) return new ClaudeSessionService(options)
 
     const settings = await loadClaudeSettings({ configRoot, cwd })
-    const extensions = new ClaudeExtensionCatalog(
-      await loadClaudeSharedResources({ configRoot, cwd }),
-    )
+    const resources = await loadClaudeSharedResources({
+      configRoot,
+      cwd,
+      claudeStatePath,
+    })
+    const extensions = new ClaudeExtensionCatalog(resources)
     const loadContextResources = () =>
       loadClaudeContextResources({ configRoot, cwd })
     const permissions = new ClaudeExtensionPermissionResolver(
       new ClaudePermissionResolver({ cwd, settings }),
     )
-    return new ClaudeSessionService({
+    const mcpTools = await ClaudeMcpToolRegistry.connect({
+      base: new LocalToolRegistry({ cwd }),
+      resources: resources.mcp,
+      cwd,
+      onWarning: (message) => eventSink({ type: 'warning', message }),
+      ...(signal ? { signal } : {}),
+    })
+    const service = new ClaudeSessionService({
       ...options,
       provider,
-      tools: new ClaudeExtensionToolRegistry(
-        new LocalToolRegistry({ cwd }),
-        extensions,
-      ),
+      tools: new ClaudeExtensionToolRegistry(mcpTools, extensions),
       permissions,
       extensions,
       hooks: new ClaudeHookRunner({ settings, cwd }),
@@ -137,6 +154,16 @@ const defaultDependencies: CliDependencies = {
       }),
       ...(approveRecovery ? { approveRecovery: () => true } : {}),
     })
+    return {
+      run: (prompt, signal) =>
+        service.run(prompt, signal).finally(() => mcpTools.close()),
+      resume: (sessionId, prompt, signal) =>
+        service
+          .resume(sessionId, prompt, signal)
+          .finally(() => mcpTools.close()),
+      fork: (sessionId) => service.fork(sessionId),
+      sessions: () => service.sessions(),
+    }
   },
 }
 
@@ -218,6 +245,7 @@ async function execute(
     eventSink: eventSink(io, json),
     requireProvider: !['fork', 'sessions'].includes(command ?? 'run'),
     approveRecovery,
+    ...(signal ? { signal } : {}),
     ...(agent ? { agent } : {}),
   })
 
@@ -269,7 +297,11 @@ export async function run(
   try {
     return await execute(argv, io, dependencies, signal)
   } catch (error) {
-    if (error instanceof AgentRunCancelledError) {
+    if (
+      error instanceof AgentRunCancelledError ||
+      signal?.aborted ||
+      (error instanceof DOMException && error.name === 'AbortError')
+    ) {
       io.stderr('Praxis run cancelled.\n')
       return 130
     }

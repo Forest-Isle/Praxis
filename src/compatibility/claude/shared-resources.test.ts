@@ -78,6 +78,17 @@ describe('Claude shared resource discovery', () => {
         JSON.stringify({ model: 'user-model' }),
       ),
       writeFixture(
+        join(configRoot, '.claude.json'),
+        JSON.stringify({
+          mcpServers: { user_fixture: { command: 'user-node' } },
+          projects: {
+            [cwd]: {
+              mcpServers: { local_fixture: { command: 'local-node' } },
+            },
+          },
+        }),
+      ),
+      writeFixture(
         join(cwd, '.claude', 'settings.json'),
         JSON.stringify({ permissions: { allow: ['Read'] } }),
       ),
@@ -120,7 +131,14 @@ describe('Claude shared resource discovery', () => {
       { hooks: { UserPromptSubmit: [] } },
     ])
     expect(resources.mcp.map((item) => item.value)).toEqual([
+      { mcpServers: { user_fixture: { command: 'user-node' } } },
       { mcpServers: { fixture: { command: 'node' } } },
+      { mcpServers: { local_fixture: { command: 'local-node' } } },
+    ])
+    expect(resources.mcp.map((item) => item.scope)).toEqual([
+      'user',
+      'project',
+      'local',
     ])
   })
 

@@ -24,6 +24,7 @@ src/
 ├── tools/         local executable capabilities
 ├── extensions/    skills, commands, and agents
 ├── hooks/         shared hook parsing, execution, and tool coordination
+├── mcp/           shared Claude MCP config, clients, and tool adapter
 ├── persistence/   Claude-compatible JSONL and local sidecar indexes
 └── platform/      filesystem, process, keychain, and OS adapters
 ```
@@ -79,6 +80,13 @@ SessionEnd persists as native `hook_success`, `hook_error`, and
 next model turn. SessionEnd runs during teardown, after `last-prompt` on a
 successful turn and after cancellation handling on an aborted turn. Matching
 Claude Code 2.1.208, it does not append stdout or stderr to the transcript.
+
+`ClaudeMcpToolRegistry` merges user, boundary-to-cwd project, and canonical
+project-local Claude MCP sources. It delegates protocol behavior to the
+official MCP SDK, maps discovered tools to Claude's `mcp__server__tool` names,
+and wraps local tools without changing the provider-neutral runtime port.
+Stdio and HTTP clients are connected before model execution and closed after
+the run or resume turn completes.
 
 Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
 

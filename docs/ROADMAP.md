@@ -58,7 +58,7 @@ Status: in progress.
 - [x] path-conditional rule activation through native resumable attachments
 - [x] skills, commands, and agent definitions
 - [x] command hooks across session, prompt, permission, tool, stop, and end events
-- [ ] remaining user/local MCP compatible sources
+- [x] user/project/local MCP sources, stdio/HTTP discovery, calls, and lifecycle
 - [ ] context budgeting and version-supported compaction
 
 Exit gate: shared-data black-box matrix and context fidelity tests.

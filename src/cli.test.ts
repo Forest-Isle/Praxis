@@ -88,6 +88,22 @@ describe('Praxis CLI', () => {
     expect(capture.stderr).toEqual(['Warning: hook failed\n'])
   })
 
+  it('normalizes startup aborts to cancellation', async () => {
+    const capture = captureIO()
+    const controller = new AbortController()
+    controller.abort()
+    const aborted: CliDependencies = {
+      async createService() {
+        throw new DOMException('aborted', 'AbortError')
+      },
+    }
+
+    await expect(
+      run(['run', 'hello'], capture.io, aborted, controller.signal),
+    ).resolves.toBe(130)
+    expect(capture.stderr).toEqual(['Praxis run cancelled.\n'])
+  })
+
   it('resumes with NDJSON runtime events and a result record', async () => {
     const capture = captureIO()
     const sessionId = '11111111-1111-4111-8111-111111111111'
