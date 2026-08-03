@@ -8,6 +8,7 @@ export interface ClaudeSchemaAdapter {
   parse(line: string): ClaudeTranscriptEntry
   serialize(entry: ClaudeTranscriptEntry): string
   serializeForAppend(entry: ClaudeTranscriptEntry): string
+  serializeForFork(entry: ClaudeTranscriptEntry): string
 }
 
 const SUPPORTED_VERSION = '2.1.208'
@@ -199,6 +200,16 @@ class ClaudeCode21208Adapter implements ClaudeSchemaAdapter {
 
     return serializeEntry(entry)
   }
+
+  serializeForFork(entry: ClaudeTranscriptEntry): string {
+    if (!APPENDABLE_ENTRY_TYPES.has(entry.type)) {
+      throw new Error(
+        `Claude transcript entry type ${entry.type} is not forkable by Praxis`,
+      )
+    }
+    validateAppendableEntry(entry)
+    return serializeEntry(entry)
+  }
 }
 
 class ReadOnlyClaudeAdapter implements ClaudeSchemaAdapter {
@@ -215,6 +226,12 @@ class ReadOnlyClaudeAdapter implements ClaudeSchemaAdapter {
   }
 
   serializeForAppend(): never {
+    throw new Error(
+      `Unsupported Claude Code transcript version ${this.version}; read-only mode`,
+    )
+  }
+
+  serializeForFork(): never {
     throw new Error(
       `Unsupported Claude Code transcript version ${this.version}; read-only mode`,
     )

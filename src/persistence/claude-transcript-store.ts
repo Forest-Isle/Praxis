@@ -59,6 +59,17 @@ export type TranscriptCreateResult =
   | { status: 'created'; tail: TranscriptTail }
   | { status: 'conflict'; reason: 'already-exists' }
 
+export interface ClaudeTranscriptLease {
+  load(): Promise<TranscriptSnapshot>
+  append(
+    expectedTail: TranscriptTail,
+    entry: ClaudeTranscriptEntry,
+  ): Promise<TranscriptAppendResult>
+}
+
+export type TranscriptLeaseResult<T> =
+  { status: 'completed'; value: T } | { status: 'conflict'; reason: 'locked' }
+
 export interface ClaudeTranscriptStoreOptions {
   sessionFile: string
   lockFile: string
@@ -256,7 +267,7 @@ export class ClaudeTranscriptStore {
     if (entries.length === 0) {
       throw new Error('Cannot create an empty Claude transcript')
     }
-    const source = `${entries.map((entry) => this.schema.serialize(entry)).join('\n')}\n`
+    const source = `${entries.map((entry) => this.schema.serializeForFork(entry)).join('\n')}\n`
     await mkdir(dirname(this.sessionFile), { recursive: true })
 
     let sessionHandle
@@ -278,7 +289,47 @@ export class ClaudeTranscriptStore {
     return { status: 'created', tail: (await this.load()).tail }
   }
 
+  async withLease<T>(
+    operation: (lease: ClaudeTranscriptLease) => Promise<T>,
+  ): Promise<TranscriptLeaseResult<T>> {
+    await mkdir(dirname(this.lockFile), { recursive: true })
+
+    let lockHandle
+    try {
+      lockHandle = await open(this.lockFile, 'wx')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        return { status: 'conflict', reason: 'locked' }
+      }
+      throw error
+    }
+
+    try {
+      const value = await operation({
+        load: () => this.load(),
+        append: (expectedTail, entry) =>
+          this.appendUnderLease(expectedTail, entry),
+      })
+      return { status: 'completed', value }
+    } finally {
+      await lockHandle.close()
+      await rm(this.lockFile)
+    }
+  }
+
   async append(
+    expectedTail: TranscriptTail,
+    entry: ClaudeTranscriptEntry,
+  ): Promise<TranscriptAppendResult> {
+    const result = await this.withLease((lease) =>
+      lease.append(expectedTail, entry),
+    )
+    return result.status === 'completed'
+      ? result.value
+      : { status: 'conflict', reason: result.reason }
+  }
+
+  private async appendUnderLease(
     expectedTail: TranscriptTail,
     entry: ClaudeTranscriptEntry,
   ): Promise<TranscriptAppendResult> {
@@ -295,59 +346,42 @@ export class ClaudeTranscriptStore {
       }
     }
 
-    await mkdir(dirname(this.lockFile), { recursive: true })
-
-    let lockHandle
-    try {
-      lockHandle = await open(this.lockFile, 'wx')
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        return { status: 'conflict', reason: 'locked' }
-      }
-      throw error
+    const current = await this.load()
+    if (!tailsMatch(current.tail, expectedTail)) {
+      return { status: 'conflict', reason: 'tail-changed' }
+    }
+    validateLastPromptLeaf(current.entries, entry)
+    validateToolPairing(current.entries, entry)
+    if (!current.tail.newlineTerminated) {
+      throw new Error('Claude transcript is not newline-terminated')
     }
 
+    const line = this.schema.serializeForAppend(entry)
+    const encodedLine = Buffer.from(`${line}\n`)
+    await mkdir(dirname(this.sessionFile), { recursive: true })
+    const sessionHandle = await open(this.sessionFile, 'a')
     try {
-      const current = await this.load()
-      if (!tailsMatch(current.tail, expectedTail)) {
+      const file = await sessionHandle.stat()
+      if (file.size !== expectedTail.byteLength) {
         return { status: 'conflict', reason: 'tail-changed' }
       }
-      validateLastPromptLeaf(current.entries, entry)
-      validateToolPairing(current.entries, entry)
-      if (!current.tail.newlineTerminated) {
-        throw new Error('Claude transcript is not newline-terminated')
-      }
-
-      const line = this.schema.serializeForAppend(entry)
-      const encodedLine = Buffer.from(`${line}\n`)
-      await mkdir(dirname(this.sessionFile), { recursive: true })
-      const sessionHandle = await open(this.sessionFile, 'a')
-      try {
-        const file = await sessionHandle.stat()
-        if (file.size !== expectedTail.byteLength) {
-          return { status: 'conflict', reason: 'tail-changed' }
-        }
-        await sessionHandle.writeFile(encodedLine)
-        await sessionHandle.sync()
-      } finally {
-        await sessionHandle.close()
-      }
-
-      const written = await readFile(this.sessionFile)
-      if (
-        classifyTranscriptAppend(
-          written,
-          expectedTail.byteLength,
-          encodedLine,
-        ) === 'interleaved-write'
-      ) {
-        return { status: 'conflict', reason: 'interleaved-write' }
-      }
-
-      return { status: 'appended', tail: (await this.load()).tail }
+      await sessionHandle.writeFile(encodedLine)
+      await sessionHandle.sync()
     } finally {
-      await lockHandle.close()
-      await rm(this.lockFile)
+      await sessionHandle.close()
     }
+
+    const written = await readFile(this.sessionFile)
+    if (
+      classifyTranscriptAppend(
+        written,
+        expectedTail.byteLength,
+        encodedLine,
+      ) === 'interleaved-write'
+    ) {
+      return { status: 'conflict', reason: 'interleaved-write' }
+    }
+
+    return { status: 'appended', tail: (await this.load()).tail }
   }
 }

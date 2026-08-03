@@ -16,6 +16,11 @@ OpenAI-compatible streaming provider. Cancellation, retry classification,
 usage accounting, JSON output, and bidirectional Claude Code 2.1.208 resume
 pass isolated probes.
 
+Each run or resume holds one session lease through model completion and final
+persistence. Sprint 1 forks intentionally rebuild only visible user/assistant
+text through the validated Claude writer; provider reasoning, queue operations,
+tools, images, and compaction metadata are not copied into a text-only fork.
+
 ## Product boundary
 
 - CLI-only, including interactive and structured non-interactive output

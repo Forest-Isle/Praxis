@@ -13,10 +13,18 @@ function fixtureProvider(responses) {
   return {
     model: 'praxis/fixture',
     capabilities: { streaming: true, usage: true },
-    async *complete() {
-      const text = responses.shift()
-      if (!text) throw new Error('Runtime provider fixture exhausted')
-      yield { type: 'text-delta', delta: text }
+    async *complete(request) {
+      const response = responses.shift()
+      if (!response) throw new Error('Runtime provider fixture exhausted')
+      if (
+        response.expectedHistory &&
+        !request.messages.some((message) =>
+          message.content.includes(response.expectedHistory),
+        )
+      ) {
+        throw new Error('Claude history did not reach the Praxis provider')
+      }
+      yield { type: 'text-delta', delta: response.text }
       yield {
         type: 'usage',
         usage: { inputTokens: 1, outputTokens: 1 },
@@ -74,7 +82,13 @@ try {
     configRoot,
     cwd,
     claudeVersion,
-    provider: fixtureProvider([praxisCreatedMarker, praxisResumedMarker]),
+    provider: fixtureProvider([
+      { text: praxisCreatedMarker },
+      {
+        text: praxisResumedMarker,
+        expectedHistory: claudeOriginMarker,
+      },
+    ]),
   })
 
   const praxisCreated = await service.run(

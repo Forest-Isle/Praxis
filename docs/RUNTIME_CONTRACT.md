@@ -68,6 +68,11 @@ state, and indexes remain disposable sidecars. A crash may leave a completed
 tool call without its result; resume must surface that state and recover or ask,
 never invent a result.
 
+Sprint 1 fork is text-only: it projects visible user/assistant text and creates
+a new validated UUID/parent chain. It does not copy provider reasoning, queue
+operations, tool state, images, sidechains, or compaction metadata. Later fork
+profiles require their own versioned writer and Claude reopen probe.
+
 ## Error contract
 
 - Unsupported Claude schema: read-only session, no shared writes.

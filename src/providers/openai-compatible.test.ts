@@ -67,4 +67,62 @@ describe('OpenAICompatibleProvider', () => {
     expect(failure).toBeInstanceOf(ModelProviderError)
     expect(failure).toMatchObject({ retryable: true, status: 429 })
   })
+
+  it('parses CRLF-framed SSE split across transport chunks', async () => {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode('data: {"choices":[{"delta":{"content":"ok"}}]}\r'),
+        )
+        controller.enqueue(encoder.encode('\n\r'))
+        controller.enqueue(encoder.encode('\ndata: [DONE]\r\n\r\n'))
+        controller.close()
+      },
+    })
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () => new Response(body),
+    })
+
+    const events = []
+    for await (const event of provider.complete({ messages: [] })) {
+      events.push(event)
+    }
+    expect(events).toEqual([{ type: 'text-delta', delta: 'ok' }])
+  })
+
+  it.each([
+    ['connection', async () => Promise.reject(new TypeError('offline'))],
+    [
+      'stream',
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new TypeError('disconnected'))
+            },
+          }),
+        ),
+    ],
+  ])(
+    'classifies %s transport failures as retryable',
+    async (_name, fetcher) => {
+      const provider = new OpenAICompatibleProvider({
+        baseUrl: 'https://provider.example/v1',
+        apiKey: 'secret',
+        model: 'fixture-model',
+        fetchImplementation: fetcher,
+      })
+
+      const stream = provider.complete({ messages: [] })
+      const next = stream[Symbol.asyncIterator]().next()
+      await expect(next).rejects.toMatchObject({
+        name: 'ModelProviderError',
+        retryable: true,
+      })
+    },
+  )
 })

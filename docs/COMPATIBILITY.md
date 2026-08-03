@@ -159,6 +159,10 @@ must match the historical `tool_use` plus `sourceToolAssistantUUID`. Summary,
 sidechain, attachment, image, and other entry writers remain disabled until
 their runtime implementations and write/resume probes pass.
 
+Sprint 1 text forks create a new transcript from projected user/assistant text
+using the validated writer. They do not clone opaque native entries or bypass
+the active version adapter.
+
 Claude 2.1.208 read fixtures now cover text, tool use/results, manual
 compaction, subagent sidechains, image results, non-zero tool errors, and user
 interruption. Passing a read fixture does not enable its writer: compact

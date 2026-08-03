@@ -120,4 +120,44 @@ describe('ClaudeSessionService', () => {
       expect.objectContaining({ lastPrompt: null }),
     ])
   })
+
+  it('holds one session lease for the complete model turn', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const origin = await service.run('origin')
+    let announceStarted: (() => void) | undefined
+    let releaseProvider: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      announceStarted = resolve
+    })
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve
+    })
+    const firstWriter = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true },
+        async *complete() {
+          announceStarted?.()
+          await providerGate
+          yield { type: 'text-delta', delta: 'finished' }
+        },
+      },
+    })
+    const competingWriter = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+    })
+
+    const activeTurn = firstWriter.resume(origin.sessionId, 'first writer')
+    await started
+    await expect(
+      competingWriter.resume(origin.sessionId, 'second writer'),
+    ).rejects.toThrow('conflict: locked')
+    releaseProvider?.()
+    await expect(activeTurn).resolves.toMatchObject({ text: 'finished' })
+  })
 })

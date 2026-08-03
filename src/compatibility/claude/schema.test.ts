@@ -56,6 +56,9 @@ describe('ClaudeSchemaAdapter', () => {
     expect(
       adapter.serializeForAppend(adapter.parse(lastPromptLine ?? '')),
     ).toBe(lastPromptLine)
+    expect(adapter.serializeForFork(adapter.parse(userLine ?? ''))).toBe(
+      userLine,
+    )
     expect(() =>
       adapter.serializeForAppend({
         type: 'last-prompt',
@@ -172,6 +175,9 @@ describe('ClaudeSchemaAdapter', () => {
     }
 
     expect(() => adapter.serializeForAppend(compactSummary)).toThrow(
+      'compact summaries',
+    )
+    expect(() => adapter.serializeForFork(compactSummary)).toThrow(
       'compact summaries',
     )
     expect(() => adapter.serializeForAppend(sidechain)).toThrow('sidechains')

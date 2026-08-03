@@ -91,4 +91,26 @@ describe('AgentRuntime', () => {
     expect(called).toBe(false)
     expect(events.at(-1)).toEqual({ type: 'state', state: 'cancelled' })
   })
+
+  it('stops an active stream when cancellation is requested', async () => {
+    const controller = new AbortController()
+    const events: RuntimeEvent[] = []
+    const provider = providerFrom(async function* (request) {
+      expect(request.signal).toBe(controller.signal)
+      yield { type: 'text-delta', delta: 'partial' }
+      controller.abort()
+      yield { type: 'text-delta', delta: 'ignored' }
+    })
+    const runtime = new AgentRuntime(provider, (event) => events.push(event))
+
+    await expect(
+      runtime.run({
+        messages: [{ role: 'user', content: 'hello' }],
+        signal: controller.signal,
+      }),
+    ).rejects.toBeInstanceOf(AgentRunCancelledError)
+    expect(events.at(-1)).toEqual({ type: 'state', state: 'cancelled' })
+    expect(events).not.toContainEqual({ type: 'state', state: 'completed' })
+    expect(events).not.toContainEqual({ type: 'text-delta', delta: 'ignored' })
+  })
 })

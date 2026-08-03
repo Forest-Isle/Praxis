@@ -91,7 +91,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
       }),
     }
     if (request.signal) requestInit.signal = request.signal
-    const response = await this.fetchImplementation(this.endpoint, requestInit)
+    let response: Response
+    try {
+      response = await this.fetchImplementation(this.endpoint, requestInit)
+    } catch (error) {
+      if (request.signal?.aborted) throw error
+      throw new ModelProviderError('Provider transport failed', {
+        retryable: true,
+        cause: error,
+      })
+    }
 
     if (!response.ok) {
       let payload: unknown
@@ -115,28 +124,37 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const decoder = new TextDecoder()
     let buffer = ''
 
-    while (true) {
-      const { done, value } = await reader.read()
-      buffer += decoder
-        .decode(value, { stream: !done })
-        .replaceAll('\r\n', '\n')
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        buffer += decoder.decode(value, { stream: !done })
+        buffer = buffer.replaceAll('\r\n', '\n')
 
-      let boundary = buffer.indexOf('\n\n')
-      while (boundary >= 0) {
-        const block = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
-        const data = block
-          .split('\n')
-          .filter((line) => line.startsWith('data:'))
-          .map((line) => line.slice(5).trimStart())
-          .join('\n')
-        if (data.length > 0) {
-          for (const event of parseSseEvent(data)) yield event
+        let boundary = buffer.indexOf('\n\n')
+        while (boundary >= 0) {
+          const block = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+          const data = block
+            .split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart())
+            .join('\n')
+          if (data.length > 0) {
+            for (const event of parseSseEvent(data)) yield event
+          }
+          boundary = buffer.indexOf('\n\n')
         }
-        boundary = buffer.indexOf('\n\n')
-      }
 
-      if (done) break
+        if (done) break
+      }
+    } catch (error) {
+      if (error instanceof ModelProviderError || request.signal?.aborted) {
+        throw error
+      }
+      throw new ModelProviderError('Provider stream failed', {
+        retryable: true,
+        cause: error,
+      })
     }
   }
 }

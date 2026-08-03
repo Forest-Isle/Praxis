@@ -3,6 +3,11 @@ import { readdir, stat } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import { createClaudeTextFork } from '../compatibility/claude/fork.js'
+import {
+  getClaudeLastPrompt,
+  projectClaudeTextMessages,
+} from '../compatibility/claude/projection.js'
 import {
   type ClaudeTranscriptEntry,
   selectClaudeSchemaAdapter,
@@ -13,13 +18,13 @@ import {
 } from '../compatibility/claude/translation.js'
 import {
   AgentRuntime,
-  type ModelMessage,
   type ModelProvider,
   type ModelUsage,
   type RuntimeEventSink,
 } from '../core/runtime.js'
 import {
   ClaudeTranscriptStore,
+  type ClaudeTranscriptLease,
   type TranscriptSnapshot,
   type TranscriptTail,
 } from '../persistence/claude-transcript-store.js'
@@ -47,49 +52,6 @@ export interface SessionSummary {
 export interface ForkResult {
   sessionId: string
   parentSessionId: string
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function messagesFrom(
-  entries: readonly ClaudeTranscriptEntry[],
-): ModelMessage[] {
-  const messages: ModelMessage[] = []
-  for (const entry of entries) {
-    if (!isRecord(entry.message)) continue
-    const role = entry.message.role
-    if (role !== 'user' && role !== 'assistant') continue
-    const content = entry.message.content
-    if (typeof content === 'string') {
-      messages.push({ role, content })
-      continue
-    }
-    if (!Array.isArray(content)) continue
-    const text = content
-      .filter(
-        (block): block is Record<string, unknown> =>
-          isRecord(block) && block.type === 'text',
-      )
-      .map((block) => block.text)
-      .filter((value): value is string => typeof value === 'string')
-      .join('')
-    if (text.length > 0) messages.push({ role, content: text })
-  }
-  return messages
-}
-
-function lastPromptFrom(
-  entries: readonly ClaudeTranscriptEntry[],
-): string | null {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]
-    if (entry?.type === 'last-prompt' && typeof entry.lastPrompt === 'string') {
-      return entry.lastPrompt
-    }
-  }
-  return null
 }
 
 export class ClaudeSessionService {
@@ -133,7 +95,7 @@ export class ClaudeSessionService {
           ])
           return {
             sessionId,
-            lastPrompt: lastPromptFrom(snapshot.entries),
+            lastPrompt: getClaudeLastPrompt(snapshot.entries),
             updatedAt: metadata.mtime.toISOString(),
           }
         }),
@@ -145,7 +107,13 @@ export class ClaudeSessionService {
 
   async fork(parentSessionId: string): Promise<ForkResult> {
     this.assertWritable()
-    const source = await this.store(parentSessionId).load()
+    const sourceResult = await this.store(parentSessionId).withLease((lease) =>
+      lease.load(),
+    )
+    if (sourceResult.status === 'conflict') {
+      throw new Error(`Claude transcript fork conflict: ${sourceResult.reason}`)
+    }
+    const source = sourceResult.value
     if (source.entries.length === 0) {
       throw new Error(`Claude session not found: ${parentSessionId}`)
     }
@@ -153,7 +121,12 @@ export class ClaudeSessionService {
     const sessionId = randomUUID()
     const target = this.store(sessionId)
     const result = await target.create(
-      source.entries.map((entry) => ({ ...entry, sessionId })),
+      createClaudeTextFork({
+        source: source.entries,
+        sessionId,
+        cwd: this.options.cwd,
+        claudeVersion: this.options.claudeVersion,
+      }),
     )
     if (result.status === 'conflict') {
       throw new Error('Generated Claude fork session already exists')
@@ -171,56 +144,66 @@ export class ClaudeSessionService {
     if (prompt.length === 0) throw new Error('Prompt must not be empty')
 
     const store = this.store(sessionId)
-    let snapshot = await store.load()
-    if (requireExisting && snapshot.entries.length === 0) {
-      throw new Error(`Claude session not found: ${sessionId}`)
+    const leaseResult = await store.withLease(async (lease) => {
+      let snapshot = await lease.load()
+      if (requireExisting && snapshot.entries.length === 0) {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+
+      const [userEntry] = translateProviderEvents(
+        [{ type: 'user-text', text: prompt }],
+        this.translationContext(sessionId, snapshot),
+      )
+      if (!userEntry) throw new Error('Could not translate user prompt')
+      const userTail = await this.append(lease, snapshot.tail, userEntry)
+      snapshot = { entries: [...snapshot.entries, userEntry], tail: userTail }
+
+      const provider = this.provider()
+      const runtime = new AgentRuntime(provider, this.options.eventSink)
+      const runtimeRequest = {
+        messages: projectClaudeTextMessages(snapshot.entries),
+      }
+      const result = signal
+        ? await runtime.run({ ...runtimeRequest, signal })
+        : await runtime.run(runtimeRequest)
+
+      const [assistantEntry] = translateProviderEvents(
+        [
+          {
+            type: 'assistant-text',
+            text: result.text,
+            providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
+            model: provider.model ?? 'praxis/provider',
+          },
+        ],
+        this.translationContext(sessionId, snapshot),
+      )
+      if (!assistantEntry || typeof assistantEntry.uuid !== 'string') {
+        throw new Error('Could not translate assistant response')
+      }
+      const assistantTail = await this.append(
+        lease,
+        snapshot.tail,
+        assistantEntry,
+      )
+      await this.append(
+        lease,
+        assistantTail,
+        createClaudeLastPromptEntry({
+          sessionId,
+          lastPrompt: prompt,
+          leafUuid: assistantEntry.uuid,
+        }),
+      )
+
+      return { sessionId, text: result.text, usage: result.usage }
+    })
+    if (leaseResult.status === 'conflict') {
+      throw new Error(
+        `Claude transcript append conflict: ${leaseResult.reason}`,
+      )
     }
-
-    const [userEntry] = translateProviderEvents(
-      [{ type: 'user-text', text: prompt }],
-      this.translationContext(sessionId, snapshot),
-    )
-    if (!userEntry) throw new Error('Could not translate user prompt')
-    const userTail = await this.append(store, snapshot.tail, userEntry)
-    snapshot = { entries: [...snapshot.entries, userEntry], tail: userTail }
-
-    const provider = this.provider()
-    const runtime = new AgentRuntime(provider, this.options.eventSink)
-    const runtimeRequest = { messages: messagesFrom(snapshot.entries) }
-    const result = signal
-      ? await runtime.run({ ...runtimeRequest, signal })
-      : await runtime.run(runtimeRequest)
-
-    const [assistantEntry] = translateProviderEvents(
-      [
-        {
-          type: 'assistant-text',
-          text: result.text,
-          providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
-          model: provider.model ?? 'praxis/provider',
-        },
-      ],
-      this.translationContext(sessionId, snapshot),
-    )
-    if (!assistantEntry || typeof assistantEntry.uuid !== 'string') {
-      throw new Error('Could not translate assistant response')
-    }
-    const assistantTail = await this.append(
-      store,
-      snapshot.tail,
-      assistantEntry,
-    )
-    await this.append(
-      store,
-      assistantTail,
-      createClaudeLastPromptEntry({
-        sessionId,
-        lastPrompt: prompt,
-        leafUuid: assistantEntry.uuid,
-      }),
-    )
-
-    return { sessionId, text: result.text, usage: result.usage }
+    return leaseResult.value
   }
 
   private translationContext(sessionId: string, snapshot: TranscriptSnapshot) {
@@ -267,11 +250,11 @@ export class ClaudeSessionService {
   }
 
   private async append(
-    store: ClaudeTranscriptStore,
+    lease: ClaudeTranscriptLease,
     tail: TranscriptTail,
     entry: ClaudeTranscriptEntry,
   ): Promise<TranscriptTail> {
-    const result = await store.append(tail, entry)
+    const result = await lease.append(tail, entry)
     if (result.status === 'conflict') {
       throw new Error(`Claude transcript append conflict: ${result.reason}`)
     }
