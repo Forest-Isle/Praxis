@@ -117,6 +117,56 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('done')
   })
 
+  it('settles a newly-created permission prompt when cancellation races render', async () => {
+    const controller = new AbortController()
+    let approval: boolean | undefined
+    const call: ModelToolCall = {
+      id: 'call-race',
+      name: 'Bash',
+      input: { command: 'npm test' },
+    }
+    const factory: InteractiveServiceFactory = {
+      async createService({ approveTool }) {
+        return {
+          async run() {
+            const pendingApproval = approveTool?.(call)
+            controller.abort()
+            approval = await pendingApproval
+            return {
+              sessionId: 'session-1',
+              text: 'cancelled',
+              usage: { inputTokens: 0, outputTokens: 0 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        signal={controller.signal}
+      />,
+    )
+
+    await flush()
+    app.stdin.write('run tests')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(approval).toBe(false)
+  })
+
   it('selects an existing session before accepting a prompt', async () => {
     const resumed: string[] = []
     const factory: InteractiveServiceFactory = {
@@ -191,5 +241,56 @@ describe('InteractiveApp', () => {
     await flush()
 
     expect(cancelled).toBe(true)
+  })
+
+  it('exposes the active turn promise for shutdown coordination', async () => {
+    let finishTurn: (() => void) | undefined
+    let activeTurn: Promise<void> | null = null
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            await new Promise<void>((resolve) => {
+              finishTurn = resolve
+            })
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        onTurnChange={(turn) => {
+          activeTurn = turn
+        }}
+      />,
+    )
+
+    await flush()
+    app.stdin.write('wait')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(activeTurn).toBeInstanceOf(Promise)
+
+    finishTurn?.()
+    await activeTurn
+    await flush()
+    expect(activeTurn).toBeNull()
   })
 })

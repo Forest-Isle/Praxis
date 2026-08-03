@@ -40,6 +40,7 @@ interface InteractiveAppProps {
   initialSessions: readonly SessionSummary[]
   signal?: AbortSignal
   onCancel?: () => void
+  onTurnChange?: (turn: Promise<void> | null) => void
 }
 
 type HistoryLine = {
@@ -62,6 +63,7 @@ export function InteractiveApp({
   initialSessions,
   signal,
   onCancel,
+  onTurnChange,
 }: InteractiveAppProps) {
   const { exit } = useApp()
   const choices = useMemo(
@@ -82,10 +84,6 @@ export function InteractiveApp({
   const [history, setHistory] = useState<HistoryLine[]>([])
   const [permission, setPermission] = useState<PendingPermission | null>(null)
   const permissionRef = useRef<PendingPermission | null>(null)
-
-  useEffect(() => {
-    permissionRef.current = permission
-  }, [permission])
 
   useEffect(() => {
     if (!signal) return
@@ -118,8 +116,20 @@ export function InteractiveApp({
   }
 
   const approveTool = (call: ModelToolCall) =>
-    new Promise<boolean>((resolve) => {
-      setPermission({ call, resolve })
+    new Promise<boolean>((resolveApproval) => {
+      let settled = false
+      const pending: PendingPermission = {
+        call,
+        resolve: (approved) => {
+          if (settled) return
+          settled = true
+          if (permissionRef.current === pending) permissionRef.current = null
+          setPermission((current) => (current === pending ? null : current))
+          resolveApproval(approved)
+        },
+      }
+      permissionRef.current = pending
+      setPermission(pending)
     })
 
   const submit = async (prompt: string) => {
@@ -162,10 +172,8 @@ export function InteractiveApp({
     }
     if (permission) {
       if (value.toLowerCase() === 'y') {
-        setPermission(null)
         permission.resolve(true)
       } else if (value.toLowerCase() === 'n' || key.return || key.escape) {
-        setPermission(null)
         permission.resolve(false)
       }
       return
@@ -204,7 +212,12 @@ export function InteractiveApp({
         setSelectedIndex(0)
         setSelectingSession(true)
       } else {
-        void submit(prompt)
+        const turn = submit(prompt)
+        onTurnChange?.(turn)
+        void turn.then(
+          () => onTurnChange?.(null),
+          () => onTurnChange?.(null),
+        )
       }
     } else if (key.backspace || key.delete) {
       inputRef.current = inputRef.current.slice(0, -1)
@@ -282,15 +295,20 @@ export async function runInteractive(options: {
     signal,
   })
   const initialSessions = await listing.sessions()
+  let activeTurn: Promise<void> | null = null
   const instance = render(
     <InteractiveApp
       factory={options.factory}
       initialSessions={initialSessions}
       signal={signal}
       onCancel={() => controller.abort()}
+      onTurnChange={(turn) => {
+        activeTurn = turn
+      }}
     />,
     { exitOnCtrlC: false, incrementalRendering: true },
   )
   await instance.waitUntilExit()
+  if (activeTurn) await activeTurn
   return signal.aborted ? 130 : 0
 }
