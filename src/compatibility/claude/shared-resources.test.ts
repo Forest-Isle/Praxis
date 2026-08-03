@@ -5,7 +5,10 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { sanitizeClaudeProjectPath } from './paths.js'
-import { loadClaudeSharedResources } from './shared-resources.js'
+import {
+  loadClaudeSettings,
+  loadClaudeSharedResources,
+} from './shared-resources.js'
 
 const tempDirectories: string[] = []
 
@@ -156,6 +159,29 @@ describe('Claude shared resource discovery', () => {
         cwd: join(root, 'workspace'),
       }),
     ).rejects.toThrow(`Invalid Claude JSON resource: ${settingsPath}`)
+  })
+
+  it('loads permission settings without parsing unrelated MCP resources', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-settings-only-')),
+    )
+    tempDirectories.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'workspace')
+    await Promise.all([
+      writeFixture(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({ permissions: { allow: ['Read'] } }),
+      ),
+      writeFixture(join(cwd, '.mcp.json'), '{'),
+    ])
+
+    await expect(loadClaudeSettings({ configRoot, cwd })).resolves.toEqual([
+      expect.objectContaining({
+        scope: 'user',
+        value: { permissions: { allow: ['Read'] } },
+      }),
+    ])
   })
 
   it('does not swallow filesystem errors other than missing resources', async () => {

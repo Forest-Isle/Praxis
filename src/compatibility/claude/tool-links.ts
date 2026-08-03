@@ -52,7 +52,31 @@ export function indexClaudeToolLinks(
 
 export function findUnresolvedClaudeToolCalls(
   entries: readonly ClaudeTranscriptEntry[],
-): string[] {
-  const { toolCalls, completedToolCalls } = indexClaudeToolLinks(entries)
-  return [...toolCalls.keys()].filter((id) => !completedToolCalls.has(id))
+): { id: string; name: string; input: Record<string, unknown> }[] {
+  const { completedToolCalls } = indexClaudeToolLinks(entries)
+  const unresolved = new Map<
+    string,
+    { id: string; name: string; input: Record<string, unknown> }
+  >()
+  for (const entry of entries) {
+    if (entry.type !== 'assistant') continue
+    for (const block of getClaudeContentBlocks(entry)) {
+      if (
+        block.type === 'tool_use' &&
+        typeof block.id === 'string' &&
+        typeof block.name === 'string' &&
+        typeof block.input === 'object' &&
+        block.input !== null &&
+        !Array.isArray(block.input) &&
+        !completedToolCalls.has(block.id)
+      ) {
+        unresolved.set(block.id, {
+          id: block.id,
+          name: block.name,
+          input: block.input as Record<string, unknown>,
+        })
+      }
+    }
+  }
+  return [...unresolved.values()]
 }

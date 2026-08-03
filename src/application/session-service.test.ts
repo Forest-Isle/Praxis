@@ -16,7 +16,7 @@ const roots: string[] = []
 
 function queuedProvider(responses: string[]): ModelProvider {
   return {
-    capabilities: { streaming: true, usage: true },
+    capabilities: { streaming: true, usage: true, tools: false },
     async *complete() {
       const response = responses.shift()
       if (!response) throw new Error('Provider response fixture exhausted')
@@ -107,7 +107,7 @@ describe('ClaudeSessionService', () => {
       cwd: join(root, 'project'),
       claudeVersion: '2.1.208',
       provider: {
-        capabilities: { streaming: true, usage: true },
+        capabilities: { streaming: true, usage: true, tools: false },
         async *complete() {
           yield* []
           throw new ModelProviderError('temporary failure', {
@@ -141,7 +141,7 @@ describe('ClaudeSessionService', () => {
       cwd,
       claudeVersion: '2.1.208',
       provider: {
-        capabilities: { streaming: true, usage: true },
+        capabilities: { streaming: true, usage: true, tools: false },
         async *complete() {
           announceStarted?.()
           await providerGate
@@ -262,7 +262,7 @@ describe('ClaudeSessionService', () => {
     expect(entries[4]?.leafUuid).toBe(entries[3]?.uuid)
   })
 
-  it('refuses to resume an interrupted tool call without inventing a result', async () => {
+  it('recovers an interrupted tool call before resuming the model', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-recovery-'))
     roots.push(root)
     const configRoot = join(root, 'config')
@@ -310,18 +310,36 @@ describe('ClaudeSessionService', () => {
     ).rejects.toBeInstanceOf(AgentRunCancelledError)
     const [summary] = await interrupted.sessions()
     if (!summary) throw new Error('Interrupted session was not persisted')
+    const recoveryTools: ToolRegistry = {
+      ...tools,
+      async execute() {
+        return { content: 'recovered output', isError: false }
+      },
+    }
+    const requiresApproval = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+      tools: recoveryTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    await expect(
+      requiresApproval.resume(summary.sessionId, 'continue'),
+    ).rejects.toThrow('requires explicit recovery approval')
     const resumed = new ClaudeSessionService({
       configRoot,
       cwd,
       claudeVersion: '2.1.208',
       provider: queuedProvider(['must not run']),
-      tools,
+      tools: recoveryTools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      approveTool: () => true,
     })
 
-    await expect(resumed.resume(summary.sessionId, 'continue')).rejects.toThrow(
-      'unresolved tool call call_interrupted',
-    )
+    await expect(
+      resumed.resume(summary.sessionId, 'continue'),
+    ).resolves.toMatchObject({ text: 'must not run' })
     const { resolveClaudePaths } =
       await import('../compatibility/claude/paths.js')
     const paths = resolveClaudePaths({
@@ -332,6 +350,14 @@ describe('ClaudeSessionService', () => {
     const entries = (await readFile(paths.sessionFile, 'utf8'))
       .trimEnd()
       .split('\n')
-    expect(entries).toHaveLength(2)
+    expect(entries).toHaveLength(6)
+    expect(JSON.parse(entries[2] ?? '{}').message.content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'call_interrupted',
+        content: 'recovered output',
+        is_error: false,
+      },
+    ])
   })
 })

@@ -189,6 +189,42 @@ describe('OpenAICompatibleProvider', () => {
     ])
   })
 
+  it('rejects oversized streamed tool arguments', async () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      maxToolArgumentsBytes: 8,
+      fetchImplementation: async () =>
+        new Response(
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call","function":{"name":"Read","arguments":"{\\"file_path\\":\\"too-long\\"}"}}]}}]}\n\n',
+        ),
+    })
+
+    const stream = provider.complete({ messages: [] })
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toThrow(
+      'tool arguments exceeded 8 bytes',
+    )
+  })
+
+  it('bounds pending streamed tool-call cardinality', async () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      maxToolCallsPerResponse: 1,
+      fetchImplementation: async () =>
+        new Response(
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"one"},{"index":1,"id":"two"}]}}]}\n\n',
+        ),
+    })
+
+    const stream = provider.complete({ messages: [] })
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toThrow(
+      'exceeded 1 tool calls',
+    )
+  })
+
   it.each([
     ['connection', async () => Promise.reject(new TypeError('offline'))],
     [

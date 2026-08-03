@@ -236,6 +236,13 @@ async function loadProjectSettings(
   return [userSettings, ...projectSettings].filter(present)
 }
 
+export async function loadClaudeSettings({
+  configRoot,
+  cwd,
+}: LoadClaudeSharedResourcesOptions): Promise<ClaudeJsonResource[]> {
+  return loadProjectSettings(configRoot, await canonicalPath(cwd))
+}
+
 async function loadProjectMcp(
   projectDirectories: readonly string[],
 ): Promise<ClaudeJsonResource[]> {
@@ -332,7 +339,7 @@ export async function loadClaudeSharedResources({
       extensionDirectories.map((path) => join(path, '.claude', 'agents')),
       (name) => name.endsWith('.md'),
     ),
-    loadProjectSettings(configRoot, await canonicalPath(cwd)),
+    loadClaudeSettings({ configRoot, cwd }),
     loadProjectMcp(projectDirectories),
   ])
 

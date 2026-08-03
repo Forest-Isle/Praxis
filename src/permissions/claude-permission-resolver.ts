@@ -1,4 +1,5 @@
 import { isAbsolute, resolve } from 'node:path'
+import { homedir } from 'node:os'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import type {
@@ -10,13 +11,13 @@ import type {
 
 interface PermissionRule {
   behavior: PermissionBehavior
-  source: string
   toolName: string
   pattern: string | null
 }
 
 export interface ClaudePermissionResolverOptions {
   cwd: string
+  homeDirectory?: string
   settings: readonly ClaudeJsonResource[]
 }
 
@@ -37,7 +38,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readRuleStrings(
   value: unknown,
   behavior: PermissionBehavior,
-  source: string,
 ): PermissionRule[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((item) => {
@@ -48,7 +48,6 @@ function readRuleStrings(
     return [
       {
         behavior,
-        source,
         toolName,
         pattern: match[2] ?? null,
       },
@@ -62,9 +61,9 @@ function loadRules(settings: readonly ClaudeJsonResource[]): PermissionRule[] {
     const permissions = resource.value.permissions
     if (!isRecord(permissions)) return []
     return [
-      ...readRuleStrings(permissions.deny, 'deny', resource.path),
-      ...readRuleStrings(permissions.ask, 'ask', resource.path),
-      ...readRuleStrings(permissions.allow, 'allow', resource.path),
+      ...readRuleStrings(permissions.deny, 'deny'),
+      ...readRuleStrings(permissions.ask, 'ask'),
+      ...readRuleStrings(permissions.allow, 'allow'),
     ]
   })
 }
@@ -114,28 +113,47 @@ function matchesRule(
   rule: PermissionRule,
   call: ModelToolCall,
   cwd: string,
+  homeDirectory: string,
 ): boolean {
   if (rule.toolName !== call.name) return false
   if (rule.pattern === null) return true
   const target = permissionTarget(call)
   if (target === null) return false
+  if (
+    call.name === 'Bash' &&
+    rule.behavior === 'allow' &&
+    rule.pattern.includes('*') &&
+    /[\n\r;|&<>`]|\$\(/.test(target)
+  ) {
+    return false
+  }
   if (call.name === 'Bash' && rule.pattern.endsWith(':*')) {
     const commandPrefix = rule.pattern.slice(0, -2)
     return target === commandPrefix || target.startsWith(`${commandPrefix} `)
   }
-  const pattern =
-    FILE_TOOLS.has(call.name) && !isAbsolute(rule.pattern)
-      ? resolve(cwd, rule.pattern)
-      : rule.pattern
-  return globExpression(pattern).test(target)
+  let permissionPattern = rule.pattern
+  if (FILE_TOOLS.has(call.name)) {
+    if (permissionPattern.startsWith('//')) {
+      permissionPattern = permissionPattern.slice(1)
+    } else if (permissionPattern === '~') {
+      permissionPattern = homeDirectory
+    } else if (permissionPattern.startsWith('~/')) {
+      permissionPattern = resolve(homeDirectory, permissionPattern.slice(2))
+    } else if (!isAbsolute(permissionPattern)) {
+      permissionPattern = resolve(cwd, permissionPattern)
+    }
+  }
+  return globExpression(permissionPattern).test(target)
 }
 
 export class ClaudePermissionResolver implements PermissionResolver {
   private readonly rules: readonly PermissionRule[]
   private readonly cwd: string
+  private readonly homeDirectory: string
 
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
+    this.homeDirectory = resolve(options.homeDirectory ?? homedir())
     this.rules = loadRules(options.settings)
   }
 
@@ -144,7 +162,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
       const rule = this.rules.find(
         (candidate) =>
           candidate.behavior === behavior &&
-          matchesRule(candidate, call, this.cwd),
+          matchesRule(candidate, call, this.cwd, this.homeDirectory),
       )
       if (!rule) continue
       if (behavior === 'deny') {

@@ -1,6 +1,14 @@
 import { spawn } from 'node:child_process'
-import { readFile, realpath, stat, writeFile } from 'node:fs/promises'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { constants } from 'node:fs'
+import { open, realpath } from 'node:fs/promises'
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from 'node:path'
 
 import type {
   ModelToolCall,
@@ -263,6 +271,9 @@ export class LocalToolRegistry implements ToolRegistry {
   ): Promise<ToolExecutionResult> {
     if (context.signal?.aborted) throw abortError()
     const prepared = await this.prepare(call, context)
+    if (JSON.stringify(prepared.input) !== JSON.stringify(call.input)) {
+      throw new Error('Tool input changed after permission approval')
+    }
     switch (prepared.name) {
       case 'Read':
         return this.read(prepared)
@@ -299,32 +310,46 @@ export class LocalToolRegistry implements ToolRegistry {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !allowMissing) {
         throw error
       }
-      const separator = candidate.lastIndexOf('/')
-      const parent = await realpath(candidate.slice(0, separator))
+      const parent = await realpath(dirname(candidate))
       if (!isWithin(root, parent)) {
         throw new Error(`Path is outside workspace: ${requestedPath}`)
       }
-      return candidate
+      return join(parent, basename(candidate))
+    }
+  }
+
+  private async assertStablePath(filePath: string): Promise<void> {
+    if ((await realpath(filePath)) !== filePath) {
+      throw new Error('Tool input changed after permission approval')
     }
   }
 
   private async read(call: ModelToolCall): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'file_path')
-    const metadata = await stat(filePath)
-    if (!metadata.isFile()) throw new Error(`Not a file: ${filePath}`)
-    if (metadata.size > this.maxFileBytes) {
-      throw new Error(`File exceeds ${this.maxFileBytes} byte read limit`)
-    }
-    const source = await readFile(filePath, 'utf8')
-    const offset = optionalPositiveInteger(call.input, 'offset') ?? 1
-    const limit = optionalPositiveInteger(call.input, 'limit')
-    const lines = source.split('\n')
-    const content = lines
-      .slice(offset - 1, limit === undefined ? undefined : offset - 1 + limit)
-      .join('\n')
-    return {
-      content: truncateOutput(content, this.maxOutputBytes),
-      isError: false,
+    const handle = await open(
+      filePath,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    )
+    try {
+      await this.assertStablePath(filePath)
+      const metadata = await handle.stat()
+      if (!metadata.isFile()) throw new Error(`Not a file: ${filePath}`)
+      if (metadata.size > this.maxFileBytes) {
+        throw new Error(`File exceeds ${this.maxFileBytes} byte read limit`)
+      }
+      const source = await handle.readFile('utf8')
+      const offset = optionalPositiveInteger(call.input, 'offset') ?? 1
+      const limit = optionalPositiveInteger(call.input, 'limit')
+      const lines = source.split('\n')
+      const content = lines
+        .slice(offset - 1, limit === undefined ? undefined : offset - 1 + limit)
+        .join('\n')
+      return {
+        content: truncateOutput(content, this.maxOutputBytes),
+        isError: false,
+      }
+    } finally {
+      await handle.close()
     }
   }
 
@@ -334,10 +359,25 @@ export class LocalToolRegistry implements ToolRegistry {
     if (Buffer.byteLength(content) > this.maxFileBytes) {
       throw new Error(`Content exceeds ${this.maxFileBytes} byte write limit`)
     }
-    await writeFile(filePath, content)
-    return {
-      content: `Wrote ${Buffer.byteLength(content)} bytes`,
-      isError: false,
+    const handle = await open(
+      filePath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
+      0o666,
+    )
+    try {
+      await this.assertStablePath(filePath)
+      const metadata = await handle.stat()
+      if (!metadata.isFile()) throw new Error(`Not a file: ${filePath}`)
+      const encoded = Buffer.from(content)
+      await handle.write(encoded, 0, encoded.length, 0)
+      await handle.truncate(encoded.length)
+      await handle.sync()
+      return {
+        content: `Wrote ${encoded.length} bytes`,
+        isError: false,
+      }
+    } finally {
+      await handle.close()
     }
   }
 
@@ -345,25 +385,44 @@ export class LocalToolRegistry implements ToolRegistry {
     const filePath = stringInput(call.input, 'file_path')
     const oldString = stringInput(call.input, 'old_string')
     const newString = stringInput(call.input, 'new_string', true)
-    const source = await readFile(filePath, 'utf8')
-    if (Buffer.byteLength(source) > this.maxFileBytes) {
-      throw new Error(`File exceeds ${this.maxFileBytes} byte edit limit`)
-    }
-    const occurrences = source.split(oldString).length - 1
-    if (occurrences === 0) throw new Error('old_string was not found')
-    if (call.input.replace_all !== true && occurrences !== 1) {
-      throw new Error(
-        `old_string matched ${occurrences} times; set replace_all`,
-      )
-    }
-    const output =
-      call.input.replace_all === true
-        ? source.replaceAll(oldString, newString)
-        : source.replace(oldString, newString)
-    await writeFile(filePath, output)
-    return {
-      content: `Replaced ${call.input.replace_all === true ? occurrences : 1} occurrence(s)`,
-      isError: false,
+    const handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
+    try {
+      await this.assertStablePath(filePath)
+      const metadata = await handle.stat()
+      if (!metadata.isFile()) throw new Error(`Not a file: ${filePath}`)
+      if (metadata.size > this.maxFileBytes) {
+        throw new Error(`File exceeds ${this.maxFileBytes} byte edit limit`)
+      }
+      const source = await handle.readFile('utf8')
+      const occurrences = source.split(oldString).length - 1
+      if (occurrences === 0) throw new Error('old_string was not found')
+      if (call.input.replace_all !== true && occurrences !== 1) {
+        throw new Error(
+          `old_string matched ${occurrences} times; set replace_all`,
+        )
+      }
+      const replacementCount = call.input.replace_all === true ? occurrences : 1
+      const outputBytes =
+        Buffer.byteLength(source) +
+        replacementCount *
+          (Buffer.byteLength(newString) - Buffer.byteLength(oldString))
+      if (outputBytes > this.maxFileBytes) {
+        throw new Error(`Edited content exceeds ${this.maxFileBytes} bytes`)
+      }
+      const output =
+        call.input.replace_all === true
+          ? source.replaceAll(oldString, newString)
+          : source.replace(oldString, newString)
+      const encoded = Buffer.from(output)
+      await handle.write(encoded, 0, encoded.length, 0)
+      await handle.truncate(encoded.length)
+      await handle.sync()
+      return {
+        content: `Replaced ${replacementCount} occurrence(s)`,
+        isError: false,
+      }
+    } finally {
+      await handle.close()
     }
   }
 

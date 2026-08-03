@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { ClaudeSessionService } from '../dist/application/session-service.js'
+import { ClaudePermissionResolver } from '../dist/permissions/claude-permission-resolver.js'
 import { detectClaudeVersion, runClaudeJson } from './lib/claude-probe.mjs'
 
 const praxisCreatedMarker = 'PRAXIS_RUNTIME_CREATED_1742'
@@ -14,7 +15,7 @@ const toolFinalMarker = 'PRAXIS_RUNTIME_TOOL_FINAL_7462'
 function fixtureProvider(responses) {
   return {
     model: 'praxis/fixture',
-    capabilities: { streaming: true, usage: true },
+    capabilities: { streaming: true, usage: true, tools: false },
     async *complete(request) {
       const response = responses.shift()
       if (!response) throw new Error('Runtime provider fixture exhausted')
@@ -175,6 +176,34 @@ try {
   )
 
   let toolTurn = 0
+  const permissionResolver = new ClaudePermissionResolver({
+    cwd,
+    settings: [
+      {
+        path: join(configRoot, 'settings.json'),
+        scope: 'user',
+        value: {
+          permissions: {
+            allow: ['Read'],
+            deny: [`Read(/${cwd}/blocked/**)`],
+          },
+        },
+      },
+    ],
+  })
+  const deniedFixture = await permissionResolver.resolve({
+    id: 'call_denied_fixture',
+    name: 'Read',
+    input: { file_path: join(cwd, 'blocked', 'secret.txt') },
+  })
+  const askedFixture = await permissionResolver.resolve({
+    id: 'call_asked_fixture',
+    name: 'Write',
+    input: { file_path: join(cwd, 'output.txt') },
+  })
+  if (deniedFixture.behavior !== 'deny' || askedFixture.behavior !== 'ask') {
+    throw new Error('Claude-compatible permission fixture did not match')
+  }
   const toolService = new ClaudeSessionService({
     configRoot,
     cwd,
@@ -221,7 +250,7 @@ try {
         return { content: toolResultMarker, isError: false }
       },
     },
-    permissions: { resolve: () => ({ behavior: 'allow' }) },
+    permissions: permissionResolver,
   })
   const toolRuntime = await toolService.run('Execute the fixture tool.')
   if (toolRuntime.text !== toolFinalMarker) {

@@ -11,6 +11,10 @@ export interface OpenAICompatibleProviderOptions {
   baseUrl: string
   apiKey: string
   model: string
+  maxStreamBufferBytes?: number
+  maxToolArgumentsBytes?: number
+  maxToolCallsPerResponse?: number
+  maxToolMetadataBytes?: number
   fetchImplementation?: typeof fetch
 }
 
@@ -36,10 +40,15 @@ interface PendingToolCall {
   arguments: string
 }
 
+interface PendingToolState {
+  calls: Map<number, PendingToolCall>
+  metadataBytes: number
+}
+
 function completedToolCallEvents(
-  pending: Map<number, PendingToolCall>,
+  pending: PendingToolState,
 ): ModelStreamEvent[] {
-  const events = [...pending.entries()]
+  const events = [...pending.calls.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, call]): ModelStreamEvent => {
       let input: unknown
@@ -63,15 +72,19 @@ function completedToolCallEvents(
       }
       return { type: 'tool-call', call: completed }
     })
-  pending.clear()
+  pending.calls.clear()
+  pending.metadataBytes = 0
   return events
 }
 
 function parseSseEvent(
   data: string,
-  pendingToolCalls: Map<number, PendingToolCall>,
+  pendingTools: PendingToolState,
+  maxToolArgumentsBytes: number,
+  maxToolCallsPerResponse: number,
+  maxToolMetadataBytes: number,
 ): ModelStreamEvent[] {
-  if (data === '[DONE]') return completedToolCallEvents(pendingToolCalls)
+  if (data === '[DONE]') return completedToolCallEvents(pendingTools)
 
   let value: unknown
   try {
@@ -97,21 +110,49 @@ function parseSseEvent(
       if (Array.isArray(toolCalls)) {
         for (const value of toolCalls) {
           if (!isRecord(value) || typeof value.index !== 'number') continue
-          const pending = pendingToolCalls.get(value.index) ?? {
-            id: '',
-            name: '',
-            arguments: '',
+          let pending = pendingTools.calls.get(value.index)
+          if (!pending) {
+            if (pendingTools.calls.size >= maxToolCallsPerResponse) {
+              throw new ModelProviderError(
+                `Provider exceeded ${maxToolCallsPerResponse} tool calls in one response`,
+                { retryable: false },
+              )
+            }
+            pending = { id: '', name: '', arguments: '' }
           }
-          if (typeof value.id === 'string') pending.id += value.id
+          if (typeof value.id === 'string') {
+            pending.id += value.id
+            pendingTools.metadataBytes += Buffer.byteLength(value.id)
+          }
           if (isRecord(value.function)) {
             if (typeof value.function.name === 'string') {
               pending.name += value.function.name
+              pendingTools.metadataBytes += Buffer.byteLength(
+                value.function.name,
+              )
             }
             if (typeof value.function.arguments === 'string') {
               pending.arguments += value.function.arguments
+              pendingTools.metadataBytes += Buffer.byteLength(
+                value.function.arguments,
+              )
+              if (
+                Buffer.byteLength(pending.arguments) > maxToolArgumentsBytes
+              ) {
+                throw new ModelProviderError(
+                  `Provider tool arguments exceeded ${maxToolArgumentsBytes} bytes`,
+                  { retryable: false },
+                )
+              }
             }
           }
-          pendingToolCalls.set(value.index, pending)
+          if (pendingTools.metadataBytes > maxToolMetadataBytes) {
+            throw new ModelProviderError(
+              `Provider tool metadata exceeded ${maxToolMetadataBytes} bytes`,
+              { retryable: false },
+            )
+          }
+          pendingTools.calls.set(value.index, pending)
         }
       }
     }
@@ -119,9 +160,9 @@ function parseSseEvent(
       isRecord(first) &&
       first.finish_reason !== null &&
       first.finish_reason !== undefined &&
-      pendingToolCalls.size > 0
+      pendingTools.calls.size > 0
     ) {
-      events.push(...completedToolCallEvents(pendingToolCalls))
+      events.push(...completedToolCallEvents(pendingTools))
     }
   }
 
@@ -165,11 +206,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
   readonly model: string
   private readonly endpoint: string
   private readonly fetchImplementation: typeof fetch
+  private readonly maxStreamBufferBytes: number
+  private readonly maxToolArgumentsBytes: number
+  private readonly maxToolCallsPerResponse: number
+  private readonly maxToolMetadataBytes: number
 
   constructor(private readonly options: OpenAICompatibleProviderOptions) {
     this.endpoint = `${options.baseUrl.replace(/\/+$/, '')}/chat/completions`
     this.model = options.model
     this.fetchImplementation = options.fetchImplementation ?? fetch
+    this.maxStreamBufferBytes = options.maxStreamBufferBytes ?? 1024 * 1024
+    this.maxToolArgumentsBytes = options.maxToolArgumentsBytes ?? 1024 * 1024
+    this.maxToolCallsPerResponse = options.maxToolCallsPerResponse ?? 32
+    this.maxToolMetadataBytes = options.maxToolMetadataBytes ?? 1024 * 1024
   }
 
   async *complete(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
@@ -231,13 +280,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    const pendingToolCalls = new Map<number, PendingToolCall>()
+    const pendingTools: PendingToolState = {
+      calls: new Map(),
+      metadataBytes: 0,
+    }
 
     try {
       while (true) {
         const { done, value } = await reader.read()
         buffer += decoder.decode(value, { stream: !done })
         buffer = buffer.replaceAll('\r\n', '\n')
+        if (Buffer.byteLength(buffer) > this.maxStreamBufferBytes) {
+          throw new ModelProviderError(
+            `Provider stream buffer exceeded ${this.maxStreamBufferBytes} bytes`,
+            { retryable: false },
+          )
+        }
 
         let boundary = buffer.indexOf('\n\n')
         while (boundary >= 0) {
@@ -249,7 +307,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
             .map((line) => line.slice(5).trimStart())
             .join('\n')
           if (data.length > 0) {
-            for (const event of parseSseEvent(data, pendingToolCalls)) {
+            for (const event of parseSseEvent(
+              data,
+              pendingTools,
+              this.maxToolArgumentsBytes,
+              this.maxToolCallsPerResponse,
+              this.maxToolMetadataBytes,
+            )) {
               yield event
             }
           }

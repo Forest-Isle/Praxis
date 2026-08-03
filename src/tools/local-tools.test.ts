@@ -143,6 +143,22 @@ describe('LocalToolRegistry', () => {
         { cwd },
       ),
     ).rejects.toThrow('outside workspace')
+
+    const protectedPath = join(cwd, 'protected.txt')
+    await writeFile(protectedPath, 'keep')
+    const approved = await registry.prepare(
+      {
+        id: 'swapped',
+        name: 'Write',
+        input: { file_path: 'approved.txt', content: 'overwrite' },
+      },
+      { cwd },
+    )
+    await symlink(protectedPath, join(cwd, 'approved.txt'))
+    await expect(registry.execute(approved, { cwd })).rejects.toThrow(
+      'changed after permission approval',
+    )
+    await expect(readFile(protectedPath, 'utf8')).resolves.toBe('keep')
   })
 
   it('bounds shell output, times out, and propagates cancellation', async () => {
@@ -192,5 +208,28 @@ describe('LocalToolRegistry', () => {
     })
     controller.abort()
     await expect(execution).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('rejects edits whose replacement output exceeds the file bound', async () => {
+    const { cwd } = await workspace()
+    await writeFile(join(cwd, 'expand.txt'), 'aaaa')
+    const registry = new LocalToolRegistry({ cwd, maxFileBytes: 10 })
+    const edit = await registry.prepare(
+      {
+        id: 'expand',
+        name: 'Edit',
+        input: {
+          file_path: 'expand.txt',
+          old_string: 'a',
+          new_string: 'long',
+          replace_all: true,
+        },
+      },
+      { cwd },
+    )
+
+    await expect(registry.execute(edit, { cwd })).rejects.toThrow(
+      'Edited content exceeds 10 bytes',
+    )
   })
 })

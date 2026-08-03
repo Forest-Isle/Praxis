@@ -55,7 +55,7 @@ export interface ModelRequest {
 export interface ModelProviderCapabilities {
   streaming: boolean
   usage: boolean
-  tools?: boolean
+  tools: boolean
 }
 
 export interface ModelProvider {
@@ -127,6 +127,9 @@ export interface AgentRuntimeOptions {
   tools?: ToolRegistry
   permissions?: PermissionResolver
   maxModelTurns?: number
+  maxModelOutputBytes?: number
+  maxToolCallsPerTurn?: number
+  maxToolInputBytes?: number
 }
 
 export interface AgentRunRequest {
@@ -136,6 +139,11 @@ export interface AgentRunRequest {
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
   signal?: AbortSignal
 }
+
+export type AgentToolRecoveryRequest = Pick<
+  AgentRunRequest,
+  'approveTool' | 'cwd' | 'observer' | 'signal'
+>
 
 export interface AgentRunResult {
   text: string
@@ -192,8 +200,13 @@ export class AgentRuntime {
 
     const messages = [...request.messages]
     let usage = emptyUsage()
-    const definitions = this.options.tools?.definitions() ?? []
+    const definitions = this.provider.capabilities.tools
+      ? (this.options.tools?.definitions() ?? [])
+      : []
     const maxModelTurns = this.options.maxModelTurns ?? 16
+    const maxModelOutputBytes = this.options.maxModelOutputBytes ?? 1024 * 1024
+    const maxToolCallsPerTurn = this.options.maxToolCallsPerTurn ?? 32
+    const maxToolInputBytes = this.options.maxToolInputBytes ?? 1024 * 1024
 
     try {
       for (let turn = 0; turn < maxModelTurns; turn += 1) {
@@ -203,6 +216,7 @@ export class AgentRuntime {
         if (request.signal) providerRequest.signal = request.signal
 
         let text = ''
+        let textBytes = 0
         let turnUsage = emptyUsage()
         let streaming = false
         const toolCalls: ModelToolCall[] = []
@@ -214,9 +228,26 @@ export class AgentRuntime {
             this.emit({ type: 'state', state: 'streaming' })
           }
           if (event.type === 'text-delta') {
+            textBytes += Buffer.byteLength(event.delta)
+            if (textBytes > maxModelOutputBytes) {
+              throw new Error(
+                `Model output exceeded ${maxModelOutputBytes} bytes`,
+              )
+            }
             text += event.delta
             this.emit(event)
           } else if (event.type === 'tool-call') {
+            if (toolCalls.length >= maxToolCallsPerTurn) {
+              throw new Error(
+                `Model exceeded ${maxToolCallsPerTurn} tool calls in one turn`,
+              )
+            }
+            if (
+              Buffer.byteLength(JSON.stringify(event.call.input)) >
+              maxToolInputBytes
+            ) {
+              throw new Error(`Tool input exceeded ${maxToolInputBytes} bytes`)
+            }
             toolCalls.push(event.call)
             this.emit(event)
           } else {
@@ -244,15 +275,7 @@ export class AgentRuntime {
         }
 
         for (const call of toolCalls) {
-          const result = await this.executeTool(call, request)
-          this.emit({ type: 'state', state: 'persisting-results' })
-          await request.observer?.toolCompleted(call, result)
-          this.emit({
-            type: 'tool-result',
-            callId: call.id,
-            content: result.content,
-            isError: result.isError,
-          })
+          const result = await this.completeToolCall(call, request)
           messages.push({
             role: 'tool',
             toolCallId: call.id,
@@ -273,9 +296,34 @@ export class AgentRuntime {
     }
   }
 
+  async recoverToolCall(
+    call: ModelToolCall,
+    request: AgentToolRecoveryRequest,
+  ): Promise<ToolExecutionResult> {
+    if (request.signal?.aborted) return this.cancel()
+    this.emit({ type: 'tool-call', call })
+    return this.completeToolCall(call, request)
+  }
+
+  private async completeToolCall(
+    call: ModelToolCall,
+    request: AgentToolRecoveryRequest,
+  ): Promise<ToolExecutionResult> {
+    const result = await this.executeTool(call, request)
+    this.emit({ type: 'state', state: 'persisting-results' })
+    await request.observer?.toolCompleted(call, result)
+    this.emit({
+      type: 'tool-result',
+      callId: call.id,
+      content: result.content,
+      isError: result.isError,
+    })
+    return result
+  }
+
   private async executeTool(
     call: ModelToolCall,
-    request: AgentRunRequest,
+    request: AgentToolRecoveryRequest,
   ): Promise<ToolExecutionResult> {
     const tools = this.options.tools
     const permissions = this.options.permissions

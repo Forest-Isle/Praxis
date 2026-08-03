@@ -12,7 +12,7 @@ import {
 
 function providerFrom(complete: ModelProvider['complete']): ModelProvider {
   return {
-    capabilities: { streaming: true, usage: true },
+    capabilities: { streaming: true, usage: true, tools: true },
     complete,
   }
 }
@@ -263,5 +263,35 @@ describe('AgentRuntime', () => {
     expect(results).toEqual([
       { content: 'Denied by local policy', isError: true },
     ])
+  })
+
+  it('fails closed when model output or tool calls exceed run bounds', async () => {
+    const textProvider = providerFrom(async function* () {
+      yield { type: 'text-delta', delta: '1234' }
+      yield { type: 'text-delta', delta: '56' }
+    })
+    const textRuntime = new AgentRuntime(textProvider, undefined, {
+      maxModelOutputBytes: 5,
+    })
+    await expect(
+      textRuntime.run({ messages: [{ role: 'user', content: 'respond' }] }),
+    ).rejects.toThrow('Model output exceeded 5 bytes')
+
+    const toolProvider = providerFrom(async function* () {
+      yield {
+        type: 'tool-call',
+        call: { id: 'one', name: 'Read', input: { file_path: 'one' } },
+      }
+      yield {
+        type: 'tool-call',
+        call: { id: 'two', name: 'Read', input: { file_path: 'two' } },
+      }
+    })
+    const toolRuntime = new AgentRuntime(toolProvider, undefined, {
+      maxToolCallsPerTurn: 1,
+    })
+    await expect(
+      toolRuntime.run({ messages: [{ role: 'user', content: 'inspect' }] }),
+    ).rejects.toThrow('Model exceeded 1 tool calls in one turn')
   })
 })

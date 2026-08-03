@@ -156,23 +156,6 @@ export class ClaudeSessionService {
       if (requireExisting && snapshot.entries.length === 0) {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
-      const [unresolvedToolCall] = findUnresolvedClaudeToolCalls(
-        snapshot.entries,
-      )
-      if (unresolvedToolCall) {
-        throw new Error(
-          `Claude session has unresolved tool call ${unresolvedToolCall}; recover or fork before resume`,
-        )
-      }
-
-      const [userEntry] = translateProviderEvents(
-        [{ type: 'user-text', text: prompt }],
-        this.translationContext(sessionId, snapshot),
-      )
-      if (!userEntry) throw new Error('Could not translate user prompt')
-      const userTail = await this.append(lease, snapshot.tail, userEntry)
-      snapshot = { entries: [...snapshot.entries, userEntry], tail: userTail }
-
       const provider = this.provider()
       const runtime = new AgentRuntime(provider, this.options.eventSink, {
         ...(this.options.tools ? { tools: this.options.tools } : {}),
@@ -221,6 +204,38 @@ export class ClaudeSessionService {
           snapshot = { entries: [...snapshot.entries, entry], tail }
         },
       }
+      const recoveryRequest = {
+        cwd: this.options.cwd,
+        observer,
+        ...(signal ? { signal } : {}),
+        ...(this.options.approveTool
+          ? { approveTool: this.options.approveTool }
+          : {}),
+      }
+      for (const unresolvedToolCall of findUnresolvedClaudeToolCalls(
+        snapshot.entries,
+      )) {
+        if (!this.options.approveTool) {
+          throw new Error(
+            `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
+          )
+        }
+        if (!(await this.options.approveTool(unresolvedToolCall))) {
+          throw new Error(
+            `Claude session tool call ${unresolvedToolCall.id} recovery was declined`,
+          )
+        }
+        await runtime.recoverToolCall(unresolvedToolCall, recoveryRequest)
+      }
+
+      const [userEntry] = translateProviderEvents(
+        [{ type: 'user-text', text: prompt }],
+        this.translationContext(sessionId, snapshot),
+      )
+      if (!userEntry) throw new Error('Could not translate user prompt')
+      const userTail = await this.append(lease, snapshot.tail, userEntry)
+      snapshot = { entries: [...snapshot.entries, userEntry], tail: userTail }
+
       const runtimeRequest = {
         messages: projectClaudeModelMessages(snapshot.entries),
         cwd: this.options.cwd,

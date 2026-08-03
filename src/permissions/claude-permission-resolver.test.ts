@@ -14,7 +14,12 @@ describe('ClaudePermissionResolver', () => {
             permissions: {
               allow: ['Read', 'Bash(git status)', 'Bash(npm test:*)'],
               ask: ['Write'],
-              deny: ['Read(**/.env)', 'Bash(rm *)'],
+              deny: [
+                'Read(**/.env)',
+                'Read(//workspace/secrets/**)',
+                'Read(~/private/**)',
+                'Bash(rm *)',
+              ],
             },
           },
         },
@@ -37,6 +42,13 @@ describe('ClaudePermissionResolver', () => {
     ).resolves.toEqual({ behavior: 'allow' })
     await expect(
       resolver.resolve({
+        id: 'npm_test_injected',
+        name: 'Bash',
+        input: { command: 'npm test && rm generated.txt' },
+      }),
+    ).resolves.toEqual({ behavior: 'ask' })
+    await expect(
+      resolver.resolve({
         id: 'read_secret',
         name: 'Read',
         input: { file_path: '/workspace/.env' },
@@ -45,6 +57,31 @@ describe('ClaudePermissionResolver', () => {
       behavior: 'deny',
       reason: 'Denied by Claude permission rule Read(**/.env)',
     })
+    await expect(
+      resolver.resolve({
+        id: 'read_double_slash',
+        name: 'Read',
+        input: { file_path: '/workspace/secrets/key.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    const homeResolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      homeDirectory: '/home/fixture',
+      settings: [
+        {
+          path: '/config/settings.json',
+          scope: 'user',
+          value: { permissions: { deny: ['Read(~/private/**)'] } },
+        },
+      ],
+    })
+    await expect(
+      homeResolver.resolve({
+        id: 'read_home',
+        name: 'Read',
+        input: { file_path: '/home/fixture/private/key.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
     await expect(
       resolver.resolve({
         id: 'write',

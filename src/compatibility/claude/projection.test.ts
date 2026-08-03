@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -96,6 +98,54 @@ describe('Claude transcript projection', () => {
         isError: false,
       },
       { role: 'assistant', content: 'done' },
+    ])
+  })
+
+  it('keeps structured media and error tool results paired', async () => {
+    const fixture = new URL(
+      '../../../test/fixtures/claude-code/2.1.208/media-error-session.jsonl',
+      import.meta.url,
+    )
+    const entries = (await readFile(fixture, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+
+    expect(projectClaudeModelMessages(entries)).toEqual([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          {
+            id: 'call_read_fixture',
+            name: 'Read',
+            input: { file_path: '/tmp/praxis-fixture/fixture.png' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_read_fixture',
+        content: '[image tool result omitted: unsupported media]',
+        isError: false,
+      },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          {
+            id: 'call_error_fixture',
+            name: 'Bash',
+            input: { command: "sh -c 'echo fixture-error >&2; exit 7'" },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_error_fixture',
+        content: 'Exit code 7\nfixture-error',
+        isError: true,
+      },
     ])
   })
 })

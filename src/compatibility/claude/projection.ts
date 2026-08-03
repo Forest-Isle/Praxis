@@ -10,6 +10,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function projectToolResultContent(content: unknown): string | null {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return null
+  const parts = content.flatMap((block) => {
+    if (!isRecord(block)) return []
+    if (block.type === 'text' && typeof block.text === 'string') {
+      return [block.text]
+    }
+    if (block.type === 'image') {
+      return ['[image tool result omitted: unsupported media]']
+    }
+    return [`[${String(block.type ?? 'structured')} tool result omitted]`]
+  })
+  return parts.join('\n') || '[empty structured tool result]'
+}
+
 export function projectClaudeTextMessages(
   entries: readonly ClaudeTranscriptEntry[],
 ): ClaudeTextMessage[] {
@@ -65,15 +81,16 @@ export function projectClaudeModelMessages(
         if (
           !isRecord(block) ||
           block.type !== 'tool_result' ||
-          typeof block.tool_use_id !== 'string' ||
-          typeof block.content !== 'string'
+          typeof block.tool_use_id !== 'string'
         ) {
           continue
         }
+        const toolContent = projectToolResultContent(block.content)
+        if (toolContent === null) continue
         messages.push({
           role: 'tool',
           toolCallId: block.tool_use_id,
-          content: block.content,
+          content: toolContent,
           isError: block.is_error === true,
         })
       }

@@ -13,7 +13,7 @@ import {
   AgentRunCancelledError,
   type RuntimeEventSink,
 } from './core/runtime.js'
-import { loadClaudeSharedResources } from './compatibility/claude/shared-resources.js'
+import { loadClaudeSettings } from './compatibility/claude/shared-resources.js'
 import { ClaudePermissionResolver } from './permissions/claude-permission-resolver.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
@@ -93,14 +93,14 @@ const defaultDependencies: CliDependencies = {
     }
     if (!provider) return new ClaudeSessionService(options)
 
-    const resources = await loadClaudeSharedResources({ configRoot, cwd })
+    const settings = await loadClaudeSettings({ configRoot, cwd })
     return new ClaudeSessionService({
       ...options,
       provider,
       tools: new LocalToolRegistry({ cwd }),
       permissions: new ClaudePermissionResolver({
         cwd,
-        settings: resources.settings,
+        settings,
       }),
     })
   },
