@@ -85,6 +85,7 @@ export type RuntimeEvent =
 export interface ToolExecutionResult {
   content: string
   isError: boolean
+  accessedPaths?: readonly string[]
 }
 
 export interface ToolExecutionContext {
@@ -136,6 +137,7 @@ export interface AgentRunRequest {
   messages: readonly ModelMessage[]
   cwd?: string
   observer?: AgentRunObserver
+  reloadMessages?: () => Promise<readonly ModelMessage[]>
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
   signal?: AbortSignal
 }
@@ -282,6 +284,11 @@ export class AgentRuntime {
             content: result.content,
             isError: result.isError,
           })
+        }
+        if (request.reloadMessages) {
+          const reloadedMessages = await request.reloadMessages()
+          if (request.signal?.aborted) return this.cancel()
+          messages.splice(0, messages.length, ...reloadedMessages)
         }
       }
 

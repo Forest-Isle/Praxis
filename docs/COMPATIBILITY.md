@@ -53,6 +53,11 @@ Memory location is resolved asynchronously by `loadClaudeSharedResources`
 because worktree identity requires reading Git metadata. Callers must not infer
 a memory path from the synchronous session-path resolver.
 
+Path-conditional rule globs follow their discovery base: project rules are
+relative to the directory that owns their `.claude/rules` tree, while user
+rules under the config root are relative to the invocation cwd. Valid YAML
+frontmatter is parsed once for both base-context exclusion and activation.
+
 ## Transcript write profile
 
 Shared session files contain only entries accepted by the supported Claude Code
@@ -151,13 +156,14 @@ Support policy:
 
 Current write scope is deliberately smaller than read scope. Praxis reads any
 well-formed native entry as opaque data, but only appends validated `user` and
-`assistant` conversational entries plus the physical `last-prompt` record
-required by Claude resume for the selected adapter version. `last-prompt` must
-name the current logical conversation leaf and does not advance that leaf.
-Message content blocks are validated before append, and every `tool_result`
-must match the historical `tool_use` plus `sourceToolAssistantUUID`. Summary,
-sidechain, attachment, image, and other entry writers remain disabled until
-their runtime implementations and write/resume probes pass.
+`assistant` conversational entries, path-rule `nested_memory` attachments, and
+the physical `last-prompt` record required by Claude resume for the selected
+adapter version. `last-prompt` must name the current logical conversation leaf
+and does not advance that leaf. Message content blocks and attachment envelopes
+are validated before append, and every `tool_result` must match the historical
+`tool_use` plus `sourceToolAssistantUUID`. Summary, sidechain, image, and other
+entry writers remain disabled until their runtime implementations and
+write/resume probes pass. Text forks do not copy attachments.
 
 Sprint 1 text forks create a new transcript from projected user/assistant text
 using the validated writer. They do not clone opaque native entries or bypass
@@ -204,6 +210,12 @@ generate a sidechain. `npm run test:shared-compat` proves Claude and Praxis
 observe the same worktree/non-git hierarchy, canonical shared memory including
 a linked detail, skill, hook, layered project MCP, command, agent, and ordered
 settings sources without copying or synchronization.
+`npm run test:conditional-compat` proves that only a successful matching `Read`
+activates a path rule, validates the native attachment envelope and resume
+persistence, requires successful native tool results for every negative tool
+case (including an Edit pre-read before its matching rule exists), exercises
+built CLI message reload, and reopens the Praxis-written attachment with Claude
+Code 2.1.208.
 
 ## Explicit non-goals
 

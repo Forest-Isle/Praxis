@@ -26,6 +26,18 @@ function projectToolResultContent(content: unknown): string | null {
   return parts.join('\n') || '[empty structured tool result]'
 }
 
+function projectNestedMemory(entry: ClaudeTranscriptEntry): string | null {
+  if (entry.type !== 'attachment' || !isRecord(entry.attachment)) return null
+  if (
+    entry.attachment.type !== 'nested_memory' ||
+    !isRecord(entry.attachment.content) ||
+    typeof entry.attachment.content.content !== 'string'
+  ) {
+    return null
+  }
+  return entry.attachment.content.content
+}
+
 export function projectClaudeTextMessages(
   entries: readonly ClaudeTranscriptEntry[],
 ): ClaudeTextMessage[] {
@@ -56,8 +68,17 @@ export function projectClaudeTextMessages(
 export function projectClaudeModelMessages(
   entries: readonly ClaudeTranscriptEntry[],
 ): ModelMessage[] {
-  const messages: ModelMessage[] = []
+  const messages: ModelMessage[] = entries.flatMap((entry) => {
+    const nestedMemory = projectNestedMemory(entry)
+    return nestedMemory === null || nestedMemory.length === 0
+      ? []
+      : [{ role: 'system' as const, content: nestedMemory }]
+  })
   for (const entry of entries) {
+    const nestedMemory = projectNestedMemory(entry)
+    if (nestedMemory !== null) {
+      continue
+    }
     if (!isRecord(entry.message)) continue
     const role = entry.message.role
     const content = entry.message.content

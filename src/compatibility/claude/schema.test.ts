@@ -91,6 +91,61 @@ describe('ClaudeSchemaAdapter', () => {
     ).toThrow('must target Claude Code 2.1.208')
   })
 
+  it('accepts only validated Claude 2.1.208 nested-memory attachments', () => {
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+    const attachment = {
+      type: 'attachment',
+      parentUuid: '10000000-0000-4000-8000-000000000001',
+      isSidechain: false,
+      uuid: '10000000-0000-4000-8000-000000000002',
+      timestamp: '2026-08-03T08:00:01.000Z',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: '/tmp/project',
+      sessionId: '20000000-0000-4000-8000-000000000001',
+      version: '2.1.208',
+      gitBranch: null,
+      attachment: {
+        type: 'nested_memory',
+        path: '/tmp/project/.claude/rules/typescript.md',
+        content: {
+          path: '/tmp/project/.claude/rules/typescript.md',
+          type: 'Project',
+          content: 'USE_TYPESCRIPT\n',
+          globs: ['src/**/*.ts'],
+          contentDiffersFromDisk: true,
+          rawContent: '---\npaths:\n  - "src/**/*.ts"\n---\nUSE_TYPESCRIPT\n',
+        },
+        displayPath: '.claude/rules/typescript.md',
+      },
+    }
+
+    expect(adapter.serializeForAppend(attachment)).toBe(
+      JSON.stringify(attachment),
+    )
+    expect(() =>
+      adapter.serializeForAppend({
+        ...attachment,
+        attachment: {
+          ...attachment.attachment,
+          content: { ...attachment.attachment.content, globs: [] },
+        },
+      }),
+    ).toThrow('invalid nested-memory attachment')
+    for (const invalidEnvelope of [
+      { ...attachment, isSidechain: undefined },
+      { ...attachment, userType: undefined },
+      { ...attachment, entrypoint: undefined },
+      { ...attachment, gitBranch: undefined },
+      { ...attachment, gitBranch: 1 },
+    ]) {
+      expect(() => adapter.serializeForAppend(invalidEnvelope)).toThrow(
+        'invalid nested-memory attachment',
+      )
+    }
+    expect(() => adapter.serializeForFork(attachment)).toThrow('not forkable')
+  })
+
   it('falls back to read-only parsing for unknown Claude versions', () => {
     const adapter = selectClaudeSchemaAdapter('9.0.0')
     const entry = adapter.parse('{"type":"user","unknown":true}')

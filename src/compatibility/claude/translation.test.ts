@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createClaudeLastPromptEntry,
+  createClaudeRuleAttachmentEntry,
   translateProviderEvents,
 } from './translation.js'
 
@@ -13,6 +14,56 @@ const toolFixtureUrl = new URL(
 )
 
 describe('provider to Claude transcript translation', () => {
+  it('creates the Claude 2.1.208 nested-memory attachment observed for a path rule', () => {
+    const entry = createClaudeRuleAttachmentEntry(
+      {
+        path: '/tmp/project/.claude/rules/typescript.md',
+        scope: 'project',
+        baseDirectory: '/tmp/project',
+        content: 'USE_TYPESCRIPT\n',
+        globs: ['src/**/*.ts'],
+        rawContent: '---\npaths:\n  - "src/**/*.ts"\n---\nUSE_TYPESCRIPT\n',
+      },
+      '.claude/rules/typescript.md',
+      {
+        sessionId: '20000000-0000-4000-8000-000000000001',
+        parentUuid: '10000000-0000-4000-8000-000000000001',
+        cwd: '/tmp/project',
+        claudeVersion: '2.1.208',
+        gitBranch: null,
+        createUuid: () => '10000000-0000-4000-8000-000000000002',
+        now: () => '2026-08-03T08:00:01.000Z',
+      },
+    )
+
+    expect(entry).toEqual({
+      parentUuid: '10000000-0000-4000-8000-000000000001',
+      isSidechain: false,
+      attachment: {
+        type: 'nested_memory',
+        path: '/tmp/project/.claude/rules/typescript.md',
+        content: {
+          path: '/tmp/project/.claude/rules/typescript.md',
+          type: 'Project',
+          content: 'USE_TYPESCRIPT\n',
+          globs: ['src/**/*.ts'],
+          contentDiffersFromDisk: true,
+          rawContent: '---\npaths:\n  - "src/**/*.ts"\n---\nUSE_TYPESCRIPT\n',
+        },
+        displayPath: '.claude/rules/typescript.md',
+      },
+      type: 'attachment',
+      uuid: '10000000-0000-4000-8000-000000000002',
+      timestamp: '2026-08-03T08:00:01.000Z',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: '/tmp/project',
+      sessionId: '20000000-0000-4000-8000-000000000001',
+      version: '2.1.208',
+      gitBranch: null,
+    })
+  })
+
   it('creates native last-prompt metadata for the final assistant leaf', () => {
     expect(
       createClaudeLastPromptEntry({

@@ -347,6 +347,7 @@ export class LocalToolRegistry implements ToolRegistry {
       return {
         content: truncateOutput(content, this.maxOutputBytes),
         isError: false,
+        accessedPaths: [filePath],
       }
     } finally {
       await handle.close()

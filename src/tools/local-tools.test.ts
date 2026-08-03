@@ -57,6 +57,7 @@ describe('LocalToolRegistry', () => {
     await expect(registry.execute(read, context)).resolves.toEqual({
       content: 'beta',
       isError: false,
+      accessedPaths: [await realpath(join(cwd, 'source.txt'))],
     })
 
     const write = await registry.prepare(

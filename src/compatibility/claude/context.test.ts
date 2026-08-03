@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
-import { ClaudeContextAssembler } from './context.js'
+import {
+  ClaudeConditionalRuleResolver,
+  ClaudeContextAssembler,
+} from './context.js'
 
 describe('ClaudeContextAssembler', () => {
   it('assembles ordered instructions and auto-memory as provider-neutral system context', async () => {
@@ -18,6 +21,7 @@ describe('ClaudeContextAssembler', () => {
             content: 'PROJECT_INSTRUCTION\n',
           },
         ],
+        conditionalRules: [],
         memoryIndex: {
           path: '/config/projects/workspace/memory/MEMORY.md',
           scope: 'project',
@@ -51,7 +55,11 @@ MEMORY_CONTEXT`,
 
   it('does not inject a system message when shared context is empty', async () => {
     const assembler = new ClaudeContextAssembler({
-      loadResources: async () => ({ instructions: [], memoryIndex: null }),
+      loadResources: async () => ({
+        instructions: [],
+        conditionalRules: [],
+        memoryIndex: null,
+      }),
     })
 
     await expect(assembler.assemble()).resolves.toEqual([])
@@ -65,6 +73,7 @@ MEMORY_CONTEXT`,
     const assembler = new ClaudeContextAssembler({
       loadResources: async () => ({
         instructions: [],
+        conditionalRules: [],
         memoryIndex: {
           path: '/config/projects/workspace/memory/MEMORY.md',
           scope: 'project',
@@ -86,6 +95,7 @@ MEMORY_CONTEXT`,
         instructions: [
           { path: '/workspace/CLAUDE.md', scope: 'project', content },
         ],
+        conditionalRules: [],
         memoryIndex: null,
       }),
     })
@@ -97,5 +107,78 @@ MEMORY_CONTEXT`,
     expect(first?.content).toContain('FIRST_CONTEXT')
     expect(updated?.content).toContain('UPDATED_CONTEXT')
     expect(updated?.content).not.toContain('FIRST_CONTEXT')
+  })
+})
+
+describe('ClaudeConditionalRuleResolver', () => {
+  it('matches project-relative read paths and skips rules already attached', async () => {
+    const resolver = new ClaudeConditionalRuleResolver({
+      loadResources: async () => ({
+        instructions: [],
+        conditionalRules: [
+          {
+            path: '/workspace/.claude/rules/root.md',
+            scope: 'project',
+            content: 'ROOT_RULE',
+            globs: ['packages/app/src/**/*.ts'],
+            baseDirectory: '/workspace',
+            rawContent: '---\npaths: ["src/**/*.ts"]\n---\nTYPESCRIPT_RULE',
+          },
+          {
+            path: '/workspace/packages/app/.claude/rules/nested.md',
+            scope: 'project',
+            content: 'NESTED_RULE',
+            globs: ['src/**/*.ts'],
+            baseDirectory: '/workspace/packages/app',
+            rawContent: '---\npaths: ["src/**/*.ts"]\n---\nNESTED_RULE',
+          },
+          {
+            path: '/config/rules/tests.md',
+            scope: 'user',
+            content: 'TEST_RULE',
+            globs: ['**/*.test.ts'],
+            baseDirectory: '/workspace/packages/app',
+            rawContent: '---\npaths: ["**/*.test.ts"]\n---\nTEST_RULE',
+          },
+          {
+            path: '/workspace/.claude/rules/wrong-base.md',
+            scope: 'project',
+            content: 'WRONG_BASE_RULE',
+            globs: ['src/**/*.ts'],
+            baseDirectory: '/workspace',
+            rawContent: '---\npaths: ["src/**/*.ts"]\n---\nWRONG_BASE_RULE',
+          },
+          {
+            path: '/workspace/packages/app/.claude/rules/dotdot-name.md',
+            scope: 'project',
+            content: 'DOTDOT_NAME_RULE',
+            globs: ['..config/**/*.ts'],
+            baseDirectory: '/workspace/packages/app',
+            rawContent:
+              '---\npaths: ["..config/**/*.ts"]\n---\nDOTDOT_NAME_RULE',
+          },
+        ],
+        memoryIndex: null,
+      }),
+    })
+
+    await expect(
+      resolver.resolve('/workspace/packages/app/src/app.test.ts', [
+        '/workspace/packages/app/.claude/rules/nested.md',
+      ]),
+    ).resolves.toEqual([
+      expect.objectContaining({ path: '/workspace/.claude/rules/root.md' }),
+      expect.objectContaining({ path: '/config/rules/tests.md' }),
+    ])
+    await expect(resolver.resolve('/outside/src/app.test.ts')).resolves.toEqual(
+      [],
+    )
+    await expect(
+      resolver.resolve('/workspace/packages/app/..config/app.ts'),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        path: '/workspace/packages/app/.claude/rules/dotdot-name.md',
+      }),
+    ])
   })
 })

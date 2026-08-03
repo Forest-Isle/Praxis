@@ -2,6 +2,8 @@ import { readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
+import { parse as parseYaml } from 'yaml'
+
 import { sanitizeClaudeProjectPath } from './paths.js'
 
 export type ClaudeResourceScope = 'local' | 'project' | 'user'
@@ -20,7 +22,15 @@ export interface ClaudeJsonResource {
 
 export interface ClaudeContextResources {
   instructions: ClaudeTextResource[]
+  conditionalRules: ClaudeConditionalRule[]
   memoryIndex: ClaudeTextResource | null
+}
+
+export interface ClaudeConditionalRule extends ClaudeTextResource {
+  baseDirectory: string
+  content: string
+  globs: string[]
+  rawContent: string
 }
 
 export interface ClaudeSharedResources {
@@ -101,26 +111,70 @@ async function loadFiles(
   )
 }
 
-function hasPathCondition(content: string): boolean {
-  const lines = content.split(/\r?\n/)
-  if (lines[0]?.trim() !== '---') return false
+function parseConditionalRule(
+  resource: ClaudeTextResource,
+  baseDirectory: string,
+): ClaudeConditionalRule | null {
+  const lines = resource.content.split(/\r?\n/)
+  if (lines[0]?.trim() !== '---') return null
   const closingIndex = lines.findIndex(
     (line, index) => index > 0 && line.trim() === '---',
   )
-  if (closingIndex < 0) return false
-  return lines.slice(1, closingIndex).some((line) => /^\s*paths\s*:/.test(line))
+  if (closingIndex < 0) return null
+
+  let metadata: unknown
+  try {
+    metadata = parseYaml(lines.slice(1, closingIndex).join('\n'))
+  } catch (error) {
+    throw new Error(`Invalid Claude rule frontmatter: ${resource.path}`, {
+      cause: error,
+    })
+  }
+  if (typeof metadata !== 'object' || metadata === null) return null
+  const paths = (metadata as Record<string, unknown>).paths
+  if (paths === undefined) return null
+  const globs = typeof paths === 'string' ? [paths] : paths
+  if (
+    !Array.isArray(globs) ||
+    globs.length === 0 ||
+    globs.some((glob) => typeof glob !== 'string' || glob.length === 0)
+  ) {
+    throw new Error(`Invalid Claude rule paths: ${resource.path}`)
+  }
+
+  return {
+    ...resource,
+    baseDirectory,
+    content: lines.slice(closingIndex + 1).join('\n'),
+    globs,
+    rawContent: resource.content,
+  }
 }
 
-async function loadRules(
+async function loadAllRules(
   directory: string,
   scope: ClaudeResourceScope,
-  includeConditional: boolean,
 ): Promise<ClaudeTextResource[]> {
   const paths = await findFiles(directory, (name) => name.endsWith('.md'))
-  const rules = await loadFiles(paths, scope)
-  return includeConditional
-    ? rules
-    : rules.filter((rule) => !hasPathCondition(rule.content))
+  return loadFiles(paths, scope)
+}
+
+async function loadRuleResources(
+  directory: string,
+  scope: ClaudeResourceScope,
+  baseDirectory: string,
+): Promise<{
+  unconditional: ClaudeTextResource[]
+  conditional: ClaudeConditionalRule[]
+}> {
+  const rules = await loadAllRules(directory, scope)
+  const parsed = rules.map((rule) => parseConditionalRule(rule, baseDirectory))
+  return {
+    unconditional: rules.filter((_, index) => parsed[index] === null),
+    conditional: parsed.filter(
+      (rule): rule is ClaudeConditionalRule => rule !== null,
+    ),
+  }
 }
 
 async function loadScopedFiles(
@@ -281,12 +335,17 @@ async function loadProjectMcp(
   return resources.filter(present)
 }
 
-async function loadProjectInstructions(
+interface ProjectResourceGroup<Rules> {
+  instructions: ClaudeTextResource[]
+  rules: Rules
+}
+
+async function loadProjectResourceGroups<Rules>(
   projectDirectories: readonly string[],
   homeBoundary: string | null,
-  includeConditionalRules: boolean,
-): Promise<ClaudeTextResource[]> {
-  const resourceGroups = await Promise.all(
+  loadRules: (rulesDirectory: string, ownerDirectory: string) => Promise<Rules>,
+): Promise<ProjectResourceGroup<Rules>[]> {
+  return Promise.all(
     projectDirectories.map(async (directory) => {
       const claudeRoot = join(directory, '.claude')
       const [rootInstruction, localInstruction, dotInstruction, rules] =
@@ -296,24 +355,63 @@ async function loadProjectInstructions(
           directory === homeBoundary
             ? null
             : readOptionalText(join(claudeRoot, 'CLAUDE.md'), 'project'),
-          directory === homeBoundary
-            ? []
-            : loadRules(
-                join(claudeRoot, 'rules'),
-                'project',
-                includeConditionalRules,
-              ),
+          loadRules(join(claudeRoot, 'rules'), directory),
         ])
-      return [
-        rootInstruction,
-        localInstruction,
-        dotInstruction,
-        ...rules,
-      ].filter(present)
+      return {
+        instructions: [
+          rootInstruction,
+          localInstruction,
+          dotInstruction,
+        ].filter(present),
+        rules,
+      }
     }),
   )
+}
 
-  return resourceGroups.flat()
+async function loadProjectInstructions(
+  projectDirectories: readonly string[],
+  homeBoundary: string | null,
+): Promise<ClaudeTextResource[]> {
+  const resourceGroups = await loadProjectResourceGroups(
+    projectDirectories,
+    homeBoundary,
+    (rulesDirectory, ownerDirectory) =>
+      ownerDirectory === homeBoundary
+        ? Promise.resolve([])
+        : loadAllRules(rulesDirectory, 'project'),
+  )
+
+  return resourceGroups.flatMap((group) => [
+    ...group.instructions,
+    ...group.rules,
+  ])
+}
+
+async function loadProjectContextResources(
+  projectDirectories: readonly string[],
+  homeBoundary: string | null,
+): Promise<{
+  instructions: ClaudeTextResource[]
+  conditionalRules: ClaudeConditionalRule[]
+}> {
+  const resourceGroups = await loadProjectResourceGroups(
+    projectDirectories,
+    homeBoundary,
+    (rulesDirectory, ownerDirectory) =>
+      ownerDirectory === homeBoundary
+        ? Promise.resolve({ unconditional: [], conditional: [] })
+        : loadRuleResources(rulesDirectory, 'project', ownerDirectory),
+  )
+  return {
+    instructions: resourceGroups.flatMap((group) => [
+      ...group.instructions,
+      ...group.rules.unconditional,
+    ]),
+    conditionalRules: resourceGroups.flatMap(
+      (group) => group.rules.conditional,
+    ),
+  }
 }
 
 function present<T>(value: T | null): value is T {
@@ -332,19 +430,27 @@ async function loadResolvedClaudeContext(
     sanitizeClaudeProjectPath(memoryIdentityRoot),
     'memory',
   )
-  const [globalInstruction, globalRules, projectInstructions, memoryIndex] =
+  const [globalInstruction, globalRules, projectContext, memoryIndex] =
     await Promise.all([
       readOptionalText(join(configRoot, 'CLAUDE.md'), 'user'),
-      loadRules(join(configRoot, 'rules'), 'user', false),
-      loadProjectInstructions(projectDirectories, homeBoundary, false),
+      loadRuleResources(
+        join(configRoot, 'rules'),
+        'user',
+        projectDirectories.at(-1) ?? memoryIdentityRoot,
+      ),
+      loadProjectContextResources(projectDirectories, homeBoundary),
       readOptionalText(join(projectMemoryDirectory, 'MEMORY.md'), 'project'),
     ])
   return {
     instructions: [
       globalInstruction,
-      ...globalRules,
-      ...projectInstructions,
+      ...globalRules.unconditional,
+      ...projectContext.instructions,
     ].filter(present),
+    conditionalRules: [
+      ...globalRules.conditional,
+      ...projectContext.conditionalRules,
+    ],
     memoryIndex,
   }
 }
@@ -393,8 +499,8 @@ export async function loadClaudeSharedResources({
     mcp,
   ] = await Promise.all([
     readOptionalText(join(configRoot, 'CLAUDE.md'), 'user'),
-    loadRules(join(configRoot, 'rules'), 'user', true),
-    loadProjectInstructions(projectDirectories, homeBoundary, true),
+    loadAllRules(join(configRoot, 'rules'), 'user'),
+    loadProjectInstructions(projectDirectories, homeBoundary),
     findFiles(projectMemoryDirectory, (name) => name.endsWith('.md')).then(
       (paths) => loadFiles(paths, 'project'),
     ),

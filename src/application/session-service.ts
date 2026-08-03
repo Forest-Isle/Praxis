@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { readdir, stat } from 'node:fs/promises'
-import { basename, extname, join } from 'node:path'
+import { basename, extname, isAbsolute, join, relative } from 'node:path'
 
+import type { ClaudeConditionalRuleResolver } from '../compatibility/claude/context.js'
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import { createClaudeTextFork } from '../compatibility/claude/fork.js'
 import {
@@ -15,6 +16,7 @@ import {
 import { findUnresolvedClaudeToolCalls } from '../compatibility/claude/tool-links.js'
 import {
   createClaudeLastPromptEntry,
+  createClaudeRuleAttachmentEntry,
   translateProviderEvents,
 } from '../compatibility/claude/translation.js'
 import {
@@ -44,6 +46,7 @@ export interface ClaudeSessionServiceOptions {
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
   contextAssembler?: ContextAssembler
+  conditionalRuleResolver?: Pick<ClaudeConditionalRuleResolver, 'resolve'>
   eventSink?: RuntimeEventSink
 }
 
@@ -189,7 +192,11 @@ export class ClaudeSessionService {
         },
         toolCompleted: async (
           call: ModelToolCall,
-          toolResult: { content: string; isError: boolean },
+          toolResult: {
+            content: string
+            isError: boolean
+            accessedPaths?: readonly string[]
+          },
         ) => {
           const [entry] = translateProviderEvents(
             [
@@ -205,6 +212,39 @@ export class ClaudeSessionService {
           if (!entry) throw new Error('Could not translate tool result')
           const tail = await this.append(lease, snapshot.tail, entry)
           snapshot = { entries: [...snapshot.entries, entry], tail }
+
+          if (
+            toolResult.isError ||
+            call.name !== 'Read' ||
+            !this.options.conditionalRuleResolver ||
+            !toolResult.accessedPaths
+          ) {
+            return
+          }
+          const attachedRulePaths = this.attachedRulePaths(snapshot.entries)
+          for (const filePath of toolResult.accessedPaths) {
+            const rules = await this.options.conditionalRuleResolver.resolve(
+              filePath,
+              [...attachedRulePaths],
+            )
+            for (const rule of rules) {
+              const attachment = createClaudeRuleAttachmentEntry(
+                rule,
+                this.displayRulePath(rule.path),
+                this.translationContext(sessionId, snapshot),
+              )
+              const attachmentTail = await this.append(
+                lease,
+                snapshot.tail,
+                attachment,
+              )
+              snapshot = {
+                entries: [...snapshot.entries, attachment],
+                tail: attachmentTail,
+              }
+              attachedRulePaths.add(rule.path)
+            }
+          }
         },
       }
       const recoveryRequest = {
@@ -250,6 +290,10 @@ export class ClaudeSessionService {
         ],
         cwd: this.options.cwd,
         observer,
+        reloadMessages: async () => [
+          ...contextMessages,
+          ...projectClaudeModelMessages(snapshot.entries),
+        ],
         ...(this.options.approveTool
           ? { approveTool: this.options.approveTool }
           : {}),
@@ -291,6 +335,33 @@ export class ClaudeSessionService {
       gitBranch: null,
       history: snapshot.entries,
     }
+  }
+
+  private attachedRulePaths(
+    entries: readonly ClaudeTranscriptEntry[],
+  ): Set<string> {
+    const paths = new Set<string>()
+    for (const entry of entries) {
+      if (entry.type !== 'attachment') continue
+      const attachment = entry.attachment
+      if (
+        typeof attachment !== 'object' ||
+        attachment === null ||
+        Array.isArray(attachment)
+      ) {
+        continue
+      }
+      const path = (attachment as Record<string, unknown>).path
+      if (typeof path === 'string') paths.add(path)
+    }
+    return paths
+  }
+
+  private displayRulePath(rulePath: string): string {
+    const pathFromCwd = relative(this.options.cwd, rulePath)
+    return pathFromCwd.startsWith('..') || isAbsolute(pathFromCwd)
+      ? rulePath
+      : pathFromCwd
   }
 
   private paths(sessionId: string) {

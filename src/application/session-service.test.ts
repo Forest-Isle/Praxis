@@ -1,4 +1,11 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -10,6 +17,11 @@ import type {
   ToolRegistry,
 } from '../core/runtime.js'
 import { AgentRunCancelledError, ModelProviderError } from '../core/runtime.js'
+import {
+  ClaudeConditionalRuleResolver,
+  ClaudeContextAssembler,
+} from '../compatibility/claude/context.js'
+import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeSessionService } from './session-service.js'
 
 const roots: string[] = []
@@ -138,6 +150,160 @@ describe('ClaudeSessionService', () => {
     })
     const transcript = await readFile(paths.sessionFile, 'utf8')
     expect(transcript).not.toContain('SYSTEM_CONTEXT')
+  })
+
+  it('activates a matching path rule after Read and preserves it across resume', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-rules-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sourcePath = join(cwd, 'src', 'app.ts')
+    const rulePath = join(cwd, '.claude', 'rules', 'typescript.md')
+    const marker = 'CONDITIONAL_RULE_ACTIVE_4731'
+    await Promise.all([
+      mkdir(join(cwd, 'src'), { recursive: true }),
+      mkdir(join(cwd, '.claude', 'rules'), { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(sourcePath, 'export const value = 1\n'),
+      writeFile(
+        rulePath,
+        `---\npaths:\n  - "src/**/*.ts"\n---\nUse ${marker}.\n`,
+      ),
+    ])
+
+    const requests: ModelRequest[] = []
+    let turn = 0
+    const provider: ModelProvider = {
+      model: 'fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_read_rule_path',
+              name: 'Read',
+              input: { file_path: 'src/app.ts' },
+            },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: `answer-${turn}` }
+      },
+    }
+    const loadResources = () => loadClaudeContextResources({ configRoot, cwd })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: {
+        definitions: () => [
+          {
+            name: 'Read',
+            description: 'Read a file',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return {
+            content: 'export const value = 1',
+            isError: false,
+            accessedPaths: [await realpath(sourcePath)],
+          }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextAssembler: new ClaudeContextAssembler({ loadResources }),
+      conditionalRuleResolver: new ClaudeConditionalRuleResolver({
+        loadResources,
+      }),
+    })
+
+    const first = await service.run('Read src/app.ts')
+    await service.resume(first.sessionId, 'Continue without tools')
+
+    expect(JSON.stringify(requests[0]?.messages)).not.toContain(marker)
+    expect(JSON.stringify(requests[1]?.messages)).toContain(marker)
+    expect(JSON.stringify(requests[2]?.messages)).toContain(marker)
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: first.sessionId,
+    })
+    const entries = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const attachments = entries.filter((entry) => entry.type === 'attachment')
+    expect(attachments).toHaveLength(1)
+    expect(attachments[0]?.attachment).toMatchObject({
+      type: 'nested_memory',
+      path: await realpath(rulePath),
+      content: {
+        content: `Use ${marker}.\n`,
+        globs: ['src/**/*.ts'],
+      },
+    })
+  })
+
+  it('does not activate path rules from non-Read tool metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-rule-gate-'))
+    roots.push(root)
+    let turn = 0
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          if (turn++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'call_grep_metadata',
+                name: 'Grep',
+                input: { pattern: 'value' },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'done' }
+        },
+      },
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return {
+            content: 'src/app.ts:1:value',
+            isError: false,
+            accessedPaths: [join(root, 'project', 'src', 'app.ts')],
+          }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      conditionalRuleResolver: {
+        async resolve() {
+          throw new Error('non-Read tool attempted rule activation')
+        },
+      },
+    })
+
+    await expect(service.run('Search for value')).resolves.toMatchObject({
+      text: 'done',
+    })
   })
 
   it('fails closed for unsupported Claude write versions', async () => {

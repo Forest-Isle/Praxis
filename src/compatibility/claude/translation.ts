@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { ClaudeTranscriptEntry } from './schema.js'
+import type { ClaudeConditionalRule } from './shared-resources.js'
 import { indexClaudeToolLinks } from './tool-links.js'
 
 export type ProviderPersistenceEvent =
@@ -52,6 +53,41 @@ export interface ClaudeLastPromptEntryOptions {
   sessionId: string
   lastPrompt: string
   leafUuid: string
+}
+
+export function createClaudeRuleAttachmentEntry(
+  rule: ClaudeConditionalRule,
+  displayPath: string,
+  context: TranslationContext,
+): ClaudeTranscriptEntry {
+  const createUuid = context.createUuid ?? randomUUID
+  const now = context.now ?? (() => new Date().toISOString())
+  return {
+    parentUuid: context.parentUuid,
+    isSidechain: false,
+    attachment: {
+      type: 'nested_memory',
+      path: rule.path,
+      content: {
+        path: rule.path,
+        type: rule.scope === 'user' ? 'User' : 'Project',
+        content: rule.content,
+        globs: rule.globs,
+        contentDiffersFromDisk: true,
+        rawContent: rule.rawContent,
+      },
+      displayPath,
+    },
+    type: 'attachment',
+    uuid: createUuid(),
+    timestamp: now(),
+    userType: 'external',
+    entrypoint: 'cli',
+    cwd: context.cwd,
+    sessionId: context.sessionId,
+    version: context.claudeVersion,
+    gitBranch: context.gitBranch,
+  }
 }
 
 export function createClaudeLastPromptEntry({

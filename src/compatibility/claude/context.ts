@@ -1,9 +1,12 @@
+import { isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path'
+
 import type {
   ContextAssembler,
   SystemContextMessage,
 } from '../../core/context.js'
 import type {
   ClaudeContextResources,
+  ClaudeConditionalRule,
   ClaudeTextResource,
 } from './shared-resources.js'
 
@@ -31,6 +34,37 @@ function limitMemoryIndex(resource: ClaudeTextResource): ClaudeTextResource {
 
 export interface ClaudeContextAssemblerOptions {
   loadResources(): Promise<ClaudeContextResources>
+}
+
+export type ClaudeConditionalRuleResolverOptions = ClaudeContextAssemblerOptions
+
+export class ClaudeConditionalRuleResolver {
+  constructor(private readonly options: ClaudeConditionalRuleResolverOptions) {}
+
+  async resolve(
+    filePath: string,
+    attachedRulePaths: readonly string[] = [],
+  ): Promise<readonly ClaudeConditionalRule[]> {
+    const absoluteFilePath = resolve(filePath)
+    const attached = new Set(attachedRulePaths)
+    const resources = await this.options.loadResources()
+    return resources.conditionalRules.filter((rule) => {
+      if (attached.has(rule.path)) return false
+      const pathFromBase = relative(rule.baseDirectory, absoluteFilePath)
+      if (
+        pathFromBase === '' ||
+        pathFromBase === '..' ||
+        pathFromBase.startsWith(`..${sep}`) ||
+        isAbsolute(pathFromBase)
+      ) {
+        return false
+      }
+      const rulePath = pathFromBase.split(sep).join('/')
+      return rule.globs.some((glob) =>
+        matchesGlob(rulePath, glob.replace(/^\.\//, '')),
+      )
+    })
+  }
 }
 
 export class ClaudeContextAssembler implements ContextAssembler {

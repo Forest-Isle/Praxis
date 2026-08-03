@@ -212,7 +212,7 @@ describe('Claude shared resource discovery', () => {
       ),
       writeFixture(
         join(cwd, '.claude', 'rules', 'conditional.md'),
-        '---\npaths:\n  - "src/**"\n---\nCONDITIONAL_CONTEXT',
+        '---\n"paths": ["src/**"]\n---\nCONDITIONAL_CONTEXT',
       ),
       writeFixture(memoryPath, 'MEMORY_CONTEXT'),
       writeFixture(join(dirname(memoryPath), 'details.md'), 'MEMORY_DETAIL'),
@@ -231,6 +231,16 @@ describe('Claude shared resource discovery', () => {
       'GLOBAL_RULE_CONTEXT',
       'PROJECT_CONTEXT',
       'PROJECT_RULE_CONTEXT',
+    ])
+    expect(resources.conditionalRules).toEqual([
+      {
+        path: join(cwd, '.claude', 'rules', 'conditional.md'),
+        scope: 'project',
+        content: 'CONDITIONAL_CONTEXT',
+        globs: ['src/**'],
+        rawContent: '---\n"paths": ["src/**"]\n---\nCONDITIONAL_CONTEXT',
+        baseDirectory: cwd,
+      },
     ])
     expect(resources.memoryIndex?.content).toBe('MEMORY_CONTEXT')
   })

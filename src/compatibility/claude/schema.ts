@@ -12,7 +12,13 @@ export interface ClaudeSchemaAdapter {
 }
 
 const SUPPORTED_VERSION = '2.1.208'
-const APPENDABLE_ENTRY_TYPES = new Set(['assistant', 'last-prompt', 'user'])
+const APPENDABLE_ENTRY_TYPES = new Set([
+  'assistant',
+  'attachment',
+  'last-prompt',
+  'user',
+])
+const FORKABLE_ENTRY_TYPES = new Set(['assistant', 'last-prompt', 'user'])
 
 function parseEntry(line: string): ClaudeTranscriptEntry {
   let value: unknown
@@ -116,6 +122,41 @@ function hasImageContent(message: Record<string, unknown>): boolean {
   })
 }
 
+function validateNestedMemoryAttachment(entry: ClaudeTranscriptEntry): void {
+  if (
+    entry.isSidechain !== false ||
+    entry.userType !== 'external' ||
+    entry.entrypoint !== 'cli' ||
+    !('gitBranch' in entry) ||
+    (entry.gitBranch !== null && typeof entry.gitBranch !== 'string') ||
+    !isRecord(entry.attachment)
+  ) {
+    throw new Error('Claude transcript has invalid nested-memory attachment')
+  }
+  const attachment = entry.attachment
+  if (
+    attachment.type !== 'nested_memory' ||
+    !isNonEmptyString(attachment.path) ||
+    !isNonEmptyString(attachment.displayPath) ||
+    !isRecord(attachment.content)
+  ) {
+    throw new Error('Claude transcript has invalid nested-memory attachment')
+  }
+  const content = attachment.content
+  if (
+    content.path !== attachment.path ||
+    (content.type !== 'Project' && content.type !== 'User') ||
+    typeof content.content !== 'string' ||
+    typeof content.rawContent !== 'string' ||
+    typeof content.contentDiffersFromDisk !== 'boolean' ||
+    !Array.isArray(content.globs) ||
+    content.globs.length === 0 ||
+    content.globs.some((glob) => !isNonEmptyString(glob))
+  ) {
+    throw new Error('Claude transcript has invalid nested-memory attachment')
+  }
+}
+
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   if (entry.type === 'last-prompt') {
     if (!isNonEmptyString(entry.leafUuid)) {
@@ -148,15 +189,6 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   ) {
     throw new Error('Claude transcript entry has invalid parentUuid')
   }
-  if (!isRecord(entry.message)) {
-    throw new Error('Claude transcript entry is missing message')
-  }
-
-  const role = entry.message.role
-  if (role !== entry.type) {
-    throw new Error('Claude transcript message role does not match entry type')
-  }
-
   if (entry.isCompactSummary === true) {
     throw new Error('Praxis cannot append Claude compact summaries yet')
   }
@@ -165,6 +197,20 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   }
   if (entry.toolDenialKind !== undefined) {
     throw new Error('Praxis cannot append Claude tool denials yet')
+  }
+
+  if (entry.type === 'attachment') {
+    validateNestedMemoryAttachment(entry)
+    return
+  }
+
+  if (!isRecord(entry.message)) {
+    throw new Error('Claude transcript entry is missing message')
+  }
+
+  const role = entry.message.role
+  if (role !== entry.type) {
+    throw new Error('Claude transcript message role does not match entry type')
   }
   if (hasImageContent(entry.message)) {
     throw new Error('Praxis cannot append Claude image results yet')
@@ -202,7 +248,7 @@ class ClaudeCode21208Adapter implements ClaudeSchemaAdapter {
   }
 
   serializeForFork(entry: ClaudeTranscriptEntry): string {
-    if (!APPENDABLE_ENTRY_TYPES.has(entry.type)) {
+    if (!FORKABLE_ENTRY_TYPES.has(entry.type)) {
       throw new Error(
         `Claude transcript entry type ${entry.type} is not forkable by Praxis`,
       )

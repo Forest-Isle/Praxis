@@ -70,6 +70,22 @@ describe('Claude transcript projection', () => {
         },
       },
       {
+        type: 'attachment',
+        attachment: {
+          type: 'nested_memory',
+          path: '/workspace/.claude/rules/typescript.md',
+          content: {
+            path: '/workspace/.claude/rules/typescript.md',
+            type: 'Project',
+            content: 'USE_TYPESCRIPT\n',
+            globs: ['src/**/*.ts'],
+            contentDiffersFromDisk: true,
+            rawContent: '---\npaths:\n  - "src/**/*.ts"\n---\nUSE_TYPESCRIPT\n',
+          },
+          displayPath: '.claude/rules/typescript.md',
+        },
+      },
+      {
         type: 'assistant',
         message: {
           role: 'assistant',
@@ -79,6 +95,7 @@ describe('Claude transcript projection', () => {
     ]
 
     expect(projectClaudeModelMessages(entries)).toEqual([
+      { role: 'system', content: 'USE_TYPESCRIPT\n' },
       { role: 'user', content: 'inspect' },
       {
         role: 'assistant',
@@ -98,6 +115,98 @@ describe('Claude transcript projection', () => {
         isError: false,
       },
       { role: 'assistant', content: 'done' },
+    ])
+  })
+
+  it('keeps every tool result adjacent when a Read activates a rule', () => {
+    const entries = [
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_read',
+              name: 'Read',
+              input: { file_path: 'src/app.ts' },
+            },
+            {
+              type: 'tool_use',
+              id: 'call_grep',
+              name: 'Grep',
+              input: { pattern: 'value' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_read',
+              content: 'export const value = 1',
+            },
+          ],
+        },
+      },
+      {
+        type: 'attachment',
+        attachment: {
+          type: 'nested_memory',
+          path: '/workspace/.claude/rules/typescript.md',
+          content: { content: 'USE_TYPESCRIPT\n' },
+          displayPath: '.claude/rules/typescript.md',
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_grep',
+              content: 'src/app.ts:1:value',
+            },
+          ],
+        },
+      },
+    ]
+
+    expect(projectClaudeModelMessages(entries)).toEqual([
+      { role: 'system', content: 'USE_TYPESCRIPT\n' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          {
+            id: 'call_read',
+            name: 'Read',
+            input: { file_path: 'src/app.ts' },
+          },
+          {
+            id: 'call_grep',
+            name: 'Grep',
+            input: { pattern: 'value' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_read',
+        content: 'export const value = 1',
+        isError: false,
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_grep',
+        content: 'src/app.ts:1:value',
+        isError: false,
+      },
     ])
   })
 

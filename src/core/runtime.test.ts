@@ -170,6 +170,10 @@ describe('AgentRuntime', () => {
     const result = await runtime.run({
       cwd: '/workspace',
       messages: [{ role: 'user', content: 'What is this project?' }],
+      reloadMessages: async () => [
+        { role: 'user', content: 'What is this project?' },
+        { role: 'system', content: 'ACTIVE_READ_RULE' },
+      ],
       observer: {
         async assistantCompleted(message) {
           persisted.push(message.toolCalls?.[0]?.id ?? message.content)
@@ -187,10 +191,8 @@ describe('AgentRuntime', () => {
     expect(requests).toHaveLength(2)
     expect(requests[0]?.tools).toEqual(tools.definitions())
     expect(requests[1]?.messages.at(-1)).toEqual({
-      role: 'tool',
-      toolCallId: 'call_read',
-      content: '# Praxis',
-      isError: false,
+      role: 'system',
+      content: 'ACTIVE_READ_RULE',
     })
     expect(persisted).toEqual([
       'call_read',

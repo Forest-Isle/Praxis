@@ -17,6 +17,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:compat": "npm run build && node scripts/verify-claude-compatibility.mjs && node scripts/verify-claude-advanced-fixtures.mjs",
+    "test:conditional-compat": "npm run build && node scripts/verify-conditional-rules.mjs",
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",
     "test:runtime-compat": "npm run build && node scripts/verify-runtime-compatibility.mjs",
@@ -25,6 +26,9 @@
   },
   "engines": {
     "node": ">=24"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

@@ -25,10 +25,15 @@ images, and compaction metadata are not copied into a fork.
 
 Global and project `CLAUDE.md`, unconditional user/project rules, and the first
 200 lines of canonical project `MEMORY.md` now assemble into provider-neutral
-system context for run and resume. Conditional rules and linked memory details
-remain deferred until their matching file or explicit read activates them.
-System context is read from the shared Claude data plane and is never copied
-into the authoritative conversation transcript.
+system context for run and resume. A successful `Read` of a path matching a
+conditional rule activates its instruction for later model turns and persists
+the Claude 2.1.208 native `nested_memory` attachment, so both Praxis and Claude
+Code retain it after resume. Prompt path mentions, Write, Grep, and Bash do not
+activate path rules. Edit also remains non-activating; the compatibility probe
+pre-reads its target before installing the matching rule so Edit can succeed
+without a rule-activating Read.
+Linked memory details remain explicit reads. Base system context stays
+ephemeral and is not copied into the authoritative transcript.
 
 ## Product boundary
 
@@ -90,6 +95,7 @@ probe uses a local provider fixture:
 
 ```sh
 npm run test:compat
+npm run test:conditional-compat
 npm run test:context-compat
 npm run test:permission-compat
 npm run test:runtime-compat

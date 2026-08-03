@@ -9,7 +9,10 @@ import {
   type SessionRunResult,
   type SessionSummary,
 } from './application/session-service.js'
-import { ClaudeContextAssembler } from './compatibility/claude/context.js'
+import {
+  ClaudeConditionalRuleResolver,
+  ClaudeContextAssembler,
+} from './compatibility/claude/context.js'
 import {
   loadClaudeContextResources,
   loadClaudeSettings,
@@ -99,6 +102,8 @@ const defaultDependencies: CliDependencies = {
     if (!provider) return new ClaudeSessionService(options)
 
     const settings = await loadClaudeSettings({ configRoot, cwd })
+    const loadContextResources = () =>
+      loadClaudeContextResources({ configRoot, cwd })
     return new ClaudeSessionService({
       ...options,
       provider,
@@ -108,7 +113,10 @@ const defaultDependencies: CliDependencies = {
         settings,
       }),
       contextAssembler: new ClaudeContextAssembler({
-        loadResources: () => loadClaudeContextResources({ configRoot, cwd }),
+        loadResources: loadContextResources,
+      }),
+      conditionalRuleResolver: new ClaudeConditionalRuleResolver({
+        loadResources: loadContextResources,
       }),
       ...(approveRecovery ? { approveRecovery: () => true } : {}),
     })
