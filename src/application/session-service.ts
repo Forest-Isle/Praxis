@@ -41,6 +41,7 @@ export interface ClaudeSessionServiceOptions {
   tools?: ToolRegistry
   permissions?: PermissionResolver
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
+  approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
   eventSink?: RuntimeEventSink
 }
 
@@ -208,20 +209,20 @@ export class ClaudeSessionService {
         cwd: this.options.cwd,
         observer,
         ...(signal ? { signal } : {}),
-        ...(this.options.approveTool
-          ? { approveTool: this.options.approveTool }
+        ...(this.options.approveRecovery
+          ? { approveTool: this.options.approveRecovery }
           : {}),
       }
       const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
         snapshot.entries,
       )
       for (const unresolvedToolCall of unresolvedToolCalls) {
-        if (!this.options.approveTool) {
+        if (!this.options.approveRecovery) {
           throw new Error(
             `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
           )
         }
-        if (!(await this.options.approveTool(unresolvedToolCall))) {
+        if (!(await this.options.approveRecovery(unresolvedToolCall))) {
           throw new Error(
             `Claude session tool call ${unresolvedToolCall.id} recovery was declined`,
           )

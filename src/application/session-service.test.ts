@@ -334,7 +334,7 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['must not run']),
       tools: recoveryTools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
-      approveTool: () => true,
+      approveRecovery: () => true,
     })
 
     await expect(

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
+import { ClaudePermissionResolver } from '../dist/permissions/claude-permission-resolver.js'
 import {
   detectClaudeVersion,
   runClaudeJson,
@@ -18,7 +19,7 @@ function contentBlocks(entry) {
   return Array.isArray(content) ? content : []
 }
 
-async function runReadProbe({ cwd, configRoot, path, expectedError }) {
+async function runReadProbe({ cwd, configRoot, path, expectedBehavior }) {
   const response = await runClaudeJson(
     [
       '-p',
@@ -58,15 +59,29 @@ async function runReadProbe({ cwd, configRoot, path, expectedError }) {
         block.input?.file_path === path,
     )
   if (!toolCall) throw new Error(`Claude did not call Read for ${path}`)
-  const result = entries
-    .flatMap(contentBlocks)
-    .find(
+  const resultEntry = entries.find((entry) =>
+    contentBlocks(entry).some(
       (block) =>
         block.type === 'tool_result' && block.tool_use_id === toolCall.id,
-    )
-  if (!result || (result.is_error === true) !== expectedError) {
+    ),
+  )
+  const result = contentBlocks(resultEntry).find(
+    (block) =>
+      block.type === 'tool_result' && block.tool_use_id === toolCall.id,
+  )
+  const behaviorMatches =
+    expectedBehavior === 'allow'
+      ? result?.is_error !== true
+      : expectedBehavior === 'ask'
+        ? result?.is_error === true &&
+          resultEntry?.toolDenialKind === 'permission-rule' &&
+          String(result.content).includes("running in don't ask mode")
+        : result?.is_error === true &&
+          resultEntry?.toolDenialKind === undefined &&
+          String(result.content).includes('denied by your permission settings')
+  if (!result || !behaviorMatches) {
     throw new Error(
-      `Claude Read permission mismatch for ${path}: ${JSON.stringify(result)}`,
+      `Claude Read ${expectedBehavior} mismatch for ${path}: ${JSON.stringify({ resultEntry, result })}`,
     )
   }
 }
@@ -135,50 +150,81 @@ try {
   const askedPath = join(cwd, 'asked.txt')
   const deniedPath = join(cwd, 'denied.txt')
   const bashCommand = 'printf praxis-permission allowed-argument'
+  const userPermissions = {
+    allow: [
+      `Read(${permissionPath(join(cwd, 'allowed*'))})`,
+      'Bash(printf praxis-permission:*)',
+    ],
+  }
+  const projectPermissions = {
+    ask: [`Read(${permissionPath(askedPath)})`],
+    deny: [`Read(${permissionPath(deniedPath)})`],
+  }
   await Promise.all([
     writeFixture(allowedPath, 'ALLOWED_PERMISSION_MARKER\n'),
     writeFixture(askedPath, 'ASKED_PERMISSION_MARKER\n'),
     writeFixture(deniedPath, 'DENIED_PERMISSION_MARKER\n'),
     writeFixture(
       join(configRoot, 'settings.json'),
-      JSON.stringify({
-        permissions: {
-          allow: [
-            `Read(${permissionPath(join(cwd, 'allowed*'))})`,
-            'Bash(printf praxis-permission:*)',
-          ],
-        },
-      }),
+      JSON.stringify({ permissions: userPermissions }),
     ),
     writeFixture(
       join(cwd, '.claude', 'settings.json'),
-      JSON.stringify({
-        permissions: {
-          ask: [`Read(${permissionPath(askedPath)})`],
-          deny: [`Read(${permissionPath(deniedPath)})`],
-        },
-      }),
+      JSON.stringify({ permissions: projectPermissions }),
     ),
   ])
 
   const version = await detectClaudeVersion('Permission probe')
+  const praxisResolver = new ClaudePermissionResolver({
+    cwd,
+    settings: [
+      {
+        path: join(configRoot, 'settings.json'),
+        scope: 'user',
+        value: { permissions: userPermissions },
+      },
+      {
+        path: join(cwd, '.claude', 'settings.json'),
+        scope: 'project',
+        value: { permissions: projectPermissions },
+      },
+    ],
+  })
+  const praxisCases = [
+    ['allow', 'Read', { file_path: allowedPath }],
+    ['ask', 'Read', { file_path: askedPath }],
+    ['deny', 'Read', { file_path: deniedPath }],
+    ['allow', 'Bash', { command: bashCommand }],
+  ]
+  for (const [expectedBehavior, name, input] of praxisCases) {
+    const decision = await praxisResolver.resolve({
+      id: `praxis_${expectedBehavior}_${name}`,
+      name,
+      input,
+    })
+    if (decision.behavior !== expectedBehavior) {
+      throw new Error(
+        `Praxis permission mismatch: expected ${expectedBehavior}, got ${decision.behavior}`,
+      )
+    }
+  }
   await runReadProbe({
     cwd,
     configRoot,
     path: allowedPath,
-    expectedError: false,
+    expectedBehavior: 'allow',
   })
   await runReadProbe({
     cwd,
     configRoot,
     path: askedPath,
-    expectedError: true,
+    expectedBehavior: 'ask',
   })
   await runReadProbe({
     cwd,
     configRoot,
     path: deniedPath,
-    expectedError: true,
+    expectedBehavior: 'deny',
   })
   await runBashProbe({ cwd, configRoot, command: bashCommand })
   console.log(

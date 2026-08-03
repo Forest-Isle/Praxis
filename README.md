@@ -64,6 +64,7 @@ export PRAXIS_BASE_URL=https://api.openai.com/v1
 node dist/cli.js run "Inspect this project"
 node dist/cli.js sessions --json
 node dist/cli.js resume <session-id> "Continue"
+node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
 node dist/cli.js fork <session-id>
 ```
 

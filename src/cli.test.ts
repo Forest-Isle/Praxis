@@ -100,6 +100,32 @@ describe('Praxis CLI', () => {
     ])
   })
 
+  it('passes explicit interrupted-tool recovery only for resume', async () => {
+    const capture = captureIO()
+    let approveRecovery = false
+    const base = dependencies()
+    const recovering: CliDependencies = {
+      async createService(options) {
+        approveRecovery = options.approveRecovery
+        return base.createService(options)
+      },
+    }
+
+    await expect(
+      run(
+        [
+          'resume',
+          '--retry-interrupted-tools',
+          '11111111-1111-4111-8111-111111111111',
+          'continue',
+        ],
+        capture.io,
+        recovering,
+      ),
+    ).resolves.toBe(0)
+    expect(approveRecovery).toBe(true)
+  })
+
   it('lists and forks sessions without a provider', async () => {
     const listed = captureIO()
     const forked = captureIO()

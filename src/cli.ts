@@ -25,7 +25,7 @@ const HELP = `Praxis — local-first general agent
 
 Usage:
   praxis run [--json] <prompt>
-  praxis resume [--json] <session-id> <prompt>
+  praxis resume [--json] [--retry-interrupted-tools] <session-id> <prompt>
   praxis fork [--json] <session-id>
   praxis sessions [--json]
   praxis <prompt>
@@ -56,6 +56,7 @@ export interface CliDependencies {
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
+    approveRecovery: boolean
   }): Promise<SessionCommands>
 }
 
@@ -65,7 +66,7 @@ const consoleIO: CliIO = {
 }
 
 const defaultDependencies: CliDependencies = {
-  async createService({ eventSink, requireProvider }) {
+  async createService({ eventSink, requireProvider, approveRecovery }) {
     const claudeVersion = await detectInstalledClaudeVersion()
     const cwd = process.cwd()
     const configRoot = resolve(
@@ -102,6 +103,7 @@ const defaultDependencies: CliDependencies = {
         cwd,
         settings,
       }),
+      ...(approveRecovery ? { approveRecovery: () => true } : {}),
     })
   },
 }
@@ -144,14 +146,21 @@ async function execute(
   }
 
   const json = argv.includes('--json')
-  const args = argv.filter((value) => value !== '--json')
+  const approveRecovery = argv.includes('--retry-interrupted-tools')
+  const args = argv.filter(
+    (value) => value !== '--json' && value !== '--retry-interrupted-tools',
+  )
   const command = args[0]
+  if (approveRecovery && command !== 'resume') {
+    throw new Error('--retry-interrupted-tools is only valid with resume')
+  }
   const knownCommand = ['run', 'resume', 'fork', 'sessions'].includes(
     command ?? '',
   )
   const service = await dependencies.createService({
     eventSink: eventSink(io, json),
     requireProvider: !['fork', 'sessions'].includes(command ?? 'run'),
+    approveRecovery,
   })
 
   if (command === 'sessions') {
