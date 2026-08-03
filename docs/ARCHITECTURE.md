@@ -54,6 +54,15 @@ Praxis-only indexes, provider payloads, and locks are non-authoritative
 sidecars under `<claude-config>/praxis/`. They must never be required to resume
 the human-visible conversation from Claude Code.
 
+`ContextAssembler` converts selected shared resources into provider-neutral
+system messages for each run or resume invocation. The same system message
+remains present across that invocation's tool loop. System context is ephemeral
+input: it is not appended to the shared Claude transcript. Skills, commands,
+agents, hooks, and MCP remain separate extension inputs instead of being
+injected wholesale into the base prompt. Path-conditional rules and linked
+memory details stay out of base context until a matching-file activation path
+is available.
+
 Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Clean-room rule

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { sanitizeClaudeProjectPath } from './paths.js'
 import {
+  loadClaudeContextResources,
   loadClaudeSettings,
   loadClaudeSharedResources,
 } from './shared-resources.js'
@@ -182,6 +183,56 @@ describe('Claude shared resource discovery', () => {
         value: { permissions: { allow: ['Read'] } },
       }),
     ])
+  })
+
+  it('loads model context without parsing unrelated settings or MCP resources', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-context-only-')),
+    )
+    tempDirectories.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'workspace')
+    const memoryPath = join(
+      configRoot,
+      'projects',
+      sanitizeClaudeProjectPath(cwd),
+      'memory',
+      'MEMORY.md',
+    )
+    await Promise.all([
+      writeFixture(join(configRoot, 'CLAUDE.md'), 'GLOBAL_CONTEXT'),
+      writeFixture(
+        join(configRoot, 'rules', 'global.md'),
+        'GLOBAL_RULE_CONTEXT',
+      ),
+      writeFixture(join(cwd, 'CLAUDE.md'), 'PROJECT_CONTEXT'),
+      writeFixture(
+        join(cwd, '.claude', 'rules', 'unconditional.md'),
+        'PROJECT_RULE_CONTEXT',
+      ),
+      writeFixture(
+        join(cwd, '.claude', 'rules', 'conditional.md'),
+        '---\npaths:\n  - "src/**"\n---\nCONDITIONAL_CONTEXT',
+      ),
+      writeFixture(memoryPath, 'MEMORY_CONTEXT'),
+      writeFixture(join(dirname(memoryPath), 'details.md'), 'MEMORY_DETAIL'),
+      writeFixture(
+        join(dirname(memoryPath), 'nested', 'MEMORY.md'),
+        'NESTED_MEMORY_INDEX',
+      ),
+      writeFixture(join(configRoot, 'settings.json'), '{'),
+      writeFixture(join(cwd, '.mcp.json'), '{'),
+    ])
+
+    const resources = await loadClaudeContextResources({ configRoot, cwd })
+
+    expect(resources.instructions.map((item) => item.content)).toEqual([
+      'GLOBAL_CONTEXT',
+      'GLOBAL_RULE_CONTEXT',
+      'PROJECT_CONTEXT',
+      'PROJECT_RULE_CONTEXT',
+    ])
+    expect(resources.memoryIndex?.content).toBe('MEMORY_CONTEXT')
   })
 
   it('does not swallow filesystem errors other than missing resources', async () => {

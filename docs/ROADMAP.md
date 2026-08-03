@@ -51,11 +51,14 @@ an allow/ask/deny permission oracle covering scope, glob, `//`, and Bash `:*`.
 
 ## Sprint 3 — context ecosystem
 
-- CLAUDE.md and rules hierarchy
-- auto memory
-- skills, commands, and agent definitions
-- hooks and remaining user/local MCP compatible sources
-- context budgeting and version-supported compaction
+Status: in progress.
+
+- [x] CLAUDE.md hierarchy and unconditional user/project rules in model context
+- [x] canonical `MEMORY.md` index with Claude-compatible 200-line visibility
+- [ ] path-conditional rule activation
+- [ ] skills, commands, and agent definitions
+- [ ] hooks and remaining user/local MCP compatible sources
+- [ ] context budgeting and version-supported compaction
 
 Exit gate: shared-data black-box matrix and context fidelity tests.
 

@@ -3,7 +3,11 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { sanitizeClaudeProjectPath } from '../dist/compatibility/claude/paths.js'
-import { loadClaudeSharedResources } from '../dist/compatibility/claude/shared-resources.js'
+import { ClaudeContextAssembler } from '../dist/compatibility/claude/context.js'
+import {
+  loadClaudeContextResources,
+  loadClaudeSharedResources,
+} from '../dist/compatibility/claude/shared-resources.js'
 import {
   assertContains,
   assertNotContains,
@@ -19,12 +23,17 @@ const markers = {
   localInstruction: 'SHARED_LOCAL_INSTRUCTION_2108',
   projectPackage: 'SHARED_PROJECT_PACKAGE_2163',
   projectCwd: 'SHARED_PROJECT_CWD_2274',
+  rule: 'SHARED_RULE_2304',
+  userRule: 'SHARED_USER_RULE_2326',
+  conditionalRule: 'SHARED_CONDITIONAL_RULE_2348',
   nonGit: 'SHARED_NON_GIT_2385',
   nonGitSkill: 'SHARED_NON_GIT_SKILL_2496',
   nonGitCommand: 'SHARED_NON_GIT_COMMAND_2507',
   nonGitAgent: 'SHARED_NON_GIT_AGENT_2618',
   memory: 'SHARED_MEMORY_3063',
   memoryDetail: 'SHARED_MEMORY_DETAIL_3174',
+  memoryBoundary: 'SHARED_MEMORY_LINE_200_3230',
+  memoryBeyondIndex: 'SHARED_MEMORY_AFTER_LINE_200_3285',
   skill: 'SHARED_SKILL_4074',
   hook: 'SHARED_HOOK_5085',
   mcp: 'SHARED_MCP_6096',
@@ -81,6 +90,16 @@ try {
     'memory',
   )
   const mcpServer = join(probeRoot, 'fixture-mcp.mjs')
+  const memoryIndex = [
+    `Auto-memory marker: ${markers.memory}`,
+    '- [Details](details.md)',
+    ...Array.from(
+      { length: 197 },
+      (_, index) => `Memory compatibility filler line ${index + 3}`,
+    ),
+    `Memory boundary marker: ${markers.memoryBoundary}`,
+    `Out-of-index marker: ${markers.memoryBeyondIndex}`,
+  ].join('\n')
 
   await Promise.all([
     write(
@@ -104,16 +123,25 @@ try {
       `Cwd compatibility marker: ${markers.projectCwd}\n`,
     ),
     write(
-      join(projectMemoryDirectory, 'MEMORY.md'),
-      `Auto-memory marker: ${markers.memory}\n\n- [Details](details.md)\n`,
+      join(cwd, '.claude', 'rules', 'fixture.md'),
+      `Rule compatibility marker: ${markers.rule}\n`,
     ),
+    write(
+      join(configRoot, 'rules', 'fixture.md'),
+      `User rule compatibility marker: ${markers.userRule}\n`,
+    ),
+    write(
+      join(cwd, '.claude', 'rules', 'conditional.md'),
+      `---\npaths:\n  - "src/**"\n---\nConditional rule marker: ${markers.conditionalRule}\n`,
+    ),
+    write(join(projectMemoryDirectory, 'MEMORY.md'), memoryIndex),
     write(
       join(projectMemoryDirectory, 'details.md'),
       `Detailed memory marker: ${markers.memoryDetail}\n`,
     ),
     write(
       join(repository, '.claude', 'skills', 'fixture-matrix', 'SKILL.md'),
-      `---\nname: fixture-matrix\ndescription: Verify the shared compatibility matrix.\n---\n\nSkill marker: ${markers.skill}. Read ${join(projectMemoryDirectory, 'details.md')}, call mcp__fixture_root__marker and mcp__fixture_cwd__marker once each, then reply with one JSON object containing every exact marker visible from global/root/local/package/cwd instructions, memory index/detail, skill, hooks/settings, both MCP tools, and active agent.\n`,
+      `---\nname: fixture-matrix\ndescription: Verify the shared compatibility matrix.\n---\n\nSkill marker: ${markers.skill}. Read ${join(projectMemoryDirectory, 'details.md')}, call mcp__fixture_root__marker and mcp__fixture_cwd__marker once each, then reply with one JSON object containing every exact marker visible from global/root/local/package/cwd/rule instructions, memory index/detail, skill, hooks/settings, both MCP tools, and active agent.\n`,
     ),
     write(
       join(configRoot, 'commands', 'fixture-command.md'),
@@ -253,6 +281,21 @@ process.stdin.on('data', chunk => {
     'Praxis cwd instructions',
   )
   assertContains(
+    resources.instructions.map((item) => item.content).join('\n'),
+    markers.rule,
+    'Praxis rules',
+  )
+  assertContains(
+    resources.instructions.map((item) => item.content).join('\n'),
+    markers.userRule,
+    'Praxis user rules',
+  )
+  assertContains(
+    resources.instructions.map((item) => item.content).join('\n'),
+    markers.conditionalRule,
+    'Praxis conditional rule discovery',
+  )
+  assertContains(
     resources.memory.map((item) => item.content).join('\n'),
     markers.memory,
     'Praxis memory',
@@ -290,6 +333,55 @@ process.stdin.on('data', chunk => {
     markers.projectAgent,
     'Praxis project agents',
   )
+  const contextResources = await loadClaudeContextResources({
+    configRoot,
+    cwd,
+  })
+  const [systemContext] = await new ClaudeContextAssembler({
+    loadResources: async () => contextResources,
+  }).assemble()
+  if (systemContext?.role !== 'system') {
+    throw new Error('Praxis did not assemble shared system context')
+  }
+  for (const label of [
+    'global',
+    'project',
+    'localInstruction',
+    'projectPackage',
+    'projectCwd',
+    'rule',
+    'userRule',
+    'memory',
+    'memoryBoundary',
+  ]) {
+    assertContains(
+      systemContext.content,
+      markers[label],
+      `Praxis assembled ${label}`,
+    )
+  }
+  assertNotContains(
+    systemContext.content,
+    markers.memoryDetail,
+    'Praxis deferred memory detail',
+  )
+  assertNotContains(
+    systemContext.content,
+    markers.conditionalRule,
+    'Praxis deferred conditional rule',
+  )
+  assertNotContains(
+    systemContext.content,
+    markers.memoryBeyondIndex,
+    'Praxis memory index line limit',
+  )
+  for (const label of ['skill', 'command', 'agent']) {
+    assertNotContains(
+      systemContext.content,
+      markers[label],
+      `Praxis deferred ${label}`,
+    )
+  }
   if (resources.settings.length !== 2 || resources.mcp.length !== 2) {
     throw new Error('Praxis did not discover shared settings/hooks and MCP')
   }
@@ -306,6 +398,53 @@ process.stdin.on('data', chunk => {
   const serializedMcp = JSON.stringify(resources.mcp.map((item) => item.value))
   assertContains(serializedMcp, markers.mcp, 'Praxis root MCP')
   assertContains(serializedMcp, markers.mcpCwd, 'Praxis cwd MCP')
+
+  const baseContextResponse = await runClaudeJson(
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--tools',
+      '',
+      '--output-format',
+      'json',
+      'Without using tools, reply with every exact token matching SHARED_[A-Z0-9_]+ already present in your instructions or auto-memory.',
+    ],
+    cwd,
+    configRoot,
+  )
+  const baseContextResult = String(baseContextResponse.result)
+  for (const label of [
+    'global',
+    'project',
+    'rule',
+    'userRule',
+    'memory',
+    'memoryBoundary',
+  ]) {
+    assertContains(
+      baseContextResult,
+      markers[label],
+      `Claude base context ${label}`,
+    )
+  }
+  assertNotContains(
+    baseContextResult,
+    markers.memoryDetail,
+    'Claude deferred memory detail',
+  )
+  assertNotContains(
+    baseContextResult,
+    markers.conditionalRule,
+    'Claude deferred conditional rule',
+  )
+  assertNotContains(
+    baseContextResult,
+    markers.memoryBeyondIndex,
+    'Claude memory index line limit',
+  )
 
   const response = await runClaudeJson(
     [
@@ -333,7 +472,10 @@ process.stdin.on('data', chunk => {
     'localInstruction',
     'projectPackage',
     'projectCwd',
+    'rule',
+    'userRule',
     'memory',
+    'memoryBoundary',
     'memoryDetail',
     'skill',
     'hook',

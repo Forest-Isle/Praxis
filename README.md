@@ -10,17 +10,25 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 2 headless tool runtime complete. Praxis can run, resume, fork, and list
-Claude-compatible sessions through a provider-neutral event loop and an
-OpenAI-compatible streaming provider. Built-in read, write, edit, search, and
-shell tools execute behind Claude-compatible local permission rules with
-workspace path checks, timeouts, cancellation, and bounded output.
+Sprint 2 headless tool runtime is complete; Sprint 3 context integration is in
+progress. Praxis can run, resume, fork, and list Claude-compatible sessions
+through a provider-neutral event loop and an OpenAI-compatible streaming
+provider. Built-in read, write, edit, search, and shell tools execute behind
+Claude-compatible local permission rules with workspace path checks, timeouts,
+cancellation, and bounded output.
 
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
 Claude transcript, and Claude Code 2.1.208 can resume a Praxis tool session.
 Sprint 1 forks remain text-only: provider reasoning, queue operations, tools,
 images, and compaction metadata are not copied into a fork.
+
+Global and project `CLAUDE.md`, unconditional user/project rules, and the first
+200 lines of canonical project `MEMORY.md` now assemble into provider-neutral
+system context for run and resume. Conditional rules and linked memory details
+remain deferred until their matching file or explicit read activates them.
+System context is read from the shared Claude data plane and is never copied
+into the authoritative conversation transcript.
 
 ## Product boundary
 
@@ -76,11 +84,13 @@ Permissions load from the shared global and current-project Claude settings.
 without an approval callback returns a denied tool result; add an explicit
 compatible `allow` rule for trusted headless commands.
 
-With an authenticated Claude Code 2.1.208 installation, run the isolated live
-probes separately (they make real model requests):
+With a Claude Code 2.1.208 installation, run the isolated compatibility probes
+separately. Claude-backed probes make real model requests; the context-runtime
+probe uses a local provider fixture:
 
 ```sh
 npm run test:compat
+npm run test:context-compat
 npm run test:permission-compat
 npm run test:runtime-compat
 npm run test:shared-compat

@@ -26,6 +26,7 @@ import {
   type RuntimeEventSink,
   type ToolRegistry,
 } from '../core/runtime.js'
+import type { ContextAssembler } from '../core/context.js'
 import {
   ClaudeTranscriptStore,
   type ClaudeTranscriptLease,
@@ -42,6 +43,7 @@ export interface ClaudeSessionServiceOptions {
   permissions?: PermissionResolver
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
+  contextAssembler?: ContextAssembler
   eventSink?: RuntimeEventSink
 }
 
@@ -230,6 +232,9 @@ export class ClaudeSessionService {
       }
       await runtime.recoverToolCalls(unresolvedToolCalls, recoveryRequest)
 
+      const contextMessages =
+        (await this.options.contextAssembler?.assemble()) ?? []
+
       const [userEntry] = translateProviderEvents(
         [{ type: 'user-text', text: prompt }],
         this.translationContext(sessionId, snapshot),
@@ -239,7 +244,10 @@ export class ClaudeSessionService {
       snapshot = { entries: [...snapshot.entries, userEntry], tail: userTail }
 
       const runtimeRequest = {
-        messages: projectClaudeModelMessages(snapshot.entries),
+        messages: [
+          ...contextMessages,
+          ...projectClaudeModelMessages(snapshot.entries),
+        ],
         cwd: this.options.cwd,
         observer,
         ...(this.options.approveTool

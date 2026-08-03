@@ -87,6 +87,59 @@ describe('ClaudeSessionService', () => {
     expect(source).not.toContain(`"sessionId":"${first.sessionId}"`)
   })
 
+  it('assembles fresh system context for run and resume without persisting it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-context-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let contextVersion = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: `answer-${requests.length}` }
+        },
+      },
+      contextAssembler: {
+        async assemble() {
+          contextVersion += 1
+          return [
+            {
+              role: 'system',
+              content: `SYSTEM_CONTEXT_${contextVersion}`,
+            },
+          ]
+        },
+      },
+    })
+
+    const first = await service.run('first prompt')
+    await service.resume(first.sessionId, 'second prompt')
+
+    expect(requests[0]?.messages[0]).toEqual({
+      role: 'system',
+      content: 'SYSTEM_CONTEXT_1',
+    })
+    expect(requests[1]?.messages[0]).toEqual({
+      role: 'system',
+      content: 'SYSTEM_CONTEXT_2',
+    })
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: first.sessionId,
+    })
+    const transcript = await readFile(paths.sessionFile, 'utf8')
+    expect(transcript).not.toContain('SYSTEM_CONTEXT')
+  })
+
   it('fails closed for unsupported Claude write versions', async () => {
     const { configRoot, cwd } = await createService()
     const service = new ClaudeSessionService({

@@ -9,11 +9,15 @@ import {
   type SessionRunResult,
   type SessionSummary,
 } from './application/session-service.js'
+import { ClaudeContextAssembler } from './compatibility/claude/context.js'
+import {
+  loadClaudeContextResources,
+  loadClaudeSettings,
+} from './compatibility/claude/shared-resources.js'
 import {
   AgentRunCancelledError,
   type RuntimeEventSink,
 } from './core/runtime.js'
-import { loadClaudeSettings } from './compatibility/claude/shared-resources.js'
 import { ClaudePermissionResolver } from './permissions/claude-permission-resolver.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
@@ -102,6 +106,9 @@ const defaultDependencies: CliDependencies = {
       permissions: new ClaudePermissionResolver({
         cwd,
         settings,
+      }),
+      contextAssembler: new ClaudeContextAssembler({
+        loadResources: () => loadClaudeContextResources({ configRoot, cwd }),
       }),
       ...(approveRecovery ? { approveRecovery: () => true } : {}),
     })
