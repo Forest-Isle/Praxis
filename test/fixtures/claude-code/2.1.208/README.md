@@ -8,6 +8,11 @@ paths, timestamps, token counts, and human text with deterministic values.
   `last-prompt` metadata tail.
 - `tool-session.jsonl`: Bash `tool_use` and matching user `tool_result`
   envelope, including `sourceToolAssistantUUID` and `toolUseResult`.
+- `compact-session.jsonl`: manual `compact_boundary` and compact-summary pair.
+- `sidechain-session.jsonl`: subagent transcript entries with `isSidechain`,
+  `agentId`, and attribution metadata.
+- `media-error-session.jsonl`: image result and non-zero Bash error result.
+- `interrupted-session.jsonl`: Ctrl-C tool rejection and interruption message.
 
 They contain no Claude Code source and no user configuration or conversation
 data.

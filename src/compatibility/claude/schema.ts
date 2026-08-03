@@ -62,6 +62,19 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   if (role !== entry.type) {
     throw new Error('Claude transcript message role does not match entry type')
   }
+
+  if (entry.isCompactSummary === true) {
+    throw new Error('Praxis cannot append Claude compact summaries yet')
+  }
+  if (entry.isSidechain === true) {
+    throw new Error('Praxis cannot append Claude sidechains yet')
+  }
+  if (entry.toolDenialKind !== undefined) {
+    throw new Error('Praxis cannot append Claude tool denials yet')
+  }
+  if (JSON.stringify(entry.message).includes('"type":"image"')) {
+    throw new Error('Praxis cannot append Claude image results yet')
+  }
 }
 
 class ClaudeCode21208Adapter implements ClaudeSchemaAdapter {

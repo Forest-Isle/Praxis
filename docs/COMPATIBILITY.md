@@ -135,7 +135,14 @@ Support policy:
 Current write scope is deliberately smaller than read scope. Praxis reads any
 well-formed native entry as opaque data, but only appends validated `user` and
 `assistant` conversational entries. Summary, sidechain, attachment, image, and
-other entry writers remain disabled until their black-box fixtures pass.
+other entry writers remain disabled until their runtime implementations and
+write/resume probes pass.
+
+Claude 2.1.208 read fixtures now cover text, tool use/results, manual
+compaction, subagent sidechains, image results, non-zero tool errors, and user
+interruption. Passing a read fixture does not enable its writer: compact
+summaries, sidechains, images, and tool-denial entries remain explicitly
+rejected by the append adapter.
 
 ## Resource ownership and current access
 
@@ -163,6 +170,12 @@ Compatibility work is complete only when black-box tests prove both directions:
 
 Tests run against isolated temporary `CLAUDE_CONFIG_DIR` directories and a
 version matrix of installed Claude Code releases.
+
+For 2.1.208, `npm run test:compat` proves transcript creation/resume in both
+directions, including a Praxis-written tool chain. `npm run
+test:shared-compat` proves Claude and Praxis observe the same instructions,
+memory, skill, hook, MCP, command, agent, and settings fixtures without copying
+or synchronization.
 
 ## Explicit non-goals
 

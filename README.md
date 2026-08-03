@@ -48,10 +48,11 @@ node dist/cli.js --help
 ```
 
 With an authenticated Claude Code 2.1.208 installation, run the isolated live
-resume probe separately (it makes real model requests):
+probes separately (they make real model requests):
 
 ```sh
 npm run test:compat
+npm run test:shared-compat
 ```
 
 Architecture constraints live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

@@ -2,7 +2,7 @@
 
 ## Sprint 0 — executable compatibility protocol
 
-Status: in progress.
+Status: complete for Claude Code 2.1.208.
 
 - [x] Claude 2.1.208 project-path resolver, including long-path hash fixture
 - [x] versioned schema adapter and unknown-field round-trip
@@ -13,13 +13,16 @@ Status: in progress.
 - [x] runtime contract and local threat model
 - [x] automated Claude-created → Praxis → Claude resume probe
 - [x] Praxis-created → Claude discovery/resume probe
-- [ ] shared instructions/memory/skill/hook/MCP black-box matrix
-- [ ] schema fixtures for compaction, sidechains, images, interruption, and errors
+- [x] shared instructions/memory/skill/hook/MCP black-box matrix
+- [x] schema fixtures for compaction, sidechains, images, interruption, and errors
 
-Exit gate: all remaining black-box items pass against installed Claude Code
-2.1.208 in isolated config directories. Unknown versions stay read-only.
+Exit gate passed against installed Claude Code 2.1.208 in isolated config
+directories. Unknown versions stay read-only; each new Claude release must pass
+the same probes before write support is enabled.
 
 ## Sprint 1 — headless vertical slice
+
+Status: ready.
 
 - CLI `run`, `resume`, `fork`, `sessions`, and JSON output
 - runtime state machine and event stream

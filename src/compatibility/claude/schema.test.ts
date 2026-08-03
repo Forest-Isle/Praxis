@@ -11,6 +11,18 @@ const fixtureUrl = new URL(
   '../../../test/fixtures/claude-code/2.1.208/basic-session.jsonl',
   import.meta.url,
 )
+const advancedFixtureUrls = [
+  'compact-session.jsonl',
+  'sidechain-session.jsonl',
+  'media-error-session.jsonl',
+  'interrupted-session.jsonl',
+].map(
+  (name) =>
+    new URL(
+      `../../../test/fixtures/claude-code/2.1.208/${name}`,
+      import.meta.url,
+    ),
+)
 
 describe('ClaudeSchemaAdapter', () => {
   it('round-trips Claude Code 2.1.208 entries without losing unknown fields', async () => {
@@ -63,6 +75,44 @@ describe('ClaudeSchemaAdapter', () => {
     )
     expect(() => adapter.parse('{"message":{}}')).toThrow(
       'Claude transcript entry must have a type',
+    )
+  })
+
+  it('losslessly reads advanced Claude entries without enabling their writers', async () => {
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+    const fixtures = await Promise.all(
+      advancedFixtureUrls.map(async (url) => {
+        const source = await readFile(url, 'utf8')
+        const lines = source.trimEnd().split('\n')
+        expect(
+          lines.map((line) => adapter.serialize(adapter.parse(line))),
+        ).toEqual(lines)
+        return lines.map((line) => adapter.parse(line))
+      }),
+    )
+    const entries = fixtures.flat()
+
+    const compactSummary = entries.find((entry) => entry.isCompactSummary)
+    const sidechain = entries.find((entry) => entry.isSidechain)
+    const imageResult = entries.find((entry) =>
+      JSON.stringify(entry).includes('"type":"image"'),
+    )
+    const interrupted = entries.find(
+      (entry) => entry.toolDenialKind === 'user-rejected',
+    )
+    if (!compactSummary || !sidechain || !imageResult || !interrupted) {
+      throw new Error('Advanced fixture profile is incomplete')
+    }
+
+    expect(() => adapter.serializeForAppend(compactSummary)).toThrow(
+      'compact summaries',
+    )
+    expect(() => adapter.serializeForAppend(sidechain)).toThrow('sidechains')
+    expect(() => adapter.serializeForAppend(imageResult)).toThrow(
+      'image results',
+    )
+    expect(() => adapter.serializeForAppend(interrupted)).toThrow(
+      'tool denials',
     )
   })
 })
