@@ -293,5 +293,14 @@ describe('AgentRuntime', () => {
     await expect(
       toolRuntime.run({ messages: [{ role: 'user', content: 'inspect' }] }),
     ).rejects.toThrow('Model exceeded 1 tool calls in one turn')
+    await expect(
+      toolRuntime.recoverToolCalls(
+        [
+          { id: 'one', name: 'Read', input: { file_path: 'one' } },
+          { id: 'two', name: 'Read', input: { file_path: 'two' } },
+        ],
+        {},
+      ),
+    ).rejects.toThrow('Recovery exceeded 1 tool calls in one turn')
   })
 })

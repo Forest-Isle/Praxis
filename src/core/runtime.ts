@@ -296,13 +296,32 @@ export class AgentRuntime {
     }
   }
 
-  async recoverToolCall(
-    call: ModelToolCall,
+  async recoverToolCalls(
+    calls: readonly ModelToolCall[],
     request: AgentToolRecoveryRequest,
-  ): Promise<ToolExecutionResult> {
+  ): Promise<ToolExecutionResult[]> {
     if (request.signal?.aborted) return this.cancel()
-    this.emit({ type: 'tool-call', call })
-    return this.completeToolCall(call, request)
+    const maxToolCallsPerTurn = this.options.maxToolCallsPerTurn ?? 32
+    const maxToolInputBytes = this.options.maxToolInputBytes ?? 1024 * 1024
+    if (calls.length > maxToolCallsPerTurn) {
+      throw new Error(
+        `Recovery exceeded ${maxToolCallsPerTurn} tool calls in one turn`,
+      )
+    }
+    for (const call of calls) {
+      if (Buffer.byteLength(JSON.stringify(call.input)) > maxToolInputBytes) {
+        throw new Error(
+          `Recovery tool input exceeded ${maxToolInputBytes} bytes`,
+        )
+      }
+    }
+
+    const results: ToolExecutionResult[] = []
+    for (const call of calls) {
+      this.emit({ type: 'tool-call', call })
+      results.push(await this.completeToolCall(call, request))
+    }
+    return results
   }
 
   private async completeToolCall(

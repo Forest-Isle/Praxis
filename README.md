@@ -80,6 +80,7 @@ probes separately (they make real model requests):
 
 ```sh
 npm run test:compat
+npm run test:permission-compat
 npm run test:runtime-compat
 npm run test:shared-compat
 ```

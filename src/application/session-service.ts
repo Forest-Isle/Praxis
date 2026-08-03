@@ -212,9 +212,10 @@ export class ClaudeSessionService {
           ? { approveTool: this.options.approveTool }
           : {}),
       }
-      for (const unresolvedToolCall of findUnresolvedClaudeToolCalls(
+      const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
         snapshot.entries,
-      )) {
+      )
+      for (const unresolvedToolCall of unresolvedToolCalls) {
         if (!this.options.approveTool) {
           throw new Error(
             `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
@@ -225,8 +226,8 @@ export class ClaudeSessionService {
             `Claude session tool call ${unresolvedToolCall.id} recovery was declined`,
           )
         }
-        await runtime.recoverToolCall(unresolvedToolCall, recoveryRequest)
       }
+      await runtime.recoverToolCalls(unresolvedToolCalls, recoveryRequest)
 
       const [userEntry] = translateProviderEvents(
         [{ type: 'user-text', text: prompt }],

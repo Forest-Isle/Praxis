@@ -46,7 +46,8 @@ Status: complete for the headless OpenAI-compatible runtime.
 - [x] native `tool_use`/`tool_result` persistence
 
 Exit gate passed with provider-independent tool and denial scenarios plus a
-live Claude Code 2.1.208 reopen probe for a Praxis-created tool round trip.
+live Claude Code 2.1.208 reopen probe for a Praxis-created tool round trip and
+an allow/ask/deny permission oracle covering scope, glob, `//`, and Bash `:*`.
 
 ## Sprint 3 — context ecosystem
 
