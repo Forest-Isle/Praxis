@@ -162,6 +162,64 @@ describe('ClaudeSchemaAdapter', () => {
     expect(() => adapter.serializeForFork(attachment)).toThrow('not forkable')
   })
 
+  it('accepts only validated Claude 2.1.208 hook attachments', () => {
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+    const common = {
+      type: 'attachment',
+      parentUuid: 'parent',
+      isSidechain: false,
+      uuid: 'hook',
+      timestamp: '2026-08-03T08:00:00.000Z',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: '/tmp/project',
+      sessionId: 'session',
+      version: '2.1.208',
+      gitBranch: null,
+    }
+    const success = {
+      ...common,
+      attachment: {
+        type: 'hook_success',
+        hookName: 'PreToolUse:Bash',
+        toolUseID: 'call_hook',
+        hookEvent: 'PreToolUse',
+        content: '',
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        command: 'node hook.mjs',
+        durationMs: 4,
+      },
+    }
+    const context = {
+      ...common,
+      uuid: 'context',
+      attachment: {
+        type: 'hook_additional_context',
+        content: ['HOOK_CONTEXT'],
+        hookName: 'PreToolUse:Bash',
+        toolUseID: 'call_hook',
+        hookEvent: 'PreToolUse',
+      },
+    }
+
+    expect(adapter.serializeForAppend(success)).toBe(JSON.stringify(success))
+    expect(adapter.serializeForAppend(context)).toBe(JSON.stringify(context))
+    expect(() =>
+      adapter.serializeForAppend({
+        ...success,
+        attachment: { ...success.attachment, command: '' },
+      }),
+    ).toThrow('invalid hook success attachment')
+    expect(() =>
+      adapter.serializeForAppend({
+        ...context,
+        attachment: { ...context.attachment, content: [] },
+      }),
+    ).toThrow('invalid hook context attachment')
+  })
+
   it('falls back to read-only parsing for unknown Claude versions', () => {
     const adapter = selectClaudeSchemaAdapter('9.0.0')
     const entry = adapter.parse('{"type":"user","unknown":true}')

@@ -3,6 +3,10 @@ import { randomUUID } from 'node:crypto'
 import type { ClaudeTranscriptEntry } from './schema.js'
 import type { ClaudeConditionalRule } from './shared-resources.js'
 import { indexClaudeToolLinks } from './tool-links.js'
+import type {
+  ClaudeHookExecution,
+  ClaudeHookOutcome,
+} from '../../hooks/claude-hooks.js'
 
 export type ProviderPersistenceEvent =
   | { type: 'user-text'; text: string }
@@ -54,6 +58,101 @@ export interface ClaudeLastPromptEntryOptions {
   sessionId: string
   lastPrompt: string
   leafUuid: string
+}
+
+function hookExecutionContent(execution: ClaudeHookExecution): string {
+  if (
+    execution.event !== 'UserPromptSubmit' &&
+    execution.event !== 'SessionStart'
+  ) {
+    return ''
+  }
+  const stdout = execution.stdout.trim()
+  if (stdout.startsWith('{')) {
+    try {
+      JSON.parse(stdout)
+      return ''
+    } catch {
+      return stdout
+    }
+  }
+  return stdout
+}
+
+export function createClaudeHookAttachmentEntries(
+  outcome: ClaudeHookOutcome,
+  context: TranslationContext,
+): ClaudeTranscriptEntry[] {
+  const createUuid = context.createUuid ?? randomUUID
+  const now = context.now ?? (() => new Date().toISOString())
+  const entries: ClaudeTranscriptEntry[] = []
+  let parentUuid = context.parentUuid
+  const persistedExecutions = outcome.executions.filter(
+    (execution) =>
+      !(
+        (execution.event === 'Stop' || execution.event === 'SessionEnd') &&
+        execution.exitCode === 0 &&
+        execution.stdout.length === 0 &&
+        execution.stderr.length === 0
+      ),
+  )
+  for (const execution of persistedExecutions) {
+    const uuid = createUuid()
+    entries.push({
+      parentUuid,
+      isSidechain: false,
+      attachment: {
+        type: execution.exitCode === 0 ? 'hook_success' : 'hook_error',
+        hookName: execution.hookName,
+        toolUseID: execution.toolUseId,
+        hookEvent: execution.event,
+        content:
+          execution.exitCode === 0
+            ? hookExecutionContent(execution)
+            : execution.stderr.trim(),
+        stdout: execution.stdout,
+        stderr: execution.stderr,
+        exitCode: execution.exitCode,
+        command: execution.command,
+        durationMs: execution.durationMs,
+      },
+      type: 'attachment',
+      uuid,
+      timestamp: now(),
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: context.cwd,
+      sessionId: context.sessionId,
+      version: context.claudeVersion,
+      gitBranch: context.gitBranch,
+    })
+    parentUuid = uuid
+  }
+  if (outcome.additionalContext.length > 0 && persistedExecutions.length > 0) {
+    const execution = persistedExecutions.at(-1)
+    if (!execution) return entries
+    entries.push({
+      parentUuid,
+      isSidechain: false,
+      attachment: {
+        type: 'hook_additional_context',
+        content: outcome.additionalContext,
+        hookName: execution.hookName,
+        toolUseID: execution.toolUseId,
+        hookEvent: execution.event,
+      },
+      type: 'attachment',
+      uuid: createUuid(),
+      timestamp: now(),
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: context.cwd,
+      sessionId: context.sessionId,
+      version: context.claudeVersion,
+      gitBranch: context.gitBranch,
+    })
+  }
+  return entries
 }
 
 export function createClaudeRuleAttachmentEntry(

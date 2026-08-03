@@ -158,6 +158,68 @@ function validateNestedMemoryAttachment(entry: ClaudeTranscriptEntry): void {
   }
 }
 
+function validateHookAttachment(entry: ClaudeTranscriptEntry): void {
+  if (
+    entry.isSidechain !== false ||
+    entry.userType !== 'external' ||
+    entry.entrypoint !== 'cli' ||
+    !('gitBranch' in entry) ||
+    (entry.gitBranch !== null && typeof entry.gitBranch !== 'string') ||
+    !isRecord(entry.attachment)
+  ) {
+    throw new Error('Claude transcript has invalid hook attachment')
+  }
+  const attachment = entry.attachment
+  if (
+    !isNonEmptyString(attachment.hookName) ||
+    !isNonEmptyString(attachment.toolUseID) ||
+    !isNonEmptyString(attachment.hookEvent)
+  ) {
+    throw new Error('Claude transcript has invalid hook attachment metadata')
+  }
+  if (attachment.type === 'hook_additional_context') {
+    if (
+      !Array.isArray(attachment.content) ||
+      attachment.content.length === 0 ||
+      attachment.content.some((value) => !isNonEmptyString(value))
+    ) {
+      throw new Error('Claude transcript has invalid hook context attachment')
+    }
+    return
+  }
+  if (
+    (attachment.type !== 'hook_success' && attachment.type !== 'hook_error') ||
+    typeof attachment.content !== 'string' ||
+    typeof attachment.stdout !== 'string' ||
+    typeof attachment.stderr !== 'string' ||
+    !Number.isInteger(attachment.exitCode) ||
+    !isNonEmptyString(attachment.command) ||
+    typeof attachment.durationMs !== 'number' ||
+    attachment.durationMs < 0
+  ) {
+    throw new Error('Claude transcript has invalid hook success attachment')
+  }
+}
+
+function validateAttachment(entry: ClaudeTranscriptEntry): void {
+  if (!isRecord(entry.attachment)) {
+    throw new Error('Claude transcript has invalid attachment')
+  }
+  if (entry.attachment.type === 'nested_memory') {
+    validateNestedMemoryAttachment(entry)
+    return
+  }
+  if (
+    entry.attachment.type === 'hook_success' ||
+    entry.attachment.type === 'hook_error' ||
+    entry.attachment.type === 'hook_additional_context'
+  ) {
+    validateHookAttachment(entry)
+    return
+  }
+  throw new Error('Claude transcript has unsupported attachment type')
+}
+
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   if (entry.type === 'agent-setting') {
     if (
@@ -210,7 +272,7 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   }
 
   if (entry.type === 'attachment') {
-    validateNestedMemoryAttachment(entry)
+    validateAttachment(entry)
     return
   }
 

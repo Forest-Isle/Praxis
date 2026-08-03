@@ -1,0 +1,177 @@
+import type {
+  ModelToolCall,
+  PermissionDecision,
+  PermissionResolver,
+  ToolExecutionContext,
+  ToolExecutionResult,
+  ToolRegistry,
+} from '../core/runtime.js'
+import type { ClaudeHookOutcome, ClaudeHookRunner } from './claude-hooks.js'
+
+export interface ClaudeHookSessionInput {
+  session_id: string
+  transcript_path: string
+  cwd: string
+  permission_mode: string
+}
+
+export interface ClaudeHookToolCoordinatorOptions {
+  tools: ToolRegistry
+  permissions: PermissionResolver
+  hooks: ClaudeHookRunner
+  session: ClaudeHookSessionInput
+  recordOutcome(outcome: ClaudeHookOutcome): Promise<void>
+}
+
+interface PreparedHookCall {
+  hookInput: Record<string, unknown>
+  permissionDecision?: PermissionDecision
+  signal?: AbortSignal
+}
+
+export class ClaudeHookToolCoordinator
+  implements ToolRegistry, PermissionResolver
+{
+  private readonly prepared = new Map<string, PreparedHookCall>()
+
+  constructor(private readonly options: ClaudeHookToolCoordinatorOptions) {}
+
+  definitions() {
+    return this.options.tools.definitions()
+  }
+
+  async prepare(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ModelToolCall> {
+    const outcome = await this.options.hooks.run(
+      {
+        ...this.options.session,
+        hook_event_name: 'PreToolUse',
+        tool_name: call.name,
+        tool_input: call.input,
+        tool_use_id: call.id,
+      },
+      call.name,
+      context.signal,
+    )
+    await this.options.recordOutcome(outcome)
+    if (outcome.blockedReason) {
+      throw new Error(
+        `PreToolUse:${call.name} hook error: ${outcome.blockedReason}`,
+      )
+    }
+    const hookInput = outcome.updatedInput ?? call.input
+    this.prepared.set(call.id, {
+      hookInput,
+      ...(context.signal ? { signal: context.signal } : {}),
+      ...(outcome.permissionDecision
+        ? {
+            permissionDecision:
+              outcome.permissionDecision === 'deny'
+                ? {
+                    behavior: 'deny',
+                    reason:
+                      outcome.permissionDecisionReason ??
+                      `PreToolUse:${call.name} hook denied tool`,
+                  }
+                : outcome.permissionDecision === 'ask'
+                  ? {
+                      behavior: 'ask',
+                      ...(outcome.permissionDecisionReason
+                        ? { reason: outcome.permissionDecisionReason }
+                        : {}),
+                    }
+                  : { behavior: 'allow' },
+          }
+        : {}),
+    })
+    return this.options.tools.prepare({ ...call, input: hookInput }, context)
+  }
+
+  async resolve(call: ModelToolCall): Promise<PermissionDecision> {
+    const prepared = this.prepared.get(call.id)
+    if (prepared?.permissionDecision) return prepared.permissionDecision
+    const decision = await this.options.permissions.resolve(call)
+    if (decision.behavior !== 'ask') return decision
+
+    const outcome = await this.options.hooks.run(
+      {
+        ...this.options.session,
+        hook_event_name: 'PermissionRequest',
+        tool_name: call.name,
+        tool_input: prepared?.hookInput ?? call.input,
+        tool_use_id: call.id,
+        permission_suggestions: [],
+      },
+      call.name,
+      prepared?.signal,
+    )
+    await this.options.recordOutcome(outcome)
+    if (outcome.blockedReason || outcome.permissionDecision === 'deny') {
+      return {
+        behavior: 'deny',
+        reason:
+          outcome.blockedReason ??
+          outcome.permissionDecisionReason ??
+          `PermissionRequest:${call.name} hook denied tool`,
+      }
+    }
+    if (outcome.permissionDecision === 'allow') return { behavior: 'allow' }
+    return decision
+  }
+
+  async execute(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    const prepared = this.prepared.get(call.id)
+    try {
+      let result: ToolExecutionResult
+      try {
+        result = await this.options.tools.execute(call, context)
+      } catch (error) {
+        result = {
+          content: error instanceof Error ? error.message : String(error),
+          isError: true,
+        }
+      }
+      const event = result.isError ? 'PostToolUseFailure' : 'PostToolUse'
+      const outcome = await this.options.hooks.run(
+        {
+          ...this.options.session,
+          hook_event_name: event,
+          tool_name: call.name,
+          tool_input: prepared?.hookInput ?? call.input,
+          ...(result.isError
+            ? { error: result.content, is_interrupt: false }
+            : {
+                tool_response: {
+                  stdout: result.content,
+                  stderr: '',
+                  interrupted: false,
+                  isImage: false,
+                  noOutputExpected: false,
+                },
+              }),
+          tool_use_id: call.id,
+        },
+        call.name,
+        context.signal,
+      )
+      await this.options.recordOutcome(outcome)
+      const followUpUserMessages = [
+        ...(result.followUpUserMessages ?? []),
+        ...(outcome.blockedReason
+          ? [`${event}:${call.name} hook error: ${outcome.blockedReason}`]
+          : []),
+      ]
+      return {
+        ...result,
+        ...(followUpUserMessages.length > 0 ? { followUpUserMessages } : {}),
+      }
+    } finally {
+      this.prepared.delete(call.id)
+    }
+  }
+}

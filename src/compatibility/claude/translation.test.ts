@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createClaudeAgentSettingEntry,
+  createClaudeHookAttachmentEntries,
   createClaudeLastPromptEntry,
   createClaudeRuleAttachmentEntry,
   translateProviderEvents,
@@ -87,6 +88,60 @@ describe('provider to Claude transcript translation', () => {
       version: '2.1.208',
       gitBranch: null,
     })
+  })
+
+  it('creates native hook success and additional-context attachments', () => {
+    const uuids = ['hook-success', 'hook-context'][Symbol.iterator]()
+    const entries = createClaudeHookAttachmentEntries(
+      {
+        executions: [
+          {
+            event: 'PreToolUse',
+            hookName: 'PreToolUse:Bash',
+            toolUseId: 'call_hook',
+            command: 'node hook.mjs',
+            stdout: '{"hookSpecificOutput":{}}\n',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 8,
+          },
+        ],
+        additionalContext: ['HOOK_CONTEXT'],
+      },
+      {
+        sessionId: 'session',
+        parentUuid: 'assistant',
+        cwd: '/tmp/project',
+        claudeVersion: '2.1.208',
+        gitBranch: null,
+        createUuid: () => {
+          const next = uuids.next()
+          if (next.done) throw new Error('UUID fixture exhausted')
+          return next.value
+        },
+        now: () => '2026-08-03T08:00:00.000Z',
+      },
+    )
+
+    expect(entries.map((entry) => entry.parentUuid)).toEqual([
+      'assistant',
+      'hook-success',
+    ])
+    expect(entries.map((entry) => entry.attachment)).toEqual([
+      expect.objectContaining({
+        type: 'hook_success',
+        hookName: 'PreToolUse:Bash',
+        toolUseID: 'call_hook',
+        content: '',
+      }),
+      {
+        type: 'hook_additional_context',
+        content: ['HOOK_CONTEXT'],
+        hookName: 'PreToolUse:Bash',
+        toolUseID: 'call_hook',
+        hookEvent: 'PreToolUse',
+      },
+    ])
   })
 
   it('creates native last-prompt metadata for the final assistant leaf', () => {

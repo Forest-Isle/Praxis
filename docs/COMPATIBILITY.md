@@ -183,7 +183,8 @@ rejected by the append adapter.
 | Transcript                             | Shared         | Append only                               |
 | Auto memory                            | Shared         | Read/write                                |
 | Instructions, skills, commands, agents | Shared         | Read/execute; source files stay read only |
-| Settings, hooks, MCP                   | Shared         | Read only until semantic matrix passes    |
+| Settings, MCP                          | Shared         | Read only until semantic matrix passes    |
+| Hooks                                  | Shared         | Read/execute; declarations stay read only |
 | Provider payloads, indexes, locks      | Praxis sidecar | Read/write                                |
 
 This matrix is also encoded in `src/compatibility/claude/ownership.ts`; runtime
@@ -220,6 +221,10 @@ Code 2.1.208.
 `npm run test:extension-compat` proves native slash command/skill expansion,
 model-selected `Skill` tool injection, selected-agent metadata, and live resume
 in both Claude→Praxis and Praxis→Claude directions.
+`npm run test:hook-compat` proves command-hook event order and stdin envelopes,
+PreToolUse input/permission changes, native success/error/context attachments,
+exit-code-2 blocking, non-persisted SessionEnd output, Praxis built-CLI
+execution, and Claude resume of the Praxis-written hook transcript.
 
 ## Explicit non-goals
 

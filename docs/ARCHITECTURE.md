@@ -22,7 +22,8 @@ src/
 ├── compatibility/ versioned Claude local-protocol adapters
 ├── providers/     capability-aware model adapters
 ├── tools/         local executable capabilities
-├── extensions/    MCP, skills, and hooks
+├── extensions/    skills, commands, and agents
+├── hooks/         shared hook parsing, execution, and tool coordination
 ├── persistence/   Claude-compatible JSONL and local sidecar indexes
 └── platform/      filesystem, process, keychain, and OS adapters
 ```
@@ -68,6 +69,16 @@ provider-neutral `Skill` tool whose result is followed by scoped user context.
 Selected agent definitions add invocation system context and persist native
 `agent-setting` metadata for resume. Linked memory details remain explicit
 reads.
+
+`ClaudeHookRunner` parses layered settings without rewriting them, executes
+bounded command hooks, and interprets Claude-compatible JSON/exit semantics.
+`ClaudeHookToolCoordinator` wraps tool preparation, permission, execution, and
+failure paths while core runtime remains provider-neutral. Hook output before
+SessionEnd persists as native `hook_success`, `hook_error`, and
+`hook_additional_context` attachments; projected context is reloaded before the
+next model turn. SessionEnd runs during teardown, after `last-prompt` on a
+successful turn and after cancellation handling on an aborted turn. Matching
+Claude Code 2.1.208, it does not append stdout or stderr to the transcript.
 
 Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
 

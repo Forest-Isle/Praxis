@@ -28,6 +28,7 @@ import {
   ClaudeExtensionToolRegistry,
 } from './extensions/claude-extension-tools.js'
 import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
+import { ClaudeHookRunner } from './hooks/claude-hooks.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
@@ -126,6 +127,7 @@ const defaultDependencies: CliDependencies = {
       ),
       permissions,
       extensions,
+      hooks: new ClaudeHookRunner({ settings, cwd }),
       ...(agent ? { agent } : {}),
       contextAssembler: new ClaudeContextAssembler({
         loadResources: loadContextResources,
@@ -146,6 +148,7 @@ function eventSink(io: CliIO, json: boolean): RuntimeEventSink {
   if (json) return (event) => writeJson(io, event)
   return (event) => {
     if (event.type === 'text-delta') io.stdout(event.delta)
+    if (event.type === 'warning') io.stderr(`Warning: ${event.message}\n`)
   }
 }
 

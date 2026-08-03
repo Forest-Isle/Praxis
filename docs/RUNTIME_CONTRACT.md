@@ -31,6 +31,12 @@ Rules:
    shared transcript; transcript history is never rewritten.
 7. Compaction appends Claude-native summary metadata only after a compatibility
    adapter proves the active Claude version accepts it.
+8. Shared command hooks run at their lifecycle seam with bounded output,
+   timeout, and cancellation; PreToolUse changes precede permission checks and
+   Stop blocking creates an explicit persisted continuation turn. SessionEnd
+   runs during successful or cancelled teardown without persisting output,
+   matching Claude 2.1.208. Its teardown failure emits a warning without
+   replacing the completed result or primary runtime error.
 
 ## Core ports
 

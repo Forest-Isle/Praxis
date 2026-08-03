@@ -80,6 +80,7 @@ export type RuntimeEvent =
       content: string
       isError: boolean
     }
+  | { type: 'warning'; message: string }
   | { type: 'failed'; message: string; retryable: boolean }
 
 export interface ToolExecutionResult {
@@ -141,6 +142,7 @@ export interface AgentRunRequest {
   observer?: AgentRunObserver
   reloadMessages?: () => Promise<readonly ModelMessage[]>
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
+  onStop?: (text: string) => Promise<readonly string[]>
   signal?: AbortSignal
 }
 
@@ -274,6 +276,24 @@ export class AgentRuntime {
         messages.push(assistantMessage)
 
         if (toolCalls.length === 0) {
+          const stopMessages = (await request.onStop?.(text)) ?? []
+          if (stopMessages.length > 0) {
+            await request.observer?.followUpUserMessagesCompleted?.(
+              stopMessages,
+            )
+            messages.push(
+              ...stopMessages.map((content) => ({
+                role: 'user' as const,
+                content,
+              })),
+            )
+            if (request.reloadMessages) {
+              const reloadedMessages = await request.reloadMessages()
+              if (request.signal?.aborted) return this.cancel()
+              messages.splice(0, messages.length, ...reloadedMessages)
+            }
+            continue
+          }
           this.emit({ type: 'state', state: 'completed' })
           return { text, usage }
         }

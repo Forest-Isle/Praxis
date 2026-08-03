@@ -57,7 +57,8 @@ Status: in progress.
 - [x] canonical `MEMORY.md` index with Claude-compatible 200-line visibility
 - [x] path-conditional rule activation through native resumable attachments
 - [x] skills, commands, and agent definitions
-- [ ] hooks and remaining user/local MCP compatible sources
+- [x] command hooks across session, prompt, permission, tool, stop, and end events
+- [ ] remaining user/local MCP compatible sources
 - [ ] context budgeting and version-supported compaction
 
 Exit gate: shared-data black-box matrix and context fidelity tests.

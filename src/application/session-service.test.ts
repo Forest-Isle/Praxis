@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type {
   ModelProvider,
   ModelRequest,
+  RuntimeEvent,
   ToolRegistry,
 } from '../core/runtime.js'
 import { AgentRunCancelledError, ModelProviderError } from '../core/runtime.js'
@@ -23,6 +24,7 @@ import {
 } from '../compatibility/claude/context.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
+import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudeSessionService } from './session-service.js'
 
 const roots: string[] = []
@@ -674,12 +676,322 @@ describe('ClaudeSessionService', () => {
     expect(entries[4]?.leafUuid).toBe(entries[3]?.uuid)
   })
 
+  it('executes lifecycle and tool hooks with resumable native context', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-hooks-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let providerTurn = 0
+    const provider: ModelProvider = {
+      model: 'fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        if (providerTurn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_hook',
+              name: 'Bash',
+              input: { command: 'printf original' },
+            },
+          }
+          return
+        }
+        yield {
+          type: 'text-delta',
+          delta: providerTurn === 2 ? 'first answer' : 'revised answer',
+        }
+      },
+    }
+    let stopCalls = 0
+    const hookEvents: string[] = []
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: Object.fromEntries(
+              [
+                'SessionStart',
+                'UserPromptSubmit',
+                'PreToolUse',
+                'PostToolUse',
+                'Stop',
+                'SessionEnd',
+              ].map((event) => [
+                event,
+                [
+                  {
+                    ...(event.includes('Tool') ? { matcher: 'Bash' } : {}),
+                    hooks: [{ type: 'command', command: event }],
+                  },
+                ],
+              ]),
+            ),
+          },
+        },
+      ],
+      executeCommand: async (_command, input) => {
+        hookEvents.push(input.hook_event_name)
+        if (input.hook_event_name === 'SessionStart') {
+          return {
+            stdout: 'SESSION_HOOK_CONTEXT\n',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        }
+        if (input.hook_event_name === 'UserPromptSubmit') {
+          return {
+            stdout: 'PROMPT_HOOK_CONTEXT\n',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        }
+        if (input.hook_event_name === 'PreToolUse') {
+          return {
+            stdout: JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                updatedInput: { command: 'printf updated' },
+                permissionDecision: 'allow',
+                additionalContext: 'PRE_HOOK_CONTEXT',
+              },
+            }),
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        }
+        if (input.hook_event_name === 'PostToolUse') {
+          return {
+            stdout: JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PostToolUse',
+                additionalContext: 'POST_HOOK_CONTEXT',
+              },
+            }),
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        }
+        if (input.hook_event_name === 'SessionEnd') {
+          return {
+            stdout: 'SESSION_END_UNPERSISTED\n',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        }
+        stopCalls += 1
+        return stopCalls === 1
+          ? {
+              stdout: '',
+              stderr: 'REVISE_RESPONSE',
+              exitCode: 2,
+              durationMs: 1,
+            }
+          : { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+      },
+    })
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Bash',
+          description: 'Run a command',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute(call) {
+        return {
+          content: `ran:${String(call.input.command)}`,
+          isError: false,
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+      hooks,
+    })
+
+    const result = await service.run('run hook fixture')
+    expect(result.text).toBe('revised answer')
+    expect(hookEvents).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PostToolUse',
+      'Stop',
+      'Stop',
+      'SessionEnd',
+    ])
+    expect(requests).toHaveLength(3)
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      'SESSION_HOOK_CONTEXT',
+    )
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      'PROMPT_HOOK_CONTEXT',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).toContain('PRE_HOOK_CONTEXT')
+    expect(JSON.stringify(requests[1]?.messages)).toContain('POST_HOOK_CONTEXT')
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'ran:printf updated',
+    )
+    expect(requests[2]?.messages.at(-1)).toEqual({
+      role: 'user',
+      content: 'Stop hook error: REVISE_RESPONSE',
+    })
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    const entries = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(
+      entries
+        .filter((entry) => entry.type === 'attachment')
+        .map((entry) => entry.attachment.type),
+    ).toEqual([
+      'hook_success',
+      'hook_success',
+      'hook_success',
+      'hook_additional_context',
+      'hook_success',
+      'hook_additional_context',
+      'hook_error',
+    ])
+    expect(entries.at(-1)).toMatchObject({
+      type: 'last-prompt',
+      leafUuid: expect.any(String),
+    })
+    expect(JSON.stringify(entries)).not.toContain('SESSION_END_UNPERSISTED')
+    expect(
+      entries.find(
+        (entry) =>
+          entry.type === 'assistant' &&
+          entry.message?.content?.some?.(
+            (block: { text?: string }) => block.text === 'revised answer',
+          ),
+      )?.uuid,
+    ).toBe(entries.at(-1)?.leafUuid)
+  })
+
+  it('reports SessionEnd failure without replacing a completed result', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-end-failure-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const runtimeEvents: RuntimeEvent[] = []
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              SessionEnd: [
+                {
+                  hooks: [
+                    { type: 'command', command: 'session-end-failure' },
+                    { type: 'command', command: 'session-end-block' },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async (command) =>
+        command === 'session-end-failure'
+          ? {
+              stdout: '',
+              stderr: 'session end fixture failed',
+              exitCode: 1,
+              durationMs: 1,
+            }
+          : {
+              stdout: JSON.stringify({
+                continue: false,
+                stopReason: 'session end fixture blocked',
+              }),
+              stderr: '',
+              exitCode: 0,
+              durationMs: 1,
+            },
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['completed answer']),
+      hooks,
+      eventSink: (event) => runtimeEvents.push(event),
+    })
+
+    await expect(service.run('finish')).resolves.toMatchObject({
+      text: 'completed answer',
+    })
+    expect(runtimeEvents.slice(-2)).toEqual([
+      {
+        type: 'warning',
+        message: 'SessionEnd hook failed: session end fixture failed',
+      },
+      {
+        type: 'warning',
+        message: 'SessionEnd hook failed: session end fixture blocked',
+      },
+    ])
+  })
+
   it('recovers an interrupted tool call before resuming the model', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-recovery-'))
     roots.push(root)
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const controller = new AbortController()
+    const runtimeEvents: RuntimeEvent[] = []
+    const sessionEndSignals: (AbortSignal | undefined)[] = []
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              SessionEnd: [
+                { hooks: [{ type: 'command', command: 'session-end' }] },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async (_command, _input, _timeout, signal) => {
+        sessionEndSignals.push(signal)
+        throw new Error('session end fixture failed')
+      },
+    })
     const tools: ToolRegistry = {
       definitions: () => [
         {
@@ -715,11 +1027,18 @@ describe('ClaudeSessionService', () => {
       },
       tools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      hooks,
+      eventSink: (event) => runtimeEvents.push(event),
     })
 
     await expect(
       interrupted.run('run it', controller.signal),
     ).rejects.toBeInstanceOf(AgentRunCancelledError)
+    expect(sessionEndSignals).toEqual([undefined])
+    expect(runtimeEvents.at(-1)).toEqual({
+      type: 'warning',
+      message: 'SessionEnd hook failed: session end fixture failed',
+    })
     const [summary] = await interrupted.sessions()
     if (!summary) throw new Error('Interrupted session was not persisted')
     const recoveryTools: ToolRegistry = {

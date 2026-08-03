@@ -42,6 +42,16 @@ command wrapper plus expanded user entries; provider-selected skills use the
 `--agent <name>` applies shared agent instructions and writes native
 `agent-setting` metadata, which both Praxis and Claude restore on resume.
 
+Command hooks load directly from user, project, and local Claude settings.
+Praxis executes SessionStart, UserPromptSubmit, PreToolUse,
+PermissionRequest, PostToolUse, PostToolUseFailure, Stop, and SessionEnd with
+bounded subprocesses and native stdin envelopes. Pre-tool hooks can rewrite
+input, decide permission, add resumable context, or block with exit code 2;
+Stop hooks can request another model turn. Hook success, failure, and context
+attachments before SessionEnd use the Claude 2.1.208 transcript profile and
+survive bidirectional resume; SessionEnd executes after `last-prompt` without
+writing its output to the transcript.
+
 ## Product boundary
 
 - CLI-only, including interactive and structured non-interactive output
@@ -106,6 +116,8 @@ probe uses a local provider fixture:
 npm run test:compat
 npm run test:conditional-compat
 npm run test:context-compat
+npm run test:extension-compat
+npm run test:hook-compat
 npm run test:permission-compat
 npm run test:runtime-compat
 npm run test:shared-compat

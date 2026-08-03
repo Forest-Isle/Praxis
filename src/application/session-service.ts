@@ -17,6 +17,7 @@ import {
 import { findUnresolvedClaudeToolCalls } from '../compatibility/claude/tool-links.js'
 import {
   createClaudeAgentSettingEntry,
+  createClaudeHookAttachmentEntries,
   createClaudeLastPromptEntry,
   createClaudeRuleAttachmentEntry,
   translateProviderEvents,
@@ -32,6 +33,11 @@ import {
 } from '../core/runtime.js'
 import type { ContextAssembler } from '../core/context.js'
 import type { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
+import { ClaudeHookToolCoordinator } from '../hooks/claude-hook-tools.js'
+import type {
+  ClaudeHookOutcome,
+  ClaudeHookRunner,
+} from '../hooks/claude-hooks.js'
 import {
   ClaudeTranscriptStore,
   type ClaudeTranscriptLease,
@@ -51,6 +57,7 @@ export interface ClaudeSessionServiceOptions {
   contextAssembler?: ContextAssembler
   conditionalRuleResolver?: Pick<ClaudeConditionalRuleResolver, 'resolve'>
   extensions?: ClaudeExtensionCatalog
+  hooks?: ClaudeHookRunner
   agent?: string
   eventSink?: RuntimeEventSink
 }
@@ -168,12 +175,42 @@ export class ClaudeSessionService {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
       const provider = this.provider()
+      const hookSession = {
+        session_id: sessionId,
+        transcript_path: this.paths(sessionId).sessionFile,
+        cwd: this.options.cwd,
+        permission_mode: 'default',
+      }
+      const recordHookOutcome = async (outcome: ClaudeHookOutcome) => {
+        for (const entry of createClaudeHookAttachmentEntries(
+          outcome,
+          this.translationContext(sessionId, snapshot),
+        )) {
+          const tail = await this.append(lease, snapshot.tail, entry)
+          snapshot = { entries: [...snapshot.entries, entry], tail }
+        }
+      }
+      const hookTools =
+        this.options.hooks && this.options.tools && this.options.permissions
+          ? new ClaudeHookToolCoordinator({
+              tools: this.options.tools,
+              permissions: this.options.permissions,
+              hooks: this.options.hooks,
+              session: hookSession,
+              recordOutcome: recordHookOutcome,
+            })
+          : null
       const runtime = new AgentRuntime(provider, this.options.eventSink, {
-        ...(this.options.tools ? { tools: this.options.tools } : {}),
-        ...(this.options.permissions
-          ? { permissions: this.options.permissions }
-          : {}),
+        ...(hookTools
+          ? { tools: hookTools, permissions: hookTools }
+          : {
+              ...(this.options.tools ? { tools: this.options.tools } : {}),
+              ...(this.options.permissions
+                ? { permissions: this.options.permissions }
+                : {}),
+            }),
       })
+      let lastAssistantUuid: string | null = null
       const observer = {
         assistantCompleted: async (message: {
           content: string
@@ -194,6 +231,8 @@ export class ClaudeSessionService {
           if (!entry) throw new Error('Could not translate assistant response')
           const tail = await this.append(lease, snapshot.tail, entry)
           snapshot = { entries: [...snapshot.entries, entry], tail }
+          lastAssistantUuid =
+            typeof entry.uuid === 'string' ? entry.uuid : lastAssistantUuid
         },
         toolCompleted: async (
           call: ModelToolCall,
@@ -273,119 +312,224 @@ export class ClaudeSessionService {
           }
         },
       }
-      const recoveryRequest = {
-        cwd: this.options.cwd,
-        observer,
-        ...(signal ? { signal } : {}),
-        ...(this.options.approveRecovery
-          ? { approveTool: this.options.approveRecovery }
-          : {}),
-      }
-      const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
-        snapshot.entries,
-      )
-      for (const unresolvedToolCall of unresolvedToolCalls) {
-        if (!this.options.approveRecovery) {
-          throw new Error(
-            `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
+      try {
+        if (this.options.hooks) {
+          const outcome = await this.options.hooks.run(
+            {
+              ...hookSession,
+              hook_event_name: 'SessionStart',
+              source: requireExisting ? 'resume' : 'startup',
+            },
+            requireExisting ? 'resume' : 'startup',
+            signal,
           )
+          await recordHookOutcome(outcome)
+          if (outcome.blockedReason) {
+            throw new Error(`SessionStart hook error: ${outcome.blockedReason}`)
+          }
         }
-        if (!(await this.options.approveRecovery(unresolvedToolCall))) {
-          throw new Error(
-            `Claude session tool call ${unresolvedToolCall.id} recovery was declined`,
-          )
+        const recoveryRequest = {
+          cwd: this.options.cwd,
+          observer,
+          ...(signal ? { signal } : {}),
+          ...(this.options.approveRecovery
+            ? { approveTool: this.options.approveRecovery }
+            : {}),
         }
-      }
-      await runtime.recoverToolCalls(unresolvedToolCalls, recoveryRequest)
-
-      const agentName =
-        this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
-      const agent = agentName ? this.options.extensions?.agent(agentName) : null
-      if (agentName && !agent) {
-        throw new Error(`Unknown Claude agent ${agentName}`)
-      }
-      if (
-        this.options.agent &&
-        getClaudeAgentSetting(snapshot.entries) !== this.options.agent
-      ) {
-        const agentSetting = createClaudeAgentSettingEntry(
-          sessionId,
-          this.options.agent,
+        const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
+          snapshot.entries,
         )
-        const settingTail = await this.append(
+        for (const unresolvedToolCall of unresolvedToolCalls) {
+          if (!this.options.approveRecovery) {
+            throw new Error(
+              `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
+            )
+          }
+          if (!(await this.options.approveRecovery(unresolvedToolCall))) {
+            throw new Error(
+              `Claude session tool call ${unresolvedToolCall.id} recovery was declined`,
+            )
+          }
+        }
+        await runtime.recoverToolCalls(unresolvedToolCalls, recoveryRequest)
+
+        const agentName =
+          this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
+        const agent = agentName
+          ? this.options.extensions?.agent(agentName)
+          : null
+        if (agentName && !agent) {
+          throw new Error(`Unknown Claude agent ${agentName}`)
+        }
+        if (
+          this.options.agent &&
+          getClaudeAgentSetting(snapshot.entries) !== this.options.agent
+        ) {
+          const agentSetting = createClaudeAgentSettingEntry(
+            sessionId,
+            this.options.agent,
+          )
+          const settingTail = await this.append(
+            lease,
+            snapshot.tail,
+            agentSetting,
+          )
+          snapshot = {
+            entries: [...snapshot.entries, agentSetting],
+            tail: settingTail,
+          }
+        }
+
+        const contextMessages = [
+          ...((await this.options.contextAssembler?.assemble()) ?? []),
+          ...(agent
+            ? [
+                {
+                  role: 'system' as const,
+                  content: `# Agent definition: ${agent.name}\n\n${agent.body}`,
+                },
+              ]
+            : []),
+        ]
+
+        const expansion = this.options.extensions?.expandPrompt(prompt) ?? {
+          userMessages: [prompt],
+        }
+        let promptId: string | undefined
+        for (const [index, text] of expansion.userMessages.entries()) {
+          const [userEntry] = translateProviderEvents(
+            [
+              index === 0
+                ? { type: 'user-text', text }
+                : { type: 'user-text-block', text },
+            ],
+            this.translationContext(sessionId, snapshot),
+          )
+          if (!userEntry) throw new Error('Could not translate user prompt')
+          if (promptId === undefined && typeof userEntry.uuid === 'string') {
+            promptId = userEntry.uuid
+          }
+          const userTail = await this.append(lease, snapshot.tail, userEntry)
+          snapshot = {
+            entries: [...snapshot.entries, userEntry],
+            tail: userTail,
+          }
+        }
+
+        if (this.options.hooks) {
+          const outcome = await this.options.hooks.run(
+            {
+              ...hookSession,
+              hook_event_name: 'UserPromptSubmit',
+              prompt_id: promptId ?? randomUUID(),
+              prompt,
+            },
+            undefined,
+            signal,
+          )
+          await recordHookOutcome(outcome)
+          if (outcome.blockedReason) {
+            throw new Error(
+              `UserPromptSubmit hook error: ${outcome.blockedReason}`,
+            )
+          }
+        }
+
+        let stopHookActive = false
+        const runtimeRequest = {
+          messages: [
+            ...contextMessages,
+            ...projectClaudeModelMessages(snapshot.entries),
+          ],
+          cwd: this.options.cwd,
+          observer,
+          reloadMessages: async () => [
+            ...contextMessages,
+            ...projectClaudeModelMessages(snapshot.entries),
+          ],
+          ...(this.options.hooks
+            ? {
+                onStop: async (text: string) => {
+                  const outcome = await this.options.hooks?.run(
+                    {
+                      ...hookSession,
+                      hook_event_name: 'Stop',
+                      stop_hook_active: stopHookActive,
+                      last_assistant_message: text,
+                    },
+                    undefined,
+                    signal,
+                  )
+                  if (!outcome) return []
+                  await recordHookOutcome(outcome)
+                  if (!outcome.blockedReason) return []
+                  stopHookActive = true
+                  return [`Stop hook error: ${outcome.blockedReason}`]
+                },
+              }
+            : {}),
+          ...(this.options.approveTool
+            ? { approveTool: this.options.approveTool }
+            : {}),
+        }
+        const result = signal
+          ? await runtime.run({ ...runtimeRequest, signal })
+          : await runtime.run(runtimeRequest)
+
+        const finalLeafUuid = lastAssistantUuid
+        if (!finalLeafUuid) {
+          throw new Error('Could not locate final assistant response')
+        }
+        await this.append(
           lease,
           snapshot.tail,
-          agentSetting,
+          createClaudeLastPromptEntry({
+            sessionId,
+            lastPrompt: prompt,
+            leafUuid: finalLeafUuid,
+          }),
         )
-        snapshot = {
-          entries: [...snapshot.entries, agentSetting],
-          tail: settingTail,
+        return { sessionId, text: result.text, usage: result.usage }
+      } finally {
+        try {
+          const outcome = await this.options.hooks?.run(
+            {
+              ...hookSession,
+              hook_event_name: 'SessionEnd',
+              reason: 'other',
+            },
+            'other',
+          )
+          const failedExecutions =
+            outcome?.executions.filter(
+              (execution) => execution.exitCode !== 0,
+            ) ?? []
+          for (const execution of failedExecutions) {
+            const detail =
+              execution.stderr.trim() ||
+              execution.stdout.trim() ||
+              `exit code ${execution.exitCode}`
+            this.options.eventSink?.({
+              type: 'warning',
+              message: `SessionEnd hook failed: ${detail}`,
+            })
+          }
+          if (
+            outcome?.blockedReason &&
+            outcome.executions.at(-1)?.exitCode === 0
+          ) {
+            this.options.eventSink?.({
+              type: 'warning',
+              message: `SessionEnd hook failed: ${outcome.blockedReason}`,
+            })
+          }
+        } catch (error) {
+          this.options.eventSink?.({
+            type: 'warning',
+            message: `SessionEnd hook failed: ${error instanceof Error ? error.message : String(error)}`,
+          })
         }
       }
-
-      const contextMessages = [
-        ...((await this.options.contextAssembler?.assemble()) ?? []),
-        ...(agent
-          ? [
-              {
-                role: 'system' as const,
-                content: `# Agent definition: ${agent.name}\n\n${agent.body}`,
-              },
-            ]
-          : []),
-      ]
-
-      const expansion = this.options.extensions?.expandPrompt(prompt) ?? {
-        userMessages: [prompt],
-      }
-      for (const [index, text] of expansion.userMessages.entries()) {
-        const [userEntry] = translateProviderEvents(
-          [
-            index === 0
-              ? { type: 'user-text', text }
-              : { type: 'user-text-block', text },
-          ],
-          this.translationContext(sessionId, snapshot),
-        )
-        if (!userEntry) throw new Error('Could not translate user prompt')
-        const userTail = await this.append(lease, snapshot.tail, userEntry)
-        snapshot = { entries: [...snapshot.entries, userEntry], tail: userTail }
-      }
-
-      const runtimeRequest = {
-        messages: [
-          ...contextMessages,
-          ...projectClaudeModelMessages(snapshot.entries),
-        ],
-        cwd: this.options.cwd,
-        observer,
-        reloadMessages: async () => [
-          ...contextMessages,
-          ...projectClaudeModelMessages(snapshot.entries),
-        ],
-        ...(this.options.approveTool
-          ? { approveTool: this.options.approveTool }
-          : {}),
-      }
-      const result = signal
-        ? await runtime.run({ ...runtimeRequest, signal })
-        : await runtime.run(runtimeRequest)
-
-      const finalLeafUuid = snapshot.tail.lastUuid
-      if (!finalLeafUuid) {
-        throw new Error('Could not locate final assistant response')
-      }
-      await this.append(
-        lease,
-        snapshot.tail,
-        createClaudeLastPromptEntry({
-          sessionId,
-          lastPrompt: prompt,
-          leafUuid: finalLeafUuid,
-        }),
-      )
-
-      return { sessionId, text: result.text, usage: result.usage }
     })
     if (leaseResult.status === 'conflict') {
       throw new Error(

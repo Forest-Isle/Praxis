@@ -55,6 +55,41 @@ describe('AgentRuntime', () => {
     })
   })
 
+  it('continues after a stop hook blocks completion', async () => {
+    const requests: ModelRequest[] = []
+    let turn = 0
+    const provider = providerFrom(async function* (request) {
+      requests.push(request)
+      yield {
+        type: 'text-delta',
+        delta: turn++ === 0 ? 'first answer' : 'revised answer',
+      }
+    })
+    const followUps: string[][] = []
+    const runtime = new AgentRuntime(provider)
+
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'answer' }],
+      onStop: async () =>
+        turn === 1 ? ['Stop hook blocked: revise response'] : [],
+      observer: {
+        async assistantCompleted() {},
+        async toolCompleted() {},
+        async followUpUserMessagesCompleted(messages) {
+          followUps.push([...messages])
+        },
+      },
+    })
+
+    expect(result.text).toBe('revised answer')
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'user',
+      content: 'Stop hook blocked: revise response',
+    })
+    expect(followUps).toEqual([['Stop hook blocked: revise response']])
+  })
+
   it('classifies provider failures without leaking provider payloads', async () => {
     const provider = providerFrom(async function* () {
       yield* []

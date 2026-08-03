@@ -38,6 +38,26 @@ function projectNestedMemory(entry: ClaudeTranscriptEntry): string | null {
   return entry.attachment.content.content
 }
 
+function projectHookContext(entry: ClaudeTranscriptEntry): string | null {
+  if (entry.type !== 'attachment' || !isRecord(entry.attachment)) return null
+  if (
+    entry.attachment.type === 'hook_success' &&
+    typeof entry.attachment.content === 'string'
+  ) {
+    return entry.attachment.content || null
+  }
+  if (
+    entry.attachment.type === 'hook_additional_context' &&
+    Array.isArray(entry.attachment.content)
+  ) {
+    const content = entry.attachment.content.filter(
+      (value): value is string => typeof value === 'string',
+    )
+    return content.join('\n') || null
+  }
+  return null
+}
+
 export function projectClaudeTextMessages(
   entries: readonly ClaudeTranscriptEntry[],
 ): ClaudeTextMessage[] {
@@ -69,14 +89,17 @@ export function projectClaudeModelMessages(
   entries: readonly ClaudeTranscriptEntry[],
 ): ModelMessage[] {
   const messages: ModelMessage[] = entries.flatMap((entry) => {
-    const nestedMemory = projectNestedMemory(entry)
-    return nestedMemory === null || nestedMemory.length === 0
+    const attachmentContext =
+      projectNestedMemory(entry) ?? projectHookContext(entry)
+    return attachmentContext === null || attachmentContext.length === 0
       ? []
-      : [{ role: 'system' as const, content: nestedMemory }]
+      : [{ role: 'system' as const, content: attachmentContext }]
   })
   for (const entry of entries) {
-    const nestedMemory = projectNestedMemory(entry)
-    if (nestedMemory !== null) {
+    if (
+      projectNestedMemory(entry) !== null ||
+      projectHookContext(entry) !== null
+    ) {
       continue
     }
     if (!isRecord(entry.message)) continue

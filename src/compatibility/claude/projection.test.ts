@@ -92,6 +92,20 @@ describe('Claude transcript projection', () => {
         },
       },
       {
+        type: 'attachment',
+        attachment: {
+          type: 'hook_success',
+          content: 'PROMPT_HOOK_CONTEXT',
+        },
+      },
+      {
+        type: 'attachment',
+        attachment: {
+          type: 'hook_additional_context',
+          content: ['PRE_HOOK_CONTEXT', 'POST_HOOK_CONTEXT'],
+        },
+      },
+      {
         type: 'assistant',
         message: {
           role: 'assistant',
@@ -102,6 +116,11 @@ describe('Claude transcript projection', () => {
 
     expect(projectClaudeModelMessages(entries)).toEqual([
       { role: 'system', content: 'USE_TYPESCRIPT\n' },
+      { role: 'system', content: 'PROMPT_HOOK_CONTEXT' },
+      {
+        role: 'system',
+        content: 'PRE_HOOK_CONTEXT\nPOST_HOOK_CONTEXT',
+      },
       { role: 'user', content: 'inspect' },
       {
         role: 'assistant',

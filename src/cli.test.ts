@@ -12,11 +12,12 @@ function captureIO() {
   return { io, stdout, stderr }
 }
 
-function dependencies(): CliDependencies {
+function dependencies(warning?: string): CliDependencies {
   return {
     async createService({ eventSink }) {
       return {
         async run(prompt) {
+          if (warning) eventSink({ type: 'warning', message: warning })
           eventSink({ type: 'text-delta', delta: `answer:${prompt}` })
           return {
             sessionId: '11111111-1111-4111-8111-111111111111',
@@ -75,6 +76,16 @@ describe('Praxis CLI', () => {
       run(['run', 'hello', 'world'], capture.io, dependencies()),
     ).resolves.toBe(0)
     expect(capture.stdout.join('')).toBe('answer:hello world\n')
+  })
+
+  it('prints non-terminal runtime warnings to stderr', async () => {
+    const capture = captureIO()
+
+    await expect(
+      run(['run', 'hello'], capture.io, dependencies('hook failed')),
+    ).resolves.toBe(0)
+    expect(capture.stdout.join('')).toBe('answer:hello\n')
+    expect(capture.stderr).toEqual(['Warning: hook failed\n'])
   })
 
   it('resumes with NDJSON runtime events and a result record', async () => {
