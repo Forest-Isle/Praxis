@@ -1,0 +1,147 @@
+# Claude Code Compatibility Contract
+
+## Goal
+
+Claude Code and Praxis operate on one local data plane:
+
+```text
+Claude Code ─┐
+             ├── ~/.claude (or CLAUDE_CONFIG_DIR)
+Praxis ──────┘
+```
+
+Compatibility is bidirectional, not import-only:
+
+1. Praxis can discover and resume a Claude Code session.
+2. Claude Code can discover and resume a Praxis session.
+3. Both load the same project instructions, memory, skills, hooks, agents, and
+   MCP definitions.
+
+## Shared authoritative data
+
+Praxis follows the active Claude Code layout and path derivation for:
+
+| Data | Shared location |
+| --- | --- |
+| Config root | `CLAUDE_CONFIG_DIR` or `~/.claude` |
+| Sessions | `<config>/projects/<project-key>/<session-id>.jsonl` |
+| Global instructions | `<config>/CLAUDE.md` |
+| Project instructions | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/**/*.md` |
+| Auto memory | `<config>/projects/<project-key>/memory/MEMORY.md` and linked memory files |
+| Global skills | `<config>/skills/` |
+| Project skills | `.claude/skills/` |
+| Commands | `<config>/commands/`, `.claude/commands/` |
+| Agent definitions | `<config>/agents/`, `.claude/agents/` |
+| Settings and hooks | `<config>/settings.json`, `.claude/settings.json`, `.claude/settings.local.json` |
+| Project MCP | `.mcp.json` and Claude-compatible configured sources |
+
+Praxis must reuse Claude Code's canonical project-path sanitization. A similar
+but independently invented directory name is not compatible.
+
+## Transcript write profile
+
+Shared session files contain only entries accepted by the supported Claude Code
+version. Praxis must preserve:
+
+- session UUID and `<session-id>.jsonl` filename;
+- message UUID and `parentUuid` chain;
+- `sessionId`, `cwd`, timestamp, version, branch, and sidechain semantics where
+  required by the active schema;
+- Anthropic-compatible user and assistant message envelopes;
+- strict `tool_use` and `tool_result` pairing;
+- compaction summary and resume metadata accepted by Claude Code.
+
+Praxis may read optional Claude entry types it does not execute. It must retain
+them when continuing a session unless the active Claude schema explicitly marks
+them as disposable.
+
+Praxis must not write private event types, provider-native reasoning payloads,
+indexes, embeddings, locks, or UI state into the shared JSONL. Claude Code's
+unknown-entry tolerance is not a stable contract.
+
+## Provider translation
+
+Claude Code sessions use Anthropic message semantics. When Praxis runs another
+provider, it translates completed turns into the Claude-compatible envelope:
+
+- plain output becomes assistant text blocks;
+- provider tool calls become `tool_use` blocks with stable unique IDs;
+- results become matching `tool_result` blocks;
+- unsupported reasoning or provider metadata goes to a Praxis sidecar;
+- the shared transcript remains sufficient to resume without that sidecar.
+
+This is a persistence translation only. Praxis does not pretend every provider
+supports all Claude model capabilities at runtime.
+
+## Praxis sidecars
+
+Private operational state lives under `<claude-config>/praxis/`, for example:
+
+```text
+~/.claude/praxis/
+├── compatibility/
+├── indexes/
+├── locks/
+└── providers/
+```
+
+Sidecars may contain schema probes, search indexes, process locks, provider raw
+payloads, and cached projections. They are disposable and never authoritative
+for conversation or memory content.
+
+## Concurrent access
+
+Claude Code and Praxis may list and read the same sessions concurrently, but a
+session has one writer at a time. Praxis must:
+
+- acquire a per-session advisory lock before append;
+- detect transcript changes before every append;
+- refuse or fork if another process advanced the same parent UUID;
+- flush and close the transcript before handing it to Claude Code;
+- never truncate or rewrite a live shared transcript.
+
+Advisory locks cannot force an unmodified Claude Code process to cooperate.
+Optimistic parent/tail checks are therefore mandatory.
+
+## Version compatibility
+
+Claude Code's local format is an implementation contract and can change.
+Praxis maintains versioned compatibility adapters rather than one permissive
+parser:
+
+```text
+Claude installation/version detection
+  -> schema adapter selection
+  -> read/validate
+  -> append native entry
+  -> re-open validation
+```
+
+Support policy:
+
+- exact compatibility with explicitly tested Claude Code versions;
+- preserve unknown fields when round-tripping;
+- fail closed before writing an unsupported schema;
+- offer read-only recovery/export when write compatibility is unknown.
+
+## Verification gates
+
+Compatibility work is complete only when black-box tests prove both directions:
+
+1. Claude Code creates a fixture; Praxis resumes and appends a turn.
+2. Claude Code resumes the resulting Praxis-written fixture.
+3. Praxis creates a fixture; Claude Code lists and resumes it.
+4. Both tools observe the same changed `CLAUDE.md`, memory, skill, hook, and MCP
+   fixture without synchronization or copying.
+5. Concurrent-tail mutation causes a safe refusal or fork, never corruption.
+
+Tests run against isolated temporary `CLAUDE_CONFIG_DIR` directories and a
+version matrix of installed Claude Code releases.
+
+## Explicit non-goals
+
+- Sharing Claude OAuth credentials or subscription state.
+- Reimplementing organization, managed policy, billing, or remote sessions.
+- Depending on Claude Code internals beyond the versioned local compatibility
+  contract.
+- Maintaining a second Praxis-native transcript that later needs syncing.

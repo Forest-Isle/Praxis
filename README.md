@@ -17,8 +17,19 @@ Initial clean-room scaffold. Agent runtime implementation has not started.
 - CLI-only, including interactive and structured non-interactive output
 - One local OS user, multiple workspaces and sessions
 - Provider-capability-aware rather than tied to one model vendor
-- Local transcripts, configuration, permissions, and memory
+- Claude Code-compatible transcripts, configuration, permissions, and memory
 - Optional local sub-agents; no multi-tenant control plane
+
+## Claude Code interoperability
+
+Praxis uses Claude Code's local data layout as its default shared data plane.
+The compatibility target is bidirectional: Praxis can resume Claude Code
+sessions, and Claude Code can resume sessions written by Praxis. Project
+instructions, auto memory, skills, agents, hooks, and MCP configuration are
+shared rather than copied into a separate Praxis ecosystem.
+
+See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for boundaries and safety
+rules.
 
 ## Development
 

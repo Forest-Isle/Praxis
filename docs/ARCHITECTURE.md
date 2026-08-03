@@ -22,7 +22,7 @@ src/
 ├── providers/     capability-aware model adapters
 ├── tools/         local executable capabilities
 ├── extensions/    MCP, skills, and hooks
-├── persistence/   JSONL transcripts and local indexes
+├── persistence/   Claude-compatible JSONL and local sidecar indexes
 └── platform/      filesystem, process, keychain, and OS adapters
 ```
 
@@ -30,12 +30,30 @@ src/
 
 - `core` must not import React, Ink, model-vendor SDKs, filesystem, or storage.
 - The CLI observes runtime events; it does not own agent state.
-- JSONL transcripts remain authoritative and append-only.
+- Claude Code-compatible JSONL transcripts remain authoritative and
+  append-only.
 - Provider adapters expose capabilities instead of flattening every model to a
   lowest-common-denominator API.
 - Tool permissions are local `allow`, `ask`, or `deny` decisions.
 - No tenant, organization, role, entitlement, billing, remote-control, or
   telemetry domain exists.
+
+## Shared Claude data plane
+
+Praxis defaults to the same configuration root as Claude Code:
+`CLAUDE_CONFIG_DIR`, falling back to `~/.claude`. It shares:
+
+- workspace session JSONL files and UUID/parent UUID chains;
+- `CLAUDE.md`, `.claude/CLAUDE.md`, and `.claude/rules` instructions;
+- global and project skills, commands, and agent definitions;
+- auto memory under the Claude project memory directory;
+- compatible settings, hooks, and MCP configuration.
+
+Praxis-only indexes, provider payloads, and locks are non-authoritative
+sidecars under `<claude-config>/praxis/`. They must never be required to resume
+the human-visible conversation from Claude Code.
+
+Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Clean-room rule
 
