@@ -117,6 +117,66 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('done')
   })
 
+  it('asks before retrying an interrupted tool during resume', async () => {
+    let recoveryApproval: boolean | undefined
+    const call: ModelToolCall = {
+      id: 'call-interrupted',
+      name: 'Bash',
+      input: { command: 'npm test' },
+    }
+    const factory: InteractiveServiceFactory = {
+      async createService({ approveRecovery }) {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume(sessionId) {
+            recoveryApproval = await approveRecovery?.(call)
+            return {
+              sessionId,
+              text: 'recovered',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[
+          {
+            sessionId: 'session-1',
+            lastPrompt: 'interrupted task',
+            updatedAt: '2026-08-04T00:00:00.000Z',
+          },
+        ]}
+      />,
+    )
+
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('continue')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Retry interrupted Bash')
+    expect(app.lastFrame()).toContain('npm test')
+
+    app.stdin.write('y')
+    await flush()
+    expect(recoveryApproval).toBe(true)
+    expect(app.lastFrame()).toContain('recovered')
+  })
+
   it('settles a newly-created permission prompt when cancellation races render', async () => {
     const controller = new AbortController()
     let approval: boolean | undefined

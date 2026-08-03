@@ -343,28 +343,31 @@ export class ClaudeSessionService {
             throw new Error(`SessionStart hook error: ${outcome.blockedReason}`)
           }
         }
+        const approveRecovery = this.options.approveRecovery
         const recoveryRequest = {
           cwd: this.options.cwd,
           observer,
           ...(signal ? { signal } : {}),
-          ...(this.options.approveRecovery
-            ? { approveTool: this.options.approveRecovery }
+          ...(approveRecovery
+            ? {
+                approveRecovery: async (call: ModelToolCall) => {
+                  if (await approveRecovery(call)) return true
+                  throw new Error(
+                    `Claude session tool call ${call.id} recovery was declined`,
+                  )
+                },
+                approveTool: () => true,
+              }
             : {}),
         }
         const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
           snapshot.entries,
         )
-        for (const unresolvedToolCall of unresolvedToolCalls) {
-          if (!this.options.approveRecovery) {
-            throw new Error(
-              `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
-            )
-          }
-          if (!(await this.options.approveRecovery(unresolvedToolCall))) {
-            throw new Error(
-              `Claude session tool call ${unresolvedToolCall.id} recovery was declined`,
-            )
-          }
+        const unresolvedToolCall = unresolvedToolCalls[0]
+        if (unresolvedToolCall && !approveRecovery) {
+          throw new Error(
+            `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
+          )
         }
         await runtime.recoverToolCalls(unresolvedToolCalls, recoveryRequest)
 

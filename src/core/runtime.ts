@@ -149,10 +149,12 @@ export interface AgentRunRequest {
   signal?: AbortSignal
 }
 
-export type AgentToolRecoveryRequest = Pick<
+export interface AgentToolRecoveryRequest extends Pick<
   AgentRunRequest,
   'approveTool' | 'cwd' | 'observer' | 'signal'
->
+> {
+  approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
+}
 
 export interface AgentRunResult {
   text: string
@@ -402,6 +404,7 @@ export class AgentRuntime {
     const tools = this.options.tools
     const permissions = this.options.permissions
     if (!tools || !permissions) {
+      await this.requireRecoveryApproval(call, request)
       return {
         content: `Tool ${call.name} is unavailable`,
         isError: true,
@@ -415,12 +418,13 @@ export class AgentRuntime {
     try {
       prepared = await tools.prepare(call, context)
     } catch (error) {
+      await this.requireRecoveryApproval(call, request)
       return {
         content: error instanceof Error ? error.message : String(error),
         isError: true,
       }
     }
-    if (request.signal?.aborted) return this.cancel()
+    await this.requireRecoveryApproval(prepared, request)
 
     const decision = await permissions.resolve(prepared)
     this.emit({
@@ -454,6 +458,17 @@ export class AgentRuntime {
         isError: true,
       }
     }
+  }
+
+  private async requireRecoveryApproval(
+    call: ModelToolCall,
+    request: AgentToolRecoveryRequest,
+  ): Promise<void> {
+    if (request.signal?.aborted) return this.cancel()
+    if (request.approveRecovery && !(await request.approveRecovery(call))) {
+      throw new Error(`Tool call ${call.id} recovery was declined`)
+    }
+    if (request.signal?.aborted) return this.cancel()
   }
 
   private cancel(): never {

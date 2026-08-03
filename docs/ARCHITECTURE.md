@@ -48,6 +48,12 @@ React and Ink do not enter `core`, application services, providers, tools, or
 shared persistence. Headless text and NDJSON modes retain the same runtime
 ports without terminal prompts.
 
+Interrupted-tool recovery uses a separate `approveRecovery` port. The runtime
+invokes it after tool/hook preparation so the UI displays the input that would
+actually execute. One explicit recovery approval satisfies an `ask` decision,
+while a current `deny` rule still produces an error result. Missing or declined
+approval leaves the unresolved transcript prefix untouched.
+
 ## Shared Claude data plane
 
 Praxis defaults to the same configuration root as Claude Code:

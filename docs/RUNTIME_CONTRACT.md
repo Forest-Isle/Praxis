@@ -47,6 +47,10 @@ Rules:
     calls are never compacted. Between-turn compaction replays current user
     messages verbatim after the summary, and the compactor's own provider call
     must fit the configured full context window.
+11. Resume never silently replays an interrupted tool call. Recovery prepares
+    the call through the current hook/tool pipeline, asks once against the
+    actual prepared input, then applies the current deny/ask/allow policy.
+    Decline leaves the append-only transcript unchanged.
 
 ## Core ports
 

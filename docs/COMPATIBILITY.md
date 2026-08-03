@@ -230,6 +230,9 @@ execution, and Claude resume of the Praxis-written hook transcript.
 `npm run test:mcp-compat` proves Claude and Praxis share user/project-local
 precedence, then exercises Praxis stdio and Streamable HTTP discovery, tool
 calls, permission flow, and stdio subprocess cleanup through the built CLI.
+`npm run test:recovery-compat` creates an interrupted native tool call, proves
+decline is append-free, approves the prepared retry exactly once, persists its
+native result, and requires Claude Code 2.1.208 to resume the recovered turn.
 `npm run test:compaction-compat` creates over-budget history, lets Praxis append
 an automatic compact pair, proves its next provider request excludes discarded
 messages, and requires Claude 2.1.208 to resume the same active summary without

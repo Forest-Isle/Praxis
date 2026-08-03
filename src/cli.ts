@@ -108,7 +108,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
-    approveRecovery: boolean
+    approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
     approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
     agent?: string
     signal?: AbortSignal
@@ -200,7 +200,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ? { contextReserveTokens: context.contextReserveTokens }
       : {}),
     ...(approveTool ? { approveTool } : {}),
-    ...(approveRecovery ? { approveRecovery: () => true } : {}),
+    ...(approveRecovery ? { approveRecovery } : {}),
   })
   return {
     run: (prompt, signal) =>
@@ -284,12 +284,12 @@ async function execute(
 
   const { agent, args: agentArgs } = extractAgent(argv)
   const json = agentArgs.includes('--json')
-  const approveRecovery = agentArgs.includes('--retry-interrupted-tools')
+  const retryInterruptedTools = agentArgs.includes('--retry-interrupted-tools')
   const args = agentArgs.filter(
     (value) => value !== '--json' && value !== '--retry-interrupted-tools',
   )
   const command = args[0]
-  if (approveRecovery && command !== 'resume') {
+  if (retryInterruptedTools && command !== 'resume') {
     throw new Error('--retry-interrupted-tools is only valid with resume')
   }
   if (agent && !['run', 'resume'].includes(command ?? 'run')) {
@@ -301,7 +301,7 @@ async function execute(
   const service = await dependencies.createService({
     eventSink: eventSink(io, json),
     requireProvider: !['fork', 'sessions'].includes(command ?? 'run'),
-    approveRecovery,
+    ...(retryInterruptedTools ? { approveRecovery: () => true } : {}),
     ...(signal ? { signal } : {}),
     ...(agent ? { agent } : {}),
   })

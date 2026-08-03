@@ -70,7 +70,8 @@ Status: in progress.
 
 - [x] Ink TUI over runtime events
 - [x] streaming, permission prompts, session picker, and basic diagnostics
-- [ ] crash recovery and performance budgets
+- [x] interrupted-tool crash recovery with prepared-input approval
+- [ ] performance budgets
 - [ ] packaging and upgrade compatibility matrix
 
 Exit gate: end-to-end release suite on macOS and Linux.

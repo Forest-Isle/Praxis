@@ -4,6 +4,7 @@ import {
   AgentRunCancelledError,
   AgentRuntime,
   ModelProviderError,
+  type ModelToolCall,
   type ModelProvider,
   type ModelRequest,
   type RuntimeEvent,
@@ -380,5 +381,72 @@ describe('AgentRuntime', () => {
     )
 
     expect(followUps).toEqual([['SKILL_CONTEXT']])
+  })
+
+  it('approves a recovered tool after preparation and before execution', async () => {
+    const approvals: ModelToolCall[] = []
+    let executed = false
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield* []
+      }),
+      undefined,
+      {
+        tools: {
+          definitions: () => [],
+          async prepare(call) {
+            return { ...call, input: { command: 'prepared command' } }
+          },
+          async execute() {
+            executed = true
+            return { content: 'unexpected', isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+
+    await expect(
+      runtime.recoverToolCalls(
+        [{ id: 'call_recovery', name: 'Bash', input: { command: 'original' } }],
+        {
+          approveRecovery(call) {
+            approvals.push(call)
+            return false
+          },
+        },
+      ),
+    ).rejects.toThrow('recovery was declined')
+
+    expect(approvals).toEqual([
+      {
+        id: 'call_recovery',
+        name: 'Bash',
+        input: { command: 'prepared command' },
+      },
+    ])
+    expect(executed).toBe(false)
+  })
+
+  it('requires recovery approval before resolving an unavailable tool', async () => {
+    let approvals = 0
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield* []
+      }),
+    )
+
+    await expect(
+      runtime.recoverToolCalls(
+        [{ id: 'call_missing', name: 'Missing', input: {} }],
+        {
+          approveRecovery() {
+            approvals += 1
+            return false
+          },
+        },
+      ),
+    ).rejects.toThrow('recovery was declined')
+    expect(approvals).toBe(1)
   })
 })

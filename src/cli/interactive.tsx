@@ -28,7 +28,7 @@ export interface InteractiveServiceFactory {
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
-    approveRecovery: boolean
+    approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
     approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
     agent?: string
     signal?: AbortSignal
@@ -49,6 +49,7 @@ type HistoryLine = {
 }
 
 type PendingPermission = {
+  kind: 'tool' | 'recovery'
   call: ModelToolCall
   resolve: (approved: boolean) => void
 }
@@ -115,10 +116,14 @@ export function InteractiveApp({
     }
   }
 
-  const approveTool = (call: ModelToolCall) =>
+  const requestApproval = (
+    call: ModelToolCall,
+    kind: PendingPermission['kind'],
+  ) =>
     new Promise<boolean>((resolveApproval) => {
       let settled = false
       const pending: PendingPermission = {
+        kind,
         call,
         resolve: (approved) => {
           if (settled) return
@@ -131,6 +136,9 @@ export function InteractiveApp({
       permissionRef.current = pending
       setPermission(pending)
     })
+  const approveTool = (call: ModelToolCall) => requestApproval(call, 'tool')
+  const approveRecovery = (call: ModelToolCall) =>
+    requestApproval(call, 'recovery')
 
   const submit = async (prompt: string) => {
     setBusy(true)
@@ -141,7 +149,7 @@ export function InteractiveApp({
       const service = await factory.createService({
         eventSink: handleEvent,
         requireProvider: true,
-        approveRecovery: false,
+        approveRecovery,
         approveTool,
         ...(signal ? { signal } : {}),
       })
@@ -264,7 +272,8 @@ export function InteractiveApp({
           {activeText ? <Text>Praxis: {activeText}</Text> : null}
           {permission ? (
             <Text color="yellow">
-              Allow {describeTool(permission.call)}? (y/N)
+              {permission.kind === 'recovery' ? 'Retry interrupted ' : 'Allow '}
+              {describeTool(permission.call)}? (y/N)
             </Text>
           ) : busy ? (
             <Text dimColor>{status}…</Text>
@@ -291,7 +300,6 @@ export async function runInteractive(options: {
   const listing = await options.factory.createService({
     eventSink: () => undefined,
     requireProvider: false,
-    approveRecovery: false,
     signal,
   })
   const initialSessions = await listing.sessions()

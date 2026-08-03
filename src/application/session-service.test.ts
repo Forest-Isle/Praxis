@@ -1749,19 +1749,6 @@ describe('ClaudeSessionService', () => {
     await expect(
       requiresApproval.resume(summary.sessionId, 'continue'),
     ).rejects.toThrow('requires explicit recovery approval')
-    const resumed = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['must not run']),
-      tools: recoveryTools,
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-      approveRecovery: () => true,
-    })
-
-    await expect(
-      resumed.resume(summary.sessionId, 'continue'),
-    ).resolves.toMatchObject({ text: 'must not run' })
     const { resolveClaudePaths } =
       await import('../compatibility/claude/paths.js')
     const paths = resolveClaudePaths({
@@ -1769,6 +1756,38 @@ describe('ClaudeSessionService', () => {
       cwd,
       sessionId: summary.sessionId,
     })
+    const beforeDecline = await readFile(paths.sessionFile, 'utf8')
+    const declined = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+      tools: recoveryTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      approveRecovery: () => false,
+    })
+    await expect(
+      declined.resume(summary.sessionId, 'continue'),
+    ).rejects.toThrow('recovery was declined')
+    expect(await readFile(paths.sessionFile, 'utf8')).toBe(beforeDecline)
+    let recoveryApprovals = 0
+    const resumed = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+      tools: recoveryTools,
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+      approveRecovery: () => {
+        recoveryApprovals += 1
+        return true
+      },
+    })
+
+    await expect(
+      resumed.resume(summary.sessionId, 'continue'),
+    ).resolves.toMatchObject({ text: 'must not run' })
+    expect(recoveryApprovals).toBe(1)
     const entries = (await readFile(paths.sessionFile, 'utf8'))
       .trimEnd()
       .split('\n')

@@ -13,6 +13,8 @@ IDE surfaces, and telemetry control planes.
 Sprint 3 context ecosystem is complete; Sprint 4 interactive hardening is in
 progress. Running `praxis` in a TTY opens an Ink session UI with streaming
 responses, recent-session selection, runtime status, and ask-permission prompts.
+When resume finds a tool call interrupted before its result was persisted, the
+UI shows the prepared tool name/input and requires a separate retry decision.
 Praxis can run, resume, fork, and list Claude-compatible sessions
 through a provider-neutral event loop and an OpenAI-compatible streaming
 provider. Built-in read, write, edit, search, and shell tools execute behind
@@ -144,6 +146,7 @@ npm run test:hook-compat
 npm run test:mcp-compat
 npm run test:permission-compat
 npm run test:runtime-compat
+npm run test:recovery-compat
 npm run test:shared-compat
 ```
 

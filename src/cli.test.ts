@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ModelToolCall } from './core/runtime.js'
 import {
   parseContextEnvironment,
   run,
@@ -167,7 +168,8 @@ describe('Praxis CLI', () => {
 
   it('passes explicit interrupted-tool recovery only for resume', async () => {
     const capture = captureIO()
-    let approveRecovery = false
+    let approveRecovery:
+      ((call: ModelToolCall) => boolean | Promise<boolean>) | undefined
     const base = dependencies()
     const recovering: CliDependencies = {
       async createService(options) {
@@ -188,7 +190,9 @@ describe('Praxis CLI', () => {
         recovering,
       ),
     ).resolves.toBe(0)
-    expect(approveRecovery).toBe(true)
+    expect(
+      await approveRecovery?.({ id: 'interrupted', name: 'Bash', input: {} }),
+    ).toBe(true)
   })
 
   it('passes an explicit agent without including the option in the prompt', async () => {

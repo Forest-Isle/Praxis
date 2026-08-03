@@ -25,6 +25,7 @@
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",
     "test:runtime-compat": "npm run build && node scripts/verify-runtime-compatibility.mjs",
+    "test:recovery-compat": "npm run build && node scripts/verify-crash-recovery.mjs",
     "test:shared-compat": "npm run build && node scripts/verify-claude-shared-resources.mjs",
     "typecheck": "tsc --noEmit"
   },
