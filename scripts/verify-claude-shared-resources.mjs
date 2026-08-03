@@ -19,6 +19,9 @@ const markers = {
   projectPackage: 'SHARED_PROJECT_PACKAGE_2163',
   projectCwd: 'SHARED_PROJECT_CWD_2274',
   nonGit: 'SHARED_NON_GIT_2385',
+  nonGitSkill: 'SHARED_NON_GIT_SKILL_2496',
+  nonGitCommand: 'SHARED_NON_GIT_COMMAND_2507',
+  nonGitAgent: 'SHARED_NON_GIT_AGENT_2618',
   memory: 'SHARED_MEMORY_3063',
   memoryDetail: 'SHARED_MEMORY_DETAIL_3174',
   skill: 'SHARED_SKILL_4074',
@@ -442,6 +445,18 @@ process.stdin.on('data', chunk => {
       join(nonGitRoot, 'CLAUDE.md'),
       `Non-git hierarchy marker: ${markers.nonGit}\n`,
     ),
+    write(
+      join(nonGitRoot, '.claude', 'skills', 'non-git-skill', 'SKILL.md'),
+      `---\nname: non-git-skill\ndescription: Non-git project skill fixture.\n---\nReply with exactly ${markers.nonGitSkill}.\n`,
+    ),
+    write(
+      join(nonGitRoot, '.claude', 'commands', 'non-git-command.md'),
+      `Reply with exactly ${markers.nonGitCommand}.\n`,
+    ),
+    write(
+      join(nonGitRoot, '.claude', 'agents', 'non-git-agent.md'),
+      `---\nname: non-git-agent\ndescription: Non-git project agent fixture.\n---\nReply with exactly ${markers.nonGitAgent}.\n`,
+    ),
   ])
   const nonGitResources = await loadClaudeSharedResources({
     configRoot,
@@ -451,6 +466,21 @@ process.stdin.on('data', chunk => {
     nonGitResources.instructions.map((item) => item.content).join('\n'),
     markers.nonGit,
     'Praxis non-git hierarchy',
+  )
+  assertContains(
+    nonGitResources.skills.map((item) => item.content).join('\n'),
+    markers.nonGitSkill,
+    'Praxis non-git project skill',
+  )
+  assertContains(
+    nonGitResources.commands.map((item) => item.content).join('\n'),
+    markers.nonGitCommand,
+    'Praxis non-git project command',
+  )
+  assertContains(
+    nonGitResources.agents.map((item) => item.content).join('\n'),
+    markers.nonGitAgent,
+    'Praxis non-git project agent',
   )
   const { stdout: nonGitStdout } = await execFileAsync(
     'claude',
@@ -475,6 +505,80 @@ process.stdin.on('data', chunk => {
     String(JSON.parse(nonGitStdout).result),
     markers.nonGit,
     'Claude non-git hierarchy',
+  )
+  const { stdout: nonGitSkillStdout } = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--output-format',
+      'json',
+      '/non-git-skill',
+    ],
+    {
+      cwd: nonGitCwd,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  assertContains(
+    String(JSON.parse(nonGitSkillStdout).result),
+    markers.nonGitSkill,
+    'Claude non-git project skill',
+  )
+  const { stdout: nonGitCommandStdout } = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--output-format',
+      'json',
+      '/non-git-command',
+    ],
+    {
+      cwd: nonGitCwd,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  assertContains(
+    String(JSON.parse(nonGitCommandStdout).result),
+    markers.nonGitCommand,
+    'Claude non-git project command',
+  )
+  const { stdout: nonGitAgentStdout } = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--output-format',
+      'json',
+      '--agent',
+      'non-git-agent',
+      'Follow your agent instructions.',
+    ],
+    {
+      cwd: nonGitCwd,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  assertContains(
+    String(JSON.parse(nonGitAgentStdout).result),
+    markers.nonGitAgent,
+    'Claude non-git project agent',
   )
 
   console.log(
