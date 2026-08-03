@@ -58,11 +58,20 @@ function projectHookContext(entry: ClaudeTranscriptEntry): string | null {
   return null
 }
 
+function activeEntries(
+  entries: readonly ClaudeTranscriptEntry[],
+): readonly ClaudeTranscriptEntry[] {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index]?.isCompactSummary === true) return entries.slice(index)
+  }
+  return entries
+}
+
 export function projectClaudeTextMessages(
   entries: readonly ClaudeTranscriptEntry[],
 ): ClaudeTextMessage[] {
   const messages: ClaudeTextMessage[] = []
-  for (const entry of entries) {
+  for (const entry of activeEntries(entries)) {
     if (!isRecord(entry.message)) continue
     const role = entry.message.role
     if (role !== 'user' && role !== 'assistant') continue
@@ -88,14 +97,22 @@ export function projectClaudeTextMessages(
 export function projectClaudeModelMessages(
   entries: readonly ClaudeTranscriptEntry[],
 ): ModelMessage[] {
+  const active = activeEntries(entries)
   const messages: ModelMessage[] = entries.flatMap((entry) => {
-    const attachmentContext =
-      projectNestedMemory(entry) ?? projectHookContext(entry)
+    const attachmentContext = projectNestedMemory(entry)
     return attachmentContext === null || attachmentContext.length === 0
       ? []
       : [{ role: 'system' as const, content: attachmentContext }]
   })
-  for (const entry of entries) {
+  messages.push(
+    ...active.flatMap((entry) => {
+      const hookContext = projectHookContext(entry)
+      return hookContext === null || hookContext.length === 0
+        ? []
+        : [{ role: 'system' as const, content: hookContext }]
+    }),
+  )
+  for (const entry of active) {
     if (
       projectNestedMemory(entry) !== null ||
       projectHookContext(entry) !== null

@@ -88,6 +88,16 @@ and wraps local tools without changing the provider-neutral runtime port.
 Stdio and HTTP clients are connected before model execution and closed after
 the run or resume turn completes.
 
+`ContextBudget` estimates provider-neutral request size across ephemeral system
+messages, active transcript projection, current prompt, and tool definitions.
+Provider capability or explicit CLI configuration supplies the window; Praxis
+does not guess model limits. `ModelCompactor` uses the active provider without
+tools and enforces a bounded, non-empty summary. `ClaudeSessionService` writes
+the native boundary/summary pair as one leased append, then projects only the
+latest summary onward while retaining historical nested-memory attachments.
+Compaction failure, cancellation, or an oversized summary leaves no partial
+compact records.
+
 Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Clean-room rule

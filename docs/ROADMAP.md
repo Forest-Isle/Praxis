@@ -59,7 +59,7 @@ Status: in progress.
 - [x] skills, commands, and agent definitions
 - [x] command hooks across session, prompt, permission, tool, stop, and end events
 - [x] user/project/local MCP sources, stdio/HTTP discovery, calls, and lifecycle
-- [ ] context budgeting and version-supported compaction
+- [x] context budgeting and version-supported compaction
 
 Exit gate: shared-data black-box matrix and context fidelity tests.
 

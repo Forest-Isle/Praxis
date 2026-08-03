@@ -117,6 +117,77 @@ describe('ClaudeTranscriptStore', () => {
     expect(after.slice(before.length)).toBe(`${JSON.stringify(entry)}\n`)
   })
 
+  it('atomically appends a compact boundary and summary under one tail check', async () => {
+    const { sessionFile, store } = await createStore()
+    const before = await readFile(sessionFile, 'utf8')
+    const snapshot = await store.load()
+    const boundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      content: 'Conversation compacted',
+      isMeta: false,
+      level: 'info',
+      logicalParentUuid: snapshot.tail.lastUuid,
+      compactMetadata: {
+        trigger: 'auto',
+        preTokens: 100,
+        durationMs: 2,
+        preservedSegment: {
+          headUuid: snapshot.tail.lastUuid,
+          anchorUuid: 'compact-summary',
+          tailUuid: snapshot.tail.lastUuid,
+        },
+        preservedMessages: {
+          anchorUuid: 'compact-summary',
+          uuids: [snapshot.tail.lastUuid],
+          allUuids: [snapshot.tail.lastUuid],
+        },
+        postTokens: 20,
+        cumulativeDroppedTokens: 80,
+      },
+      parentUuid: null,
+      isSidechain: false,
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: '/tmp/praxis-fixture',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      version: '2.1.208',
+      gitBranch: null,
+      timestamp: '2026-08-04T00:00:00.000Z',
+      uuid: 'compact-boundary',
+    }
+    const summary = {
+      parentUuid: 'compact-boundary',
+      isSidechain: false,
+      isCompactSummary: true,
+      isVisibleInTranscriptOnly: true,
+      message: { role: 'user', content: 'COMPACT_SUMMARY' },
+      type: 'user',
+      uuid: 'compact-summary',
+      timestamp: '2026-08-04T00:00:00.000Z',
+      userType: 'external',
+      promptId: 'compact-summary',
+      cwd: '/tmp/praxis-fixture',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      version: '2.1.208',
+      gitBranch: null,
+      entrypoint: 'cli',
+    }
+
+    const leaseResult = await store.withLease((lease) =>
+      lease.appendMany(snapshot.tail, [boundary, summary]),
+    )
+    const after = await readFile(sessionFile, 'utf8')
+
+    expect(leaseResult).toMatchObject({
+      status: 'completed',
+      value: { status: 'appended', tail: { lastUuid: 'compact-summary' } },
+    })
+    expect(after).toBe(
+      `${before}${JSON.stringify(boundary)}\n${JSON.stringify(summary)}\n`,
+    )
+  })
+
   it('creates a fork transcript exclusively without linearizing native entries', async () => {
     const source = await createStore()
     const snapshot = await source.store.load()

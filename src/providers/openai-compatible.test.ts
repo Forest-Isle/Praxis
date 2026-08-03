@@ -4,6 +4,26 @@ import { ModelProviderError } from '../core/runtime.js'
 import { OpenAICompatibleProvider } from './openai-compatible.js'
 
 describe('OpenAICompatibleProvider', () => {
+  it('exposes an explicitly configured context window', () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      contextWindowTokens: 200_000,
+    })
+
+    expect(provider.capabilities.contextWindowTokens).toBe(200_000)
+    expect(
+      () =>
+        new OpenAICompatibleProvider({
+          baseUrl: 'https://provider.example/v1',
+          apiKey: 'secret',
+          model: 'fixture-model',
+          contextWindowTokens: 0,
+        }),
+    ).toThrow('positive integer')
+  })
+
   it('streams text and usage from chat completions SSE', async () => {
     let capturedUrl = ''
     let capturedInit: RequestInit | undefined

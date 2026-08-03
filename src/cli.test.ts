@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { run, type CliDependencies, type CliIO } from './cli.js'
+import {
+  parseContextEnvironment,
+  run,
+  type CliDependencies,
+  type CliIO,
+} from './cli.js'
 
 function captureIO() {
   const stdout: string[] = []
@@ -54,6 +59,21 @@ function dependencies(warning?: string): CliDependencies {
 }
 
 describe('Praxis CLI', () => {
+  it('validates explicit context budget environment', () => {
+    expect(
+      parseContextEnvironment({
+        PRAXIS_CONTEXT_WINDOW_TOKENS: '200000',
+        PRAXIS_CONTEXT_RESERVE_TOKENS: '8192',
+      }),
+    ).toEqual({ contextWindowTokens: 200_000, contextReserveTokens: 8192 })
+    expect(() =>
+      parseContextEnvironment({ PRAXIS_CONTEXT_WINDOW_TOKENS: 'unknown' }),
+    ).toThrow('positive integer')
+    expect(() =>
+      parseContextEnvironment({ PRAXIS_CONTEXT_RESERVE_TOKENS: '8192' }),
+    ).toThrow('requires PRAXIS_CONTEXT_WINDOW_TOKENS')
+  })
+
   it('prints help and version without creating runtime dependencies', async () => {
     const capture = captureIO()
     const unavailable: CliDependencies = {

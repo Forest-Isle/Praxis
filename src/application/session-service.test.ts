@@ -17,6 +17,7 @@ import type {
   RuntimeEvent,
   ToolRegistry,
 } from '../core/runtime.js'
+import { ContextBudget } from '../core/context-budget.js'
 import { AgentRunCancelledError, ModelProviderError } from '../core/runtime.js'
 import {
   ClaudeConditionalRuleResolver,
@@ -69,6 +70,273 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('compacts over-budget context before the model turn and preserves append-only history', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-compaction-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield {
+            type: 'text-delta',
+            delta: `old-context ${'discarded '.repeat(600)}`,
+          }
+        },
+      },
+    })
+    const first = await origin.run('CURRENT_TASK')
+
+    const requests: ModelRequest[] = []
+    const events: RuntimeEvent[] = []
+    const provider: ModelProvider = {
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 400,
+      },
+      async *complete(request) {
+        requests.push(request)
+        if (requests.length === 1) {
+          yield { type: 'text-delta', delta: 'COMPACTED_CURRENT_TASK' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 50, outputTokens: 5 },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'final answer' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 20, outputTokens: 3 },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      contextReserveTokens: 50,
+      eventSink: (event) => events.push(event),
+    })
+
+    const result = await service.resume(first.sessionId, 'Continue the task.')
+
+    expect(result).toMatchObject({
+      text: 'final answer',
+      usage: { inputTokens: 70, outputTokens: 8 },
+    })
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[0]?.messages)).toContain('old-context')
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'COMPACTED_CURRENT_TASK',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).not.toContain('old-context')
+    expect(events).toContainEqual({ type: 'state', state: 'compacting' })
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: result.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('old-context')
+    expect(transcript).toContain('"subtype":"compact_boundary"')
+    expect(transcript).toContain('"isCompactSummary":true')
+  })
+
+  it('compacts a large completed tool result before the next model turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-tool-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let mainTurns = 0
+    const provider: ModelProvider = {
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        contextWindowTokens: 500,
+      },
+      async *complete(request) {
+        requests.push(request)
+        if (
+          JSON.stringify(request.messages).includes(
+            'You are compacting an agent conversation',
+          )
+        ) {
+          yield { type: 'text-delta', delta: 'TOOL_RESULT_SUMMARY' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 30, outputTokens: 4 },
+          }
+          return
+        }
+        if (mainTurns++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_large', name: 'Read', input: {} },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'tool compacted' }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        { name: 'Read', description: 'Read', inputSchema: { type: 'object' } },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return {
+          content: `LARGE_TOOL_RESULT ${'contents '.repeat(500)}`,
+          isError: false,
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextReserveTokens: 50,
+    })
+
+    const result = await service.run('Read the large result.')
+
+    expect(result.text).toBe('tool compacted')
+    expect(requests).toHaveLength(3)
+    expect(JSON.stringify(requests[1]?.messages)).toContain('LARGE_TOOL_RESULT')
+    expect(JSON.stringify(requests[2]?.messages)).toContain(
+      'TOOL_RESULT_SUMMARY',
+    )
+    expect(JSON.stringify(requests[2]?.messages)).not.toContain(
+      'LARGE_TOOL_RESULT',
+    )
+  })
+
+  it('does not write partial compact records when summarization fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-compact-fail-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'history '.repeat(600) }
+        },
+      },
+    })
+    const first = await origin.run('Build the feature.')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 400,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'unexpected' }
+        },
+      },
+      contextReserveTokens: 50,
+      compactor: {
+        async compact() {
+          throw new Error('summary provider failed')
+        },
+      },
+    })
+
+    await expect(service.resume(first.sessionId, 'Continue.')).rejects.toThrow(
+      'summary provider failed',
+    )
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
+    expect(transcript).not.toContain('Continue.')
+  })
+
+  it('fails with token diagnostics before writing a summary that still cannot fit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-compact-size-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['history '.repeat(200)]),
+    })
+    const first = await origin.run('Build the feature.')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unexpected']),
+      contextBudget: new ContextBudget({
+        contextWindowTokens: 100,
+        reserveTokens: 20,
+      }),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'SMALL_SUMMARY',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+          }
+        },
+      },
+    })
+
+    await expect(service.resume(first.sessionId, 'Continue.')).rejects.toThrow(
+      /estimated=.*window=100.*reserve=20.*available=80/,
+    )
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
+  })
+
   it('runs, persists, resumes, lists, and forks a text session', async () => {
     const { configRoot, cwd, service } = await createService()
 

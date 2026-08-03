@@ -277,7 +277,7 @@ describe('ClaudeSchemaAdapter', () => {
     )
   })
 
-  it('losslessly reads advanced Claude entries without enabling their writers', async () => {
+  it('writes only the validated native compaction profile from advanced entries', async () => {
     const adapter = selectClaudeSchemaAdapter('2.1.208')
     const fixtures = await Promise.all(
       advancedFixtureUrls.map(async (url) => {
@@ -303,11 +303,18 @@ describe('ClaudeSchemaAdapter', () => {
       throw new Error('Advanced fixture profile is incomplete')
     }
 
-    expect(() => adapter.serializeForAppend(compactSummary)).toThrow(
-      'compact summaries',
+    const compactBoundary = entries.find(
+      (entry) => entry.subtype === 'compact_boundary',
+    )
+    if (!compactBoundary) throw new Error('Compact boundary fixture is missing')
+    expect(adapter.serializeForAppend(compactBoundary)).toBe(
+      JSON.stringify(compactBoundary),
+    )
+    expect(adapter.serializeForAppend(compactSummary)).toBe(
+      JSON.stringify(compactSummary),
     )
     expect(() => adapter.serializeForFork(compactSummary)).toThrow(
-      'compact summaries',
+      'not forkable',
     )
     expect(() => adapter.serializeForAppend(sidechain)).toThrow('sidechains')
     expect(() => adapter.serializeForAppend(imageResult)).toThrow(

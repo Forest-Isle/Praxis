@@ -158,23 +158,25 @@ Current write scope is deliberately smaller than read scope. Praxis reads any
 well-formed native entry as opaque data, but only appends validated `user` and
 `assistant` conversational entries, path-rule `nested_memory` attachments,
 selected-agent `agent-setting` metadata, and the physical `last-prompt` record
-required by Claude resume for the selected adapter version. `agent-setting` and
+required by Claude resume for the selected adapter version. The write profile
+also includes the validated `compact_boundary` system record and its paired
+`isCompactSummary` user entry; both append atomically under one tail check.
+`agent-setting` and
 `last-prompt` do not advance the logical UUID chain; `last-prompt` must name its
 current leaf. Message content blocks and attachment envelopes are validated
 before append, and every `tool_result` must match the historical `tool_use` plus
-`sourceToolAssistantUUID`. Summary, sidechain, image, and other entry writers
+`sourceToolAssistantUUID`. Sidechain, image, tool-denial, and other entry writers
 remain disabled until their runtime implementations and write/resume probes
-pass. Text forks do not copy attachments.
+pass. Text forks do not copy attachments or compaction metadata.
 
 Sprint 1 text forks create a new transcript from projected user/assistant text
 using the validated writer. They do not clone opaque native entries or bypass
 the active version adapter.
 
-Claude 2.1.208 read fixtures now cover text, tool use/results, manual
-compaction, subagent sidechains, image results, non-zero tool errors, and user
-interruption. Passing a read fixture does not enable its writer: compact
-summaries, sidechains, images, and tool-denial entries remain explicitly
-rejected by the append adapter.
+Claude 2.1.208 fixtures cover text, tool use/results, manual compaction,
+subagent sidechains, image results, non-zero tool errors, and user interruption.
+Compaction alone has passed its native writer/reopen gate; sidechains, images,
+and tool-denial entries remain explicitly rejected by the append adapter.
 
 ## Resource ownership and current access
 
@@ -228,6 +230,10 @@ execution, and Claude resume of the Praxis-written hook transcript.
 `npm run test:mcp-compat` proves Claude and Praxis share user/project-local
 precedence, then exercises Praxis stdio and Streamable HTTP discovery, tool
 calls, permission flow, and stdio subprocess cleanup through the built CLI.
+`npm run test:compaction-compat` creates over-budget history, lets Praxis append
+an automatic compact pair, proves its next provider request excludes discarded
+messages, and requires Claude 2.1.208 to resume the same active summary without
+recovering the discarded marker.
 
 ## Explicit non-goals
 

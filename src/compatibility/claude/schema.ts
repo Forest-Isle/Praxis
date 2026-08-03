@@ -17,6 +17,7 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'assistant',
   'attachment',
   'last-prompt',
+  'system',
   'user',
 ])
 const FORKABLE_ENTRY_TYPES = new Set(['assistant', 'last-prompt', 'user'])
@@ -220,6 +221,72 @@ function validateAttachment(entry: ClaudeTranscriptEntry): void {
   throw new Error('Claude transcript has unsupported attachment type')
 }
 
+function isNonNegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function validateCompactBoundary(entry: ClaudeTranscriptEntry): void {
+  const metadata = entry.compactMetadata
+  if (
+    entry.subtype !== 'compact_boundary' ||
+    entry.content !== 'Conversation compacted' ||
+    entry.parentUuid !== null ||
+    entry.isSidechain !== false ||
+    entry.isMeta !== false ||
+    entry.level !== 'info' ||
+    entry.userType !== 'external' ||
+    (entry.entrypoint !== 'cli' && entry.entrypoint !== 'sdk-cli') ||
+    !('gitBranch' in entry) ||
+    (entry.gitBranch !== null && typeof entry.gitBranch !== 'string') ||
+    !isNonEmptyString(entry.logicalParentUuid) ||
+    !isRecord(metadata)
+  ) {
+    throw new Error('Claude transcript has invalid compact boundary')
+  }
+  const segment = metadata.preservedSegment
+  const messages = metadata.preservedMessages
+  if (
+    (metadata.trigger !== 'auto' && metadata.trigger !== 'manual') ||
+    !isNonNegativeNumber(metadata.preTokens) ||
+    !isNonNegativeNumber(metadata.postTokens) ||
+    !isNonNegativeNumber(metadata.durationMs) ||
+    !isNonNegativeNumber(metadata.cumulativeDroppedTokens) ||
+    !isRecord(segment) ||
+    segment.headUuid !== entry.logicalParentUuid ||
+    segment.tailUuid !== entry.logicalParentUuid ||
+    !isNonEmptyString(segment.anchorUuid) ||
+    !isRecord(messages) ||
+    messages.anchorUuid !== segment.anchorUuid ||
+    !Array.isArray(messages.uuids) ||
+    messages.uuids.length === 0 ||
+    messages.uuids.some((value) => !isNonEmptyString(value)) ||
+    !Array.isArray(messages.allUuids) ||
+    messages.allUuids.length === 0 ||
+    messages.allUuids.some((value) => !isNonEmptyString(value))
+  ) {
+    throw new Error('Claude transcript has invalid compact metadata')
+  }
+}
+
+function validateCompactSummary(entry: ClaudeTranscriptEntry): void {
+  if (
+    entry.type !== 'user' ||
+    entry.isCompactSummary !== true ||
+    entry.isVisibleInTranscriptOnly !== true ||
+    entry.isSidechain !== false ||
+    entry.userType !== 'external' ||
+    (entry.entrypoint !== 'cli' && entry.entrypoint !== 'sdk-cli') ||
+    !('gitBranch' in entry) ||
+    (entry.gitBranch !== null && typeof entry.gitBranch !== 'string') ||
+    !isNonEmptyString(entry.promptId) ||
+    !isRecord(entry.message) ||
+    entry.message.role !== 'user' ||
+    !isNonEmptyString(entry.message.content)
+  ) {
+    throw new Error('Claude transcript has invalid compact summary')
+  }
+}
+
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   if (entry.type === 'agent-setting') {
     if (
@@ -261,8 +328,13 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   ) {
     throw new Error('Claude transcript entry has invalid parentUuid')
   }
+  if (entry.type === 'system') {
+    validateCompactBoundary(entry)
+    return
+  }
   if (entry.isCompactSummary === true) {
-    throw new Error('Praxis cannot append Claude compact summaries yet')
+    validateCompactSummary(entry)
+    return
   }
   if (entry.isSidechain === true) {
     throw new Error('Praxis cannot append Claude sidechains yet')
@@ -324,6 +396,9 @@ class ClaudeCode21208Adapter implements ClaudeSchemaAdapter {
       throw new Error(
         `Claude transcript entry type ${entry.type} is not forkable by Praxis`,
       )
+    }
+    if (entry.isCompactSummary === true) {
+      throw new Error('Claude compact summaries are not forkable by Praxis')
     }
     validateAppendableEntry(entry)
     return serializeEntry(entry)

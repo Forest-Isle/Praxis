@@ -65,6 +65,10 @@ export interface ClaudeTranscriptLease {
     expectedTail: TranscriptTail,
     entry: ClaudeTranscriptEntry,
   ): Promise<TranscriptAppendResult>
+  appendMany(
+    expectedTail: TranscriptTail,
+    entries: readonly ClaudeTranscriptEntry[],
+  ): Promise<TranscriptAppendResult>
 }
 
 export type TranscriptLeaseResult<T> =
@@ -309,6 +313,8 @@ export class ClaudeTranscriptStore {
         load: () => this.load(),
         append: (expectedTail, entry) =>
           this.appendUnderLease(expectedTail, entry),
+        appendMany: (expectedTail, entries) =>
+          this.appendManyUnderLease(expectedTail, entries),
       })
       return { status: 'completed', value }
     } finally {
@@ -333,31 +339,62 @@ export class ClaudeTranscriptStore {
     expectedTail: TranscriptTail,
     entry: ClaudeTranscriptEntry,
   ): Promise<TranscriptAppendResult> {
-    if (entry.type === 'last-prompt') {
-      if (entry.leafUuid !== expectedTail.lastUuid) {
-        throw new Error('Entry leafUuid does not match transcript tail')
-      }
-    } else if (entry.type !== 'agent-setting') {
-      if (entry.parentUuid !== expectedTail.lastUuid) {
-        throw new Error('Entry parentUuid does not match transcript tail')
-      }
-      if (typeof entry.uuid !== 'string' || entry.uuid.length === 0) {
-        throw new Error('Appended Claude transcript entry must have a uuid')
-      }
-    }
+    return this.appendManyUnderLease(expectedTail, [entry])
+  }
 
+  private async appendManyUnderLease(
+    expectedTail: TranscriptTail,
+    entries: readonly ClaudeTranscriptEntry[],
+  ): Promise<TranscriptAppendResult> {
+    if (entries.length === 0) {
+      throw new Error('Cannot append an empty Claude transcript batch')
+    }
     const current = await this.load()
     if (!tailsMatch(current.tail, expectedTail)) {
       return { status: 'conflict', reason: 'tail-changed' }
     }
-    validateLastPromptLeaf(current.entries, entry)
-    validateToolPairing(current.entries, entry)
     if (!current.tail.newlineTerminated) {
       throw new Error('Claude transcript is not newline-terminated')
     }
 
-    const line = this.schema.serializeForAppend(entry)
-    const encodedLine = Buffer.from(`${line}\n`)
+    const history = [...current.entries]
+    let logicalTailUuid = expectedTail.lastUuid
+    const lines: string[] = []
+    for (const entry of entries) {
+      if (entry.type === 'last-prompt') {
+        if (entry.leafUuid !== logicalTailUuid) {
+          throw new Error('Entry leafUuid does not match transcript tail')
+        }
+      } else if (entry.type === 'system') {
+        if (
+          entry.subtype !== 'compact_boundary' ||
+          entry.parentUuid !== null ||
+          entry.logicalParentUuid !== logicalTailUuid
+        ) {
+          throw new Error(
+            'Compact boundary logicalParentUuid does not match transcript tail',
+          )
+        }
+      } else if (entry.type !== 'agent-setting') {
+        if (entry.parentUuid !== logicalTailUuid) {
+          throw new Error('Entry parentUuid does not match transcript tail')
+        }
+      }
+      if (
+        entry.type !== 'last-prompt' &&
+        entry.type !== 'agent-setting' &&
+        (typeof entry.uuid !== 'string' || entry.uuid.length === 0)
+      ) {
+        throw new Error('Appended Claude transcript entry must have a uuid')
+      }
+      validateLastPromptLeaf(history, entry)
+      validateToolPairing(history, entry)
+      lines.push(this.schema.serializeForAppend(entry))
+      history.push(entry)
+      if (typeof entry.uuid === 'string') logicalTailUuid = entry.uuid
+    }
+
+    const encodedLine = Buffer.from(`${lines.join('\n')}\n`)
     await mkdir(dirname(this.sessionFile), { recursive: true })
     const sessionHandle = await open(this.sessionFile, 'a')
     try {

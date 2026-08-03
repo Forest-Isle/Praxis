@@ -1,6 +1,7 @@
 export type RuntimeState =
   | 'idle'
   | 'assembling-context'
+  | 'compacting'
   | 'awaiting-model'
   | 'streaming'
   | 'awaiting-permission'
@@ -56,6 +57,7 @@ export interface ModelProviderCapabilities {
   streaming: boolean
   usage: boolean
   tools: boolean
+  contextWindowTokens?: number
 }
 
 export interface ModelProvider {
@@ -134,6 +136,7 @@ export interface AgentRuntimeOptions {
   maxModelOutputBytes?: number
   maxToolCallsPerTurn?: number
   maxToolInputBytes?: number
+  emitInitialContextState?: boolean
 }
 
 export interface AgentRunRequest {
@@ -201,7 +204,9 @@ export class AgentRuntime {
   ) {}
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
-    this.emit({ type: 'state', state: 'assembling-context' })
+    if (this.options.emitInitialContextState !== false) {
+      this.emit({ type: 'state', state: 'assembling-context' })
+    }
     if (request.signal?.aborted) return this.cancel()
 
     const messages = [...request.messages]

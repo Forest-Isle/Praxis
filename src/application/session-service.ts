@@ -3,6 +3,10 @@ import { readdir, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative } from 'node:path'
 
 import type { ClaudeConditionalRuleResolver } from '../compatibility/claude/context.js'
+import {
+  createClaudeCompactEntries,
+  getCumulativeDroppedTokens,
+} from '../compatibility/claude/compaction.js'
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import { createClaudeTextFork } from '../compatibility/claude/fork.js'
 import {
@@ -31,6 +35,8 @@ import {
   type RuntimeEventSink,
   type ToolRegistry,
 } from '../core/runtime.js'
+import type { Compactor } from '../core/compaction.js'
+import { ContextBudget } from '../core/context-budget.js'
 import type { ContextAssembler } from '../core/context.js'
 import type { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookToolCoordinator } from '../hooks/claude-hook-tools.js'
@@ -44,6 +50,7 @@ import {
   type TranscriptSnapshot,
   type TranscriptTail,
 } from '../persistence/claude-transcript-store.js'
+import { ModelCompactor } from './model-compactor.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -60,6 +67,9 @@ export interface ClaudeSessionServiceOptions {
   hooks?: ClaudeHookRunner
   agent?: string
   eventSink?: RuntimeEventSink
+  compactor?: Compactor
+  contextBudget?: ContextBudget
+  contextReserveTokens?: number
 }
 
 export interface SessionRunResult {
@@ -201,6 +211,7 @@ export class ClaudeSessionService {
             })
           : null
       const runtime = new AgentRuntime(provider, this.options.eventSink, {
+        emitInitialContextState: false,
         ...(hookTools
           ? { tools: hookTools, permissions: hookTools }
           : {
@@ -395,6 +406,117 @@ export class ClaudeSessionService {
         const expansion = this.options.extensions?.expandPrompt(prompt) ?? {
           userMessages: [prompt],
         }
+        this.options.eventSink?.({
+          type: 'state',
+          state: 'assembling-context',
+        })
+        let compactionUsage: ModelUsage = {
+          inputTokens: 0,
+          outputTokens: 0,
+        }
+        const definitions = provider.capabilities.tools
+          ? (this.options.tools?.definitions() ?? [])
+          : []
+        const budget = this.contextBudget(provider)
+        const pendingUserMessages = expansion.userMessages.map((content) => ({
+          role: 'user' as const,
+          content,
+        }))
+        const compactIfNeeded = async (
+          pendingMessages: readonly {
+            role: 'user'
+            content: string
+          }[] = [],
+        ) => {
+          if (!budget) return
+          const historyMessages = projectClaudeModelMessages(snapshot.entries)
+          const predicted = budget.evaluate(
+            [...contextMessages, ...historyMessages, ...pendingMessages],
+            definitions,
+          )
+          if (!predicted.shouldCompact) return
+          const logicalParentUuid = snapshot.tail.lastUuid
+          if (!logicalParentUuid || historyMessages.length === 0) {
+            budget.assertFits(predicted)
+            throw new Error('Cannot compact an empty Claude transcript')
+          }
+          if (findUnresolvedClaudeToolCalls(snapshot.entries).length > 0) {
+            throw new Error(
+              'Cannot compact a Claude session with unresolved tool calls',
+            )
+          }
+          this.options.eventSink?.({ type: 'state', state: 'compacting' })
+          const targetTokens = Math.max(
+            1,
+            Math.min(8192, Math.floor(predicted.availableTokens / 4)),
+          )
+          const compacted = await (
+            this.options.compactor ?? new ModelCompactor(provider)
+          ).compact({
+            messages: historyMessages,
+            targetTokens,
+            ...(signal ? { signal } : {}),
+          })
+          const boundaryUuid = randomUUID()
+          const summaryUuid = randomUUID()
+          const timestamp = new Date().toISOString()
+          const compactEntries = (postTokens: number) => {
+            const uuids = [boundaryUuid, summaryUuid]
+            return createClaudeCompactEntries({
+              sessionId,
+              logicalParentUuid,
+              summary: compacted.summary,
+              trigger: 'auto',
+              preTokens: budget.evaluate(
+                [...contextMessages, ...historyMessages],
+                definitions,
+              ).estimatedTokens,
+              postTokens,
+              previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
+                snapshot.entries,
+              ),
+              durationMs: compacted.durationMs,
+              cwd: this.options.cwd,
+              claudeVersion: this.options.claudeVersion,
+              gitBranch: null,
+              createUuid: () => uuids.shift() ?? randomUUID(),
+              now: () => timestamp,
+            })
+          }
+          const provisionalEntries = compactEntries(0)
+          const compactedHistory = projectClaudeModelMessages([
+            ...snapshot.entries,
+            ...provisionalEntries,
+          ])
+          const afterHistory = budget.evaluate(
+            [...contextMessages, ...compactedHistory],
+            definitions,
+          )
+          const afterPending = budget.evaluate(
+            [...contextMessages, ...compactedHistory, ...pendingMessages],
+            definitions,
+          )
+          budget.assertFits(afterPending)
+          const entries = compactEntries(afterHistory.estimatedTokens)
+          const appendResult = await lease.appendMany(snapshot.tail, entries)
+          if (appendResult.status === 'conflict') {
+            throw new Error(
+              `Claude transcript append conflict: ${appendResult.reason}`,
+            )
+          }
+          snapshot = {
+            entries: [...snapshot.entries, ...entries],
+            tail: appendResult.tail,
+          }
+          compactionUsage = {
+            inputTokens:
+              compactionUsage.inputTokens + compacted.usage.inputTokens,
+            outputTokens:
+              compactionUsage.outputTokens + compacted.usage.outputTokens,
+          }
+        }
+        await compactIfNeeded(pendingUserMessages)
+
         let promptId: string | undefined
         for (const [index, text] of expansion.userMessages.entries()) {
           const [userEntry] = translateProviderEvents(
@@ -434,6 +556,17 @@ export class ClaudeSessionService {
             )
           }
         }
+        if (budget) {
+          budget.assertFits(
+            budget.evaluate(
+              [
+                ...contextMessages,
+                ...projectClaudeModelMessages(snapshot.entries),
+              ],
+              definitions,
+            ),
+          )
+        }
 
         let stopHookActive = false
         const runtimeRequest = {
@@ -443,10 +576,13 @@ export class ClaudeSessionService {
           ],
           cwd: this.options.cwd,
           observer,
-          reloadMessages: async () => [
-            ...contextMessages,
-            ...projectClaudeModelMessages(snapshot.entries),
-          ],
+          reloadMessages: async () => {
+            await compactIfNeeded()
+            return [
+              ...contextMessages,
+              ...projectClaudeModelMessages(snapshot.entries),
+            ]
+          },
           ...(this.options.hooks
             ? {
                 onStop: async (text: string) => {
@@ -489,7 +625,15 @@ export class ClaudeSessionService {
             leafUuid: finalLeafUuid,
           }),
         )
-        return { sessionId, text: result.text, usage: result.usage }
+        return {
+          sessionId,
+          text: result.text,
+          usage: {
+            inputTokens: compactionUsage.inputTokens + result.usage.inputTokens,
+            outputTokens:
+              compactionUsage.outputTokens + result.usage.outputTokens,
+          },
+        }
       } finally {
         try {
           const outcome = await this.options.hooks?.run(
@@ -607,6 +751,18 @@ export class ClaudeSessionService {
       throw new Error('A model provider is required for run and resume')
     }
     return this.options.provider
+  }
+
+  private contextBudget(provider: ModelProvider): ContextBudget | null {
+    if (this.options.contextBudget) return this.options.contextBudget
+    const contextWindowTokens = provider.capabilities.contextWindowTokens
+    if (contextWindowTokens === undefined) return null
+    return new ContextBudget({
+      contextWindowTokens,
+      ...(this.options.contextReserveTokens === undefined
+        ? {}
+        : { reserveTokens: this.options.contextReserveTokens }),
+    })
   }
 
   private async append(

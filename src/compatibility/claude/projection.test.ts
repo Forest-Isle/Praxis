@@ -282,4 +282,46 @@ describe('Claude transcript projection', () => {
       },
     ])
   })
+
+  it('projects only the latest compact summary and later messages', () => {
+    const entries = [
+      { type: 'user', message: { role: 'user', content: 'DROPPED_USER' } },
+      {
+        type: 'attachment',
+        attachment: {
+          type: 'hook_additional_context',
+          content: ['DROPPED_HOOK_CONTEXT'],
+        },
+      },
+      {
+        type: 'attachment',
+        attachment: {
+          type: 'nested_memory',
+          content: { content: 'PERSISTED_RULE' },
+        },
+      },
+      {
+        type: 'user',
+        isCompactSummary: true,
+        message: { role: 'user', content: 'COMPACT_SUMMARY' },
+      },
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'AFTER_COMPACT' }],
+        },
+      },
+    ]
+
+    expect(projectClaudeTextMessages(entries)).toEqual([
+      { role: 'user', content: 'COMPACT_SUMMARY' },
+      { role: 'assistant', content: 'AFTER_COMPACT' },
+    ])
+    expect(projectClaudeModelMessages(entries)).toEqual([
+      { role: 'system', content: 'PERSISTED_RULE' },
+      { role: 'user', content: 'COMPACT_SUMMARY' },
+      { role: 'assistant', content: 'AFTER_COMPACT' },
+    ])
+  })
 })

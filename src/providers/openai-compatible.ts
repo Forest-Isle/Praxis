@@ -11,6 +11,7 @@ export interface OpenAICompatibleProviderOptions {
   baseUrl: string
   apiKey: string
   model: string
+  contextWindowTokens?: number
   maxStreamBufferBytes?: number
   maxToolArgumentsBytes?: number
   maxToolCallsPerResponse?: number
@@ -202,7 +203,7 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
-  readonly capabilities = { streaming: true, usage: true, tools: true } as const
+  readonly capabilities: ModelProvider['capabilities']
   readonly model: string
   private readonly endpoint: string
   private readonly fetchImplementation: typeof fetch
@@ -212,6 +213,21 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly maxToolMetadataBytes: number
 
   constructor(private readonly options: OpenAICompatibleProviderOptions) {
+    if (
+      options.contextWindowTokens !== undefined &&
+      (!Number.isInteger(options.contextWindowTokens) ||
+        options.contextWindowTokens <= 0)
+    ) {
+      throw new Error('Context window tokens must be a positive integer')
+    }
+    this.capabilities = {
+      streaming: true,
+      usage: true,
+      tools: true,
+      ...(options.contextWindowTokens === undefined
+        ? {}
+        : { contextWindowTokens: options.contextWindowTokens }),
+    }
     this.endpoint = `${options.baseUrl.replace(/\/+$/, '')}/chat/completions`
     this.model = options.model
     this.fetchImplementation = options.fetchImplementation ?? fetch

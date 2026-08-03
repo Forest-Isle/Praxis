@@ -49,7 +49,37 @@ Usage:
 
 Provider environment:
   PRAXIS_API_KEY, PRAXIS_MODEL, PRAXIS_BASE_URL
+  PRAXIS_CONTEXT_WINDOW_TOKENS, PRAXIS_CONTEXT_RESERVE_TOKENS
 `
+
+export function parseContextEnvironment(environment: NodeJS.ProcessEnv): {
+  contextWindowTokens?: number
+  contextReserveTokens?: number
+} {
+  const parse = (name: string): number | undefined => {
+    const raw = environment[name]
+    if (raw === undefined) return undefined
+    if (
+      !/^\d+$/.test(raw) ||
+      Number(raw) <= 0 ||
+      !Number.isSafeInteger(Number(raw))
+    ) {
+      throw new Error(`${name} must be a positive integer`)
+    }
+    return Number(raw)
+  }
+  const contextWindowTokens = parse('PRAXIS_CONTEXT_WINDOW_TOKENS')
+  const contextReserveTokens = parse('PRAXIS_CONTEXT_RESERVE_TOKENS')
+  if (contextReserveTokens !== undefined && contextWindowTokens === undefined) {
+    throw new Error(
+      'PRAXIS_CONTEXT_RESERVE_TOKENS requires PRAXIS_CONTEXT_WINDOW_TOKENS',
+    )
+  }
+  return {
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+    ...(contextReserveTokens === undefined ? {} : { contextReserveTokens }),
+  }
+}
 
 export interface CliIO {
   stdout(message: string): void
@@ -98,6 +128,7 @@ const defaultDependencies: CliDependencies = {
       ? join(configRoot, '.claude.json')
       : resolve(homedir(), '.claude.json')
     let provider
+    const context = parseContextEnvironment(process.env)
     if (requireProvider) {
       const apiKey = process.env.PRAXIS_API_KEY
       const model = process.env.PRAXIS_MODEL
@@ -108,6 +139,9 @@ const defaultDependencies: CliDependencies = {
         apiKey,
         model,
         baseUrl: process.env.PRAXIS_BASE_URL ?? 'https://api.openai.com/v1',
+        ...('contextWindowTokens' in context
+          ? { contextWindowTokens: context.contextWindowTokens }
+          : {}),
       })
     }
 
@@ -152,6 +186,9 @@ const defaultDependencies: CliDependencies = {
       conditionalRuleResolver: new ClaudeConditionalRuleResolver({
         loadResources: loadContextResources,
       }),
+      ...('contextReserveTokens' in context
+        ? { contextReserveTokens: context.contextReserveTokens }
+        : {}),
       ...(approveRecovery ? { approveRecovery: () => true } : {}),
     })
     return {

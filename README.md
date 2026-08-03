@@ -10,8 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 2 headless tool runtime is complete; Sprint 3 context integration is in
-progress. Praxis can run, resume, fork, and list Claude-compatible sessions
+Sprint 3 context ecosystem is complete; Sprint 4 interactive hardening is next.
+Praxis can run, resume, fork, and list Claude-compatible sessions
 through a provider-neutral event loop and an OpenAI-compatible streaming
 provider. Built-in read, write, edit, search, and shell tools execute behind
 Claude-compatible local permission rules with workspace path checks, timeouts,
@@ -58,6 +58,14 @@ legacy SSE servers expose `mcp__<server>__<tool>` definitions through the same
 permission and hook pipeline as built-in tools. Unavailable servers emit a
 warning; connected clients and stdio subprocesses close after each CLI turn.
 
+Provider-neutral context budgeting counts system/history/tool-schema input
+before every model turn. When an explicitly configured provider window would
+overflow, Praxis summarizes completed history without tools, atomically appends
+the Claude 2.1.208 native `compact_boundary` plus compact-summary pair, and
+rechecks the reduced request before continuing. Shared JSONL remains
+append-only; Claude Code and Praxis both project only the latest summary and
+later messages. Activated nested-memory rules remain active across compaction.
+
 ## Product boundary
 
 - CLI-only, including interactive and structured non-interactive output
@@ -96,6 +104,8 @@ Configure the first provider adapter, then run a prompt:
 export PRAXIS_API_KEY=...
 export PRAXIS_MODEL=...
 export PRAXIS_BASE_URL=https://api.openai.com/v1
+export PRAXIS_CONTEXT_WINDOW_TOKENS=200000
+export PRAXIS_CONTEXT_RESERVE_TOKENS=8192
 
 node dist/cli.js run "Inspect this project"
 node dist/cli.js run "/my-command arguments"
@@ -106,7 +116,10 @@ node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
 node dist/cli.js fork <session-id>
 ```
 
-`PRAXIS_BASE_URL` is optional and defaults to OpenAI's `/v1` endpoint.
+`PRAXIS_BASE_URL` is optional and defaults to OpenAI's `/v1` endpoint. Context
+window configuration is explicit because Praxis accepts arbitrary provider
+models; when `PRAXIS_CONTEXT_WINDOW_TOKENS` is absent, Praxis does not invent a
+model limit. Reserve defaults to 10% of the configured window, capped at 8192.
 
 Permissions load from the shared global and current-project Claude settings.
 `Read` and `Grep` default to `allow`; `Write`, `Edit`, and `Bash` default to
@@ -120,6 +133,7 @@ probe uses a local provider fixture:
 
 ```sh
 npm run test:compat
+npm run test:compaction-compat
 npm run test:conditional-compat
 npm run test:context-compat
 npm run test:extension-compat

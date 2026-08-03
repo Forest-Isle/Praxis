@@ -11,11 +11,11 @@ keeping the domain provider-neutral and single-user.
 ```text
 idle
   -> assembling-context
+  -> compacting -> awaiting-model ...
   -> awaiting-model
   -> streaming
   -> awaiting-permission -> executing-tools -> persisting-results
   -> awaiting-model ...
-  -> compacting -> awaiting-model ...
   -> completed | cancelled | failed
 ```
 
@@ -40,6 +40,11 @@ Rules:
 9. Shared MCP tools use the same permission, hook, cancellation, observation,
    and transcript path as local tools. Client transports close at turn end;
    an unavailable server warns and does not hide healthy servers.
+10. Budgeting includes ephemeral system context, active transcript messages,
+    current prompt, and tool definitions before every provider call. Automatic
+    compaction summarizes completed history before appending a new prompt; after
+    completed tool results it may compact between model turns. Unresolved tool
+    calls are never compacted.
 
 ## Core ports
 
@@ -92,7 +97,9 @@ profiles require their own versioned writer and Claude reopen probe.
 - Tool failure: append an error `tool_result`, then let model decide.
 - Corrupt/truncated JSONL: preserve file, report line and offset, read-only
   recovery; never auto-truncate.
-- Context overflow: compact when supported or fail with actionable token data.
+- Context overflow: compact when a window is configured and history is
+  compactable; otherwise fail with estimated, window, reserve, available, and
+  overflow token data. A summary that still does not fit is not persisted.
 
 ## MVP boundary
 
