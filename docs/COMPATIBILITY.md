@@ -101,7 +101,15 @@ session has one writer at a time. Praxis must:
 - never truncate or rewrite a live shared transcript.
 
 Advisory locks cannot force an unmodified Claude Code process to cooperate.
-Optimistic parent/tail checks are therefore mandatory.
+Praxis therefore checks the physical tail before opening, checks file size on
+the append handle, writes one append record, fsyncs, and verifies the exact byte
+range afterward. A detected interleaving is reported as a conflict and the
+session becomes read-only until reload/fork.
+
+No portable filesystem compare-and-append primitive can make an unmodified
+Claude process honor this lease. Users must not run Claude and Praxis as writers
+of the same session simultaneously; the checks detect conflicts but cannot
+mathematically eliminate the final cross-process race.
 
 ## Version compatibility
 

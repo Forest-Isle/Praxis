@@ -12,7 +12,7 @@ Status: in progress.
 - [x] typed shared-data ownership policy
 - [x] runtime contract and local threat model
 - [x] automated Claude-created → Praxis → Claude resume probe
-- [x] Praxis-created → Claude resume probe
+- [x] Praxis-created → Claude discovery/resume probe
 - [ ] shared instructions/memory/skill/hook/MCP black-box matrix
 - [ ] schema fixtures for compaction, sidechains, images, interruption, and errors
 

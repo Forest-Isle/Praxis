@@ -1,6 +1,13 @@
+import { readFile } from 'node:fs/promises'
+
 import { describe, expect, it } from 'vitest'
 
 import { translateProviderEvents } from './translation.js'
+
+const toolFixtureUrl = new URL(
+  '../../../test/fixtures/claude-code/2.1.208/tool-session.jsonl',
+  import.meta.url,
+)
 
 describe('provider to Claude transcript translation', () => {
   it('creates a native parentUuid chain for text and tool events', () => {
@@ -114,5 +121,104 @@ describe('provider to Claude transcript translation', () => {
 
     expect(JSON.stringify(entry)).not.toContain('providerPayload')
     expect(JSON.stringify(entry)).not.toContain('reasoning')
+  })
+
+  it('matches Claude 2.1.208 black-box tool envelope fields', async () => {
+    const [toolCallLine, toolResultLine] = (
+      await readFile(toolFixtureUrl, 'utf8')
+    )
+      .trimEnd()
+      .split('\n')
+    if (!toolCallLine || !toolResultLine)
+      throw new Error('Invalid tool fixture')
+    const nativeToolCall = JSON.parse(toolCallLine)
+    const nativeToolResult = JSON.parse(toolResultLine)
+
+    const [toolCall, toolResult] = translateProviderEvents(
+      [
+        {
+          type: 'assistant-tool-call',
+          toolCallId: 'call_fixture',
+          name: 'Bash',
+          input: {
+            command: 'printf praxis-tool-fixture',
+            description: 'Run printf praxis-tool-fixture',
+          },
+          providerMessageId: 'msg_tool_fixture',
+          model: 'claude-fixture',
+        },
+        {
+          type: 'tool-result',
+          toolCallId: 'call_fixture',
+          content: 'praxis-tool-fixture',
+          isError: false,
+        },
+      ],
+      {
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        parentUuid: '99999999-9999-4999-8999-999999999999',
+        cwd: '/tmp/praxis-fixture',
+        claudeVersion: '2.1.208',
+        gitBranch: 'HEAD',
+        createUuid: (() => {
+          const values = [
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          ]
+          return () => {
+            const value = values.shift()
+            if (!value) throw new Error('UUID fixture exhausted')
+            return value
+          }
+        })(),
+        now: (() => {
+          let index = 0
+          return () => `2026-08-03T08:00:0${index++}.000Z`
+        })(),
+      },
+    )
+
+    expect(toolCall?.message).toEqual(nativeToolCall.message)
+    expect(toolResult?.message).toEqual(nativeToolResult.message)
+    expect(toolResult?.sourceToolAssistantUUID).toBe(
+      nativeToolResult.sourceToolAssistantUUID,
+    )
+    expect(toolResult?.toolUseResult).toEqual(nativeToolResult.toolUseResult)
+  })
+
+  it('can persist a recovered tool result in a later translation call', () => {
+    const [toolResult] = translateProviderEvents(
+      [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_fixture',
+          content: 'recovered',
+          isError: false,
+        },
+      ],
+      {
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        parentUuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        cwd: '/tmp/praxis-fixture',
+        claudeVersion: '2.1.208',
+        gitBranch: null,
+        history: [
+          {
+            type: 'assistant',
+            uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 'call_fixture' }],
+            },
+          },
+        ],
+        createUuid: () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        now: () => '2026-08-03T08:00:01.000Z',
+      },
+    )
+
+    expect(toolResult?.sourceToolAssistantUUID).toBe(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    )
   })
 })

@@ -31,6 +31,7 @@ export interface TranslationContext {
   cwd: string
   claudeVersion: string
   gitBranch: string | null
+  history?: readonly ClaudeTranscriptEntry[]
   createUuid?: () => string
   now?: () => string
 }
@@ -50,7 +51,62 @@ function emptyUsage() {
       ephemeral_1h_input_tokens: 0,
       ephemeral_5m_input_tokens: 0,
     },
+    inference_geo: '',
   }
+}
+
+function assistantMessage(
+  event: {
+    providerMessageId: string
+    model: string
+  },
+  content: readonly Record<string, unknown>[],
+  stopReason: 'end_turn' | 'tool_use',
+) {
+  return {
+    id: event.providerMessageId,
+    type: 'message',
+    role: 'assistant',
+    model: event.model,
+    content,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: emptyUsage(),
+    stop_details: null,
+  }
+}
+
+function collectToolSources(
+  history: readonly ClaudeTranscriptEntry[],
+): Map<string, string> {
+  const sources = new Map<string, string>()
+
+  for (const entry of history) {
+    if (
+      entry.type !== 'assistant' ||
+      typeof entry.uuid !== 'string' ||
+      typeof entry.message !== 'object' ||
+      entry.message === null
+    ) {
+      continue
+    }
+    const message = entry.message as Record<string, unknown>
+    if (message.role !== 'assistant' || !Array.isArray(message.content))
+      continue
+
+    for (const block of message.content) {
+      if (
+        typeof block === 'object' &&
+        block !== null &&
+        (block as Record<string, unknown>).type === 'tool_use' &&
+        typeof (block as Record<string, unknown>).id === 'string'
+      ) {
+        sources.set((block as Record<string, unknown>).id as string, entry.uuid)
+      }
+    }
+  }
+
+  return sources
 }
 
 export function translateProviderEvents(
@@ -60,7 +116,7 @@ export function translateProviderEvents(
   const createUuid = context.createUuid ?? randomUUID
   const now = context.now ?? (() => new Date().toISOString())
   const entries: ClaudeTranscriptEntry[] = []
-  const toolSources = new Map<string, string>()
+  const toolSources = collectToolSources(context.history ?? [])
   let parentUuid = context.parentUuid
 
   for (const event of events) {
@@ -95,17 +151,11 @@ export function translateProviderEvents(
         entry = {
           ...common,
           type: 'assistant',
-          message: {
-            id: event.providerMessageId,
-            type: 'message',
-            role: 'assistant',
-            model: event.model,
-            content: [{ type: 'text', text: event.text }],
-            stop_reason: 'end_turn',
-            stop_sequence: null,
-            usage: emptyUsage(),
-            stop_details: null,
-          },
+          message: assistantMessage(
+            event,
+            [{ type: 'text', text: event.text }],
+            'end_turn',
+          ),
         }
         break
 
@@ -114,12 +164,9 @@ export function translateProviderEvents(
         entry = {
           ...common,
           type: 'assistant',
-          message: {
-            id: event.providerMessageId,
-            type: 'message',
-            role: 'assistant',
-            model: event.model,
-            content: [
+          message: assistantMessage(
+            event,
+            [
               {
                 type: 'tool_use',
                 id: event.toolCallId,
@@ -127,11 +174,8 @@ export function translateProviderEvents(
                 input: event.input,
               },
             ],
-            stop_reason: 'tool_use',
-            stop_sequence: null,
-            usage: emptyUsage(),
-            stop_details: null,
-          },
+            'tool_use',
+          ),
         }
         break
 

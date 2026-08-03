@@ -132,4 +132,24 @@ describe('ClaudeTranscriptStore', () => {
 
     expect(result).toEqual({ status: 'conflict', reason: 'locked' })
   })
+
+  it('reports corrupt JSONL position and exposes read-only recovery', async () => {
+    const { sessionFile, store } = await createStore()
+    const firstLine = (await readFile(fixtureUrl, 'utf8')).split('\n')[0]
+    if (!firstLine) throw new Error('Fixture has no first line')
+    await writeFile(sessionFile, `${firstLine}\n{\n`)
+
+    await expect(store.load()).rejects.toMatchObject({
+      name: 'ClaudeTranscriptParseError',
+      lineNumber: 2,
+      byteOffset: Buffer.byteLength(`${firstLine}\n`),
+    })
+
+    const recovery = await store.loadReadOnly()
+    expect(recovery.entries).toHaveLength(1)
+    expect(recovery.issue).toMatchObject({
+      lineNumber: 2,
+      byteOffset: Buffer.byteLength(`${firstLine}\n`),
+    })
+  })
 })

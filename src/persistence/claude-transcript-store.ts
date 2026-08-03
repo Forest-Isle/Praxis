@@ -19,9 +19,37 @@ export interface TranscriptSnapshot {
   tail: TranscriptTail
 }
 
+export interface TranscriptParseIssue {
+  lineNumber: number
+  byteOffset: number
+  message: string
+}
+
+export interface TranscriptRecovery extends TranscriptSnapshot {
+  issue: TranscriptParseIssue | null
+}
+
+export class ClaudeTranscriptParseError extends Error {
+  override readonly name = 'ClaudeTranscriptParseError'
+
+  constructor(
+    readonly lineNumber: number,
+    readonly byteOffset: number,
+    options: ErrorOptions,
+  ) {
+    super(
+      `Invalid Claude transcript JSON at line ${lineNumber}, byte ${byteOffset}`,
+      options,
+    )
+  }
+}
+
 export type TranscriptAppendResult =
   | { status: 'appended'; tail: TranscriptTail }
-  | { status: 'conflict'; reason: 'locked' | 'tail-changed' }
+  | {
+      status: 'conflict'
+      reason: 'interleaved-write' | 'locked' | 'tail-changed'
+    }
 
 export interface ClaudeTranscriptStoreOptions {
   sessionFile: string
@@ -71,7 +99,7 @@ export class ClaudeTranscriptStore {
     this.schema = options.schema
   }
 
-  async load(): Promise<TranscriptSnapshot> {
+  private async readSource(): Promise<string> {
     let source: string
     try {
       source = await readFile(this.sessionFile, 'utf8')
@@ -82,13 +110,41 @@ export class ClaudeTranscriptStore {
       source = ''
     }
 
+    return source
+  }
+
+  private parseSource(source: string, recover: boolean): TranscriptRecovery {
     const content = source.endsWith('\n') ? source.slice(0, -1) : source
     const lines = content.length === 0 ? [] : content.split('\n')
-    const entries = lines.map((line) => this.schema.parse(line))
+    const entries: ClaudeTranscriptEntry[] = []
+    let issue: TranscriptParseIssue | null = null
+    let byteOffset = 0
+
+    for (const [index, line] of lines.entries()) {
+      try {
+        entries.push(this.schema.parse(line))
+      } catch (error) {
+        issue = {
+          lineNumber: index + 1,
+          byteOffset,
+          message: error instanceof Error ? error.message : String(error),
+        }
+        if (!recover) {
+          throw new ClaudeTranscriptParseError(
+            issue.lineNumber,
+            issue.byteOffset,
+            { cause: error },
+          )
+        }
+        break
+      }
+      byteOffset += Buffer.byteLength(line) + 1
+    }
     const lastLine = lines.at(-1)
 
     return {
       entries,
+      issue,
       tail: {
         byteLength: Buffer.byteLength(source),
         lastLineHash: lastLine === undefined ? null : hashLine(lastLine),
@@ -96,6 +152,15 @@ export class ClaudeTranscriptStore {
         newlineTerminated: source.length === 0 || source.endsWith('\n'),
       },
     }
+  }
+
+  async load(): Promise<TranscriptSnapshot> {
+    const { entries, tail } = this.parseSource(await this.readSource(), false)
+    return { entries, tail }
+  }
+
+  async loadReadOnly(): Promise<TranscriptRecovery> {
+    return this.parseSource(await this.readSource(), true)
   }
 
   async append(
@@ -131,6 +196,7 @@ export class ClaudeTranscriptStore {
       }
 
       const line = this.schema.serializeForAppend(entry)
+      const encodedLine = Buffer.from(`${line}\n`)
       await mkdir(dirname(this.sessionFile), { recursive: true })
       const sessionHandle = await open(this.sessionFile, 'a')
       try {
@@ -138,10 +204,21 @@ export class ClaudeTranscriptStore {
         if (file.size !== expectedTail.byteLength) {
           return { status: 'conflict', reason: 'tail-changed' }
         }
-        await sessionHandle.writeFile(`${line}\n`, { encoding: 'utf8' })
+        await sessionHandle.writeFile(encodedLine)
         await sessionHandle.sync()
       } finally {
         await sessionHandle.close()
+      }
+
+      const written = await readFile(this.sessionFile)
+      const expectedEnd = expectedTail.byteLength + encodedLine.length
+      if (
+        written.length !== expectedEnd ||
+        !written
+          .subarray(expectedTail.byteLength, expectedEnd)
+          .equals(encodedLine)
+      ) {
+        return { status: 'conflict', reason: 'interleaved-write' }
       }
 
       return { status: 'appended', tail: (await this.load()).tail }

@@ -15,7 +15,8 @@ import { ClaudeTranscriptStore } from '../dist/persistence/claude-transcript-sto
 
 const execFileAsync = promisify(execFile)
 const markerFromClaude = 'CLAUDE_ORIGIN_7319'
-const markerFromPraxis = 'PRAXIS_ORIGIN_8427'
+const markerFromPraxisAppend = 'PRAXIS_APPEND_8427'
+const markerFromPraxisCreated = 'PRAXIS_CREATED_9538'
 
 async function runClaude(args, cwd, configRoot) {
   const { stdout } = await execFileAsync('claude', args, {
@@ -89,12 +90,27 @@ try {
     schema,
   })
   const claudeSnapshot = await claudeStore.load()
+  const praxisToolCallId = `call_${randomUUID().replaceAll('-', '')}`
   const praxisContinuation = translateProviderEvents(
     [
       { type: 'user-text', text: 'Praxis continued this session.' },
       {
+        type: 'assistant-tool-call',
+        toolCallId: praxisToolCallId,
+        name: 'Bash',
+        input: { command: 'printf praxis-tool-fixture' },
+        providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
+        model: 'praxis/fixture',
+      },
+      {
+        type: 'tool-result',
+        toolCallId: praxisToolCallId,
+        content: 'praxis-tool-fixture',
+        isError: false,
+      },
+      {
         type: 'assistant-text',
-        text: markerFromPraxis,
+        text: markerFromPraxisAppend,
         providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
         model: 'praxis/fixture',
       },
@@ -120,12 +136,12 @@ try {
       '1',
       '--output-format',
       'json',
-      `Repeat exactly the prior assistant marker ${markerFromPraxis}`,
+      `Repeat exactly the prior assistant marker ${markerFromPraxisAppend}`,
     ],
     canonicalWorkDirectory,
     configRoot,
   )
-  if (!String(claudeResume.result).includes(markerFromPraxis)) {
+  if (!String(claudeResume.result).includes(markerFromPraxisAppend)) {
     throw new Error('Claude did not resume the Praxis-appended context')
   }
 
@@ -145,7 +161,7 @@ try {
       { type: 'user-text', text: 'Remember the following marker.' },
       {
         type: 'assistant-text',
-        text: markerFromPraxis,
+        text: markerFromPraxisCreated,
         providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
         model: 'praxis/fixture',
       },
@@ -163,8 +179,7 @@ try {
   const praxisResume = await runClaude(
     [
       '-p',
-      '--resume',
-      praxisSessionId,
+      '--continue',
       '--model',
       'haiku',
       '--max-turns',
@@ -176,12 +191,15 @@ try {
     canonicalWorkDirectory,
     configRoot,
   )
-  if (!String(praxisResume.result).includes(markerFromPraxis)) {
-    throw new Error('Claude did not resume the Praxis-created session')
+  if (
+    praxisResume.session_id !== praxisSessionId ||
+    !String(praxisResume.result).includes(markerFromPraxisCreated)
+  ) {
+    throw new Error('Claude did not discover the Praxis-created session')
   }
 
   console.log(
-    `Claude ${version} compatibility passed: Claude→Praxis→Claude and Praxis→Claude`,
+    `Claude ${version} compatibility passed: Claude→Praxis(tool chain)→Claude and Praxis→Claude discovery`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

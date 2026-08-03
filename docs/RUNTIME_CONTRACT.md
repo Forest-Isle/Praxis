@@ -72,6 +72,8 @@ never invent a result.
 
 - Unsupported Claude schema: read-only session, no shared writes.
 - Tail changed or lock held: refuse append and offer explicit fork/reload.
+- Write interleaving detected after fsync: mark session read-only and require
+  reload/fork; never truncate either writer's entries.
 - Provider failure: persist only native events already completed.
 - Tool failure: append an error `tool_result`, then let model decide.
 - Corrupt/truncated JSONL: preserve file, report line and offset, read-only
