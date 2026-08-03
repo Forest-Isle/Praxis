@@ -21,27 +21,30 @@ Compatibility is bidirectional, not import-only:
 
 Praxis follows the active Claude Code layout and path derivation for:
 
-| Data                 | Shared location                                                                |
-| -------------------- | ------------------------------------------------------------------------------ |
-| Config root          | `CLAUDE_CONFIG_DIR` or `~/.claude`                                             |
-| Sessions             | `<config>/projects/<project-key>/<session-id>.jsonl`                           |
-| Global instructions  | `<config>/CLAUDE.md`                                                           |
-| Project instructions | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/**/*.md` from boundary to cwd |
-| Auto memory          | `<config>/projects/<canonical-repository-key>/memory/**/*.md`                  |
-| Global skills        | `<config>/skills/`                                                             |
-| Project skills       | `.claude/skills/`                                                              |
-| Commands             | `<config>/commands/`, `.claude/commands/`                                      |
-| Agent definitions    | `<config>/agents/`, `.claude/agents/`                                          |
-| Settings and hooks   | Ordered user and boundary-to-cwd `.claude/settings*.json` sources              |
-| Project MCP          | Boundary-to-cwd `.mcp.json` sources                                            |
+| Data                 | Shared location                                                                 |
+| -------------------- | ------------------------------------------------------------------------------- |
+| Config root          | `CLAUDE_CONFIG_DIR` or `~/.claude`                                              |
+| Sessions             | `<config>/projects/<project-key>/<session-id>.jsonl`                            |
+| Global instructions  | `<config>/CLAUDE.md`                                                            |
+| Project instructions | `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, rules from boundary to cwd |
+| Auto memory          | `<config>/projects/<canonical-repository-key>/memory/**/*.md`                   |
+| Global skills        | `<config>/skills/`                                                              |
+| Project skills       | `.claude/skills/`                                                               |
+| Commands             | `<config>/commands/`, `.claude/commands/`                                       |
+| Agent definitions    | `<config>/agents/`, `.claude/agents/`                                           |
+| Settings and hooks   | User settings plus project/local `.claude/settings*.json` at original cwd       |
+| Project MCP          | Boundary-to-cwd `.mcp.json` sources                                             |
 
 Praxis must reuse Claude Code's canonical project-path sanitization. A similar
 but independently invented directory name is not compatible.
 
 For git worktrees, project resources come from the active worktree while auto
-memory uses the canonical main-repository key. Outside git, project discovery
-walks from the user's home boundary through cwd. Settings and MCP resources are
-returned broad-to-specific as separate sources; Sprint 0 does not invent one
+memory uses the canonical main-repository key. Outside git, instruction
+discovery walks from the user's home boundary through cwd, while project
+skills, commands, and agents stop before home so they cannot duplicate or leak
+the default global config when `CLAUDE_CONFIG_DIR` changes. Settings retain
+Claude's user plus original-cwd project/local boundary. Project MCP resources
+are returned broad-to-specific as separate sources. Sprint 0 does not invent a
 generic JSON merge because hook, permission, environment, and server fields
 have different precedence semantics. User/local MCP registry formats beyond
 project `.mcp.json` remain a Sprint 3 compatibility subset.

@@ -1,19 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { promisify } from 'node:util'
 
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
-import {
-  parseClaudeVersionOutput,
-  selectClaudeSchemaAdapter,
-} from '../dist/compatibility/claude/schema.js'
+import { selectClaudeSchemaAdapter } from '../dist/compatibility/claude/schema.js'
 import { translateProviderEvents } from '../dist/compatibility/claude/translation.js'
 import { ClaudeTranscriptStore } from '../dist/persistence/claude-transcript-store.js'
+import { detectClaudeVersion, execFileAsync } from './lib/claude-probe.mjs'
 
-const execFileAsync = promisify(execFile)
 const markerFromClaude = 'CLAUDE_ORIGIN_7319'
 const markerFromPraxisAppend = 'PRAXIS_APPEND_8427'
 const markerFromPraxisCreated = 'PRAXIS_CREATED_9538'
@@ -51,8 +46,7 @@ try {
   await mkdir(workDirectory, { recursive: true })
   const canonicalWorkDirectory = await realpath(workDirectory)
 
-  const { stdout: versionOutput } = await execFileAsync('claude', ['--version'])
-  const version = parseClaudeVersionOutput(versionOutput)
+  const version = await detectClaudeVersion('Compatibility probe')
   const schema = selectClaudeSchemaAdapter(version)
   if (schema.writeMode !== 'read-write') {
     throw new Error(

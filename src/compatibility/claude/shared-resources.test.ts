@@ -195,6 +195,10 @@ describe('Claude shared resource discovery', () => {
       writeFixture(join(root, 'CLAUDE.md'), 'OUTSIDE_INSTRUCTION'),
       writeFixture(join(repository, 'CLAUDE.md'), 'ROOT_INSTRUCTION'),
       writeFixture(
+        join(repository, 'CLAUDE.local.md'),
+        'ROOT_LOCAL_INSTRUCTION',
+      ),
+      writeFixture(
         join(packageDirectory, '.claude', 'CLAUDE.md'),
         'PACKAGE_INSTRUCTION',
       ),
@@ -209,11 +213,11 @@ describe('Claude shared resource discovery', () => {
       ),
       writeFixture(join(cwd, '.claude', 'agents', 'nested.md'), 'NESTED_AGENT'),
       writeFixture(
-        join(repository, '.claude', 'settings.json'),
+        join(cwd, '.claude', 'settings.json'),
         JSON.stringify({ env: { ROOT_SETTING: 'root' } }),
       ),
       writeFixture(
-        join(packageDirectory, '.claude', 'settings.local.json'),
+        join(cwd, '.claude', 'settings.local.json'),
         JSON.stringify({ env: { PACKAGE_SETTING: 'package' } }),
       ),
       writeFixture(
@@ -235,6 +239,7 @@ describe('Claude shared resource discovery', () => {
 
     expect(resources.instructions.map((item) => item.content)).toEqual([
       'ROOT_INSTRUCTION',
+      'ROOT_LOCAL_INSTRUCTION',
       'PACKAGE_INSTRUCTION',
       'NESTED_RULE',
     ])
@@ -253,6 +258,11 @@ describe('Claude shared resource discovery', () => {
       { env: { ROOT_SETTING: 'root' } },
       { env: { PACKAGE_SETTING: 'package' } },
     ])
+    expect(
+      resources.instructions.find(
+        (item) => item.content === 'ROOT_LOCAL_INSTRUCTION',
+      )?.scope,
+    ).toBe('local')
     expect(resources.mcp.map((item) => item.value)).toEqual([
       { mcpServers: { root: { command: 'root' } } },
       { mcpServers: { nested: { command: 'nested' } } },
@@ -313,8 +323,29 @@ describe('Claude shared resource discovery', () => {
 
     await Promise.all([
       writeFixture(join(root, 'CLAUDE.md'), 'OUTSIDE_HOME'),
+      writeFixture(join(configRoot, 'CLAUDE.md'), 'ACTIVE_GLOBAL'),
       writeFixture(join(homeDirectory, 'CLAUDE.md'), 'HOME_INSTRUCTION'),
+      writeFixture(
+        join(homeDirectory, '.claude', 'CLAUDE.md'),
+        'INACTIVE_DEFAULT_GLOBAL',
+      ),
+      writeFixture(
+        join(configRoot, 'skills', 'active', 'SKILL.md'),
+        'ACTIVE_GLOBAL_SKILL',
+      ),
+      writeFixture(
+        join(homeDirectory, '.claude', 'skills', 'inactive', 'SKILL.md'),
+        'INACTIVE_DEFAULT_SKILL',
+      ),
       writeFixture(join(projectDirectory, 'CLAUDE.md'), 'PROJECT_INSTRUCTION'),
+      writeFixture(
+        join(projectDirectory, 'CLAUDE.local.md'),
+        'PROJECT_LOCAL_INSTRUCTION',
+      ),
+      writeFixture(
+        join(projectDirectory, '.claude', 'skills', 'project', 'SKILL.md'),
+        'PROJECT_SKILL',
+      ),
       writeFixture(join(cwd, 'CLAUDE.md'), 'CWD_INSTRUCTION'),
     ])
 
@@ -325,9 +356,15 @@ describe('Claude shared resource discovery', () => {
     })
 
     expect(resources.instructions.map((item) => item.content)).toEqual([
+      'ACTIVE_GLOBAL',
       'HOME_INSTRUCTION',
       'PROJECT_INSTRUCTION',
+      'PROJECT_LOCAL_INSTRUCTION',
       'CWD_INSTRUCTION',
+    ])
+    expect(resources.skills.map((item) => item.content)).toEqual([
+      'ACTIVE_GLOBAL_SKILL',
+      'PROJECT_SKILL',
     ])
   })
 })

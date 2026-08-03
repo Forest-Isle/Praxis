@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
 import {
   mkdir,
   mkdtemp,
@@ -7,29 +6,24 @@ import {
   readFile,
   realpath,
   rm,
-  writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { promisify } from 'node:util'
 
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
-import {
-  parseClaudeVersionOutput,
-  selectClaudeSchemaAdapter,
-} from '../dist/compatibility/claude/schema.js'
+import { selectClaudeSchemaAdapter } from '../dist/compatibility/claude/schema.js'
 import { ClaudeTranscriptStore } from '../dist/persistence/claude-transcript-store.js'
+import {
+  assertContains,
+  detectClaudeVersion,
+  execFileAsync,
+  writeFixture as write,
+} from './lib/claude-probe.mjs'
 
-const execFileAsync = promisify(execFile)
 const fixtureDirectory = fileURLToPath(
   new URL('../test/fixtures/claude-code/2.1.208/', import.meta.url),
 )
-
-async function write(path, content) {
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, content)
-}
 
 async function rewriteFixture(name, sessionId, cwd, mutate = (entry) => entry) {
   const source = await readFile(join(fixtureDirectory, name), 'utf8')
@@ -99,17 +93,10 @@ async function resume(configRoot, fixture, prompt) {
   return String(response.result)
 }
 
-function assertContains(haystack, needle, label) {
-  if (!haystack.includes(needle)) {
-    throw new Error(`${label} did not expose marker ${needle}`)
-  }
-}
-
 const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-claude-advanced-'))
 
 try {
-  const { stdout: versionOutput } = await execFileAsync('claude', ['--version'])
-  const version = parseClaudeVersionOutput(versionOutput)
+  const version = await detectClaudeVersion('Advanced fixture probe')
   const schema = selectClaudeSchemaAdapter(version)
   if (version !== '2.1.208' || schema.writeMode !== 'read-write') {
     throw new Error(`Advanced fixture probe does not support Claude ${version}`)

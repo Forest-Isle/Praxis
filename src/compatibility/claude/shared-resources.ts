@@ -191,42 +191,48 @@ async function findMemoryIdentityRoot(gitRoot: string): Promise<string> {
 async function resolveProjectContext(
   cwd: string,
   homeDirectory: string,
-): Promise<{ directories: string[]; memoryIdentityRoot: string }> {
+): Promise<{
+  directories: string[]
+  extensionDirectories: string[]
+  homeBoundary: string | null
+  memoryIdentityRoot: string
+}> {
   const canonicalCwd = await canonicalPath(cwd)
   const gitRoot = await findGitRoot(canonicalCwd)
   if (gitRoot) {
     return {
       directories: directoriesFromRoot(gitRoot, canonicalCwd),
+      extensionDirectories: directoriesFromRoot(gitRoot, canonicalCwd),
+      homeBoundary: null,
       memoryIdentityRoot: await findMemoryIdentityRoot(gitRoot),
     }
   }
 
   const canonicalHome = await canonicalPath(homeDirectory)
+  const directories = isWithin(canonicalHome, canonicalCwd)
+    ? directoriesFromRoot(canonicalHome, canonicalCwd)
+    : [canonicalCwd]
   return {
-    directories: isWithin(canonicalHome, canonicalCwd)
-      ? directoriesFromRoot(canonicalHome, canonicalCwd)
-      : [canonicalCwd],
+    directories,
+    extensionDirectories:
+      directories[0] === canonicalHome ? directories.slice(1) : directories,
+    homeBoundary: directories[0] === canonicalHome ? canonicalHome : null,
     memoryIdentityRoot: canonicalCwd,
   }
 }
 
 async function loadProjectSettings(
   configRoot: string,
-  projectDirectories: readonly string[],
+  cwd: string,
 ): Promise<ClaudeJsonResource[]> {
   const userSettings = await readOptionalJson(
     join(configRoot, 'settings.json'),
     'user',
   )
-  const projectSettings = await Promise.all(
-    projectDirectories.flatMap((directory) => [
-      readOptionalJson(join(directory, '.claude', 'settings.json'), 'project'),
-      readOptionalJson(
-        join(directory, '.claude', 'settings.local.json'),
-        'local',
-      ),
-    ]),
-  )
+  const projectSettings = await Promise.all([
+    readOptionalJson(join(cwd, '.claude', 'settings.json'), 'project'),
+    readOptionalJson(join(cwd, '.claude', 'settings.local.json'), 'local'),
+  ])
   return [userSettings, ...projectSettings].filter(present)
 }
 
@@ -243,17 +249,31 @@ async function loadProjectMcp(
 
 async function loadProjectInstructions(
   projectDirectories: readonly string[],
+  homeBoundary: string | null,
 ): Promise<ClaudeTextResource[]> {
   const resourceGroups = await Promise.all(
     projectDirectories.map(async (directory) => {
       const claudeRoot = join(directory, '.claude')
-      const [rootInstruction, dotInstruction, rulePaths] = await Promise.all([
-        readOptionalText(join(directory, 'CLAUDE.md'), 'project'),
-        readOptionalText(join(claudeRoot, 'CLAUDE.md'), 'project'),
-        findFiles(join(claudeRoot, 'rules'), (name) => name.endsWith('.md')),
-      ])
+      const [rootInstruction, localInstruction, dotInstruction, rulePaths] =
+        await Promise.all([
+          readOptionalText(join(directory, 'CLAUDE.md'), 'project'),
+          readOptionalText(join(directory, 'CLAUDE.local.md'), 'local'),
+          directory === homeBoundary
+            ? null
+            : readOptionalText(join(claudeRoot, 'CLAUDE.md'), 'project'),
+          directory === homeBoundary
+            ? []
+            : findFiles(join(claudeRoot, 'rules'), (name) =>
+                name.endsWith('.md'),
+              ),
+        ])
       const rules = await loadFiles(rulePaths, 'project')
-      return [rootInstruction, dotInstruction, ...rules].filter(present)
+      return [
+        rootInstruction,
+        localInstruction,
+        dotInstruction,
+        ...rules,
+      ].filter(present)
     }),
   )
 
@@ -269,8 +289,12 @@ export async function loadClaudeSharedResources({
   cwd,
   homeDirectory = homedir(),
 }: LoadClaudeSharedResourcesOptions): Promise<ClaudeSharedResources> {
-  const { directories: projectDirectories, memoryIdentityRoot } =
-    await resolveProjectContext(cwd, homeDirectory)
+  const {
+    directories: projectDirectories,
+    extensionDirectories,
+    homeBoundary,
+    memoryIdentityRoot,
+  } = await resolveProjectContext(cwd, homeDirectory)
   const projectMemoryDirectory = join(
     configRoot,
     'projects',
@@ -289,26 +313,26 @@ export async function loadClaudeSharedResources({
     mcp,
   ] = await Promise.all([
     readOptionalText(join(configRoot, 'CLAUDE.md'), 'user'),
-    loadProjectInstructions(projectDirectories),
+    loadProjectInstructions(projectDirectories, homeBoundary),
     findFiles(projectMemoryDirectory, (name) => name.endsWith('.md')).then(
       (paths) => loadFiles(paths, 'project'),
     ),
     loadScopedFiles(
       join(configRoot, 'skills'),
-      projectDirectories.map((path) => join(path, '.claude', 'skills')),
+      extensionDirectories.map((path) => join(path, '.claude', 'skills')),
       (name) => name === 'SKILL.md',
     ),
     loadScopedFiles(
       join(configRoot, 'commands'),
-      projectDirectories.map((path) => join(path, '.claude', 'commands')),
+      extensionDirectories.map((path) => join(path, '.claude', 'commands')),
       (name) => name.endsWith('.md'),
     ),
     loadScopedFiles(
       join(configRoot, 'agents'),
-      projectDirectories.map((path) => join(path, '.claude', 'agents')),
+      extensionDirectories.map((path) => join(path, '.claude', 'agents')),
       (name) => name.endsWith('.md'),
     ),
-    loadProjectSettings(configRoot, projectDirectories),
+    loadProjectSettings(configRoot, await canonicalPath(cwd)),
     loadProjectMcp(projectDirectories),
   ])
 

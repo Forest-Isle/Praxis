@@ -1,17 +1,21 @@
-import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { promisify } from 'node:util'
+import { join } from 'node:path'
 
 import { sanitizeClaudeProjectPath } from '../dist/compatibility/claude/paths.js'
-import { parseClaudeVersionOutput } from '../dist/compatibility/claude/schema.js'
 import { loadClaudeSharedResources } from '../dist/compatibility/claude/shared-resources.js'
+import {
+  assertContains,
+  assertNotContains,
+  detectClaudeVersion,
+  execFileAsync,
+  writeFixture as write,
+} from './lib/claude-probe.mjs'
 
-const execFileAsync = promisify(execFile)
 const markers = {
   global: 'SHARED_GLOBAL_1041',
   project: 'SHARED_PROJECT_2052',
+  localInstruction: 'SHARED_LOCAL_INSTRUCTION_2108',
   projectPackage: 'SHARED_PROJECT_PACKAGE_2163',
   projectCwd: 'SHARED_PROJECT_CWD_2274',
   nonGit: 'SHARED_NON_GIT_2385',
@@ -26,35 +30,15 @@ const markers = {
   agent: 'SHARED_AGENT_8218',
   projectAgent: 'SHARED_PROJECT_AGENT_8329',
   settings: 'SHARED_SETTINGS_9329',
+  cwdSettings: 'SHARED_CWD_SETTINGS_9374',
   rootSettings: 'SHARED_ROOT_SETTINGS_9430',
-}
-
-async function write(path, content) {
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, content)
-}
-
-function assertContains(haystack, needle, label) {
-  if (!haystack.includes(needle)) {
-    throw new Error(`${label} did not expose marker ${needle}`)
-  }
-}
-
-function assertNotContains(haystack, needle, label) {
-  if (haystack.includes(needle)) {
-    throw new Error(`${label} unexpectedly exposed marker ${needle}`)
-  }
 }
 
 const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-claude-shared-'))
 let nonGitRoot
 
 try {
-  const { stdout: versionOutput } = await execFileAsync('claude', ['--version'])
-  const version = parseClaudeVersionOutput(versionOutput)
-  if (version !== '2.1.208') {
-    throw new Error(`Shared-resource probe does not support Claude ${version}`)
-  }
+  const version = await detectClaudeVersion('Shared-resource probe')
 
   const configRoot = join(probeRoot, 'config')
   const mainRepository = join(probeRoot, 'main')
@@ -104,6 +88,10 @@ try {
       `Project compatibility marker: ${markers.project}\n`,
     ),
     write(
+      join(repository, 'CLAUDE.local.md'),
+      `Local instruction compatibility marker: ${markers.localInstruction}\n`,
+    ),
+    write(
       join(packageDirectory, 'CLAUDE.md'),
       `Package compatibility marker: ${markers.projectPackage}\n`,
     ),
@@ -121,7 +109,7 @@ try {
     ),
     write(
       join(repository, '.claude', 'skills', 'fixture-matrix', 'SKILL.md'),
-      `---\nname: fixture-matrix\ndescription: Verify the shared compatibility matrix.\n---\n\nSkill marker: ${markers.skill}. Read ${join(projectMemoryDirectory, 'details.md')}, call mcp__fixture_root__marker and mcp__fixture_cwd__marker once each, then reply with one JSON object containing every exact marker visible from global/root/package/cwd instructions, memory index/detail, skill, hooks/settings, both MCP tools, and active agent.\n`,
+      `---\nname: fixture-matrix\ndescription: Verify the shared compatibility matrix.\n---\n\nSkill marker: ${markers.skill}. Read ${join(projectMemoryDirectory, 'details.md')}, call mcp__fixture_root__marker and mcp__fixture_cwd__marker once each, then reply with one JSON object containing every exact marker visible from global/root/local/package/cwd instructions, memory index/detail, skill, hooks/settings, both MCP tools, and active agent.\n`,
     ),
     write(
       join(configRoot, 'commands', 'fixture-command.md'),
@@ -147,6 +135,13 @@ try {
       }),
     ),
     write(
+      join(cwd, '.claude', 'settings.json'),
+      JSON.stringify({
+        enableAllProjectMcpServers: true,
+        env: { PRAXIS_CWD_SETTINGS_MARKER: markers.cwdSettings },
+      }),
+    ),
+    write(
       join(cwd, '.claude', 'settings.local.json'),
       JSON.stringify({
         env: { PRAXIS_SETTINGS_MARKER: markers.settings },
@@ -156,7 +151,7 @@ try {
               hooks: [
                 {
                   type: 'command',
-                  command: `printf "$PRAXIS_ROOT_SETTINGS_MARKER:$PRAXIS_SETTINGS_MARKER:${markers.hook}"`,
+                  command: `printf "$PRAXIS_CWD_SETTINGS_MARKER:$PRAXIS_SETTINGS_MARKER:$PRAXIS_ROOT_SETTINGS_MARKER:${markers.hook}"`,
                 },
               ],
             },
@@ -240,6 +235,11 @@ process.stdin.on('data', chunk => {
   )
   assertContains(
     resources.instructions.map((item) => item.content).join('\n'),
+    markers.localInstruction,
+    'Praxis local instructions',
+  )
+  assertContains(
+    resources.instructions.map((item) => item.content).join('\n'),
     markers.projectPackage,
     'Praxis package instructions',
   )
@@ -292,12 +292,13 @@ process.stdin.on('data', chunk => {
   const serializedSettings = JSON.stringify(
     resources.settings.map((item) => item.value),
   )
-  assertContains(
+  assertContains(serializedSettings, markers.cwdSettings, 'Praxis cwd settings')
+  assertContains(serializedSettings, markers.settings, 'Praxis local settings')
+  assertNotContains(
     serializedSettings,
     markers.rootSettings,
-    'Praxis root settings',
+    'Praxis parent settings boundary',
   )
-  assertContains(serializedSettings, markers.settings, 'Praxis local settings')
   const serializedMcp = JSON.stringify(resources.mcp.map((item) => item.value))
   assertContains(serializedMcp, markers.mcp, 'Praxis root MCP')
   assertContains(serializedMcp, markers.mcpCwd, 'Praxis cwd MCP')
@@ -309,7 +310,7 @@ process.stdin.on('data', chunk => {
       '--model',
       'haiku',
       '--max-turns',
-      '3',
+      '8',
       '--output-format',
       'json',
       '--allowedTools',
@@ -331,6 +332,7 @@ process.stdin.on('data', chunk => {
   for (const label of [
     'global',
     'project',
+    'localInstruction',
     'projectPackage',
     'projectCwd',
     'memory',
@@ -341,6 +343,7 @@ process.stdin.on('data', chunk => {
     'mcpCwd',
     'agent',
     'settings',
+    'cwdSettings',
   ]) {
     const marker = markers[label]
     assertContains(result, marker, `Claude ${label}`)
@@ -459,7 +462,7 @@ process.stdin.on('data', chunk => {
       '1',
       '--output-format',
       'json',
-      `Reply with exactly ${markers.nonGit}.`,
+      'Reply with exactly the marker declared by the nearest non-git CLAUDE.md instruction.',
     ],
     {
       cwd: nonGitCwd,
