@@ -98,7 +98,7 @@ describe('ClaudeSessionService', () => {
         streaming: true,
         usage: true,
         tools: false,
-        contextWindowTokens: 400,
+        contextWindowTokens: 2_500,
       },
       async *complete(request) {
         requests.push(request)
@@ -122,7 +122,7 @@ describe('ClaudeSessionService', () => {
       cwd,
       claudeVersion: '2.1.208',
       provider,
-      contextReserveTokens: 50,
+      contextReserveTokens: 1_500,
       eventSink: (event) => events.push(event),
     })
 
@@ -167,7 +167,7 @@ describe('ClaudeSessionService', () => {
         streaming: true,
         usage: true,
         tools: true,
-        contextWindowTokens: 500,
+        contextWindowTokens: 2_000,
       },
       async *complete(request) {
         requests.push(request)
@@ -214,7 +214,7 @@ describe('ClaudeSessionService', () => {
       provider,
       tools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
-      contextReserveTokens: 50,
+      contextReserveTokens: 1_000,
     })
 
     const result = await service.run('Read the large result.')
@@ -225,9 +225,92 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(requests[2]?.messages)).toContain(
       'TOOL_RESULT_SUMMARY',
     )
+    expect(JSON.stringify(requests[2]?.messages)).toContain(
+      'Read the large result.',
+    )
     expect(JSON.stringify(requests[2]?.messages)).not.toContain(
       'LARGE_TOOL_RESULT',
     )
+  })
+
+  it('supports repeated compaction with cumulative dropped-token metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-recompact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['old-history '.repeat(500)]),
+    })
+    const first = await origin.run('Initial task.')
+    let compactCount = 0
+    let mainCount = 0
+    const provider: ModelProvider = {
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 2_500,
+      },
+      async *complete(request) {
+        const compacting = JSON.stringify(request.messages).includes(
+          'You are compacting an agent conversation',
+        )
+        if (compacting) {
+          compactCount += 1
+          yield {
+            type: 'text-delta',
+            delta: `COMPACT_SUMMARY_${compactCount}`,
+          }
+          return
+        }
+        mainCount += 1
+        yield {
+          type: 'text-delta',
+          delta:
+            mainCount === 1
+              ? `intermediate ${'new-history '.repeat(500)}`
+              : 'recompact done',
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      contextReserveTokens: 1_500,
+    })
+
+    await service.resume(first.sessionId, 'First continuation.')
+    const result = await service.resume(first.sessionId, 'Second continuation.')
+
+    expect(result.text).toBe('recompact done')
+    expect(compactCount).toBe(2)
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const entries = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: first.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const boundaries = entries.filter(
+      (entry) => entry.subtype === 'compact_boundary',
+    )
+    expect(boundaries).toHaveLength(2)
+    expect(
+      boundaries[1]?.compactMetadata.cumulativeDroppedTokens,
+    ).toBeGreaterThan(boundaries[0]?.compactMetadata.cumulativeDroppedTokens)
   })
 
   it('does not write partial compact records when summarization fails', async () => {
@@ -335,6 +418,133 @@ describe('ClaudeSessionService', () => {
       'utf8',
     )
     expect(transcript).not.toContain('compact_boundary')
+  })
+
+  it('retries compaction after prompt hook context pushes the turn over budget', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-hook-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['history '.repeat(200)]),
+    })
+    const first = await origin.run('Initial task.')
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 2_500,
+      },
+      async *complete(request) {
+        requests.push(request)
+        const compacting = JSON.stringify(request.messages).includes(
+          'You are compacting an agent conversation',
+        )
+        yield {
+          type: 'text-delta',
+          delta: compacting ? 'HOOK_CONTEXT_SUMMARY' : 'hook compacted',
+        }
+      },
+    }
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              UserPromptSubmit: [
+                { hooks: [{ type: 'command', command: 'prompt-hook' }] },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async () => ({
+        stdout: `HOOK_CONTEXT ${'hook-data '.repeat(350)}`,
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      }),
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      hooks,
+      contextReserveTokens: 1_500,
+    })
+
+    const result = await service.resume(first.sessionId, 'Exact prompt text.')
+
+    expect(result.text).toBe('hook compacted')
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[0]?.messages)).toContain('HOOK_CONTEXT')
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'HOOK_CONTEXT_SUMMARY',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'Exact prompt text.',
+    )
+  })
+
+  it('checks cancellation again before committing compact records', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-compact-abort-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['history '.repeat(500)]),
+    })
+    const first = await origin.run('Initial task.')
+    const controller = new AbortController()
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unexpected']),
+      contextBudget: new ContextBudget({
+        contextWindowTokens: 500,
+        reserveTokens: 100,
+      }),
+      compactor: {
+        async compact() {
+          controller.abort()
+          return {
+            summary: 'CANCELLED_SUMMARY',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+          }
+        },
+      },
+    })
+
+    await expect(
+      service.resume(first.sessionId, 'Do not persist.', controller.signal),
+    ).rejects.toBeInstanceOf(AgentRunCancelledError)
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
+    expect(transcript).not.toContain('Do not persist.')
   })
 
   it('runs, persists, resumes, lists, and forks a text session', async () => {

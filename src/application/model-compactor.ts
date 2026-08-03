@@ -3,7 +3,10 @@ import type {
   CompactionResult,
   Compactor,
 } from '../core/compaction.js'
-import { estimateTextTokens } from '../core/context-budget.js'
+import {
+  estimateModelRequestTokens,
+  estimateTextTokens,
+} from '../core/context-budget.js'
 import {
   AgentRunCancelledError,
   type ModelProvider,
@@ -18,6 +21,14 @@ export class ModelCompactor implements Compactor {
   async compact(request: CompactionRequest): Promise<CompactionResult> {
     if (!Number.isInteger(request.targetTokens) || request.targetTokens <= 0) {
       throw new Error('Compaction target tokens must be a positive integer')
+    }
+    if (
+      !Number.isInteger(request.contextWindowTokens) ||
+      request.contextWindowTokens <= request.targetTokens
+    ) {
+      throw new Error(
+        'Compaction context window must be larger than target tokens',
+      )
     }
     if (request.signal?.aborted) throw new AgentRunCancelledError()
 
@@ -34,6 +45,16 @@ export class ModelCompactor implements Compactor {
         },
       ],
       ...(request.signal ? { signal: request.signal } : {}),
+    }
+    const estimatedInputTokens = estimateModelRequestTokens(
+      providerRequest.messages,
+    )
+    const availableInputTokens =
+      request.contextWindowTokens - request.targetTokens
+    if (estimatedInputTokens > availableInputTokens) {
+      throw new Error(
+        `Compaction input exceeds provider budget: estimated=${estimatedInputTokens}, window=${request.contextWindowTokens}, target=${request.targetTokens}, available=${availableInputTokens}. Start a new session or use a provider with a larger context window.`,
+      )
     }
 
     for await (const event of this.provider.complete(providerRequest)) {

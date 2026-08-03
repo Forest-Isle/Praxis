@@ -27,6 +27,7 @@ import {
   translateProviderEvents,
 } from '../compatibility/claude/translation.js'
 import {
+  AgentRunCancelledError,
   AgentRuntime,
   type ModelToolCall,
   type ModelProvider,
@@ -427,6 +428,7 @@ export class ClaudeSessionService {
             role: 'user'
             content: string
           }[] = [],
+          preservedUserMessages: readonly string[] = [],
         ) => {
           if (!budget) return
           const historyMessages = projectClaudeModelMessages(snapshot.entries)
@@ -435,6 +437,11 @@ export class ClaudeSessionService {
             definitions,
           )
           if (!predicted.shouldCompact) return
+          const irreducible = budget.evaluate(
+            [...contextMessages, ...pendingMessages],
+            definitions,
+          )
+          budget.assertFits(irreducible)
           const logicalParentUuid = snapshot.tail.lastUuid
           if (!logicalParentUuid || historyMessages.length === 0) {
             budget.assertFits(predicted)
@@ -455,6 +462,7 @@ export class ClaudeSessionService {
           ).compact({
             messages: historyMessages,
             targetTokens,
+            contextWindowTokens: budget.contextWindowTokens,
             ...(signal ? { signal } : {}),
           })
           const boundaryUuid = randomUUID()
@@ -466,7 +474,6 @@ export class ClaudeSessionService {
               sessionId,
               logicalParentUuid,
               summary: compacted.summary,
-              trigger: 'auto',
               preTokens: budget.evaluate(
                 [...contextMessages, ...historyMessages],
                 definitions,
@@ -484,9 +491,32 @@ export class ClaudeSessionService {
             })
           }
           const provisionalEntries = compactEntries(0)
+          const compactSummaryUuid = provisionalEntries.at(-1)?.uuid
+          if (typeof compactSummaryUuid !== 'string') {
+            throw new Error('Could not create Claude compact summary')
+          }
+          const replayUuids = preservedUserMessages.map(() => randomUUID())
+          const replayEntries = translateProviderEvents(
+            preservedUserMessages.map((text, index) =>
+              index === 0
+                ? { type: 'user-text' as const, text }
+                : { type: 'user-text-block' as const, text },
+            ),
+            {
+              sessionId,
+              parentUuid: compactSummaryUuid,
+              cwd: this.options.cwd,
+              claudeVersion: this.options.claudeVersion,
+              gitBranch: null,
+              history: [...snapshot.entries, ...provisionalEntries],
+              createUuid: () => replayUuids.shift() ?? randomUUID(),
+              now: () => timestamp,
+            },
+          )
           const compactedHistory = projectClaudeModelMessages([
             ...snapshot.entries,
             ...provisionalEntries,
+            ...replayEntries,
           ])
           const afterHistory = budget.evaluate(
             [...contextMessages, ...compactedHistory],
@@ -497,7 +527,11 @@ export class ClaudeSessionService {
             definitions,
           )
           budget.assertFits(afterPending)
-          const entries = compactEntries(afterHistory.estimatedTokens)
+          const entries = [
+            ...compactEntries(afterHistory.estimatedTokens),
+            ...replayEntries,
+          ]
+          if (signal?.aborted) throw new AgentRunCancelledError()
           const appendResult = await lease.appendMany(snapshot.tail, entries)
           if (appendResult.status === 'conflict') {
             throw new Error(
@@ -557,6 +591,7 @@ export class ClaudeSessionService {
           }
         }
         if (budget) {
+          await compactIfNeeded([], expansion.userMessages)
           budget.assertFits(
             budget.evaluate(
               [
@@ -577,7 +612,7 @@ export class ClaudeSessionService {
           cwd: this.options.cwd,
           observer,
           reloadMessages: async () => {
-            await compactIfNeeded()
+            await compactIfNeeded([], expansion.userMessages)
             return [
               ...contextMessages,
               ...projectClaudeModelMessages(snapshot.entries),

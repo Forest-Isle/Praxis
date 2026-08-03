@@ -92,9 +92,12 @@ the run or resume turn completes.
 messages, active transcript projection, current prompt, and tool definitions.
 Provider capability or explicit CLI configuration supplies the window; Praxis
 does not guess model limits. `ModelCompactor` uses the active provider without
-tools and enforces a bounded, non-empty summary. `ClaudeSessionService` writes
+tools, budgets its own request against the full provider window, and enforces a
+bounded, non-empty summary. `ClaudeSessionService` writes
 the native boundary/summary pair as one leased append, then projects only the
 latest summary onward while retaining historical nested-memory attachments.
+When compaction happens inside an active turn, current user messages are
+replayed verbatim after the summary before model execution continues.
 Compaction failure, cancellation, or an oversized summary leaves no partial
 compact records.
 

@@ -22,6 +22,7 @@ describe('ModelCompactor', () => {
     const result = await compactor.compact({
       messages: [{ role: 'user', content: 'Keep CURRENT_TASK.' }],
       targetTokens: 100,
+      contextWindowTokens: 1_000,
     })
 
     expect(result.summary).toBe('CURRENT_TASK and DECISION')
@@ -45,6 +46,7 @@ describe('ModelCompactor', () => {
       new ModelCompactor(toolProvider).compact({
         messages: [{ role: 'user', content: 'history' }],
         targetTokens: 10,
+        contextWindowTokens: 1_000,
       }),
     ).rejects.toThrow('must not call tools')
 
@@ -58,7 +60,28 @@ describe('ModelCompactor', () => {
       new ModelCompactor(longProvider).compact({
         messages: [{ role: 'user', content: 'history' }],
         targetTokens: 10,
+        contextWindowTokens: 1_000,
       }),
     ).rejects.toThrow('exceeded 10 tokens')
+  })
+
+  it('refuses an over-window compaction request before calling the provider', async () => {
+    let called = false
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        called = true
+        yield { type: 'text-delta', delta: 'unexpected' }
+      },
+    }
+
+    await expect(
+      new ModelCompactor(provider).compact({
+        messages: [{ role: 'user', content: 'history '.repeat(100) }],
+        targetTokens: 20,
+        contextWindowTokens: 100,
+      }),
+    ).rejects.toThrow(/estimated=.*window=100.*target=20.*available=80/)
+    expect(called).toBe(false)
   })
 })

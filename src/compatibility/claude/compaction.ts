@@ -6,7 +6,6 @@ export interface ClaudeCompactEntriesOptions {
   sessionId: string
   logicalParentUuid: string
   summary: string
-  trigger: 'auto' | 'manual'
   preTokens: number
   postTokens: number
   previousCumulativeDroppedTokens: number
@@ -54,7 +53,7 @@ export function createClaudeCompactEntries(
       level: 'info',
       logicalParentUuid: options.logicalParentUuid,
       compactMetadata: {
-        trigger: options.trigger,
+        trigger: 'auto',
         preTokens: options.preTokens,
         durationMs: options.durationMs,
         preservedSegment: {

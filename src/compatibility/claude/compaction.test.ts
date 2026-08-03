@@ -9,7 +9,6 @@ describe('Claude compaction translation', () => {
       sessionId: 'session',
       logicalParentUuid: 'logical-tail',
       summary: 'Keep COMPACT_MARKER and continue the pending task.',
-      trigger: 'auto',
       preTokens: 12_000,
       postTokens: 1_500,
       previousCumulativeDroppedTokens: 2_000,

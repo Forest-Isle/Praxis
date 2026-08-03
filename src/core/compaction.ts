@@ -3,6 +3,7 @@ import type { ModelMessage, ModelUsage } from './runtime.js'
 export interface CompactionRequest {
   messages: readonly ModelMessage[]
   targetTokens: number
+  contextWindowTokens: number
   signal?: AbortSignal
 }
 

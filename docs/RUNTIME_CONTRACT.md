@@ -44,7 +44,9 @@ Rules:
     current prompt, and tool definitions before every provider call. Automatic
     compaction summarizes completed history before appending a new prompt; after
     completed tool results it may compact between model turns. Unresolved tool
-    calls are never compacted.
+    calls are never compacted. Between-turn compaction replays current user
+    messages verbatim after the summary, and the compactor's own provider call
+    must fit the configured full context window.
 
 ## Core ports
 
