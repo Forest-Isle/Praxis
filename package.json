@@ -18,6 +18,7 @@
     "test": "vitest run",
     "test:compat": "npm run build && node scripts/verify-claude-compatibility.mjs && node scripts/verify-claude-advanced-fixtures.mjs",
     "test:conditional-compat": "npm run build && node scripts/verify-conditional-rules.mjs",
+    "test:extension-compat": "npm run build && node scripts/verify-extension-compatibility.mjs",
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",
     "test:runtime-compat": "npm run build && node scripts/verify-runtime-compatibility.mjs",

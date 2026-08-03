@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
 import {
+  createClaudeAgentSettingEntry,
   createClaudeLastPromptEntry,
   createClaudeRuleAttachmentEntry,
   translateProviderEvents,
@@ -14,6 +15,30 @@ const toolFixtureUrl = new URL(
 )
 
 describe('provider to Claude transcript translation', () => {
+  it('creates native agent-setting metadata and text-block user content', () => {
+    expect(createClaudeAgentSettingEntry('session', 'reviewer')).toEqual({
+      type: 'agent-setting',
+      agentSetting: 'reviewer',
+      sessionId: 'session',
+    })
+    const [entry] = translateProviderEvents(
+      [{ type: 'user-text-block', text: 'expanded skill' }],
+      {
+        sessionId: 'session',
+        parentUuid: null,
+        cwd: '/tmp/project',
+        claudeVersion: '2.1.208',
+        gitBranch: null,
+        createUuid: () => '10000000-0000-4000-8000-000000000001',
+        now: () => '2026-08-03T08:00:00.000Z',
+      },
+    )
+    expect(entry?.message).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'expanded skill' }],
+    })
+  })
+
   it('creates the Claude 2.1.208 nested-memory attachment observed for a path rule', () => {
     const entry = createClaudeRuleAttachmentEntry(
       {

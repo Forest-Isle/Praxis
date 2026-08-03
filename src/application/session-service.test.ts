@@ -22,6 +22,7 @@ import {
   ClaudeContextAssembler,
 } from '../compatibility/claude/context.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
+import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeSessionService } from './session-service.js'
 
 const roots: string[] = []
@@ -150,6 +151,198 @@ describe('ClaudeSessionService', () => {
     })
     const transcript = await readFile(paths.sessionFile, 'utf8')
     expect(transcript).not.toContain('SYSTEM_CONTEXT')
+  })
+
+  it('persists slash expansion and resumes the selected Claude agent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-extensions-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const extensions = new ClaudeExtensionCatalog({
+      skills: [],
+      commands: [
+        {
+          path: join(configRoot, 'commands', 'probe.md'),
+          scope: 'user',
+          content:
+            '---\ndescription: Probe command.\n---\nCOMMAND [$ARGUMENTS] ZERO=[$0]',
+        },
+      ],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'reviewer.md'),
+          scope: 'user',
+          content:
+            '---\nname: reviewer\ndescription: Review work.\n---\nAGENT_MARKER',
+        },
+      ],
+    })
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        yield { type: 'text-delta', delta: 'done' }
+      },
+    }
+    const selected = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      extensions,
+      agent: 'reviewer',
+    })
+
+    const result = await selected.run('/probe alpha beta')
+    const resumed = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      extensions,
+    })
+    await resumed.resume(result.sessionId, 'continue')
+
+    expect(requests[0]?.messages).toEqual([
+      {
+        role: 'system',
+        content: '# Agent definition: reviewer\n\nAGENT_MARKER',
+      },
+      {
+        role: 'user',
+        content:
+          '<command-message>probe</command-message>\n<command-name>/probe</command-name>\n<command-args>alpha beta</command-args>',
+      },
+      { role: 'user', content: 'COMMAND [alpha beta] ZERO=[alpha]' },
+    ])
+    expect(requests[1]?.messages[0]).toEqual({
+      role: 'system',
+      content: '# Agent definition: reviewer\n\nAGENT_MARKER',
+    })
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    const entries = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(entries.slice(0, 3).map((entry) => entry.type)).toEqual([
+      'agent-setting',
+      'user',
+      'user',
+    ])
+    expect(entries[0]).toEqual({
+      type: 'agent-setting',
+      agentSetting: 'reviewer',
+      sessionId: result.sessionId,
+    })
+    expect(entries[2]?.message.content).toEqual([
+      { type: 'text', text: 'COMMAND [alpha beta] ZERO=[alpha]' },
+    ])
+  })
+
+  it('persists tool-provided skill context before the next model turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-skill-tool-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let turn = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          requests.push(request)
+          if (turn++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'call_skill',
+                name: 'Skill',
+                input: { skill: 'probe', args: 'alpha' },
+              },
+            }
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'call_read_after_skill',
+                name: 'Read',
+                input: { file_path: 'README.md' },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'done' }
+        },
+      },
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute(call) {
+          if (call.name === 'Read') {
+            return { content: '# Praxis', isError: false }
+          }
+          return {
+            content: 'Launching skill: probe',
+            isError: false,
+            followUpUserMessages: ['Base directory: /probe\n\nSKILL'],
+          }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const result = await service.run('Use probe')
+
+    expect(requests[1]?.messages.slice(-3)).toEqual([
+      {
+        role: 'tool',
+        toolCallId: 'call_skill',
+        content: 'Launching skill: probe',
+        isError: false,
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_read_after_skill',
+        content: '# Praxis',
+        isError: false,
+      },
+      { role: 'user', content: 'Base directory: /probe\n\nSKILL' },
+    ])
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    const entries = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(entries.map((entry) => entry.type)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'user',
+      'user',
+      'assistant',
+      'last-prompt',
+    ])
+    expect(entries[4]?.message.content).toEqual([
+      { type: 'text', text: 'Base directory: /probe\n\nSKILL' },
+    ])
   })
 
   it('activates a matching path rule after Read and preserves it across resume', async () => {

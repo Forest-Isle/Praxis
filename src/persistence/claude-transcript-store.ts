@@ -337,7 +337,7 @@ export class ClaudeTranscriptStore {
       if (entry.leafUuid !== expectedTail.lastUuid) {
         throw new Error('Entry leafUuid does not match transcript tail')
       }
-    } else {
+    } else if (entry.type !== 'agent-setting') {
       if (entry.parentUuid !== expectedTail.lastUuid) {
         throw new Error('Entry parentUuid does not match transcript tail')
       }

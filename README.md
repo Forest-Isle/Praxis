@@ -35,6 +35,13 @@ without a rule-activating Read.
 Linked memory details remain explicit reads. Base system context stays
 ephemeral and is not copied into the authoritative transcript.
 
+Global and project commands and skills now expand from the shared Claude files
+without entering base context. Slash invocation persists Claude-compatible
+command wrapper plus expanded user entries; provider-selected skills use the
+`Skill` tool/result flow and inject their scoped body before the next turn.
+`--agent <name>` applies shared agent instructions and writes native
+`agent-setting` metadata, which both Praxis and Claude restore on resume.
+
 ## Product boundary
 
 - CLI-only, including interactive and structured non-interactive output
@@ -75,6 +82,8 @@ export PRAXIS_MODEL=...
 export PRAXIS_BASE_URL=https://api.openai.com/v1
 
 node dist/cli.js run "Inspect this project"
+node dist/cli.js run "/my-command arguments"
+node dist/cli.js run --agent reviewer "Inspect this project"
 node dist/cli.js sessions --json
 node dist/cli.js resume <session-id> "Continue"
 node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"

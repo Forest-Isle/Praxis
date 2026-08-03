@@ -126,6 +126,28 @@ describe('Praxis CLI', () => {
     expect(approveRecovery).toBe(true)
   })
 
+  it('passes an explicit agent without including the option in the prompt', async () => {
+    const capture = captureIO()
+    let selectedAgent: string | undefined
+    const base = dependencies()
+    const withAgent: CliDependencies = {
+      async createService(options) {
+        selectedAgent = options.agent
+        return base.createService(options)
+      },
+    }
+
+    await expect(
+      run(
+        ['run', '--agent', 'reviewer', 'inspect', 'this'],
+        capture.io,
+        withAgent,
+      ),
+    ).resolves.toBe(0)
+    expect(selectedAgent).toBe('reviewer')
+    expect(capture.stdout.join('')).toBe('answer:inspect this\n')
+  })
+
   it('lists and forks sessions without a provider', async () => {
     const listed = captureIO()
     const forked = captureIO()

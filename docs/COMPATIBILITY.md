@@ -156,14 +156,15 @@ Support policy:
 
 Current write scope is deliberately smaller than read scope. Praxis reads any
 well-formed native entry as opaque data, but only appends validated `user` and
-`assistant` conversational entries, path-rule `nested_memory` attachments, and
-the physical `last-prompt` record required by Claude resume for the selected
-adapter version. `last-prompt` must name the current logical conversation leaf
-and does not advance that leaf. Message content blocks and attachment envelopes
-are validated before append, and every `tool_result` must match the historical
-`tool_use` plus `sourceToolAssistantUUID`. Summary, sidechain, image, and other
-entry writers remain disabled until their runtime implementations and
-write/resume probes pass. Text forks do not copy attachments.
+`assistant` conversational entries, path-rule `nested_memory` attachments,
+selected-agent `agent-setting` metadata, and the physical `last-prompt` record
+required by Claude resume for the selected adapter version. `agent-setting` and
+`last-prompt` do not advance the logical UUID chain; `last-prompt` must name its
+current leaf. Message content blocks and attachment envelopes are validated
+before append, and every `tool_result` must match the historical `tool_use` plus
+`sourceToolAssistantUUID`. Summary, sidechain, image, and other entry writers
+remain disabled until their runtime implementations and write/resume probes
+pass. Text forks do not copy attachments.
 
 Sprint 1 text forks create a new transcript from projected user/assistant text
 using the validated writer. They do not clone opaque native entries or bypass
@@ -177,13 +178,13 @@ rejected by the append adapter.
 
 ## Resource ownership and current access
 
-| Resource                               | Plane          | Praxis access                          |
-| -------------------------------------- | -------------- | -------------------------------------- |
-| Transcript                             | Shared         | Append only                            |
-| Auto memory                            | Shared         | Read/write                             |
-| Instructions, skills, commands, agents | Shared         | Read only until loaders pass fixtures  |
-| Settings, hooks, MCP                   | Shared         | Read only until semantic matrix passes |
-| Provider payloads, indexes, locks      | Praxis sidecar | Read/write                             |
+| Resource                               | Plane          | Praxis access                             |
+| -------------------------------------- | -------------- | ----------------------------------------- |
+| Transcript                             | Shared         | Append only                               |
+| Auto memory                            | Shared         | Read/write                                |
+| Instructions, skills, commands, agents | Shared         | Read/execute; source files stay read only |
+| Settings, hooks, MCP                   | Shared         | Read only until semantic matrix passes    |
+| Provider payloads, indexes, locks      | Praxis sidecar | Read/write                                |
 
 This matrix is also encoded in `src/compatibility/claude/ownership.ts`; runtime
 code must consult that policy instead of inventing ownership per feature.
@@ -216,6 +217,9 @@ persistence, requires successful native tool results for every negative tool
 case (including an Edit pre-read before its matching rule exists), exercises
 built CLI message reload, and reopens the Praxis-written attachment with Claude
 Code 2.1.208.
+`npm run test:extension-compat` proves native slash command/skill expansion,
+model-selected `Skill` tool injection, selected-agent metadata, and live resume
+in both Claude→Praxis and Praxis→Claude directions.
 
 ## Explicit non-goals
 

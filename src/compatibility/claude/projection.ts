@@ -165,3 +165,19 @@ export function getClaudeLastPrompt(
   }
   return null
 }
+
+export function getClaudeAgentSetting(
+  entries: readonly ClaudeTranscriptEntry[],
+): string | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]
+    if (
+      entry?.type === 'agent-setting' &&
+      typeof entry.agentSetting === 'string' &&
+      entry.agentSetting.length > 0
+    ) {
+      return entry.agentSetting
+    }
+  }
+  return null
+}

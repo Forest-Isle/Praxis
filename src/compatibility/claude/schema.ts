@@ -13,6 +13,7 @@ export interface ClaudeSchemaAdapter {
 
 const SUPPORTED_VERSION = '2.1.208'
 const APPENDABLE_ENTRY_TYPES = new Set([
+  'agent-setting',
   'assistant',
   'attachment',
   'last-prompt',
@@ -158,6 +159,15 @@ function validateNestedMemoryAttachment(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'agent-setting') {
+    if (
+      !isNonEmptyString(entry.agentSetting) ||
+      !isNonEmptyString(entry.sessionId)
+    ) {
+      throw new Error('Claude agent-setting entry has invalid metadata')
+    }
+    return
+  }
   if (entry.type === 'last-prompt') {
     if (!isNonEmptyString(entry.leafUuid)) {
       throw new Error('Claude last-prompt entry has invalid leafUuid')

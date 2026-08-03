@@ -62,8 +62,12 @@ rules stay out of base context; a successful matching `Read` appends the native
 Claude `nested_memory` attachment and reloads projected messages before the next
 model turn. That attachment is authoritative resume context for both tools.
 Skills, commands, agents, hooks, and MCP remain separate extension inputs
-instead of being injected wholesale into the base prompt. Linked memory details
-remain explicit reads.
+instead of being injected wholesale into the base prompt. Commands and skills
+expand on slash invocation; model-invocable skills are exposed through a
+provider-neutral `Skill` tool whose result is followed by scoped user context.
+Selected agent definitions add invocation system context and persist native
+`agent-setting` metadata for resume. Linked memory details remain explicit
+reads.
 
 Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
 

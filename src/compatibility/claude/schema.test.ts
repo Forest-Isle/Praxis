@@ -89,6 +89,22 @@ describe('ClaudeSchemaAdapter', () => {
         version: '2.1.209',
       }),
     ).toThrow('must target Claude Code 2.1.208')
+    expect(
+      adapter.serializeForAppend({
+        type: 'agent-setting',
+        agentSetting: 'reviewer',
+        sessionId: 'session',
+      }),
+    ).toBe(
+      '{"type":"agent-setting","agentSetting":"reviewer","sessionId":"session"}',
+    )
+    expect(() =>
+      adapter.serializeForAppend({
+        type: 'agent-setting',
+        agentSetting: '',
+        sessionId: 'session',
+      }),
+    ).toThrow('invalid metadata')
   })
 
   it('accepts only validated Claude 2.1.208 nested-memory attachments', () => {

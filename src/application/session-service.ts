@@ -6,6 +6,7 @@ import type { ClaudeConditionalRuleResolver } from '../compatibility/claude/cont
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import { createClaudeTextFork } from '../compatibility/claude/fork.js'
 import {
+  getClaudeAgentSetting,
   getClaudeLastPrompt,
   projectClaudeModelMessages,
 } from '../compatibility/claude/projection.js'
@@ -15,6 +16,7 @@ import {
 } from '../compatibility/claude/schema.js'
 import { findUnresolvedClaudeToolCalls } from '../compatibility/claude/tool-links.js'
 import {
+  createClaudeAgentSettingEntry,
   createClaudeLastPromptEntry,
   createClaudeRuleAttachmentEntry,
   translateProviderEvents,
@@ -29,6 +31,7 @@ import {
   type ToolRegistry,
 } from '../core/runtime.js'
 import type { ContextAssembler } from '../core/context.js'
+import type { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import {
   ClaudeTranscriptStore,
   type ClaudeTranscriptLease,
@@ -47,6 +50,8 @@ export interface ClaudeSessionServiceOptions {
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
   contextAssembler?: ContextAssembler
   conditionalRuleResolver?: Pick<ClaudeConditionalRuleResolver, 'resolve'>
+  extensions?: ClaudeExtensionCatalog
+  agent?: string
   eventSink?: RuntimeEventSink
 }
 
@@ -196,6 +201,7 @@ export class ClaudeSessionService {
             content: string
             isError: boolean
             accessedPaths?: readonly string[]
+            followUpUserMessages?: readonly string[]
           },
         ) => {
           const [entry] = translateProviderEvents(
@@ -246,6 +252,26 @@ export class ClaudeSessionService {
             }
           }
         },
+        followUpUserMessagesCompleted: async (messages: readonly string[]) => {
+          for (const content of messages) {
+            const [followUpEntry] = translateProviderEvents(
+              [{ type: 'user-text-block', text: content }],
+              this.translationContext(sessionId, snapshot),
+            )
+            if (!followUpEntry) {
+              throw new Error('Could not translate tool follow-up message')
+            }
+            const followUpTail = await this.append(
+              lease,
+              snapshot.tail,
+              followUpEntry,
+            )
+            snapshot = {
+              entries: [...snapshot.entries, followUpEntry],
+              tail: followUpTail,
+            }
+          }
+        },
       }
       const recoveryRequest = {
         cwd: this.options.cwd,
@@ -272,16 +298,59 @@ export class ClaudeSessionService {
       }
       await runtime.recoverToolCalls(unresolvedToolCalls, recoveryRequest)
 
-      const contextMessages =
-        (await this.options.contextAssembler?.assemble()) ?? []
+      const agentName =
+        this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
+      const agent = agentName ? this.options.extensions?.agent(agentName) : null
+      if (agentName && !agent) {
+        throw new Error(`Unknown Claude agent ${agentName}`)
+      }
+      if (
+        this.options.agent &&
+        getClaudeAgentSetting(snapshot.entries) !== this.options.agent
+      ) {
+        const agentSetting = createClaudeAgentSettingEntry(
+          sessionId,
+          this.options.agent,
+        )
+        const settingTail = await this.append(
+          lease,
+          snapshot.tail,
+          agentSetting,
+        )
+        snapshot = {
+          entries: [...snapshot.entries, agentSetting],
+          tail: settingTail,
+        }
+      }
 
-      const [userEntry] = translateProviderEvents(
-        [{ type: 'user-text', text: prompt }],
-        this.translationContext(sessionId, snapshot),
-      )
-      if (!userEntry) throw new Error('Could not translate user prompt')
-      const userTail = await this.append(lease, snapshot.tail, userEntry)
-      snapshot = { entries: [...snapshot.entries, userEntry], tail: userTail }
+      const contextMessages = [
+        ...((await this.options.contextAssembler?.assemble()) ?? []),
+        ...(agent
+          ? [
+              {
+                role: 'system' as const,
+                content: `# Agent definition: ${agent.name}\n\n${agent.body}`,
+              },
+            ]
+          : []),
+      ]
+
+      const expansion = this.options.extensions?.expandPrompt(prompt) ?? {
+        userMessages: [prompt],
+      }
+      for (const [index, text] of expansion.userMessages.entries()) {
+        const [userEntry] = translateProviderEvents(
+          [
+            index === 0
+              ? { type: 'user-text', text }
+              : { type: 'user-text-block', text },
+          ],
+          this.translationContext(sessionId, snapshot),
+        )
+        if (!userEntry) throw new Error('Could not translate user prompt')
+        const userTail = await this.append(lease, snapshot.tail, userEntry)
+        snapshot = { entries: [...snapshot.entries, userEntry], tail: userTail }
+      }
 
       const runtimeRequest = {
         messages: [

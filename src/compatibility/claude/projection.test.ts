@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
 import {
+  getClaudeAgentSetting,
   getClaudeLastPrompt,
   projectClaudeModelMessages,
   projectClaudeTextMessages,
@@ -35,6 +36,11 @@ describe('Claude transcript projection', () => {
       { role: 'assistant', content: 'answer' },
     ])
     expect(getClaudeLastPrompt(entries)).toBe('hello')
+    expect(
+      getClaudeAgentSetting([
+        { type: 'agent-setting', agentSetting: 'reviewer' },
+      ]),
+    ).toBe('reviewer')
   })
 
   it('projects native tool use and results into provider-neutral messages', () => {

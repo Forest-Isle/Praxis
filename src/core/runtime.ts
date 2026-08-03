@@ -86,6 +86,7 @@ export interface ToolExecutionResult {
   content: string
   isError: boolean
   accessedPaths?: readonly string[]
+  followUpUserMessages?: readonly string[]
 }
 
 export interface ToolExecutionContext {
@@ -122,6 +123,7 @@ export interface AgentRunObserver {
     toolCalls?: readonly ModelToolCall[]
   }): Promise<void>
   toolCompleted(call: ModelToolCall, result: ToolExecutionResult): Promise<void>
+  followUpUserMessagesCompleted?(messages: readonly string[]): Promise<void>
 }
 
 export interface AgentRuntimeOptions {
@@ -276,6 +278,7 @@ export class AgentRuntime {
           return { text, usage }
         }
 
+        const followUpUserMessages: string[] = []
         for (const call of toolCalls) {
           const result = await this.completeToolCall(call, request)
           messages.push({
@@ -284,6 +287,18 @@ export class AgentRuntime {
             content: result.content,
             isError: result.isError,
           })
+          followUpUserMessages.push(...(result.followUpUserMessages ?? []))
+        }
+        if (followUpUserMessages.length > 0) {
+          await request.observer?.followUpUserMessagesCompleted?.(
+            followUpUserMessages,
+          )
+          messages.push(
+            ...followUpUserMessages.map((content) => ({
+              role: 'user' as const,
+              content,
+            })),
+          )
         }
         if (request.reloadMessages) {
           const reloadedMessages = await request.reloadMessages()
@@ -327,6 +342,14 @@ export class AgentRuntime {
     for (const call of calls) {
       this.emit({ type: 'tool-call', call })
       results.push(await this.completeToolCall(call, request))
+    }
+    const followUpUserMessages = results.flatMap(
+      (result) => result.followUpUserMessages ?? [],
+    )
+    if (followUpUserMessages.length > 0) {
+      await request.observer?.followUpUserMessagesCompleted?.(
+        followUpUserMessages,
+      )
     }
     return results
   }

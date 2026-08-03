@@ -6,6 +6,7 @@ import { indexClaudeToolLinks } from './tool-links.js'
 
 export type ProviderPersistenceEvent =
   | { type: 'user-text'; text: string }
+  | { type: 'user-text-block'; text: string }
   | {
       type: 'assistant-message'
       text: string
@@ -103,6 +104,13 @@ export function createClaudeLastPromptEntry({
   }
 }
 
+export function createClaudeAgentSettingEntry(
+  sessionId: string,
+  agent: string,
+): ClaudeTranscriptEntry {
+  return { type: 'agent-setting', agentSetting: agent, sessionId }
+}
+
 function emptyUsage() {
   return {
     input_tokens: 0,
@@ -178,6 +186,20 @@ export function translateProviderEvents(
           permissionMode: 'default',
           promptSource: 'interactive',
           message: { role: 'user', content: event.text },
+        }
+        break
+
+      case 'user-text-block':
+        entry = {
+          ...common,
+          type: 'user',
+          promptId: uuid,
+          permissionMode: 'default',
+          promptSource: 'interactive',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: event.text }],
+          },
         }
         break
 

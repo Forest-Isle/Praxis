@@ -305,4 +305,45 @@ describe('AgentRuntime', () => {
       ),
     ).rejects.toThrow('Recovery exceeded 1 tool calls in one turn')
   })
+
+  it('finalizes follow-up user context from recovered tool calls', async () => {
+    const followUps: string[][] = []
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield* []
+      }),
+      undefined,
+      {
+        tools: {
+          definitions: () => [],
+          async prepare(call) {
+            return call
+          },
+          async execute() {
+            return {
+              content: 'Launching skill: probe',
+              isError: false,
+              followUpUserMessages: ['SKILL_CONTEXT'],
+            }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+
+    await runtime.recoverToolCalls(
+      [{ id: 'call_skill', name: 'Skill', input: { skill: 'probe' } }],
+      {
+        observer: {
+          async assistantCompleted() {},
+          async toolCompleted() {},
+          async followUpUserMessagesCompleted(messages) {
+            followUps.push([...messages])
+          },
+        },
+      },
+    )
+
+    expect(followUps).toEqual([['SKILL_CONTEXT']])
+  })
 })

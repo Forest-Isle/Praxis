@@ -16,12 +16,18 @@ import {
 import {
   loadClaudeContextResources,
   loadClaudeSettings,
+  loadClaudeSharedResources,
 } from './compatibility/claude/shared-resources.js'
 import {
   AgentRunCancelledError,
   type RuntimeEventSink,
 } from './core/runtime.js'
 import { ClaudePermissionResolver } from './permissions/claude-permission-resolver.js'
+import {
+  ClaudeExtensionPermissionResolver,
+  ClaudeExtensionToolRegistry,
+} from './extensions/claude-extension-tools.js'
+import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
@@ -31,8 +37,8 @@ const VERSION = '0.1.0'
 const HELP = `Praxis — local-first general agent
 
 Usage:
-  praxis run [--json] <prompt>
-  praxis resume [--json] [--retry-interrupted-tools] <session-id> <prompt>
+  praxis run [--json] [--agent <name>] <prompt>
+  praxis resume [--json] [--agent <name>] [--retry-interrupted-tools] <session-id> <prompt>
   praxis fork [--json] <session-id>
   praxis sessions [--json]
   praxis <prompt>
@@ -64,6 +70,7 @@ export interface CliDependencies {
     eventSink: RuntimeEventSink
     requireProvider: boolean
     approveRecovery: boolean
+    agent?: string
   }): Promise<SessionCommands>
 }
 
@@ -73,7 +80,7 @@ const consoleIO: CliIO = {
 }
 
 const defaultDependencies: CliDependencies = {
-  async createService({ eventSink, requireProvider, approveRecovery }) {
+  async createService({ eventSink, requireProvider, approveRecovery, agent }) {
     const claudeVersion = await detectInstalledClaudeVersion()
     const cwd = process.cwd()
     const configRoot = resolve(
@@ -102,16 +109,24 @@ const defaultDependencies: CliDependencies = {
     if (!provider) return new ClaudeSessionService(options)
 
     const settings = await loadClaudeSettings({ configRoot, cwd })
+    const extensions = new ClaudeExtensionCatalog(
+      await loadClaudeSharedResources({ configRoot, cwd }),
+    )
     const loadContextResources = () =>
       loadClaudeContextResources({ configRoot, cwd })
+    const permissions = new ClaudeExtensionPermissionResolver(
+      new ClaudePermissionResolver({ cwd, settings }),
+    )
     return new ClaudeSessionService({
       ...options,
       provider,
-      tools: new LocalToolRegistry({ cwd }),
-      permissions: new ClaudePermissionResolver({
-        cwd,
-        settings,
-      }),
+      tools: new ClaudeExtensionToolRegistry(
+        new LocalToolRegistry({ cwd }),
+        extensions,
+      ),
+      permissions,
+      extensions,
+      ...(agent ? { agent } : {}),
       contextAssembler: new ClaudeContextAssembler({
         loadResources: loadContextResources,
       }),
@@ -145,6 +160,26 @@ function promptFrom(values: readonly string[]): string {
   return prompt
 }
 
+function extractAgent(argv: readonly string[]): {
+  agent: string | undefined
+  args: string[]
+} {
+  const args: string[] = []
+  let agent: string | undefined
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index]
+    if (value !== '--agent') {
+      if (value !== undefined) args.push(value)
+      continue
+    }
+    if (agent !== undefined)
+      throw new Error('--agent may only be specified once')
+    agent = requireValue(argv[index + 1], 'Agent name')
+    index += 1
+  }
+  return { agent, args }
+}
+
 async function execute(
   argv: readonly string[],
   io: CliIO,
@@ -160,14 +195,18 @@ async function execute(
     return 0
   }
 
-  const json = argv.includes('--json')
-  const approveRecovery = argv.includes('--retry-interrupted-tools')
-  const args = argv.filter(
+  const { agent, args: agentArgs } = extractAgent(argv)
+  const json = agentArgs.includes('--json')
+  const approveRecovery = agentArgs.includes('--retry-interrupted-tools')
+  const args = agentArgs.filter(
     (value) => value !== '--json' && value !== '--retry-interrupted-tools',
   )
   const command = args[0]
   if (approveRecovery && command !== 'resume') {
     throw new Error('--retry-interrupted-tools is only valid with resume')
+  }
+  if (agent && !['run', 'resume'].includes(command ?? 'run')) {
+    throw new Error('--agent is only valid with run or resume')
   }
   const knownCommand = ['run', 'resume', 'fork', 'sessions'].includes(
     command ?? '',
@@ -176,6 +215,7 @@ async function execute(
     eventSink: eventSink(io, json),
     requireProvider: !['fork', 'sessions'].includes(command ?? 'run'),
     approveRecovery,
+    ...(agent ? { agent } : {}),
   })
 
   if (command === 'sessions') {
