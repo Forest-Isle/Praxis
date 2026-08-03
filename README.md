@@ -10,7 +10,9 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 3 context ecosystem is complete; Sprint 4 interactive hardening is next.
+Sprint 3 context ecosystem is complete; Sprint 4 interactive hardening is in
+progress. Running `praxis` in a TTY opens an Ink session UI with streaming
+responses, recent-session selection, runtime status, and ask-permission prompts.
 Praxis can run, resume, fork, and list Claude-compatible sessions
 through a provider-neutral event loop and an OpenAI-compatible streaming
 provider. Built-in read, write, edit, search, and shell tools execute behind
@@ -114,6 +116,7 @@ node dist/cli.js sessions --json
 node dist/cli.js resume <session-id> "Continue"
 node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
 node dist/cli.js fork <session-id>
+node dist/cli.js
 ```
 
 `PRAXIS_BASE_URL` is optional and defaults to OpenAI's `/v1` endpoint. Context
@@ -123,9 +126,9 @@ model limit. Reserve defaults to 10% of the configured window, capped at 8192.
 
 Permissions load from the shared global and current-project Claude settings.
 `Read` and `Grep` default to `allow`; `Write`, `Edit`, and `Bash` default to
-`ask`. Until the interactive permission UI lands in Sprint 4, an `ask` decision
-without an approval callback returns a denied tool result; add an explicit
-compatible `allow` rule for trusted headless commands.
+`ask`. Interactive mode prompts before an `ask` tool call. Headless commands
+remain non-interactive and return a denied tool result unless a compatible
+`allow` rule exists.
 
 With a Claude Code 2.1.208 installation, run the isolated compatibility probes
 separately. Claude-backed probes make real model requests; the context-runtime

@@ -20,8 +20,13 @@ import {
 } from './compatibility/claude/shared-resources.js'
 import {
   AgentRunCancelledError,
+  type ModelToolCall,
   type RuntimeEventSink,
 } from './core/runtime.js'
+import {
+  runInteractive as renderInteractive,
+  type InteractiveServiceFactory,
+} from './cli/interactive.js'
 import { ClaudePermissionResolver } from './permissions/claude-permission-resolver.js'
 import {
   ClaudeExtensionPermissionResolver,
@@ -39,6 +44,7 @@ const VERSION = '0.1.0'
 const HELP = `Praxis — local-first general agent
 
 Usage:
+  praxis
   praxis run [--json] [--agent <name>] <prompt>
   praxis resume [--json] [--agent <name>] [--retry-interrupted-tools] <session-id> <prompt>
   praxis fork [--json] <session-id>
@@ -84,6 +90,7 @@ export function parseContextEnvironment(environment: NodeJS.ProcessEnv): {
 export interface CliIO {
   stdout(message: string): void
   stderr(message: string): void
+  isTTY?: boolean
 }
 
 interface SessionCommands {
@@ -97,111 +104,121 @@ interface SessionCommands {
   sessions(): Promise<SessionSummary[]>
 }
 
-export interface CliDependencies {
+export interface CliDependencies extends InteractiveServiceFactory {
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
     approveRecovery: boolean
+    approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
     agent?: string
     signal?: AbortSignal
   }): Promise<SessionCommands>
+  runInteractive?(options: { signal?: AbortSignal }): Promise<number>
 }
 
 const consoleIO: CliIO = {
   stdout: (message) => process.stdout.write(message),
   stderr: (message) => process.stderr.write(message),
+  isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+}
+
+const createDefaultService: CliDependencies['createService'] = async ({
+  eventSink,
+  requireProvider,
+  approveRecovery,
+  approveTool,
+  agent,
+  signal,
+}) => {
+  const claudeVersion = await detectInstalledClaudeVersion()
+  const cwd = process.cwd()
+  const configuredRoot = process.env.CLAUDE_CONFIG_DIR
+  const configRoot = resolve(configuredRoot ?? resolve(homedir(), '.claude'))
+  const claudeStatePath = configuredRoot
+    ? join(configRoot, '.claude.json')
+    : resolve(homedir(), '.claude.json')
+  let provider
+  const context = parseContextEnvironment(process.env)
+  if (requireProvider) {
+    const apiKey = process.env.PRAXIS_API_KEY
+    const model = process.env.PRAXIS_MODEL
+    if (!apiKey || !model) {
+      throw new Error('PRAXIS_API_KEY and PRAXIS_MODEL are required')
+    }
+    provider = new OpenAICompatibleProvider({
+      apiKey,
+      model,
+      baseUrl: process.env.PRAXIS_BASE_URL ?? 'https://api.openai.com/v1',
+      ...('contextWindowTokens' in context
+        ? { contextWindowTokens: context.contextWindowTokens }
+        : {}),
+    })
+  }
+
+  const options = {
+    configRoot,
+    cwd,
+    claudeVersion,
+    eventSink,
+  }
+  if (!provider) return new ClaudeSessionService(options)
+
+  const settings = await loadClaudeSettings({ configRoot, cwd })
+  const resources = await loadClaudeSharedResources({
+    configRoot,
+    cwd,
+    claudeStatePath,
+  })
+  const extensions = new ClaudeExtensionCatalog(resources)
+  const loadContextResources = () =>
+    loadClaudeContextResources({ configRoot, cwd })
+  const permissions = new ClaudeExtensionPermissionResolver(
+    new ClaudePermissionResolver({ cwd, settings }),
+  )
+  const mcpTools = await ClaudeMcpToolRegistry.connect({
+    base: new LocalToolRegistry({ cwd }),
+    resources: resources.mcp,
+    cwd,
+    onWarning: (message) => eventSink({ type: 'warning', message }),
+    ...(signal ? { signal } : {}),
+  })
+  const service = new ClaudeSessionService({
+    ...options,
+    provider,
+    tools: new ClaudeExtensionToolRegistry(mcpTools, extensions),
+    permissions,
+    extensions,
+    hooks: new ClaudeHookRunner({ settings, cwd }),
+    ...(agent ? { agent } : {}),
+    contextAssembler: new ClaudeContextAssembler({
+      loadResources: loadContextResources,
+    }),
+    conditionalRuleResolver: new ClaudeConditionalRuleResolver({
+      loadResources: loadContextResources,
+    }),
+    ...('contextReserveTokens' in context
+      ? { contextReserveTokens: context.contextReserveTokens }
+      : {}),
+    ...(approveTool ? { approveTool } : {}),
+    ...(approveRecovery ? { approveRecovery: () => true } : {}),
+  })
+  return {
+    run: (prompt, signal) =>
+      service.run(prompt, signal).finally(() => mcpTools.close()),
+    resume: (sessionId, prompt, signal) =>
+      service.resume(sessionId, prompt, signal).finally(() => mcpTools.close()),
+    fork: (sessionId) => service.fork(sessionId),
+    sessions: () => service.sessions(),
+  }
 }
 
 const defaultDependencies: CliDependencies = {
-  async createService({
-    eventSink,
-    requireProvider,
-    approveRecovery,
-    agent,
-    signal,
-  }) {
-    const claudeVersion = await detectInstalledClaudeVersion()
-    const cwd = process.cwd()
-    const configuredRoot = process.env.CLAUDE_CONFIG_DIR
-    const configRoot = resolve(configuredRoot ?? resolve(homedir(), '.claude'))
-    const claudeStatePath = configuredRoot
-      ? join(configRoot, '.claude.json')
-      : resolve(homedir(), '.claude.json')
-    let provider
-    const context = parseContextEnvironment(process.env)
-    if (requireProvider) {
-      const apiKey = process.env.PRAXIS_API_KEY
-      const model = process.env.PRAXIS_MODEL
-      if (!apiKey || !model) {
-        throw new Error('PRAXIS_API_KEY and PRAXIS_MODEL are required')
-      }
-      provider = new OpenAICompatibleProvider({
-        apiKey,
-        model,
-        baseUrl: process.env.PRAXIS_BASE_URL ?? 'https://api.openai.com/v1',
-        ...('contextWindowTokens' in context
-          ? { contextWindowTokens: context.contextWindowTokens }
-          : {}),
-      })
-    }
-
-    const options = {
-      configRoot,
-      cwd,
-      claudeVersion,
-      eventSink,
-    }
-    if (!provider) return new ClaudeSessionService(options)
-
-    const settings = await loadClaudeSettings({ configRoot, cwd })
-    const resources = await loadClaudeSharedResources({
-      configRoot,
-      cwd,
-      claudeStatePath,
-    })
-    const extensions = new ClaudeExtensionCatalog(resources)
-    const loadContextResources = () =>
-      loadClaudeContextResources({ configRoot, cwd })
-    const permissions = new ClaudeExtensionPermissionResolver(
-      new ClaudePermissionResolver({ cwd, settings }),
-    )
-    const mcpTools = await ClaudeMcpToolRegistry.connect({
-      base: new LocalToolRegistry({ cwd }),
-      resources: resources.mcp,
-      cwd,
-      onWarning: (message) => eventSink({ type: 'warning', message }),
+  createService: createDefaultService,
+  runInteractive: ({ signal }) =>
+    renderInteractive({
+      factory: { createService: createDefaultService },
       ...(signal ? { signal } : {}),
-    })
-    const service = new ClaudeSessionService({
-      ...options,
-      provider,
-      tools: new ClaudeExtensionToolRegistry(mcpTools, extensions),
-      permissions,
-      extensions,
-      hooks: new ClaudeHookRunner({ settings, cwd }),
-      ...(agent ? { agent } : {}),
-      contextAssembler: new ClaudeContextAssembler({
-        loadResources: loadContextResources,
-      }),
-      conditionalRuleResolver: new ClaudeConditionalRuleResolver({
-        loadResources: loadContextResources,
-      }),
-      ...('contextReserveTokens' in context
-        ? { contextReserveTokens: context.contextReserveTokens }
-        : {}),
-      ...(approveRecovery ? { approveRecovery: () => true } : {}),
-    })
-    return {
-      run: (prompt, signal) =>
-        service.run(prompt, signal).finally(() => mcpTools.close()),
-      resume: (sessionId, prompt, signal) =>
-        service
-          .resume(sessionId, prompt, signal)
-          .finally(() => mcpTools.close()),
-      fork: (sessionId) => service.fork(sessionId),
-      sessions: () => service.sessions(),
-    }
-  },
+    }),
 }
 
 function writeJson(io: CliIO, value: unknown): void {
@@ -253,6 +270,9 @@ async function execute(
   dependencies: CliDependencies,
   signal?: AbortSignal,
 ): Promise<number> {
+  if (argv.length === 0 && io.isTTY && dependencies.runInteractive) {
+    return dependencies.runInteractive(signal ? { signal } : {})
+  }
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
     io.stdout(HELP)
     return 0

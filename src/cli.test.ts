@@ -89,6 +89,24 @@ describe('Praxis CLI', () => {
     expect(capture.stderr).toEqual([])
   })
 
+  it('starts the interactive UI only for an empty TTY invocation', async () => {
+    const capture = captureIO()
+    capture.io.isTTY = true
+    let started = false
+    const interactive: CliDependencies = {
+      ...dependencies(),
+      async runInteractive() {
+        started = true
+        return 0
+      },
+    }
+
+    await expect(run([], capture.io, interactive)).resolves.toBe(0)
+
+    expect(started).toBe(true)
+    expect(capture.stdout).toEqual([])
+  })
+
   it('runs a prompt in plain output mode', async () => {
     const capture = captureIO()
 

@@ -51,7 +51,7 @@ an allow/ask/deny permission oracle covering scope, glob, `//`, and Bash `:*`.
 
 ## Sprint 3 — context ecosystem
 
-Status: in progress.
+Status: complete for Claude Code 2.1.208.
 
 - [x] CLAUDE.md hierarchy and unconditional user/project rules in model context
 - [x] canonical `MEMORY.md` index with Claude-compatible 200-line visibility
@@ -61,12 +61,16 @@ Status: in progress.
 - [x] user/project/local MCP sources, stdio/HTTP discovery, calls, and lifecycle
 - [x] context budgeting and version-supported compaction
 
-Exit gate: shared-data black-box matrix and context fidelity tests.
+Exit gate passed with shared-data black-box probes, context fidelity tests, 142
+unit/integration tests, and bidirectional live compaction resume.
 
 ## Sprint 4 — interactive CLI hardening
 
-- Ink TUI over runtime events
-- streaming, permission prompts, session picker, diagnostics
-- crash recovery, performance budgets, packaging, upgrade compatibility matrix
+Status: in progress.
+
+- [x] Ink TUI over runtime events
+- [x] streaming, permission prompts, session picker, and basic diagnostics
+- [ ] crash recovery and performance budgets
+- [ ] packaging and upgrade compatibility matrix
 
 Exit gate: end-to-end release suite on macOS and Linux.

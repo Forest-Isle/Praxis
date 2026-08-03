@@ -41,6 +41,13 @@ src/
 - No tenant, organization, role, entitlement, billing, remote-control, or
   telemetry domain exists.
 
+The Ink interactive CLI is an event adapter under `src/cli`: it renders
+`RuntimeEvent` state and streaming deltas, requests user decisions through the
+existing `approveTool` callback, and starts or resumes application sessions.
+React and Ink do not enter `core`, application services, providers, tools, or
+shared persistence. Headless text and NDJSON modes retain the same runtime
+ports without terminal prompts.
+
 ## Shared Claude data plane
 
 Praxis defaults to the same configuration root as Claude Code:
