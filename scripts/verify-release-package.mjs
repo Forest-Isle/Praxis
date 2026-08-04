@@ -71,7 +71,7 @@ function run(file, args, options = {}) {
           : `exited with ${code === null ? `signal ${signal}` : `code ${code}`}`)
       reject(
         new Error(
-          `${file} ${args.join(' ')} failed: ${reason}${stderr.trim() ? `\n${stderr.trim()}` : ''}`,
+          `${file} ${args.join(' ')} failed: ${reason}${stderr.trim() ? `\n${stderr.trim()}` : ''}${stdout.trim() ? `\n${stdout.trim()}` : ''}`,
           spawnError ? { cause: spawnError } : undefined,
         ),
       )
@@ -252,7 +252,7 @@ function assertConversationEnd(messages, cursor, stage) {
   }
 }
 
-function assertProviderConversation(messages, stage) {
+function assertProviderConversation(messages, stage, memoryDirectory) {
   const firstConversationIndex = messages.findIndex(
     (message) => message?.role !== 'system',
   )
@@ -281,6 +281,29 @@ function assertProviderConversation(messages, stage) {
     marker: 'RELEASE_PERMISSION_MARKER',
   })
   if (stage === 'tools') {
+    assertConversationEnd(messages, cursor, stage)
+    return
+  }
+  cursor = assertToolExchange(messages, cursor, {
+    id: 'release_memory_read',
+    name: 'Read',
+    input: { file_path: join(memoryDirectory, 'details.md') },
+    marker: 'RELEASE_MEMORY_DETAIL_MARKER',
+  })
+  if (stage === 'memory-read') {
+    assertConversationEnd(messages, cursor, stage)
+    return
+  }
+  cursor = assertToolExchange(messages, cursor, {
+    id: 'release_memory_write',
+    name: 'Write',
+    input: {
+      file_path: join(memoryDirectory, 'praxis-note.md'),
+      content: 'RELEASE_MEMORY_WRITE_MARKER\n',
+    },
+    marker: 'Wrote',
+  })
+  if (stage === 'memory-write') {
     assertConversationEnd(messages, cursor, stage)
     return
   }
@@ -444,7 +467,7 @@ function normalizeAnthropicMessages(messages) {
   return normalized
 }
 
-async function startProviderProbe(provider) {
+async function startProviderProbe(provider, memoryDirectory) {
   const requests = []
   let failure
   const server = createServer(async (request, response) => {
@@ -477,6 +500,22 @@ async function startProviderProbe(provider) {
           ? normalizeAnthropicMessages(body.messages)
           : body.messages
       if (requests.length === 1) {
+        const systemContext =
+          provider === 'anthropic'
+            ? body.system
+            : messages
+                .filter((message) => message?.role === 'system')
+                .map((message) => message.content)
+                .join('\n')
+        if (
+          typeof systemContext !== 'string' ||
+          !systemContext.includes('RELEASE_MEMORY_LINK_MARKER') ||
+          systemContext.includes('RELEASE_MEMORY_OVERFLOW_SENTINEL')
+        ) {
+          throw new Error(
+            'Installed CLI returned invalid 200-line memory index context',
+          )
+        }
         if (
           messages.slice(0, -1).some((message) => message?.role !== 'system') ||
           messages.at(-1)?.role !== 'user' ||
@@ -488,9 +527,11 @@ async function startProviderProbe(provider) {
           provider === 'anthropic'
             ? Array.isArray(body.tools) &&
               hasAnthropicToolSchema(body.tools, 'Read', 'file_path') &&
+              hasAnthropicToolSchema(body.tools, 'Write', 'content') &&
               hasAnthropicToolSchema(body.tools, 'Bash', 'command')
             : Array.isArray(body.tools) &&
               hasToolSchema(body.tools, 'Read', 'file_path') &&
+              hasToolSchema(body.tools, 'Write', 'content') &&
               hasToolSchema(body.tools, 'Bash', 'command')
         if (
           !hasSchemas ||
@@ -561,7 +602,7 @@ async function startProviderProbe(provider) {
         return
       }
       if (requests.length === 2) {
-        assertProviderConversation(messages, 'read')
+        assertProviderConversation(messages, 'read', memoryDirectory)
         if (provider === 'anthropic') {
           sendAnthropicEvents(response, [
             {
@@ -627,7 +668,140 @@ async function startProviderProbe(provider) {
         return
       }
       if (requests.length === 3) {
-        assertProviderConversation(messages, 'tools')
+        assertProviderConversation(messages, 'tools', memoryDirectory)
+        const input = { file_path: join(memoryDirectory, 'details.md') }
+        if (provider === 'anthropic') {
+          sendAnthropicEvents(response, [
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 8 } },
+            },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: {
+                type: 'tool_use',
+                id: 'release_memory_read',
+                name: 'Read',
+                input: {},
+              },
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify(input),
+              },
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'tool_use', stop_sequence: null },
+              usage: { output_tokens: 4 },
+            },
+            { type: 'message_stop' },
+          ])
+        } else {
+          sendOpenAIEvents(response, [
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'release_memory_read',
+                        type: 'function',
+                        function: {
+                          name: 'Read',
+                          arguments: JSON.stringify(input),
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                },
+              ],
+            },
+            {
+              choices: [],
+              usage: { prompt_tokens: 8, completion_tokens: 4 },
+            },
+          ])
+        }
+        return
+      }
+      if (requests.length === 4) {
+        assertProviderConversation(messages, 'memory-read', memoryDirectory)
+        const input = {
+          file_path: join(memoryDirectory, 'praxis-note.md'),
+          content: 'RELEASE_MEMORY_WRITE_MARKER\n',
+        }
+        if (provider === 'anthropic') {
+          sendAnthropicEvents(response, [
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 8 } },
+            },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: {
+                type: 'tool_use',
+                id: 'release_memory_write',
+                name: 'Write',
+                input: {},
+              },
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify(input),
+              },
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'tool_use', stop_sequence: null },
+              usage: { output_tokens: 4 },
+            },
+            { type: 'message_stop' },
+          ])
+        } else {
+          sendOpenAIEvents(response, [
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'release_memory_write',
+                        type: 'function',
+                        function: {
+                          name: 'Write',
+                          arguments: JSON.stringify(input),
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                },
+              ],
+            },
+            {
+              choices: [],
+              usage: { prompt_tokens: 8, completion_tokens: 4 },
+            },
+          ])
+        }
+        return
+      }
+      if (requests.length === 5) {
+        assertProviderConversation(messages, 'memory-write', memoryDirectory)
         if (provider === 'anthropic') {
           sendAnthropicEvents(response, [
             {
@@ -668,8 +842,8 @@ async function startProviderProbe(provider) {
         }
         return
       }
-      if (requests.length === 4) {
-        assertProviderConversation(messages, 'resume')
+      if (requests.length === 6) {
+        assertProviderConversation(messages, 'resume', memoryDirectory)
         if (provider === 'anthropic') {
           sendAnthropicEvents(response, [
             {
@@ -731,7 +905,7 @@ async function startProviderProbe(provider) {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     assertComplete() {
       if (failure) throw failure
-      if (requests.length !== 4) {
+      if (requests.length !== 6) {
         throw new Error(`Provider probe received ${requests.length} requests`)
       }
     },
@@ -855,9 +1029,47 @@ try {
     throw new Error(`Installed CLI session smoke failed: ${sessions.stdout}`)
   }
 
+  const sharedResourcesModule = await import(
+    pathToFileURL(
+      join(
+        installedPackage,
+        'dist',
+        'compatibility',
+        'claude',
+        'shared-resources.js',
+      ),
+    ).href
+  )
+  const memoryDirectory =
+    await sharedResourcesModule.resolveClaudeProjectMemoryDirectory({
+      configRoot,
+      cwd: workDirectory,
+    })
+  await mkdir(memoryDirectory, { recursive: true })
+  const memoryIndex = [
+    '# Shared memory',
+    '- [release detail](details.md) RELEASE_MEMORY_LINK_MARKER',
+    ...Array.from({ length: 198 }, (_, index) => `memory filler ${index + 3}`),
+    'RELEASE_MEMORY_OVERFLOW_SENTINEL',
+  ].join('\n')
+  await Promise.all([
+    writeFile(join(memoryDirectory, 'MEMORY.md'), memoryIndex),
+    writeFile(
+      join(memoryDirectory, 'details.md'),
+      'RELEASE_MEMORY_DETAIL_MARKER\n',
+    ),
+  ])
+
   await writeFile(
     join(configRoot, 'settings.json'),
-    `${JSON.stringify({ permissions: { allow: ["Bash(sed -n '1p' release-permission.txt)"] } })}\n`,
+    `${JSON.stringify({
+      permissions: {
+        allow: [
+          "Bash(sed -n '1p' release-permission.txt)",
+          `Write(${join(memoryDirectory, 'praxis-note.md')})`,
+        ],
+      },
+    })}\n`,
   )
   await writeFile(
     join(workDirectory, 'release-fixture.txt'),
@@ -868,7 +1080,7 @@ try {
     'RELEASE_PERMISSION_MARKER\n',
   )
   for (const provider of ['openai', 'anthropic']) {
-    providerProbe = await startProviderProbe(provider)
+    providerProbe = await startProviderProbe(provider, memoryDirectory)
     const providerEnvironment = {
       ...process.env,
       CLAUDE_CONFIG_DIR: configRoot,
@@ -891,12 +1103,18 @@ try {
       )
     }
     if (
-      runResult.usage?.inputTokens !== 24 ||
-      runResult.usage?.outputTokens !== 12
+      runResult.usage?.inputTokens !== 40 ||
+      runResult.usage?.outputTokens !== 20
     ) {
       throw new Error(
         `Installed ${provider} CLI returned invalid run usage ${JSON.stringify(runResult.usage)}`,
       )
+    }
+    if (
+      (await readFile(join(memoryDirectory, 'praxis-note.md'), 'utf8')) !==
+      'RELEASE_MEMORY_WRITE_MARKER\n'
+    ) {
+      throw new Error(`Installed ${provider} CLI did not write shared memory`)
     }
     const installedResume = await run(
       praxis,

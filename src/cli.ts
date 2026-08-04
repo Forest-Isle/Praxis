@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { realpathSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -19,6 +20,7 @@ import {
   loadClaudeContextResources,
   loadClaudeSettings,
   loadClaudeSharedResources,
+  resolveClaudeProjectMemoryDirectory,
 } from './compatibility/claude/shared-resources.js'
 import {
   AgentRunCancelledError,
@@ -234,13 +236,21 @@ const createDefaultService: CliDependencies['createService'] = async ({
     claudeStatePath,
   })
   const extensions = new ClaudeExtensionCatalog(resources)
+  const memoryDirectory = await resolveClaudeProjectMemoryDirectory({
+    configRoot,
+    cwd,
+  })
+  await mkdir(memoryDirectory, { recursive: true })
   const loadContextResources = () =>
     loadClaudeContextResources({ configRoot, cwd })
   const permissions = new ClaudeExtensionPermissionResolver(
     new ClaudePermissionResolver({ cwd, settings }),
   )
   const mcpTools = await ClaudeMcpToolRegistry.connect({
-    base: new LocalToolRegistry({ cwd }),
+    base: new LocalToolRegistry({
+      cwd,
+      sharedMemoryDirectory: memoryDirectory,
+    }),
     resources: resources.mcp,
     cwd,
     onWarning: (message) => eventSink({ type: 'warning', message }),

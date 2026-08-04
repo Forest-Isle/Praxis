@@ -29,10 +29,11 @@ The gate builds, packs without lifecycle scripts, installs the tarball into an
 empty project, and runs the installed npm bin through `--version`, `--help`, and
 an isolated `sessions --json` smoke test. It then drives the installed CLI
 through real local OpenAI Chat Completions and Anthropic Messages HTTP/SSE
-providers. Each adapter must complete the same default-safe `Read`, shared-rule
-authorized `Bash`, persisted tool-result continuation, final response, and
-resumed turn. The gate also checks the package allowlist, size limits, version,
-license, and Claude write-safety matrix.
+providers. Each adapter must complete the same workspace `Read`, shared-rule
+authorized `Bash`, canonical memory-detail `Read`, permission-authorized shared
+memory `Write`, persisted tool-result continuation, final response, and resumed
+turn. The gate also checks the package allowlist, size limits, version, license,
+and Claude write-safety matrix.
 
 ## Runtime matrix
 

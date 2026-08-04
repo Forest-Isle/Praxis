@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -9,6 +16,7 @@ import {
   loadClaudeContextResources,
   loadClaudeSettings,
   loadClaudeSharedResources,
+  resolveClaudeProjectMemoryDirectory,
 } from './shared-resources.js'
 
 const tempDirectories: string[] = []
@@ -103,6 +111,10 @@ describe('Claude shared resource discovery', () => {
     ])
 
     const resources = await loadClaudeSharedResources({ configRoot, cwd })
+    const resolvedMemoryDirectory = await resolveClaudeProjectMemoryDirectory({
+      configRoot,
+      cwd,
+    })
 
     expect(resources.instructions.map((item) => item.content)).toEqual([
       'GLOBAL_INSTRUCTION',
@@ -113,6 +125,7 @@ describe('Claude shared resource discovery', () => {
     expect(resources.memory.map((item) => item.content)).toEqual([
       'MEMORY_MARKER',
     ])
+    expect(resolvedMemoryDirectory).toBe(dirname(projectMemory))
     expect(resources.skills.map((item) => item.content)).toEqual([
       'GLOBAL_SKILL',
       'PROJECT_SKILL',
@@ -341,6 +354,10 @@ describe('Claude shared resource discovery', () => {
     ])
 
     const resources = await loadClaudeSharedResources({ configRoot, cwd })
+    const resolvedMemoryDirectory = await resolveClaudeProjectMemoryDirectory({
+      configRoot,
+      cwd,
+    })
 
     expect(resources.instructions.map((item) => item.content)).toEqual([
       'ROOT_INSTRUCTION',
@@ -352,6 +369,7 @@ describe('Claude shared resource discovery', () => {
       'MEMORY_INDEX',
       'MEMORY_DETAIL',
     ])
+    expect(resolvedMemoryDirectory).toBe(memoryDirectory)
     expect(resources.skills.map((item) => item.content)).toEqual(['ROOT_SKILL'])
     expect(resources.commands.map((item) => item.content)).toEqual([
       'PACKAGE_COMMAND',
@@ -407,6 +425,10 @@ describe('Claude shared resource discovery', () => {
     ])
 
     const resources = await loadClaudeSharedResources({ configRoot, cwd })
+    const resolvedMemoryDirectory = await resolveClaudeProjectMemoryDirectory({
+      configRoot,
+      cwd,
+    })
 
     expect(resources.instructions.map((item) => item.content)).toEqual([
       'WORKTREE_INSTRUCTION',
@@ -414,6 +436,25 @@ describe('Claude shared resource discovery', () => {
     expect(resources.memory.map((item) => item.content)).toEqual([
       'SHARED_WORKTREE_MEMORY',
     ])
+    expect(resolvedMemoryDirectory).toBe(memoryDirectory)
+  })
+
+  it('returns a canonical memory root through a symlinked config path', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-config-link-')),
+    )
+    tempDirectories.push(root)
+    const configRoot = join(root, 'config')
+    const configLink = join(root, 'config-link')
+    const cwd = join(root, 'workspace')
+    await Promise.all([mkdir(configRoot), mkdir(cwd)])
+    await symlink(configRoot, configLink)
+
+    await expect(
+      resolveClaudeProjectMemoryDirectory({ configRoot: configLink, cwd }),
+    ).resolves.toBe(
+      join(configRoot, 'projects', sanitizeClaudeProjectPath(cwd), 'memory'),
+    )
   })
 
   it('walks from a configured home boundary through a non-git cwd', async () => {

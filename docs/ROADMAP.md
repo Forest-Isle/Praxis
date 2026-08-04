@@ -103,3 +103,16 @@ Status: complete for OpenAI-compatible and Anthropic Messages APIs.
 
 Exit gate runs both provider protocols through the clean-installed npm bin on
 the Node 24/25 macOS and Ubuntu release matrix without external network access.
+
+## Sprint 7 — shared auto-memory access closure
+
+Status: complete for canonical project memory reads and writes.
+
+- [x] canonical main-repository memory root reused across git worktrees
+- [x] standard `Read`, `Write`, and `Edit` access without private memory tools
+- [x] workspace, sibling-path, and symlink-escape isolation retained
+- [x] installed OpenAI/Anthropic linked-detail read and memory-write scenario
+- [x] exact run usage, transcript persistence, and second-process resume gate
+
+Exit gate runs from the clean-installed tarball and verifies the written
+Markdown is stored in Claude's shared project-memory directory.

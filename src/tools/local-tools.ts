@@ -21,6 +21,7 @@ import { commandShell } from '../platform/command-shell.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
+  sharedMemoryDirectory?: string
   maxOutputBytes?: number
   maxFileBytes?: number
   maxShellTimeoutMs?: number
@@ -168,19 +169,31 @@ function abortError(): DOMException {
 
 export class LocalToolRegistry implements ToolRegistry {
   private readonly cwd: string
+  private readonly sharedMemoryDirectory: string | undefined
   private readonly maxOutputBytes: number
   private readonly maxFileBytes: number
   private readonly maxShellTimeoutMs: number
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
+    this.sharedMemoryDirectory = options.sharedMemoryDirectory
+      ? resolve(options.sharedMemoryDirectory)
+      : undefined
     this.maxOutputBytes = options.maxOutputBytes ?? 128 * 1024
     this.maxFileBytes = options.maxFileBytes ?? 10 * 1024 * 1024
     this.maxShellTimeoutMs = options.maxShellTimeoutMs ?? 120_000
   }
 
   definitions(): readonly ModelToolDefinition[] {
-    return TOOL_DEFINITIONS
+    if (!this.sharedMemoryDirectory) return TOOL_DEFINITIONS
+    return TOOL_DEFINITIONS.map((definition) =>
+      ['Read', 'Write', 'Edit'].includes(definition.name)
+        ? {
+            ...definition,
+            description: `${definition.description} Shared auto-memory files under ${this.sharedMemoryDirectory} are also allowed.`,
+          }
+        : definition,
+    )
   }
 
   async prepare(
@@ -193,7 +206,7 @@ export class LocalToolRegistry implements ToolRegistry {
         return {
           ...call,
           input: {
-            file_path: await this.workspacePath(
+            file_path: await this.filePath(
               stringInput(call.input, 'file_path'),
               false,
             ),
@@ -209,7 +222,7 @@ export class LocalToolRegistry implements ToolRegistry {
         return {
           ...call,
           input: {
-            file_path: await this.workspacePath(
+            file_path: await this.filePath(
               stringInput(call.input, 'file_path'),
               true,
             ),
@@ -224,7 +237,7 @@ export class LocalToolRegistry implements ToolRegistry {
         return {
           ...call,
           input: {
-            file_path: await this.workspacePath(
+            file_path: await this.filePath(
               stringInput(call.input, 'file_path'),
               false,
             ),
@@ -295,15 +308,33 @@ export class LocalToolRegistry implements ToolRegistry {
     requestedPath: string,
     allowMissing: boolean,
   ): Promise<string> {
-    const root = await realpath(this.cwd)
-    const candidate = resolve(root, requestedPath)
-    if (!isWithin(root, candidate)) {
-      throw new Error(`Path is outside workspace: ${requestedPath}`)
-    }
+    return this.resolvePath(requestedPath, allowMissing, false)
+  }
+
+  private async filePath(
+    requestedPath: string,
+    allowMissing: boolean,
+  ): Promise<string> {
+    return this.resolvePath(requestedPath, allowMissing, true)
+  }
+
+  private async resolvePath(
+    requestedPath: string,
+    allowMissing: boolean,
+    includeSharedMemory: boolean,
+  ): Promise<string> {
+    const workspaceRoot = await realpath(this.cwd)
+    const roots =
+      includeSharedMemory && this.sharedMemoryDirectory
+        ? [workspaceRoot, await realpath(this.sharedMemoryDirectory)]
+        : [workspaceRoot]
+    const candidate = isAbsolute(requestedPath)
+      ? resolve(requestedPath)
+      : resolve(workspaceRoot, requestedPath)
 
     try {
       const canonical = await realpath(candidate)
-      if (!isWithin(root, canonical)) {
+      if (!roots.some((root) => isWithin(root, canonical))) {
         throw new Error(`Path is outside workspace: ${requestedPath}`)
       }
       return canonical
@@ -312,7 +343,7 @@ export class LocalToolRegistry implements ToolRegistry {
         throw error
       }
       const parent = await realpath(dirname(candidate))
-      if (!isWithin(root, parent)) {
+      if (!roots.some((root) => isWithin(root, parent))) {
         throw new Error(`Path is outside workspace: ${requestedPath}`)
       }
       return join(parent, basename(candidate))

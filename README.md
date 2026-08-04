@@ -10,8 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 6 provider closure is complete for native Anthropic Messages and
-OpenAI-compatible APIs. Running `praxis` in a TTY opens an
+Sprint 7 shared-memory access is complete on top of native Anthropic Messages
+and OpenAI-compatible APIs. Running `praxis` in a TTY opens an
 Ink session UI with streaming
 responses, recent-session selection, runtime status, and ask-permission prompts.
 When resume finds a tool call interrupted before its result was persisted, the
@@ -19,9 +19,10 @@ UI shows the prepared tool name/input and requires a separate retry decision.
 Praxis can run, resume, fork, and list Claude-compatible sessions
 through a provider-neutral event loop and Anthropic-compatible or
 OpenAI-compatible streaming providers. Built-in read, write, edit, search, and
-shell tools execute behind
-Claude-compatible local permission rules with workspace path checks, timeouts,
-cancellation, and bounded output.
+shell tools execute behind Claude-compatible local permission rules with path
+checks, timeouts, cancellation, and bounded output. `Read`, `Write`, and `Edit`
+also accept the canonical shared Claude project-memory root; other external
+paths and memory-root symlink escapes remain rejected.
 
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
@@ -38,8 +39,10 @@ Code retain it after resume. Prompt path mentions, Write, Grep, and Bash do not
 activate path rules. Edit also remains non-activating; the compatibility probe
 pre-reads its target before installing the matching rule so Edit can succeed
 without a rule-activating Read.
-Linked memory details remain explicit reads. Base system context stays
-ephemeral and is not copied into the authoritative transcript.
+Linked memory details remain explicit standard `Read` calls. Standard `Write`
+and `Edit` calls update the same shared Markdown files, so Claude Code and
+Praxis observe one memory plane without import or synchronization. Base system
+context stays ephemeral and is not copied into the authoritative transcript.
 
 Global and project commands and skills now expand from the shared Claude files
 without entering base context. Slash invocation persists Claude-compatible

@@ -162,6 +162,101 @@ describe('LocalToolRegistry', () => {
     await expect(readFile(protectedPath, 'utf8')).resolves.toBe('keep')
   })
 
+  it('limits standard file tools to the workspace and configured shared roots', async () => {
+    const { root, cwd } = await workspace()
+    const memoryDirectory = join(root, 'config', 'projects', 'key', 'memory')
+    const outside = join(root, 'outside')
+    await Promise.all([
+      mkdir(memoryDirectory, { recursive: true }),
+      mkdir(outside),
+    ])
+    await Promise.all([
+      writeFile(join(memoryDirectory, 'details.md'), 'shared detail'),
+      writeFile(join(outside, 'secret.md'), 'secret'),
+    ])
+    await symlink(outside, join(memoryDirectory, 'escape'))
+    const registry = new LocalToolRegistry({
+      cwd,
+      sharedMemoryDirectory: memoryDirectory,
+    })
+    const context = { cwd }
+
+    expect(
+      registry.definitions().find((tool) => tool.name === 'Read')?.description,
+    ).toContain(memoryDirectory)
+    const read = await registry.prepare(
+      {
+        id: 'memory-read',
+        name: 'Read',
+        input: { file_path: join(memoryDirectory, 'details.md') },
+      },
+      context,
+    )
+    await expect(registry.execute(read, context)).resolves.toMatchObject({
+      content: 'shared detail',
+      isError: false,
+    })
+    const write = await registry.prepare(
+      {
+        id: 'memory-write',
+        name: 'Write',
+        input: {
+          file_path: join(memoryDirectory, 'praxis.md'),
+          content: 'created by Praxis',
+        },
+      },
+      context,
+    )
+    await registry.execute(write, context)
+    const edit = await registry.prepare(
+      {
+        id: 'memory-edit',
+        name: 'Edit',
+        input: {
+          file_path: join(memoryDirectory, 'praxis.md'),
+          old_string: 'Praxis',
+          new_string: 'Claude and Praxis',
+        },
+      },
+      context,
+    )
+    await registry.execute(edit, context)
+    await expect(
+      readFile(join(memoryDirectory, 'praxis.md'), 'utf8'),
+    ).resolves.toBe('created by Claude and Praxis')
+
+    await expect(
+      registry.prepare(
+        {
+          id: 'outside-read',
+          name: 'Read',
+          input: { file_path: join(outside, 'secret.md') },
+        },
+        context,
+      ),
+    ).rejects.toThrow('outside workspace')
+    await expect(
+      registry.prepare(
+        {
+          id: 'memory-symlink',
+          name: 'Read',
+          input: { file_path: join(memoryDirectory, 'escape', 'secret.md') },
+        },
+        context,
+      ),
+    ).rejects.toThrow('outside workspace')
+    await expect(
+      registry.prepare(
+        {
+          id: 'outside-grep',
+          name: 'Grep',
+          input: { pattern: 'shared', path: memoryDirectory },
+        },
+        context,
+      ),
+    ).rejects.toThrow('outside workspace')
+  })
+
   it('bounds shell output, times out, and propagates cancellation', async () => {
     const { cwd } = await workspace()
     const registry = new LocalToolRegistry({

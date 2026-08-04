@@ -102,7 +102,10 @@ expand on slash invocation; model-invocable skills are exposed through a
 provider-neutral `Skill` tool whose result is followed by scoped user context.
 Selected agent definitions add invocation system context and persist native
 `agent-setting` metadata for resume. Linked memory details remain explicit
-reads.
+reads. CLI startup resolves and creates only the canonical project memory root;
+standard `Read`, `Write`, and `Edit` may access that root in addition to the
+workspace. Canonical-path and no-follow checks reject siblings and symlink
+escapes, while `Grep` remains workspace-scoped.
 
 `ClaudeHookRunner` parses layered settings without rewriting them, executes
 bounded command hooks, and interprets Claude-compatible JSON/exit semantics.

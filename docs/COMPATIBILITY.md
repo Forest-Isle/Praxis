@@ -49,9 +49,12 @@ generic JSON merge because hook, permission, environment, and server fields
 have different precedence semantics. User/local MCP registry formats beyond
 project `.mcp.json` remain a Sprint 3 compatibility subset.
 
-Memory location is resolved asynchronously by `loadClaudeSharedResources`
-because worktree identity requires reading Git metadata. Callers must not infer
-a memory path from the synchronous session-path resolver.
+Memory location is resolved asynchronously by
+`resolveClaudeProjectMemoryDirectory` and `loadClaudeSharedResources` because
+worktree identity requires reading Git metadata. Callers must not infer a
+memory path from the synchronous session-path resolver. Praxis exposes that
+single canonical root through standard `Read`, `Write`, and `Edit`; it does not
+add a private memory tool or accept sibling paths and symlink escapes.
 
 Path-conditional rule globs follow their discovery base: project rules are
 relative to the directory that owns their `.claude/rules` tree, while user
@@ -214,6 +217,9 @@ generate a sidechain. `npm run test:shared-compat` proves Claude and Praxis
 observe the same worktree/non-git hierarchy, canonical shared memory including
 a linked detail, skill, hook, layered project MCP, command, agent, and ordered
 settings sources without copying or synchronization.
+`npm run test:package` additionally drives installed OpenAI and Anthropic loops
+through a linked memory `Read`, permission-authorized memory `Write`, native
+tool-result persistence, and second-process resume against that same root.
 `npm run test:conditional-compat` proves that only a successful matching `Read`
 activates a path rule, validates the native attachment envelope and resume
 persistence, requires successful native tool results for every negative tool

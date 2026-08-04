@@ -325,6 +325,20 @@ export async function loadClaudeSettings({
   return loadProjectSettings(configRoot, await canonicalPath(cwd))
 }
 
+export async function resolveClaudeProjectMemoryDirectory({
+  configRoot,
+  cwd,
+  homeDirectory = homedir(),
+}: LoadClaudeSharedResourcesOptions): Promise<string> {
+  const { memoryIdentityRoot } = await resolveProjectContext(cwd, homeDirectory)
+  return join(
+    await canonicalPath(configRoot),
+    'projects',
+    sanitizeClaudeProjectPath(memoryIdentityRoot),
+    'memory',
+  )
+}
+
 async function loadProjectMcp(
   statePath: string,
   projectDirectories: readonly string[],
