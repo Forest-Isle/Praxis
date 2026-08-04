@@ -34,8 +34,11 @@ through real local OpenAI Chat Completions and Anthropic Messages HTTP/SSE
 providers. Each adapter must complete the same workspace `Read`, shared-rule
 authorized `Bash`, canonical memory-detail `Read`, permission-authorized shared
 memory `Write`, persisted tool-result continuation, final response, and resumed
-turn. The gate also checks the package allowlist, size limits, version, license,
-and Claude write-safety matrix.
+turn. It then executes provider-free `praxis fork --json`, verifies the fork
+preserves complete Read/Bash/memory/tool-result history field-for-field under a
+new session ID, and proves the fork creates no provider request. The gate also
+checks the package allowlist, size limits, version, license, and Claude
+write-safety matrix.
 
 `npm run check` is a prerequisite for packaging. Its security cases run real
 Bash, hook, and MCP children, verify explicit MCP credential grants are usable
@@ -45,14 +48,14 @@ JSONL.
 
 ## Runtime matrix
 
-| Surface                             | Matrix                                   | Expected behavior                            |
-| ----------------------------------- | ---------------------------------------- | -------------------------------------------- |
-| Node.js                             | 24 and 25                                | clean install and full installed CLI loop    |
-| OS                                  | current macOS and Ubuntu GitHub runners  | package and performance gates                |
-| Provider API                        | OpenAI-compatible and Anthropic Messages | identical installed tool/resume scenario     |
-| Claude Code 2.1.208                 | verified native profile                  | read-write plus all compatibility probes     |
-| Claude Code 2.1.207, 2.1.209, 3.0.0 | unverified profiles                      | read-only parse; append and fork fail closed |
-| Any other Claude version            | unverified profile                       | read-only until promoted below               |
+| Surface                             | Matrix                                   | Expected behavior                             |
+| ----------------------------------- | ---------------------------------------- | --------------------------------------------- |
+| Node.js                             | 24 and 25                                | clean install and full installed CLI loop     |
+| OS                                  | current macOS and Ubuntu GitHub runners  | package and performance gates                 |
+| Provider API                        | OpenAI-compatible and Anthropic Messages | identical installed tool/resume/fork scenario |
+| Claude Code 2.1.208                 | verified native profile                  | read-write plus all compatibility probes      |
+| Claude Code 2.1.207, 2.1.209, 3.0.0 | unverified profiles                      | read-only parse; append and fork fail closed  |
+| Any other Claude version            | unverified profile                       | read-only until promoted below                |
 
 Promoting a new Claude version to read-write requires new black-box fixtures,
 an explicit versioned adapter, all unit and compatibility probes, tarball gate,

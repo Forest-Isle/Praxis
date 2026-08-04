@@ -139,3 +139,24 @@ Status: complete for Bash, hooks, Claude version detection, and MCP transports.
 Exit gate covers direct sanitizer behavior, real child processes, stdio and
 HTTP MCP servers, MCP failures, hook lifecycle persistence, package builds, and
 the existing compatibility/performance suite.
+
+## Sprint 9 — native full-fidelity session fork
+
+Status: complete for Claude Code 2.1.208 main-chain sessions.
+
+- [x] preserve native text, tool-use/result, media, error, and interruption
+      payloads without regenerating UUIDs or parent links
+- [x] preserve compact boundaries/summaries, nested-memory and hook
+      attachments, agent settings, titles, and `last-prompt`
+- [x] replace only root `sessionId` without JSON normalization; retain latest
+      title/mode/permission state and exclude transient queue/file-history data
+- [x] fail closed on unknown entry types, mismatched session IDs, unsupported
+      Claude versions, and malformed cross-entry links; exclude sidechains and
+      orphaned `last-prompt` hints from main-session forks
+- [x] installed-package fork gate with field-for-field history comparison and
+      no provider request
+- [x] live Claude 2.1.208 reopen gates for tool and compact-history forks
+
+Exit gate covers fixture profiles, runtime tool history, compact active-context
+semantics, installed OpenAI/Anthropic CLI loops, package/performance gates, and
+macOS/Linux Node 24 clean-room validation.

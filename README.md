@@ -10,8 +10,9 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 8 child-process credential boundaries are complete on top of shared
-memory and native Anthropic/OpenAI-compatible providers. Running `praxis` in a
+Sprint 9 native session forks are complete on top of child-process credential
+boundaries, shared memory, and native Anthropic/OpenAI-compatible providers.
+Running `praxis` in a
 TTY opens an
 Ink session UI with streaming
 responses, recent-session selection, runtime status, and ask-permission prompts.
@@ -28,8 +29,14 @@ paths and memory-root symlink escapes remain rejected.
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
 Claude transcript, and Claude Code 2.1.208 can resume a Praxis tool session.
-Sprint 1 forks remain text-only: provider reasoning, queue operations, tools,
-images, and compaction metadata are not copied into a fork.
+Forks preserve the complete supported main-chain native history, including
+tool calls/results, compact boundaries/summaries, attachments, agent settings,
+titles, images, errors, and interrupted-tool denial records. Existing UUIDs,
+parent links, and payload fields remain unchanged; only `sessionId` changes.
+Latest mode and permission state is retained. Queue and file-history records
+are transient and excluded, while unknown entry types, mismatched session IDs,
+and malformed cross-entry links fail closed. Subagent sidechains and orphaned
+`last-prompt` hints are excluded from the main-session fork.
 
 Global and project `CLAUDE.md`, unconditional user/project rules, and the first
 200 lines of canonical project `MEMORY.md` now assemble into provider-neutral

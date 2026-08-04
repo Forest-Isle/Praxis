@@ -148,6 +148,19 @@ replayed verbatim after the summary before model execution continues.
 Compaction failure, cancellation, or an oversized summary leaves no partial
 compact records.
 
+`ClaudeSessionService.fork` is a version-gated native transcript operation,
+not model-history replay. It loads one leased source snapshot, validates the
+complete supported main chain, and exclusively creates a new JSONL file whose
+entries preserve all native fields and identifiers except `sessionId`.
+Latest title, mode, permission, and `last-prompt` metadata retain Claude's
+observed physical placement; queue and file-history records are omitted as
+transient. Root `sessionId` replacement operates on raw JSON so provider/tool
+payload numbers and formatting are not normalized. Unknown entries,
+mismatched session IDs, and invalid cross-entry links fail closed so a partial
+or semantically reduced fork is never published. Sidechain records and orphaned
+`last-prompt` hints are excluded because they do not belong to the resumable
+main chain.
+
 Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Clean-room rule

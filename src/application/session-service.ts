@@ -9,7 +9,7 @@ import {
   getCumulativeDroppedTokens,
 } from '../compatibility/claude/compaction.js'
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
-import { createClaudeTextFork } from '../compatibility/claude/fork.js'
+import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
 import {
   getClaudeAgentSetting,
   getClaudeLastPrompt,
@@ -158,11 +158,10 @@ export class ClaudeSessionService {
     const sessionId = randomUUID()
     const target = this.store(sessionId)
     const result = await target.create(
-      createClaudeTextFork({
+      createClaudeNativeFork({
         source: source.entries,
+        sourceSessionId: parentSessionId,
         sessionId,
-        cwd: this.options.cwd,
-        claudeVersion: this.options.claudeVersion,
       }),
     )
     if (result.status === 'conflict') {

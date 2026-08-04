@@ -257,9 +257,11 @@ try {
     throw new Error('Praxis tool runtime did not produce the final marker')
   }
   await assertClaudeRecallsToolTurn(toolRuntime.sessionId, cwd, configRoot)
+  const toolFork = await toolService.fork(toolRuntime.sessionId)
+  await assertClaudeRecallsToolTurn(toolFork.sessionId, cwd, configRoot)
 
   console.log(
-    `Claude ${claudeVersion} runtime compatibility passed: Praxis→Claude, fork→Claude, Claude→Praxis→Claude, and Praxis tool loop→Claude`,
+    `Claude ${claudeVersion} runtime compatibility passed: Praxis→Claude, fork→Claude, Claude→Praxis→Claude, Praxis tool loop→Claude, and native tool fork→Claude`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

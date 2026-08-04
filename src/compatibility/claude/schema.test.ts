@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
 import {
+  copyClaudeEntryWithSessionId,
   parseClaudeVersionOutput,
   selectClaudeSchemaAdapter,
 } from './schema.js'
@@ -39,6 +40,20 @@ describe('ClaudeSchemaAdapter', () => {
     })
   })
 
+  it('replaces only root sessionId without normalizing native JSON', () => {
+    const source =
+      '{"type":"user","parentUuid":null,"isSidechain":false,"uuid":"user","timestamp":"2026-08-04T00:00:00.000Z","cwd":"/tmp/project","future":{"sessionId":"source","unsafe":9007199254740993},"sessionId":"source","version":"2.1.208","message":{"role":"user","content":"hello"}}'
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+    const copied = copyClaudeEntryWithSessionId(adapter.parse(source), 'target')
+
+    expect(adapter.serializeForFork(copied)).toBe(
+      source.replace(
+        '"sessionId":"source","version"',
+        '"sessionId":"target","version"',
+      ),
+    )
+  })
+
   it('accepts only the native append profile', async () => {
     const source = await readFile(fixtureUrl, 'utf8')
     const [userLine, , lastPromptLine] = source.trimEnd().split('\n')
@@ -56,6 +71,17 @@ describe('ClaudeSchemaAdapter', () => {
     expect(
       adapter.serializeForAppend(adapter.parse(lastPromptLine ?? '')),
     ).toBe(lastPromptLine)
+    const nativeLastPrompt = {
+      type: 'last-prompt',
+      sessionId: 'session',
+      leafUuid: 'leaf',
+    }
+    expect(adapter.serializeForFork(nativeLastPrompt)).toBe(
+      JSON.stringify(nativeLastPrompt),
+    )
+    expect(() => adapter.serializeForAppend(nativeLastPrompt)).toThrow(
+      'invalid metadata',
+    )
     expect(adapter.serializeForFork(adapter.parse(userLine ?? ''))).toBe(
       userLine,
     )
@@ -89,6 +115,14 @@ describe('ClaudeSchemaAdapter', () => {
         version: '2.1.209',
       }),
     ).toThrow('must target Claude Code 2.1.208')
+    for (const serialize of [
+      adapter.serializeForAppend.bind(adapter),
+      adapter.serializeForFork.bind(adapter),
+    ]) {
+      expect(() =>
+        serialize({ ...adapter.parse(userLine ?? ''), parentUuid: '' }),
+      ).toThrow('invalid parentUuid')
+    }
     expect(
       adapter.serializeForAppend({
         type: 'agent-setting',
@@ -159,7 +193,9 @@ describe('ClaudeSchemaAdapter', () => {
         'invalid nested-memory attachment',
       )
     }
-    expect(() => adapter.serializeForFork(attachment)).toThrow('not forkable')
+    expect(adapter.serializeForFork(attachment)).toBe(
+      JSON.stringify(attachment),
+    )
   })
 
   it('accepts only validated Claude 2.1.208 hook attachments', () => {
@@ -206,6 +242,15 @@ describe('ClaudeSchemaAdapter', () => {
 
     expect(adapter.serializeForAppend(success)).toBe(JSON.stringify(success))
     expect(adapter.serializeForAppend(context)).toBe(JSON.stringify(context))
+    for (const entrypoint of ['sdk-cli', 'sdk-ts']) {
+      const nativeSuccess = { ...success, entrypoint }
+      expect(adapter.serializeForFork(nativeSuccess)).toBe(
+        JSON.stringify(nativeSuccess),
+      )
+      expect(() => adapter.serializeForAppend(nativeSuccess)).toThrow(
+        'invalid hook attachment',
+      )
+    }
     expect(() =>
       adapter.serializeForAppend({
         ...success,
@@ -313,16 +358,53 @@ describe('ClaudeSchemaAdapter', () => {
     expect(adapter.serializeForAppend(compactSummary)).toBe(
       JSON.stringify(compactSummary),
     )
-    expect(() => adapter.serializeForFork(compactSummary)).toThrow(
-      'not forkable',
+    expect(adapter.serializeForFork(compactSummary)).toBe(
+      JSON.stringify(compactSummary),
     )
     expect(() => adapter.serializeForAppend(sidechain)).toThrow('sidechains')
     expect(() => adapter.serializeForAppend(imageResult)).toThrow(
       'image results',
     )
+    expect(adapter.serializeForFork(imageResult)).toBe(
+      JSON.stringify(imageResult),
+    )
     expect(() => adapter.serializeForAppend(interrupted)).toThrow(
       'tool denials',
     )
+    expect(adapter.serializeForFork(interrupted)).toBe(
+      JSON.stringify(interrupted),
+    )
+    expect(() =>
+      adapter.serializeForFork({
+        ...imageResult,
+        message: {
+          ...(imageResult.message as Record<string, unknown>),
+          content: [{}],
+        },
+      }),
+    ).toThrow('invalid user content block')
+    expect(() =>
+      adapter.serializeForFork({
+        ...imageResult,
+        type: 'system',
+        subtype: 'future-system-event',
+      }),
+    ).toThrow('unsupported subtype')
+    expect(() =>
+      adapter.serializeForFork({
+        ...imageResult,
+        type: 'system',
+        subtype: 'turn_duration',
+        isSidechain: undefined,
+      }),
+    ).toThrow('main chain')
+    expect(() =>
+      adapter.serializeForFork({
+        ...imageResult,
+        type: 'attachment',
+        attachment: { type: 'future-attachment' },
+      }),
+    ).toThrow('unsupported attachment')
   })
 })
 

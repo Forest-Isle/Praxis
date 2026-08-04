@@ -72,7 +72,9 @@ version. Praxis must preserve:
   required by the active schema;
 - Anthropic-compatible user and assistant message envelopes;
 - strict `tool_use` and `tool_result` pairing;
-- native `last-prompt` metadata pointing at the final assistant leaf;
+- Praxis-generated `last-prompt` metadata pointing at the final assistant leaf;
+- native fork `last-prompt` metadata pointing at the current logical UUID leaf,
+  which may be a user, system, or attachment record accepted by Claude;
 - compaction summary and other resume metadata accepted by Claude Code when
   their writers are enabled.
 
@@ -157,11 +159,11 @@ Support policy:
 - fail closed before writing an unsupported schema;
 - offer read-only recovery/export when write compatibility is unknown.
 
-Current write scope is deliberately smaller than read scope. Praxis reads any
+Append scope is deliberately smaller than read scope. Praxis reads any
 well-formed native entry as opaque data, but only appends validated `user` and
 `assistant` conversational entries, path-rule `nested_memory` attachments,
 selected-agent `agent-setting` metadata, and the physical `last-prompt` record
-required by Claude resume for the selected adapter version. The write profile
+required by Claude resume for the selected adapter version. The append profile
 also includes the validated `compact_boundary` system record and its paired
 `isCompactSummary` user entry; both append atomically under one tail check.
 `agent-setting` and
@@ -170,11 +172,25 @@ current leaf. Message content blocks and attachment envelopes are validated
 before append, and every `tool_result` must match the historical `tool_use` plus
 `sourceToolAssistantUUID`. Sidechain, image, tool-denial, and other entry writers
 remain disabled until their runtime implementations and write/resume probes
-pass. Text forks do not copy attachments or compaction metadata.
+pass.
 
-Sprint 1 text forks create a new transcript from projected user/assistant text
-using the validated writer. They do not clone opaque native entries or bypass
-the active version adapter.
+Fork uses a separate versioned creation profile because it copies existing
+native records rather than appending newly generated records. For Claude Code
+2.1.208 it losslessly copies supported main-chain `user`, `assistant`, `system`,
+`attachment`, and `agent-setting` entries plus `ai-title`, `mode`,
+`permission-mode`, and `last-prompt` metadata, replacing only `sessionId` in
+each copied record. This preserves tool history, compact history, media and
+error payloads, hook/nested-memory attachments, agent state, UUIDs, and parent
+links. Latest title/mode/permission state is placed first and latest valid
+`last-prompt` that matches the current logical tail last. Queue operations and
+file-history snapshots/deltas are
+excluded. Ordinary 2.1.208 system subtypes and main-chain attachment envelopes
+are copied without requiring Praxis to execute them. Unknown entry types,
+mismatched source session IDs, malformed UUID/parent/tool/compact/leaf links,
+and unsupported versions fail closed before exclusive target creation.
+Sidechain records and orphaned `last-prompt` hints are excluded from the
+resumable main-chain copy. Raw root `sessionId` replacement preserves every
+other copied JSON token, including integers beyond JavaScript's safe range.
 
 Claude 2.1.208 fixtures cover text, tool use/results, manual compaction,
 subagent sidechains, image results, non-zero tool errors, and user interruption.
@@ -234,7 +250,9 @@ a linked detail, skill, hook, layered project MCP, command, agent, and ordered
 settings sources without copying or synchronization.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
-tool-result persistence, and second-process resume against that same root.
+tool-result persistence, second-process resume, and a provider-free native fork
+against that same root. It compares source and fork records field-for-field
+after the defined session-ID and transient-record transformation.
 `npm run test:conditional-compat` proves that only a successful matching `Read`
 activates a path rule, validates the native attachment envelope and resume
 persistence, requires successful native tool results for every negative tool
@@ -256,8 +274,10 @@ decline is append-free, approves the prepared retry exactly once, persists its
 native result, and requires Claude Code 2.1.208 to resume the recovered turn.
 `npm run test:compaction-compat` creates over-budget history, lets Praxis append
 an automatic compact pair, proves its next provider request excludes discarded
-messages, and requires Claude 2.1.208 to resume the same active summary without
-recovering the discarded marker.
+messages, forks that physical history, and requires Claude 2.1.208 to resume
+both source and fork from the active summary without recovering the discarded
+marker. `npm run test:runtime-compat` likewise requires Claude 2.1.208 to recover
+both tool result and final response from a Praxis-native tool fork.
 Unit/integration security gates additionally execute real Bash, hook, stdio,
 and HTTP children and assert that ambient canaries are absent while explicit
 MCP grants work and return as `[REDACTED]`. The hook lifecycle gate asserts the

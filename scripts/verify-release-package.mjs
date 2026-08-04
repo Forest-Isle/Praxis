@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises'
@@ -182,6 +183,89 @@ function resultFrom(output) {
   )
   if (!result) throw new Error(`Installed CLI returned no result: ${output}`)
   return result
+}
+
+function forkFrom(output) {
+  const fork = parseJsonLines(output).findLast(
+    (entry) => entry?.type === 'forked',
+  )
+  if (!fork) throw new Error(`Installed CLI returned no fork: ${output}`)
+  return fork
+}
+
+function assertNativeFork(
+  sourceText,
+  forkText,
+  sourceSessionId,
+  forkSessionId,
+) {
+  const sourceLines = sourceText.trimEnd().split('\n')
+  const forkLines = forkText.trimEnd().split('\n')
+  const source = sourceLines.map((line) => JSON.parse(line))
+  const actual = forkLines.map((line) => JSON.parse(line))
+  const titles = []
+  const modes = []
+  const permissionModes = []
+  const history = []
+  let lastPrompt
+  const isTransient = (entry) =>
+    entry.type === 'file-history-delta' ||
+    entry.type === 'file-history-snapshot' ||
+    entry.type === 'queue-operation'
+  for (const [index, entry] of source.entries()) {
+    if (isTransient(entry) || entry.isSidechain === true) continue
+    const line = sourceLines[index]
+    if (!line) {
+      throw new Error('Installed CLI source has invalid native sessionId')
+    }
+    const sourceProperty = `"sessionId":${JSON.stringify(sourceSessionId)}`
+    const propertyIndex = line.indexOf(sourceProperty)
+    if (
+      propertyIndex < 0 ||
+      line.indexOf(sourceProperty, propertyIndex + sourceProperty.length) >= 0
+    ) {
+      throw new Error('Installed CLI source has ambiguous native sessionId')
+    }
+    const copied = `${line.slice(0, propertyIndex)}"sessionId":${JSON.stringify(forkSessionId)}${line.slice(propertyIndex + sourceProperty.length)}`
+    if (entry.type === 'ai-title') titles.push(copied)
+    else if (entry.type === 'mode') modes.push(copied)
+    else if (entry.type === 'permission-mode') permissionModes.push(copied)
+    else if (entry.type === 'last-prompt') lastPrompt = copied
+    else history.push(copied)
+  }
+  const expected = [
+    ...titles.slice(-1),
+    ...modes.slice(-1),
+    ...permissionModes.slice(-1),
+    ...history,
+    ...(lastPrompt ? [lastPrompt] : []),
+  ]
+  if (
+    source.some(
+      (entry) =>
+        !isTransient(entry) &&
+        entry.isSidechain !== true &&
+        entry.sessionId !== sourceSessionId,
+    ) ||
+    actual.some((entry) => entry.sessionId !== forkSessionId) ||
+    JSON.stringify(forkLines) !== JSON.stringify(expected)
+  ) {
+    throw new Error('Installed CLI fork did not preserve native history')
+  }
+  for (const marker of [
+    'release_read',
+    'release_permission',
+    'release_memory_read',
+    'release_memory_write',
+    'RELEASE_TOOL_MARKER',
+    'RELEASE_PERMISSION_MARKER',
+    'RELEASE_MEMORY_DETAIL_MARKER',
+    'RELEASE_MEMORY_WRITE_MARKER',
+  ]) {
+    if (!forkText.includes(marker)) {
+      throw new Error(`Installed CLI fork omitted ${marker}`)
+    }
+  }
 }
 
 function findMessage(messages, start, predicate, description) {
@@ -1040,6 +1124,16 @@ try {
       ),
     ).href
   )
+  const pathsModule = await import(
+    pathToFileURL(
+      join(installedPackage, 'dist', 'compatibility', 'claude', 'paths.js'),
+    ).href
+  )
+  const schemaModule = await import(
+    pathToFileURL(
+      join(installedPackage, 'dist', 'compatibility', 'claude', 'schema.js'),
+    ).href
+  )
   const memoryDirectory =
     await sharedResourcesModule.resolveClaudeProjectMemoryDirectory({
       configRoot,
@@ -1139,15 +1233,41 @@ try {
       )
     }
     providerProbe.assertComplete()
+    const installedFork = await run(
+      praxis,
+      ['fork', '--json', runResult.sessionId],
+      { cwd: workDirectory, env: providerEnvironment },
+    )
+    const forkResult = forkFrom(installedFork.stdout)
+    if (
+      typeof forkResult.sessionId !== 'string' ||
+      forkResult.sessionId === runResult.sessionId ||
+      forkResult.parentSessionId !== runResult.sessionId
+    ) {
+      throw new Error(`Installed ${provider} CLI returned an invalid fork`)
+    }
+    providerProbe.assertComplete()
+    const canonicalWorkDirectory = await realpath(workDirectory)
+    const sourcePath = pathsModule.resolveClaudePaths({
+      configDir: configRoot,
+      cwd: canonicalWorkDirectory,
+      sessionId: runResult.sessionId,
+    }).sessionFile
+    const forkPath = pathsModule.resolveClaudePaths({
+      configDir: configRoot,
+      cwd: canonicalWorkDirectory,
+      sessionId: forkResult.sessionId,
+    }).sessionFile
+    assertNativeFork(
+      await readFile(sourcePath, 'utf8'),
+      await readFile(forkPath, 'utf8'),
+      runResult.sessionId,
+      forkResult.sessionId,
+    )
     await providerProbe.close()
     providerProbe = undefined
   }
 
-  const schemaModule = await import(
-    pathToFileURL(
-      join(installedPackage, 'dist', 'compatibility', 'claude', 'schema.js'),
-    ).href
-  )
   const sessionModule = await import(
     pathToFileURL(
       join(installedPackage, 'dist', 'application', 'session-service.js'),
@@ -1211,7 +1331,7 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed OpenAI/Anthropic CLI provider/tool/resume loops, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork loops, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
   )
 } finally {
   try {

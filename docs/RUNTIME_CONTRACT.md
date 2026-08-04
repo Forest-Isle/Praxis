@@ -95,10 +95,19 @@ state, and indexes remain disposable sidecars. A crash may leave a completed
 tool call without its result; resume must surface that state and recover or ask,
 never invent a result.
 
-Sprint 1 fork is text-only: it projects visible user/assistant text and creates
-a new validated UUID/parent chain. It does not copy provider reasoning, queue
-operations, tool state, images, sidechains, or compaction metadata. Later fork
-profiles require their own versioned writer and Claude reopen probe.
+Fork creates a new transcript exclusively and copies the supported native
+main-chain history losslessly, replacing only `sessionId`. It retains original
+UUIDs, parent links, message/tool payloads, compact boundaries and summaries,
+attachments, agent settings, titles, images, errors, and interruption records.
+The latest title, mode, and permission state are placed first and the latest
+`last-prompt` last, matching the Claude 2.1.208 fork profile. Queue operations
+and file-history snapshots/deltas are transient and omitted. Unknown entry
+types, mismatched source session IDs, malformed UUID/parent/tool/compact/leaf
+links, and unsupported Claude versions fail closed before the
+target file is created. Subagent sidechains and a `last-prompt` whose logical
+UUID leaf is absent from copied history or no longer current are excluded from
+the main-session fork. Native Claude may use a user, system, or attachment UUID;
+Praxis-generated append metadata remains restricted to assistant leaves.
 
 ## Error contract
 

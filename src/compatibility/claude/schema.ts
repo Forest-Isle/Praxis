@@ -20,7 +20,54 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'system',
   'user',
 ])
-const FORKABLE_ENTRY_TYPES = new Set(['assistant', 'last-prompt', 'user'])
+const FORKABLE_ENTRY_TYPES = new Set([
+  'agent-setting',
+  'ai-title',
+  'assistant',
+  'attachment',
+  'last-prompt',
+  'mode',
+  'permission-mode',
+  'system',
+  'user',
+])
+
+export function isClaudeForkableEntryType(type: string): boolean {
+  return FORKABLE_ENTRY_TYPES.has(type)
+}
+const FORKABLE_SYSTEM_SUBTYPES = new Set([
+  'api_error',
+  'away_summary',
+  'compact_boundary',
+  'local_command',
+  'stop_hook_summary',
+  'turn_duration',
+])
+const FORKABLE_ATTACHMENT_TYPES = new Set([
+  'agent_listing_delta',
+  'command_permissions',
+  'date_change',
+  'directory',
+  'edited_text_file',
+  'file',
+  'goal_status',
+  'hook_additional_context',
+  'hook_blocking_error',
+  'hook_error',
+  'hook_success',
+  'mcp_instructions_delta',
+  'nested_memory',
+  'plan_mode_exit',
+  'queued_command',
+  'read_truncation_notice',
+  'skill_listing',
+  'task_reminder',
+])
+const RAW_CLAUDE_ENTRY = Symbol('raw-claude-entry')
+
+type RawClaudeEntry = ClaudeTranscriptEntry & {
+  [RAW_CLAUDE_ENTRY]?: string
+}
 
 function parseEntry(line: string): ClaudeTranscriptEntry {
   let value: unknown
@@ -39,11 +86,129 @@ function parseEntry(line: string): ClaudeTranscriptEntry {
     throw new Error('Claude transcript entry must have a type')
   }
 
+  Object.defineProperty(entry, RAW_CLAUDE_ENTRY, { value: line })
   return entry as ClaudeTranscriptEntry
 }
 
 function serializeEntry(entry: ClaudeTranscriptEntry): string {
-  return JSON.stringify(entry)
+  return (entry as RawClaudeEntry)[RAW_CLAUDE_ENTRY] ?? JSON.stringify(entry)
+}
+
+function skipWhitespace(source: string, start: number): number {
+  let index = start
+  while (/\s/u.test(source[index] ?? '')) index += 1
+  return index
+}
+
+function findStringEnd(source: string, start: number): number {
+  if (source[start] !== '"') throw new Error('Expected JSON string')
+  let escaped = false
+  for (let index = start + 1; index < source.length; index += 1) {
+    const character = source[index]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (character === '\\') {
+      escaped = true
+      continue
+    }
+    if (character === '"') return index + 1
+  }
+  throw new Error('Unterminated JSON string')
+}
+
+function findValueEnd(source: string, start: number): number {
+  if (source[start] === '"') return findStringEnd(source, start)
+  if (source[start] !== '{' && source[start] !== '[') {
+    let index = start
+    while (
+      index < source.length &&
+      source[index] !== ',' &&
+      source[index] !== '}'
+    ) {
+      index += 1
+    }
+    return index
+  }
+
+  const stack = [source[start]]
+  for (let index = start + 1; index < source.length; index += 1) {
+    const character = source[index]
+    if (character === '"') {
+      index = findStringEnd(source, index) - 1
+      continue
+    }
+    if (character === '{' || character === '[') stack.push(character)
+    else if (character === '}' || character === ']') {
+      const opener = stack.pop()
+      if (
+        (opener === '{' && character !== '}') ||
+        (opener === '[' && character !== ']')
+      ) {
+        throw new Error('Mismatched JSON container')
+      }
+      if (stack.length === 0) return index + 1
+    }
+  }
+  throw new Error('Unterminated JSON value')
+}
+
+function replaceRootStringProperty(
+  source: string,
+  property: string,
+  value: string,
+): string {
+  let index = skipWhitespace(source, 0)
+  if (source[index] !== '{') throw new Error('Claude entry must be an object')
+  index += 1
+  let match: { start: number; end: number } | undefined
+
+  while (true) {
+    index = skipWhitespace(source, index)
+    if (source[index] === '}') break
+    const keyStart = index
+    const keyEnd = findStringEnd(source, keyStart)
+    const key = JSON.parse(source.slice(keyStart, keyEnd)) as unknown
+    index = skipWhitespace(source, keyEnd)
+    if (source[index] !== ':') throw new Error('Invalid Claude entry property')
+    index = skipWhitespace(source, index + 1)
+    const valueStart = index
+    const valueEnd = findValueEnd(source, valueStart)
+    if (key === property) {
+      if (match) throw new Error(`Claude entry has duplicate ${property}`)
+      if (source[valueStart] !== '"') {
+        throw new Error(`Claude entry ${property} must be a string`)
+      }
+      match = { start: valueStart, end: valueEnd }
+    }
+    index = skipWhitespace(source, valueEnd)
+    if (source[index] === '}') break
+    if (source[index] !== ',') throw new Error('Invalid Claude entry object')
+    index += 1
+  }
+
+  if (!match) throw new Error(`Claude entry is missing ${property}`)
+  return `${source.slice(0, match.start)}${JSON.stringify(value)}${source.slice(match.end)}`
+}
+
+export function copyClaudeEntryWithSessionId(
+  entry: ClaudeTranscriptEntry,
+  sessionId: string,
+): ClaudeTranscriptEntry {
+  const copy = { ...entry, sessionId }
+  const raw = (entry as RawClaudeEntry)[RAW_CLAUDE_ENTRY]
+  if (raw !== undefined) {
+    Object.defineProperty(copy, RAW_CLAUDE_ENTRY, { value: raw })
+  }
+  return copy
+}
+
+function serializeForkEntry(entry: ClaudeTranscriptEntry): string {
+  const raw = (entry as RawClaudeEntry)[RAW_CLAUDE_ENTRY]
+  return raw === undefined
+    ? JSON.stringify(entry)
+    : replaceRootStringProperty(raw, 'sessionId', String(entry.sessionId))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,6 +217,90 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
+}
+
+function validateMediaSource(value: unknown): void {
+  if (
+    !isRecord(value) ||
+    value.type !== 'base64' ||
+    !isNonEmptyString(value.media_type) ||
+    typeof value.data !== 'string'
+  ) {
+    throw new Error('Claude transcript has invalid media source')
+  }
+}
+
+function validateForkUserContent(content: unknown): void {
+  if (typeof content === 'string') return
+  if (!Array.isArray(content) || content.length === 0) {
+    throw new Error('Claude transcript user message has invalid content')
+  }
+  for (const block of content) {
+    if (!isRecord(block)) {
+      throw new Error('Claude transcript has invalid user content block')
+    }
+    if (block.type === 'text' && typeof block.text === 'string') continue
+    if (block.type === 'image' || block.type === 'document') {
+      validateMediaSource(block.source)
+      continue
+    }
+    if (
+      block.type !== 'tool_result' ||
+      !isNonEmptyString(block.tool_use_id) ||
+      (block.is_error !== undefined && typeof block.is_error !== 'boolean')
+    ) {
+      throw new Error('Claude transcript has invalid user content block')
+    }
+    if (typeof block.content === 'string') continue
+    if (!Array.isArray(block.content) || block.content.length === 0) {
+      throw new Error('Claude transcript has invalid tool result content')
+    }
+    for (const nested of block.content) {
+      if (!isRecord(nested)) {
+        throw new Error('Claude transcript has invalid tool result content')
+      }
+      if (nested.type === 'text' && typeof nested.text === 'string') continue
+      if (nested.type === 'image') {
+        validateMediaSource(nested.source)
+        continue
+      }
+      throw new Error('Claude transcript has invalid tool result content')
+    }
+  }
+}
+
+function validateForkAssistantMessage(message: Record<string, unknown>): void {
+  if (
+    message.type !== 'message' ||
+    !isNonEmptyString(message.id) ||
+    !isNonEmptyString(message.model) ||
+    !Array.isArray(message.content) ||
+    message.content.length === 0
+  ) {
+    throw new Error('Claude transcript has invalid assistant message')
+  }
+  for (const block of message.content) {
+    if (!isRecord(block)) {
+      throw new Error('Claude transcript has invalid assistant content block')
+    }
+    if (block.type === 'text' && typeof block.text === 'string') continue
+    if (
+      block.type === 'thinking' &&
+      typeof block.thinking === 'string' &&
+      typeof block.signature === 'string'
+    ) {
+      continue
+    }
+    if (
+      block.type === 'tool_use' &&
+      isNonEmptyString(block.id) &&
+      isNonEmptyString(block.name) &&
+      isRecord(block.input)
+    ) {
+      continue
+    }
+    throw new Error('Claude transcript has invalid assistant content block')
+  }
 }
 
 function validateUserContent(content: unknown): void {
@@ -159,11 +408,16 @@ function validateNestedMemoryAttachment(entry: ClaudeTranscriptEntry): void {
   }
 }
 
-function validateHookAttachment(entry: ClaudeTranscriptEntry): void {
+function validateHookAttachment(
+  entry: ClaudeTranscriptEntry,
+  allowNativeEntrypoint = false,
+): void {
   if (
     entry.isSidechain !== false ||
     entry.userType !== 'external' ||
-    entry.entrypoint !== 'cli' ||
+    (entry.entrypoint !== 'cli' &&
+      (!allowNativeEntrypoint ||
+        (entry.entrypoint !== 'sdk-cli' && entry.entrypoint !== 'sdk-ts'))) ||
     !('gitBranch' in entry) ||
     (entry.gitBranch !== null && typeof entry.gitBranch !== 'string') ||
     !isRecord(entry.attachment)
@@ -202,7 +456,10 @@ function validateHookAttachment(entry: ClaudeTranscriptEntry): void {
   }
 }
 
-function validateAttachment(entry: ClaudeTranscriptEntry): void {
+function validateAttachment(
+  entry: ClaudeTranscriptEntry,
+  allowNativeEntrypoint = false,
+): void {
   if (!isRecord(entry.attachment)) {
     throw new Error('Claude transcript has invalid attachment')
   }
@@ -215,7 +472,7 @@ function validateAttachment(entry: ClaudeTranscriptEntry): void {
     entry.attachment.type === 'hook_error' ||
     entry.attachment.type === 'hook_additional_context'
   ) {
-    validateHookAttachment(entry)
+    validateHookAttachment(entry, allowNativeEntrypoint)
     return
   }
   throw new Error('Claude transcript has unsupported attachment type')
@@ -324,7 +581,7 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
 
   if (
     !('parentUuid' in entry) ||
-    (entry.parentUuid !== null && typeof entry.parentUuid !== 'string')
+    (entry.parentUuid !== null && !isNonEmptyString(entry.parentUuid))
   ) {
     throw new Error('Claude transcript entry has invalid parentUuid')
   }
@@ -367,6 +624,100 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   }
 }
 
+function validateForkableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'ai-title') {
+    if (
+      !isNonEmptyString(entry.aiTitle) ||
+      !isNonEmptyString(entry.sessionId)
+    ) {
+      throw new Error('Claude ai-title entry has invalid metadata')
+    }
+    return
+  }
+  if (entry.type === 'agent-setting') {
+    validateAppendableEntry(entry)
+    return
+  }
+  if (entry.type === 'last-prompt') {
+    if (
+      !isNonEmptyString(entry.sessionId) ||
+      !isNonEmptyString(entry.leafUuid) ||
+      (entry.lastPrompt !== undefined && !isNonEmptyString(entry.lastPrompt))
+    ) {
+      throw new Error('Claude last-prompt entry has invalid metadata')
+    }
+    return
+  }
+  if (entry.type === 'mode') {
+    if (!isNonEmptyString(entry.mode) || !isNonEmptyString(entry.sessionId)) {
+      throw new Error('Claude mode entry has invalid metadata')
+    }
+    return
+  }
+  if (entry.type === 'permission-mode') {
+    if (
+      !isNonEmptyString(entry.permissionMode) ||
+      !isNonEmptyString(entry.sessionId)
+    ) {
+      throw new Error('Claude permission-mode entry has invalid metadata')
+    }
+    return
+  }
+
+  for (const field of ['uuid', 'sessionId', 'timestamp', 'cwd', 'version']) {
+    if (!isNonEmptyString(entry[field])) {
+      throw new Error(`Claude transcript entry is missing ${field}`)
+    }
+  }
+  if (entry.version !== SUPPORTED_VERSION) {
+    throw new Error(
+      `Claude transcript fork must target Claude Code ${SUPPORTED_VERSION}`,
+    )
+  }
+  if (
+    !('parentUuid' in entry) ||
+    (entry.parentUuid !== null && !isNonEmptyString(entry.parentUuid))
+  ) {
+    throw new Error('Claude transcript entry has invalid parentUuid')
+  }
+  if (entry.isSidechain !== false) {
+    throw new Error('Claude fork entry must belong to the main chain')
+  }
+  if (entry.type === 'system') {
+    if (!FORKABLE_SYSTEM_SUBTYPES.has(String(entry.subtype))) {
+      throw new Error('Claude system entry has unsupported subtype')
+    }
+    if (entry.subtype === 'compact_boundary') validateCompactBoundary(entry)
+    return
+  }
+  if (entry.isCompactSummary === true) {
+    validateCompactSummary(entry)
+    return
+  }
+  if (entry.type === 'attachment') {
+    if (
+      !isRecord(entry.attachment) ||
+      !FORKABLE_ATTACHMENT_TYPES.has(String(entry.attachment.type))
+    ) {
+      throw new Error('Claude transcript has unsupported attachment')
+    }
+    if (
+      entry.attachment.type === 'nested_memory' ||
+      entry.attachment.type === 'hook_success' ||
+      entry.attachment.type === 'hook_error' ||
+      entry.attachment.type === 'hook_additional_context'
+    ) {
+      validateAttachment(entry, true)
+    }
+    return
+  }
+  if (!isRecord(entry.message) || entry.message.role !== entry.type) {
+    throw new Error('Claude fork entry has invalid message role')
+  }
+  if (entry.type === 'user') validateForkUserContent(entry.message.content)
+  else validateForkAssistantMessage(entry.message)
+}
+
 class ClaudeCode21208Adapter implements ClaudeSchemaAdapter {
   readonly version = SUPPORTED_VERSION
   readonly writeMode = 'read-write' as const
@@ -392,16 +743,13 @@ class ClaudeCode21208Adapter implements ClaudeSchemaAdapter {
   }
 
   serializeForFork(entry: ClaudeTranscriptEntry): string {
-    if (!FORKABLE_ENTRY_TYPES.has(entry.type)) {
+    if (!isClaudeForkableEntryType(entry.type)) {
       throw new Error(
         `Claude transcript entry type ${entry.type} is not forkable by Praxis`,
       )
     }
-    if (entry.isCompactSummary === true) {
-      throw new Error('Claude compact summaries are not forkable by Praxis')
-    }
-    validateAppendableEntry(entry)
-    return serializeEntry(entry)
+    validateForkableEntry(entry)
+    return serializeForkEntry(entry)
   }
 }
 

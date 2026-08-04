@@ -165,8 +165,75 @@ try {
   assertContains(claudeResult, retainedMarker, 'Claude compact resume')
   assertNotContains(claudeResult, droppedMarker, 'Claude compact resume')
 
+  const { stdout: forkStdout } = await execFileAsync(
+    process.execPath,
+    [cli, 'fork', '--json', result.sessionId],
+    {
+      cwd: workDirectory,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  const fork = forkStdout
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+    .find((record) => record.type === 'forked')
+  if (
+    !fork ||
+    typeof fork.sessionId !== 'string' ||
+    fork.sessionId === result.sessionId ||
+    fork.parentSessionId !== result.sessionId
+  ) {
+    throw new Error(`Praxis compact fork failed: ${forkStdout}`)
+  }
+  if (requestCount !== 3) {
+    throw new Error('Praxis fork unexpectedly contacted the model provider')
+  }
+
+  const forkTranscriptPath = resolveClaudePaths({
+    configDir: configRoot,
+    cwd: workDirectory,
+    sessionId: fork.sessionId,
+  }).sessionFile
+  const forkTranscript = await readFile(forkTranscriptPath, 'utf8')
+  assertContains(forkTranscript, droppedMarker, 'Forked append-only transcript')
+  assertContains(
+    forkTranscript,
+    '"subtype":"compact_boundary"',
+    'Forked compact boundary',
+  )
+  assertContains(
+    forkTranscript,
+    '"isCompactSummary":true',
+    'Forked compact summary',
+  )
+
+  const forkedClaude = await runClaudeJson(
+    [
+      '-p',
+      '--resume',
+      fork.sessionId,
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--tools',
+      '',
+      '--output-format',
+      'json',
+      'Return the token matching COMPACT_KEEP_[0-9]+ from active context. Also return any token matching DROPPED_HISTORY_[0-9]+ only if it exists in active context.',
+    ],
+    workDirectory,
+    configRoot,
+  )
+  const forkedClaudeResult = String(forkedClaude.result)
+  assertContains(forkedClaudeResult, retainedMarker, 'Claude compact fork')
+  assertNotContains(forkedClaudeResult, droppedMarker, 'Claude compact fork')
+
   console.log(
-    `Claude ${version} compaction compatibility passed: Praxis compact write, active-context projection, and Claude resume`,
+    `Claude ${version} compaction compatibility passed: Praxis compact write, active-context projection, native fork preservation, and Claude resume`,
   )
 } finally {
   if (server.listening) await closeServer()
