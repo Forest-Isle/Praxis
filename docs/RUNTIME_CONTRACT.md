@@ -139,7 +139,8 @@ Included:
 
 Deferred:
 
-- parallel sub-agent orchestration;
+- background, messaging, and parallel sub-agent orchestration; foreground
+  synchronous subagents follow `docs/SUBAGENT_CONTRACT.md`;
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
 - transcript migration across unsupported Claude versions.

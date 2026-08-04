@@ -8,6 +8,7 @@ export interface ClaudeSchemaAdapter {
   parse(line: string): ClaudeTranscriptEntry
   serialize(entry: ClaudeTranscriptEntry): string
   serializeForAppend(entry: ClaudeTranscriptEntry): string
+  serializeForSidechainAppend(entry: ClaudeTranscriptEntry): string
   serializeForFork(entry: ClaudeTranscriptEntry): string
 }
 
@@ -412,8 +413,11 @@ function validateHookAttachment(
   entry: ClaudeTranscriptEntry,
   allowNativeEntrypoint = false,
 ): void {
+  const validChain =
+    entry.isSidechain === false ||
+    (entry.isSidechain === true && isNonEmptyString(entry.agentId))
   if (
-    entry.isSidechain !== false ||
+    !validChain ||
     entry.userType !== 'external' ||
     (entry.entrypoint !== 'cli' &&
       (!allowNativeEntrypoint ||
@@ -624,6 +628,68 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   }
 }
 
+function validateSidechainEntry(entry: ClaudeTranscriptEntry): void {
+  for (const field of [
+    'uuid',
+    'sessionId',
+    'timestamp',
+    'cwd',
+    'version',
+    'agentId',
+  ]) {
+    if (!isNonEmptyString(entry[field])) {
+      throw new Error(`Claude sidechain entry is missing ${field}`)
+    }
+  }
+  if (entry.version !== SUPPORTED_VERSION) {
+    throw new Error(
+      `Claude sidechain append must target Claude Code ${SUPPORTED_VERSION}`,
+    )
+  }
+  if (
+    !('parentUuid' in entry) ||
+    (entry.parentUuid !== null && !isNonEmptyString(entry.parentUuid))
+  ) {
+    throw new Error('Claude sidechain entry has invalid parentUuid')
+  }
+  if (
+    entry.isSidechain !== true ||
+    entry.userType !== 'external' ||
+    entry.entrypoint !== 'cli' ||
+    !('gitBranch' in entry) ||
+    (entry.gitBranch !== null && typeof entry.gitBranch !== 'string')
+  ) {
+    throw new Error('Claude sidechain entry has invalid metadata')
+  }
+  if (entry.toolDenialKind !== undefined || entry.isCompactSummary === true) {
+    throw new Error('Claude sidechain entry has unsupported runtime metadata')
+  }
+  if (entry.type === 'attachment') {
+    validateAttachment(entry)
+    return
+  }
+  if (entry.type !== 'user' && entry.type !== 'assistant') {
+    throw new Error(`Claude sidechain entry type ${entry.type} is unsupported`)
+  }
+  if (!isRecord(entry.message) || entry.message.role !== entry.type) {
+    throw new Error('Claude sidechain entry has invalid message role')
+  }
+  if (hasImageContent(entry.message)) {
+    throw new Error('Praxis cannot append Claude sidechain images yet')
+  }
+  if (entry.type === 'user') {
+    if (!isNonEmptyString(entry.promptId)) {
+      throw new Error('Claude sidechain user entry is missing promptId')
+    }
+    validateUserContent(entry.message.content)
+  } else {
+    if (!isNonEmptyString(entry.attributionAgent)) {
+      throw new Error('Claude sidechain assistant is missing attributionAgent')
+    }
+    validateAssistantMessage(entry.message)
+  }
+}
+
 function validateForkableEntry(entry: ClaudeTranscriptEntry): void {
   if (entry.type === 'ai-title') {
     if (
@@ -742,6 +808,11 @@ class ClaudeCode21208Adapter implements ClaudeSchemaAdapter {
     return serializeEntry(entry)
   }
 
+  serializeForSidechainAppend(entry: ClaudeTranscriptEntry): string {
+    validateSidechainEntry(entry)
+    return serializeEntry(entry)
+  }
+
   serializeForFork(entry: ClaudeTranscriptEntry): string {
     if (!isClaudeForkableEntryType(entry.type)) {
       throw new Error(
@@ -767,6 +838,12 @@ class ReadOnlyClaudeAdapter implements ClaudeSchemaAdapter {
   }
 
   serializeForAppend(): never {
+    throw new Error(
+      `Unsupported Claude Code transcript version ${this.version}; read-only mode`,
+    )
+  }
+
+  serializeForSidechainAppend(): never {
     throw new Error(
       `Unsupported Claude Code transcript version ${this.version}; read-only mode`,
     )

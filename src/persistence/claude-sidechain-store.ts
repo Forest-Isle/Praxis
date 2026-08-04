@@ -1,0 +1,78 @@
+import { mkdir, open, rm } from 'node:fs/promises'
+
+import type {
+  ClaudeSchemaAdapter,
+  ClaudeTranscriptEntry,
+} from '../compatibility/claude/schema.js'
+import type {
+  ClaudeSidechainMetadata,
+  ClaudeSidechainPaths,
+} from '../compatibility/claude/sidechain.js'
+import {
+  ClaudeTranscriptStore,
+  type ClaudeTranscriptLease,
+} from './claude-transcript-store.js'
+
+export class ClaudeSidechainStore {
+  private readonly transcript: ClaudeTranscriptStore
+
+  constructor(
+    private readonly paths: ClaudeSidechainPaths,
+    lockFile: string,
+    schema: ClaudeSchemaAdapter,
+  ) {
+    this.transcript = new ClaudeTranscriptStore({
+      sessionFile: paths.transcriptFile,
+      lockFile,
+      schema,
+      writeProfile: 'sidechain',
+    })
+  }
+
+  async create(
+    root: ClaudeTranscriptEntry,
+    metadata: ClaudeSidechainMetadata,
+  ): Promise<void> {
+    if (
+      root.sessionId !== this.paths.sessionId ||
+      root.agentId !== this.paths.agentId
+    ) {
+      throw new Error('Claude sidechain root identity does not match paths')
+    }
+    await mkdir(this.paths.directory, { recursive: true })
+    let metadataCreated = false
+    try {
+      const metadataHandle = await open(this.paths.metadataFile, 'wx')
+      metadataCreated = true
+      try {
+        await metadataHandle.writeFile(`${JSON.stringify(metadata)}\n`)
+        await metadataHandle.sync()
+      } finally {
+        await metadataHandle.close()
+      }
+    } catch (error) {
+      if (metadataCreated) await rm(this.paths.metadataFile, { force: true })
+      throw error
+    }
+
+    try {
+      const result = await this.transcript.create([root])
+      if (result.status === 'conflict') {
+        throw new Error('Claude sidechain transcript already exists')
+      }
+    } catch (error) {
+      await rm(this.paths.metadataFile, { force: true })
+      throw error
+    }
+  }
+
+  async withLease<T>(
+    operation: (lease: ClaudeTranscriptLease) => Promise<T>,
+  ): Promise<T> {
+    const result = await this.transcript.withLease(operation)
+    if (result.status === 'conflict') {
+      throw new Error('Claude sidechain transcript is locked')
+    }
+    return result.value
+  }
+}

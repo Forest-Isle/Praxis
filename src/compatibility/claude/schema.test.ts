@@ -7,6 +7,7 @@ import {
   parseClaudeVersionOutput,
   selectClaudeSchemaAdapter,
 } from './schema.js'
+import { createClaudeSidechainRoot } from './sidechain.js'
 
 const fixtureUrl = new URL(
   '../../../test/fixtures/claude-code/2.1.208/basic-session.jsonl',
@@ -123,6 +124,22 @@ describe('ClaudeSchemaAdapter', () => {
         serialize({ ...adapter.parse(userLine ?? ''), parentUuid: '' }),
       ).toThrow('invalid parentUuid')
     }
+    expect(() =>
+      adapter.serializeForSidechainAppend({
+        ...createClaudeSidechainRoot({
+          sessionId: 'session',
+          promptId: 'prompt',
+          prompt: 'hello',
+          agentId: '0123456789abcdef',
+          cwd: '/tmp/project',
+          claudeVersion: '2.1.208',
+          gitBranch: null,
+          uuid: 'sidechain-root',
+          timestamp: '2026-08-04T00:00:00.000Z',
+        }),
+        parentUuid: '',
+      }),
+    ).toThrow('invalid parentUuid')
     expect(
       adapter.serializeForAppend({
         type: 'agent-setting',
@@ -362,6 +379,19 @@ describe('ClaudeSchemaAdapter', () => {
       JSON.stringify(compactSummary),
     )
     expect(() => adapter.serializeForAppend(sidechain)).toThrow('sidechains')
+    expect(
+      adapter.serializeForSidechainAppend({
+        ...sidechain,
+        entrypoint: 'cli',
+      }),
+    ).toContain('"isSidechain":true')
+    expect(() =>
+      adapter.serializeForSidechainAppend({
+        ...sidechain,
+        entrypoint: 'cli',
+        agentId: '',
+      }),
+    ).toThrow('missing agentId')
     expect(() => adapter.serializeForAppend(imageResult)).toThrow(
       'image results',
     )

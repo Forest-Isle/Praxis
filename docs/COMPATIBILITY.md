@@ -185,8 +185,10 @@ also includes the validated `compact_boundary` system record and its paired
 `last-prompt` do not advance the logical UUID chain; `last-prompt` must name its
 current leaf. Message content blocks and attachment envelopes are validated
 before append, and every `tool_result` must match the historical `tool_use` plus
-`sourceToolAssistantUUID`. Sidechain, image, tool-denial, and other entry writers
-remain disabled until their runtime implementations and write/resume probes
+`sourceToolAssistantUUID`. Foreground Agent sidechain entries become writable
+only through the bounded runtime in `docs/SUBAGENT_CONTRACT.md` and its
+write/resume probes. Image, tool-denial, background-agent, messaging, and other
+entry writers remain disabled until their runtime implementations and probes
 pass.
 
 Fork uses a separate versioned creation profile because it copies existing

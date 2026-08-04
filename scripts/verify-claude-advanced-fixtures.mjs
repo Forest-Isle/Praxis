@@ -217,6 +217,21 @@ try {
       sidechain.cwd,
     ),
   )
+  await write(
+    join(
+      sidechain.paths.projectRoot,
+      sidechain.sessionId,
+      'subagents',
+      'agent-fixture.meta.json',
+    ),
+    await readFile(
+      join(
+        fixtureDirectory,
+        'sidechain-layout/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/subagents/agent-fixture.meta.json',
+      ),
+      'utf8',
+    ),
+  )
   const sidechainStore = new ClaudeTranscriptStore({
     sessionFile: sidechainFile,
     lockFile: join(probeRoot, 'locks', 'sidechain.lock'),
@@ -289,11 +304,25 @@ try {
     generatedResponse.session_id,
     'subagents',
   )
-  const generatedSubagentFiles = (await readdir(generatedSubagentDirectory))
+  const generatedSubagentNames = await readdir(generatedSubagentDirectory)
+  const generatedSubagentFiles = generatedSubagentNames
     .filter((name) => name.startsWith('agent-') && name.endsWith('.jsonl'))
     .map((name) => join(generatedSubagentDirectory, name))
   if (generatedSubagentFiles.length === 0) {
     throw new Error('Claude did not generate native subagent JSONL layout')
+  }
+  for (const transcriptPath of generatedSubagentFiles) {
+    const metadataPath = transcriptPath.replace(/\.jsonl$/u, '.meta.json')
+    const metadata = JSON.parse(await readFile(metadataPath, 'utf8'))
+    if (
+      typeof metadata.agentType !== 'string' ||
+      typeof metadata.description !== 'string' ||
+      typeof metadata.toolUseId !== 'string' ||
+      !Number.isSafeInteger(metadata.spawnDepth) ||
+      metadata.spawnDepth < 1
+    ) {
+      throw new Error('Claude generated invalid native subagent metadata')
+    }
   }
   const generatedSidechainSources = await Promise.all(
     generatedSubagentFiles.map((path) => readFile(path, 'utf8')),

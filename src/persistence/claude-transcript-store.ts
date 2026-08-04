@@ -87,6 +87,7 @@ export interface ClaudeTranscriptStoreOptions {
   sessionFile: string
   lockFile: string
   schema: ClaudeSchemaAdapter
+  writeProfile?: 'main' | 'sidechain'
 }
 
 interface LeaseLockMetadata {
@@ -261,11 +262,13 @@ export class ClaudeTranscriptStore {
   private readonly sessionFile: string
   private readonly lockFile: string
   private readonly schema: ClaudeSchemaAdapter
+  private readonly writeProfile: 'main' | 'sidechain'
 
   constructor(options: ClaudeTranscriptStoreOptions) {
     this.sessionFile = options.sessionFile
     this.lockFile = options.lockFile
     this.schema = options.schema
+    this.writeProfile = options.writeProfile ?? 'main'
   }
 
   private async readSource(): Promise<Buffer> {
@@ -348,7 +351,10 @@ export class ClaudeTranscriptStore {
     if (entries.length === 0) {
       throw new Error('Cannot create an empty Claude transcript')
     }
-    const source = `${entries.map((entry) => this.schema.serializeForFork(entry)).join('\n')}\n`
+    const source =
+      this.writeProfile === 'sidechain'
+        ? `${this.serializeNewSidechain(entries).join('\n')}\n`
+        : `${entries.map((entry) => this.schema.serializeForFork(entry)).join('\n')}\n`
     await mkdir(dirname(this.sessionFile), { recursive: true })
 
     let sessionHandle
@@ -637,7 +643,19 @@ export class ClaudeTranscriptStore {
     let logicalTailUuid = expectedTail.lastUuid
     const lines: string[] = []
     for (const entry of entries) {
-      if (entry.type === 'last-prompt') {
+      if (this.writeProfile === 'sidechain') {
+        if (entry.parentUuid !== logicalTailUuid) {
+          throw new Error('Sidechain entry parentUuid does not match tail')
+        }
+        const first = history[0]
+        if (
+          first &&
+          (entry.sessionId !== first.sessionId ||
+            entry.agentId !== first.agentId)
+        ) {
+          throw new Error('Sidechain entry identity does not match history')
+        }
+      } else if (entry.type === 'last-prompt') {
         if (entry.leafUuid !== logicalTailUuid) {
           throw new Error('Entry leafUuid does not match transcript tail')
         }
@@ -665,9 +683,13 @@ export class ClaudeTranscriptStore {
       ) {
         throw new Error('Appended Claude transcript entry must have a uuid')
       }
-      validateLastPromptLeaf(history, entry)
+      if (this.writeProfile === 'main') validateLastPromptLeaf(history, entry)
       validateToolPairing(history, entry)
-      lines.push(this.schema.serializeForAppend(entry))
+      lines.push(
+        this.writeProfile === 'sidechain'
+          ? this.schema.serializeForSidechainAppend(entry)
+          : this.schema.serializeForAppend(entry),
+      )
       history.push(entry)
       if (typeof entry.uuid === 'string') logicalTailUuid = entry.uuid
     }
@@ -698,5 +720,30 @@ export class ClaudeTranscriptStore {
     }
 
     return { status: 'appended', tail: (await this.load()).tail }
+  }
+
+  private serializeNewSidechain(
+    entries: readonly ClaudeTranscriptEntry[],
+  ): string[] {
+    const lines: string[] = []
+    const history: ClaudeTranscriptEntry[] = []
+    let logicalTailUuid: string | null = null
+    for (const entry of entries) {
+      if (entry.parentUuid !== logicalTailUuid) {
+        throw new Error('Sidechain entry parentUuid does not match tail')
+      }
+      const first = history[0]
+      if (
+        first &&
+        (entry.sessionId !== first.sessionId || entry.agentId !== first.agentId)
+      ) {
+        throw new Error('Sidechain entry identity does not match history')
+      }
+      validateToolPairing(history, entry)
+      lines.push(this.schema.serializeForSidechainAppend(entry))
+      history.push(entry)
+      logicalTailUuid = typeof entry.uuid === 'string' ? entry.uuid : null
+    }
+    return lines
   }
 }

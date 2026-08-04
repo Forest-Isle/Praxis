@@ -57,6 +57,7 @@ import {
   type TranscriptTail,
 } from '../persistence/claude-transcript-store.js'
 import { ModelCompactor } from './model-compactor.js'
+import { ClaudeSubagentExecutor } from './subagent-service.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -76,6 +77,7 @@ export interface ClaudeSessionServiceOptions {
   compactor?: Compactor
   contextBudget?: ContextBudget
   contextReserveTokens?: number
+  enableSubagents?: boolean
 }
 
 export interface SessionRunResult {
@@ -252,6 +254,7 @@ export class ClaudeSessionService {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
       const provider = this.provider()
+      let currentPromptId: string | null = null
       const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
         snapshot.entries,
       )
@@ -312,10 +315,45 @@ export class ClaudeSessionService {
         snapshot = { entries: history, tail: appendResult.tail }
         pendingRecoveryHookOutcomes.length = 0
       }
+      const subagentExecutor =
+        this.options.enableSubagents &&
+        this.options.tools &&
+        this.options.permissions
+          ? new ClaudeSubagentExecutor({
+              configRoot: this.options.configRoot,
+              cwd: this.options.cwd,
+              claudeVersion: this.options.claudeVersion,
+              provider,
+              baseTools: this.options.tools,
+              permissions: this.options.permissions,
+              ...(this.options.extensions
+                ? { extensions: this.options.extensions }
+                : {}),
+              ...(this.options.hooks ? { hooks: this.options.hooks } : {}),
+              ...(this.options.contextAssembler
+                ? { contextAssembler: this.options.contextAssembler }
+                : {}),
+              ...(this.options.approveTool
+                ? { approveTool: this.options.approveTool }
+                : {}),
+              ...(this.options.eventSink
+                ? { eventSink: this.options.eventSink }
+                : {}),
+            })
+          : null
+      const turnTools = subagentExecutor
+        ? subagentExecutor.registry(
+            sessionId,
+            0,
+            (callId) =>
+              currentPromptId ??
+              this.promptIdForToolCall(snapshot.entries, callId),
+          )
+        : this.options.tools
       const hookTools =
-        this.options.hooks && this.options.tools && this.options.permissions
+        this.options.hooks && turnTools && this.options.permissions
           ? new ClaudeHookToolCoordinator({
-              tools: this.options.tools,
+              tools: turnTools,
               permissions: this.options.permissions,
               hooks: this.options.hooks,
               session: hookSession,
@@ -329,7 +367,7 @@ export class ClaudeSessionService {
         ...(hookTools
           ? { tools: hookTools, permissions: hookTools }
           : {
-              ...(this.options.tools ? { tools: this.options.tools } : {}),
+              ...(turnTools ? { tools: turnTools } : {}),
               ...(this.options.permissions
                 ? { permissions: this.options.permissions }
                 : {}),
@@ -367,6 +405,7 @@ export class ClaudeSessionService {
             isError: boolean
             accessedPaths?: readonly string[]
             followUpUserMessages?: readonly string[]
+            nativeToolUseResult?: Record<string, unknown>
           },
         ) => {
           const [entry] = translateProviderEvents(
@@ -376,6 +415,9 @@ export class ClaudeSessionService {
                 toolCallId: call.id,
                 content: toolResult.content,
                 isError: toolResult.isError,
+                ...(toolResult.nativeToolUseResult
+                  ? { nativeToolUseResult: toolResult.nativeToolUseResult }
+                  : {}),
               },
             ],
             this.translationContext(sessionId, snapshot),
@@ -483,7 +525,18 @@ export class ClaudeSessionService {
             `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
           )
         }
-        await runtime.recoverToolCalls(unresolvedToolCalls, recoveryRequest)
+        const recoveryResults = await runtime.recoverToolCalls(
+          unresolvedToolCalls,
+          recoveryRequest,
+        )
+        const recoveryUsage = recoveryResults.reduce<ModelUsage>(
+          (usage, result) => ({
+            inputTokens: usage.inputTokens + (result.usage?.inputTokens ?? 0),
+            outputTokens:
+              usage.outputTokens + (result.usage?.outputTokens ?? 0),
+          }),
+          { inputTokens: 0, outputTokens: 0 },
+        )
 
         const agentName =
           this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
@@ -537,7 +590,7 @@ export class ClaudeSessionService {
           outputTokens: 0,
         }
         const definitions = provider.capabilities.tools
-          ? (this.options.tools?.definitions() ?? [])
+          ? (turnTools?.definitions() ?? [])
           : []
         const budget = this.contextBudget(provider)
         const pendingUserMessages = expansion.userMessages.map((content) => ({
@@ -704,7 +757,6 @@ export class ClaudeSessionService {
         }
         await compactIfNeeded(pendingUserMessages)
 
-        let promptId: string | undefined
         for (const [index, text] of expansion.userMessages.entries()) {
           const [userEntry] = translateProviderEvents(
             [
@@ -715,8 +767,8 @@ export class ClaudeSessionService {
             this.translationContext(sessionId, snapshot),
           )
           if (!userEntry) throw new Error('Could not translate user prompt')
-          if (promptId === undefined && typeof userEntry.uuid === 'string') {
-            promptId = userEntry.uuid
+          if (currentPromptId === null && typeof userEntry.uuid === 'string') {
+            currentPromptId = userEntry.uuid
             compactionAnchorUuid ??= userEntry.uuid
           }
           const userTail = await this.append(lease, snapshot.tail, userEntry)
@@ -731,7 +783,7 @@ export class ClaudeSessionService {
             {
               ...hookSession,
               hook_event_name: 'UserPromptSubmit',
-              prompt_id: promptId ?? randomUUID(),
+              prompt_id: currentPromptId ?? randomUUID(),
               prompt,
             },
             undefined,
@@ -818,9 +870,14 @@ export class ClaudeSessionService {
           sessionId,
           text: result.text,
           usage: {
-            inputTokens: compactionUsage.inputTokens + result.usage.inputTokens,
+            inputTokens:
+              recoveryUsage.inputTokens +
+              compactionUsage.inputTokens +
+              result.usage.inputTokens,
             outputTokens:
-              compactionUsage.outputTokens + result.usage.outputTokens,
+              recoveryUsage.outputTokens +
+              compactionUsage.outputTokens +
+              result.usage.outputTokens,
           },
         }
       } finally {
@@ -917,6 +974,61 @@ export class ClaudeSessionService {
       ) {
         return entry.uuid
       }
+    }
+    return null
+  }
+
+  private promptIdForToolCall(
+    entries: readonly ClaudeTranscriptEntry[],
+    callId: string,
+  ): string | null {
+    const byUuid = new Map<string, ClaudeTranscriptEntry>()
+    let source: ClaudeTranscriptEntry | undefined
+    for (const entry of entries) {
+      if (typeof entry.uuid === 'string') byUuid.set(entry.uuid, entry)
+      if (
+        entry.type !== 'assistant' ||
+        typeof entry.message !== 'object' ||
+        entry.message === null ||
+        Array.isArray(entry.message)
+      ) {
+        continue
+      }
+      const message = entry.message as unknown
+      if (
+        typeof message !== 'object' ||
+        message === null ||
+        !Array.isArray((message as Record<string, unknown>).content)
+      ) {
+        continue
+      }
+      const content = (message as Record<string, unknown>).content as unknown[]
+      if (
+        content.some(
+          (block) =>
+            typeof block === 'object' &&
+            block !== null &&
+            (block as Record<string, unknown>).type === 'tool_use' &&
+            (block as Record<string, unknown>).id === callId,
+        )
+      ) {
+        source = entry
+      }
+    }
+    let candidate = source
+    while (candidate) {
+      if (
+        candidate.type === 'user' &&
+        typeof candidate.promptId === 'string' &&
+        (candidate.promptSource === 'interactive' ||
+          candidate.promptSource === 'sdk')
+      ) {
+        return candidate.promptId
+      }
+      candidate =
+        typeof candidate.parentUuid === 'string'
+          ? byUuid.get(candidate.parentUuid)
+          : undefined
     }
     return null
   }

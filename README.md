@@ -10,9 +10,9 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 10 session resilience is complete on top of native full-history forks,
-child-process credential boundaries, shared memory, and native
-Anthropic/OpenAI-compatible providers.
+Sprint 11 native foreground subagents are complete on top of resilient sessions,
+native full-history forks, child-process credential boundaries, shared memory,
+and native Anthropic/OpenAI-compatible providers.
 Running `praxis` in a
 TTY opens an
 Ink session UI with streaming
@@ -30,6 +30,12 @@ paths and memory-root symlink escapes remain rejected.
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
 Claude transcript, and Claude Code 2.1.208 can resume a Praxis tool session.
+The synchronous `Agent` tool runs bounded `general-purpose` or shared custom
+agents through the same provider, local/MCP/Skill tools, permissions, hooks,
+context, and cancellation path. Completed work writes native sidechain JSONL,
+metadata, and main-chain Agent results that Claude Code 2.1.208 can discover and
+resume. Background Agent execution and agent messaging remain explicitly
+unsupported.
 Forks preserve the complete supported main-chain native history, including
 tool calls/results, compact boundaries/summaries, attachments, agent settings,
 titles, images, errors, and interrupted-tool denial records. Existing UUIDs,

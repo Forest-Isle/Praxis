@@ -34,6 +34,7 @@
     "test:runtime-compat": "npm run build && node scripts/verify-runtime-compatibility.mjs",
     "test:recovery-compat": "npm run build && node scripts/verify-crash-recovery.mjs",
     "test:shared-compat": "npm run build && node scripts/verify-claude-shared-resources.mjs",
+    "test:subagent-compat": "npm run build && node scripts/verify-subagent-compatibility.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

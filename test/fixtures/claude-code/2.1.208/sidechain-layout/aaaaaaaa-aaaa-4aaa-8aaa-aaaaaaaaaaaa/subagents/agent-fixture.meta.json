@@ -1,0 +1,6 @@
+{
+  "agentType": "general-purpose",
+  "description": "Return fixture marker",
+  "toolUseId": "toolu_fixture_agent",
+  "spawnDepth": 1
+}

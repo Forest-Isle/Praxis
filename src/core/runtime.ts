@@ -88,8 +88,10 @@ export type RuntimeEvent =
 export interface ToolExecutionResult {
   content: string
   isError: boolean
+  usage?: ModelUsage
   accessedPaths?: readonly string[]
   followUpUserMessages?: readonly string[]
+  nativeToolUseResult?: Record<string, unknown>
 }
 
 export interface ToolExecutionContext {
@@ -308,6 +310,7 @@ export class AgentRuntime {
         const followUpUserMessages: string[] = []
         for (const call of toolCalls) {
           const result = await this.completeToolCall(call, request)
+          if (result.usage) usage = addUsage(usage, result.usage)
           messages.push({
             role: 'tool',
             toolCallId: call.id,

@@ -69,7 +69,7 @@ describe('ClaudeExtensionToolRegistry', () => {
 })
 
 describe('ClaudeExtensionPermissionResolver', () => {
-  it('allows Skill and delegates other tools', async () => {
+  it('allows Skill while delegating other tools', async () => {
     const base = {
       resolve: vi.fn(() => ({ behavior: 'deny' as const, reason: 'x' })),
     }
@@ -77,7 +77,11 @@ describe('ClaudeExtensionPermissionResolver', () => {
     expect(resolver.resolve({ id: '1', name: 'Skill', input: {} })).toEqual({
       behavior: 'allow',
     })
-    expect(resolver.resolve({ id: '2', name: 'Read', input: {} })).toEqual({
+    expect(resolver.resolve({ id: '2', name: 'Agent', input: {} })).toEqual({
+      behavior: 'deny',
+      reason: 'x',
+    })
+    expect(resolver.resolve({ id: '3', name: 'Read', input: {} })).toEqual({
       behavior: 'deny',
       reason: 'x',
     })

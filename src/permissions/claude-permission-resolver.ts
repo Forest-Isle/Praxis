@@ -22,6 +22,7 @@ export interface ClaudePermissionResolverOptions {
 }
 
 const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
+  Agent: 'allow',
   Read: 'allow',
   Grep: 'allow',
   Write: 'ask',
@@ -102,6 +103,11 @@ function globExpression(pattern: string): RegExp {
 function permissionTarget(call: ModelToolCall): string | null {
   if (call.name === 'Bash') {
     return typeof call.input.command === 'string' ? call.input.command : null
+  }
+  if (call.name === 'Agent') {
+    return typeof call.input.subagent_type === 'string'
+      ? call.input.subagent_type
+      : null
   }
   if (call.name === 'Grep') {
     return typeof call.input.path === 'string' ? call.input.path : null

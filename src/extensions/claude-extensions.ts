@@ -182,6 +182,10 @@ export class ClaudeExtensionCatalog {
     return this.agents.get(name) ?? null
   }
 
+  agentNames(): readonly string[] {
+    return [...this.agents.keys()]
+  }
+
   renderSkill(name: string, argumentsText: string): string | null {
     const definition = this.skill(name)
     return definition ? renderInvocation(definition, argumentsText) : null

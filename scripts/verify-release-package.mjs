@@ -1003,6 +1003,246 @@ async function startProviderProbe(provider, memoryDirectory) {
   }
 }
 
+async function startSubagentProviderProbe(provider) {
+  const requests = []
+  let failure
+  const server = createServer(async (request, response) => {
+    try {
+      const expectedPath =
+        provider === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'
+      if (request.method !== 'POST' || request.url !== expectedPath) {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await readProviderRequest(request)
+      requests.push(body)
+      const messages =
+        provider === 'anthropic'
+          ? normalizeAnthropicMessages(body.messages)
+          : body.messages
+      const hasAgentSchema =
+        provider === 'anthropic'
+          ? Array.isArray(body.tools) &&
+            hasAnthropicToolSchema(body.tools, 'Agent', 'prompt') &&
+            hasAnthropicToolSchema(body.tools, 'Agent', 'subagent_type')
+          : Array.isArray(body.tools) &&
+            hasToolSchema(body.tools, 'Agent', 'prompt') &&
+            hasToolSchema(body.tools, 'Agent', 'subagent_type')
+      if (!hasAgentSchema) {
+        throw new Error('Installed CLI omitted Agent tool schema')
+      }
+      if (requests.length === 1) {
+        if (
+          messages.at(-1)?.role !== 'user' ||
+          messages.at(-1)?.content !== 'delegate release subagent'
+        ) {
+          throw new Error('Installed CLI omitted subagent main prompt')
+        }
+        const input = {
+          description: 'Return release marker',
+          prompt: 'Return RELEASE_SUBAGENT_MARKER',
+          subagent_type: 'general-purpose',
+          run_in_background: false,
+        }
+        if (provider === 'anthropic') {
+          sendAnthropicEvents(response, [
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 8 } },
+            },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: {
+                type: 'tool_use',
+                id: 'release_agent',
+                name: 'Agent',
+                input: {},
+              },
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify(input),
+              },
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'tool_use', stop_sequence: null },
+              usage: { output_tokens: 4 },
+            },
+            { type: 'message_stop' },
+          ])
+        } else {
+          sendOpenAIEvents(response, [
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'release_agent',
+                        type: 'function',
+                        function: {
+                          name: 'Agent',
+                          arguments: JSON.stringify(input),
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                },
+              ],
+            },
+            {
+              choices: [],
+              usage: { prompt_tokens: 8, completion_tokens: 4 },
+            },
+          ])
+        }
+        return
+      }
+      if (requests.length === 2) {
+        const system =
+          provider === 'anthropic'
+            ? body.system
+            : messages
+                .filter((message) => message?.role === 'system')
+                .map((message) => message.content)
+                .join('\n')
+        if (
+          typeof system !== 'string' ||
+          !system.includes('general-purpose subagent') ||
+          messages.at(-1)?.content !== 'Return RELEASE_SUBAGENT_MARKER'
+        ) {
+          throw new Error('Installed CLI sent invalid subagent context')
+        }
+        if (provider === 'anthropic') {
+          sendAnthropicEvents(response, [
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 7 } },
+            },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: { type: 'text', text: '' },
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'text_delta',
+                text: 'RELEASE_SUBAGENT_MARKER',
+              },
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn', stop_sequence: null },
+              usage: { output_tokens: 3 },
+            },
+            { type: 'message_stop' },
+          ])
+        } else {
+          sendOpenAIEvents(response, [
+            {
+              choices: [{ delta: { content: 'RELEASE_SUBAGENT_MARKER' } }],
+            },
+            {
+              choices: [],
+              usage: { prompt_tokens: 7, completion_tokens: 3 },
+            },
+          ])
+        }
+        return
+      }
+      if (requests.length === 3) {
+        const serialized = JSON.stringify(messages)
+        if (
+          !serialized.includes('release_agent') ||
+          !serialized.includes('RELEASE_SUBAGENT_MARKER')
+        ) {
+          throw new Error('Installed CLI omitted Agent result continuation')
+        }
+        if (provider === 'anthropic') {
+          sendAnthropicEvents(response, [
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 8 } },
+            },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: { type: 'text', text: '' },
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'text_delta',
+                text: 'installed subagent response',
+              },
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn', stop_sequence: null },
+              usage: { output_tokens: 4 },
+            },
+            { type: 'message_stop' },
+          ])
+        } else {
+          sendOpenAIEvents(response, [
+            {
+              choices: [{ delta: { content: 'installed subagent response' } }],
+            },
+            {
+              choices: [],
+              usage: { prompt_tokens: 8, completion_tokens: 4 },
+            },
+          ])
+        }
+        return
+      }
+      throw new Error(`Unexpected subagent provider request ${requests.length}`)
+    } catch (error) {
+      failure ??= error
+      if (!response.headersSent) {
+        response.writeHead(500, { 'content-type': 'application/json' })
+      }
+      response.end(JSON.stringify({ error: { message: String(error) } }))
+    }
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('Subagent provider probe has no TCP address')
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    assertComplete() {
+      if (failure) throw failure
+      if (requests.length !== 3) {
+        throw new Error(
+          `Subagent provider probe received ${requests.length} requests`,
+        )
+      }
+    },
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()))
+      }),
+  }
+}
+
 let providerProbe
 try {
   const repositoryRoot = process.cwd()
@@ -1294,6 +1534,77 @@ try {
     )
     await providerProbe.close()
     providerProbe = undefined
+
+    providerProbe = await startSubagentProviderProbe(provider)
+    const subagentEnvironment = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: configRoot,
+      PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+      PRAXIS_PROVIDER: provider,
+      PRAXIS_API_KEY: 'release-probe-key',
+      PRAXIS_MODEL: 'release-probe-model',
+      PRAXIS_BASE_URL: providerProbe.baseUrl,
+      ...(provider === 'anthropic' ? { PRAXIS_MAX_OUTPUT_TOKENS: '1024' } : {}),
+    }
+    const installedSubagent = resultFrom(
+      (
+        await run(praxis, ['run', '--json', 'delegate release subagent'], {
+          cwd: workDirectory,
+          env: subagentEnvironment,
+        })
+      ).stdout,
+    )
+    if (
+      installedSubagent.text !== 'installed subagent response' ||
+      installedSubagent.usage?.inputTokens !== 23 ||
+      installedSubagent.usage?.outputTokens !== 11
+    ) {
+      throw new Error(
+        `Installed ${provider} CLI returned invalid subagent result`,
+      )
+    }
+    const subagentPaths = pathsModule.resolveClaudePaths({
+      configDir: configRoot,
+      cwd: await realpath(workDirectory),
+      sessionId: installedSubagent.sessionId,
+    })
+    const mainSource = await readFile(subagentPaths.sessionFile, 'utf8')
+    const subagentDirectory = join(
+      subagentPaths.projectRoot,
+      installedSubagent.sessionId,
+      'subagents',
+    )
+    const subagentFiles = await readdir(subagentDirectory)
+    const transcriptName = subagentFiles.find((name) => name.endsWith('.jsonl'))
+    const metadataName = subagentFiles.find((name) =>
+      name.endsWith('.meta.json'),
+    )
+    if (!transcriptName || !metadataName) {
+      throw new Error(`Installed ${provider} CLI omitted sidechain files`)
+    }
+    const sidechainSource = await readFile(
+      join(subagentDirectory, transcriptName),
+      'utf8',
+    )
+    const metadata = JSON.parse(
+      await readFile(join(subagentDirectory, metadataName), 'utf8'),
+    )
+    if (
+      !mainSource.includes('"status":"completed"') ||
+      !mainSource.includes('RELEASE_SUBAGENT_MARKER') ||
+      !sidechainSource.includes('"isSidechain":true') ||
+      !sidechainSource.includes('RELEASE_SUBAGENT_MARKER') ||
+      metadata.agentType !== 'general-purpose' ||
+      metadata.toolUseId !== 'release_agent' ||
+      metadata.spawnDepth !== 1
+    ) {
+      throw new Error(
+        `Installed ${provider} CLI wrote invalid native subagent state`,
+      )
+    }
+    providerProbe.assertComplete()
+    await providerProbe.close()
+    providerProbe = undefined
   }
 
   const sessionModule = await import(
@@ -1476,7 +1787,7 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork loops, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
   )
 } finally {
   try {

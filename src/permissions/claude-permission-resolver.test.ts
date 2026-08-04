@@ -3,6 +3,48 @@ import { describe, expect, it } from 'vitest'
 import { ClaudePermissionResolver } from './claude-permission-resolver.js'
 
 describe('ClaudePermissionResolver', () => {
+  it('allows Agent by default while preserving explicit deny rules', async () => {
+    const call = { id: 'agent', name: 'Agent', input: {} }
+    await expect(
+      new ClaudePermissionResolver({ cwd: '/workspace', settings: [] }).resolve(
+        call,
+      ),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [
+          {
+            path: '/config/settings.json',
+            scope: 'user',
+            value: { permissions: { deny: ['Agent'] } },
+          },
+        ],
+      }).resolve(call),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule Agent',
+    })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [
+          {
+            path: '/config/settings.json',
+            scope: 'user',
+            value: { permissions: { deny: ['Agent(reviewer)'] } },
+          },
+        ],
+      }).resolve({
+        ...call,
+        input: { subagent_type: 'reviewer' },
+      }),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule Agent(reviewer)',
+    })
+  })
+
   it('applies deny, ask, allow, and safe defaults to normalized tool calls', async () => {
     const resolver = new ClaudePermissionResolver({
       cwd: '/workspace',

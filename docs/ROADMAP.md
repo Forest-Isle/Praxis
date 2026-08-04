@@ -178,3 +178,19 @@ Status: complete for local Claude-compatible session storage.
 
 Exit gate covers storage/service/CLI behavior, installed-package inspect/export,
 the existing compatibility suite, and macOS/Linux Node 24 clean-room validation.
+
+## Sprint 11 — native foreground subagents
+
+Status: complete for Claude Code 2.1.208 foreground Agent execution.
+
+- [x] synchronous `Agent` tool with strict native input and permission flow
+- [x] `general-purpose` plus shared user/project custom agent definitions
+- [x] recursive provider-neutral runtime with depth, call, turn, input, and
+      output bounds
+- [x] shared local/MCP/Skill, permission, hook, cancellation, and redaction path
+- [x] native sidechain JSONL and `.meta.json` persistence
+- [x] native main-chain Agent result metadata and crash/failure semantics
+- [x] installed OpenAI/Anthropic execution and Claude reopen/discovery probes
+
+Background execution, `SendMessage`, and parallel scheduling remain a later
+sprint and are rejected explicitly rather than serialized or simulated.

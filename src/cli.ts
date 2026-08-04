@@ -271,6 +271,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     tools: new ClaudeExtensionToolRegistry(mcpTools, extensions),
     permissions,
     extensions,
+    enableSubagents: true,
     hooks: new ClaudeHookRunner({ settings, cwd }),
     ...(agent ? { agent } : {}),
     contextAssembler: new ClaudeContextAssembler({

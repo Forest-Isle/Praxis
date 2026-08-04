@@ -41,6 +41,7 @@ export type ProviderPersistenceEvent =
       toolCallId: string
       content: string
       isError: boolean
+      nativeToolUseResult?: Record<string, unknown>
     }
 
 export interface TranslationContext {
@@ -386,7 +387,7 @@ export function translateProviderEvents(
               },
             ],
           },
-          toolUseResult: {
+          toolUseResult: event.nativeToolUseResult ?? {
             stdout: event.isError ? '' : event.content,
             stderr: event.isError ? event.content : '',
             interrupted: false,
