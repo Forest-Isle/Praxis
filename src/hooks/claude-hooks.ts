@@ -2,7 +2,15 @@ import { spawn } from 'node:child_process'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import type { PermissionBehavior } from '../core/runtime.js'
-import { commandShell } from '../platform/command-shell.js'
+import {
+  commandShell,
+  commandShellArguments,
+} from '../platform/command-shell.js'
+import {
+  redactSensitiveText,
+  sanitizeChildEnvironment,
+  sensitiveEnvironmentValues,
+} from '../platform/sensitive-data.js'
 
 export type ClaudeHookEventName =
   | 'SessionStart'
@@ -202,6 +210,7 @@ export class ClaudeHookRunner {
     signal?: AbortSignal,
   ): Promise<ClaudeHookOutcome> {
     if (signal?.aborted) throw abortError()
+    const sensitiveValues = sensitiveEnvironmentValues(process.env)
     const groups = eventSettings(
       this.settings,
       input.hook_event_name,
@@ -226,18 +235,31 @@ export class ClaudeHookRunner {
         )
         const toolUseId =
           optionalString(input.tool_use_id) ?? crypto.randomUUID()
+        const stdout = redactSensitiveText(result.stdout, sensitiveValues)
+        const stderr = redactSensitiveText(result.stderr, sensitiveValues)
+        if (
+          Buffer.byteLength(stdout) + Buffer.byteLength(stderr) >
+          this.maxOutputBytes
+        ) {
+          throw new Error('Hook output exceeded byte limit')
+        }
         executions.push({
           event: input.hook_event_name,
           hookName: `${input.hook_event_name}${matcherValue ? `:${matcherValue}` : ''}`,
           toolUseId,
-          command: hook.command,
-          ...result,
+          command: redactSensitiveText(hook.command, sensitiveValues),
+          stdout,
+          stderr,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
         })
         if (result.exitCode === 2) {
-          blockedReason =
+          blockedReason = redactSensitiveText(
             result.stderr.trim() ||
-            result.stdout.trim() ||
-            'Hook blocked action'
+              result.stdout.trim() ||
+              'Hook blocked action',
+            sensitiveValues,
+          )
           break
         }
         if (result.exitCode !== 0) continue
@@ -247,20 +269,27 @@ export class ClaudeHookRunner {
           ? output.hookSpecificOutput
           : null
         const context = optionalString(specific?.additionalContext)
-        if (context) additionalContext.push(context)
+        if (context) {
+          additionalContext.push(redactSensitiveText(context, sensitiveValues))
+        }
         if (isRecord(specific?.updatedInput)) {
           updatedInput = specific.updatedInput
         }
         permissionDecision =
           permissionBehavior(specific?.permissionDecision) ?? permissionDecision
-        permissionDecisionReason =
-          optionalString(specific?.permissionDecisionReason) ??
-          permissionDecisionReason
+        const nextPermissionReason = optionalString(
+          specific?.permissionDecisionReason,
+        )
+        permissionDecisionReason = nextPermissionReason
+          ? redactSensitiveText(nextPermissionReason, sensitiveValues)
+          : permissionDecisionReason
         if (output?.continue === false || output?.decision === 'block') {
-          blockedReason =
+          blockedReason = redactSensitiveText(
             optionalString(output.stopReason) ??
-            optionalString(output.reason) ??
-            'Hook blocked action'
+              optionalString(output.reason) ??
+              'Hook blocked action',
+            sensitiveValues,
+          )
           break
         }
       }
@@ -285,9 +314,9 @@ export class ClaudeHookRunner {
   ): Promise<ProcessResult> {
     return new Promise((resolve, reject) => {
       const startedAt = Date.now()
-      const child = spawn(commandShell(), ['-lc', command], {
+      const child = spawn(commandShell(), commandShellArguments(command), {
         cwd: this.cwd,
-        env: { ...process.env, CLAUDE_PROJECT_DIR: input.cwd },
+        env: sanitizeChildEnvironment({ CLAUDE_PROJECT_DIR: input.cwd }),
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
       })
@@ -323,7 +352,10 @@ export class ClaudeHookRunner {
         if (terminationError) return
         terminationError = error
         killGroup('SIGTERM')
-        killTimer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS)
+        killTimer = setTimeout(() => {
+          killGroup('SIGKILL')
+          finish(() => reject(error))
+        }, KILL_GRACE_MS)
       }
       const abort = () => terminate(abortError())
       const collect = (target: Buffer[]) => (chunk: Buffer) => {
@@ -341,12 +373,9 @@ export class ClaudeHookRunner {
       child.once('error', (error) => {
         spawnError = error
       })
-      child.once('close', (code) =>
+      child.once('close', (code) => {
+        if (terminationError) return
         finish(() => {
-          if (terminationError) {
-            reject(terminationError)
-            return
-          }
           if (spawnError) {
             reject(spawnError)
             return
@@ -357,8 +386,8 @@ export class ClaudeHookRunner {
             exitCode: code ?? 1,
             durationMs: Date.now() - startedAt,
           })
-        }),
-      )
+        })
+      })
       const timer = setTimeout(
         () => terminate(new Error(`Hook timed out after ${timeoutMs}ms`)),
         timeoutMs,

@@ -16,22 +16,28 @@ Protected assets:
 
 ## Main threats and required controls
 
-| Threat                                         | Control                                                                                                                |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Prompt injection requests unsafe tools         | Model text never grants permission; normalized tool input is evaluated by local allow/ask/deny rules                   |
-| Path traversal or symlink escape               | Resolve and validate filesystem targets at execution time; session IDs must be UUIDs                                   |
-| Shell injection                                | Execute explicit argv when possible; display exact shell command before approval                                       |
-| Secret disclosure                              | Redact known credentials from diagnostics; do not persist provider auth or environment snapshots in transcripts        |
-| Malicious hook, skill, or MCP server           | Treat as user-installed executable code; show origin, preserve Claude scopes, require the applicable permission policy |
-| Transcript corruption or confused parent chain | Append-only writes, advisory lock, tail fingerprint, `parentUuid` check, no auto-repair                                |
-| Unsupported Claude format                      | Version adapter selects read-only fallback before any write                                                            |
-| Provider payload incompatibility               | Persist only translated Claude-native completed events; raw payload stays in sidecar                                   |
-| Resource exhaustion                            | Bound model turns, output, tool runtime, subprocess tree, and context size                                             |
-| Dependency compromise                          | Lockfile, minimal dependencies, CI audit, explicit release review                                                      |
+| Threat                                         | Control                                                                                                                                                   |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prompt injection requests unsafe tools         | Model text never grants permission; normalized tool input is evaluated by local allow/ask/deny rules                                                      |
+| Path traversal or symlink escape               | Resolve and validate filesystem targets at execution time; session IDs must be UUIDs                                                                      |
+| Shell injection                                | Execute explicit argv when possible; display exact shell command before approval                                                                          |
+| Secret disclosure                              | Strip credential-named ambient variables from child processes; disable shell startup files; redact exact configured values before diagnostics/transcripts |
+| Malicious hook, skill, or MCP server           | Treat as user-installed executable code; show origin, preserve Claude scopes, require the applicable permission policy                                    |
+| Transcript corruption or confused parent chain | Append-only writes, advisory lock, tail fingerprint, `parentUuid` check, no auto-repair                                                                   |
+| Unsupported Claude format                      | Version adapter selects read-only fallback before any write                                                                                               |
+| Provider payload incompatibility               | Persist only translated Claude-native completed events; raw payload stays in sidecar                                                                      |
+| Resource exhaustion                            | Bound model turns, post-redaction output, tool runtime, subprocess tree, and context size                                                                 |
+| Dependency compromise                          | Lockfile, minimal dependencies, CI audit, explicit release review                                                                                         |
 
 ## Explicit assumptions
 
 - User may intentionally grant broad shell/filesystem access.
+- Explicit MCP `env` and sensitive HTTP headers grant that credential to the
+  configured server. Exact values and common auth/cookie payloads are redacted
+  on return; transformed or encoded values are the server's responsibility.
+- Environment filtering is not a process sandbox. Approved shell commands,
+  hooks, and MCP servers still run as the local user and may access files or OS
+  credential services available to that user.
 - Claude Code does not honor Praxis locks; optimistic checks reduce but cannot
   eliminate a simultaneous append race from an uncooperative process.
 - A process already running as the user can alter shared files and sidecars.
@@ -47,4 +53,11 @@ Protected assets:
 - never put Praxis-private fields in shared JSONL;
 - preserve unknown Claude fields without executing them;
 - cancel and reap tool subprocesses on run cancellation;
-- keep permission checks between normalized tool input and execution.
+- keep permission checks between normalized tool input and execution;
+- keep ambient API/access keys, auth/PAT/JWT/tokens, secrets/passwords/private
+  keys/credentials, authorization, cookies, and common database/Docker/npm
+  credentials out of Bash, hook, version, and MCP stdio child environments;
+- preserve explicit MCP env/header grants while redacting their exact values
+  from tool results, warnings, errors, hook attachments, and shared JSONL;
+- prevent login/non-interactive shell startup files from restoring stripped
+  credentials.

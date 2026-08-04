@@ -10,8 +10,9 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 7 shared-memory access is complete on top of native Anthropic Messages
-and OpenAI-compatible APIs. Running `praxis` in a TTY opens an
+Sprint 8 child-process credential boundaries are complete on top of shared
+memory and native Anthropic/OpenAI-compatible providers. Running `praxis` in a
+TTY opens an
 Ink session UI with streaming
 responses, recent-session selection, runtime status, and ask-permission prompts.
 When resume finds a tool call interrupted before its result was persisted, the
@@ -59,13 +60,22 @@ input, decide permission, add resumable context, or block with exit code 2;
 Stop hooks can request another model turn. Hook success, failure, and context
 attachments before SessionEnd use the Claude 2.1.208 transcript profile and
 survive bidirectional resume; SessionEnd executes after `last-prompt` without
-writing its output to the transcript.
+writing its output to the transcript. Hook commands run without user shell
+startup files or ambient credential variables. Exact credential values are
+redacted from commands, stdout, stderr, blocking reasons, and additional
+context before they can reach diagnostics or shared JSONL.
 
 MCP servers load from Claude's shared user, project, and project-local config
 with local-over-project-over-user precedence. Stdio, Streamable HTTP, and
 legacy SSE servers expose `mcp__<server>__<tool>` definitions through the same
 permission and hook pipeline as built-in tools. Unavailable servers emit a
 warning; connected clients and stdio subprocesses close after each CLI turn.
+Stdio servers receive a sanitized ambient environment; values declared in that
+server's explicit `env` config remain available to it. Credential-named MCP
+environment values and sensitive HTTP headers are redacted from tool results,
+discovery warnings, and errors. Plain, NDJSON, and interactive CLI diagnostics
+also redact ambient credential values, including provider error bodies, failed
+runtime events, tool failures, and approval descriptions that echo a key.
 
 Provider-neutral context budgeting counts system/history/tool-schema input
 before every model turn. When an explicitly configured provider window would
@@ -98,8 +108,8 @@ See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for protocol boundaries and
 ## Development
 
 Requires Node.js 24 or newer.
-The Grep tool requires `rg`; command execution uses `/bin/zsh` on macOS and
-`/bin/bash` on Linux.
+The Grep tool requires `rg`; command execution uses startup-file-free
+`/bin/zsh` on macOS and `/bin/bash` on Linux.
 
 ```sh
 npm install
@@ -139,6 +149,10 @@ selected provider's official `/v1` endpoint. Native Anthropic requests accept
 is explicit because Praxis accepts arbitrary provider models; when
 `PRAXIS_CONTEXT_WINDOW_TOKENS` is absent, Praxis does not invent a model limit.
 Reserve defaults to 10% of the configured window, capped at 8192.
+Provider credentials stay in the Praxis process. Bash, hooks, Claude version
+detection, and ambient MCP stdio environments do not inherit credential-named
+variables. Explicit per-server MCP `env` and HTTP headers are treated as
+intentional grants to that server, with matching output redaction.
 
 Permissions load from the shared global and current-project Claude settings.
 `Read` and `Grep` default to `allow`; `Write`, `Edit`, and `Bash` default to

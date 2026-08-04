@@ -40,6 +40,10 @@ import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
 import { ClaudeHookRunner } from './hooks/claude-hooks.js'
 import { ClaudeMcpToolRegistry } from './mcp/claude-mcp-tools.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
+import {
+  redactSensitiveText,
+  sensitiveEnvironmentValues,
+} from './platform/sensitive-data.js'
 import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
@@ -300,10 +304,26 @@ function writeJson(io: CliIO, value: unknown): void {
 }
 
 function eventSink(io: CliIO, json: boolean): RuntimeEventSink {
-  if (json) return (event) => writeJson(io, event)
+  const sensitiveValues = sensitiveEnvironmentValues(process.env)
+  if (json) {
+    return (event) =>
+      writeJson(
+        io,
+        event.type === 'warning' || event.type === 'failed'
+          ? {
+              ...event,
+              message: redactSensitiveText(event.message, sensitiveValues),
+            }
+          : event,
+      )
+  }
   return (event) => {
     if (event.type === 'text-delta') io.stdout(event.delta)
-    if (event.type === 'warning') io.stderr(`Warning: ${event.message}\n`)
+    if (event.type === 'warning') {
+      io.stderr(
+        `Warning: ${redactSensitiveText(event.message, sensitiveValues)}\n`,
+      )
+    }
   }
 }
 
@@ -436,7 +456,10 @@ export async function run(
       io.stderr('Praxis run cancelled.\n')
       return 130
     }
-    const message = error instanceof Error ? error.message : String(error)
+    const message = redactSensitiveText(
+      error instanceof Error ? error.message : String(error),
+      sensitiveEnvironmentValues(process.env),
+    )
     if (argv.includes('--json')) writeJson(io, { type: 'error', message })
     else io.stderr(`${message}\n`)
     return 1

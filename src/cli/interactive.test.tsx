@@ -69,6 +69,69 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual(['run:first prompt', 'resume:session-1:continue'])
   })
 
+  it('redacts ambient credentials from interactive diagnostics', async () => {
+    const secret = `interactive-diagnostic-secret-${'x'.repeat(200)}-canary`
+    const variable = 'PRAXIS_TEST_API_KEY'
+    const previous = process.env[variable]
+    process.env[variable] = secret
+    const factory: InteractiveServiceFactory = {
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            eventSink({ type: 'warning', message: `warning ${secret}` })
+            eventSink({
+              type: 'tool-call',
+              call: {
+                id: 'secret-call',
+                name: 'Bash',
+                input: { command: `printf ${secret}` },
+              },
+            })
+            eventSink({
+              type: 'tool-result',
+              callId: 'secret-call',
+              content: `tool error ${secret}`,
+              isError: true,
+            })
+            eventSink({
+              type: 'failed',
+              message: `runtime failure ${secret}`,
+              retryable: false,
+            })
+            throw new Error(`provider failure ${secret}`)
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+
+    try {
+      const app = render(
+        <InteractiveApp factory={factory} initialSessions={[]} />,
+      )
+      await flush()
+      app.stdin.write('trigger failure')
+      await flush()
+      app.stdin.write('\r')
+      await flush()
+
+      expect(app.lastFrame()).toContain('[REDACTED]')
+      expect(app.lastFrame()).not.toContain(secret)
+      expect(app.lastFrame()).not.toContain(secret.slice(0, 40))
+    } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+  })
+
   it('asks before an ask-permission tool and forwards the decision', async () => {
     let approval: boolean | undefined
     const call: ModelToolCall = {

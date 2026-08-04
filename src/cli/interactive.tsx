@@ -12,6 +12,10 @@ import type {
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
+import {
+  redactSensitiveText,
+  sensitiveEnvironmentValues,
+} from '../platform/sensitive-data.js'
 
 interface InteractiveSessionCommands {
   run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult>
@@ -54,9 +58,16 @@ type PendingPermission = {
   resolve: (approved: boolean) => void
 }
 
-function describeTool(call: ModelToolCall): string {
-  const detail = JSON.stringify(call.input)
-  return `${call.name} ${detail.length > 160 ? `${detail.slice(0, 157)}...` : detail}`
+function describeTool(
+  call: ModelToolCall,
+  sensitiveValues: readonly string[],
+): string {
+  const name = redactSensitiveText(call.name, sensitiveValues)
+  const detail = redactSensitiveText(
+    JSON.stringify(call.input),
+    sensitiveValues,
+  )
+  return `${name} ${detail.length > 160 ? `${detail.slice(0, 157)}...` : detail}`
 }
 
 export function InteractiveApp({
@@ -67,6 +78,10 @@ export function InteractiveApp({
   onTurnChange,
 }: InteractiveAppProps) {
   const { exit } = useApp()
+  const sensitiveValues = useMemo(
+    () => sensitiveEnvironmentValues(process.env),
+    [],
+  )
   const choices = useMemo(
     () => [null, ...initialSessions] as const,
     [initialSessions],
@@ -108,11 +123,20 @@ export function InteractiveApp({
     } else if (event.type === 'state') {
       setStatus(event.state)
     } else if (event.type === 'tool-call') {
-      append({ kind: 'notice', text: `Tool: ${describeTool(event.call)}` })
+      append({
+        kind: 'notice',
+        text: `Tool: ${describeTool(event.call, sensitiveValues)}`,
+      })
     } else if (event.type === 'tool-result' && event.isError) {
-      append({ kind: 'warning', text: `Tool failed: ${event.content}` })
+      append({
+        kind: 'warning',
+        text: `Tool failed: ${redactSensitiveText(event.content, sensitiveValues)}`,
+      })
     } else if (event.type === 'warning' || event.type === 'failed') {
-      append({ kind: 'warning', text: event.message })
+      append({
+        kind: 'warning',
+        text: redactSensitiveText(event.message, sensitiveValues),
+      })
     }
   }
 
@@ -163,7 +187,10 @@ export function InteractiveApp({
     } catch (error) {
       append({
         kind: 'warning',
-        text: error instanceof Error ? error.message : String(error),
+        text: redactSensitiveText(
+          error instanceof Error ? error.message : String(error),
+          sensitiveValues,
+        ),
       })
       setStatus('failed')
     } finally {
@@ -273,7 +300,7 @@ export function InteractiveApp({
           {permission ? (
             <Text color="yellow">
               {permission.kind === 'recovery' ? 'Retry interrupted ' : 'Allow '}
-              {describeTool(permission.call)}? (y/N)
+              {describeTool(permission.call, sensitiveValues)}? (y/N)
             </Text>
           ) : busy ? (
             <Text dimColor>{status}…</Text>

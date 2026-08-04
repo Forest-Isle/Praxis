@@ -153,6 +153,64 @@ describe('Praxis CLI', () => {
     expect(capture.stderr).toEqual(['Warning: hook failed\n'])
   })
 
+  it('redacts ambient credentials from warnings and structured failures', async () => {
+    const secret = 'cli-diagnostic-secret-canary'
+    const variable = 'PRAXIS_TEST_API_KEY'
+    const previous = process.env[variable]
+    process.env[variable] = secret
+    const warning = captureIO()
+    const failure = captureIO()
+    const failed: CliDependencies = {
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            eventSink({
+              type: 'failed',
+              message: `runtime echoed ${secret}`,
+              retryable: false,
+            })
+            throw new Error(`provider echoed ${secret}`)
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+
+    try {
+      await expect(
+        run(
+          ['run', 'hello'],
+          warning.io,
+          dependencies(`hook echoed ${secret}`),
+        ),
+      ).resolves.toBe(0)
+      await expect(
+        run(['run', '--json', 'hello'], failure.io, failed),
+      ).resolves.toBe(1)
+      expect(warning.stderr).toEqual(['Warning: hook echoed [REDACTED]\n'])
+      expect(failure.stdout.map((line) => JSON.parse(line))).toEqual([
+        {
+          type: 'failed',
+          message: 'runtime echoed [REDACTED]',
+          retryable: false,
+        },
+        { type: 'error', message: 'provider echoed [REDACTED]' },
+      ])
+      expect(failure.stdout.join('')).not.toContain(secret)
+    } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+  })
+
   it('normalizes startup aborts to cancellation', async () => {
     const capture = captureIO()
     const controller = new AbortController()

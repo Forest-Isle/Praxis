@@ -38,6 +38,8 @@ src/
 - Provider adapters expose capabilities instead of flattening every model to a
   lowest-common-denominator API.
 - Tool permissions are local `allow`, `ask`, or `deny` decisions.
+- Child-process adapters share one ambient-environment sanitizer and one exact
+  credential redactor; shell startup files cannot repopulate stripped values.
 - No tenant, organization, role, entitlement, billing, remote-control, or
   telemetry domain exists.
 
@@ -109,6 +111,11 @@ escapes, while `Grep` remains workspace-scoped.
 
 `ClaudeHookRunner` parses layered settings without rewriting them, executes
 bounded command hooks, and interprets Claude-compatible JSON/exit semantics.
+It parses raw JSON before redaction so `updatedInput` and permission behavior
+retain their declared semantics, while commands, stdout/stderr, reasons, and
+additional context cross the persistence/diagnostic boundary only after exact
+credential redaction. Hook shells disable user startup files and receive a
+credential-sanitized environment plus `CLAUDE_PROJECT_DIR`.
 `ClaudeHookToolCoordinator` wraps tool preparation, permission, execution, and
 failure paths while core runtime remains provider-neutral. Hook output before
 SessionEnd persists as native `hook_success`, `hook_error`, and
@@ -122,7 +129,11 @@ project-local Claude MCP sources. It delegates protocol behavior to the
 official MCP SDK, maps discovered tools to Claude's `mcp__server__tool` names,
 and wraps local tools without changing the provider-neutral runtime port.
 Stdio and HTTP clients are connected before model execution and closed after
-the run or resume turn completes.
+the run or resume turn completes. Stdio transports inherit sanitized ambient
+runtime variables, then apply server-local `env` as an explicit grant.
+Sensitive configured env/header values redact MCP definitions, results,
+warnings, and error messages before those values reach the model, CLI, or
+transcript.
 
 `ContextBudget` estimates provider-neutral request size across ephemeral system
 messages, active transcript projection, current prompt, and tool definitions.

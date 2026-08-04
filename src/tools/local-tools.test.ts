@@ -306,6 +306,90 @@ describe('LocalToolRegistry', () => {
     await expect(execution).rejects.toMatchObject({ name: 'AbortError' })
   })
 
+  it('does not expose ambient credentials to shell processes', async () => {
+    const { cwd } = await workspace()
+    const credentials = {
+      PRAXIS_TEST_API_KEY: 'local-tool-secret-canary',
+      AWS_ACCESS_KEY_ID: 'local-tool-access-key',
+      GITHUB_PAT: 'local-tool-pat',
+      NPM_CONFIG__AUTH: 'local-tool-npm-auth',
+      PGPASSWORD: 'local-tool-pg-password',
+    }
+    const previous = Object.fromEntries(
+      Object.keys(credentials).map((name) => [name, process.env[name]]),
+    )
+    Object.assign(process.env, credentials)
+    const script = `process.stdout.write(JSON.stringify(${JSON.stringify(Object.keys(credentials))}.map(name => process.env[name] ?? 'missing')) + ':local-tool-secret-canary')`
+    const registry = new LocalToolRegistry({ cwd })
+
+    try {
+      const shell = await registry.prepare(
+        {
+          id: 'environment',
+          name: 'Bash',
+          input: {
+            command: `node -e ${JSON.stringify(script)}`,
+          },
+        },
+        { cwd },
+      )
+      await expect(registry.execute(shell, { cwd })).resolves.toEqual({
+        content: `${JSON.stringify(Object.keys(credentials).map(() => 'missing'))}:[REDACTED]`,
+        isError: false,
+      })
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  })
+
+  it('applies shell output bounds after credential redaction', async () => {
+    const { cwd } = await workspace()
+    const secret = 'boundary-secret-canary'
+    const variable = 'PRAXIS_TEST_API_KEY'
+    const previous = process.env[variable]
+    process.env[variable] = secret
+    const registry = new LocalToolRegistry({ cwd, maxOutputBytes: 8 })
+
+    try {
+      const shell = await registry.prepare(
+        {
+          id: 'bounded-redaction',
+          name: 'Bash',
+          input: { command: `printf 1234${secret}` },
+        },
+        { cwd },
+      )
+      const result = await registry.execute(shell, { cwd })
+      expect(result.content).toBe('1234[RED\n[output truncated]')
+      expect(result.content).not.toContain(secret)
+      expect(result.content).not.toContain(secret.slice(0, 8))
+    } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+  })
+
+  it('does not expose split UTF-8 characters at the shell output bound', async () => {
+    const { cwd } = await workspace()
+    const registry = new LocalToolRegistry({ cwd, maxOutputBytes: 7 })
+    const shell = await registry.prepare(
+      {
+        id: 'bounded-utf8',
+        name: 'Bash',
+        input: { command: "printf 'abcd😀'" },
+      },
+      { cwd },
+    )
+
+    await expect(registry.execute(shell, { cwd })).resolves.toEqual({
+      content: 'abcd\n[output truncated]',
+      isError: false,
+    })
+  })
+
   it('rejects edits whose replacement output exceeds the file bound', async () => {
     const { cwd } = await workspace()
     await writeFile(join(cwd, 'expand.txt'), 'aaaa')

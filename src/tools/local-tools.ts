@@ -17,7 +17,15 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
-import { commandShell } from '../platform/command-shell.js'
+import {
+  commandShell,
+  commandShellArguments,
+} from '../platform/command-shell.js'
+import {
+  redactSensitiveText,
+  sanitizeChildEnvironment,
+  sensitiveEnvironmentValues,
+} from '../platform/sensitive-data.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
@@ -151,10 +159,60 @@ function isWithin(root: string, target: string): boolean {
   )
 }
 
+function takeUtf8Prefix(
+  content: string,
+  maxBytes: number,
+): { content: string; bytes: number; truncated: boolean } {
+  const encodedBytes = Buffer.byteLength(content)
+  if (encodedBytes <= maxBytes) {
+    return { content, bytes: encodedBytes, truncated: false }
+  }
+  let prefix = ''
+  let bytes = 0
+  for (const character of content) {
+    const characterBytes = Buffer.byteLength(character)
+    if (bytes + characterBytes > maxBytes) break
+    prefix += character
+    bytes += characterBytes
+  }
+  return { content: prefix, bytes, truncated: true }
+}
+
 function truncateOutput(content: string, maxBytes: number): string {
-  const encoded = Buffer.from(content)
-  if (encoded.length <= maxBytes) return content
-  return `${encoded.subarray(0, maxBytes).toString('utf8')}\n[output truncated]`
+  const retained = takeUtf8Prefix(content, maxBytes)
+  return retained.truncated
+    ? `${retained.content}\n[output truncated]`
+    : retained.content
+}
+
+function redactSensitivePrefix(
+  content: string,
+  sensitiveValues: readonly string[],
+  maxRawBytes: number,
+): string {
+  let redacted = ''
+  let index = 0
+  let rawBytes = 0
+  while (index < content.length && rawBytes < maxRawBytes) {
+    const sensitiveValue = sensitiveValues.find((value) =>
+      content.startsWith(value, index),
+    )
+    if (sensitiveValue) {
+      redacted += redactSensitiveText(sensitiveValue, [sensitiveValue])
+      rawBytes += Buffer.byteLength(sensitiveValue)
+      index += sensitiveValue.length
+      continue
+    }
+    const codePoint = content.codePointAt(index)
+    if (codePoint === undefined) break
+    const character = String.fromCodePoint(codePoint)
+    const characterBytes = Buffer.byteLength(character)
+    if (rawBytes + characterBytes > maxRawBytes) break
+    redacted += character
+    rawBytes += characterBytes
+    index += character.length
+  }
+  return redacted
 }
 
 function joinedOutput(result: ProcessResult): string {
@@ -507,7 +565,7 @@ export class LocalToolRegistry implements ToolRegistry {
       throw new Error('Prepared Bash call has no timeout')
     const result = await this.runProcess(
       commandShell(),
-      ['-lc', stringInput(call.input, 'command')],
+      commandShellArguments(stringInput(call.input, 'command')),
       timeout,
       signal,
     )
@@ -535,26 +593,34 @@ export class LocalToolRegistry implements ToolRegistry {
     if (signal?.aborted) return Promise.reject(abortError())
 
     return new Promise((resolveProcess, reject) => {
+      const sensitiveValues = sensitiveEnvironmentValues(process.env)
+      const longestSensitiveValueBytes = sensitiveValues.reduce(
+        (longest, value) => Math.max(longest, Buffer.byteLength(value)),
+        0,
+      )
+      const rawOutputLimit =
+        this.maxOutputBytes + Math.max(3, longestSensitiveValueBytes)
       const child = spawn(command, args, {
         cwd: this.cwd,
         detached: process.platform !== 'win32',
+        env: sanitizeChildEnvironment(),
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] }
-      let retainedBytes = 0
-      let truncated = false
+      const retainedBytes = { stdout: 0, stderr: 0 }
+      let outputBytes = 0
       let timedOut = false
 
       const retain = (stream: keyof typeof chunks, chunk: Buffer) => {
-        const remaining = this.maxOutputBytes - retainedBytes
-        if (remaining <= 0) {
-          truncated = true
-          return
-        }
+        outputBytes = Math.min(
+          this.maxOutputBytes + 1,
+          outputBytes + chunk.length,
+        )
+        const remaining = rawOutputLimit - retainedBytes[stream]
+        if (remaining <= 0) return
         const retained = chunk.subarray(0, remaining)
         chunks[stream].push(retained)
-        retainedBytes += retained.length
-        if (retained.length < chunk.length) truncated = true
+        retainedBytes[stream] += retained.length
       }
       child.stdout.on('data', (chunk: Buffer) => retain('stdout', chunk))
       child.stderr.on('data', (chunk: Buffer) => retain('stderr', chunk))
@@ -587,13 +653,41 @@ export class LocalToolRegistry implements ToolRegistry {
           reject(abortError())
           return
         }
-        const suffix = truncated ? '\n[output truncated]' : ''
+        const rawStdout = Buffer.concat(chunks.stdout).toString('utf8')
+        const rawStderr = Buffer.concat(chunks.stderr).toString('utf8')
+        const stdoutRawBudget = Math.min(
+          retainedBytes.stdout,
+          this.maxOutputBytes,
+        )
+        const stderrRawBudget = Math.min(
+          retainedBytes.stderr,
+          this.maxOutputBytes - stdoutRawBudget,
+        )
+        const redactedStdout = redactSensitivePrefix(
+          rawStdout,
+          sensitiveValues,
+          stdoutRawBudget,
+        )
+        const redactedStderr = redactSensitivePrefix(
+          rawStderr,
+          sensitiveValues,
+          stderrRawBudget,
+        )
+        const stdout = takeUtf8Prefix(redactedStdout, this.maxOutputBytes)
+        const stderr = takeUtf8Prefix(
+          redactedStderr,
+          this.maxOutputBytes - stdout.bytes,
+        )
+        const outputTruncated =
+          outputBytes > this.maxOutputBytes ||
+          stdout.truncated ||
+          stderr.truncated
         resolveProcess({
-          stdout: `${Buffer.concat(chunks.stdout).toString('utf8')}${suffix}`,
-          stderr: Buffer.concat(chunks.stderr).toString('utf8'),
+          stdout: `${stdout.content}${outputTruncated ? '\n[output truncated]' : ''}`,
+          stderr: stderr.content,
           code: code ?? 1,
           timedOut,
-          truncated,
+          truncated: outputTruncated,
         })
       })
     })

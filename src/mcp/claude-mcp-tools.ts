@@ -12,6 +12,13 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import {
+  redactSensitiveError,
+  redactSensitiveText,
+  redactSensitiveValue,
+  sanitizeChildEnvironment,
+  sensitiveEnvironmentValues,
+} from '../platform/sensitive-data.js'
 
 type McpServerConfig =
   | {
@@ -37,6 +44,7 @@ interface ConnectedTool {
   client: Client
   toolName: string
   definition: ModelToolDefinition
+  sensitiveValues: readonly string[]
 }
 
 export interface ClaudeMcpToolRegistryOptions {
@@ -153,7 +161,7 @@ function transport(config: McpServerConfig, cwd: string) {
     return new StdioClientTransport({
       command: config.command,
       args: config.args,
-      env: { ...process.env, ...config.env } as Record<string, string>,
+      env: sanitizeChildEnvironment(config.env),
       cwd: config.cwd ?? cwd,
       stderr: 'pipe',
     })
@@ -164,7 +172,10 @@ function transport(config: McpServerConfig, cwd: string) {
     : new StreamableHTTPClientTransport(new URL(config.url), { requestInit })
 }
 
-function toolContent(result: Record<string, unknown>): string {
+function toolContent(
+  result: Record<string, unknown>,
+  sensitiveValues: readonly string[],
+): string {
   if (!Array.isArray(result.content)) {
     throw new Error('MCP tool result content must be an array')
   }
@@ -176,7 +187,14 @@ function toolContent(result: Record<string, unknown>): string {
   if (result.structuredContent !== undefined) {
     parts.push(JSON.stringify(result.structuredContent))
   }
-  return parts.join('\n')
+  return redactSensitiveText(parts.join('\n'), sensitiveValues)
+}
+
+function configSensitiveValues(config: McpServerConfig): readonly string[] {
+  return sensitiveEnvironmentValues(
+    process.env,
+    config.type === 'stdio' ? config.env : config.headers,
+  )
 }
 
 export class ClaudeMcpToolRegistry implements ToolRegistry {
@@ -190,16 +208,16 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
     options: ClaudeMcpToolRegistryOptions,
   ): Promise<ClaudeMcpToolRegistry> {
     const registry = new ClaudeMcpToolRegistry(options)
+    const ambientSensitiveValues = sensitiveEnvironmentValues(process.env)
+    const warn = (message: string) =>
+      options.onWarning?.(redactSensitiveText(message, ambientSensitiveValues))
     try {
-      for (const server of configuredServers(
-        options.resources,
-        options.onWarning,
-      )) {
+      for (const server of configuredServers(options.resources, warn)) {
         let config
         try {
           config = parseServerConfig(server.name, server.value, server.path)
         } catch (error) {
-          options.onWarning?.(
+          warn(
             `MCP server ${server.name} unavailable: ${error instanceof Error ? error.message : String(error)}`,
           )
           continue
@@ -235,14 +253,19 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
   ): Promise<ToolExecutionResult> {
     const tool = this.tools.get(call.name)
     if (!tool) return this.options.base.execute(call, context)
-    const result = await tool.client.callTool(
-      { name: tool.toolName, arguments: call.input },
-      undefined,
-      context.signal ? { signal: context.signal } : undefined,
-    )
+    let result
+    try {
+      result = await tool.client.callTool(
+        { name: tool.toolName, arguments: call.input },
+        undefined,
+        context.signal ? { signal: context.signal } : undefined,
+      )
+    } catch (error) {
+      throw redactSensitiveError(error, tool.sensitiveValues)
+    }
     if (!isRecord(result)) throw new Error('Invalid MCP tool result')
     return {
-      content: toolContent(result),
+      content: toolContent(result, tool.sensitiveValues),
       isError: result.isError === true,
     }
   }
@@ -258,6 +281,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
     config: McpServerConfig,
   ): Promise<void> {
     const client = new Client({ name: 'praxis', version: '0.1.0' })
+    const sensitiveValues = configSensitiveValues(config)
     const timeoutSignal = AbortSignal.timeout(DISCOVERY_TIMEOUT_MS)
     const discoverySignal = this.options.signal
       ? AbortSignal.any([this.options.signal, timeoutSignal])
@@ -290,17 +314,26 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
       const connectedTools = new Map<string, ConnectedTool>()
       for (const tool of tools) {
         const name = `mcp__${serverName}__${tool.name}`
+        if (redactSensitiveText(name, sensitiveValues) !== name) {
+          throw new Error('MCP tool name contains sensitive data')
+        }
         if (this.tools.has(name) || connectedTools.has(name)) {
           throw new Error(`Duplicate MCP tool ${name}`)
         }
         connectedTools.set(name, {
           client,
           toolName: tool.name,
+          sensitiveValues,
           definition: {
             name,
-            description:
+            description: redactSensitiveText(
               tool.description ?? `MCP tool ${tool.name} from ${serverName}`,
-            inputSchema: tool.inputSchema,
+              sensitiveValues,
+            ),
+            inputSchema: redactSensitiveValue(
+              tool.inputSchema,
+              sensitiveValues,
+            ),
           },
         })
       }
@@ -310,7 +343,10 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
       await client.close().catch(() => undefined)
       if (this.options.signal?.aborted) throw error
       this.options.onWarning?.(
-        `MCP server ${serverName} unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        redactSensitiveText(
+          `MCP server ${serverName} unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          sensitiveValues,
+        ),
       )
     }
   }

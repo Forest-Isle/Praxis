@@ -51,6 +51,13 @@ Rules:
     the call through the current hook/tool pipeline, asks once against the
     actual prepared input, then applies the current deny/ask/allow policy.
     Decline leaves the append-only transcript unchanged.
+12. Child processes do not inherit credential-named ambient variables or shell
+    startup injection. Explicit MCP env/header values are per-server grants;
+    matching definitions, results, warnings, and errors are redacted before
+    they enter model, CLI, or transcript paths. Hook JSON is interpreted before
+    redaction so executable input/permission semantics remain unchanged. Plain,
+    structured, and interactive CLI diagnostics redact ambient credentials, and
+    Bash/hook output limits are enforced after redaction.
 
 ## Core ports
 

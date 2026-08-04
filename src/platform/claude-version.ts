@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 import { parseClaudeVersionOutput } from '../compatibility/claude/schema.js'
+import { sanitizeChildEnvironment } from './sensitive-data.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -11,7 +12,10 @@ export type VersionCommand = (
 ) => Promise<{ stdout: string }>
 
 const executeVersionCommand: VersionCommand = async (file, args) => {
-  const { stdout } = await execFileAsync(file, [...args], { encoding: 'utf8' })
+  const { stdout } = await execFileAsync(file, [...args], {
+    encoding: 'utf8',
+    env: sanitizeChildEnvironment(),
+  })
   return { stdout }
 }
 

@@ -195,6 +195,21 @@ and tool-denial entries remain explicitly rejected by the append adapter.
 This matrix is also encoded in `src/compatibility/claude/ownership.ts`; runtime
 code must consult that policy instead of inventing ownership per feature.
 
+## Credential boundary
+
+Shared settings remain authoritative, but ambient Praxis/provider credentials
+are not shared resources. Bash, command hooks, Claude version detection, and
+MCP stdio transports receive the normal runtime environment with
+credential-named variables and shell startup injection variables removed.
+Hook shells also disable user startup files.
+
+An MCP server's explicit `env` or sensitive HTTP headers are deliberate grants
+to that server and therefore apply after ambient sanitization. Praxis records
+their exact values, including common authorization and cookie payloads, only in
+an in-memory redaction set. MCP definitions, tool results, warnings, and errors
+cross back into provider/CLI/transcript paths after redaction. No credential
+field or new Praxis entry type is added to shared JSONL.
+
 ## Verification gates
 
 Compatibility work is complete only when black-box tests prove both directions:
@@ -243,6 +258,10 @@ native result, and requires Claude Code 2.1.208 to resume the recovered turn.
 an automatic compact pair, proves its next provider request excludes discarded
 messages, and requires Claude 2.1.208 to resume the same active summary without
 recovering the discarded marker.
+Unit/integration security gates additionally execute real Bash, hook, stdio,
+and HTTP children and assert that ambient canaries are absent while explicit
+MCP grants work and return as `[REDACTED]`. The hook lifecycle gate asserts the
+same canary is absent from the physical shared transcript.
 
 ## Explicit non-goals
 

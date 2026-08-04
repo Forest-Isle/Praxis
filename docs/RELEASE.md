@@ -6,6 +6,8 @@ never contacts a registry for publication.
 
 Runtime prerequisites are Node.js 24 or newer, `ripgrep` (`rg`) for the Grep
 tool, and the native command shell: `/bin/zsh` on macOS or `/bin/bash` on Linux.
+Praxis invokes those shells without user startup files and removes
+credential-named ambient variables from child environments.
 
 ## Package boundary
 
@@ -34,6 +36,12 @@ authorized `Bash`, canonical memory-detail `Read`, permission-authorized shared
 memory `Write`, persisted tool-result continuation, final response, and resumed
 turn. The gate also checks the package allowlist, size limits, version, license,
 and Claude write-safety matrix.
+
+`npm run check` is a prerequisite for packaging. Its security cases run real
+Bash, hook, and MCP children, verify explicit MCP credential grants are usable
+but redacted on return, enforce post-redaction output bounds, cover structured
+and interactive diagnostics, and reject any canary credential in shared hook
+JSONL.
 
 ## Runtime matrix
 

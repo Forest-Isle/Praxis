@@ -1373,6 +1373,10 @@ describe('ClaudeSessionService', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const requests: ModelRequest[] = []
+    const secret = 'persisted-hook-secret-canary'
+    const secretVariable = 'PRAXIS_TEST_API_KEY'
+    const previousSecret = process.env[secretVariable]
+    process.env[secretVariable] = secret
     let providerTurn = 0
     const provider: ModelProvider = {
       model: 'fixture-model',
@@ -1451,10 +1455,10 @@ describe('ClaudeSessionService', () => {
                 hookEventName: 'PreToolUse',
                 updatedInput: { command: 'printf updated' },
                 permissionDecision: 'allow',
-                additionalContext: 'PRE_HOOK_CONTEXT',
+                additionalContext: `PRE_HOOK_CONTEXT ${secret}`,
               },
             }),
-            stderr: '',
+            stderr: `diagnostic ${secret}`,
             exitCode: 0,
             durationMs: 1,
           }
@@ -1519,7 +1523,10 @@ describe('ClaudeSessionService', () => {
       hooks,
     })
 
-    const result = await service.run('run hook fixture')
+    const result = await service.run('run hook fixture').finally(() => {
+      if (previousSecret === undefined) delete process.env[secretVariable]
+      else process.env[secretVariable] = previousSecret
+    })
     expect(result.text).toBe('revised answer')
     expect(hookEvents).toEqual([
       'SessionStart',
@@ -1537,7 +1544,9 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(requests[0]?.messages)).toContain(
       'PROMPT_HOOK_CONTEXT',
     )
-    expect(JSON.stringify(requests[1]?.messages)).toContain('PRE_HOOK_CONTEXT')
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'PRE_HOOK_CONTEXT [REDACTED]',
+    )
     expect(JSON.stringify(requests[1]?.messages)).toContain('POST_HOOK_CONTEXT')
     expect(JSON.stringify(requests[1]?.messages)).toContain(
       'ran:printf updated',
@@ -1576,6 +1585,7 @@ describe('ClaudeSessionService', () => {
       leafUuid: expect.any(String),
     })
     expect(JSON.stringify(entries)).not.toContain('SESSION_END_UNPERSISTED')
+    expect(JSON.stringify(entries)).not.toContain(secret)
     expect(
       entries.find(
         (entry) =>

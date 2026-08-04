@@ -116,3 +116,26 @@ Status: complete for canonical project memory reads and writes.
 
 Exit gate runs from the clean-installed tarball and verifies the written
 Markdown is stored in Claude's shared project-memory directory.
+
+## Sprint 8 — child-process credential boundary
+
+Status: complete for Bash, hooks, Claude version detection, and MCP transports.
+
+- [x] central credential-name detection, child environment sanitization, and
+      exact-value redaction
+- [x] startup-file-free Bash and hook shells with ordinary runtime variables
+      retained
+- [x] ambient credentials removed from Bash, hooks, version detection, and MCP
+      stdio children
+- [x] explicit MCP env/header grants retained with result, warning, error, and
+      definition redaction
+- [x] nested MCP error/cause/stack redaction and plain, NDJSON, and interactive
+      CLI diagnostic redaction
+- [x] raw hook JSON semantics retained while persisted diagnostics/context are
+      redacted
+- [x] Bash and hook output budgets enforced after credential redaction
+- [x] canary coverage proving shared hook JSONL contains no ambient credential
+
+Exit gate covers direct sanitizer behavior, real child processes, stdio and
+HTTP MCP servers, MCP failures, hook lifecycle persistence, package builds, and
+the existing compatibility/performance suite.
