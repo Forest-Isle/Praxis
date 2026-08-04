@@ -79,3 +79,15 @@ and an 11 MiB/20,000-entry transcript. Package gate passes from the installed
 tarball. Sprint exit gate passed on macOS with live Claude Code 2.1.208 probes
 and in a Linux Node 24 Bookworm container; CI repeats package and performance
 gates for Node 24/25 on current macOS and Ubuntu runners.
+
+## Sprint 5 — installed CLI end-to-end closure
+
+Status: complete for the packaged OpenAI-compatible runtime.
+
+- [x] installed npm bin to local HTTP/SSE provider request
+- [x] local `Read` plus default-ask `Bash` authorized by shared permission rules
+- [x] ordered tool-call/result continuation and native transcript persistence
+- [x] installed CLI resume with prior assistant context
+
+Exit gate runs from the clean-installed tarball on the Node 24/25 macOS and
+Ubuntu release matrix without contacting an external provider.

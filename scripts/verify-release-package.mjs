@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import {
   access,
@@ -8,6 +9,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join, relative, sep } from 'node:path'
 import { clearTimeout, setTimeout } from 'node:timers'
@@ -19,6 +21,7 @@ const commandTerminationGraceMs = 1_000
 const maxCommandOutputBytes = 4 * 1024 * 1024
 const maxPackageBytes = 1024 * 1024
 const maxUnpackedBytes = 4 * 1024 * 1024
+const maxProviderRequestBytes = 1024 * 1024
 
 function run(file, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -165,6 +168,339 @@ async function expectRejected(action, message) {
   throw new Error(`Expected rejection containing ${message}`)
 }
 
+function parseJsonLines(output) {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+}
+
+function resultFrom(output) {
+  const result = parseJsonLines(output).findLast(
+    (entry) => entry?.type === 'result',
+  )
+  if (!result) throw new Error(`Installed CLI returned no result: ${output}`)
+  return result
+}
+
+function findMessage(messages, start, predicate, description) {
+  const offset = messages.slice(start).findIndex(predicate)
+  if (offset < 0) throw new Error(`Provider request omitted ${description}`)
+  return start + offset
+}
+
+function matchesToolCall(message, expected) {
+  if (
+    message?.role !== 'assistant' ||
+    !Array.isArray(message.tool_calls) ||
+    message.tool_calls.length !== 1
+  ) {
+    return false
+  }
+  const call = message.tool_calls.find(
+    (candidate) =>
+      candidate?.type === 'function' &&
+      candidate?.id === expected.id &&
+      candidate?.function?.name === expected.name,
+  )
+  if (!call) return false
+  try {
+    const input = JSON.parse(call.function.arguments)
+    const expectedEntries = Object.entries(expected.input)
+    return (
+      input !== null &&
+      typeof input === 'object' &&
+      !Array.isArray(input) &&
+      Object.keys(input).length === expectedEntries.length &&
+      expectedEntries.every(([key, value]) => input[key] === value)
+    )
+  } catch {
+    return false
+  }
+}
+
+function assertToolExchange(messages, start, expected) {
+  const assistantIndex = findMessage(
+    messages,
+    start,
+    (message) => matchesToolCall(message, expected),
+    `${expected.name} assistant tool call ${expected.id}`,
+  )
+  if (assistantIndex !== start) {
+    throw new Error(`Provider request reordered ${expected.name} tool call`)
+  }
+  const resultIndex = findMessage(
+    messages,
+    assistantIndex + 1,
+    (message) =>
+      message?.role === 'tool' &&
+      message?.tool_call_id === expected.id &&
+      String(message?.content).includes(expected.marker),
+    `${expected.name} tool result ${expected.id}`,
+  )
+  if (resultIndex !== assistantIndex + 1) {
+    throw new Error(`Provider request reordered ${expected.name} tool result`)
+  }
+  return resultIndex + 1
+}
+
+function assertConversationEnd(messages, cursor, stage) {
+  if (cursor !== messages.length) {
+    throw new Error(`Provider request appended unexpected ${stage} messages`)
+  }
+}
+
+function assertProviderConversation(messages, stage) {
+  const firstConversationIndex = messages.findIndex(
+    (message) => message?.role !== 'system',
+  )
+  if (
+    firstConversationIndex < 0 ||
+    messages[firstConversationIndex]?.role !== 'user' ||
+    messages[firstConversationIndex]?.content !== 'read the release fixture'
+  ) {
+    throw new Error('Provider request has an invalid initial user prompt')
+  }
+  let cursor = firstConversationIndex + 1
+  cursor = assertToolExchange(messages, cursor, {
+    id: 'release_read',
+    name: 'Read',
+    input: { file_path: 'release-fixture.txt' },
+    marker: 'RELEASE_TOOL_MARKER',
+  })
+  if (stage === 'read') {
+    assertConversationEnd(messages, cursor, stage)
+    return
+  }
+  cursor = assertToolExchange(messages, cursor, {
+    id: 'release_permission',
+    name: 'Bash',
+    input: { command: "sed -n '1p' release-permission.txt" },
+    marker: 'RELEASE_PERMISSION_MARKER',
+  })
+  if (stage === 'tools') {
+    assertConversationEnd(messages, cursor, stage)
+    return
+  }
+  const assistantIndex = findMessage(
+    messages,
+    cursor,
+    (message) =>
+      message?.role === 'assistant' &&
+      message?.content === 'installed tool loop response',
+    'final assistant response',
+  )
+  if (assistantIndex !== cursor) {
+    throw new Error('Provider request reordered final assistant response')
+  }
+  const resumeIndex = findMessage(
+    messages,
+    assistantIndex + 1,
+    (message) =>
+      message?.role === 'user' && message?.content === 'release resume prompt',
+    'resume user prompt',
+  )
+  if (resumeIndex !== assistantIndex + 1) {
+    throw new Error('Provider request reordered resume user prompt')
+  }
+  assertConversationEnd(messages, resumeIndex + 1, stage)
+}
+
+function readProviderRequest(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    request.on('data', (chunk) => {
+      size += chunk.length
+      if (size > maxProviderRequestBytes) {
+        reject(
+          new Error(
+            `Provider request exceeded ${maxProviderRequestBytes} bytes`,
+          ),
+        )
+        request.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    request.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      } catch (error) {
+        reject(error)
+      }
+    })
+    request.on('error', reject)
+  })
+}
+
+function sendProviderEvents(response, events) {
+  response.writeHead(200, { 'content-type': 'text/event-stream' })
+  for (const event of events)
+    response.write(`data: ${JSON.stringify(event)}\n\n`)
+  response.end('data: [DONE]\n\n')
+}
+
+function hasToolSchema(tools, name, requiredProperty) {
+  const tool = tools.find(
+    (candidate) =>
+      candidate?.type === 'function' && candidate?.function?.name === name,
+  )
+  const parameters = tool?.function?.parameters
+  return (
+    typeof tool?.function?.description === 'string' &&
+    parameters?.type === 'object' &&
+    parameters?.properties?.[requiredProperty]?.type === 'string' &&
+    Array.isArray(parameters?.required) &&
+    parameters.required.includes(requiredProperty)
+  )
+}
+
+async function startProviderProbe() {
+  const requests = []
+  let failure
+  const server = createServer(async (request, response) => {
+    try {
+      if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
+        response.writeHead(404).end()
+        return
+      }
+      if (request.headers.authorization !== 'Bearer release-probe-key') {
+        throw new Error('Installed CLI sent unexpected provider authorization')
+      }
+      const body = await readProviderRequest(request)
+      if (
+        body?.model !== 'release-probe-model' ||
+        body?.stream !== true ||
+        !Array.isArray(body?.messages)
+      ) {
+        throw new Error('Installed CLI sent an invalid provider request')
+      }
+      requests.push(body)
+      if (requests.length === 1) {
+        if (
+          body.messages
+            .slice(0, -1)
+            .some((message) => message?.role !== 'system') ||
+          body.messages.at(-1)?.role !== 'user' ||
+          body.messages.at(-1)?.content !== 'read the release fixture'
+        ) {
+          throw new Error('Installed CLI omitted the initial user prompt')
+        }
+        if (
+          !Array.isArray(body.tools) ||
+          !hasToolSchema(body.tools, 'Read', 'file_path') ||
+          !hasToolSchema(body.tools, 'Bash', 'command')
+        ) {
+          throw new Error('Installed CLI omitted local tool schemas')
+        }
+        sendProviderEvents(response, [
+          {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'release_read',
+                      type: 'function',
+                      function: {
+                        name: 'Read',
+                        arguments: '{"file_path":"release-fixture.txt"}',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+          },
+        ])
+        return
+      }
+      if (requests.length === 2) {
+        assertProviderConversation(body.messages, 'read')
+        sendProviderEvents(response, [
+          {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'release_permission',
+                      type: 'function',
+                      function: {
+                        name: 'Bash',
+                        arguments:
+                          '{"command":"sed -n \'1p\' release-permission.txt"}',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+          },
+        ])
+        return
+      }
+      if (requests.length === 3) {
+        assertProviderConversation(body.messages, 'tools')
+        sendProviderEvents(response, [
+          {
+            choices: [{ delta: { content: 'installed tool loop response' } }],
+          },
+          {
+            choices: [],
+            usage: { prompt_tokens: 8, completion_tokens: 4 },
+          },
+        ])
+        return
+      }
+      if (requests.length === 4) {
+        assertProviderConversation(body.messages, 'resume')
+        sendProviderEvents(response, [
+          {
+            choices: [{ delta: { content: 'installed resume response' } }],
+          },
+        ])
+        return
+      }
+      throw new Error(`Unexpected provider request ${requests.length}`)
+    } catch (error) {
+      failure ??= error
+      if (!response.headersSent) {
+        response.writeHead(500, { 'content-type': 'application/json' })
+      }
+      response.end(JSON.stringify({ error: { message: String(error) } }))
+    }
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('Provider probe has no TCP address')
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    assertComplete() {
+      if (failure) throw failure
+      if (requests.length !== 4) {
+        throw new Error(`Provider probe received ${requests.length} requests`)
+      }
+    },
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()))
+      }),
+  }
+}
+
+let providerProbe
 try {
   const repositoryRoot = process.cwd()
   const manifest = JSON.parse(
@@ -277,6 +613,52 @@ try {
     throw new Error(`Installed CLI session smoke failed: ${sessions.stdout}`)
   }
 
+  await writeFile(
+    join(configRoot, 'settings.json'),
+    `${JSON.stringify({ permissions: { allow: ["Bash(sed -n '1p' release-permission.txt)"] } })}\n`,
+  )
+  await writeFile(
+    join(workDirectory, 'release-fixture.txt'),
+    'RELEASE_TOOL_MARKER\n',
+  )
+  await writeFile(
+    join(workDirectory, 'release-permission.txt'),
+    'RELEASE_PERMISSION_MARKER\n',
+  )
+  providerProbe = await startProviderProbe()
+  const providerEnvironment = {
+    ...process.env,
+    CLAUDE_CONFIG_DIR: configRoot,
+    PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+    PRAXIS_API_KEY: 'release-probe-key',
+    PRAXIS_MODEL: 'release-probe-model',
+    PRAXIS_BASE_URL: providerProbe.baseUrl,
+  }
+  const installedRun = await run(
+    praxis,
+    ['run', '--json', 'read the release fixture'],
+    { cwd: workDirectory, env: providerEnvironment },
+  )
+  const runResult = resultFrom(installedRun.stdout)
+  if (runResult.text !== 'installed tool loop response') {
+    throw new Error(`Installed CLI tool loop returned ${runResult.text}`)
+  }
+  const installedResume = await run(
+    praxis,
+    ['resume', '--json', runResult.sessionId, 'release resume prompt'],
+    { cwd: workDirectory, env: providerEnvironment },
+  )
+  const resumeResult = resultFrom(installedResume.stdout)
+  if (
+    resumeResult.sessionId !== runResult.sessionId ||
+    resumeResult.text !== 'installed resume response'
+  ) {
+    throw new Error('Installed CLI resume did not preserve the session')
+  }
+  providerProbe.assertComplete()
+  await providerProbe.close()
+  providerProbe = undefined
+
   const schemaModule = await import(
     pathToFileURL(
       join(installedPackage, 'dist', 'compatibility', 'claude', 'schema.js'),
@@ -345,8 +727,12 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, CLI smoke, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed CLI provider/tool/resume loop, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
   )
 } finally {
-  await rm(probeRoot, { recursive: true })
+  try {
+    if (providerProbe) await providerProbe.close()
+  } finally {
+    await rm(probeRoot, { recursive: true })
+  }
 }

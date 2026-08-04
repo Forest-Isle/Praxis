@@ -27,14 +27,17 @@ npm run test:package
 
 The gate builds, packs without lifecycle scripts, installs the tarball into an
 empty project, and runs the installed npm bin through `--version`, `--help`, and
-an isolated `sessions --json` smoke test. It also checks the package allowlist,
-size limits, version, license, and Claude write-safety matrix.
+an isolated `sessions --json` smoke test. It then drives the installed CLI
+through a real local HTTP/SSE provider, default-safe `Read`, a `Bash` call
+authorized by shared Claude permission settings, persisted tool results, final
+response, and resumed turn. It also checks the package allowlist, size limits,
+version, license, and Claude write-safety matrix.
 
 ## Runtime matrix
 
 | Surface                             | Matrix                                  | Expected behavior                            |
 | ----------------------------------- | --------------------------------------- | -------------------------------------------- |
-| Node.js                             | 24 and 25                               | clean tarball install and CLI smoke          |
+| Node.js                             | 24 and 25                               | clean install and full installed CLI loop    |
 | OS                                  | current macOS and Ubuntu GitHub runners | package and performance gates                |
 | Claude Code 2.1.208                 | verified native profile                 | read-write plus all compatibility probes     |
 | Claude Code 2.1.207, 2.1.209, 3.0.0 | unverified profiles                     | read-only parse; append and fork fail closed |
