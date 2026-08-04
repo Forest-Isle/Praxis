@@ -194,3 +194,19 @@ Status: complete for Claude Code 2.1.208 foreground Agent execution.
 
 Background execution, `SendMessage`, and parallel scheduling remain a later
 sprint and are rejected explicitly rather than serialized or simulated.
+
+## Sprint 12 — native image tool-result closure
+
+Status: complete for Claude Code 2.1.208 `Read` image results.
+
+- [x] provider-neutral bounded image payload and explicit provider capability
+- [x] PNG, JPEG, GIF, and WebP `Read` detection by file signature
+- [x] native Anthropic tool-result images and OpenAI-compatible image input
+- [x] main-chain and foreground-sidechain image persistence and projection
+- [x] strict native message/`toolUseResult` metadata consistency validation
+- [x] real Claude 2.1.208 resume of a Praxis-written image result
+
+User image attachments and MCP image-result writers remain closed pending
+separate Claude black-box envelopes. Exit gate covers focused runtime/provider/
+schema tests, real bidirectional projection, and the existing package,
+performance, recovery, subagent, and compatibility suites.

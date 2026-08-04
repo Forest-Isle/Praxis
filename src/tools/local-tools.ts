@@ -11,6 +11,7 @@ import {
 } from 'node:path'
 
 import type {
+  ModelImageMediaType,
   ModelToolCall,
   ModelToolDefinition,
   ToolExecutionContext,
@@ -46,7 +47,8 @@ interface ProcessResult {
 const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
   {
     name: 'Read',
-    description: 'Read a UTF-8 text file inside the active workspace.',
+    description:
+      'Read a UTF-8 text file or supported PNG, JPEG, GIF, or WebP image inside the active workspace.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -223,6 +225,35 @@ function joinedOutput(result: ProcessResult): string {
 
 function abortError(): DOMException {
   return new DOMException('Tool execution aborted', 'AbortError')
+}
+
+function imageMediaType(content: Buffer): ModelImageMediaType | null {
+  if (
+    content.length >= 8 &&
+    content
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) {
+    return 'image/png'
+  }
+  if (
+    content.length >= 3 &&
+    content[0] === 0xff &&
+    content[1] === 0xd8 &&
+    content[2] === 0xff
+  ) {
+    return 'image/jpeg'
+  }
+  const header = content.subarray(0, 6).toString('ascii')
+  if (header === 'GIF87a' || header === 'GIF89a') return 'image/gif'
+  if (
+    content.length >= 12 &&
+    content.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    content.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp'
+  }
+  return null
 }
 
 export class LocalToolRegistry implements ToolRegistry {
@@ -427,10 +458,24 @@ export class LocalToolRegistry implements ToolRegistry {
       if (metadata.size > this.maxFileBytes) {
         throw new Error(`File exceeds ${this.maxFileBytes} byte read limit`)
       }
-      const source = await handle.readFile('utf8')
-      const offset = optionalPositiveInteger(call.input, 'offset') ?? 1
+      const source = await handle.readFile()
+      const requestedOffset = optionalPositiveInteger(call.input, 'offset')
+      const offset = requestedOffset ?? 1
       const limit = optionalPositiveInteger(call.input, 'limit')
-      const lines = source.split('\n')
+      const mediaType = imageMediaType(source)
+      if (mediaType) {
+        if (requestedOffset !== undefined || limit !== undefined) {
+          throw new Error('offset and limit are not supported for images')
+        }
+        const base64 = source.toString('base64')
+        return {
+          content: '',
+          images: [{ type: 'image', mediaType, data: base64 }],
+          isError: false,
+          accessedPaths: [filePath],
+        }
+      }
+      const lines = source.toString('utf8').split('\n')
       const content = lines
         .slice(offset - 1, limit === undefined ? undefined : offset - 1 + limit)
         .join('\n')

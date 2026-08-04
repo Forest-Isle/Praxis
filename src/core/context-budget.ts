@@ -44,11 +44,14 @@ export function estimateTextTokens(value: string): number {
 function estimateMessageTokens(message: ModelMessage): number {
   let tokens = 4 + estimateTextTokens(message.role)
   if (message.role === 'tool') {
-    return (
-      tokens +
+    tokens +=
       estimateTextTokens(message.toolCallId) +
       estimateTextTokens(message.content)
-    )
+    for (const image of message.images ?? []) {
+      tokens +=
+        8 + estimateTextTokens(image.mediaType) + estimateTextTokens(image.data)
+    }
+    return tokens + (message.isError ? 1 : 0)
   }
   tokens += estimateTextTokens(message.content)
   if (message.role !== 'assistant' || !message.toolCalls) return tokens

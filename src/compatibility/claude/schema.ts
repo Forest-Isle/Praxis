@@ -316,14 +316,24 @@ function validateUserContent(content: unknown): void {
     }
     if (block.type === 'text' && typeof block.text === 'string') continue
     if (
-      block.type === 'tool_result' &&
-      isNonEmptyString(block.tool_use_id) &&
-      typeof block.content === 'string' &&
-      (block.is_error === undefined || typeof block.is_error === 'boolean')
+      block.type !== 'tool_result' ||
+      !isNonEmptyString(block.tool_use_id) ||
+      (block.is_error !== undefined && typeof block.is_error !== 'boolean')
     ) {
-      continue
+      throw new Error('Claude transcript has invalid user content block')
     }
-    throw new Error('Claude transcript has invalid user content block')
+    if (typeof block.content === 'string') continue
+    if (!Array.isArray(block.content) || block.content.length === 0) {
+      throw new Error('Claude transcript has invalid tool result content')
+    }
+    if (
+      block.content.length !== 1 ||
+      !isRecord(block.content[0]) ||
+      block.content[0].type !== 'image'
+    ) {
+      throw new Error('Claude transcript has invalid tool result content')
+    }
+    validateMediaSource(block.content[0].source)
   }
 }
 
@@ -359,19 +369,96 @@ function validateAssistantMessage(message: Record<string, unknown>): void {
   }
 }
 
-function hasImageContent(message: Record<string, unknown>): boolean {
-  if (!Array.isArray(message.content)) return false
-  return message.content.some((value) => {
-    if (!isRecord(value)) return false
-    if (value.type === 'image') return true
-    return (
-      value.type === 'tool_result' &&
-      Array.isArray(value.content) &&
-      value.content.some(
-        (nestedValue) => isRecord(nestedValue) && nestedValue.type === 'image',
-      )
-    )
-  })
+const APPENDABLE_IMAGE_MEDIA_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
+
+function decodedBase64Size(data: string): number | null {
+  if (
+    data.length === 0 ||
+    data.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(data)
+  ) {
+    return null
+  }
+  const decoded = Buffer.from(data, 'base64')
+  return decoded.toString('base64') === data ? decoded.length : null
+}
+
+function validateImageToolResultMetadata(
+  entry: ClaudeTranscriptEntry,
+  message: Record<string, unknown>,
+): void {
+  const hasImageMetadata =
+    isRecord(entry.toolUseResult) && entry.toolUseResult.type === 'image'
+  if (!Array.isArray(message.content)) {
+    if (hasImageMetadata) {
+      throw new Error('Claude image tool result metadata is invalid')
+    }
+    return
+  }
+  const toolResults = message.content.filter(
+    (block): block is Record<string, unknown> =>
+      isRecord(block) && block.type === 'tool_result',
+  )
+  const images = toolResults.flatMap((toolResult) =>
+    Array.isArray(toolResult.content)
+      ? toolResult.content.filter(
+          (block): block is Record<string, unknown> =>
+            isRecord(block) && block.type === 'image',
+        )
+      : [],
+  )
+  const hasTopLevelImage = message.content.some(
+    (block) => isRecord(block) && block.type === 'image',
+  )
+  if (images.length === 0 && !hasTopLevelImage && !hasImageMetadata) return
+  const toolResult = toolResults.find(
+    (block) =>
+      Array.isArray(block.content) &&
+      block.content.some(
+        (nested) => isRecord(nested) && nested.type === 'image',
+      ),
+  )
+  const image = images[0]
+  if (
+    entry.type !== 'user' ||
+    hasTopLevelImage ||
+    message.content.length !== 1 ||
+    toolResults.length !== 1 ||
+    images.length !== 1 ||
+    !toolResult ||
+    toolResult.is_error !== undefined ||
+    !Array.isArray(toolResult.content) ||
+    toolResult.content.length !== 1 ||
+    !image ||
+    !isRecord(image.source) ||
+    image.source.type !== 'base64' ||
+    !isNonEmptyString(image.source.media_type) ||
+    !APPENDABLE_IMAGE_MEDIA_TYPES.has(image.source.media_type) ||
+    !isNonEmptyString(image.source.data) ||
+    !isRecord(entry.toolUseResult) ||
+    entry.toolUseResult.type !== 'image' ||
+    !isRecord(entry.toolUseResult.file)
+  ) {
+    throw new Error('Claude image tool result metadata is invalid')
+  }
+  const file = entry.toolUseResult.file
+  const decodedSize = decodedBase64Size(image.source.data)
+  if (
+    file.base64 !== image.source.data ||
+    file.type !== image.source.media_type ||
+    !Number.isSafeInteger(file.originalSize) ||
+    typeof file.originalSize !== 'number' ||
+    file.originalSize < 0 ||
+    decodedSize === null ||
+    file.originalSize !== decodedSize
+  ) {
+    throw new Error('Claude image tool result metadata is invalid')
+  }
 }
 
 function validateNestedMemoryAttachment(entry: ClaudeTranscriptEntry): void {
@@ -617,9 +704,7 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   if (role !== entry.type) {
     throw new Error('Claude transcript message role does not match entry type')
   }
-  if (hasImageContent(entry.message)) {
-    throw new Error('Praxis cannot append Claude image results yet')
-  }
+  validateImageToolResultMetadata(entry, entry.message)
 
   if (entry.type === 'user') {
     validateUserContent(entry.message.content)
@@ -674,9 +759,7 @@ function validateSidechainEntry(entry: ClaudeTranscriptEntry): void {
   if (!isRecord(entry.message) || entry.message.role !== entry.type) {
     throw new Error('Claude sidechain entry has invalid message role')
   }
-  if (hasImageContent(entry.message)) {
-    throw new Error('Praxis cannot append Claude sidechain images yet')
-  }
+  validateImageToolResultMetadata(entry, entry.message)
   if (entry.type === 'user') {
     if (!isNonEmptyString(entry.promptId)) {
       throw new Error('Claude sidechain user entry is missing promptId')

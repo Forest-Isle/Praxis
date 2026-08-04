@@ -33,6 +33,7 @@ import {
 import {
   AgentRunCancelledError,
   AgentRuntime,
+  type ModelImage,
   type ModelToolCall,
   type ModelProvider,
   type ModelUsage,
@@ -402,6 +403,7 @@ export class ClaudeSessionService {
           call: ModelToolCall,
           toolResult: {
             content: string
+            images?: readonly ModelImage[]
             isError: boolean
             accessedPaths?: readonly string[]
             followUpUserMessages?: readonly string[]
@@ -414,6 +416,7 @@ export class ClaudeSessionService {
                 type: 'tool-result',
                 toolCallId: call.id,
                 content: toolResult.content,
+                ...(toolResult.images ? { images: toolResult.images } : {}),
                 isError: toolResult.isError,
                 ...(toolResult.nativeToolUseResult
                   ? { nativeToolUseResult: toolResult.nativeToolUseResult }

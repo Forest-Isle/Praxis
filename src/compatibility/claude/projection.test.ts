@@ -260,7 +260,14 @@ describe('Claude transcript projection', () => {
       {
         role: 'tool',
         toolCallId: 'call_read_fixture',
-        content: '[image tool result omitted: unsupported media]',
+        content: '',
+        images: [
+          {
+            type: 'image',
+            mediaType: 'image/png',
+            data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+          },
+        ],
         isError: false,
       },
       {

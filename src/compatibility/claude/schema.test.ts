@@ -392,9 +392,17 @@ describe('ClaudeSchemaAdapter', () => {
         agentId: '',
       }),
     ).toThrow('missing agentId')
-    expect(() => adapter.serializeForAppend(imageResult)).toThrow(
-      'image results',
+    expect(adapter.serializeForAppend(imageResult)).toBe(
+      JSON.stringify(imageResult),
     )
+    expect(
+      adapter.serializeForSidechainAppend({
+        ...imageResult,
+        isSidechain: true,
+        entrypoint: 'cli',
+        agentId: '0123456789abcdef',
+      }),
+    ).toContain('"type":"image"')
     expect(adapter.serializeForFork(imageResult)).toBe(
       JSON.stringify(imageResult),
     )
@@ -413,6 +421,60 @@ describe('ClaudeSchemaAdapter', () => {
         },
       }),
     ).toThrow('invalid user content block')
+    expect(() =>
+      adapter.serializeForAppend({
+        ...imageResult,
+        toolUseResult: {
+          type: 'image',
+          file: {
+            base64: 'different',
+            type: 'image/png',
+            originalSize: 9,
+          },
+        },
+      }),
+    ).toThrow('image tool result metadata')
+    const imageMessage = imageResult.message as Record<string, unknown>
+    const imageToolResult = (
+      imageMessage.content as Record<string, unknown>[]
+    )[0]
+    const textArrayResult = {
+      ...imageResult,
+      toolUseResult: undefined,
+      message: {
+        ...imageMessage,
+        content: [
+          {
+            ...imageToolResult,
+            content: [{ type: 'text', text: 'unexpected' }],
+          },
+        ],
+      },
+    }
+    expect(() => adapter.serializeForAppend(textArrayResult)).toThrow(
+      'invalid tool result content',
+    )
+    expect(() =>
+      adapter.serializeForAppend({
+        ...textArrayResult,
+        toolUseResult: imageResult.toolUseResult,
+      }),
+    ).toThrow('image tool result metadata')
+    const textMessageWithImageMetadata = {
+      ...imageResult,
+      message: { role: 'user', content: 'unexpected' },
+    }
+    expect(() =>
+      adapter.serializeForAppend(textMessageWithImageMetadata),
+    ).toThrow('image tool result metadata')
+    expect(() =>
+      adapter.serializeForSidechainAppend({
+        ...textMessageWithImageMetadata,
+        isSidechain: true,
+        entrypoint: 'cli',
+        agentId: '0123456789abcdef',
+      }),
+    ).toThrow('image tool result metadata')
     expect(() =>
       adapter.serializeForFork({
         ...imageResult,

@@ -18,6 +18,12 @@ function providerFrom(complete: ModelProvider['complete']): ModelProvider {
   }
 }
 
+const image = {
+  type: 'image' as const,
+  mediaType: 'image/png' as const,
+  data: 'aGVsbG8=',
+}
+
 describe('AgentRuntime', () => {
   it('emits typed state, text, usage, and completion events', async () => {
     const provider = providerFrom(async function* () {
@@ -245,6 +251,161 @@ describe('AgentRuntime', () => {
       callId: 'call_read',
       content: '# Praxis',
       isError: false,
+    })
+  })
+
+  it('forwards image tool results only to image-capable providers', async () => {
+    const requests: ModelRequest[] = []
+    let turn = 0
+    const provider: ModelProvider = {
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        images: true,
+      },
+      async *complete(request) {
+        requests.push(request)
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_image', name: 'Read', input: {} },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'seen' }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return { content: '', images: [image], isError: false }
+      },
+    }
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await runtime.run({ messages: [{ role: 'user', content: 'inspect' }] })
+
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'call_image',
+      content: '',
+      images: [image],
+      isError: false,
+    })
+
+    const unsupportedResults: unknown[] = []
+    let unsupportedTurn = 0
+    const unsupported = new AgentRuntime(
+      providerFrom(async function* () {
+        if (unsupportedTurn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_image', name: 'Read', input: {} },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'fallback' }
+      }),
+      undefined,
+      {
+        tools,
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+    await unsupported.run({
+      messages: [{ role: 'user', content: 'inspect' }],
+      observer: {
+        async assistantCompleted() {},
+        async toolCompleted(_call, result) {
+          unsupportedResults.push(result)
+        },
+      },
+    })
+    expect(unsupportedResults).toEqual([
+      {
+        content: 'Provider does not support image tool results',
+        isError: true,
+      },
+    ])
+  })
+
+  it('replaces image results restored before each unsupported provider request', async () => {
+    const requests: ModelRequest[] = []
+    let turn = 0
+    const provider = providerFrom(async function* (request) {
+      requests.push(request)
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_reload', name: 'Read', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'fallback' }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return { content: 'temporary', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await runtime.run({
+      messages: [
+        { role: 'user', content: 'inspect prior result' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'call_prior', name: 'Read', input: {} }],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'call_prior',
+          content: '',
+          images: [image],
+          isError: false,
+        },
+      ],
+      reloadMessages: async () => [
+        { role: 'user', content: 'inspect reloaded result' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'call_reload', name: 'Read', input: {} }],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'call_reload',
+          content: '',
+          images: [image],
+          isError: false,
+        },
+      ],
+    })
+
+    const fallback = {
+      role: 'tool',
+      toolCallId: 'call_prior',
+      content: 'Provider does not support image tool results',
+      isError: true,
+    }
+    expect(requests[0]?.messages.at(-1)).toEqual(fallback)
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      ...fallback,
+      toolCallId: 'call_reload',
     })
   })
 

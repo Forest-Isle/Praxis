@@ -191,7 +191,9 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
     return {
       role: 'tool',
       tool_call_id: message.toolCallId,
-      content: message.content,
+      content:
+        message.content ||
+        (message.images?.length ? 'Image tool result attached.' : ''),
     }
   }
   if (message.role === 'assistant' && message.toolCalls?.length) {
@@ -209,6 +211,34 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
     }
   }
   return { role: message.role, content: message.content }
+}
+
+function serializeMessages(
+  messages: readonly ModelMessage[],
+): Record<string, unknown>[] {
+  const serialized: Record<string, unknown>[] = []
+  let pendingImages: Record<string, unknown>[] = []
+  const flushImages = () => {
+    if (pendingImages.length === 0) return
+    serialized.push({ role: 'user', content: pendingImages })
+    pendingImages = []
+  }
+  for (const message of messages) {
+    if (message.role !== 'tool') flushImages()
+    serialized.push(serializeMessage(message))
+    if (message.role === 'tool') {
+      pendingImages.push(
+        ...(message.images ?? []).map((image) => ({
+          type: 'image_url',
+          image_url: {
+            url: `data:${image.mediaType};base64,${image.data}`,
+          },
+        })),
+      )
+    }
+  }
+  flushImages()
+  return serialized
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
@@ -234,6 +264,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       streaming: true,
       usage: true,
       tools: true,
+      images: true,
       ...(options.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: options.contextWindowTokens }),
@@ -257,7 +288,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       },
       body: JSON.stringify({
         model: this.options.model,
-        messages: request.messages.map(serializeMessage),
+        messages: serializeMessages(request.messages),
         stream: true,
         stream_options: { include_usage: true },
         ...(request.tools?.length

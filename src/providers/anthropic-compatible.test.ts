@@ -16,6 +16,7 @@ describe('AnthropicCompatibleProvider', () => {
       streaming: true,
       usage: true,
       tools: true,
+      images: true,
       contextWindowTokens: 200_000,
     })
     expect(
@@ -27,6 +28,64 @@ describe('AnthropicCompatibleProvider', () => {
           maxOutputTokens: 0,
         }),
     ).toThrow('positive integer')
+  })
+
+  it('serializes image tool results as native Anthropic content blocks', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          [
+            'data: {"type":"message_start","message":{}}\n\n',
+            'data: {"type":"message_delta","usage":{}}\n\n',
+            'data: {"type":"message_stop"}\n\n',
+          ].join(''),
+        )
+      },
+    })
+
+    const events = []
+    for await (const event of provider.complete({
+      messages: [
+        {
+          role: 'tool',
+          toolCallId: 'call_image',
+          content: '',
+          images: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+          isError: false,
+        },
+      ],
+    })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([])
+    expect(body?.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call_image',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: 'aGVsbG8=',
+                },
+              },
+            ],
+            is_error: false,
+          },
+        ],
+      },
+    ])
   })
 
   it('serializes Anthropic messages and streams text with aggregate usage', async () => {

@@ -58,6 +58,10 @@ Rules:
     redaction so executable input/permission semantics remain unchanged. Plain,
     structured, and interactive CLI diagnostics redact ambient credentials, and
     Bash/hook output limits are enforced after redaction.
+13. Image tool results cross core as typed base64 payloads only when the active
+    provider advertises image input. Unsupported providers receive an explicit
+    error result; Praxis never persists an image the next model turn cannot
+    consume. Native image writes require exact message/metadata pairing.
 
 ## Core ports
 
@@ -133,6 +137,7 @@ Included:
 - one foreground agent loop;
 - Anthropic-compatible and OpenAI-compatible provider adapters;
 - file read/write/edit, search, shell, and MCP tools;
+- PNG, JPEG, GIF, and WebP results from the local `Read` tool;
 - local permissions, sessions, resume/fork, compaction, CLAUDE.md, auto memory,
   skills, commands, agents, hooks, and MCP compatible subset;
 - text and structured JSON output.
@@ -144,6 +149,8 @@ Deferred:
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
 - transcript migration across unsupported Claude versions.
+- user image attachments and MCP-specific image-result writers until their
+  native Claude profiles are validated.
 
 ## Acceptance gate
 

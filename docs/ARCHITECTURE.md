@@ -73,8 +73,11 @@ See [RELEASE.md](RELEASE.md).
 Provider selection stays at the CLI composition root. `core` receives the same
 `ModelProvider` port whether the adapter serializes OpenAI Chat Completions or
 Anthropic Messages. Both adapters expose streaming text, usage, tool schemas,
-tool calls, cancellation, retry classification, and explicit context-window
-capabilities without putting provider-native payloads in shared transcripts.
+tool calls, image input, cancellation, retry classification, and explicit
+context-window capabilities without putting provider-native payloads in shared
+transcripts. Image tool results stay provider-neutral in core: Anthropic keeps
+them nested under `tool_result`, while OpenAI-compatible requests pair the tool
+result with a following user `image_url` message.
 
 ## Shared Claude data plane
 

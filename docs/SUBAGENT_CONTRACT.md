@@ -29,6 +29,8 @@ use the same precedence as other Claude-compatible tool permissions.
    reused from the main runtime. Nested foreground Agent calls use the same
    path with incremented spawn depth.
 6. Completed assistant and tool-result records append immediately to sidechain.
+   Validated local `Read` image results retain the same native image envelope as
+   the main chain.
 7. Main tool result contains returned text and native structured execution
    metadata, then the main agent continues.
 

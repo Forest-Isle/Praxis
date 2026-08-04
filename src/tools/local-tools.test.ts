@@ -31,6 +31,43 @@ afterEach(async () => {
 })
 
 describe('LocalToolRegistry', () => {
+  it('reads supported images as bounded native multimodal results', async () => {
+    const { cwd } = await workspace()
+    const base64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII='
+    const imagePath = join(cwd, 'pixel.png')
+    await writeFile(imagePath, Buffer.from(base64, 'base64'))
+    const registry = new LocalToolRegistry({ cwd })
+    const context = { cwd }
+    const call = await registry.prepare(
+      {
+        id: 'read-image',
+        name: 'Read',
+        input: { file_path: 'pixel.png' },
+      },
+      context,
+    )
+
+    await expect(registry.execute(call, context)).resolves.toEqual({
+      content: '',
+      images: [{ type: 'image', mediaType: 'image/png', data: base64 }],
+      isError: false,
+      accessedPaths: [await realpath(imagePath)],
+    })
+    for (const input of [
+      { file_path: 'pixel.png', offset: 1 },
+      { file_path: 'pixel.png', limit: 1 },
+    ]) {
+      const sliced = await registry.prepare(
+        { id: 'read-image-lines', name: 'Read', input },
+        context,
+      )
+      await expect(registry.execute(sliced, context)).rejects.toThrow(
+        'offset and limit are not supported for images',
+      )
+    }
+  })
+
   it('provides bounded read, write, edit, search, and shell tools', async () => {
     const { cwd } = await workspace()
     await writeFile(join(cwd, 'source.txt'), 'alpha\nbeta\nalpha\n')

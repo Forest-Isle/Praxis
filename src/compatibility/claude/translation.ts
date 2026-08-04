@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { ClaudeTranscriptEntry } from './schema.js'
 import type { ClaudeConditionalRule } from './shared-resources.js'
 import { indexClaudeToolLinks } from './tool-links.js'
+import type { ModelImage } from '../../core/runtime.js'
 import type {
   ClaudeHookExecution,
   ClaudeHookOutcome,
@@ -40,6 +41,7 @@ export type ProviderPersistenceEvent =
       type: 'tool-result'
       toolCallId: string
       content: string
+      images?: readonly ModelImage[]
       isError: boolean
       nativeToolUseResult?: Record<string, unknown>
     }
@@ -371,6 +373,28 @@ export function translateProviderEvents(
             `Tool result has no matching tool call: ${event.toolCallId}`,
           )
         }
+        if (event.images && event.images.length !== 1) {
+          throw new Error('Claude image tool results require exactly one image')
+        }
+        if (event.images && event.content.length > 0) {
+          throw new Error('Claude image tool results cannot include text')
+        }
+        if (event.images && event.isError) {
+          throw new Error('Claude image tool results cannot be errors')
+        }
+        const image = event.images?.[0]
+        const toolResultContent = image
+          ? [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: image.mediaType,
+                  data: image.data,
+                },
+              },
+            ]
+          : event.content
         entry = {
           ...common,
           type: 'user',
@@ -382,18 +406,29 @@ export function translateProviderEvents(
               {
                 type: 'tool_result',
                 tool_use_id: event.toolCallId,
-                content: event.content,
-                is_error: event.isError,
+                content: toolResultContent,
+                ...(image ? {} : { is_error: event.isError }),
               },
             ],
           },
-          toolUseResult: event.nativeToolUseResult ?? {
-            stdout: event.isError ? '' : event.content,
-            stderr: event.isError ? event.content : '',
-            interrupted: false,
-            isImage: false,
-            noOutputExpected: false,
-          },
+          toolUseResult:
+            event.nativeToolUseResult ??
+            (image
+              ? {
+                  type: 'image',
+                  file: {
+                    base64: image.data,
+                    type: image.mediaType,
+                    originalSize: Buffer.from(image.data, 'base64').length,
+                  },
+                }
+              : {
+                  stdout: event.isError ? '' : event.content,
+                  stderr: event.isError ? event.content : '',
+                  interrupted: false,
+                  isImage: false,
+                  noOutputExpected: false,
+                }),
         }
         break
       }

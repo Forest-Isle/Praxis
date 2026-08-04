@@ -10,9 +10,10 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 11 native foreground subagents are complete on top of resilient sessions,
-native full-history forks, child-process credential boundaries, shared memory,
-and native Anthropic/OpenAI-compatible providers.
+Sprint 12 image tool-result support is complete on top of native foreground
+subagents, resilient sessions, native full-history forks, child-process
+credential boundaries, shared memory, and native Anthropic/OpenAI-compatible
+providers.
 Running `praxis` in a
 TTY opens an
 Ink session UI with streaming
@@ -26,6 +27,13 @@ shell tools execute behind Claude-compatible local permission rules with path
 checks, timeouts, cancellation, and bounded output. `Read`, `Write`, and `Edit`
 also accept the canonical shared Claude project-memory root; other external
 paths and memory-root symlink escapes remain rejected.
+`Read` detects PNG, JPEG, GIF, and WebP by file signature and returns bounded
+provider-neutral image data. Anthropic receives a native image tool-result
+block; OpenAI-compatible providers receive a paired tool confirmation and user
+`image_url`. The image persists in Claude Code 2.1.208's native
+`tool_result`/`toolUseResult` envelope and survives Praxis or Claude resume.
+User image attachments and MCP image-result writers remain disabled until
+their distinct native envelopes pass clean-room probes.
 
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
@@ -197,6 +205,7 @@ npm run test:conditional-compat
 npm run test:context-compat
 npm run test:extension-compat
 npm run test:hook-compat
+npm run test:image-compat
 npm run test:mcp-compat
 npm run test:permission-compat
 npm run test:runtime-compat

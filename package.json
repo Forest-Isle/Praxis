@@ -26,6 +26,7 @@
     "test:compaction-compat": "npm run build && node scripts/verify-compaction-compatibility.mjs",
     "test:extension-compat": "npm run build && node scripts/verify-extension-compatibility.mjs",
     "test:hook-compat": "npm run build && node scripts/verify-hook-compatibility.mjs",
+    "test:image-compat": "npm run build && node scripts/verify-image-compatibility.mjs",
     "test:mcp-compat": "npm run build && node scripts/verify-mcp-compatibility.mjs",
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",

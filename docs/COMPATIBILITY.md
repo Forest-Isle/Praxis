@@ -189,7 +189,11 @@ before append, and every `tool_result` must match the historical `tool_use` plus
 only through the bounded runtime in `docs/SUBAGENT_CONTRACT.md` and its
 write/resume probes. Image, tool-denial, background-agent, messaging, and other
 entry writers remain disabled until their runtime implementations and probes
-pass.
+pass. The validated exception is exactly one successful PNG, JPEG, GIF, or
+WebP image nested in a `tool_result`, with matching base64, media type, and
+decoded byte size in native `toolUseResult.file` metadata. It uses the same
+bounded runtime path on main chains and foreground sidechains. Top-level user
+image attachments and MCP-specific image results remain write-disabled.
 
 Fork uses a separate versioned creation profile because it copies existing
 native records rather than appending newly generated records. For Claude Code
@@ -211,8 +215,9 @@ other copied JSON token, including integers beyond JavaScript's safe range.
 
 Claude 2.1.208 fixtures cover text, tool use/results, manual compaction,
 subagent sidechains, image results, non-zero tool errors, and user interruption.
-Compaction alone has passed its native writer/reopen gate; sidechains, images,
-and tool-denial entries remain explicitly rejected by the append adapter.
+Compaction, foreground sidechains, and `Read` image results have passed their
+native writer/reopen gates. Tool-denial and other unimplemented entry writers
+remain explicitly rejected by the append adapter.
 
 ## Resource ownership and current access
 

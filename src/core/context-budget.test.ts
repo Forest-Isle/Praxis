@@ -33,6 +33,23 @@ describe('ContextBudget', () => {
     expect(withTools).toBeGreaterThan(
       estimateModelRequestTokens([{ role: 'user', content: 'hello' }]),
     )
+    expect(
+      estimateModelRequestTokens([
+        {
+          role: 'tool',
+          toolCallId: 'read-image',
+          content: '',
+          images: [
+            {
+              type: 'image',
+              mediaType: 'image/png',
+              data: 'a'.repeat(400),
+            },
+          ],
+          isError: false,
+        },
+      ]),
+    ).toBeGreaterThan(plain)
   })
 
   it('reports available and overflow tokens and fails actionably', () => {

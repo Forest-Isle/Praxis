@@ -68,6 +68,63 @@ describe('OpenAICompatibleProvider', () => {
     })
   })
 
+  it('serializes image tool results as a paired tool result and user image', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response('data: [DONE]\n\n')
+      },
+    })
+
+    const events = []
+    for await (const event of provider.complete({
+      messages: [
+        {
+          role: 'tool',
+          toolCallId: 'call_image',
+          content: '',
+          images: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+          isError: false,
+        },
+        {
+          role: 'tool',
+          toolCallId: 'call_text',
+          content: 'text result',
+          isError: false,
+        },
+      ],
+    })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([])
+    expect(body?.messages).toEqual([
+      {
+        role: 'tool',
+        tool_call_id: 'call_image',
+        content: 'Image tool result attached.',
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_text',
+        content: 'text result',
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            image_url: { url: 'data:image/png;base64,aGVsbG8=' },
+          },
+        ],
+      },
+    ])
+  })
+
   it('classifies retryable HTTP failures', async () => {
     const provider = new OpenAICompatibleProvider({
       baseUrl: 'https://provider.example/v1',

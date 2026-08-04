@@ -22,8 +22,18 @@ export type ModelMessage =
       role: 'tool'
       toolCallId: string
       content: string
+      images?: readonly ModelImage[]
       isError: boolean
     }
+
+export type ModelImageMediaType =
+  'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+
+export interface ModelImage {
+  type: 'image'
+  mediaType: ModelImageMediaType
+  data: string
+}
 
 export interface ModelToolCall {
   id: string
@@ -57,6 +67,7 @@ export interface ModelProviderCapabilities {
   streaming: boolean
   usage: boolean
   tools: boolean
+  images?: boolean
   contextWindowTokens?: number
 }
 
@@ -87,6 +98,7 @@ export type RuntimeEvent =
 
 export interface ToolExecutionResult {
   content: string
+  images?: readonly ModelImage[]
   isError: boolean
   usage?: ModelUsage
   accessedPaths?: readonly string[]
@@ -192,12 +204,30 @@ export class AgentRunCancelledError extends Error {
 export type RuntimeEventSink = (event: RuntimeEvent) => void
 
 const emptyUsage = (): ModelUsage => ({ inputTokens: 0, outputTokens: 0 })
+const unsupportedImageResult = 'Provider does not support image tool results'
 
 function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
   return {
     inputTokens: left.inputTokens + right.inputTokens,
     outputTokens: left.outputTokens + right.outputTokens,
   }
+}
+
+function prepareProviderMessages(
+  messages: readonly ModelMessage[],
+  supportsImages: boolean,
+): ModelMessage[] {
+  if (supportsImages) return [...messages]
+  return messages.map((message) =>
+    message.role === 'tool' && message.images?.length
+      ? {
+          role: 'tool',
+          toolCallId: message.toolCallId,
+          content: unsupportedImageResult,
+          isError: true,
+        }
+      : message,
+  )
 }
 
 export class AgentRuntime {
@@ -226,7 +256,12 @@ export class AgentRuntime {
     try {
       for (let turn = 0; turn < maxModelTurns; turn += 1) {
         this.emit({ type: 'state', state: 'awaiting-model' })
-        const providerRequest: ModelRequest = { messages: [...messages] }
+        const providerRequest: ModelRequest = {
+          messages: prepareProviderMessages(
+            messages,
+            this.provider.capabilities.images === true,
+          ),
+        }
         if (definitions.length > 0) providerRequest.tools = definitions
         if (request.signal) providerRequest.signal = request.signal
 
@@ -315,6 +350,7 @@ export class AgentRuntime {
             role: 'tool',
             toolCallId: call.id,
             content: result.content,
+            ...(result.images ? { images: result.images } : {}),
             isError: result.isError,
           })
           followUpUserMessages.push(...(result.followUpUserMessages ?? []))
@@ -388,7 +424,15 @@ export class AgentRuntime {
     call: ModelToolCall,
     request: AgentToolRecoveryRequest,
   ): Promise<ToolExecutionResult> {
-    const result = await this.executeTool(call, request)
+    const executed = await this.executeTool(call, request)
+    const result =
+      executed.images?.length && this.provider.capabilities.images !== true
+        ? {
+            content: unsupportedImageResult,
+            isError: true,
+            ...(executed.usage ? { usage: executed.usage } : {}),
+          }
+        : executed
     this.emit({ type: 'state', state: 'persisting-results' })
     await request.observer?.toolCompleted(call, result)
     this.emit({

@@ -14,6 +14,10 @@ const toolFixtureUrl = new URL(
   '../../../test/fixtures/claude-code/2.1.208/tool-session.jsonl',
   import.meta.url,
 )
+const mediaFixtureUrl = new URL(
+  '../../../test/fixtures/claude-code/2.1.208/media-error-session.jsonl',
+  import.meta.url,
+)
 
 describe('provider to Claude transcript translation', () => {
   it('creates native agent-setting metadata and text-block user content', () => {
@@ -387,6 +391,54 @@ describe('provider to Claude transcript translation', () => {
       nativeToolResult.sourceToolAssistantUUID,
     )
     expect(toolResult?.toolUseResult).toEqual(nativeToolResult.toolUseResult)
+  })
+
+  it('matches the Claude 2.1.208 black-box image tool-result envelope', async () => {
+    const [, imageResultLine] = (await readFile(mediaFixtureUrl, 'utf8'))
+      .trimEnd()
+      .split('\n')
+    if (!imageResultLine) throw new Error('Invalid image fixture')
+    const native = JSON.parse(imageResultLine)
+    const image = {
+      type: 'image' as const,
+      mediaType: 'image/png' as const,
+      data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+    }
+
+    const [entry] = translateProviderEvents(
+      [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_read_fixture',
+          content: '',
+          images: [image],
+          isError: false,
+        },
+      ],
+      {
+        sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        parentUuid: '22222222-2222-4222-8222-222222222222',
+        cwd: '/tmp/praxis-fixture',
+        claudeVersion: '2.1.208',
+        gitBranch: 'HEAD',
+        history: [
+          {
+            type: 'assistant',
+            uuid: '22222222-2222-4222-8222-222222222222',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 'call_read_fixture' }],
+            },
+          },
+        ],
+        createUuid: () => '44444444-4444-4444-8444-444444444444',
+        now: () => '2026-08-03T08:00:01.000Z',
+      },
+    )
+
+    expect(entry?.message).toEqual(native.message)
+    expect(entry?.toolUseResult).toEqual(native.toolUseResult)
+    expect(entry?.sourceToolAssistantUUID).toBe(native.sourceToolAssistantUUID)
   })
 
   it('can persist a recovered tool result in a later translation call', () => {

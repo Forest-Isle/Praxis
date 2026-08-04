@@ -414,11 +414,26 @@ function serializeMessages(messages: readonly ModelMessage[]): {
       continue
     }
     if (message.role === 'tool') {
+      const content = message.images?.length
+        ? [
+            ...(message.content.length > 0
+              ? [{ type: 'text', text: message.content }]
+              : []),
+            ...message.images.map((image) => ({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: image.mediaType,
+                data: image.data,
+              },
+            })),
+          ]
+        : message.content
       append('user', [
         {
           type: 'tool_result',
           tool_use_id: message.toolCallId,
-          content: message.content,
+          content,
           is_error: message.isError,
         },
       ])
@@ -464,6 +479,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       streaming: true,
       usage: true,
       tools: true,
+      images: true,
       ...(options.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: options.contextWindowTokens }),

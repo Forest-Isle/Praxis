@@ -1,4 +1,9 @@
-import type { ModelMessage, ModelToolCall } from '../../core/runtime.js'
+import type {
+  ModelImage,
+  ModelImageMediaType,
+  ModelMessage,
+  ModelToolCall,
+} from '../../core/runtime.js'
 import type { ClaudeTranscriptEntry } from './schema.js'
 
 export interface ClaudeTextMessage {
@@ -10,20 +15,52 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function projectToolResultContent(content: unknown): string | null {
-  if (typeof content === 'string') return content
+const IMAGE_MEDIA_TYPES = new Set<ModelImageMediaType>([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
+
+function projectToolResultContent(
+  content: unknown,
+): { content: string; images: ModelImage[] } | null {
+  if (typeof content === 'string') return { content, images: [] }
   if (!Array.isArray(content)) return null
-  const parts = content.flatMap((block) => {
-    if (!isRecord(block)) return []
+  const parts: string[] = []
+  const images: ModelImage[] = []
+  for (const block of content) {
+    if (!isRecord(block)) {
+      parts.push('[structured tool result omitted]')
+      continue
+    }
     if (block.type === 'text' && typeof block.text === 'string') {
-      return [block.text]
+      parts.push(block.text)
+      continue
     }
-    if (block.type === 'image') {
-      return ['[image tool result omitted: unsupported media]']
+    if (
+      block.type === 'image' &&
+      isRecord(block.source) &&
+      block.source.type === 'base64' &&
+      typeof block.source.media_type === 'string' &&
+      IMAGE_MEDIA_TYPES.has(block.source.media_type as ModelImageMediaType) &&
+      typeof block.source.data === 'string'
+    ) {
+      images.push({
+        type: 'image',
+        mediaType: block.source.media_type as ModelImageMediaType,
+        data: block.source.data,
+      })
+      continue
     }
-    return [`[${String(block.type ?? 'structured')} tool result omitted]`]
-  })
-  return parts.join('\n') || '[empty structured tool result]'
+    parts.push(`[${String(block.type ?? 'structured')} tool result omitted]`)
+  }
+  return {
+    content:
+      parts.join('\n') ||
+      (images.length > 0 ? '' : '[empty structured tool result]'),
+    images,
+  }
 }
 
 function projectNestedMemory(entry: ClaudeTranscriptEntry): string | null {
@@ -151,7 +188,10 @@ export function projectClaudeModelMessages(
         messages.push({
           role: 'tool',
           toolCallId: block.tool_use_id,
-          content: toolContent,
+          content: toolContent.content,
+          ...(toolContent.images.length > 0
+            ? { images: toolContent.images }
+            : {}),
           isError: block.is_error === true,
         })
       }
