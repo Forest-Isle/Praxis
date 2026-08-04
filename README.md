@@ -10,8 +10,9 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 9 native session forks are complete on top of child-process credential
-boundaries, shared memory, and native Anthropic/OpenAI-compatible providers.
+Sprint 10 session resilience is complete on top of native full-history forks,
+child-process credential boundaries, shared memory, and native
+Anthropic/OpenAI-compatible providers.
 Running `praxis` in a
 TTY opens an
 Ink session UI with streaming
@@ -37,6 +38,16 @@ Latest mode and permission state is retained. Queue and file-history records
 are transient and excluded, while unknown entry types, mismatched session IDs,
 and malformed cross-entry links fail closed. Subagent sidechains and orphaned
 `last-prompt` hints are excluded from the main-session fork.
+
+Session leases now carry PID/token ownership and safely reclaim locks left by a
+dead Praxis process while preserving live or unrecognized locks. Session
+listing isolates malformed JSONL instead of failing the entire project and
+reports the exact line and byte offset. `praxis inspect` exposes read/write
+status and recovery metadata; `praxis export` returns the original transcript
+bytes without normalization. Both commands remain available when the detected
+Claude version is unsupported for writes or the transcript has a corrupt tail.
+`praxis export --json` carries those bytes as base64 with explicit encoding
+metadata.
 
 Global and project `CLAUDE.md`, unconditional user/project rules, and the first
 200 lines of canonical project `MEMORY.md` now assemble into provider-neutral
@@ -143,6 +154,8 @@ node dist/cli.js run "Inspect this project"
 node dist/cli.js run "/my-command arguments"
 node dist/cli.js run --agent reviewer "Inspect this project"
 node dist/cli.js sessions --json
+node dist/cli.js inspect --json <session-id>
+node dist/cli.js export <session-id> > session.jsonl
 node dist/cli.js resume <session-id> "Continue"
 node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
 node dist/cli.js fork <session-id>

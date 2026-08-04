@@ -422,6 +422,145 @@ describe('ClaudeTranscriptStore', () => {
     expect(result).toEqual({ status: 'conflict', reason: 'locked' })
   })
 
+  it('reclaims a lock owned by a dead Praxis process', async () => {
+    const { lockFile, store } = await createStore()
+    const snapshot = await store.load()
+    await mkdir(dirname(lockFile), { recursive: true })
+    await writeFile(
+      lockFile,
+      JSON.stringify({
+        version: 1,
+        pid: 2_147_483_647,
+        token: 'stale-owner',
+        createdAt: '2026-08-01T00:00:00.000Z',
+      }),
+    )
+
+    const result = await store.append(snapshot.tail, {
+      ...firstEntry(snapshot),
+      uuid: '55555555-5555-4555-8555-555555555555',
+      parentUuid: snapshot.tail.lastUuid,
+    })
+
+    expect(result.status).toBe('appended')
+    await expect(readFile(lockFile, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('keeps a lock owned by the current live process', async () => {
+    const { lockFile, store } = await createStore()
+    await mkdir(dirname(lockFile), { recursive: true })
+    await writeFile(
+      lockFile,
+      JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        token: 'live-owner',
+        createdAt: '2026-08-04T00:00:00.000Z',
+      }),
+    )
+
+    await expect(store.withLease(async () => 'unexpected')).resolves.toEqual({
+      status: 'conflict',
+      reason: 'locked',
+    })
+    expect(await readFile(lockFile, 'utf8')).toContain('live-owner')
+  })
+
+  it('cleans bounded dead-owner lock artifacts without touching live or unknown files', async () => {
+    const { lockFile, store } = await createStore()
+    const deadOwner = {
+      version: 1,
+      pid: 2_147_483_647,
+      token: 'dead-artifact',
+      createdAt: '2026-08-01T00:00:00.000Z',
+    }
+    const deadArtifacts = [
+      `${lockFile}.dead-artifact.candidate`,
+      `${lockFile}.old-owner.reclaim.dead-artifact.stale`,
+    ]
+    const reusableReclaimGuard = `${lockFile}.old-owner.reclaim`
+    const liveArtifact = `${lockFile}.live-artifact.candidate`
+    const liveStaleArtifact = `${lockFile}.old-owner.reclaim.live-artifact.stale`
+    const unknownArtifact = `${lockFile}.unknown.candidate`
+    await mkdir(dirname(lockFile), { recursive: true })
+    await Promise.all([
+      ...deadArtifacts.map((path) =>
+        writeFile(path, JSON.stringify(deadOwner)),
+      ),
+      writeFile(reusableReclaimGuard, JSON.stringify(deadOwner)),
+      writeFile(
+        liveArtifact,
+        JSON.stringify({
+          ...deadOwner,
+          pid: process.pid,
+          token: 'live-artifact',
+        }),
+      ),
+      writeFile(liveStaleArtifact, JSON.stringify(deadOwner)),
+      writeFile(unknownArtifact, 'unknown-owner'),
+    ])
+
+    await expect(store.withLease(async () => 'completed')).resolves.toEqual({
+      status: 'completed',
+      value: 'completed',
+    })
+    for (const path of deadArtifacts) {
+      await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+    await expect(readFile(liveArtifact, 'utf8')).resolves.toContain(
+      'live-artifact',
+    )
+    await expect(readFile(liveStaleArtifact, 'utf8')).resolves.toContain(
+      'dead-artifact',
+    )
+    await expect(readFile(reusableReclaimGuard, 'utf8')).resolves.toContain(
+      'dead-artifact',
+    )
+    await expect(readFile(unknownArtifact, 'utf8')).resolves.toBe(
+      'unknown-owner',
+    )
+  })
+
+  it('keeps concurrent writers serialized while reclaiming a stale guard', async () => {
+    const { lockFile, store } = await createStore()
+    const staleOwner = {
+      version: 1,
+      pid: 2_147_483_647,
+      token: 'stale-owner',
+      createdAt: '2026-08-01T00:00:00.000Z',
+    }
+    await mkdir(dirname(lockFile), { recursive: true })
+    await writeFile(lockFile, JSON.stringify(staleOwner))
+    await writeFile(
+      `${lockFile}.${staleOwner.token}.reclaim`,
+      JSON.stringify({ ...staleOwner, token: 'stale-reclaimer' }),
+    )
+    let activeWriters = 0
+    let maximumActiveWriters = 0
+
+    const results = await Promise.all(
+      Array.from({ length: 16 }, () =>
+        store.withLease(async () => {
+          activeWriters += 1
+          maximumActiveWriters = Math.max(maximumActiveWriters, activeWriters)
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          activeWriters -= 1
+        }),
+      ),
+    )
+
+    expect(maximumActiveWriters).toBeLessThanOrEqual(1)
+    expect(
+      results.filter((result) => result.status === 'completed'),
+    ).toHaveLength(maximumActiveWriters)
+    await expect(store.withLease(async () => 'recovered')).resolves.toEqual({
+      status: 'completed',
+      value: 'recovered',
+    })
+  })
+
   it('reports corrupt JSONL position and exposes read-only recovery', async () => {
     const { sessionFile, store } = await createStore()
     const firstLine = (await readFile(fixtureUrl, 'utf8')).split('\n')[0]
@@ -441,4 +580,40 @@ describe('ClaudeTranscriptStore', () => {
       byteOffset: Buffer.byteLength(`${firstLine}\n`),
     })
   })
+
+  it('preserves invalid UTF-8 bytes during read-only recovery and export', async () => {
+    const { sessionFile, store } = await createStore()
+    const firstLine = (await readFile(fixtureUrl, 'utf8')).split('\n')[0]
+    if (!firstLine) throw new Error('Fixture has no first line')
+    const prefix = Buffer.from(`${firstLine}\n`)
+    const source = Buffer.concat([prefix, Buffer.from([0xff, 0x0a])])
+    await writeFile(sessionFile, source)
+
+    const recovery = await store.loadReadOnly()
+
+    expect(recovery.entries).toHaveLength(1)
+    expect(recovery.issue).toMatchObject({
+      lineNumber: 2,
+      byteOffset: prefix.length,
+    })
+    expect(Buffer.from(await store.exportReadOnly())).toEqual(source)
+  })
+
+  it.each([Buffer.alloc(0), Buffer.from('\n')])(
+    'reports empty read-only recovery at the first byte',
+    async (source) => {
+      const { sessionFile, store } = await createStore()
+      await writeFile(sessionFile, source)
+
+      await expect(store.loadReadOnly()).resolves.toMatchObject({
+        entries: [],
+        issue: {
+          lineNumber: 1,
+          byteOffset: 0,
+          message: 'Claude transcript contains no entries',
+        },
+      })
+      expect(await store.exportReadOnly()).toEqual(source)
+    },
+  )
 })

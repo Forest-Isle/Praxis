@@ -218,6 +218,8 @@ describe('InteractiveApp', () => {
             sessionId: 'session-1',
             lastPrompt: 'interrupted task',
             updatedAt: '2026-08-04T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
           },
         ]}
       />,
@@ -323,6 +325,8 @@ describe('InteractiveApp', () => {
             sessionId: 'session-1',
             lastPrompt: 'previous task',
             updatedAt: '2026-08-04T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
           },
         ]}
       />,

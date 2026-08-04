@@ -160,3 +160,21 @@ Status: complete for Claude Code 2.1.208 main-chain sessions.
 Exit gate covers fixture profiles, runtime tool history, compact active-context
 semantics, installed OpenAI/Anthropic CLI loops, package/performance gates, and
 macOS/Linux Node 24 clean-room validation.
+
+## Sprint 10 — session resilience and read-only recovery
+
+Status: complete for local Claude-compatible session storage.
+
+- [x] atomically owned PID/token leases reclaim locks left by dead Praxis
+      processes while live and unrecognized locks remain conflicts
+- [x] session discovery isolates corrupt JSONL and reports exact line/byte
+      diagnostics without hiding healthy sessions
+- [x] provider-free `inspect` exposes schema write mode, entry/tail metadata,
+      prompt summary, and corruption status
+- [x] provider-free `export` preserves exact source bytes for supported,
+      unsupported, and corrupt sessions
+- [x] unsupported Claude versions remain write/fork closed while listing,
+      inspection, and export stay available
+
+Exit gate covers storage/service/CLI behavior, installed-package inspect/export,
+the existing compatibility suite, and macOS/Linux Node 24 clean-room validation.

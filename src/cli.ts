@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url'
 import {
   ClaudeSessionService,
   type ForkResult,
+  type SessionInspection,
   type SessionRunResult,
   type SessionSummary,
 } from './application/session-service.js'
@@ -58,6 +59,8 @@ Usage:
   praxis resume [--json] [--agent <name>] [--retry-interrupted-tools] <session-id> <prompt>
   praxis fork [--json] <session-id>
   praxis sessions [--json]
+  praxis inspect [--json] <session-id>
+  praxis export [--json] <session-id>
   praxis <prompt>
   praxis --help
   praxis --version
@@ -145,7 +148,7 @@ export function parseContextEnvironment(environment: NodeJS.ProcessEnv): {
 }
 
 export interface CliIO {
-  stdout(message: string): void
+  stdout(message: string | Uint8Array): void
   stderr(message: string): void
   isTTY?: boolean
 }
@@ -159,6 +162,8 @@ interface SessionCommands {
   ): Promise<SessionRunResult>
   fork(sessionId: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
+  inspect(sessionId: string): Promise<SessionInspection>
+  export(sessionId: string): Promise<Buffer>
 }
 
 export interface CliDependencies extends InteractiveServiceFactory {
@@ -287,6 +292,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
       service.resume(sessionId, prompt, signal).finally(() => mcpTools.close()),
     fork: (sessionId) => service.fork(sessionId),
     sessions: () => service.sessions(),
+    inspect: (sessionId) => service.inspect(sessionId),
+    export: (sessionId) => service.export(sessionId),
   }
 }
 
@@ -301,6 +308,12 @@ const defaultDependencies: CliDependencies = {
 
 function writeJson(io: CliIO, value: unknown): void {
   io.stdout(`${JSON.stringify(value)}\n`)
+}
+
+function formatSessionIssue(issue: SessionSummary['issue']): string {
+  return issue
+    ? `line ${issue.lineNumber}, byte ${issue.byteOffset}: ${issue.message}`
+    : ''
 }
 
 function eventSink(io: CliIO, json: boolean): RuntimeEventSink {
@@ -389,12 +402,28 @@ async function execute(
   if (agent && !['run', 'resume'].includes(command ?? 'run')) {
     throw new Error('--agent is only valid with run or resume')
   }
-  const knownCommand = ['run', 'resume', 'fork', 'sessions'].includes(
-    command ?? '',
-  )
+  const knownCommand = [
+    'run',
+    'resume',
+    'fork',
+    'sessions',
+    'inspect',
+    'export',
+  ].includes(command ?? '')
+  const expectedOperands = command === 'sessions' ? 1 : 2
+  if (
+    ['sessions', 'fork', 'inspect', 'export'].includes(command ?? '') &&
+    args.length > expectedOperands
+  ) {
+    throw new Error(
+      `Unexpected operand for ${command}: ${args[expectedOperands]}`,
+    )
+  }
   const service = await dependencies.createService({
     eventSink: eventSink(io, json),
-    requireProvider: !['fork', 'sessions'].includes(command ?? 'run'),
+    requireProvider: !['fork', 'sessions', 'inspect', 'export'].includes(
+      command ?? 'run',
+    ),
     ...(retryInterruptedTools ? { approveRecovery: () => true } : {}),
     ...(signal ? { signal } : {}),
     ...(agent ? { agent } : {}),
@@ -406,7 +435,7 @@ async function execute(
     else {
       for (const session of sessions) {
         io.stdout(
-          `${session.sessionId}\t${session.updatedAt}\t${session.lastPrompt ?? ''}\n`,
+          `${session.sessionId}\t${session.updatedAt}\t${session.lastPrompt ?? ''}\t${session.status}\t${formatSessionIssue(session.issue)}\n`,
         )
       }
     }
@@ -417,6 +446,31 @@ async function execute(
     const result = await service.fork(requireValue(args[1], 'Session ID'))
     if (json) writeJson(io, { type: 'forked', ...result })
     else io.stdout(`${result.sessionId}\n`)
+    return 0
+  }
+
+  if (command === 'inspect') {
+    const session = await service.inspect(requireValue(args[1], 'Session ID'))
+    if (json) writeJson(io, { type: 'session', session })
+    else {
+      io.stdout(
+        `${session.sessionId}\t${session.status}\t${session.writeMode}\t${session.updatedAt}\t${session.entryCount}\t${session.byteLength}\t${session.newlineTerminated}\t${session.lastPrompt ?? ''}\t${formatSessionIssue(session.issue)}\n`,
+      )
+    }
+    return 0
+  }
+
+  if (command === 'export') {
+    const sessionId = requireValue(args[1], 'Session ID')
+    const transcript = await service.export(sessionId)
+    if (json) {
+      writeJson(io, {
+        type: 'session-export',
+        sessionId,
+        encoding: 'base64',
+        transcript: transcript.toString('base64'),
+      })
+    } else io.stdout(transcript)
     return 0
   }
 

@@ -11,15 +11,23 @@ import {
 
 function captureIO() {
   const stdout: string[] = []
+  const stdoutBytes: Buffer[] = []
   const stderr: string[] = []
   const io: CliIO = {
-    stdout: (message) => stdout.push(message),
+    stdout: (message) => {
+      const bytes = Buffer.from(message)
+      stdoutBytes.push(bytes)
+      stdout.push(bytes.toString())
+    },
     stderr: (message) => stderr.push(message),
   }
-  return { io, stdout, stderr }
+  return { io, stdout, stdoutBytes, stderr }
 }
 
-function dependencies(warning?: string): CliDependencies {
+function dependencies(
+  warning?: string,
+  transcript = Buffer.from('{"type":"user"}\n'),
+): CliDependencies {
   return {
     async createService({ eventSink }) {
       return {
@@ -52,8 +60,27 @@ function dependencies(warning?: string): CliDependencies {
               sessionId: '11111111-1111-4111-8111-111111111111',
               lastPrompt: 'hello',
               updatedAt: '2026-08-03T00:00:00.000Z',
+              status: 'ready' as const,
+              issue: null,
             },
           ]
+        },
+        async inspect(sessionId) {
+          return {
+            sessionId,
+            status: 'ready' as const,
+            writeMode: 'read-write' as const,
+            claudeVersion: '2.1.208',
+            lastPrompt: 'hello',
+            updatedAt: '2026-08-03T00:00:00.000Z',
+            entryCount: 3,
+            byteLength: 128,
+            newlineTerminated: true,
+            issue: null,
+          }
+        },
+        async export() {
+          return transcript
         },
       }
     },
@@ -179,6 +206,12 @@ describe('Praxis CLI', () => {
           },
           async sessions() {
             return []
+          },
+          async inspect() {
+            throw new Error('unused')
+          },
+          async export() {
+            throw new Error('unused')
           },
         }
       },
@@ -313,8 +346,62 @@ describe('Praxis CLI', () => {
         dependencies(),
       ),
     ).resolves.toBe(0)
-    expect(listed.stdout.join('')).toContain('\thello\n')
+    expect(listed.stdout.join('')).toContain('\thello\tready\t\n')
     expect(forked.stdout).toEqual(['22222222-2222-4222-8222-222222222222\n'])
+  })
+
+  it('inspects and exports sessions without a provider', async () => {
+    const inspected = captureIO()
+    const inspectedText = captureIO()
+    const exported = captureIO()
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+
+    await expect(
+      run(['inspect', '--json', sessionId], inspected.io, dependencies()),
+    ).resolves.toBe(0)
+    await expect(
+      run(['export', sessionId], exported.io, dependencies()),
+    ).resolves.toBe(0)
+    await expect(
+      run(['inspect', sessionId], inspectedText.io, dependencies()),
+    ).resolves.toBe(0)
+
+    expect(inspected.stdout.map((line) => JSON.parse(line))).toEqual([
+      {
+        type: 'session',
+        session: expect.objectContaining({ sessionId, status: 'ready' }),
+      },
+    ])
+    expect(inspectedText.stdout.join('')).toContain(
+      `${sessionId}\tready\tread-write\t2026-08-03T00:00:00.000Z\t3\t128\ttrue\thello\t\n`,
+    )
+    expect(exported.stdout).toEqual(['{"type":"user"}\n'])
+  })
+
+  it('exports invalid UTF-8 losslessly in plain and JSON modes', async () => {
+    const source = Buffer.from([0xff, 0x0a])
+    const plain = captureIO()
+    const json = captureIO()
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+
+    await expect(
+      run(['export', sessionId], plain.io, dependencies(undefined, source)),
+    ).resolves.toBe(0)
+    await expect(
+      run(
+        ['export', '--json', sessionId],
+        json.io,
+        dependencies(undefined, source),
+      ),
+    ).resolves.toBe(0)
+
+    expect(Buffer.concat(plain.stdoutBytes)).toEqual(source)
+    expect(JSON.parse(json.stdout.join(''))).toEqual({
+      type: 'session-export',
+      sessionId,
+      encoding: 'base64',
+      transcript: source.toString('base64'),
+    })
   })
 
   it('reports invalid commands without throwing', async () => {
@@ -322,5 +409,17 @@ describe('Praxis CLI', () => {
 
     await expect(run(['resume'], capture.io, dependencies())).resolves.toBe(1)
     expect(capture.stderr).toEqual(['Session ID is required\n'])
+  })
+
+  it('rejects extra operands for provider-free session commands', async () => {
+    for (const argv of [
+      ['sessions', 'extra'],
+      ['inspect', '11111111-1111-4111-8111-111111111111', 'extra'],
+      ['export', '11111111-1111-4111-8111-111111111111', 'extra'],
+    ]) {
+      const capture = captureIO()
+      await expect(run(argv, capture.io, dependencies())).resolves.toBe(1)
+      expect(capture.stderr.join('')).toContain('Unexpected operand')
+    }
   })
 })

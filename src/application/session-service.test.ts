@@ -4,6 +4,7 @@ import {
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -793,6 +794,82 @@ describe('ClaudeSessionService', () => {
     expect(source).not.toContain(`"sessionId":"${first.sessionId}"`)
   })
 
+  it('inspects and exports a session without rewriting its transcript', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const first = await service.run('inspect me')
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: first.sessionId,
+    }).sessionFile
+    const source = await readFile(sessionFile, 'utf8')
+
+    await expect(service.inspect(first.sessionId)).resolves.toMatchObject({
+      sessionId: first.sessionId,
+      status: 'ready',
+      writeMode: 'read-write',
+      entryCount: 3,
+      byteLength: Buffer.byteLength(source),
+      lastPrompt: 'inspect me',
+      issue: null,
+    })
+    await expect(service.export(first.sessionId)).resolves.toEqual(
+      Buffer.from(source),
+    )
+    expect(await readFile(sessionFile, 'utf8')).toBe(source)
+  })
+
+  it('lists corrupt sessions without hiding healthy sessions', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const healthy = await service.run('healthy')
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const corruptId = '99999999-9999-4999-8999-999999999999'
+    const corruptFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: corruptId,
+    }).sessionFile
+    await mkdir(join(corruptFile, '..'), { recursive: true })
+    const corruptSource = '{"type":"last-prompt"}\n{\n'
+    await writeFile(corruptFile, corruptSource)
+    await writeFile(join(corruptFile, '..', 'notes.jsonl'), '{}\n')
+    await mkdir(
+      join(corruptFile, '..', '88888888-8888-4888-8888-888888888888.jsonl'),
+    )
+    await symlink(
+      'missing-session.jsonl',
+      join(corruptFile, '..', '77777777-7777-4777-8777-777777777777.jsonl'),
+    )
+
+    const sessions = await service.sessions()
+
+    expect(sessions).toHaveLength(2)
+    expect(sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: healthy.sessionId,
+          status: 'ready',
+          issue: null,
+        }),
+        expect.objectContaining({
+          sessionId: corruptId,
+          status: 'corrupt',
+          issue: expect.objectContaining({ lineNumber: 2 }),
+        }),
+      ]),
+    )
+    await expect(service.inspect(corruptId)).resolves.toMatchObject({
+      status: 'corrupt',
+      issue: expect.objectContaining({ lineNumber: 2 }),
+    })
+    await expect(service.export(corruptId)).resolves.toEqual(
+      Buffer.from(corruptSource),
+    )
+  })
+
   it('assembles fresh system context for run and resume without persisting it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-context-'))
     roots.push(root)
@@ -1193,7 +1270,8 @@ describe('ClaudeSessionService', () => {
   })
 
   it('fails closed for unsupported Claude write versions', async () => {
-    const { configRoot, cwd } = await createService()
+    const { configRoot, cwd, service: writable } = await createService()
+    const existing = await writable.run('read this')
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
@@ -1202,6 +1280,14 @@ describe('ClaudeSessionService', () => {
     })
 
     await expect(service.run('hello')).rejects.toThrow('read-only')
+    await expect(service.inspect(existing.sessionId)).resolves.toMatchObject({
+      status: 'read-only',
+      writeMode: 'read-only',
+      lastPrompt: 'read this',
+    })
+    expect((await service.export(existing.sessionId)).toString()).toContain(
+      'read this',
+    )
   })
 
   it('keeps a completed user entry when the provider fails', async () => {

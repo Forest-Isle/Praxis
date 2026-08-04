@@ -111,14 +111,16 @@ Praxis-generated append metadata remains restricted to assistant leaves.
 
 ## Error contract
 
-- Unsupported Claude schema: read-only session, no shared writes.
-- Tail changed or lock held: refuse append and offer explicit fork/reload.
+- Unsupported Claude schema: read-only inspect/export, no shared writes.
+- Live or unrecognized lock held: refuse append. A recognized PID/token lock is
+  reclaimed only after its owner process is confirmed dead.
+- Tail changed: refuse append and offer explicit fork/reload.
 - Write interleaving detected after fsync: mark session read-only and require
   reload/fork; never truncate either writer's entries.
 - Provider failure: persist only native events already completed.
 - Tool failure: append an error `tool_result`, then let model decide.
 - Corrupt/truncated JSONL: preserve file, report line and offset, read-only
-  recovery; never auto-truncate.
+  inspect/export; never auto-truncate or hide other sessions.
 - Context overflow: compact when a window is configured and history is
   compactable; otherwise fail with estimated, window, reserve, available, and
   overflow token data. A summary that still does not fit is not persisted.

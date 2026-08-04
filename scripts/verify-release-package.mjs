@@ -12,7 +12,7 @@ import {
 } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { delimiter, join, relative, sep } from 'node:path'
+import { delimiter, dirname, join, relative, sep } from 'node:path'
 import { clearTimeout, setTimeout } from 'node:timers'
 import { pathToFileURL } from 'node:url'
 
@@ -33,6 +33,7 @@ function run(file, args, options = {}) {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stdout = ''
+    const stdoutChunks = []
     let stderr = ''
     let outputBytes = 0
     let stopReason
@@ -62,7 +63,7 @@ function run(file, args, options = {}) {
       clearTimeout(forceTimer)
       const [code, signal] = closeResult
       if (!spawnError && !stopReason && code === 0) {
-        resolve({ stdout, stderr })
+        resolve({ stdout, stdoutBytes: Buffer.concat(stdoutChunks), stderr })
         return
       }
       const reason =
@@ -90,9 +91,11 @@ function run(file, args, options = {}) {
     const capture = (target) => (chunk) => {
       const remaining = maxCommandOutputBytes - outputBytes
       if (remaining > 0) {
-        const retained = chunk.subarray(0, remaining).toString('utf8')
-        if (target === 'stdout') stdout += retained
-        else stderr += retained
+        const retained = chunk.subarray(0, remaining)
+        if (target === 'stdout') {
+          stdoutChunks.push(Buffer.from(retained))
+          stdout += retained.toString('utf8')
+        } else stderr += retained.toString('utf8')
       }
       outputBytes += chunk.length
       if (outputBytes > maxCommandOutputBytes) {
@@ -1258,6 +1261,31 @@ try {
       cwd: canonicalWorkDirectory,
       sessionId: forkResult.sessionId,
     }).sessionFile
+    const inspected = await run(
+      praxis,
+      ['inspect', '--json', runResult.sessionId],
+      { cwd: workDirectory, env: providerEnvironment },
+    )
+    const inspection = JSON.parse(inspected.stdout)
+    if (
+      inspection.type !== 'session' ||
+      inspection.session?.sessionId !== runResult.sessionId ||
+      inspection.session?.status !== 'ready' ||
+      inspection.session?.writeMode !== 'read-write' ||
+      inspection.session?.entryCount < 1
+    ) {
+      throw new Error(
+        `Installed ${provider} CLI inspect failed: ${inspected.stdout}`,
+      )
+    }
+    const exported = await run(praxis, ['export', runResult.sessionId], {
+      cwd: workDirectory,
+      env: providerEnvironment,
+    })
+    if (!exported.stdoutBytes.equals(await readFile(sourcePath))) {
+      throw new Error(`Installed ${provider} CLI export changed transcript`)
+    }
+    providerProbe.assertComplete()
     assertNativeFork(
       await readFile(sourcePath, 'utf8'),
       await readFile(forkPath, 'utf8'),
@@ -1279,6 +1307,7 @@ try {
     ['2.1.209', 'read-only'],
     ['3.0.0', 'read-only'],
   ]
+  const matrixWorkDirectory = await realpath(workDirectory)
   for (const [claudeVersion, writeMode] of versionMatrix) {
     const adapter = schemaModule.selectClaudeSchemaAdapter(claudeVersion)
     if (adapter.writeMode !== writeMode) {
@@ -1293,7 +1322,7 @@ try {
     const matrixConfigRoot = join(probeRoot, 'matrix', claudeVersion)
     const service = new sessionModule.ClaudeSessionService({
       configRoot: matrixConfigRoot,
-      cwd: workDirectory,
+      cwd: matrixWorkDirectory,
       claudeVersion,
       provider: {
         capabilities: { streaming: true, usage: true, tools: false },
@@ -1321,11 +1350,127 @@ try {
       () => Promise.resolve(adapter.serializeForFork(entry)),
       'read-only mode',
     )
-    await expectRejected(() => service.run('must stay read-only'), 'read-only')
-    await expectRejected(() => service.fork('must-not-exist'), 'read-only')
-    if ((await service.sessions()).length !== 0) {
+    const readOnlySessionId = '99999999-9999-4999-8999-999999999999'
+    const readOnlySessionFile = pathsModule.resolveClaudePaths({
+      configDir: matrixConfigRoot,
+      cwd: matrixWorkDirectory,
+      sessionId: readOnlySessionId,
+    }).sessionFile
+    const readOnlySource = `${JSON.stringify({
+      type: 'future-native-entry',
+      sessionId: readOnlySessionId,
+      version: claudeVersion,
+      preserve: true,
+    })}\n`
+    await mkdir(dirname(readOnlySessionFile), { recursive: true })
+    await writeFile(readOnlySessionFile, readOnlySource)
+    const corruptSessionId = '88888888-8888-4888-8888-888888888888'
+    const corruptSessionFile = pathsModule.resolveClaudePaths({
+      configDir: matrixConfigRoot,
+      cwd: matrixWorkDirectory,
+      sessionId: corruptSessionId,
+    }).sessionFile
+    const corruptSource = Buffer.concat([
+      Buffer.from(readOnlySource),
+      Buffer.from([0xff, 0x0a]),
+    ])
+    await writeFile(corruptSessionFile, corruptSource)
+    const readOnlySummaries = await service.sessions()
+    const readOnlySummary = readOnlySummaries.find(
+      (summary) => summary.sessionId === readOnlySessionId,
+    )
+    const readOnlyInspection = await service.inspect(readOnlySessionId)
+    if (
+      readOnlySummary?.status !== 'read-only' ||
+      readOnlyInspection.status !== 'read-only' ||
+      readOnlyInspection.writeMode !== 'read-only' ||
+      !(await service.export(readOnlySessionId)).equals(
+        Buffer.from(readOnlySource),
+      )
+    ) {
       throw new Error(
-        `Claude ${claudeVersion} read-only matrix wrote a session`,
+        `Claude ${claudeVersion} read-only inspection/export failed`,
+      )
+    }
+    await writeFile(
+      join(fakeBin, 'claude'),
+      `#!/bin/sh\nprintf '${claudeVersion} (Claude Code)\\n'\n`,
+      { mode: 0o755 },
+    )
+    const cliEnvironment = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: matrixConfigRoot,
+      PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+    }
+    for (const name of [
+      'PRAXIS_PROVIDER',
+      'PRAXIS_API_KEY',
+      'PRAXIS_MODEL',
+      'PRAXIS_BASE_URL',
+      'PRAXIS_MAX_OUTPUT_TOKENS',
+      'PRAXIS_ANTHROPIC_VERSION',
+    ]) {
+      delete cliEnvironment[name]
+    }
+    const cliSessions = JSON.parse(
+      (
+        await run(praxis, ['sessions', '--json'], {
+          cwd: workDirectory,
+          env: cliEnvironment,
+        })
+      ).stdout,
+    )
+    const cliReadOnly = cliSessions.sessions?.find(
+      (summary) => summary.sessionId === readOnlySessionId,
+    )
+    const cliCorrupt = cliSessions.sessions?.find(
+      (summary) => summary.sessionId === corruptSessionId,
+    )
+    const cliInspection = JSON.parse(
+      (
+        await run(praxis, ['inspect', '--json', readOnlySessionId], {
+          cwd: workDirectory,
+          env: cliEnvironment,
+        })
+      ).stdout,
+    )
+    const cliCorruptInspection = JSON.parse(
+      (
+        await run(praxis, ['inspect', '--json', corruptSessionId], {
+          cwd: workDirectory,
+          env: cliEnvironment,
+        })
+      ).stdout,
+    )
+    const cliReadOnlyExport = await run(praxis, ['export', readOnlySessionId], {
+      cwd: workDirectory,
+      env: cliEnvironment,
+    })
+    const cliCorruptExport = await run(praxis, ['export', corruptSessionId], {
+      cwd: workDirectory,
+      env: cliEnvironment,
+    })
+    if (
+      cliReadOnly?.status !== 'read-only' ||
+      cliCorrupt?.status !== 'corrupt' ||
+      cliInspection.session?.writeMode !== 'read-only' ||
+      cliCorruptInspection.session?.status !== 'corrupt' ||
+      !cliReadOnlyExport.stdoutBytes.equals(Buffer.from(readOnlySource)) ||
+      !cliCorruptExport.stdoutBytes.equals(corruptSource)
+    ) {
+      throw new Error(
+        `Installed Claude ${claudeVersion} read-only/corrupt CLI recovery failed`,
+      )
+    }
+    await expectRejected(() => service.run('must stay read-only'), 'read-only')
+    await expectRejected(() => service.fork(readOnlySessionId), 'read-only')
+    if (
+      (await service.sessions()).length !== 2 ||
+      (await readFile(readOnlySessionFile, 'utf8')) !== readOnlySource ||
+      !(await readFile(corruptSessionFile)).equals(corruptSource)
+    ) {
+      throw new Error(
+        `Claude ${claudeVersion} read-only matrix changed a session`,
       )
     }
   }

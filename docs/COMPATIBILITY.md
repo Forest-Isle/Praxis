@@ -122,6 +122,11 @@ Claude Code and Praxis may list and read the same sessions concurrently, but a
 session has one writer at a time. Praxis must:
 
 - acquire a per-session advisory lock before append;
+- encode lock owner PID and a unique token, reclaiming only a recognized lock
+  whose owner process is no longer alive;
+- bound orphan cleanup and remove only recognized unique candidate/stale
+  sidecars whose owner process is dead; reclaim fixed-path guards only inside
+  the guarded takeover protocol;
 - detect transcript changes before every append;
 - refuse or fork if another process advanced the same parent UUID;
 - flush and close the transcript before handing it to Claude Code;
@@ -158,6 +163,16 @@ Support policy:
 - preserve unknown fields when round-tripping;
 - fail closed before writing an unsupported schema;
 - offer read-only recovery/export when write compatibility is unknown.
+
+`praxis sessions`, `praxis inspect`, and `praxis export` never require a model
+provider. Listing parses each transcript independently, so one corrupt tail is
+reported with its line and byte offset without hiding healthy sessions.
+Inspection reports schema write mode and physical tail metadata. Export returns
+the original JSONL bytes, including any corrupt suffix, without parse/stringify
+normalization. Plain export writes the bytes directly; JSON export uses base64
+with explicit encoding metadata. Non-session, non-regular, vanished, or
+unreadable directory entries are skipped independently rather than failing the
+project listing.
 
 Append scope is deliberately smaller than read scope. Praxis reads any
 well-formed native entry as opaque data, but only appends validated `user` and

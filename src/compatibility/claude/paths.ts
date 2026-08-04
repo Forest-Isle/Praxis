@@ -5,6 +5,10 @@ const MAX_SANITIZED_LENGTH = 200
 const SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+export function isClaudeSessionId(value: string): boolean {
+  return SESSION_ID_PATTERN.test(value)
+}
+
 export interface ResolveClaudePathsOptions {
   cwd: string
   sessionId: string
@@ -43,7 +47,7 @@ export function resolveClaudePaths({
   sessionId,
   configDir,
 }: ResolveClaudePathsOptions): ClaudePaths {
-  if (!SESSION_ID_PATTERN.test(sessionId)) {
+  if (!isClaudeSessionId(sessionId)) {
     throw new Error(`Invalid Claude session ID: ${sessionId}`)
   }
 

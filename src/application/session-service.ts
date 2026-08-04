@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { readdir, stat } from 'node:fs/promises'
+import { lstat, readdir, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative } from 'node:path'
 
 import type { ClaudeConditionalRuleResolver } from '../compatibility/claude/context.js'
@@ -8,7 +8,10 @@ import {
   formatClaudeCompactSummary,
   getCumulativeDroppedTokens,
 } from '../compatibility/claude/compaction.js'
-import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import {
+  isClaudeSessionId,
+  resolveClaudePaths,
+} from '../compatibility/claude/paths.js'
 import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
 import {
   getClaudeAgentSetting,
@@ -49,6 +52,7 @@ import type {
 import {
   ClaudeTranscriptStore,
   type ClaudeTranscriptLease,
+  type TranscriptParseIssue,
   type TranscriptSnapshot,
   type TranscriptTail,
 } from '../persistence/claude-transcript-store.js'
@@ -84,6 +88,18 @@ export interface SessionSummary {
   sessionId: string
   lastPrompt: string | null
   updatedAt: string
+  status: SessionStatus
+  issue: TranscriptParseIssue | null
+}
+
+export type SessionStatus = 'ready' | 'read-only' | 'corrupt'
+
+export interface SessionInspection extends SessionSummary {
+  claudeVersion: string
+  writeMode: 'read-only' | 'read-write'
+  entryCount: number
+  byteLength: number
+  newlineTerminated: boolean
 }
 
 export interface ForkResult {
@@ -125,21 +141,71 @@ export class ClaudeSessionService {
         .filter((name) => extname(name) === '.jsonl')
         .map(async (name) => {
           const sessionId = basename(name, '.jsonl')
-          const store = this.store(sessionId)
-          const [snapshot, metadata] = await Promise.all([
-            store.load(),
-            stat(join(paths.projectRoot, name)),
-          ])
-          return {
-            sessionId,
-            lastPrompt: getClaudeLastPrompt(snapshot.entries),
-            updatedAt: metadata.mtime.toISOString(),
+          if (!isClaudeSessionId(sessionId)) return null
+          const sessionFile = join(paths.projectRoot, name)
+          try {
+            const metadata = await lstat(sessionFile)
+            if (!metadata.isFile()) return null
+            const recovery = await this.store(sessionId).loadReadOnly()
+            if (!(await lstat(sessionFile)).isFile()) return null
+            return {
+              sessionId,
+              lastPrompt: getClaudeLastPrompt(recovery.entries),
+              updatedAt: metadata.mtime.toISOString(),
+              status: this.sessionStatus(
+                recovery.issue,
+                recovery.entries.length,
+              ),
+              issue: recovery.issue,
+            }
+          } catch (error) {
+            if (typeof (error as NodeJS.ErrnoException).code === 'string') {
+              return null
+            }
+            throw error
           }
         }),
     )
-    return summaries.sort((left, right) =>
-      right.updatedAt.localeCompare(left.updatedAt),
-    )
+    return summaries
+      .filter((summary): summary is SessionSummary => summary !== null)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+  }
+
+  async inspect(sessionId: string): Promise<SessionInspection> {
+    const paths = this.paths(sessionId)
+    let metadata
+    try {
+      metadata = await stat(paths.sessionFile)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      throw error
+    }
+    const recovery = await this.store(sessionId).loadReadOnly()
+    return {
+      sessionId,
+      lastPrompt: getClaudeLastPrompt(recovery.entries),
+      updatedAt: metadata.mtime.toISOString(),
+      status: this.sessionStatus(recovery.issue, recovery.entries.length),
+      issue: recovery.issue,
+      claudeVersion: this.options.claudeVersion,
+      writeMode: this.schema.writeMode,
+      entryCount: recovery.entries.length,
+      byteLength: recovery.tail.byteLength,
+      newlineTerminated: recovery.tail.newlineTerminated,
+    }
+  }
+
+  async export(sessionId: string): Promise<Buffer> {
+    try {
+      return await this.store(sessionId).exportReadOnly()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      throw error
+    }
   }
 
   async fork(parentSessionId: string): Promise<ForkResult> {
@@ -885,6 +951,14 @@ export class ClaudeSessionService {
         `Claude ${this.options.claudeVersion} session is read-only`,
       )
     }
+  }
+
+  private sessionStatus(
+    issue: TranscriptParseIssue | null,
+    entryCount: number,
+  ): SessionStatus {
+    if (issue || entryCount === 0) return 'corrupt'
+    return this.schema.writeMode === 'read-write' ? 'ready' : 'read-only'
   }
 
   private provider(): ModelProvider {

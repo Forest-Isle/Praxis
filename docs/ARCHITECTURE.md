@@ -91,6 +91,17 @@ Praxis-only indexes, provider payloads, and locks are non-authoritative
 sidecars under `<claude-config>/praxis/`. They must never be required to resume
 the human-visible conversation from Claude Code.
 
+Session reads use a recovery parser that returns the valid prefix plus exact
+line/byte diagnostics without changing the source file. Listing, inspection,
+and raw export use this read-only path for supported, unsupported, and corrupt
+sessions. Write leases use immutable PID/token metadata linked atomically into
+the canonical lock path; a dead owner can be reclaimed, while live and
+unrecognized lock formats remain conflicts. Before acquisition, a bounded
+sidecar pass removes only recognized candidate/stale artifacts whose owner
+PID is dead; live and unknown artifacts remain untouched. Reusable `.reclaim`
+guards are reclaimed only inside the atomic guard protocol, never by the
+background pass.
+
 `ContextAssembler` converts selected shared resources into provider-neutral
 system messages for each run or resume invocation. The same system message
 remains present across that invocation's tool loop. System context is ephemeral

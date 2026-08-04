@@ -29,7 +29,9 @@ npm run test:package
 
 The gate builds, packs without lifecycle scripts, installs the tarball into an
 empty project, and runs the installed npm bin through `--version`, `--help`, and
-an isolated `sessions --json` smoke test. It then drives the installed CLI
+isolated `sessions --json`, `inspect --json`, and byte-exact `export` smoke
+tests for writable, unsupported-version, and corrupt transcripts without a
+provider. It then drives the installed CLI
 through real local OpenAI Chat Completions and Anthropic Messages HTTP/SSE
 providers. Each adapter must complete the same workspace `Read`, shared-rule
 authorized `Bash`, canonical memory-detail `Read`, permission-authorized shared
