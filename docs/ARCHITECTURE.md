@@ -50,6 +50,17 @@ React and Ink do not enter `core`, application services, providers, tools, or
 shared persistence. Headless text and NDJSON modes retain the same runtime
 ports without terminal prompts.
 
+Headless protocol adaptation also stays under `src/cli`. Argument parsing
+normalizes Claude-style print/resume and machine-format options before the
+application boundary. `StreamJsonOutput` projects provider-neutral
+`RuntimeEvent` values into init, assistant, tool-result, partial, and terminal
+result records; it never changes session state. Incremental stream input accepts
+bounded UTF-8 JSONL user text records. One headless invocation owns one service
+and MCP connection set across all streamed turns, then closes it exactly once;
+interactive submissions own and close their service independently. Unknown
+provider cost and API-only duration values stay `null` until provider ports
+expose verified metering.
+
 Interrupted-tool recovery uses a separate `approveRecovery` port. The runtime
 invokes it after tool/hook preparation so the UI displays the input that would
 actually execute. One explicit recovery approval satisfies an `ask` decision,
@@ -104,6 +115,12 @@ sidecar pass removes only recognized candidate/stale artifacts whose owner
 PID is dead; live and unknown artifacts remain untouched. Reusable `.reclaim`
 guards are reclaimed only inside the atomic guard protocol, never by the
 background pass.
+
+Starting a caller-selected session ID reserves its transcript with exclusive
+creation while holding the Praxis lease. Any existing path, including an empty
+JSONL file, is an identity collision. A claimed ID remains claimed if later
+startup fails; retry must resume a valid transcript or choose a new ID, never
+silently reuse the path.
 
 `ContextAssembler` converts selected shared resources into provider-neutral
 system messages for each run or resume invocation. The same system message

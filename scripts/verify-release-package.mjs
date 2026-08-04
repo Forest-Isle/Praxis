@@ -26,11 +26,12 @@ const maxProviderRequestBytes = 1024 * 1024
 
 function run(file, args, options = {}) {
   return new Promise((resolve, reject) => {
+    const { input, ...spawnOptions } = options
     const detached = process.platform !== 'win32'
     const child = spawn(file, args, {
-      ...options,
+      ...spawnOptions,
       detached,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     })
     let stdout = ''
     const stdoutChunks = []
@@ -109,6 +110,7 @@ function run(file, args, options = {}) {
 
     child.stdout.on('data', capture('stdout'))
     child.stderr.on('data', capture('stderr'))
+    if (input !== undefined) child.stdin.end(input)
     child.on('error', (error) => {
       spawnError = error
     })
@@ -1003,6 +1005,113 @@ async function startProviderProbe(provider, memoryDirectory) {
   }
 }
 
+async function startProtocolProviderProbe(provider) {
+  const requests = []
+  let failure
+  const responses = ['installed protocol first', 'installed protocol second']
+  const server = createServer(async (request, response) => {
+    try {
+      const expectedPath =
+        provider === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'
+      if (request.method !== 'POST' || request.url !== expectedPath) {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await readProviderRequest(request)
+      if (
+        body?.model !== 'release-probe-model' ||
+        body?.stream !== true ||
+        !Array.isArray(body?.messages)
+      ) {
+        throw new Error(
+          'Installed protocol CLI sent an invalid provider request',
+        )
+      }
+      requests.push(body)
+      const conversation = JSON.stringify(body.messages)
+      if (!conversation.includes(`protocol prompt ${requests.length}`)) {
+        throw new Error(
+          `Installed protocol CLI omitted prompt ${requests.length}`,
+        )
+      }
+      if (
+        requests.length === 2 &&
+        !conversation.includes('installed protocol first')
+      ) {
+        throw new Error('Installed protocol CLI did not resume first response')
+      }
+      const text = responses[requests.length - 1]
+      if (!text || requests.length > responses.length) {
+        throw new Error(
+          `Unexpected protocol provider request ${requests.length}`,
+        )
+      }
+      if (provider === 'anthropic') {
+        sendAnthropicEvents(response, [
+          {
+            type: 'message_start',
+            message: { usage: { input_tokens: 3 } },
+          },
+          {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'text', text: '' },
+          },
+          {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text },
+          },
+          { type: 'content_block_stop', index: 0 },
+          {
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn', stop_sequence: null },
+            usage: { output_tokens: 2 },
+          },
+          { type: 'message_stop' },
+        ])
+      } else {
+        sendOpenAIEvents(response, [
+          { choices: [{ delta: { content: text } }] },
+          {
+            choices: [],
+            usage: { prompt_tokens: 3, completion_tokens: 2 },
+          },
+        ])
+      }
+    } catch (error) {
+      failure ??= error
+      if (!response.headersSent) {
+        response.writeHead(500, { 'content-type': 'application/json' })
+      }
+      response.end(JSON.stringify({ error: { message: String(error) } }))
+    }
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('Protocol provider probe has no TCP address')
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    assertComplete() {
+      if (failure) throw failure
+      if (requests.length !== 2) {
+        throw new Error(
+          `Protocol provider probe received ${requests.length} requests`,
+        )
+      }
+    },
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()))
+      }),
+  }
+}
+
 async function startSubagentProviderProbe(provider) {
   const requests = []
   let failure
@@ -1535,6 +1644,88 @@ try {
     await providerProbe.close()
     providerProbe = undefined
 
+    providerProbe = await startProtocolProviderProbe(provider)
+    const protocolSessionId =
+      provider === 'openai'
+        ? '44444444-4444-4444-8444-444444444444'
+        : '55555555-5555-4555-8555-555555555555'
+    const protocolEnvironment = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: configRoot,
+      PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+      PRAXIS_PROVIDER: provider,
+      PRAXIS_API_KEY: 'release-probe-key',
+      PRAXIS_MODEL: 'release-probe-model',
+      PRAXIS_BASE_URL: providerProbe.baseUrl,
+      ...(provider === 'anthropic' ? { PRAXIS_MAX_OUTPUT_TOKENS: '1024' } : {}),
+    }
+    const protocolInput = [1, 2]
+      .map((turn) =>
+        JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: `protocol prompt ${turn}` },
+        }),
+      )
+      .join('\n')
+    const installedProtocol = await run(
+      praxis,
+      [
+        '-p',
+        '--input-format',
+        'stream-json',
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--replay-user-messages',
+        '--session-id',
+        protocolSessionId,
+      ],
+      {
+        cwd: workDirectory,
+        env: protocolEnvironment,
+        input: `${protocolInput}\n`,
+      },
+    )
+    const protocolRecords = parseJsonLines(installedProtocol.stdout)
+    const protocolInits = protocolRecords.filter(
+      (record) => record.type === 'system' && record.subtype === 'init',
+    )
+    const protocolResults = protocolRecords.filter(
+      (record) => record.type === 'result',
+    )
+    const replayedMessages = protocolRecords.filter(
+      (record) =>
+        record.type === 'user' && typeof record.message?.content === 'string',
+    )
+    if (
+      protocolInits.length !== 2 ||
+      protocolResults.length !== 2 ||
+      replayedMessages.length !== 2 ||
+      protocolRecords.some((record) =>
+        ['state', 'text-delta', 'usage'].includes(record.type),
+      ) ||
+      protocolRecords.some(
+        (record) =>
+          record.session_id !== undefined &&
+          record.session_id !== protocolSessionId,
+      ) ||
+      protocolResults[0]?.result !== 'installed protocol first' ||
+      protocolResults[1]?.result !== 'installed protocol second' ||
+      protocolResults.some(
+        (record) =>
+          record.subtype !== 'success' ||
+          record.is_error !== false ||
+          record.num_turns !== 1,
+      )
+    ) {
+      throw new Error(
+        `Installed ${provider} CLI stream protocol mismatch: ${installedProtocol.stdout}`,
+      )
+    }
+    providerProbe.assertComplete()
+    await providerProbe.close()
+    providerProbe = undefined
+
     providerProbe = await startSubagentProviderProbe(provider)
     const subagentEnvironment = {
       ...process.env,
@@ -1787,7 +1978,7 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
   )
 } finally {
   try {

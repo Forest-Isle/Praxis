@@ -287,7 +287,7 @@ try {
 
   const editPreread = await runClaudeCase(
     'Edit prerequisite Read',
-    'Read editable/config.txt, then reply briefly.',
+    'Use Read exactly once on editable/config.txt, then do not use more tools and reply briefly.',
     'Read',
     cwd,
     configRoot,
@@ -361,7 +361,7 @@ try {
 
   const nonmatchingRead = await runClaudeCase(
     'nonmatching Read',
-    'Read docs/guide.md, then reply with every token matching CONDITIONAL_[A-Z0-9_]+ in active instructions.',
+    'Use Read exactly once on docs/guide.md, then do not use more tools and reply with every token matching CONDITIONAL_[A-Z0-9_]+ in active instructions.',
     'Read',
     cwd,
     configRoot,
@@ -380,7 +380,7 @@ try {
 
   const matchingRead = await runClaudeCase(
     'matching Read',
-    'Read src/app.ts, then reply with every token matching CONDITIONAL_[A-Z0-9_]+ in active instructions.',
+    'Use Read exactly once on src/app.ts, then do not use more tools and reply with every token matching CONDITIONAL_[A-Z0-9_]+ in active instructions.',
     'Read',
     cwd,
     configRoot,

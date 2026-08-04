@@ -10,7 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 12 image tool-result support is complete on top of native foreground
+Sprint 13 print and machine-I/O support is complete on top of image tool
+results, native foreground
 subagents, resilient sessions, native full-history forks, child-process
 credential boundaries, shared memory, and native Anthropic/OpenAI-compatible
 providers.
@@ -101,7 +102,8 @@ MCP servers load from Claude's shared user, project, and project-local config
 with local-over-project-over-user precedence. Stdio, Streamable HTTP, and
 legacy SSE servers expose `mcp__<server>__<tool>` definitions through the same
 permission and hook pipeline as built-in tools. Unavailable servers emit a
-warning; connected clients and stdio subprocesses close after each CLI turn.
+warning; connected clients and stdio subprocesses close after each CLI
+invocation. Multi-turn stream input intentionally reuses one connection set.
 Stdio servers receive a sanitized ambient environment; values declared in that
 server's explicit `env` config remain available to it. Credential-named MCP
 environment values and sensitive HTTP headers are redacted from tool results,
@@ -123,8 +125,8 @@ later messages. Activated nested-memory rules remain active across compaction.
 - One local OS user, multiple workspaces and sessions
 - Provider-capability-aware rather than tied to one model vendor
 - Claude Code-compatible transcripts, configuration, permissions, and memory
-- Shared local agent definitions; parallel sub-agent orchestration remains out
-  of MVP scope
+- Shared local agent definitions; durable background and parallel orchestration
+  remain required but are not implemented yet
 
 ## Claude Code interoperability
 
@@ -165,6 +167,9 @@ export PRAXIS_CONTEXT_WINDOW_TOKENS=200000
 export PRAXIS_CONTEXT_RESERVE_TOKENS=8192
 
 node dist/cli.js run "Inspect this project"
+node dist/cli.js -p --output-format json "Inspect this project"
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"Inspect this project"}}' | \
+  node dist/cli.js -p --input-format stream-json --output-format stream-json --verbose
 node dist/cli.js run "/my-command arguments"
 node dist/cli.js run --agent reviewer "Inspect this project"
 node dist/cli.js sessions --json
@@ -175,6 +180,13 @@ node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
 node dist/cli.js fork <session-id>
 node dist/cli.js
 ```
+
+Claude-style `--output-format json` emits one result object. Stream input and
+output require `--verbose`; `--include-partial-messages` adds model delta
+records and `--replay-user-messages` echoes normalized input records. Multiple
+stdin messages share one session and service lifecycle. Provider pricing and
+API-only timing are not yet available, so those result fields are `null` rather
+than fabricated zeroes.
 
 `PRAXIS_PROVIDER` defaults to `openai`. `PRAXIS_BASE_URL` defaults to the
 selected provider's official `/v1` endpoint. Native Anthropic requests accept

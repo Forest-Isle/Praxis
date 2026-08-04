@@ -7,6 +7,7 @@ import type { ModelToolCall } from '../core/runtime.js'
 import {
   InteractiveApp,
   type InteractiveServiceFactory,
+  runInteractive,
 } from './interactive.js'
 
 afterEach(() => cleanup())
@@ -19,6 +20,7 @@ const flush = async () => {
 describe('InteractiveApp', () => {
   it('streams a new session and then resumes it', async () => {
     const calls: string[] = []
+    let closed = 0
     const factory: InteractiveServiceFactory = {
       async createService({ eventSink }) {
         return {
@@ -46,6 +48,9 @@ describe('InteractiveApp', () => {
           async sessions() {
             return []
           },
+          async close() {
+            closed += 1
+          },
         }
       },
     }
@@ -67,6 +72,7 @@ describe('InteractiveApp', () => {
 
     expect(app.lastFrame()).toContain('second answer')
     expect(calls).toEqual(['run:first prompt', 'resume:session-1:continue'])
+    expect(closed).toBe(2)
   })
 
   it('redacts ambient credentials from interactive diagnostics', async () => {
@@ -130,6 +136,48 @@ describe('InteractiveApp', () => {
       if (previous === undefined) delete process.env[variable]
       else process.env[variable] = previous
     }
+  })
+
+  it('reports close failures and leaves the prompt usable', async () => {
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async close() {
+            throw new Error('close failed')
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    await flush()
+    app.stdin.write('run')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('done')
+    expect(app.lastFrame()).toContain('close failed')
+    expect(app.lastFrame()).toContain('/new')
+    expect(app.lastFrame()).not.toContain('ready…')
   })
 
   it('asks before an ask-permission tool and forwards the decision', async () => {
@@ -419,5 +467,67 @@ describe('InteractiveApp', () => {
     await activeTurn
     await flush()
     expect(activeTurn).toBeNull()
+  })
+})
+
+describe('runInteractive', () => {
+  it('closes the listing service after loading sessions', async () => {
+    let closed = 0
+    const controller = new AbortController()
+    controller.abort()
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async close() {
+            closed += 1
+          },
+        }
+      },
+    }
+
+    await expect(
+      runInteractive({ factory, signal: controller.signal }),
+    ).resolves.toBe(130)
+    expect(closed).toBe(1)
+  })
+
+  it('closes the listing service when loading sessions fails', async () => {
+    let closed = 0
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            throw new Error('listing failed')
+          },
+          async close() {
+            closed += 1
+          },
+        }
+      },
+    }
+
+    await expect(runInteractive({ factory })).rejects.toThrow('listing failed')
+    expect(closed).toBe(1)
   })
 })

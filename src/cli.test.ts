@@ -24,6 +24,15 @@ function captureIO() {
   return { io, stdout, stdoutBytes, stderr }
 }
 
+function captureStreamIO(...chunks: string[]) {
+  const capture = captureIO()
+  capture.io.readStdinLines = () =>
+    (async function* () {
+      for (const chunk of chunks) yield chunk
+    })()
+  return capture
+}
+
 function dependencies(
   warning?: string,
   transcript = Buffer.from('{"type":"user"}\n'),
@@ -31,11 +40,11 @@ function dependencies(
   return {
     async createService({ eventSink }) {
       return {
-        async run(prompt) {
+        async run(prompt, _signal, sessionId) {
           if (warning) eventSink({ type: 'warning', message: warning })
           eventSink({ type: 'text-delta', delta: `answer:${prompt}` })
           return {
-            sessionId: '11111111-1111-4111-8111-111111111111',
+            sessionId: sessionId ?? '11111111-1111-4111-8111-111111111111',
             text: `answer:${prompt}`,
             usage: { inputTokens: 2, outputTokens: 3 },
           }
@@ -281,6 +290,408 @@ describe('Praxis CLI', () => {
         usage: { inputTokens: 4, outputTokens: 5 },
       },
     ])
+  })
+
+  it('supports Claude-style output format names while retaining legacy --json', async () => {
+    const text = captureIO()
+    await expect(
+      run(['run', '--output-format', 'text', 'hello'], text.io, dependencies()),
+    ).resolves.toBe(0)
+    expect(text.stdout.join('')).toBe('answer:hello\n')
+
+    const json = captureIO()
+    await expect(
+      run(['run', '--output-format', 'json', 'hello'], json.io, dependencies()),
+    ).resolves.toBe(0)
+    expect(json.stdout.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'answer:hello',
+        session_id: expect.any(String),
+        num_turns: 1,
+        usage: { input_tokens: 2, output_tokens: 3 },
+      }),
+    ])
+
+    const stream = captureIO()
+    await expect(
+      run(
+        ['run', '--output-format', 'stream-json', '--verbose', 'hello'],
+        stream.io,
+        dependencies(),
+      ),
+    ).resolves.toBe(0)
+    const streamed = stream.stdout.map((line) => JSON.parse(line))
+    expect(streamed.map((record) => record.type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+    ])
+    expect(streamed[0]).toEqual(
+      expect.objectContaining({ type: 'system', subtype: 'init' }),
+    )
+    expect(streamed[1]).toEqual(
+      expect.objectContaining({
+        type: 'assistant',
+        message: expect.objectContaining({
+          role: 'assistant',
+          content: [{ type: 'text', text: 'answer:hello' }],
+        }),
+      }),
+    )
+    expect(streamed[2]).toEqual(
+      expect.objectContaining({
+        type: 'result',
+        subtype: 'success',
+        result: 'answer:hello',
+      }),
+    )
+
+    const legacy = captureIO()
+    await expect(
+      run(['run', '--json', 'hello'], legacy.io, dependencies()),
+    ).resolves.toBe(0)
+    expect(legacy.stdout.map((line) => JSON.parse(line))).toEqual([
+      { type: 'text-delta', delta: 'answer:hello' },
+      expect.objectContaining({ type: 'result', text: 'answer:hello' }),
+    ])
+  })
+
+  it('consumes text user messages from stream-json stdin for run and resume', async () => {
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const input =
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'from stdin' }],
+        },
+      }) + '\n'
+    const runCapture = captureStreamIO(input)
+    await expect(
+      run(
+        [
+          'run',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+        ],
+        runCapture.io,
+        dependencies(),
+      ),
+    ).resolves.toBe(0)
+    expect(runCapture.stdout.map((line) => JSON.parse(line)).at(-1)).toEqual(
+      expect.objectContaining({ result: 'answer:from stdin' }),
+    )
+
+    const resumeCapture = captureStreamIO(
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: 'continue from stdin' },
+      }) + '\n',
+    )
+    await expect(
+      run(
+        [
+          'resume',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+          sessionId,
+        ],
+        resumeCapture.io,
+        dependencies(),
+      ),
+    ).resolves.toBe(0)
+    expect(resumeCapture.stdout.map((line) => JSON.parse(line)).at(-1)).toEqual(
+      expect.objectContaining({ result: 'resumed:continue from stdin' }),
+    )
+  })
+
+  it('keeps one service and session across multiple realtime stdin turns', async () => {
+    const fixedSessionId = '33333333-3333-4333-8333-333333333333'
+    const calls: string[] = []
+    let created = 0
+    let closed = 0
+    const realtime: CliDependencies = {
+      async createService({ eventSink }) {
+        created += 1
+        const complete = (text: string) => {
+          eventSink({ type: 'state', state: 'awaiting-model' })
+          eventSink({ type: 'text-delta', delta: text })
+          eventSink({
+            type: 'usage',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          })
+          eventSink({ type: 'state', state: 'completed' })
+        }
+        return {
+          async run(prompt, _signal, sessionId) {
+            calls.push(`run:${sessionId}:${prompt}`)
+            complete(`answer:${prompt}`)
+            return {
+              sessionId: sessionId ?? fixedSessionId,
+              text: `answer:${prompt}`,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume(sessionId, prompt) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            complete(`answer:${prompt}`)
+            return {
+              sessionId,
+              text: `answer:${prompt}`,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async inspect() {
+            throw new Error('unused')
+          },
+          async export() {
+            throw new Error('unused')
+          },
+          async close() {
+            closed += 1
+          },
+          runtimeInfo() {
+            return {
+              cwd: '/workspace',
+              model: 'test-model',
+              tools: [],
+              mcpServers: [],
+              permissionMode: 'default',
+              slashCommands: [],
+              agents: [],
+              skills: [],
+              claudeCodeVersion: '2.1.208',
+            }
+          },
+        }
+      },
+    }
+    const first = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: 'first' },
+    })
+    const second = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: 'second' },
+    })
+    const capture = captureStreamIO(
+      first.slice(0, 17),
+      `${first.slice(17)}\n${second}\n`,
+    )
+
+    await expect(
+      run(
+        [
+          '-p',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+          '--replay-user-messages',
+          '--session-id',
+          fixedSessionId,
+        ],
+        capture.io,
+        realtime,
+      ),
+    ).resolves.toBe(0)
+
+    expect(calls).toEqual([
+      `run:${fixedSessionId}:first`,
+      `resume:${fixedSessionId}:second`,
+    ])
+    expect(created).toBe(1)
+    expect(closed).toBe(1)
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records.filter((record) => record.subtype === 'init')).toHaveLength(
+      2,
+    )
+    expect(records.filter((record) => record.type === 'result')).toHaveLength(2)
+    expect(
+      records
+        .filter((record) => record.type === 'user')
+        .map((record) => record.message.content),
+    ).toEqual(['first', 'second'])
+    expect(new Set(records.map((record) => record.session_id))).toEqual(
+      new Set([fixedSessionId]),
+    )
+  })
+
+  it('returns redacted terminal result envelopes for structured execution failures', async () => {
+    const variable = 'PRAXIS_PROTOCOL_TEST_API_KEY'
+    const secret = 'protocol-failure-secret'
+    const previous = process.env[variable]
+    process.env[variable] = secret
+    let closed = 0
+    const failing: CliDependencies = {
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            eventSink({ type: 'state', state: 'awaiting-model' })
+            eventSink({
+              type: 'failed',
+              message: `provider ${secret}`,
+              retryable: false,
+            })
+            throw new Error(`provider ${secret}`)
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async inspect() {
+            throw new Error('unused')
+          },
+          async export() {
+            throw new Error('unused')
+          },
+          async close() {
+            closed += 1
+          },
+        }
+      },
+    }
+
+    try {
+      for (const format of ['json', 'stream-json'] as const) {
+        const capture = captureIO()
+        const args = [
+          '-p',
+          '--output-format',
+          format,
+          ...(format === 'stream-json' ? ['--verbose'] : []),
+          'fail',
+        ]
+        await expect(run(args, capture.io, failing)).resolves.toBe(1)
+        const records = capture.stdout.map((line) => JSON.parse(line))
+        expect(records.at(-1)).toEqual(
+          expect.objectContaining({
+            type: 'result',
+            subtype: 'error_during_execution',
+            is_error: true,
+            result: 'provider [REDACTED]',
+          }),
+        )
+        expect(capture.stdout.join('')).not.toContain(secret)
+        expect(capture.stderr).toEqual([])
+      }
+      expect(closed).toBe(2)
+    } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+  })
+
+  it('keeps a structured result terminal when service teardown fails', async () => {
+    const capture = captureIO()
+    const base = dependencies()
+    const teardownFailure: CliDependencies = {
+      async createService(options) {
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async close() {
+            throw new Error('teardown failed')
+          },
+        }
+      },
+    }
+
+    await expect(
+      run(
+        ['-p', '--output-format', 'stream-json', '--verbose', 'hello'],
+        capture.io,
+        teardownFailure,
+      ),
+    ).resolves.toBe(0)
+
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records.at(-1)).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+    })
+    expect(capture.stderr).toEqual(['Warning: teardown failed\n'])
+  })
+
+  it('accepts empty stream-json input as a no-op', async () => {
+    const capture = captureStreamIO('')
+
+    await expect(
+      run(
+        [
+          'run',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+        ],
+        capture.io,
+        dependencies(),
+      ),
+    ).resolves.toBe(0)
+    expect(capture.stdout).toEqual([])
+    expect(capture.stderr).toEqual([])
+  })
+
+  it('rejects malformed stream-json input', async () => {
+    for (const input of [
+      '{bad}\n',
+      JSON.stringify({ type: 'assistant', content: 'no user' }) + '\n',
+    ]) {
+      const capture = captureStreamIO(input)
+      await expect(
+        run(
+          [
+            'run',
+            '--input-format',
+            'stream-json',
+            '--output-format',
+            'stream-json',
+            '--verbose',
+          ],
+          capture.io,
+          dependencies(),
+        ),
+      ).resolves.toBe(1)
+      expect(capture.stderr.join('')).toMatch(/stream-json/)
+    }
+  })
+
+  it('validates format options and incompatible legacy flags', async () => {
+    for (const argv of [
+      ['run', '--output-format', 'yaml', 'hello'],
+      ['run', '--input-format', 'yaml', 'hello'],
+      ['run', '--json', '--output-format', 'json', 'hello'],
+    ]) {
+      const capture = captureIO()
+      await expect(run(argv, capture.io, dependencies())).resolves.toBe(1)
+      expect(`${capture.stderr.join('')}${capture.stdout.join('')}`).toMatch(
+        /format|combined/,
+      )
+    }
   })
 
   it('passes explicit interrupted-tool recovery only for resume', async () => {

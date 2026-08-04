@@ -5,6 +5,7 @@ import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { randomUUID } from 'node:crypto'
 
 import {
   ClaudeSessionService,
@@ -48,6 +49,16 @@ import {
 import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
+import {
+  createErrorResult,
+  createSuccessResult,
+  parseCliInvocation,
+  readStreamUserMessages,
+  StreamJsonOutput,
+  type CliOutputFormat,
+  type CliRuntimeInfo,
+  type StreamUserMessage,
+} from './cli/protocol.js'
 
 const VERSION = '0.1.0'
 
@@ -55,15 +66,30 @@ const HELP = `Praxis — local-first general agent
 
 Usage:
   praxis
-  praxis run [--json] [--agent <name>] <prompt>
-  praxis resume [--json] [--agent <name>] [--retry-interrupted-tools] <session-id> <prompt>
+  praxis [options] [prompt]
+  praxis -p [options] [prompt]
+  praxis --resume <session-id> [options] [prompt]
+  praxis run [options] <prompt>
+  praxis resume [options] <session-id> <prompt>
   praxis fork [--json] <session-id>
   praxis sessions [--json]
   praxis inspect [--json] <session-id>
   praxis export [--json] <session-id>
-  praxis <prompt>
-  praxis --help
-  praxis --version
+
+Options:
+  -p, --print                         Print response and exit
+  -r, --resume <session-id>           Resume a session
+  --session-id <uuid>                 Use an explicit ID for a new session
+  --agent <name>                      Select a shared agent definition
+  --input-format <format>             text (default) or stream-json
+  --output-format <format>            text (default), json, or stream-json
+  --include-partial-messages          Emit stream_event records
+  --replay-user-messages              Echo stream-json user records
+  --retry-interrupted-tools           Approve prepared interrupted tools
+  --verbose                           Required for stream-json output
+  --json                              Legacy Praxis runtime NDJSON output
+  -h, --help                          Show help
+  -v, --version                       Show version
 
 Provider environment:
   PRAXIS_PROVIDER=openai|anthropic, PRAXIS_API_KEY, PRAXIS_MODEL
@@ -151,10 +177,15 @@ export interface CliIO {
   stdout(message: string | Uint8Array): void
   stderr(message: string): void
   isTTY?: boolean
+  readStdinLines?: () => AsyncIterable<string | Uint8Array>
 }
 
 interface SessionCommands {
-  run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult>
+  run(
+    prompt: string,
+    signal?: AbortSignal,
+    sessionId?: string,
+  ): Promise<SessionRunResult>
   resume(
     sessionId: string,
     prompt: string,
@@ -164,6 +195,8 @@ interface SessionCommands {
   sessions(): Promise<SessionSummary[]>
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
+  close?(): Promise<void>
+  runtimeInfo?(): CliRuntimeInfo
 }
 
 export interface CliDependencies extends InteractiveServiceFactory {
@@ -182,6 +215,7 @@ const consoleIO: CliIO = {
   stdout: (message) => process.stdout.write(message),
   stderr: (message) => process.stderr.write(message),
   isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+  readStdinLines: () => process.stdin,
 }
 
 const createDefaultService: CliDependencies['createService'] = async ({
@@ -265,36 +299,77 @@ const createDefaultService: CliDependencies['createService'] = async ({
     onWarning: (message) => eventSink({ type: 'warning', message }),
     ...(signal ? { signal } : {}),
   })
-  const service = new ClaudeSessionService({
-    ...options,
-    provider,
-    tools: new ClaudeExtensionToolRegistry(mcpTools, extensions),
-    permissions,
-    extensions,
-    enableSubagents: true,
-    hooks: new ClaudeHookRunner({ settings, cwd }),
-    ...(agent ? { agent } : {}),
-    contextAssembler: new ClaudeContextAssembler({
-      loadResources: loadContextResources,
-    }),
-    conditionalRuleResolver: new ClaudeConditionalRuleResolver({
-      loadResources: loadContextResources,
-    }),
-    ...('contextReserveTokens' in context
-      ? { contextReserveTokens: context.contextReserveTokens }
-      : {}),
-    ...(approveTool ? { approveTool } : {}),
-    ...(approveRecovery ? { approveRecovery } : {}),
-  })
-  return {
-    run: (prompt, signal) =>
-      service.run(prompt, signal).finally(() => mcpTools.close()),
-    resume: (sessionId, prompt, signal) =>
-      service.resume(sessionId, prompt, signal).finally(() => mcpTools.close()),
-    fork: (sessionId) => service.fork(sessionId),
-    sessions: () => service.sessions(),
-    inspect: (sessionId) => service.inspect(sessionId),
-    export: (sessionId) => service.export(sessionId),
+  try {
+    const extensionTools = new ClaudeExtensionToolRegistry(mcpTools, extensions)
+    const service = new ClaudeSessionService({
+      ...options,
+      provider,
+      tools: extensionTools,
+      permissions,
+      extensions,
+      enableSubagents: true,
+      hooks: new ClaudeHookRunner({ settings, cwd }),
+      ...(agent ? { agent } : {}),
+      contextAssembler: new ClaudeContextAssembler({
+        loadResources: loadContextResources,
+      }),
+      conditionalRuleResolver: new ClaudeConditionalRuleResolver({
+        loadResources: loadContextResources,
+      }),
+      ...('contextReserveTokens' in context
+        ? { contextReserveTokens: context.contextReserveTokens }
+        : {}),
+      ...(approveTool ? { approveTool } : {}),
+      ...(approveRecovery ? { approveRecovery } : {}),
+    })
+    const toolNames = extensionTools
+      .definitions()
+      .map((definition) => definition.name)
+    const mcpServerNames = [
+      ...new Set(
+        toolNames
+          .filter((name) => name.startsWith('mcp__'))
+          .map((name) => name.split('__')[1])
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ]
+    const runtimeInfo: CliRuntimeInfo = {
+      cwd,
+      model: provider.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
+      tools: toolNames,
+      mcpServers: mcpServerNames.map((name) => ({
+        name,
+        status: 'connected',
+      })),
+      permissionMode: 'default',
+      slashCommands: extensions
+        .modelInvocableSkills()
+        .map((definition) => definition.name),
+      agents: extensions.agentNames(),
+      skills: extensions
+        .modelInvocableSkills()
+        .map((definition) => definition.name),
+      claudeCodeVersion: claudeVersion,
+    }
+    return {
+      run: (prompt, signal, sessionId) =>
+        service.run(prompt, signal, sessionId),
+      resume: (sessionId, prompt, signal) =>
+        service.resume(sessionId, prompt, signal),
+      fork: (sessionId) => service.fork(sessionId),
+      sessions: () => service.sessions(),
+      inspect: (sessionId) => service.inspect(sessionId),
+      export: (sessionId) => service.export(sessionId),
+      close: () => mcpTools.close(),
+      runtimeInfo: () => runtimeInfo,
+    }
+  } catch (error) {
+    try {
+      await mcpTools.close()
+    } catch {
+      // Preserve the service-construction failure as the primary error.
+    }
+    throw error
   }
 }
 
@@ -317,9 +392,13 @@ function formatSessionIssue(issue: SessionSummary['issue']): string {
     : ''
 }
 
-function eventSink(io: CliIO, json: boolean): RuntimeEventSink {
+function eventSink(
+  io: CliIO,
+  outputFormat: CliOutputFormat,
+  legacyJson = false,
+): RuntimeEventSink {
   const sensitiveValues = sensitiveEnvironmentValues(process.env)
-  if (json) {
+  if (legacyJson) {
     return (event) =>
       writeJson(
         io,
@@ -331,6 +410,7 @@ function eventSink(io: CliIO, json: boolean): RuntimeEventSink {
           : event,
       )
   }
+  if (outputFormat !== 'text') return () => undefined
   return (event) => {
     if (event.type === 'text-delta') io.stdout(event.delta)
     if (event.type === 'warning') {
@@ -352,24 +432,12 @@ function promptFrom(values: readonly string[]): string {
   return prompt
 }
 
-function extractAgent(argv: readonly string[]): {
-  agent: string | undefined
-  args: string[]
-} {
-  const args: string[] = []
-  let agent: string | undefined
-  for (let index = 0; index < argv.length; index += 1) {
-    const value = argv[index]
-    if (value !== '--agent') {
-      if (value !== undefined) args.push(value)
-      continue
-    }
-    if (agent !== undefined)
-      throw new Error('--agent may only be specified once')
-    agent = requireValue(argv[index + 1], 'Agent name')
-    index += 1
-  }
-  return { agent, args }
+function isCancellation(error: unknown, signal?: AbortSignal): boolean {
+  return (
+    error instanceof AgentRunCancelledError ||
+    signal?.aborted === true ||
+    (error instanceof DOMException && error.name === 'AbortError')
+  )
 }
 
 async function execute(
@@ -390,19 +458,12 @@ async function execute(
     return 0
   }
 
-  const { agent, args: agentArgs } = extractAgent(argv)
-  const json = agentArgs.includes('--json')
-  const retryInterruptedTools = agentArgs.includes('--retry-interrupted-tools')
-  const args = agentArgs.filter(
-    (value) => value !== '--json' && value !== '--retry-interrupted-tools',
-  )
+  const invocation = parseCliInvocation(argv)
+  const { agent, args, outputFormat, inputFormat, includePartialMessages } =
+    invocation
+  const { retryInterruptedTools } = invocation
   const command = args[0]
-  if (retryInterruptedTools && command !== 'resume') {
-    throw new Error('--retry-interrupted-tools is only valid with resume')
-  }
-  if (agent && !['run', 'resume'].includes(command ?? 'run')) {
-    throw new Error('--agent is only valid with run or resume')
-  }
+  if (command === 'resume') requireValue(args[1], 'Session ID')
   const knownCommand = [
     'run',
     'resume',
@@ -411,6 +472,12 @@ async function execute(
     'inspect',
     'export',
   ].includes(command ?? '')
+  if (retryInterruptedTools && command !== 'resume') {
+    throw new Error('--retry-interrupted-tools is only valid with resume')
+  }
+  if (agent && knownCommand && !['run', 'resume'].includes(command ?? 'run')) {
+    throw new Error('--agent is only valid with run or resume')
+  }
   const expectedOperands = command === 'sessions' ? 1 : 2
   if (
     ['sessions', 'fork', 'inspect', 'export'].includes(command ?? '') &&
@@ -420,8 +487,33 @@ async function execute(
       `Unexpected operand for ${command}: ${args[expectedOperands]}`,
     )
   }
+  let streamOutput: StreamJsonOutput | undefined
+  let jsonModelTurns = 0
+  const pendingEvents: Parameters<RuntimeEventSink>[0][] = []
   const service = await dependencies.createService({
-    eventSink: eventSink(io, json),
+    eventSink:
+      outputFormat === 'stream-json' && !invocation.legacyJson
+        ? (event) => {
+            const safeEvent =
+              event.type === 'warning' || event.type === 'failed'
+                ? {
+                    ...event,
+                    message: redactSensitiveText(
+                      event.message,
+                      sensitiveEnvironmentValues(process.env),
+                    ),
+                  }
+                : event
+            if (streamOutput) streamOutput.sink(safeEvent)
+            else pendingEvents.push(safeEvent)
+          }
+        : outputFormat === 'json'
+          ? (event) => {
+              if (event.type === 'state' && event.state === 'awaiting-model') {
+                jsonModelTurns += 1
+              }
+            }
+          : eventSink(io, outputFormat, invocation.legacyJson),
     requireProvider: !['fork', 'sessions', 'inspect', 'export'].includes(
       command ?? 'run',
     ),
@@ -429,69 +521,182 @@ async function execute(
     ...(signal ? { signal } : {}),
     ...(agent ? { agent } : {}),
   })
+  try {
+    if (command === 'sessions') {
+      const sessions = await service.sessions()
+      if (outputFormat === 'json' || invocation.legacyJson) {
+        writeJson(io, { type: 'sessions', sessions })
+      } else if (outputFormat === 'stream-json') {
+        for (const session of sessions)
+          writeJson(io, { type: 'session', session })
+      } else {
+        for (const session of sessions) {
+          io.stdout(
+            `${session.sessionId}\t${session.updatedAt}\t${session.lastPrompt ?? ''}\t${session.status}\t${formatSessionIssue(session.issue)}\n`,
+          )
+        }
+      }
+      return 0
+    }
 
-  if (command === 'sessions') {
-    const sessions = await service.sessions()
-    if (json) writeJson(io, { type: 'sessions', sessions })
-    else {
-      for (const session of sessions) {
+    if (command === 'fork') {
+      const result = await service.fork(requireValue(args[1], 'Session ID'))
+      if (outputFormat !== 'text') writeJson(io, { type: 'forked', ...result })
+      else io.stdout(`${result.sessionId}\n`)
+      return 0
+    }
+
+    if (command === 'inspect') {
+      const session = await service.inspect(requireValue(args[1], 'Session ID'))
+      if (outputFormat !== 'text') writeJson(io, { type: 'session', session })
+      else {
         io.stdout(
-          `${session.sessionId}\t${session.updatedAt}\t${session.lastPrompt ?? ''}\t${session.status}\t${formatSessionIssue(session.issue)}\n`,
+          `${session.sessionId}\t${session.status}\t${session.writeMode}\t${session.updatedAt}\t${session.entryCount}\t${session.byteLength}\t${session.newlineTerminated}\t${session.lastPrompt ?? ''}\t${formatSessionIssue(session.issue)}\n`,
         )
+      }
+      return 0
+    }
+
+    if (command === 'export') {
+      const sessionId = requireValue(args[1], 'Session ID')
+      const transcript = await service.export(sessionId)
+      if (outputFormat !== 'text') {
+        writeJson(io, {
+          type: 'session-export',
+          sessionId,
+          encoding: 'base64',
+          transcript: transcript.toString('base64'),
+        })
+      } else io.stdout(transcript)
+      return 0
+    }
+
+    const runtimeInfo = service.runtimeInfo?.() ?? {
+      cwd: process.cwd(),
+      model: process.env.PRAXIS_MODEL ?? 'unknown',
+      tools: [],
+      mcpServers: [],
+      permissionMode: 'default',
+      slashCommands: [],
+      agents: [],
+      skills: [],
+      claudeCodeVersion: 'unknown',
+    }
+    const existingSessionId =
+      command === 'resume' ? requireValue(args[1], 'Session ID') : undefined
+    let activeSessionId =
+      existingSessionId ?? invocation.sessionId ?? randomUUID()
+    if (outputFormat === 'stream-json' && !invocation.legacyJson) {
+      streamOutput = new StreamJsonOutput(
+        (value) => writeJson(io, value),
+        runtimeInfo,
+        activeSessionId,
+        includePartialMessages,
+      )
+    }
+    let streamIterator: AsyncGenerator<StreamUserMessage> | undefined
+    let firstStreamMessage: StreamUserMessage | undefined
+    if (inputFormat === 'stream-json' && !invocation.legacyJson) {
+      const input = io.readStdinLines?.()
+      if (!input) throw new Error('stream-json input requires stdin support')
+      const iterator = readStreamUserMessages(input)
+      const first = await iterator.next()
+      if (first.done || !first.value) return 0
+      streamIterator = iterator
+      firstStreamMessage = first.value
+    }
+
+    const initialPrompt =
+      firstStreamMessage?.prompt ??
+      promptFrom(
+        command === 'resume'
+          ? args.slice(2)
+          : knownCommand
+            ? args.slice(1)
+            : args,
+      )
+    let isFirstTurn = true
+    const runTurn = async (
+      prompt: string,
+      streamMessage?: StreamUserMessage,
+    ): Promise<boolean> => {
+      const startedAt = Date.now()
+      if (streamOutput) {
+        streamOutput.init()
+        if (isFirstTurn) {
+          for (const event of pendingEvents) streamOutput.sink(event)
+        }
+        if (invocation.replayUserMessages && streamMessage)
+          streamOutput.replayUser(streamMessage.message)
+      }
+      let result: SessionRunResult
+      try {
+        result =
+          command === 'resume' || !isFirstTurn
+            ? signal
+              ? await service.resume(activeSessionId, prompt, signal)
+              : await service.resume(activeSessionId, prompt)
+            : signal
+              ? await service.run(prompt, signal, activeSessionId)
+              : await service.run(prompt, undefined, activeSessionId)
+      } catch (error) {
+        if (isCancellation(error, signal)) throw error
+        const message = redactSensitiveText(
+          error instanceof Error ? error.message : String(error),
+          sensitiveEnvironmentValues(process.env),
+        )
+        if (streamOutput) streamOutput.error(message, startedAt)
+        else if (outputFormat === 'json') {
+          writeJson(
+            io,
+            createErrorResult(
+              message,
+              activeSessionId,
+              startedAt,
+              jsonModelTurns,
+            ),
+          )
+        } else throw error
+        return false
+      }
+      activeSessionId = result.sessionId
+      if (streamOutput) streamOutput.result(result, startedAt)
+      else if (outputFormat === 'json') {
+        writeJson(
+          io,
+          createSuccessResult(
+            result,
+            runtimeInfo,
+            startedAt,
+            Math.max(1, jsonModelTurns),
+          ),
+        )
+      } else if (outputFormat !== 'text')
+        writeJson(io, { type: 'result', ...result })
+      else io.stdout('\n')
+      isFirstTurn = false
+      return true
+    }
+
+    if (!(await runTurn(initialPrompt, firstStreamMessage))) return 1
+    if (streamIterator) {
+      for await (const message of streamIterator) {
+        if (!(await runTurn(message.prompt, message))) return 1
       }
     }
     return 0
-  }
-
-  if (command === 'fork') {
-    const result = await service.fork(requireValue(args[1], 'Session ID'))
-    if (json) writeJson(io, { type: 'forked', ...result })
-    else io.stdout(`${result.sessionId}\n`)
-    return 0
-  }
-
-  if (command === 'inspect') {
-    const session = await service.inspect(requireValue(args[1], 'Session ID'))
-    if (json) writeJson(io, { type: 'session', session })
-    else {
-      io.stdout(
-        `${session.sessionId}\t${session.status}\t${session.writeMode}\t${session.updatedAt}\t${session.entryCount}\t${session.byteLength}\t${session.newlineTerminated}\t${session.lastPrompt ?? ''}\t${formatSessionIssue(session.issue)}\n`,
+  } finally {
+    try {
+      await service.close?.()
+    } catch (error) {
+      io.stderr(
+        `Warning: ${redactSensitiveText(
+          error instanceof Error ? error.message : String(error),
+          sensitiveEnvironmentValues(process.env),
+        )}\n`,
       )
     }
-    return 0
   }
-
-  if (command === 'export') {
-    const sessionId = requireValue(args[1], 'Session ID')
-    const transcript = await service.export(sessionId)
-    if (json) {
-      writeJson(io, {
-        type: 'session-export',
-        sessionId,
-        encoding: 'base64',
-        transcript: transcript.toString('base64'),
-      })
-    } else io.stdout(transcript)
-    return 0
-  }
-
-  let result: SessionRunResult
-  if (command === 'resume') {
-    const sessionId = requireValue(args[1], 'Session ID')
-    const prompt = promptFrom(args.slice(2))
-    result = signal
-      ? await service.resume(sessionId, prompt, signal)
-      : await service.resume(sessionId, prompt)
-  } else {
-    const prompt = promptFrom(knownCommand ? args.slice(1) : args)
-    result = signal
-      ? await service.run(prompt, signal)
-      : await service.run(prompt)
-  }
-
-  if (json) writeJson(io, { type: 'result', ...result })
-  else io.stdout('\n')
-  return 0
 }
 
 export async function run(
@@ -503,11 +708,7 @@ export async function run(
   try {
     return await execute(argv, io, dependencies, signal)
   } catch (error) {
-    if (
-      error instanceof AgentRunCancelledError ||
-      signal?.aborted ||
-      (error instanceof DOMException && error.name === 'AbortError')
-    ) {
+    if (isCancellation(error, signal)) {
       io.stderr('Praxis run cancelled.\n')
       return 130
     }

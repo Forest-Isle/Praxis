@@ -210,3 +210,26 @@ User image attachments and MCP image-result writers remain closed pending
 separate Claude black-box envelopes. Exit gate covers focused runtime/provider/
 schema tests, real bidirectional projection, and the existing package,
 performance, recovery, subagent, and compatibility suites.
+
+## Sprint 13 — print and machine I/O contract
+
+Status: complete for text-only user input and current runtime events. Provider
+pricing and API-only timing remain an explicit later metering gate; machine
+results report those unknown values as `null` rather than zero.
+
+- [x] Claude-style `-p`/`--print`, `-r`/`--resume`, format, verbose, partial,
+      replay, agent, and explicit session-ID options
+- [x] atomic explicit session-ID reservation with existing and empty-file
+      collision behavior matching Claude Code 2.1.208
+- [x] single JSON result and stream JSON init/assistant/tool/result envelopes
+- [x] bounded incremental UTF-8/CRLF stream input with realtime multi-turn
+      run-to-resume behavior
+- [x] optional partial text/tool event lifecycle and user-message replay
+- [x] one MCP/service lifecycle across streamed turns and deterministic close
+      across headless and interactive paths
+- [x] legacy Praxis `--json` behavior retained as a separate compatibility alias
+- [x] clean-installed OpenAI/Anthropic two-turn stdin protocol gate
+
+User image/file input records and SDK control request/response messages remain
+explicit gaps in [PARITY_MATRIX.md](PARITY_MATRIX.md); they are not silently
+accepted or reported as compatible.

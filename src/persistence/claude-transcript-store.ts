@@ -68,6 +68,9 @@ export type TranscriptCreateResult =
   | { status: 'created'; tail: TranscriptTail }
   | { status: 'conflict'; reason: 'already-exists' }
 
+export type TranscriptReserveResult =
+  { status: 'reserved' } | { status: 'conflict'; reason: 'already-exists' }
+
 export interface ClaudeTranscriptLease {
   load(): Promise<TranscriptSnapshot>
   append(
@@ -374,6 +377,25 @@ export class ClaudeTranscriptStore {
       await sessionHandle.close()
     }
     return { status: 'created', tail: (await this.load()).tail }
+  }
+
+  async reserve(): Promise<TranscriptReserveResult> {
+    await mkdir(dirname(this.sessionFile), { recursive: true })
+    let handle
+    try {
+      handle = await open(this.sessionFile, 'wx')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        return { status: 'conflict', reason: 'already-exists' }
+      }
+      throw error
+    }
+    try {
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    return { status: 'reserved' }
   }
 
   async withLease<T>(

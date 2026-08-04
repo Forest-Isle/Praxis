@@ -26,6 +26,7 @@ interface InteractiveSessionCommands {
   ): Promise<SessionRunResult>
   fork(sessionId: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
+  close?(): Promise<void>
 }
 
 export interface InteractiveServiceFactory {
@@ -169,8 +170,9 @@ export function InteractiveApp({
     setStatus('assembling-context')
     setActiveText('')
     append({ kind: 'user', text: prompt })
+    let service: InteractiveSessionCommands | undefined
     try {
-      const service = await factory.createService({
+      service = await factory.createService({
         eventSink: handleEvent,
         requireProvider: true,
         approveRecovery,
@@ -194,7 +196,19 @@ export function InteractiveApp({
       })
       setStatus('failed')
     } finally {
-      setBusy(false)
+      try {
+        await service?.close?.()
+      } catch (error) {
+        append({
+          kind: 'warning',
+          text: redactSensitiveText(
+            error instanceof Error ? error.message : String(error),
+            sensitiveValues,
+          ),
+        })
+      } finally {
+        setBusy(false)
+      }
     }
   }
 
@@ -329,7 +343,18 @@ export async function runInteractive(options: {
     requireProvider: false,
     signal,
   })
-  const initialSessions = await listing.sessions()
+  let initialSessions: SessionSummary[]
+  try {
+    initialSessions = await listing.sessions()
+  } catch (error) {
+    try {
+      await listing.close?.()
+    } catch {
+      // Preserve the session-listing failure as the primary error.
+    }
+    throw error
+  }
+  await listing.close?.()
   let activeTurn: Promise<void> | null = null
   const instance = render(
     <InteractiveApp

@@ -143,6 +143,27 @@ Claude process honor this lease. Users must not run Claude and Praxis as writers
 of the same session simultaneously; the checks detect conflicts but cannot
 mathematically eliminate the final cross-process race.
 
+## Headless machine protocol
+
+Explicit `--output-format json` and `stream-json` use Claude-shaped result and
+message envelopes; legacy Praxis `--json` remains a separate runtime-event
+format. Stream input consumes raw stdin incrementally, validates each bounded
+UTF-8 NDJSON record, and processes user messages sequentially against one
+session and one connected MCP/service lifecycle. Each input turn emits its own
+init and terminal result records while retaining the same session ID.
+An empty stream exits successfully without emitting a record, matching Claude
+Code 2.1.208.
+
+An explicit new `--session-id` is reserved with exclusive file creation while
+the Praxis lease is held. Existing non-empty and empty files both fail with an
+already-in-use error, matching the Claude Code 2.1.208 black-box contract. The
+exclusive create also closes the race between an existence check and the first
+Praxis append.
+
+Only text user content blocks are writable through stream input in the current
+profile. Unsupported records and blocks fail closed; image/file input and SDK
+control messages require separate native/provider envelopes before enablement.
+
 ## Version compatibility
 
 Claude Code's local format is an implementation contract and can change.

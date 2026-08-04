@@ -117,8 +117,12 @@ export class ClaudeSessionService {
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
   }
 
-  async run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult> {
-    return this.executeTurn(randomUUID(), prompt, false, signal)
+  async run(
+    prompt: string,
+    signal?: AbortSignal,
+    sessionId: string = randomUUID(),
+  ): Promise<SessionRunResult> {
+    return this.executeTurn(sessionId, prompt, false, signal)
   }
 
   async resume(
@@ -250,6 +254,12 @@ export class ClaudeSessionService {
 
     const store = this.store(sessionId)
     const leaseResult = await store.withLease(async (lease) => {
+      if (!requireExisting) {
+        const reservation = await store.reserve()
+        if (reservation.status === 'conflict') {
+          throw new Error(`Session ID ${sessionId} is already in use`)
+        }
+      }
       let snapshot = await lease.load()
       if (requireExisting && snapshot.entries.length === 0) {
         throw new Error(`Claude session not found: ${sessionId}`)

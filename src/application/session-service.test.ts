@@ -71,6 +71,68 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('starts a session with an explicit caller-provided UUID', async () => {
+    const { service, configRoot, cwd } = await createService()
+    const sessionId = '33333333-3333-4333-8333-333333333333'
+
+    const result = await service.run('fixed identity', undefined, sessionId)
+
+    expect(result).toMatchObject({ sessionId, text: 'first answer' })
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    await expect(
+      readFile(
+        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+          .sessionFile,
+        'utf8',
+      ),
+    ).resolves.toContain(`"sessionId":"${sessionId}"`)
+    await expect(
+      service.run('must not append', undefined, sessionId),
+    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
+
+    const emptySessionId = '77777777-7777-4777-8777-777777777777'
+    const emptyPaths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: emptySessionId,
+    })
+    await mkdir(emptyPaths.projectRoot, { recursive: true })
+    await writeFile(emptyPaths.sessionFile, '')
+    await expect(
+      service.run('must not claim empty file', undefined, emptySessionId),
+    ).rejects.toThrow(`Session ID ${emptySessionId} is already in use`)
+  })
+
+  it('keeps a caller-provided session ID reserved after startup fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-reserve-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '88888888-8888-4888-8888-888888888888'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+    })
+
+    await expect(
+      service.run('claim identity', undefined, sessionId),
+    ).rejects.toThrow('A model provider is required for run and resume')
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    await expect(
+      readFile(
+        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+          .sessionFile,
+        'utf8',
+      ),
+    ).resolves.toBe('')
+    await expect(
+      service.run('must not reclaim identity', undefined, sessionId),
+    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
+  })
+
   it('compacts over-budget context before the model turn and preserves append-only history', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-compaction-'))
     roots.push(root)

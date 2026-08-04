@@ -211,6 +211,29 @@ describe('ClaudeTranscriptStore', () => {
     })
   })
 
+  it('reserves an empty transcript exclusively', async () => {
+    const targetRoot = await mkdtemp(join(tmpdir(), 'praxis-transcript-test-'))
+    tempDirectories.push(targetRoot)
+    const sessionFile = join(
+      targetRoot,
+      'projects',
+      'fixture',
+      'reserved.jsonl',
+    )
+    const target = new ClaudeTranscriptStore({
+      sessionFile,
+      lockFile: join(targetRoot, 'praxis', 'locks', 'reserved.lock'),
+      schema: selectClaudeSchemaAdapter('2.1.208'),
+    })
+
+    await expect(target.reserve()).resolves.toEqual({ status: 'reserved' })
+    await expect(readFile(sessionFile, 'utf8')).resolves.toBe('')
+    await expect(target.reserve()).resolves.toEqual({
+      status: 'conflict',
+      reason: 'already-exists',
+    })
+  })
+
   it('appends native last-prompt metadata without advancing the logical tail', async () => {
     const { sessionFile, store } = await createStore()
     const snapshot = await store.load()
