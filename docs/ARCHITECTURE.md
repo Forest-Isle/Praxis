@@ -61,6 +61,13 @@ probe budgets production CLI process startup, 500-session discovery, and
 network, Claude Code, and hook latency remain separate integration concerns.
 See [PERFORMANCE.md](PERFORMANCE.md).
 
+Release artifacts contain compiled `dist` output plus npm-required manifest,
+README, and license files only. The package gate installs that tarball in an
+empty project and exercises the real npm bin, preventing source-tree resolution
+or symlink behavior from masking release failures. Claude write compatibility
+remains an exact version allowlist; nearby and future versions stay read-only.
+See [RELEASE.md](RELEASE.md).
+
 ## Shared Claude data plane
 
 Praxis defaults to the same configuration root as Claude Code:

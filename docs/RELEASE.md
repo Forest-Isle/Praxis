@@ -1,0 +1,63 @@
+# Release Contract
+
+Praxis ships as the unscoped `praxis-agent` npm package with the `praxis`
+executable. Publishing is a separate, explicit operation; release validation
+never contacts a registry for publication.
+
+Runtime prerequisites are Node.js 24 or newer, `ripgrep` (`rg`) for the Grep
+tool, and the native command shell: `/bin/zsh` on macOS or `/bin/bash` on Linux.
+
+## Package boundary
+
+The tarball contains only:
+
+- compiled `dist/` JavaScript, declarations, and source maps;
+- `package.json`;
+- `README.md` and `LICENSE`.
+
+Source, tests, fixtures, compatibility probes, local configuration, and project
+documentation are not published. Compressed package size must stay below 1 MiB
+and unpacked size below 4 MiB.
+
+Run the complete tarball gate with:
+
+```sh
+npm run test:package
+```
+
+The gate builds, packs without lifecycle scripts, installs the tarball into an
+empty project, and runs the installed npm bin through `--version`, `--help`, and
+an isolated `sessions --json` smoke test. It also checks the package allowlist,
+size limits, version, license, and Claude write-safety matrix.
+
+## Runtime matrix
+
+| Surface                             | Matrix                                  | Expected behavior                            |
+| ----------------------------------- | --------------------------------------- | -------------------------------------------- |
+| Node.js                             | 24 and 25                               | clean tarball install and CLI smoke          |
+| OS                                  | current macOS and Ubuntu GitHub runners | package and performance gates                |
+| Claude Code 2.1.208                 | verified native profile                 | read-write plus all compatibility probes     |
+| Claude Code 2.1.207, 2.1.209, 3.0.0 | unverified profiles                     | read-only parse; append and fork fail closed |
+| Any other Claude version            | unverified profile                      | read-only until promoted below               |
+
+Promoting a new Claude version to read-write requires new black-box fixtures,
+an explicit versioned adapter, all unit and compatibility probes, tarball gate,
+and Standards/Spec review. Version proximity is never treated as schema
+compatibility.
+
+## Manual package creation
+
+```sh
+npm ci
+npm run check
+npm run test:performance
+npm run test:package
+npm pack
+```
+
+Install the resulting artifact without publishing:
+
+```sh
+npm install --global ./praxis-agent-0.1.0.tgz
+praxis --version
+```

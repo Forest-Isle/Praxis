@@ -17,5 +17,27 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
       - run: npm ci
       - run: npm run check
+
+  release-gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [24, 25]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - if: runner.os == 'Linux'
+        run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+      - if: runner.os == 'macOS'
+        run: command -v rg >/dev/null || brew install ripgrep
+      - run: npm ci
+      - run: npm run test:package
+      - run: npm run test:performance

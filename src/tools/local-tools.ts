@@ -17,6 +17,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { commandShell } from '../platform/command-shell.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
@@ -474,7 +475,7 @@ export class LocalToolRegistry implements ToolRegistry {
     if (timeout === undefined)
       throw new Error('Prepared Bash call has no timeout')
     const result = await this.runProcess(
-      '/bin/zsh',
+      commandShell(),
       ['-lc', stringInput(call.input, 'command')],
       timeout,
       signal,

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import {
   ClaudeSessionService,
@@ -369,7 +371,16 @@ export async function run(
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isDirectExecution(moduleUrl: string, argvPath: string | undefined) {
+  if (!argvPath) return false
+  try {
+    return moduleUrl === pathToFileURL(realpathSync(argvPath)).href
+  } catch {
+    return false
+  }
+}
+
+if (isDirectExecution(import.meta.url, process.argv[1])) {
   const controller = new AbortController()
   const cancel = () => controller.abort()
   process.once('SIGINT', cancel)

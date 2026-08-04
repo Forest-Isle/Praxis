@@ -10,8 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 3 context ecosystem is complete; Sprint 4 interactive hardening is in
-progress. Running `praxis` in a TTY opens an Ink session UI with streaming
+Sprint 4 interactive hardening is complete. Running `praxis` in a TTY opens an
+Ink session UI with streaming
 responses, recent-session selection, runtime status, and ask-permission prompts.
 When resume finds a tool call interrupted before its result was persisted, the
 UI shows the prepared tool name/input and requires a separate retry decision.
@@ -92,6 +92,8 @@ See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for protocol boundaries and
 ## Development
 
 Requires Node.js 24 or newer.
+The Grep tool requires `rg`; command execution uses `/bin/zsh` on macOS and
+`/bin/bash` on Linux.
 
 ```sh
 npm install
@@ -100,6 +102,7 @@ npm test
 npm run build
 npm run check
 npm run test:performance
+npm run test:package
 node dist/cli.js --help
 ```
 
@@ -155,6 +158,12 @@ npm run test:shared-compat
 process startup, 500-session discovery, and large transcript load, heap, and
 append behavior. Exact fixtures and limits are documented in
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
+`npm run test:package` builds the `praxis-agent` tarball, enforces its file and
+size boundary, installs it into an empty project, and exercises the installed
+`praxis` bin plus the fail-closed Claude version matrix. See
+[docs/RELEASE.md](docs/RELEASE.md). Publishing remains an explicit separate
+operation.
 
 Architecture constraints live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Runtime semantics and trust boundaries live in

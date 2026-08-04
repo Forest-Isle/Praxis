@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import type { PermissionBehavior } from '../core/runtime.js'
+import { commandShell } from '../platform/command-shell.js'
 
 export type ClaudeHookEventName =
   | 'SessionStart'
@@ -284,7 +285,7 @@ export class ClaudeHookRunner {
   ): Promise<ProcessResult> {
     return new Promise((resolve, reject) => {
       const startedAt = Date.now()
-      const child = spawn('/bin/zsh', ['-lc', command], {
+      const child = spawn(commandShell(), ['-lc', command], {
         cwd: this.cwd,
         env: { ...process.env, CLAUDE_PROJECT_DIR: input.cwd },
         stdio: ['pipe', 'pipe', 'pipe'],

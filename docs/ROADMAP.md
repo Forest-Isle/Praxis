@@ -66,14 +66,16 @@ unit/integration tests, and bidirectional live compaction resume.
 
 ## Sprint 4 — interactive CLI hardening
 
-Status: in progress.
+Status: complete for the local release suite.
 
 - [x] Ink TUI over runtime events
 - [x] streaming, permission prompts, session picker, and basic diagnostics
 - [x] interrupted-tool crash recovery with prepared-input approval
 - [x] deterministic CLI/session/transcript time and memory budgets
-- [ ] packaging and upgrade compatibility matrix
+- [x] npm tarball, clean-install smoke, and fail-closed upgrade matrix
 
 Performance gate passes against the production build with a 500-session index
-and an 11 MiB/20,000-entry transcript. Sprint exit gate remains the end-to-end
-release suite on macOS and Linux.
+and an 11 MiB/20,000-entry transcript. Package gate passes from the installed
+tarball. Sprint exit gate passed on macOS with live Claude Code 2.1.208 probes
+and in a Linux Node 24 Bookworm container; CI repeats package and performance
+gates for Node 24/25 on current macOS and Ubuntu runners.

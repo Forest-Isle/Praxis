@@ -1,9 +1,12 @@
 {
   "name": "praxis-agent",
   "version": "0.1.0",
-  "private": true,
   "description": "Local-first, single-user general agent for the command line.",
+  "license": "MIT",
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "bin": {
     "praxis": "./dist/cli.js"
   },
@@ -15,6 +18,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prepack": "npm run build",
     "test": "vitest run",
     "test:compat": "npm run build && node scripts/verify-claude-compatibility.mjs && node scripts/verify-claude-advanced-fixtures.mjs",
     "test:conditional-compat": "npm run build && node scripts/verify-conditional-rules.mjs",
@@ -25,6 +30,7 @@
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",
     "test:performance": "npm run build && node --expose-gc scripts/verify-performance-budgets.mjs",
+    "test:package": "npm run build && node scripts/verify-release-package.mjs",
     "test:runtime-compat": "npm run build && node scripts/verify-runtime-compatibility.mjs",
     "test:recovery-compat": "npm run build && node scripts/verify-crash-recovery.mjs",
     "test:shared-compat": "npm run build && node scripts/verify-claude-shared-resources.mjs",
