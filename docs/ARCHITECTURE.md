@@ -68,6 +68,12 @@ or symlink behavior from masking release failures. Claude write compatibility
 remains an exact version allowlist; nearby and future versions stay read-only.
 See [RELEASE.md](RELEASE.md).
 
+Provider selection stays at the CLI composition root. `core` receives the same
+`ModelProvider` port whether the adapter serializes OpenAI Chat Completions or
+Anthropic Messages. Both adapters expose streaming text, usage, tool schemas,
+tool calls, cancellation, retry classification, and explicit context-window
+capabilities without putting provider-native payloads in shared transcripts.
+
 ## Shared Claude data plane
 
 Praxis defaults to the same configuration root as Claude Code:

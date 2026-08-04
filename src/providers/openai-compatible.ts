@@ -16,6 +16,7 @@ export interface OpenAICompatibleProviderOptions {
   maxToolArgumentsBytes?: number
   maxToolCallsPerResponse?: number
   maxToolMetadataBytes?: number
+  maxErrorBodyBytes?: number
   fetchImplementation?: typeof fetch
 }
 
@@ -44,6 +45,8 @@ interface PendingToolCall {
 interface PendingToolState {
   calls: Map<number, PendingToolCall>
   metadataBytes: number
+  done: boolean
+  terminal: boolean
 }
 
 function completedToolCallEvents(
@@ -85,7 +88,11 @@ function parseSseEvent(
   maxToolCallsPerResponse: number,
   maxToolMetadataBytes: number,
 ): ModelStreamEvent[] {
-  if (data === '[DONE]') return completedToolCallEvents(pendingTools)
+  if (data === '[DONE]') {
+    pendingTools.done = true
+    pendingTools.terminal = true
+    return completedToolCallEvents(pendingTools)
+  }
 
   let value: unknown
   try {
@@ -160,10 +167,12 @@ function parseSseEvent(
     if (
       isRecord(first) &&
       first.finish_reason !== null &&
-      first.finish_reason !== undefined &&
-      pendingTools.calls.size > 0
+      first.finish_reason !== undefined
     ) {
-      events.push(...completedToolCallEvents(pendingTools))
+      pendingTools.terminal = true
+      if (pendingTools.calls.size > 0) {
+        events.push(...completedToolCallEvents(pendingTools))
+      }
     }
   }
 
@@ -211,6 +220,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly maxToolArgumentsBytes: number
   private readonly maxToolCallsPerResponse: number
   private readonly maxToolMetadataBytes: number
+  private readonly maxErrorBodyBytes: number
 
   constructor(private readonly options: OpenAICompatibleProviderOptions) {
     if (
@@ -235,6 +245,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.maxToolArgumentsBytes = options.maxToolArgumentsBytes ?? 1024 * 1024
     this.maxToolCallsPerResponse = options.maxToolCallsPerResponse ?? 32
     this.maxToolMetadataBytes = options.maxToolMetadataBytes ?? 1024 * 1024
+    this.maxErrorBodyBytes = options.maxErrorBodyBytes ?? 64 * 1024
   }
 
   async *complete(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
@@ -278,8 +289,46 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (!response.ok) {
       let payload: unknown
       try {
-        payload = await response.json()
-      } catch {
+        const reader = response.body?.getReader()
+        if (!reader) payload = null
+        else {
+          const chunks: Uint8Array[] = []
+          let size = 0
+          let ended = false
+          try {
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) {
+                ended = true
+                break
+              }
+              size += value.byteLength
+              if (size > this.maxErrorBodyBytes) {
+                throw new ModelProviderError(
+                  `Provider error response exceeded ${this.maxErrorBodyBytes} bytes`,
+                  { retryable: false, status: response.status },
+                )
+              }
+              chunks.push(value)
+            }
+          } finally {
+            if (!ended) {
+              try {
+                await reader.cancel()
+              } catch {
+                // Preserve the primary provider error.
+              }
+            }
+            reader.releaseLock()
+          }
+          payload = JSON.parse(
+            Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
+              'utf8',
+            ),
+          )
+        }
+      } catch (error) {
+        if (error instanceof ModelProviderError) throw error
         payload = null
       }
       throw new ModelProviderError(readErrorMessage(payload, response.status), {
@@ -299,10 +348,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const pendingTools: PendingToolState = {
       calls: new Map(),
       metadataBytes: 0,
+      done: false,
+      terminal: false,
     }
+    let streamEnded = false
 
     try {
-      while (true) {
+      stream: while (true) {
         const { done, value } = await reader.read()
         buffer += decoder.decode(value, { stream: !done })
         buffer = buffer.replaceAll('\r\n', '\n')
@@ -332,11 +384,21 @@ export class OpenAICompatibleProvider implements ModelProvider {
             )) {
               yield event
             }
+            if (pendingTools.done) break stream
           }
           boundary = buffer.indexOf('\n\n')
         }
 
-        if (done) break
+        if (done) {
+          streamEnded = true
+          break
+        }
+      }
+      if (!pendingTools.terminal) {
+        throw new ModelProviderError(
+          'Provider stream ended before a terminal event',
+          { retryable: true },
+        )
       }
     } catch (error) {
       if (error instanceof ModelProviderError || request.signal?.aborted) {
@@ -346,6 +408,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
         retryable: true,
         cause: error,
       })
+    } finally {
+      if (!streamEnded) {
+        try {
+          await reader.cancel()
+        } catch {
+          // Preserve the primary provider error or consumer return.
+        }
+      }
+      reader.releaseLock()
     }
   }
 }

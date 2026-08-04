@@ -38,6 +38,7 @@ import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
 import { ClaudeHookRunner } from './hooks/claude-hooks.js'
 import { ClaudeMcpToolRegistry } from './mcp/claude-mcp-tools.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
+import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
 
@@ -56,9 +57,57 @@ Usage:
   praxis --version
 
 Provider environment:
-  PRAXIS_API_KEY, PRAXIS_MODEL, PRAXIS_BASE_URL
+  PRAXIS_PROVIDER=openai|anthropic, PRAXIS_API_KEY, PRAXIS_MODEL
+  PRAXIS_BASE_URL, PRAXIS_MAX_OUTPUT_TOKENS, PRAXIS_ANTHROPIC_VERSION
   PRAXIS_CONTEXT_WINDOW_TOKENS, PRAXIS_CONTEXT_RESERVE_TOKENS
 `
+
+export function parseProviderEnvironment(environment: NodeJS.ProcessEnv): {
+  provider: 'openai' | 'anthropic'
+  baseUrl: string
+  maxOutputTokens?: number
+  anthropicVersion?: string
+} {
+  const provider = environment.PRAXIS_PROVIDER ?? 'openai'
+  if (provider !== 'openai' && provider !== 'anthropic') {
+    throw new Error('PRAXIS_PROVIDER must be openai or anthropic')
+  }
+  const maxOutputTokens = environment.PRAXIS_MAX_OUTPUT_TOKENS
+  if (
+    maxOutputTokens !== undefined &&
+    (!/^\d+$/.test(maxOutputTokens) ||
+      Number(maxOutputTokens) <= 0 ||
+      !Number.isSafeInteger(Number(maxOutputTokens)))
+  ) {
+    throw new Error('PRAXIS_MAX_OUTPUT_TOKENS must be a positive integer')
+  }
+  if (provider === 'openai' && maxOutputTokens !== undefined) {
+    throw new Error(
+      'PRAXIS_MAX_OUTPUT_TOKENS requires PRAXIS_PROVIDER=anthropic',
+    )
+  }
+  const anthropicVersion = environment.PRAXIS_ANTHROPIC_VERSION
+  if (provider === 'openai' && anthropicVersion !== undefined) {
+    throw new Error(
+      'PRAXIS_ANTHROPIC_VERSION requires PRAXIS_PROVIDER=anthropic',
+    )
+  }
+  if (anthropicVersion !== undefined && anthropicVersion.trim().length === 0) {
+    throw new Error('PRAXIS_ANTHROPIC_VERSION must not be empty')
+  }
+  return {
+    provider,
+    baseUrl:
+      environment.PRAXIS_BASE_URL ??
+      (provider === 'anthropic'
+        ? 'https://api.anthropic.com/v1'
+        : 'https://api.openai.com/v1'),
+    ...(maxOutputTokens === undefined
+      ? {}
+      : { maxOutputTokens: Number(maxOutputTokens) }),
+    ...(anthropicVersion === undefined ? {} : { anthropicVersion }),
+  }
+}
 
 export function parseContextEnvironment(environment: NodeJS.ProcessEnv): {
   contextWindowTokens?: number
@@ -147,14 +196,27 @@ const createDefaultService: CliDependencies['createService'] = async ({
     if (!apiKey || !model) {
       throw new Error('PRAXIS_API_KEY and PRAXIS_MODEL are required')
     }
-    provider = new OpenAICompatibleProvider({
+    const providerEnvironment = parseProviderEnvironment(process.env)
+    const providerOptions = {
       apiKey,
       model,
-      baseUrl: process.env.PRAXIS_BASE_URL ?? 'https://api.openai.com/v1',
+      baseUrl: providerEnvironment.baseUrl,
       ...('contextWindowTokens' in context
         ? { contextWindowTokens: context.contextWindowTokens }
         : {}),
-    })
+    }
+    provider =
+      providerEnvironment.provider === 'anthropic'
+        ? new AnthropicCompatibleProvider({
+            ...providerOptions,
+            ...('maxOutputTokens' in providerEnvironment
+              ? { maxOutputTokens: providerEnvironment.maxOutputTokens }
+              : {}),
+            ...('anthropicVersion' in providerEnvironment
+              ? { anthropicVersion: providerEnvironment.anthropicVersion }
+              : {}),
+          })
+        : new OpenAICompatibleProvider(providerOptions)
   }
 
   const options = {

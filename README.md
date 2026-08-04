@@ -10,14 +10,16 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 4 interactive hardening is complete. Running `praxis` in a TTY opens an
+Sprint 6 provider closure is complete for native Anthropic Messages and
+OpenAI-compatible APIs. Running `praxis` in a TTY opens an
 Ink session UI with streaming
 responses, recent-session selection, runtime status, and ask-permission prompts.
 When resume finds a tool call interrupted before its result was persisted, the
 UI shows the prepared tool name/input and requires a separate retry decision.
 Praxis can run, resume, fork, and list Claude-compatible sessions
-through a provider-neutral event loop and an OpenAI-compatible streaming
-provider. Built-in read, write, edit, search, and shell tools execute behind
+through a provider-neutral event loop and Anthropic-compatible or
+OpenAI-compatible streaming providers. Built-in read, write, edit, search, and
+shell tools execute behind
 Claude-compatible local permission rules with workspace path checks, timeouts,
 cancellation, and bounded output.
 
@@ -76,7 +78,8 @@ later messages. Activated nested-memory rules remain active across compaction.
 - One local OS user, multiple workspaces and sessions
 - Provider-capability-aware rather than tied to one model vendor
 - Claude Code-compatible transcripts, configuration, permissions, and memory
-- Optional local sub-agents; no multi-tenant control plane
+- Shared local agent definitions; parallel sub-agent orchestration remains out
+  of MVP scope
 
 ## Claude Code interoperability
 
@@ -111,6 +114,7 @@ Configure the first provider adapter, then run a prompt:
 ```sh
 export PRAXIS_API_KEY=...
 export PRAXIS_MODEL=...
+export PRAXIS_PROVIDER=openai # or anthropic
 export PRAXIS_BASE_URL=https://api.openai.com/v1
 export PRAXIS_CONTEXT_WINDOW_TOKENS=200000
 export PRAXIS_CONTEXT_RESERVE_TOKENS=8192
@@ -125,10 +129,13 @@ node dist/cli.js fork <session-id>
 node dist/cli.js
 ```
 
-`PRAXIS_BASE_URL` is optional and defaults to OpenAI's `/v1` endpoint. Context
-window configuration is explicit because Praxis accepts arbitrary provider
-models; when `PRAXIS_CONTEXT_WINDOW_TOKENS` is absent, Praxis does not invent a
-model limit. Reserve defaults to 10% of the configured window, capped at 8192.
+`PRAXIS_PROVIDER` defaults to `openai`. `PRAXIS_BASE_URL` defaults to the
+selected provider's official `/v1` endpoint. Native Anthropic requests accept
+`PRAXIS_MAX_OUTPUT_TOKENS` (default 8192) and
+`PRAXIS_ANTHROPIC_VERSION` (default `2023-06-01`). Context window configuration
+is explicit because Praxis accepts arbitrary provider models; when
+`PRAXIS_CONTEXT_WINDOW_TOKENS` is absent, Praxis does not invent a model limit.
+Reserve defaults to 10% of the configured window, capped at 8192.
 
 Permissions load from the shared global and current-project Claude settings.
 `Read` and `Grep` default to `allow`; `Write`, `Edit`, and `Bash` default to
@@ -160,8 +167,9 @@ append behavior. Exact fixtures and limits are documented in
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 `npm run test:package` builds the `praxis-agent` tarball, enforces its file and
-size boundary, installs it into an empty project, and exercises the installed
-`praxis` bin plus the fail-closed Claude version matrix. See
+size boundary, installs it into an empty project, and exercises both provider
+adapters through the installed `praxis` bin plus the fail-closed Claude version
+matrix. See
 [docs/RELEASE.md](docs/RELEASE.md). Publishing remains an explicit separate
 operation.
 

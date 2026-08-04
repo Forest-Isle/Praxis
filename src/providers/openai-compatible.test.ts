@@ -245,6 +245,97 @@ describe('OpenAICompatibleProvider', () => {
     )
   })
 
+  it('rejects premature EOF and cancels a stream abandoned by its consumer', async () => {
+    const truncated = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () =>
+        new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'),
+    })
+    const consume = async () => {
+      const stream = truncated.complete({ messages: [] })
+      const iterator = stream[Symbol.asyncIterator]()
+      while (!(await iterator.next()).done) continue
+    }
+    await expect(consume()).rejects.toMatchObject({
+      name: 'ModelProviderError',
+      retryable: true,
+    })
+
+    let cancelled = false
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"choices":[{"delta":{"content":"first"}}]}\n\n',
+          ),
+        )
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    const abandoned = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () => new Response(body),
+    })
+    const abandonedStream = abandoned.complete({ messages: [] })
+    const iterator = abandonedStream[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ done: false })
+    await iterator.return?.()
+    expect(cancelled).toBe(true)
+  })
+
+  it('bounds non-success response bodies', async () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      maxErrorBodyBytes: 8,
+      fetchImplementation: async () =>
+        new Response('{"error":{"message":"too large"}}', { status: 500 }),
+    })
+
+    await expect(
+      provider.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+    ).rejects.toThrow('error response exceeded 8 bytes')
+  })
+
+  it('completes and cancels the body at DONE without waiting for EOF', async () => {
+    let cancelled = false
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            [
+              'data: {"choices":[{"delta":{"content":"done"}}]}\n\n',
+              'data: [DONE]\n\n',
+            ].join(''),
+          ),
+        )
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () => new Response(body),
+    })
+
+    const events = []
+    for await (const event of provider.complete({ messages: [] })) {
+      events.push(event)
+    }
+    expect(events).toEqual([{ type: 'text-delta', delta: 'done' }])
+    expect(cancelled).toBe(true)
+  })
+
   it.each([
     ['connection', async () => Promise.reject(new TypeError('offline'))],
     [

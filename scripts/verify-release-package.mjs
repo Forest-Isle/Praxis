@@ -236,6 +236,7 @@ function assertToolExchange(messages, start, expected) {
     (message) =>
       message?.role === 'tool' &&
       message?.tool_call_id === expected.id &&
+      message?.is_error !== true &&
       String(message?.content).includes(expected.marker),
     `${expected.name} tool result ${expected.id}`,
   )
@@ -335,11 +336,20 @@ function readProviderRequest(request) {
   })
 }
 
-function sendProviderEvents(response, events) {
+function sendOpenAIEvents(response, events) {
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   for (const event of events)
     response.write(`data: ${JSON.stringify(event)}\n\n`)
   response.end('data: [DONE]\n\n')
+}
+
+function sendAnthropicEvents(response, events) {
+  response.writeHead(200, { 'content-type': 'text/event-stream' })
+  for (const event of events) {
+    response.write(`event: ${event.type}\n`)
+    response.write(`data: ${JSON.stringify(event)}\n\n`)
+  }
+  response.end()
 }
 
 function hasToolSchema(tools, name, requiredProperty) {
@@ -357,16 +367,100 @@ function hasToolSchema(tools, name, requiredProperty) {
   )
 }
 
-async function startProviderProbe() {
+function hasAnthropicToolSchema(tools, name, requiredProperty) {
+  const tool = tools.find((candidate) => candidate?.name === name)
+  const inputSchema = tool?.input_schema
+  return (
+    typeof tool?.description === 'string' &&
+    inputSchema?.type === 'object' &&
+    inputSchema?.properties?.[requiredProperty]?.type === 'string' &&
+    Array.isArray(inputSchema?.required) &&
+    inputSchema.required.includes(requiredProperty)
+  )
+}
+
+function normalizeAnthropicMessages(messages) {
+  const normalized = []
+  let expectedRole = 'user'
+  for (const message of messages) {
+    if (
+      (message?.role !== 'user' && message?.role !== 'assistant') ||
+      message.role !== expectedRole ||
+      !Array.isArray(message.content) ||
+      message.content.length === 0
+    ) {
+      throw new Error('Installed CLI sent invalid Anthropic message roles')
+    }
+    expectedRole = expectedRole === 'user' ? 'assistant' : 'user'
+    if (message.role === 'assistant') {
+      if (
+        message.content.some(
+          (block) => block?.type !== 'text' && block?.type !== 'tool_use',
+        )
+      ) {
+        throw new Error('Installed CLI sent invalid Anthropic assistant blocks')
+      }
+      const text = message.content
+        .filter((block) => block?.type === 'text')
+        .map((block) => block.text)
+        .join('')
+      const toolCalls = message.content
+        .filter((block) => block?.type === 'tool_use')
+        .map((block) => ({
+          type: 'function',
+          id: block.id,
+          function: {
+            name: block.name,
+            arguments: JSON.stringify(block.input),
+          },
+        }))
+      normalized.push({
+        role: 'assistant',
+        content: text,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      })
+      continue
+    }
+    for (const block of message.content) {
+      if (block?.type === 'text') {
+        normalized.push({ role: 'user', content: block.text })
+      } else if (block?.type === 'tool_result') {
+        if (block.is_error !== false) {
+          throw new Error(
+            'Installed CLI marked a successful Anthropic tool result as failed',
+          )
+        }
+        normalized.push({
+          role: 'tool',
+          tool_call_id: block.tool_use_id,
+          content: block.content,
+          is_error: block.is_error,
+        })
+      } else {
+        throw new Error('Installed CLI sent invalid Anthropic user blocks')
+      }
+    }
+  }
+  return normalized
+}
+
+async function startProviderProbe(provider) {
   const requests = []
   let failure
   const server = createServer(async (request, response) => {
     try {
-      if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
+      const expectedPath =
+        provider === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'
+      if (request.method !== 'POST' || request.url !== expectedPath) {
         response.writeHead(404).end()
         return
       }
-      if (request.headers.authorization !== 'Bearer release-probe-key') {
+      const authorized =
+        provider === 'anthropic'
+          ? request.headers['x-api-key'] === 'release-probe-key' &&
+            request.headers['anthropic-version'] === '2023-06-01'
+          : request.headers.authorization === 'Bearer release-probe-key'
+      if (!authorized) {
         throw new Error('Installed CLI sent unexpected provider authorization')
       }
       const body = await readProviderRequest(request)
@@ -378,94 +472,242 @@ async function startProviderProbe() {
         throw new Error('Installed CLI sent an invalid provider request')
       }
       requests.push(body)
+      const messages =
+        provider === 'anthropic'
+          ? normalizeAnthropicMessages(body.messages)
+          : body.messages
       if (requests.length === 1) {
         if (
-          body.messages
-            .slice(0, -1)
-            .some((message) => message?.role !== 'system') ||
-          body.messages.at(-1)?.role !== 'user' ||
-          body.messages.at(-1)?.content !== 'read the release fixture'
+          messages.slice(0, -1).some((message) => message?.role !== 'system') ||
+          messages.at(-1)?.role !== 'user' ||
+          messages.at(-1)?.content !== 'read the release fixture'
         ) {
           throw new Error('Installed CLI omitted the initial user prompt')
         }
+        const hasSchemas =
+          provider === 'anthropic'
+            ? Array.isArray(body.tools) &&
+              hasAnthropicToolSchema(body.tools, 'Read', 'file_path') &&
+              hasAnthropicToolSchema(body.tools, 'Bash', 'command')
+            : Array.isArray(body.tools) &&
+              hasToolSchema(body.tools, 'Read', 'file_path') &&
+              hasToolSchema(body.tools, 'Bash', 'command')
         if (
-          !Array.isArray(body.tools) ||
-          !hasToolSchema(body.tools, 'Read', 'file_path') ||
-          !hasToolSchema(body.tools, 'Bash', 'command')
+          !hasSchemas ||
+          (provider === 'anthropic' && body.max_tokens !== 1024)
         ) {
           throw new Error('Installed CLI omitted local tool schemas')
         }
-        sendProviderEvents(response, [
-          {
-            choices: [
-              {
-                delta: {
-                  tool_calls: [
-                    {
-                      index: 0,
-                      id: 'release_read',
-                      type: 'function',
-                      function: {
-                        name: 'Read',
-                        arguments: '{"file_path":"release-fixture.txt"}',
-                      },
-                    },
-                  ],
-                },
-                finish_reason: 'tool_calls',
+        if (provider === 'anthropic') {
+          sendAnthropicEvents(response, [
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 8 } },
+            },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: {
+                type: 'tool_use',
+                id: 'release_read',
+                name: 'Read',
+                input: {},
               },
-            ],
-          },
-        ])
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: '{"file_path":"release-fixture.txt"}',
+              },
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'tool_use', stop_sequence: null },
+              usage: { output_tokens: 4 },
+            },
+            { type: 'message_stop' },
+          ])
+        } else {
+          sendOpenAIEvents(response, [
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'release_read',
+                        type: 'function',
+                        function: {
+                          name: 'Read',
+                          arguments: '{"file_path":"release-fixture.txt"}',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                },
+              ],
+            },
+            {
+              choices: [],
+              usage: { prompt_tokens: 8, completion_tokens: 4 },
+            },
+          ])
+        }
         return
       }
       if (requests.length === 2) {
-        assertProviderConversation(body.messages, 'read')
-        sendProviderEvents(response, [
-          {
-            choices: [
-              {
-                delta: {
-                  tool_calls: [
-                    {
-                      index: 0,
-                      id: 'release_permission',
-                      type: 'function',
-                      function: {
-                        name: 'Bash',
-                        arguments:
-                          '{"command":"sed -n \'1p\' release-permission.txt"}',
-                      },
-                    },
-                  ],
-                },
-                finish_reason: 'tool_calls',
+        assertProviderConversation(messages, 'read')
+        if (provider === 'anthropic') {
+          sendAnthropicEvents(response, [
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 8 } },
+            },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: {
+                type: 'tool_use',
+                id: 'release_permission',
+                name: 'Bash',
+                input: {},
               },
-            ],
-          },
-        ])
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'input_json_delta',
+                partial_json:
+                  '{"command":"sed -n \'1p\' release-permission.txt"}',
+              },
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'tool_use', stop_sequence: null },
+              usage: { output_tokens: 4 },
+            },
+            { type: 'message_stop' },
+          ])
+        } else {
+          sendOpenAIEvents(response, [
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'release_permission',
+                        type: 'function',
+                        function: {
+                          name: 'Bash',
+                          arguments:
+                            '{"command":"sed -n \'1p\' release-permission.txt"}',
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                },
+              ],
+            },
+            {
+              choices: [],
+              usage: { prompt_tokens: 8, completion_tokens: 4 },
+            },
+          ])
+        }
         return
       }
       if (requests.length === 3) {
-        assertProviderConversation(body.messages, 'tools')
-        sendProviderEvents(response, [
-          {
-            choices: [{ delta: { content: 'installed tool loop response' } }],
-          },
-          {
-            choices: [],
-            usage: { prompt_tokens: 8, completion_tokens: 4 },
-          },
-        ])
+        assertProviderConversation(messages, 'tools')
+        if (provider === 'anthropic') {
+          sendAnthropicEvents(response, [
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 8 } },
+            },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: { type: 'text', text: '' },
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'text_delta',
+                text: 'installed tool loop response',
+              },
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn', stop_sequence: null },
+              usage: { output_tokens: 4 },
+            },
+            { type: 'message_stop' },
+          ])
+        } else {
+          sendOpenAIEvents(response, [
+            {
+              choices: [{ delta: { content: 'installed tool loop response' } }],
+            },
+            {
+              choices: [],
+              usage: { prompt_tokens: 8, completion_tokens: 4 },
+            },
+          ])
+        }
         return
       }
       if (requests.length === 4) {
-        assertProviderConversation(body.messages, 'resume')
-        sendProviderEvents(response, [
-          {
-            choices: [{ delta: { content: 'installed resume response' } }],
-          },
-        ])
+        assertProviderConversation(messages, 'resume')
+        if (provider === 'anthropic') {
+          sendAnthropicEvents(response, [
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 8 } },
+            },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: { type: 'text', text: '' },
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'text_delta',
+                text: 'installed resume response',
+              },
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn', stop_sequence: null },
+              usage: { output_tokens: 4 },
+            },
+            { type: 'message_stop' },
+          ])
+        } else {
+          sendOpenAIEvents(response, [
+            {
+              choices: [{ delta: { content: 'installed resume response' } }],
+            },
+            {
+              choices: [],
+              usage: { prompt_tokens: 8, completion_tokens: 4 },
+            },
+          ])
+        }
         return
       }
       throw new Error(`Unexpected provider request ${requests.length}`)
@@ -625,39 +867,63 @@ try {
     join(workDirectory, 'release-permission.txt'),
     'RELEASE_PERMISSION_MARKER\n',
   )
-  providerProbe = await startProviderProbe()
-  const providerEnvironment = {
-    ...process.env,
-    CLAUDE_CONFIG_DIR: configRoot,
-    PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
-    PRAXIS_API_KEY: 'release-probe-key',
-    PRAXIS_MODEL: 'release-probe-model',
-    PRAXIS_BASE_URL: providerProbe.baseUrl,
+  for (const provider of ['openai', 'anthropic']) {
+    providerProbe = await startProviderProbe(provider)
+    const providerEnvironment = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: configRoot,
+      PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+      PRAXIS_PROVIDER: provider,
+      PRAXIS_API_KEY: 'release-probe-key',
+      PRAXIS_MODEL: 'release-probe-model',
+      PRAXIS_BASE_URL: providerProbe.baseUrl,
+      ...(provider === 'anthropic' ? { PRAXIS_MAX_OUTPUT_TOKENS: '1024' } : {}),
+    }
+    const installedRun = await run(
+      praxis,
+      ['run', '--json', 'read the release fixture'],
+      { cwd: workDirectory, env: providerEnvironment },
+    )
+    const runResult = resultFrom(installedRun.stdout)
+    if (runResult.text !== 'installed tool loop response') {
+      throw new Error(
+        `Installed ${provider} CLI tool loop returned ${runResult.text}`,
+      )
+    }
+    if (
+      runResult.usage?.inputTokens !== 24 ||
+      runResult.usage?.outputTokens !== 12
+    ) {
+      throw new Error(
+        `Installed ${provider} CLI returned invalid run usage ${JSON.stringify(runResult.usage)}`,
+      )
+    }
+    const installedResume = await run(
+      praxis,
+      ['resume', '--json', runResult.sessionId, 'release resume prompt'],
+      { cwd: workDirectory, env: providerEnvironment },
+    )
+    const resumeResult = resultFrom(installedResume.stdout)
+    if (
+      resumeResult.sessionId !== runResult.sessionId ||
+      resumeResult.text !== 'installed resume response'
+    ) {
+      throw new Error(
+        `Installed ${provider} CLI resume did not preserve the session`,
+      )
+    }
+    if (
+      resumeResult.usage?.inputTokens !== 8 ||
+      resumeResult.usage?.outputTokens !== 4
+    ) {
+      throw new Error(
+        `Installed ${provider} CLI returned invalid resume usage ${JSON.stringify(resumeResult.usage)}`,
+      )
+    }
+    providerProbe.assertComplete()
+    await providerProbe.close()
+    providerProbe = undefined
   }
-  const installedRun = await run(
-    praxis,
-    ['run', '--json', 'read the release fixture'],
-    { cwd: workDirectory, env: providerEnvironment },
-  )
-  const runResult = resultFrom(installedRun.stdout)
-  if (runResult.text !== 'installed tool loop response') {
-    throw new Error(`Installed CLI tool loop returned ${runResult.text}`)
-  }
-  const installedResume = await run(
-    praxis,
-    ['resume', '--json', runResult.sessionId, 'release resume prompt'],
-    { cwd: workDirectory, env: providerEnvironment },
-  )
-  const resumeResult = resultFrom(installedResume.stdout)
-  if (
-    resumeResult.sessionId !== runResult.sessionId ||
-    resumeResult.text !== 'installed resume response'
-  ) {
-    throw new Error('Installed CLI resume did not preserve the session')
-  }
-  providerProbe.assertComplete()
-  await providerProbe.close()
-  providerProbe = undefined
 
   const schemaModule = await import(
     pathToFileURL(
@@ -727,7 +993,7 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed CLI provider/tool/resume loop, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed OpenAI/Anthropic CLI provider/tool/resume loops, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
   )
 } finally {
   try {

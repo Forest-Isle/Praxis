@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ModelToolCall } from './core/runtime.js'
 import {
   parseContextEnvironment,
+  parseProviderEnvironment,
   run,
   type CliDependencies,
   type CliIO,
@@ -60,6 +61,31 @@ function dependencies(warning?: string): CliDependencies {
 }
 
 describe('Praxis CLI', () => {
+  it('selects provider-specific environment defaults', () => {
+    expect(parseProviderEnvironment({})).toEqual({
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+    })
+    expect(
+      parseProviderEnvironment({
+        PRAXIS_PROVIDER: 'anthropic',
+        PRAXIS_MAX_OUTPUT_TOKENS: '4096',
+        PRAXIS_ANTHROPIC_VERSION: '2023-06-01',
+      }),
+    ).toEqual({
+      provider: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      maxOutputTokens: 4096,
+      anthropicVersion: '2023-06-01',
+    })
+    expect(() =>
+      parseProviderEnvironment({ PRAXIS_PROVIDER: 'unknown' }),
+    ).toThrow('openai or anthropic')
+    expect(() =>
+      parseProviderEnvironment({ PRAXIS_MAX_OUTPUT_TOKENS: '4096' }),
+    ).toThrow('requires PRAXIS_PROVIDER=anthropic')
+  })
+
   it('validates explicit context budget environment', () => {
     expect(
       parseContextEnvironment({

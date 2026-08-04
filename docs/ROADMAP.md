@@ -91,3 +91,15 @@ Status: complete for the packaged OpenAI-compatible runtime.
 
 Exit gate runs from the clean-installed tarball on the Node 24/25 macOS and
 Ubuntu release matrix without contacting an external provider.
+
+## Sprint 6 — native provider contract closure
+
+Status: complete for OpenAI-compatible and Anthropic Messages APIs.
+
+- [x] native Anthropic Messages request and SSE translation
+- [x] explicit CLI provider selection with provider-specific safe defaults
+- [x] matching text, usage, tool-call, error, cancellation, and bound semantics
+- [x] identical installed CLI Read/Bash/persist/resume scenario for both adapters
+
+Exit gate runs both provider protocols through the clean-installed npm bin on
+the Node 24/25 macOS and Ubuntu release matrix without external network access.
