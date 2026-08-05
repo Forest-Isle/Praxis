@@ -202,6 +202,35 @@ function normalizedUrl(value: string): URL {
   return url
 }
 
+function parseWebFetchInput(input: Record<string, unknown>): {
+  url: URL
+  prompt: string
+} {
+  return {
+    url: normalizedUrl(stringInput(input, 'url')),
+    prompt: stringInput(input, 'prompt', 0),
+  }
+}
+
+function parseWebSearchInput(input: Record<string, unknown>): {
+  query: string
+  allowedDomains?: readonly string[]
+  blockedDomains?: readonly string[]
+} {
+  const allowedDomains = domainList(input, 'allowed_domains')
+  const blockedDomains = domainList(input, 'blocked_domains')
+  if (allowedDomains && blockedDomains) {
+    throw new Error(
+      '<tool_use_error>Error: Cannot specify both allowed_domains and blocked_domains in the same request</tool_use_error>',
+    )
+  }
+  return {
+    query: stringInput(input, 'query', 2),
+    ...(allowedDomains ? { allowedDomains } : {}),
+    ...(blockedDomains ? { blockedDomains } : {}),
+  }
+}
+
 function normalizedAddress(value: string) {
   const parsed = ipaddr.parse(value)
   return parsed instanceof ipaddr.IPv6 && parsed.isIPv4MappedAddress()
@@ -377,11 +406,12 @@ export class WebToolRegistry implements ToolRegistry {
   ): Promise<ModelToolCall> {
     if (context.signal?.aborted) throw abortError()
     if (call.name === 'WebFetch') {
+      const input = parseWebFetchInput(call.input)
       return {
         ...call,
         input: {
-          url: normalizedUrl(stringInput(call.input, 'url')).href,
-          prompt: stringInput(call.input, 'prompt', 0),
+          url: input.url.href,
+          prompt: input.prompt,
         },
       }
     }
@@ -389,19 +419,17 @@ export class WebToolRegistry implements ToolRegistry {
       if (!this.options.provider.capabilities.webSearch) {
         throw new Error('Provider does not support web search')
       }
-      const allowedDomains = domainList(call.input, 'allowed_domains')
-      const blockedDomains = domainList(call.input, 'blocked_domains')
-      if (allowedDomains && blockedDomains) {
-        throw new Error(
-          '<tool_use_error>Error: Cannot specify both allowed_domains and blocked_domains in the same request</tool_use_error>',
-        )
-      }
+      const input = parseWebSearchInput(call.input)
       return {
         ...call,
         input: {
-          query: stringInput(call.input, 'query', 2),
-          ...(allowedDomains ? { allowed_domains: allowedDomains } : {}),
-          ...(blockedDomains ? { blocked_domains: blockedDomains } : {}),
+          query: input.query,
+          ...(input.allowedDomains
+            ? { allowed_domains: input.allowedDomains }
+            : {}),
+          ...(input.blockedDomains
+            ? { blocked_domains: input.blockedDomains }
+            : {}),
         },
       }
     }
@@ -422,8 +450,7 @@ export class WebToolRegistry implements ToolRegistry {
     call: ModelToolCall,
     signal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
-    const url = normalizedUrl(stringInput(call.input, 'url'))
-    const prompt = stringInput(call.input, 'prompt', 0)
+    const { url, prompt } = parseWebFetchInput(call.input)
     const page = await this.page(url, signal)
     if ('redirect' in page) {
       return {
@@ -452,14 +479,9 @@ export class WebToolRegistry implements ToolRegistry {
     call: ModelToolCall,
     signal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
-    const query = stringInput(call.input, 'query', 2)
-    const allowedDomains = domainList(call.input, 'allowed_domains')
-    const blockedDomains = domainList(call.input, 'blocked_domains')
-    if (allowedDomains && blockedDomains) {
-      throw new Error(
-        '<tool_use_error>Error: Cannot specify both allowed_domains and blocked_domains in the same request</tool_use_error>',
-      )
-    }
+    const { query, allowedDomains, blockedDomains } = parseWebSearchInput(
+      call.input,
+    )
     const processed = await this.modelText(
       [
         {
