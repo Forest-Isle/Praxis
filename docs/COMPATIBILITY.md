@@ -205,6 +205,19 @@ without writing raw base64 to the transcript. `ReadMcpResourceDirTool` retains
 2.1.208's current fixed disabled response. Resource-only servers appear as
 connected in stream init status, and all clients close with the CLI lifecycle.
 
+`WebFetch` and provider-capable `WebSearch` use Claude Code 2.1.208's observed
+tool names, descriptions, schemas, result wrappers, and local permission
+patterns. Normal and safe modes expose them; bare mode omits them even when
+explicitly selected. Both default to `ask`, so headless `dontAsk` runs deny
+them without an allow rule; WebFetch accepts Claude's `domain:<host>` rules.
+WebSearch is a provider capability: Anthropic uses
+the native `web_search_20250305` server tool with at most eight uses and maps
+allowed or blocked domains, while OpenAI-compatible providers currently omit
+the tool. WebFetch upgrades HTTP to HTTPS, rejects authenticated/private URLs,
+pins requests to public DNS results, follows at most five same-host redirects,
+reports cross-host redirects, converts supported text to Markdown, and applies
+bounded timeout, response, model-output, and 15-minute cache limits.
+
 ## Version compatibility
 
 Claude Code's local format is an implementation contract and can change.
@@ -354,6 +367,9 @@ execution, and Claude resume of the Praxis-written hook transcript.
 `npm run test:mcp-compat` proves Claude and Praxis share user/project-local
 precedence, then exercises Praxis stdio and Streamable HTTP discovery, tool
 calls, permission flow, and stdio subprocess cleanup through the built CLI.
+`npm run test:web-compat` compares exact schemas and safe/bare exposure, native
+filtered search requests, links/citations, private-fetch rejection, result
+errors, transcript persistence, and Claude resume against Claude Code 2.1.208.
 `npm run test:recovery-compat` creates an interrupted native tool call, proves
 decline is append-free, approves the prepared retry exactly once, persists its
 native result, and requires Claude Code 2.1.208 to resume the recovered turn.

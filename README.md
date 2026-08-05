@@ -10,11 +10,12 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 16 native file globbing is complete on top of notebook editing, CLI
-customization and session controls, print and machine-I/O support, image tool
-results, native foreground subagents, resilient sessions, native full-history
-forks, child-process credential boundaries, shared memory, and native
-Anthropic/OpenAI-compatible providers.
+Sprint 18 WebFetch/WebSearch compatibility is complete on top of MCP resource
+tools, native file globbing, notebook editing, CLI customization and session
+controls, print and machine-I/O support, image tool results, native foreground
+subagents, resilient sessions, native full-history forks, child-process
+credential boundaries, shared memory, and native Anthropic/OpenAI-compatible
+providers.
 Headless runs support Claude-style settings/source isolation, safe and bare
 modes, direct/file system prompts, additional canonical directory roots,
 explicit tool sets, CLI permission rules and modes, current-directory
@@ -31,8 +32,8 @@ UI shows the prepared tool name/input and requires a separate retry decision.
 Praxis can run, resume, fork, and list Claude-compatible sessions
 through a provider-neutral event loop and Anthropic-compatible or
 OpenAI-compatible streaming providers. Built-in read, write, edit, glob, search,
-shell, and notebook tools execute behind Claude-compatible local permission rules
-with path checks, timeouts, cancellation, and bounded output. Notebook `Read`
+shell, notebook, and web tools execute behind Claude-compatible local permission
+rules with path checks, timeouts, cancellation, and bounded output. Notebook `Read`
 emits Claude-compatible cell IDs and `NotebookEdit` performs one structured
 replace, insert, or delete only after a successful read. `Read`, `Write`, and `Edit`
 also accept the canonical shared Claude project-memory root; other external
@@ -125,6 +126,17 @@ environment values and sensitive HTTP headers are redacted from tool results,
 discovery warnings, and errors. Plain, NDJSON, and interactive CLI diagnostics
 also redact ambient credential values, including provider error bodies, failed
 runtime events, tool failures, and approval descriptions that echo a key.
+
+Normal and safe modes expose `WebFetch`; `WebSearch` is added only when the
+selected provider advertises native search support. Bare mode excludes both,
+including explicit tool selection. WebFetch upgrades HTTP to HTTPS, rejects
+credentials and private/loopback destinations, pins each request to validated
+public DNS results, revalidates same-host redirects, converts supported text to
+Markdown, and bounds time, response bytes, output bytes, redirects, and cache.
+Cross-host redirects are returned for a fresh explicit fetch. Anthropic-native
+WebSearch supports allowed or blocked domain filters, links/citations, and the
+Claude-compatible source reminder; OpenAI-compatible providers currently do
+not advertise native WebSearch.
 
 Provider-neutral context budgeting counts system/history/tool-schema input
 before every model turn. When an explicitly configured provider window would
@@ -220,10 +232,10 @@ variables. Explicit per-server MCP `env` and HTTP headers are treated as
 intentional grants to that server, with matching output redaction.
 
 Permissions load from the shared global and current-project Claude settings.
-`Read` and `Grep` default to `allow`; `Write`, `Edit`, and `Bash` default to
-`ask`. Interactive mode prompts before an `ask` tool call. Headless commands
-remain non-interactive and return a denied tool result unless a compatible
-`allow` rule exists.
+`Read` and `Grep` default to `allow`; `Write`, `Edit`, `Bash`, `WebFetch`, and
+`WebSearch` default to `ask`. Interactive mode prompts before an `ask` tool
+call. Headless commands remain non-interactive and return a denied tool result
+unless a compatible `allow` rule exists.
 
 With a Claude Code 2.1.208 installation, run the isolated compatibility probes
 separately. Claude-backed probes make real model requests; the context-runtime
@@ -246,6 +258,7 @@ npm run test:permission-compat
 npm run test:runtime-compat
 npm run test:recovery-compat
 npm run test:shared-compat
+npm run test:web-compat
 ```
 
 `npm run test:performance` is a local, provider-free release gate covering CLI

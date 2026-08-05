@@ -204,7 +204,17 @@ try {
     [
       'safe',
       ['--safe-mode'],
-      ['Read', 'Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep', 'Bash'],
+      [
+        'Read',
+        'Write',
+        'Edit',
+        'NotebookEdit',
+        'Glob',
+        'Grep',
+        'Bash',
+        'WebFetch',
+        'WebSearch',
+      ],
     ],
     ['bare', ['--bare'], ['Bash', 'Edit', 'Read']],
     ['empty tools', ['--tools='], []],

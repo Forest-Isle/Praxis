@@ -44,6 +44,8 @@ const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   ListMcpResourcesTool: 'allow',
   ReadMcpResourceDirTool: 'allow',
   ReadMcpResourceTool: 'allow',
+  WebFetch: 'ask',
+  WebSearch: 'ask',
   Bash: 'ask',
 }
 
@@ -144,6 +146,12 @@ function permissionTarget(call: ModelToolCall): string | null {
       ? call.input.notebook_path
       : null
   }
+  if (call.name === 'WebFetch') {
+    return typeof call.input.url === 'string' ? call.input.url : null
+  }
+  if (call.name === 'WebSearch') {
+    return typeof call.input.query === 'string' ? call.input.query : null
+  }
   return typeof call.input.file_path === 'string' ? call.input.file_path : null
 }
 
@@ -168,6 +176,15 @@ function matchesRule(
   if (call.name === 'Bash' && rule.pattern.endsWith(':*')) {
     const commandPrefix = rule.pattern.slice(0, -2)
     return target === commandPrefix || target.startsWith(`${commandPrefix} `)
+  }
+  if (call.name === 'WebFetch' && rule.pattern.startsWith('domain:')) {
+    try {
+      const hostname = new URL(target).hostname.toLowerCase().replace(/\.$/, '')
+      const domainPattern = rule.pattern.slice('domain:'.length).toLowerCase()
+      return globExpression(domainPattern).test(hostname)
+    } catch {
+      return false
+    }
   }
   let permissionPattern = rule.pattern
   if (FILE_TOOLS.has(call.name)) {

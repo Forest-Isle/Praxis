@@ -296,4 +296,29 @@ Status: complete for local recursive file pattern matching.
 Directories and symlinks are not returned. Praxis intentionally applies its
 canonical-root boundary to an explicitly selected symlink directory even
 though Claude 2.1.208 follows that root; this retains the established local
-threat model. Web and MCP resource tools remain separate stages.
+threat model.
+
+## Sprint 17 — MCP resource compatibility
+
+Status: complete for connected MCP resource-capable servers.
+
+- [x] capability-gated Claude-compatible list, read, and directory schemas
+- [x] bounded paginated discovery with per-server attribution and caching
+- [x] exact text/not-found result projection and disabled directory response
+- [x] bounded binary blob persistence under session `tool-results`
+- [x] resource-only connection status and ephemeral-session storage
+- [x] live Claude 2.1.208 result, persistence, and bidirectional resume gate
+
+## Sprint 18 — web tools
+
+Status: complete for WebFetch and provider-native WebSearch.
+
+- [x] exact Claude 2.1.208 schemas, descriptions, safe/bare exposure, and
+      permission defaults
+- [x] HTTPS-only public fetching with DNS pinning, redirect revalidation, SSRF
+      rejection, HTML-to-Markdown conversion, timeout, byte, and cache bounds
+- [x] provider-neutral page processing with untrusted-content isolation
+- [x] Anthropic-native `web_search_20250305` requests, domain filters,
+      links/citations, usage, and source reminder
+- [x] capability omission for providers without native search
+- [x] live Claude/Praxis result parity, native persistence, and Claude resume

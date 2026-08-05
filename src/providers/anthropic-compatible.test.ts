@@ -17,6 +17,7 @@ describe('AnthropicCompatibleProvider', () => {
       usage: true,
       tools: true,
       images: true,
+      webSearch: true,
       contextWindowTokens: 200_000,
     })
     expect(
@@ -205,6 +206,78 @@ describe('AnthropicCompatibleProvider', () => {
           input_schema: { type: 'object' },
         },
       ],
+    })
+  })
+
+  it('maps native web search requests and preserves result links', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          [
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}\n\n',
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"server_call","name":"web_search","input":{}}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"query\\":\\"marker\\"}"}}\n\n',
+            'data: {"type":"content_block_stop","index":0}\n\n',
+            'data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"server_call","content":[{"type":"web_search_result","title":"Example","url":"https://example.com","encrypted_content":"opaque"}]}}\n\n',
+            'data: {"type":"content_block_stop","index":1}\n\n',
+            'data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}\n\n',
+            'data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"summary"}}\n\n',
+            'data: {"type":"content_block_delta","index":2,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://example.com","title":"Example"}}}\n\n',
+            'data: {"type":"content_block_stop","index":2}\n\n',
+            'data: {"type":"message_delta","usage":{"output_tokens":4}}\n\n',
+            'data: {"type":"message_stop"}\n\n',
+          ].join(''),
+        )
+      },
+    })
+
+    const events = []
+    for await (const event of provider.complete({
+      messages: [
+        { role: 'system', content: 'search system' },
+        { role: 'user', content: 'search query' },
+      ],
+      webSearch: {
+        allowedDomains: ['example.com'],
+        maxUses: 8,
+      },
+    })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      {
+        type: 'text-delta',
+        delta: 'Links: [{"title":"Example","url":"https://example.com"}]\n\n',
+      },
+      { type: 'text-delta', delta: 'summary' },
+      { type: 'usage', usage: { inputTokens: 3, outputTokens: 4 } },
+    ])
+    expect(body).toEqual({
+      model: 'fixture-model',
+      max_tokens: 8192,
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'search query' }],
+        },
+      ],
+      stream: true,
+      system: 'search system',
+      tools: [
+        {
+          type: 'web_search_20250305',
+          name: 'web_search',
+          allowed_domains: ['example.com'],
+          max_uses: 8,
+        },
+      ],
+      tool_choice: { type: 'tool', name: 'web_search' },
     })
   })
 

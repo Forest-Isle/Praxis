@@ -26,6 +26,7 @@ Protected assets:
 | Transcript corruption or confused parent chain | Append-only writes, advisory lock, tail fingerprint, `parentUuid` check, no auto-repair                                                                   |
 | Unsupported Claude format                      | Version adapter selects read-only fallback before any write                                                                                               |
 | Provider payload incompatibility               | Persist only translated Claude-native completed events; raw payload stays in sidecar                                                                      |
+| Web fetch SSRF or DNS rebinding                | Require HTTPS, reject private/loopback targets, pin requests to validated public DNS results, and revalidate redirects                                    |
 | Resource exhaustion                            | Bound model turns, post-redaction output, tool runtime, subprocess tree, and context size                                                                 |
 | Dependency compromise                          | Lockfile, minimal dependencies, CI audit, explicit release review                                                                                         |
 
@@ -61,3 +62,7 @@ Protected assets:
   from tool results, warnings, errors, hook attachments, and shared JSONL;
 - prevent login/non-interactive shell startup files from restoring stripped
   credentials.
+- reject private WebFetch literals and DNS results; never pass an unvalidated
+  address to the HTTPS request lookup;
+- bound WebFetch DNS/request duration, redirect count, response bytes, processed
+  output, and cache lifetime.

@@ -46,6 +46,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function webSearchLinks(value: unknown): { title: string; url: string }[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) =>
+    isRecord(item) &&
+    item.type === 'web_search_result' &&
+    typeof item.title === 'string' &&
+    typeof item.url === 'string'
+      ? [{ title: item.title, url: item.url }]
+      : [],
+  )
+}
+
 function positiveInteger(value: number, label: string): number {
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`${label} must be a positive integer`)
@@ -206,6 +218,21 @@ function parseSseEvent(
         ? [{ type: 'text-delta', delta: block.text }]
         : []
     }
+    if (block.type === 'web_search_tool_result') {
+      state.blocks.set(value.index, 'ignored')
+      const links = webSearchLinks(block.content)
+      const serialized = links.length > 0 ? JSON.stringify(links) : ''
+      state.metadataBytes += Buffer.byteLength(serialized)
+      if (state.metadataBytes > maxToolMetadataBytes) {
+        throw new ModelProviderError(
+          `Provider tool metadata exceeded ${maxToolMetadataBytes} bytes`,
+          { retryable: false },
+        )
+      }
+      return serialized
+        ? [{ type: 'text-delta', delta: `Links: ${serialized}\n\n` }]
+        : []
+    }
     if (block.type !== 'tool_use') {
       state.blocks.set(value.index, 'ignored')
       return []
@@ -259,6 +286,7 @@ function parseSseEvent(
         { retryable: false },
       )
     }
+    if (blockType === 'ignored') return []
     if (value.delta.type === 'text_delta') {
       if (blockType !== 'text') {
         throw new ModelProviderError(
@@ -297,7 +325,7 @@ function parseSseEvent(
     if (
       value.delta.type !== 'text_delta' &&
       value.delta.type !== 'input_json_delta' &&
-      blockType !== 'ignored'
+      value.delta.type !== 'citations_delta'
     ) {
       throw new ModelProviderError(
         `Provider returned an unsupported delta for content block ${value.index}`,
@@ -480,6 +508,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       usage: true,
       tools: true,
       images: true,
+      webSearch: true,
       ...(options.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: options.contextWindowTokens }),
@@ -500,6 +529,9 @@ export class AnthropicCompatibleProvider implements ModelProvider {
   }
 
   async *complete(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    if (request.webSearch && request.tools?.length) {
+      throw new Error('Web search cannot be combined with model tools')
+    }
     const serialized = serializeMessages(request.messages)
     const requestInit: RequestInit = {
       method: 'POST',
@@ -514,15 +546,35 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         messages: serialized.messages,
         stream: true,
         ...(serialized.system ? { system: serialized.system } : {}),
-        ...(request.tools?.length
+        ...(request.webSearch
           ? {
-              tools: request.tools.map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                input_schema: tool.inputSchema,
-              })),
+              tools: [
+                {
+                  type: 'web_search_20250305',
+                  name: 'web_search',
+                  ...(request.webSearch.allowedDomains
+                    ? { allowed_domains: request.webSearch.allowedDomains }
+                    : {}),
+                  ...(request.webSearch.blockedDomains
+                    ? { blocked_domains: request.webSearch.blockedDomains }
+                    : {}),
+                  max_uses: positiveInteger(
+                    request.webSearch.maxUses,
+                    'Web search max uses',
+                  ),
+                },
+              ],
+              tool_choice: { type: 'tool', name: 'web_search' },
             }
-          : {}),
+          : request.tools?.length
+            ? {
+                tools: request.tools.map((tool) => ({
+                  name: tool.name,
+                  description: tool.description,
+                  input_schema: tool.inputSchema,
+                })),
+              }
+            : {}),
       }),
     }
     if (request.signal) requestInit.signal = request.signal

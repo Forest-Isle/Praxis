@@ -51,6 +51,7 @@ import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
 import { FilteredToolRegistry } from './tools/filtered-tool-registry.js'
+import { WebToolRegistry } from './tools/web.js'
 import {
   createErrorResult,
   createSuccessResult,
@@ -351,12 +352,15 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : cli.permissionMode,
     }),
   )
+  const localTools = new LocalToolRegistry({
+    cwd,
+    ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
+    additionalDirectories: cli.additionalDirectories,
+  })
   const mcpTools = await ClaudeMcpToolRegistry.connect({
-    base: new LocalToolRegistry({
-      cwd,
-      ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
-      additionalDirectories: cli.additionalDirectories,
-    }),
+    base: cli.bare
+      ? localTools
+      : new WebToolRegistry({ base: localTools, provider }),
     resources: resources.mcp,
     cwd,
     onWarning: (message) => eventSink({ type: 'warning', message }),
@@ -368,7 +372,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
       cli.tools === undefined ||
       cli.tools.includes('default') ||
       cli.tools.includes('Agent')
-    const selectedBaseTools = cli.tools?.filter((name) => name !== 'Agent')
+    const selectedBaseTools = cli.tools?.filter(
+      (name) =>
+        name !== 'Agent' &&
+        (!cli.bare || (name !== 'WebFetch' && name !== 'WebSearch')),
+    )
     const filteredTools = new FilteredToolRegistry(extensionTools, {
       ...(cli.tools === undefined
         ? cli.bare

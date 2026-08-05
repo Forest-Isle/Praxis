@@ -52,6 +52,12 @@ export interface ModelUsage {
   outputTokens: number
 }
 
+export interface ModelWebSearch {
+  allowedDomains?: readonly string[]
+  blockedDomains?: readonly string[]
+  maxUses: number
+}
+
 export type ModelStreamEvent =
   | { type: 'text-delta'; delta: string }
   | { type: 'tool-call'; call: ModelToolCall }
@@ -60,6 +66,7 @@ export type ModelStreamEvent =
 export interface ModelRequest {
   messages: readonly ModelMessage[]
   tools?: readonly ModelToolDefinition[]
+  webSearch?: ModelWebSearch
   signal?: AbortSignal
 }
 
@@ -68,6 +75,7 @@ export interface ModelProviderCapabilities {
   usage: boolean
   tools: boolean
   images?: boolean
+  webSearch?: boolean
   contextWindowTokens?: number
 }
 

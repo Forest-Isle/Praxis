@@ -89,6 +89,36 @@ describe('ClaudePermissionResolver', () => {
         },
       ),
     ).resolves.toEqual({ behavior: 'allow' })
+    for (const call of [
+      {
+        id: 'web-fetch',
+        name: 'WebFetch',
+        input: { url: 'https://example.com/docs', prompt: 'read' },
+      },
+      {
+        id: 'web-search',
+        name: 'WebSearch',
+        input: { query: 'current docs' },
+      },
+    ]) {
+      await expect(
+        new ClaudePermissionResolver({
+          cwd: '/workspace',
+          settings: [],
+        }).resolve(call),
+      ).resolves.toEqual({ behavior: 'ask' })
+    }
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        allowedTools: ['WebFetch(domain:example.com)'],
+      }).resolve({
+        id: 'allowed-web-fetch',
+        name: 'WebFetch',
+        input: { url: 'https://example.com/docs', prompt: 'read' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
     await expect(
       new ClaudePermissionResolver({
         cwd: '/workspace',

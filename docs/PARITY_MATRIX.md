@@ -78,16 +78,16 @@ Evidence levels:
 
 ## Tool surface
 
-| Capability                           | Status   | Evidence / remaining work                                                                             |
-| ------------------------------------ | -------- | ----------------------------------------------------------------------------------------------------- |
-| Read / Write / Edit / Grep / Bash    | Complete | Path, symlink, bounds, permissions, persistence gates                                                 |
-| Skill / foreground Agent / MCP tools | Complete | Provider-neutral registries and native persistence                                                    |
-| Glob                                 | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                            |
-| WebFetch / WebSearch                 | Missing  | Network tools, policy, citation/result bounds                                                         |
-| NotebookEdit                         | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                         |
-| Worktree enter/exit                  | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`                                                     |
-| Task/Cron/Monitor/Workflow           | Missing  | Durable scheduling and process lifecycle                                                              |
-| MCP resource tools                   | Complete | Conditional schemas, paginated list, text/blob read, directory stub, status, persistence, live resume |
+| Capability                           | Status   | Evidence / remaining work                                                                               |
+| ------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------- |
+| Read / Write / Edit / Grep / Bash    | Complete | Path, symlink, bounds, permissions, persistence gates                                                   |
+| Skill / foreground Agent / MCP tools | Complete | Provider-neutral registries and native persistence                                                      |
+| Glob                                 | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                              |
+| WebFetch / WebSearch                 | Complete | Live exact schemas/exposure/results, native Anthropic search, SSRF/redirect/cache/output bounds, resume |
+| NotebookEdit                         | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                           |
+| Worktree enter/exit                  | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`                                                       |
+| Task/Cron/Monitor/Workflow           | Missing  | Durable scheduling and process lifecycle                                                                |
+| MCP resource tools                   | Complete | Conditional schemas, paginated list, text/blob read, directory stub, status, persistence, live resume   |
 
 ## Management commands
 
@@ -104,13 +104,12 @@ Evidence levels:
 
 ## Remaining implementation order
 
-1. Missing web tools.
-2. Durable background tasks, agents, messaging, cron, monitor, and workflow.
-3. Worktree/tmux/background invocation, picker naming, ephemeral subagents,
+1. Durable background tasks, agents, messaging, cron, monitor, and workflow.
+2. Worktree/tmux/background invocation, picker naming, ephemeral subagents,
    and permission `auto` classifier.
-4. Plugin runtime and management.
-5. MCP management commands.
-6. Model effort/fallback, structured output, pricing/budget, suggestions,
+3. Plugin runtime and management.
+4. MCP management commands.
+5. Model effort/fallback, structured output, pricing/budget, suggestions,
    diagnostics, auth, and update commands.
-7. Final live black-box matrix, package/performance regression, and macOS/Linux
+6. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.
