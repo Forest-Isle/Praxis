@@ -47,6 +47,7 @@ import {
   BackgroundAgentManager,
   type BackgroundAgentRunResult,
 } from './background-agent-manager.js'
+import { isBackgroundBashTaskId } from './background-task-id.js'
 
 const DEFAULT_MAX_DEPTH = 4
 const DEFAULT_MAX_CALLS = 16
@@ -77,6 +78,7 @@ export interface ClaudeSubagentExecutorOptions {
   maxOutputBytes?: number
   providerForModel?: (model: string) => ModelProvider
   toolNames?: readonly string[]
+  backgroundTaskNotifications?: (waitForRunning: boolean) => Promise<string[]>
 }
 
 function parseAgentInput(call: ModelToolCall): AgentInput {
@@ -910,9 +912,10 @@ export class ClaudeSubagentExecutor {
           ...(this.options.approveTool
             ? { approveTool: this.options.approveTool }
             : {}),
-          ...(this.options.hooks
+          ...(this.options.hooks || this.options.backgroundTaskNotifications
             ? {
                 onStop: async (text: string) => {
+                  const messages: string[] = []
                   const outcome = await this.options.hooks?.run(
                     {
                       ...hookSession,
@@ -923,11 +926,24 @@ export class ClaudeSubagentExecutor {
                     undefined,
                     options.signal,
                   )
-                  if (!outcome) return []
-                  await recordHookOutcome(outcome)
-                  if (!outcome.blockedReason) return []
-                  stopHookActive = true
-                  return [`Stop hook error: ${outcome.blockedReason}`]
+                  if (outcome) {
+                    await recordHookOutcome(outcome)
+                    if (outcome.blockedReason) {
+                      stopHookActive = true
+                      messages.push(`Stop hook error: ${outcome.blockedReason}`)
+                    }
+                  }
+                  const background = await this.background.notifications({
+                    waitForRunning: false,
+                    excludeAgentId: options.agentId,
+                  })
+                  messages.push(...background.messages)
+                  messages.push(
+                    ...((await this.options.backgroundTaskNotifications?.(
+                      true,
+                    )) ?? []),
+                  )
+                  return { messages, usage: background.usage }
                 },
               }
             : {}),
@@ -973,14 +989,33 @@ class ClaudeSubagentToolRegistry implements ToolRegistry {
   ) {}
 
   definitions(): readonly ModelToolDefinition[] {
+    const base = this.base.definitions()
+    const management = this.executor
+      .managementDefinitions()
+      .filter(({ name }) => this.executor.isEnabled(name))
+    const managementNames = new Set(management.map(({ name }) => name))
+    const firstManagement = base.findIndex(({ name }) =>
+      managementNames.has(name),
+    )
+    const insertionIndex =
+      firstManagement < 0
+        ? base.length
+        : base
+            .slice(0, firstManagement)
+            .filter(({ name }) => !managementNames.has(name)).length
+    const ordinary = base.filter(({ name }) => !managementNames.has(name))
+    const baseByName = new Map(
+      base.map((definition) => [definition.name, definition]),
+    )
     return [
-      ...this.base.definitions(),
+      ...ordinary.slice(0, insertionIndex),
       ...(this.executor.isEnabled('Agent')
         ? [this.executor.definitions()]
         : []),
-      ...this.executor
-        .managementDefinitions()
-        .filter(({ name }) => this.executor.isEnabled(name)),
+      ...management.map(
+        (definition) => baseByName.get(definition.name) ?? definition,
+      ),
+      ...ordinary.slice(insertionIndex),
     ]
   }
 
@@ -989,11 +1024,14 @@ class ClaudeSubagentToolRegistry implements ToolRegistry {
     context: ToolExecutionContext,
   ): Promise<ModelToolCall> {
     if (call.name === 'Agent') return this.executor.prepare(call, this.depth)
-    if (
-      call.name === 'SendMessage' ||
-      call.name === 'TaskOutput' ||
-      call.name === 'TaskStop'
-    ) {
+    if (call.name === 'SendMessage') {
+      return this.executor.prepareManagement(call)
+    }
+    if (call.name === 'TaskOutput' || call.name === 'TaskStop') {
+      const taskId = call.input.task_id ?? call.input.shell_id
+      if (typeof taskId === 'string' && isBackgroundBashTaskId(taskId)) {
+        return this.base.prepare(call, context)
+      }
       return this.executor.prepareManagement(call)
     }
     return this.base.prepare(call, context)
@@ -1003,11 +1041,14 @@ class ClaudeSubagentToolRegistry implements ToolRegistry {
     call: ModelToolCall,
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
-    if (
-      call.name === 'SendMessage' ||
-      call.name === 'TaskOutput' ||
-      call.name === 'TaskStop'
-    ) {
+    if (call.name === 'SendMessage') {
+      return this.executor.executeManagement(call, this.sessionId)
+    }
+    if (call.name === 'TaskOutput' || call.name === 'TaskStop') {
+      const taskId = call.input.task_id ?? call.input.shell_id
+      if (typeof taskId === 'string' && isBackgroundBashTaskId(taskId)) {
+        return this.base.execute(call, context)
+      }
       return this.executor.executeManagement(call, this.sessionId)
     }
     if (call.name !== 'Agent') return this.base.execute(call, context)

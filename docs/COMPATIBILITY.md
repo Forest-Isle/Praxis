@@ -272,6 +272,28 @@ decoded byte size in native `toolUseResult.file` metadata. It uses the same
 bounded runtime path on main chains and Agent sidechains. Top-level user
 image attachments and MCP-specific image results remain write-disabled.
 
+Structured tasks are authoritative shared files under
+`<config>/tasks/<session-id>`, not transcript or Praxis-only records. Praxis
+preserves Claude's task JSON shape, reciprocal `blocks`/`blockedBy` edges,
+metadata null-deletion, deletion cleanup, and numeric high-watermark. ID
+allocation also scans existing task files because Claude 2.1.208 can append a
+task during cross-runtime resume without advancing an existing high-watermark.
+Praxis publishes a fully synced task through an exclusive same-directory link;
+if Claude wins the numeric ID race, Praxis rescans and retries without replacing
+the native file. Updates fingerprint every involved task immediately before
+atomic replacement and retry the complete mutation over newer native state;
+no-op updates do not rewrite task files. `TaskList` hides tasks marked with
+native `metadata._internal`. A terminal `TaskOutput` consumes its pending
+completion notification, while a bounded wait that expires reports `timeout`
+and leaves the running task eligible for its eventual notification.
+Background Bash output uses Claude's
+`/tmp/claude-<uid>/<project>/<session>/tasks` layout; standard `Read` gets
+read-only access to that root while mutation and search tools retain their
+normal workspace boundaries. Resumable Bash status metadata stays under
+`<config>/praxis/`, uses atomic replacement, and is ignored when malformed. It
+is never authoritative conversation state. Dynamic completion-notification
+fields are XML escaped before transcript insertion.
+
 Fork uses a separate versioned creation profile because it copies existing
 native records rather than appending newly generated records. For Claude Code
 2.1.208 it losslessly copies supported main-chain `user`, `assistant`, `system`,
@@ -305,6 +327,7 @@ remain explicitly rejected by the append adapter.
 | Instructions, skills, commands, agents | Shared         | Read/execute; source files stay read only |
 | Settings, MCP                          | Shared         | Read only until semantic matrix passes    |
 | Hooks                                  | Shared         | Read/execute; declarations stay read only |
+| Durable task graph                     | Shared         | Read/write                                |
 | Provider payloads, indexes, locks      | Praxis sidecar | Read/write                                |
 
 This matrix is also encoded in `src/compatibility/claude/ownership.ts`; runtime
@@ -351,6 +374,11 @@ settings sources without copying or synchronization.
 SendMessage, TaskOutput, and TaskStop schemas, then proves async launch, output
 polling, same-ID continuation, completion notification, sidechain persistence,
 usage aggregation, and Claude resume of the Praxis-written main session.
+`npm run test:task-compat` compares Bash and durable-task schemas, exercises
+Praxis task/dependency/background-Bash lifecycle, has Claude resume and extend
+the same graph, then has Praxis resume Claude's public and internal tasks,
+exclude the internal task from `TaskList`, repair a stale high-watermark without
+ID collision, and persist an XML-safe completion notification.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork

@@ -1,14 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto'
-import {
-  link,
-  mkdir,
-  open,
-  opendir,
-  readFile,
-  rename,
-  rm,
-} from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { mkdir, open, readFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { TextDecoder } from 'node:util'
 
 import type {
@@ -19,6 +11,7 @@ import {
   getClaudeContentBlocks,
   indexClaudeToolLinks,
 } from '../compatibility/claude/tool-links.js'
+import { ExclusiveFileLease } from '../platform/exclusive-file-lease.js'
 
 export interface TranscriptTail {
   byteLength: number
@@ -93,15 +86,7 @@ export interface ClaudeTranscriptStoreOptions {
   writeProfile?: 'main' | 'sidechain'
 }
 
-interface LeaseLockMetadata {
-  version: 1
-  pid: number
-  token: string
-  createdAt: string
-}
-
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true })
-const MAX_STALE_ARTIFACT_CLEANUP = 64
 const NON_TAIL_ENTRY_TYPES = new Set([
   'agent-name',
   'agent-setting',
@@ -142,39 +127,6 @@ function splitTranscriptLines(source: Buffer): Buffer[] {
   }
   lines.push(source.subarray(lineStart, contentEnd))
   return lines
-}
-
-function parseLeaseLock(source: string): LeaseLockMetadata | null {
-  let value: unknown
-  try {
-    value = JSON.parse(source)
-  } catch {
-    return null
-  }
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return null
-  }
-  const lock = value as Record<string, unknown>
-  if (
-    lock.version !== 1 ||
-    !Number.isSafeInteger(lock.pid) ||
-    Number(lock.pid) <= 0 ||
-    typeof lock.token !== 'string' ||
-    !/^[A-Za-z0-9_-]{1,128}$/u.test(lock.token) ||
-    typeof lock.createdAt !== 'string'
-  ) {
-    return null
-  }
-  return lock as unknown as LeaseLockMetadata
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
-  }
 }
 
 function tailsMatch(left: TranscriptTail, right: TranscriptTail): boolean {
@@ -268,13 +220,13 @@ function validateLastPromptLeaf(
 
 export class ClaudeTranscriptStore {
   private readonly sessionFile: string
-  private readonly lockFile: string
+  private readonly lease: ExclusiveFileLease
   private readonly schema: ClaudeSchemaAdapter
   private readonly writeProfile: 'main' | 'sidechain'
 
   constructor(options: ClaudeTranscriptStoreOptions) {
     this.sessionFile = options.sessionFile
-    this.lockFile = options.lockFile
+    this.lease = new ExclusiveFileLease(options.lockFile)
     this.schema = options.schema
     this.writeProfile = options.writeProfile ?? 'main'
   }
@@ -406,9 +358,7 @@ export class ClaudeTranscriptStore {
   async withLease<T>(
     operation: (lease: ClaudeTranscriptLease) => Promise<T>,
   ): Promise<TranscriptLeaseResult<T>> {
-    await mkdir(dirname(this.lockFile), { recursive: true })
-    await this.cleanupStaleLeaseArtifacts()
-    const lock = await this.acquireLeaseLock()
+    const lock = await this.lease.tryAcquire()
     if (!lock) return { status: 'conflict', reason: 'locked' }
 
     try {
@@ -421,214 +371,7 @@ export class ClaudeTranscriptStore {
       })
       return { status: 'completed', value }
     } finally {
-      await this.releaseOwnedLock(this.lockFile, lock.token)
-    }
-  }
-
-  private async acquireLeaseLock(): Promise<LeaseLockMetadata | null> {
-    const lock: LeaseLockMetadata = {
-      version: 1,
-      pid: process.pid,
-      token: randomUUID(),
-      createdAt: new Date().toISOString(),
-    }
-    const candidate = `${this.lockFile}.${lock.token}.candidate`
-    const candidateHandle = await open(candidate, 'wx')
-    try {
-      try {
-        await candidateHandle.writeFile(JSON.stringify(lock))
-        await candidateHandle.sync()
-      } finally {
-        await candidateHandle.close()
-      }
-      try {
-        await link(candidate, this.lockFile)
-        return lock
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      }
-
-      let existing: LeaseLockMetadata | null
-      try {
-        existing = parseLeaseLock(await readFile(this.lockFile, 'utf8'))
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        try {
-          await link(candidate, this.lockFile)
-          return lock
-        } catch (linkError) {
-          if ((linkError as NodeJS.ErrnoException).code === 'EEXIST') {
-            return null
-          }
-          throw linkError
-        }
-      }
-      if (!existing || isProcessAlive(existing.pid)) return null
-      const reclaimGuard = `${this.lockFile}.${existing.token}.reclaim`
-      if (
-        !(await this.acquireReclaimGuard(candidate, reclaimGuard, lock.token))
-      ) {
-        return null
-      }
-      try {
-        if (!(await this.ownsLock(reclaimGuard, lock.token))) return null
-        let current: LeaseLockMetadata | null
-        try {
-          current = parseLeaseLock(await readFile(this.lockFile, 'utf8'))
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') current = null
-          else throw error
-        }
-        if (current?.token !== existing.token || isProcessAlive(current.pid)) {
-          return null
-        }
-        await rm(this.lockFile, { force: true })
-        try {
-          await link(candidate, this.lockFile)
-          if (!(await this.ownsLock(reclaimGuard, lock.token))) {
-            await this.releaseOwnedLock(this.lockFile, lock.token)
-            return null
-          }
-          return lock
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null
-          throw error
-        }
-      } finally {
-        await this.releaseOwnedLock(reclaimGuard, lock.token)
-      }
-    } finally {
-      await rm(candidate, { force: true })
-    }
-  }
-
-  private async acquireReclaimGuard(
-    candidate: string,
-    reclaimGuard: string,
-    token: string,
-  ): Promise<boolean> {
-    try {
-      await link(candidate, reclaimGuard)
-      return true
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-    }
-    let existing: LeaseLockMetadata | null
-    try {
-      existing = parseLeaseLock(await readFile(reclaimGuard, 'utf8'))
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      try {
-        await link(candidate, reclaimGuard)
-        return true
-      } catch (linkError) {
-        if ((linkError as NodeJS.ErrnoException).code === 'EEXIST') return false
-        throw linkError
-      }
-    }
-    if (!existing || isProcessAlive(existing.pid)) return false
-    const displacedGuard = `${reclaimGuard}.${token}.stale`
-    try {
-      try {
-        await rename(reclaimGuard, displacedGuard)
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        try {
-          await link(candidate, reclaimGuard)
-          return true
-        } catch (linkError) {
-          if ((linkError as NodeJS.ErrnoException).code === 'EEXIST') {
-            return false
-          }
-          throw linkError
-        }
-      }
-
-      const displaced = parseLeaseLock(await readFile(displacedGuard, 'utf8'))
-      if (displaced?.token !== existing.token) {
-        return false
-      }
-      try {
-        await link(candidate, reclaimGuard)
-        return true
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
-        throw error
-      }
-    } finally {
-      await rm(displacedGuard, { force: true })
-    }
-  }
-
-  private async ownsLock(lockFile: string, token: string): Promise<boolean> {
-    let current: LeaseLockMetadata | null
-    try {
-      current = parseLeaseLock(await readFile(lockFile, 'utf8'))
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-      throw error
-    }
-    return current?.token === token
-  }
-
-  private async cleanupStaleLeaseArtifacts(): Promise<void> {
-    const directory = dirname(this.lockFile)
-    const prefix = `${basename(this.lockFile)}.`
-    const entries = await opendir(directory)
-    let inspected = 0
-
-    for await (const entry of entries) {
-      if (
-        !entry.isFile() ||
-        !entry.name.startsWith(prefix) ||
-        !/\.(?:candidate|stale)$/u.test(entry.name)
-      ) {
-        continue
-      }
-      if (inspected >= MAX_STALE_ARTIFACT_CLEANUP) return
-      inspected += 1
-      if (
-        entry.name.endsWith('.stale') &&
-        (await this.staleArtifactHasLiveOwner(entry.name))
-      ) {
-        continue
-      }
-      const artifact = join(directory, entry.name)
-      let owner: LeaseLockMetadata | null
-      try {
-        owner = parseLeaseLock(await readFile(artifact, 'utf8'))
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw error
-      }
-      if (!owner || isProcessAlive(owner.pid)) continue
-      await this.releaseOwnedLock(artifact, owner.token)
-    }
-  }
-
-  private async staleArtifactHasLiveOwner(name: string): Promise<boolean> {
-    const match = /\.reclaim\.([A-Za-z0-9_-]{1,128})\.stale$/u.exec(name)
-    const token = match?.[1]
-    if (!token) return true
-
-    let owner: LeaseLockMetadata | null
-    try {
-      owner = parseLeaseLock(
-        await readFile(`${this.lockFile}.${token}.candidate`, 'utf8'),
-      )
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-      throw error
-    }
-    return !owner || owner.token !== token || isProcessAlive(owner.pid)
-  }
-
-  private async releaseOwnedLock(
-    lockFile: string,
-    token: string,
-  ): Promise<void> {
-    if (await this.ownsLock(lockFile, token)) {
-      await rm(lockFile, { force: true })
+      await lock.release()
     }
   }
 

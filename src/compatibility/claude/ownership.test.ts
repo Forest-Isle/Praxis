@@ -12,6 +12,11 @@ describe('Claude shared-data ownership', () => {
       plane: 'shared',
       praxisAccess: 'read-write',
     })
+    expect(getDataOwnership('durable-task-graph')).toMatchObject({
+      plane: 'shared',
+      praxisAccess: 'read-write',
+      location: 'tasks/<session-id>/',
+    })
   })
 
   it('starts settings, hooks, and MCP in compatibility-safe read-only mode', () => {

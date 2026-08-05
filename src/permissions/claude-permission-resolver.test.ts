@@ -45,6 +45,33 @@ describe('ClaudePermissionResolver', () => {
     })
   })
 
+  it('allows durable task graph tools by default with explicit deny precedence', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+    })
+    for (const name of ['TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate']) {
+      await expect(
+        resolver.resolve({ id: name, name, input: {} }),
+      ).resolves.toEqual({ behavior: 'allow' })
+    }
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [
+          {
+            path: '/config/settings.json',
+            scope: 'user',
+            value: { permissions: { deny: ['TaskUpdate'] } },
+          },
+        ],
+      }).resolve({ id: 'deny-update', name: 'TaskUpdate', input: {} }),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule TaskUpdate',
+    })
+  })
+
   it('applies deny, ask, allow, and safe defaults to normalized tool calls', async () => {
     const resolver = new ClaudePermissionResolver({
       cwd: '/workspace',

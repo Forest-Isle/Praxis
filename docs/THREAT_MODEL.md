@@ -71,3 +71,12 @@ Protected assets:
   exclusively, and never let TaskStop cancel a different task or main run;
 - bound TaskOutput waits and returned content, serialize same-ID continuations,
   and keep completion metadata inside native tool results and user messages.
+- validate numeric durable-task and `b`-prefixed Bash IDs before path
+  resolution; allocate against both high-watermark and existing task files;
+- serialize Praxis task graph mutations, use atomic task-file replacement, and
+  rebase over changed native fingerprints, clean reciprocal edges, and release
+  token-owned leases only when ownership still matches;
+- run foreground and background Bash through one sanitized, bounded process
+  runner; redact before temporary output persistence, atomically replace and
+  validate resumable sidecars, XML-escape notifications, and expose temporary
+  output to `Read` only.

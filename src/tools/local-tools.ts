@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
 import { open, realpath, stat } from 'node:fs/promises'
 import {
@@ -25,10 +24,9 @@ import {
   commandShellArguments,
 } from '../platform/command-shell.js'
 import {
-  redactSensitiveText,
-  sanitizeChildEnvironment,
-  sensitiveEnvironmentValues,
-} from '../platform/sensitive-data.js'
+  BoundedProcessRunner,
+  joinedProcessOutput,
+} from '../platform/bounded-process-runner.js'
 import { globFiles } from './glob.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
 
@@ -36,17 +34,10 @@ export interface LocalToolRegistryOptions {
   cwd: string
   sharedMemoryDirectory?: string
   additionalDirectories?: readonly string[]
+  additionalReadDirectories?: readonly string[]
   maxOutputBytes?: number
   maxFileBytes?: number
   maxShellTimeoutMs?: number
-}
-
-interface ProcessResult {
-  stdout: string
-  stderr: string
-  code: number
-  timedOut: boolean
-  truncated: boolean
 }
 
 const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
@@ -233,42 +224,6 @@ function truncateOutput(content: string, maxBytes: number): string {
     : retained.content
 }
 
-function redactSensitivePrefix(
-  content: string,
-  sensitiveValues: readonly string[],
-  maxRawBytes: number,
-): string {
-  let redacted = ''
-  let index = 0
-  let rawBytes = 0
-  while (index < content.length && rawBytes < maxRawBytes) {
-    const sensitiveValue = sensitiveValues.find((value) =>
-      content.startsWith(value, index),
-    )
-    if (sensitiveValue) {
-      redacted += redactSensitiveText(sensitiveValue, [sensitiveValue])
-      rawBytes += Buffer.byteLength(sensitiveValue)
-      index += sensitiveValue.length
-      continue
-    }
-    const codePoint = content.codePointAt(index)
-    if (codePoint === undefined) break
-    const character = String.fromCodePoint(codePoint)
-    const characterBytes = Buffer.byteLength(character)
-    if (rawBytes + characterBytes > maxRawBytes) break
-    redacted += character
-    rawBytes += characterBytes
-    index += character.length
-  }
-  return redacted
-}
-
-function joinedOutput(result: ProcessResult): string {
-  if (!result.stdout) return result.stderr
-  if (!result.stderr) return result.stdout
-  return `${result.stdout}${result.stdout.endsWith('\n') ? '' : '\n'}${result.stderr}`
-}
-
 function abortError(): DOMException {
   return new DOMException('Tool execution aborted', 'AbortError')
 }
@@ -306,9 +261,11 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly cwd: string
   private readonly sharedMemoryDirectory: string | undefined
   private readonly additionalDirectories: readonly string[]
+  private readonly additionalReadDirectories: readonly string[]
   private readonly maxOutputBytes: number
   private readonly maxFileBytes: number
   private readonly maxShellTimeoutMs: number
+  private readonly processRunner: BoundedProcessRunner
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
@@ -318,15 +275,23 @@ export class LocalToolRegistry implements ToolRegistry {
     this.additionalDirectories = (options.additionalDirectories ?? []).map(
       (directory) => resolve(directory),
     )
+    this.additionalReadDirectories = (
+      options.additionalReadDirectories ?? []
+    ).map((directory) => resolve(directory))
     this.maxOutputBytes = options.maxOutputBytes ?? 128 * 1024
     this.maxFileBytes = options.maxFileBytes ?? 10 * 1024 * 1024
     this.maxShellTimeoutMs = options.maxShellTimeoutMs ?? 120_000
+    this.processRunner = new BoundedProcessRunner({
+      cwd: this.cwd,
+      maxOutputBytes: this.maxOutputBytes,
+    })
   }
 
   definitions(): readonly ModelToolDefinition[] {
     if (
       !this.sharedMemoryDirectory &&
-      this.additionalDirectories.length === 0
+      this.additionalDirectories.length === 0 &&
+      this.additionalReadDirectories.length === 0
     ) {
       return TOOL_DEFINITIONS
     }
@@ -340,6 +305,11 @@ export class LocalToolRegistry implements ToolRegistry {
               this.additionalDirectories.length === 0
                 ? ''
                 : ` Additional allowed directories: ${this.additionalDirectories.join(', ')}.`
+            }${
+              definition.name !== 'Read' ||
+              this.additionalReadDirectories.length === 0
+                ? ''
+                : ` Additional read-only directories: ${this.additionalReadDirectories.join(', ')}.`
             }${
               !this.sharedMemoryDirectory ||
               definition.name === 'Glob' ||
@@ -365,6 +335,7 @@ export class LocalToolRegistry implements ToolRegistry {
             file_path: await this.filePath(
               stringInput(call.input, 'file_path'),
               false,
+              true,
             ),
             ...(optionalPositiveInteger(call.input, 'offset') === undefined
               ? {}
@@ -533,14 +504,16 @@ export class LocalToolRegistry implements ToolRegistry {
   private async filePath(
     requestedPath: string,
     allowMissing: boolean,
+    includeReadOnly = false,
   ): Promise<string> {
-    return this.resolvePath(requestedPath, allowMissing, true)
+    return this.resolvePath(requestedPath, allowMissing, true, includeReadOnly)
   }
 
   private async resolvePath(
     requestedPath: string,
     allowMissing: boolean,
     includeSharedMemory: boolean,
+    includeReadOnly = false,
   ): Promise<string> {
     const workspaceRoot = await realpath(this.cwd)
     const workspaceRoots = [
@@ -549,10 +522,29 @@ export class LocalToolRegistry implements ToolRegistry {
         this.additionalDirectories.map((directory) => realpath(directory)),
       )),
     ]
-    const roots =
+    const writableRoots =
       includeSharedMemory && this.sharedMemoryDirectory
         ? [...workspaceRoots, await realpath(this.sharedMemoryDirectory)]
         : workspaceRoots
+    const roots = includeReadOnly
+      ? [
+          ...writableRoots,
+          ...(
+            await Promise.all(
+              this.additionalReadDirectories.map(async (directory) => {
+                try {
+                  return [await realpath(directory)]
+                } catch (error) {
+                  if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                    return []
+                  }
+                  throw error
+                }
+              }),
+            )
+          ).flat(),
+        ]
+      : writableRoots
     const candidate = isAbsolute(requestedPath)
       ? resolve(requestedPath)
       : resolve(workspaceRoot, requestedPath)
@@ -618,7 +610,7 @@ export class LocalToolRegistry implements ToolRegistry {
         const requestedPath = call.input.file_path
         if (typeof requestedPath !== 'string') continue
         try {
-          if ((await this.filePath(requestedPath, false)) === filePath) {
+          if ((await this.filePath(requestedPath, false, true)) === filePath) {
             return true
           }
         } catch {
@@ -844,19 +836,19 @@ export class LocalToolRegistry implements ToolRegistry {
     ]
     const glob = optionalString(call.input, 'glob')
     if (glob) args.splice(3, 0, '--glob', glob)
-    const result = await this.runProcess(
-      'rg',
+    const result = await this.processRunner.run({
+      command: 'rg',
       args,
-      this.maxShellTimeoutMs,
-      signal,
-    )
+      timeoutMs: this.maxShellTimeoutMs,
+      ...(signal ? { signal } : {}),
+    })
     if (result.timedOut) {
       return {
         content: `Search timed out after ${this.maxShellTimeoutMs}ms`,
         isError: true,
       }
     }
-    const content = joinedOutput(result)
+    const content = joinedProcessOutput(result)
     if (result.code === 0 || result.code === 1) {
       return { content, isError: false }
     }
@@ -873,133 +865,24 @@ export class LocalToolRegistry implements ToolRegistry {
     const timeout = optionalPositiveInteger(call.input, 'timeout')
     if (timeout === undefined)
       throw new Error('Prepared Bash call has no timeout')
-    const result = await this.runProcess(
-      commandShell(),
-      commandShellArguments(stringInput(call.input, 'command')),
-      timeout,
-      signal,
-    )
+    const result = await this.processRunner.run({
+      command: commandShell(),
+      args: commandShellArguments(stringInput(call.input, 'command')),
+      timeoutMs: timeout,
+      ...(signal ? { signal } : {}),
+    })
     if (result.timedOut) {
       return {
         content: `Command timed out after ${timeout}ms`,
         isError: true,
       }
     }
-    const content = joinedOutput(result)
+    const content = joinedProcessOutput(result)
     return {
       content:
         content ||
         (result.code === 0 ? '' : `Command exited with code ${result.code}`),
       isError: result.code !== 0,
     }
-  }
-
-  private runProcess(
-    command: string,
-    args: readonly string[],
-    timeoutMs: number,
-    signal?: AbortSignal,
-  ): Promise<ProcessResult> {
-    if (signal?.aborted) return Promise.reject(abortError())
-
-    return new Promise((resolveProcess, reject) => {
-      const sensitiveValues = sensitiveEnvironmentValues(process.env)
-      const longestSensitiveValueBytes = sensitiveValues.reduce(
-        (longest, value) => Math.max(longest, Buffer.byteLength(value)),
-        0,
-      )
-      const rawOutputLimit =
-        this.maxOutputBytes + Math.max(3, longestSensitiveValueBytes)
-      const child = spawn(command, args, {
-        cwd: this.cwd,
-        detached: process.platform !== 'win32',
-        env: sanitizeChildEnvironment(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] }
-      const retainedBytes = { stdout: 0, stderr: 0 }
-      let outputBytes = 0
-      let timedOut = false
-
-      const retain = (stream: keyof typeof chunks, chunk: Buffer) => {
-        outputBytes = Math.min(
-          this.maxOutputBytes + 1,
-          outputBytes + chunk.length,
-        )
-        const remaining = rawOutputLimit - retainedBytes[stream]
-        if (remaining <= 0) return
-        const retained = chunk.subarray(0, remaining)
-        chunks[stream].push(retained)
-        retainedBytes[stream] += retained.length
-      }
-      child.stdout.on('data', (chunk: Buffer) => retain('stdout', chunk))
-      child.stderr.on('data', (chunk: Buffer) => retain('stderr', chunk))
-
-      const kill = () => {
-        if (child.pid === undefined) return
-        try {
-          if (process.platform === 'win32') child.kill('SIGKILL')
-          else process.kill(-child.pid, 'SIGKILL')
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') reject(error)
-        }
-      }
-      const cancel = () => kill()
-      signal?.addEventListener('abort', cancel, { once: true })
-      const timeout = setTimeout(() => {
-        timedOut = true
-        kill()
-      }, timeoutMs)
-
-      child.once('error', (error) => {
-        clearTimeout(timeout)
-        signal?.removeEventListener('abort', cancel)
-        reject(error)
-      })
-      child.once('close', (code) => {
-        clearTimeout(timeout)
-        signal?.removeEventListener('abort', cancel)
-        if (signal?.aborted) {
-          reject(abortError())
-          return
-        }
-        const rawStdout = Buffer.concat(chunks.stdout).toString('utf8')
-        const rawStderr = Buffer.concat(chunks.stderr).toString('utf8')
-        const stdoutRawBudget = Math.min(
-          retainedBytes.stdout,
-          this.maxOutputBytes,
-        )
-        const stderrRawBudget = Math.min(
-          retainedBytes.stderr,
-          this.maxOutputBytes - stdoutRawBudget,
-        )
-        const redactedStdout = redactSensitivePrefix(
-          rawStdout,
-          sensitiveValues,
-          stdoutRawBudget,
-        )
-        const redactedStderr = redactSensitivePrefix(
-          rawStderr,
-          sensitiveValues,
-          stderrRawBudget,
-        )
-        const stdout = takeUtf8Prefix(redactedStdout, this.maxOutputBytes)
-        const stderr = takeUtf8Prefix(
-          redactedStderr,
-          this.maxOutputBytes - stdout.bytes,
-        )
-        const outputTruncated =
-          outputBytes > this.maxOutputBytes ||
-          stdout.truncated ||
-          stderr.truncated
-        resolveProcess({
-          stdout: `${stdout.content}${outputTruncated ? '\n[output truncated]' : ''}`,
-          stderr: stderr.content,
-          code: code ?? 1,
-          timedOut,
-          truncated: outputTruncated,
-        })
-      })
-    })
   }
 }

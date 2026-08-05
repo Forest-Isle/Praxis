@@ -2,6 +2,7 @@ export type ClaudeDataResource =
   | 'agents'
   | 'auto-memory'
   | 'commands'
+  | 'durable-task-graph'
   | 'hooks'
   | 'instructions'
   | 'mcp'
@@ -34,6 +35,12 @@ export const CLAUDE_DATA_OWNERSHIP = [
     plane: 'shared',
     praxisAccess: 'read-write',
     location: 'projects/<project-key>/memory/',
+  },
+  {
+    resource: 'durable-task-graph',
+    plane: 'shared',
+    praxisAccess: 'read-write',
+    location: 'tasks/<session-id>/',
   },
   {
     resource: 'instructions',

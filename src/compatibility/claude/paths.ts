@@ -1,6 +1,8 @@
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 
+import { getDataOwnership } from './ownership.js'
+
 const MAX_SANITIZED_LENGTH = 200
 const SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -19,6 +21,7 @@ export interface ClaudePaths {
   configRoot: string
   projectRoot: string
   sessionFile: string
+  taskRoot: string
   praxisRoot: string
 }
 
@@ -58,11 +61,20 @@ export function resolveClaudePaths({
     'projects',
     sanitizeClaudeProjectPath(cwd),
   )
+  const taskPolicy = getDataOwnership('durable-task-graph')
+  if (
+    taskPolicy.plane !== 'shared' ||
+    taskPolicy.praxisAccess !== 'read-write' ||
+    taskPolicy.location !== 'tasks/<session-id>/'
+  ) {
+    throw new Error('Invalid durable task graph ownership policy')
+  }
 
   return {
     configRoot,
     projectRoot,
     sessionFile: resolve(projectRoot, `${sessionId}.jsonl`),
+    taskRoot: resolve(configRoot, 'tasks', sessionId),
     praxisRoot: resolve(configRoot, 'praxis'),
   }
 }

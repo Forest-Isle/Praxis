@@ -10,7 +10,7 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 19 native background Agent compatibility is complete on top of WebFetch/
+Sprint 20 durable tasks and background Bash compatibility is complete on top of WebFetch/
 WebSearch, MCP resource
 tools, native file globbing, notebook editing, CLI customization and session
 controls, print and machine-I/O support, image tool results, native foreground
@@ -54,8 +54,16 @@ The synchronous `Agent` tool runs bounded `general-purpose` or shared custom
 agents through the same provider, local/MCP/Skill tools, permissions, hooks,
 context, and cancellation path. Completed work writes native sidechain JSONL,
 metadata, and main-chain Agent results that Claude Code 2.1.208 can discover and
-resume. Background Agent execution and agent messaging remain explicitly
-unsupported.
+resume. Background Agent execution, output/stop, same-ID messaging, and
+completion notifications share that sidechain path.
+`TaskCreate`, `TaskGet`, `TaskList`, and `TaskUpdate` use Claude's authoritative
+`<config>/tasks/<session-id>` graph, including reciprocal dependencies,
+metadata merge/delete, monotonic IDs, internal-task filtering, optimistic
+cross-runtime update replay, and bidirectional resume. Bash accepts
+`run_in_background`, writes bounded redacted output under Claude's temporary
+task path, and shares `TaskOutput`/`TaskStop` routing with Agent IDs. Resumable
+Bash sidecars use atomic replacement and malformed records are ignored. Only
+`Read` can access the temporary output root.
 Forks preserve the complete supported main-chain native history, including
 tool calls/results, compact boundaries/summaries, attachments, agent settings,
 titles, images, errors, and interrupted-tool denial records. Existing UUIDs,
@@ -155,6 +163,7 @@ later messages. Activated nested-memory rules remain active across compaction.
 - Claude Code-compatible transcripts, configuration, permissions, and memory
 - Shared local agent definitions plus background Agent launch, output, stop,
   same-ID messaging, completion notification, and native sidechains
+- Shared durable task graph plus foreground/background Bash lifecycle
 
 ## Claude Code interoperability
 
@@ -237,8 +246,8 @@ variables. Explicit per-server MCP `env` and HTTP headers are treated as
 intentional grants to that server, with matching output redaction.
 
 Permissions load from the shared global and current-project Claude settings.
-`Read`, `Grep`, `Agent`, `SendMessage`, `TaskOutput`, and `TaskStop` default to
-`allow`; `Write`, `Edit`, `Bash`, `WebFetch`, and `WebSearch` default to `ask`.
+`Read`, `Grep`, `Agent`, `SendMessage`, and Task tools default to `allow`;
+`Write`, `Edit`, `Bash`, `WebFetch`, and `WebSearch` default to `ask`.
 Interactive mode prompts before an `ask` tool
 call. Headless commands remain non-interactive and return a denied tool result
 unless a compatible `allow` rule exists.
@@ -250,6 +259,7 @@ probe uses a local provider fixture:
 ```sh
 npm run test:compat
 npm run test:background-agent-compat
+npm run test:task-compat
 npm run test:cli-controls-compat
 npm run test:compaction-compat
 npm run test:conditional-compat

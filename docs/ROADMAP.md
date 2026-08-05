@@ -339,7 +339,25 @@ Status: complete for background Agent tasks owned by one Praxis invocation.
 - [x] background usage aggregation into the main run result
 - [x] live Claude schema oracle, Praxis lifecycle gate, and Claude resume
 
-Top-level `--background` sessions, `agents --json`, background Bash, structured
-TaskCreate/Get/List/Update state, and Cron/Monitor/Workflow remain separate
-durable-process stages. Agent worktree isolation remains grouped with native
-worktree lifecycle; remote isolation stays outside the local product boundary.
+Top-level `--background` sessions, `agents --json`, durable scheduling, and
+native worktree lifecycle remain separate stages. Remote isolation stays
+outside the local product boundary.
+
+## Sprint 20 — durable tasks and background Bash
+
+Status: complete for persisted single-session task graphs and Bash tasks owned
+by one Praxis invocation.
+
+- [x] Claude 2.1.208 TaskCreate/Get/List/Update and background Bash schemas
+- [x] shared `<config>/tasks/<session-id>` JSON graph and high-watermark
+- [x] reciprocal dependencies, active-blocker filtering, metadata merge/delete,
+      and deletion cleanup
+- [x] `b` plus eight-character Bash IDs with blocking/non-blocking output,
+      failure, timeout, stop, and once-only completion notification consumed by
+      terminal output retrieval
+- [x] shared Agent/Bash TaskOutput and TaskStop routing in main and nested runs
+- [x] bounded redacted Claude-path output with Read-only external access
+- [x] live Praxis -> Claude -> Praxis graph and background lifecycle gate
+
+Top-level `--background`, `praxis agents`, Cron/Monitor/Workflow, and native
+worktree/tmux lifecycle remain later stages.

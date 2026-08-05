@@ -302,6 +302,135 @@ describe('foreground Claude Agent execution', () => {
     ).toHaveLength(2)
   })
 
+  it('delivers a background Bash notification once inside a nested run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-nested-notify-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let bashNotificationCalls = 0
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          const source = JSON.stringify(request.messages)
+          if (source.includes('BASH_TASK_DONE')) {
+            yield { type: 'text-delta', delta: 'FOREGROUND_DONE' }
+          } else {
+            yield { type: 'text-delta', delta: 'FOREGROUND_WAITING' }
+          }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      async backgroundTaskNotifications() {
+        bashNotificationCalls += 1
+        return bashNotificationCalls === 1
+          ? ['<task-notification>BASH_TASK_DONE</task-notification>']
+          : []
+      },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const foreground = await registry.prepare(
+      {
+        id: 'call_nested_foreground',
+        name: 'Agent',
+        input: {
+          description: 'Foreground child',
+          prompt: 'FOREGROUND_PROMPT',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+
+    await expect(registry.execute(foreground, { cwd })).resolves.toMatchObject({
+      content: expect.stringContaining('FOREGROUND_DONE'),
+    })
+    expect(bashNotificationCalls).toBe(2)
+    await expect(executor.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+  })
+
+  it('does not deadlock concurrent background Agents at their stop boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-barrier-test-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    let arrivals = 0
+    let release!: () => void
+    const barrier = new Promise<void>((resolveBarrier) => {
+      release = resolveBarrier
+    })
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          arrivals += 1
+          if (arrivals === 2) release()
+          await barrier
+          const source = JSON.stringify(request.messages)
+          yield {
+            type: 'text-delta',
+            delta: source.includes('BARRIER_ONE') ? 'AGENT_ONE' : 'AGENT_TWO',
+          }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      backgroundTaskNotifications: async () => [],
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    for (const [id, prompt] of [
+      ['call_barrier_one', 'BARRIER_ONE'],
+      ['call_barrier_two', 'BARRIER_TWO'],
+    ] as const) {
+      const call = await registry.prepare(
+        {
+          id,
+          name: 'Agent',
+          input: {
+            description: prompt,
+            prompt,
+            run_in_background: true,
+          },
+        },
+        { cwd },
+      )
+      await registry.execute(call, { cwd })
+    }
+
+    const collect = async () => {
+      const first = await executor.notifications(true)
+      const second = await executor.notifications(true)
+      return [...first.messages, ...second.messages]
+    }
+    let timeout: NodeJS.Timeout | undefined
+    const timedOut = new Promise<'timeout'>((resolveTimeout) => {
+      timeout = setTimeout(() => resolveTimeout('timeout'), 750)
+    })
+    const messages = await Promise.race([collect(), timedOut])
+    if (timeout) clearTimeout(timeout)
+    expect(messages).not.toBe('timeout')
+    expect(JSON.stringify(messages)).toContain('AGENT_ONE')
+    expect(JSON.stringify(messages)).toContain('AGENT_TWO')
+  })
+
   it('polls and resumes a completed background sidechain from a new executor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-background-resume-test-'))
     roots.push(root)

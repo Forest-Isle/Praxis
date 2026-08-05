@@ -60,6 +60,7 @@ import {
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
 import { ModelCompactor } from './model-compactor.js'
 import { ClaudeSubagentExecutor } from './subagent-service.js'
+import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -81,6 +82,7 @@ export interface ClaudeSessionServiceOptions {
   contextReserveTokens?: number
   enableSubagents?: boolean
   subagentToolNames?: readonly string[]
+  taskToolNames?: readonly string[]
   providerForModel?: (model: string) => ModelProvider
   sessionPersistence?: boolean
 }
@@ -385,10 +387,22 @@ export class ClaudeSessionService {
         snapshot = { entries: history, tail: appendResult.tail }
         pendingRecoveryHookOutcomes.length = 0
       }
+      const taskTools =
+        this.options.tools && (this.options.taskToolNames?.length ?? 0) > 0
+          ? new ClaudeTaskToolRegistry({
+              base: this.options.tools,
+              cwd: this.options.cwd,
+              praxisRoot: sessionPaths.praxisRoot,
+              sessionId,
+              taskRoot: sessionPaths.taskRoot,
+              ...(this.options.taskToolNames
+                ? { enabledTools: this.options.taskToolNames }
+                : {}),
+            })
+          : null
+      const baseTools = taskTools ?? this.options.tools
       const subagentExecutor =
-        this.options.enableSubagents &&
-        this.options.tools &&
-        this.options.permissions
+        this.options.enableSubagents && baseTools && this.options.permissions
           ? new ClaudeSubagentExecutor({
               configRoot: this.options.configRoot,
               cwd: this.options.cwd,
@@ -397,7 +411,7 @@ export class ClaudeSessionService {
               ...(this.options.providerForModel
                 ? { providerForModel: this.options.providerForModel }
                 : {}),
-              baseTools: this.options.tools,
+              baseTools,
               permissions: this.options.permissions,
               ...(this.options.subagentToolNames
                 ? { toolNames: this.options.subagentToolNames }
@@ -415,6 +429,12 @@ export class ClaudeSessionService {
               ...(this.options.eventSink
                 ? { eventSink: this.options.eventSink }
                 : {}),
+              ...(taskTools
+                ? {
+                    backgroundTaskNotifications: (waitForRunning: boolean) =>
+                      taskTools.notifications(waitForRunning),
+                  }
+                : {}),
             })
           : null
       const turnTools = subagentExecutor
@@ -425,7 +445,7 @@ export class ClaudeSessionService {
               currentPromptId ??
               this.promptIdForToolCall(snapshot.entries, callId),
           )
-        : this.options.tools
+        : baseTools
       const hookTools =
         this.options.hooks && turnTools && this.options.permissions
           ? new ClaudeHookToolCoordinator({
@@ -905,7 +925,7 @@ export class ClaudeSessionService {
               ...projectClaudeModelMessages(snapshot.entries),
             ]
           },
-          ...(this.options.hooks || subagentExecutor
+          ...(this.options.hooks || subagentExecutor || taskTools
             ? {
                 onStop: async (text: string) => {
                   const messages: string[] = []
@@ -928,6 +948,8 @@ export class ClaudeSessionService {
                   }
                   const background = await subagentExecutor?.notifications(true)
                   if (background) messages.push(...background.messages)
+                  const bashMessages = await taskTools?.notifications(true)
+                  if (bashMessages) messages.push(...bashMessages)
                   return {
                     messages,
                     ...(background ? { usage: background.usage } : {}),

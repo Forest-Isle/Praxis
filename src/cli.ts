@@ -51,6 +51,7 @@ import {
 import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
+import { claudeBackgroundTaskParent } from './application/background-bash-manager.js'
 import { FilteredToolRegistry } from './tools/filtered-tool-registry.js'
 import { WebToolRegistry } from './tools/web.js'
 import {
@@ -379,6 +380,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     cwd,
     ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
     additionalDirectories: cli.additionalDirectories,
+    additionalReadDirectories: [claudeBackgroundTaskParent(cwd)],
   })
   const mcpTools = await ClaudeMcpToolRegistry.connect({
     base: cli.bare
@@ -391,24 +393,52 @@ const createDefaultService: CliDependencies['createService'] = async ({
   })
   try {
     const extensionTools = new ClaudeExtensionToolRegistry(mcpTools, extensions)
-    const subagentToolNames = [
-      'Agent',
-      'SendMessage',
+    const agentToolNames = ['Agent', 'SendMessage'] as const
+    const taskToolNames = [
+      'TaskCreate',
+      'TaskGet',
+      'TaskList',
       'TaskOutput',
       'TaskStop',
+      'TaskUpdate',
     ] as const
-    const selectedSubagentTools = subagentToolNames.filter(
+    const selectedAgentTools = agentToolNames.filter(
       (name) =>
         (cli.tools === undefined ||
           cli.tools.includes('default') ||
           cli.tools.includes(name)) &&
         !cli.disallowedTools.includes(name),
     )
+    const selectedTaskTools = taskToolNames.filter(
+      (name) =>
+        cli.sessionPersistence &&
+        !cli.bare &&
+        (cli.tools === undefined ||
+          cli.tools.includes('default') ||
+          cli.tools.includes(name)) &&
+        !cli.disallowedTools.includes(name),
+    )
+    const enableBackgroundBash =
+      cli.sessionPersistence &&
+      !cli.bare &&
+      (cli.tools === undefined ||
+        cli.tools.includes('default') ||
+        cli.tools.includes('Bash')) &&
+      !cli.disallowedTools.includes('Bash')
+    const selectedTaskRuntimeTools = [
+      ...selectedTaskTools,
+      ...(enableBackgroundBash ? ['Bash'] : []),
+    ]
+    const routedSubagentTools = [
+      ...selectedAgentTools,
+      ...selectedTaskTools.filter(
+        (name) => name === 'TaskOutput' || name === 'TaskStop',
+      ),
+    ]
     const selectedBaseTools = cli.tools?.filter(
       (name) =>
-        !subagentToolNames.includes(
-          name as (typeof subagentToolNames)[number],
-        ) &&
+        !agentToolNames.includes(name as (typeof agentToolNames)[number]) &&
+        !taskToolNames.includes(name as (typeof taskToolNames)[number]) &&
         (!cli.bare || (name !== 'WebFetch' && name !== 'WebSearch')),
     )
     const filteredTools = new FilteredToolRegistry(extensionTools, {
@@ -420,7 +450,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       disallowedTools: cli.disallowedTools,
     })
     const enableSubagents =
-      cli.sessionPersistence && !cli.bare && selectedSubagentTools.length > 0
+      cli.sessionPersistence && !cli.bare && selectedAgentTools.length > 0
     const service = new ClaudeSessionService({
       ...options,
       provider,
@@ -429,7 +459,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
       permissions,
       extensions,
       enableSubagents,
-      subagentToolNames: selectedSubagentTools,
+      subagentToolNames: routedSubagentTools,
+      taskToolNames: selectedTaskRuntimeTools,
       ...(cli.safeMode || cli.bare
         ? {}
         : { hooks: new ClaudeHookRunner({ settings, cwd }) }),
@@ -454,7 +485,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
     })
     const toolNames = [
       ...filteredTools.definitions().map((definition) => definition.name),
-      ...(enableSubagents ? selectedSubagentTools : []),
+      ...selectedTaskTools,
+      ...(enableSubagents ? selectedAgentTools : []),
     ]
     const runtimeInfo: CliRuntimeInfo = {
       cwd,

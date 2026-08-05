@@ -57,24 +57,24 @@ Evidence levels:
 
 ## Runtime and controls
 
-| Capability                    | Status                      | Evidence / remaining work                                                                                                                          |
-| ----------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Provider-neutral agent loop   | Complete                    | OpenAI-compatible and Anthropic streaming/tool loops                                                                                               |
-| Context budget and compaction | Complete                    | Provider capability budget, native compact records, live reopen                                                                                    |
-| Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                                                        |
-| Background agents and tasks   | Partial                     | Agent launch, concurrent sidechains, output polling, stop, resume, notification complete; top-level/background Bash and durable task graph missing |
-| Agent messaging               | Complete for local Agent    | Ordered SendMessage to running/completed IDs, later-turn sidechain hydration, completion notification                                              |
-| Permissions                   | Partial                     | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass complete; `auto` classifier missing                                                         |
-| Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                                                     |
-| Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                                |
-| System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                                                        |
-| Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                                            |
-| Model selection               | Partial                     | Environment selection complete; `--model` invocation option missing                                                                                |
-| Effort and fallback           | Missing                     | `--effort`, retry fallback model chain                                                                                                             |
-| Structured output             | Missing                     | `--json-schema` validation and `structured_output` result                                                                                          |
-| Cost and budget               | Missing                     | Provider pricing, accurate cost/API duration, `--max-budget-usd`; result metrics stay `null` rather than claiming zero                             |
-| Prompt suggestions            | Missing                     | Post-turn `prompt_suggestion` event                                                                                                                |
-| Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                                   |
+| Capability                    | Status                      | Evidence / remaining work                                                                                                            |
+| ----------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Provider-neutral agent loop   | Complete                    | OpenAI-compatible and Anthropic streaming/tool loops                                                                                 |
+| Context budget and compaction | Complete                    | Provider capability budget, native compact records, live reopen                                                                      |
+| Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                                          |
+| Background agents and tasks   | Partial                     | Agent and Bash launch, shared output/stop routing, durable task graph, resume, and notification complete; top-level dispatch missing |
+| Agent messaging               | Complete for local Agent    | Ordered SendMessage to running/completed IDs, later-turn sidechain hydration, completion notification                                |
+| Permissions                   | Partial                     | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass complete; `auto` classifier missing                                           |
+| Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                                       |
+| Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                  |
+| System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                                          |
+| Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                              |
+| Model selection               | Partial                     | Environment selection complete; `--model` invocation option missing                                                                  |
+| Effort and fallback           | Missing                     | `--effort`, retry fallback model chain                                                                                               |
+| Structured output             | Missing                     | `--json-schema` validation and `structured_output` result                                                                            |
+| Cost and budget               | Missing                     | Provider pricing, accurate cost/API duration, `--max-budget-usd`; result metrics stay `null` rather than claiming zero               |
+| Prompt suggestions            | Missing                     | Post-turn `prompt_suggestion` event                                                                                                  |
+| Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                     |
 
 ## Tool surface
 
@@ -86,7 +86,8 @@ Evidence levels:
 | WebFetch / WebSearch              | Partial  | Live schemas/search/errors/resume; real Praxis public fetch; Claude public-success oracle needs domain-safety service |
 | NotebookEdit                      | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                                         |
 | Worktree enter/exit               | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`                                                                     |
-| Task/Cron/Monitor/Workflow        | Missing  | Durable scheduling and process lifecycle                                                                              |
+| TaskCreate/Get/List/Update        | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate      |
+| Cron/Monitor/Workflow             | Missing  | Durable scheduling and process lifecycle                                                                              |
 | MCP resource tools                | Complete | Conditional schemas, paginated list, text/blob read, directory stub, status, persistence, live resume                 |
 
 ## Management commands
@@ -106,8 +107,7 @@ Evidence levels:
 
 1. Complete a live successful Claude WebFetch oracle with its domain-safety
    service available.
-2. Top-level/background Bash dispatch, durable Task graph, `agents` management,
-   cron, monitor, and workflow.
+2. Top-level `--background`, `agents` management, cron, monitor, and workflow.
 3. Worktree/tmux invocation, picker naming, ephemeral subagents,
    and permission `auto` classifier.
 4. Plugin runtime and management.

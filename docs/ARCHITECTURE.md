@@ -134,6 +134,26 @@ notifications, and usage aggregation. Completed sidechains remain authoritative:
 a later Praxis turn can hydrate one by its `a` plus 16-hex agent ID and continue
 it through `SendMessage` without a private conversation store.
 
+`ClaudeTaskToolRegistry` wraps selected base tools once per persisted session.
+`ClaudeTaskStore` reads and writes Claude's shared `tasks/<session-id>` JSON
+files, maintains reciprocal dependency edges, and allocates from both
+`.highwatermark` and observed task IDs so stale Claude high-watermarks cannot
+collide. New task files use exclusive atomic publication so an overlapping
+Claude create is never overwritten. Updates use stable file fingerprints and
+full-operation retry to rebase requested fields over a simultaneous native
+writer; no-op updates do not replace files. Praxis mutations and transcript
+appends share one token-owned hard-link lease primitive with ownership-checked
+release and guarded dead-owner reclaim. `TaskList` omits native internal tasks.
+`BackgroundBashManager` uses the same bounded, credential-sanitized process
+runner as foreground Bash, writes Claude-shaped temporary output, and persists
+only validated resumable operational metadata through atomic sidecar
+replacement. Malformed sidecars do not block resume. Blocking output expiry
+reports `timeout`; successful terminal retrieval consumes the pending
+completion notification. The
+outer subagent registry routes `a...` IDs to Agent tasks and `b...` IDs to Bash
+tasks without duplicate definitions. Nested agents share their parent task
+graph and notification manager.
+
 Starting a caller-selected session ID reserves its transcript with exclusive
 creation while holding the Praxis lease. Any existing path, including an empty
 JSONL file, is an identity collision. A claimed ID remains claimed if later

@@ -369,6 +369,59 @@ describe('LocalToolRegistry', () => {
     await expect(readFile(protectedPath, 'utf8')).resolves.toBe('keep')
   })
 
+  it('allows configured task output roots for Read only', async () => {
+    const { root, cwd } = await workspace()
+    const taskRoot = join(root, 'task-output')
+    await mkdir(taskRoot)
+    const outputPath = join(taskRoot, 'background.output')
+    await writeFile(outputPath, 'BACKGROUND_OUTPUT')
+    const registry = new LocalToolRegistry({
+      cwd,
+      additionalReadDirectories: [taskRoot],
+    })
+    const read = await registry.prepare(
+      {
+        id: 'read-task-output',
+        name: 'Read',
+        input: { file_path: outputPath },
+      },
+      { cwd },
+    )
+    await expect(registry.execute(read, { cwd })).resolves.toMatchObject({
+      content: 'BACKGROUND_OUTPUT',
+    })
+    await expect(
+      registry.prepare(
+        {
+          id: 'write-task-output',
+          name: 'Write',
+          input: { file_path: outputPath, content: 'MUTATED' },
+        },
+        { cwd },
+      ),
+    ).rejects.toThrow('outside workspace')
+  })
+
+  it('ignores an absent additional Read root for workspace files', async () => {
+    const { root, cwd } = await workspace()
+    await writeFile(join(cwd, 'workspace.txt'), 'WORKSPACE')
+    const registry = new LocalToolRegistry({
+      cwd,
+      additionalReadDirectories: [join(root, 'not-created-yet')],
+    })
+    const read = await registry.prepare(
+      {
+        id: 'read-workspace-before-task-root',
+        name: 'Read',
+        input: { file_path: 'workspace.txt' },
+      },
+      { cwd },
+    )
+    await expect(registry.execute(read, { cwd })).resolves.toMatchObject({
+      content: 'WORKSPACE',
+    })
+  })
+
   it('limits standard file tools to the workspace and configured shared roots', async () => {
     const { root, cwd } = await workspace()
     const memoryDirectory = join(root, 'config', 'projects', 'key', 'memory')

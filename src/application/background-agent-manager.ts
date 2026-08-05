@@ -213,12 +213,17 @@ export class BackgroundAgentManager {
 
   async notifications(options: {
     waitForRunning: boolean
+    excludeAgentId?: string
   }): Promise<{ messages: string[]; usage: ModelUsage }> {
+    const eligibleTasks = [...this.tasks.entries()].filter(
+      ([agentId]) => agentId !== options.excludeAgentId,
+    )
     if (
       options.waitForRunning &&
-      ![...this.tasks.values()].some((task) => task.notifications.length > 0)
+      !eligibleTasks.some(([, task]) => task.notifications.length > 0)
     ) {
-      const running = [...this.tasks.values()]
+      const running = eligibleTasks
+        .map(([, task]) => task)
         .filter((task) => task.status === 'running')
         .map((task) => task.promise)
         .filter((promise): promise is Promise<void> => promise !== null)
@@ -226,7 +231,7 @@ export class BackgroundAgentManager {
     }
     const notifications: string[] = []
     const usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
-    for (const task of this.tasks.values()) {
+    for (const [, task] of eligibleTasks) {
       for (const notification of task.notifications.splice(0)) {
         notifications.push(this.formatNotification(task, notification))
         usage.inputTokens += notification.result?.usage.inputTokens ?? 0

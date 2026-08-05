@@ -41,6 +41,7 @@
     "test:shared-compat": "npm run build && node scripts/verify-claude-shared-resources.mjs",
     "test:subagent-compat": "npm run build && node scripts/verify-subagent-compatibility.mjs",
     "test:background-agent-compat": "npm run build && node scripts/verify-background-agent-compatibility.mjs",
+    "test:task-compat": "npm run build && node scripts/verify-task-compatibility.mjs",
     "test:web-compat": "npm run build && node scripts/verify-web-compatibility.mjs",
     "typecheck": "tsc --noEmit"
   },
