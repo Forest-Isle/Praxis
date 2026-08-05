@@ -44,6 +44,10 @@ export interface CliInvocation extends CliControls {
   command: string | undefined
   args: string[]
   agent: string | undefined
+  background: boolean
+  print: boolean
+  agentsAll: boolean
+  agentsCwd: string | undefined
   inputFormat: CliInputFormat
   outputFormat: CliOutputFormat
   includePartialMessages: boolean
@@ -233,6 +237,10 @@ function splitList(values: readonly string[]): string[] {
 export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   const args: string[] = []
   let agent: string | undefined
+  let background = false
+  let print = false
+  let agentsAll = false
+  let agentsCwd: string | undefined
   let inputFormat: CliInputFormat = 'text'
   let outputFormat: CliOutputFormat = 'text'
   let includePartialMessages = false
@@ -293,6 +301,14 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--agent may only be specified once')
       agent = selectedAgent.value
       index += selectedAgent.consumed
+      continue
+    }
+    const selectedCwd = optionValue(argv, index, '--cwd')
+    if (selectedCwd) {
+      if (agentsCwd !== undefined)
+        throw new Error('--cwd may only be specified once')
+      agentsCwd = selectedCwd.value
+      index += selectedCwd.consumed
       continue
     }
     const selectedSession = optionValue(argv, index, '--session-id')
@@ -435,7 +451,18 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       index += 1
       continue
     }
-    if (value === '-p' || value === '--print') continue
+    if (value === '-p' || value === '--print') {
+      print = true
+      continue
+    }
+    if (value === '--bg' || value === '--background') {
+      background = true
+      continue
+    }
+    if (value === '--all') {
+      agentsAll = true
+      continue
+    }
     if (value === '-c' || value === '--continue') {
       continueSession = true
       continue
@@ -493,6 +520,11 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     }
     outputFormat = 'stream-json'
   }
+  if (background && print) {
+    throw new Error(
+      "--bg and --print conflict: --print never starts the interactive session that `claude agents` attaches to, so the job would be unattachable. The prompt is the positional — drop --print: `claude --bg '<task>'`.",
+    )
+  }
   if (inputFormat === 'stream-json' && outputFormat !== 'stream-json') {
     throw new Error(
       '--input-format=stream-json requires --output-format=stream-json',
@@ -541,14 +573,28 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     throw new Error('--session-id must be a valid UUID')
   }
   const resumesSession = args[0] === 'resume' || continueSession
-  if (sessionId !== undefined && resumesSession && !forkSession) {
+  if (
+    sessionId !== undefined &&
+    resumesSession &&
+    !forkSession &&
+    !background
+  ) {
     throw new Error(
       '--session-id can only be used with --continue or --resume if --fork-session is also specified',
     )
   }
   if (
     sessionId !== undefined &&
-    ['fork', 'sessions', 'inspect', 'export'].includes(args[0] ?? '')
+    [
+      'fork',
+      'sessions',
+      'inspect',
+      'export',
+      'agents',
+      'attach',
+      'logs',
+      'stop',
+    ].includes(args[0] ?? '')
   ) {
     throw new Error('--session-id is only valid when starting a session')
   }
@@ -556,6 +602,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     command: args[0],
     args,
     agent,
+    background,
+    print,
+    agentsAll,
+    agentsCwd,
     inputFormat,
     outputFormat,
     includePartialMessages,

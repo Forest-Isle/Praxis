@@ -190,6 +190,107 @@ describe('Praxis CLI', () => {
     expect(capture.stdout.join('')).toBe('answer:hello world\n')
   })
 
+  it('launches and controls top-level background agents without creating a provider', async () => {
+    const calls: string[] = []
+    const managed: CliDependencies = {
+      async createService() {
+        throw new Error('provider must not be created')
+      },
+      topLevelAgents: {
+        async launch(options) {
+          calls.push(`launch:${options.prompt}:${options.argv.join('|')}`)
+          return {
+            id: 'abcd1234',
+            sessionId: 'abcd1234-1111-4111-8111-111111111111',
+          }
+        },
+        async list(options) {
+          calls.push(`list:${options.all}:${options.cwd ?? ''}`)
+          return [
+            {
+              pid: 42,
+              id: 'abcd1234',
+              cwd: '/workspace',
+              kind: 'background',
+              startedAt: 1,
+              sessionId: 'abcd1234-1111-4111-8111-111111111111',
+              name: 'finish task',
+              status: 'idle',
+              state: 'working',
+            },
+          ]
+        },
+        async logs(id) {
+          calls.push(`logs:${id}`)
+          return 'RESULT\n'
+        },
+        async stop(id) {
+          calls.push(`stop:${id}`)
+        },
+        async attach(id, input, output) {
+          calls.push(`attach:${id}`)
+          for await (const chunk of input) output(String(chunk))
+        },
+      },
+    }
+    const launched = captureIO()
+    await expect(
+      run(
+        [
+          '--bg',
+          '--bare',
+          '--session-id',
+          '11111111-1111-4111-8111-111111111111',
+          'finish task',
+        ],
+        launched.io,
+        managed,
+      ),
+    ).resolves.toBe(0)
+    expect(launched.stdout.join('')).toContain('backgrounded · abcd1234')
+    expect(launched.stderr).toEqual([
+      'warning: --bg manages the session id; ignoring --session-id (use --resume <id> to continue an existing session)\n',
+    ])
+    expect(calls[0]).toBe('launch:finish task:--bare|finish task')
+
+    const listed = captureIO()
+    await expect(
+      run(
+        ['agents', '--json', '--all', '--cwd', '/workspace'],
+        listed.io,
+        managed,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(listed.stdout.join(''))).toEqual([
+      expect.objectContaining({ id: 'abcd1234', status: 'idle' }),
+    ])
+
+    const logs = captureIO()
+    await expect(run(['logs', 'abcd1234'], logs.io, managed)).resolves.toBe(0)
+    expect(logs.stdout.join('')).toBe('RESULT\n')
+
+    const stopped = captureIO()
+    await expect(run(['stop', 'abcd1234'], stopped.io, managed)).resolves.toBe(
+      0,
+    )
+    expect(stopped.stdout.join('')).toBe('stopped abcd1234\n')
+
+    const attached = captureStreamIO('continue\n')
+    await expect(
+      run(['attach', 'abcd1234'], attached.io, managed),
+    ).resolves.toBe(0)
+    expect(attached.stdout.join('')).toBe('continue\n')
+    expect(calls).toContain('attach:abcd1234')
+  })
+
+  it('rejects print-mode background sessions with Claude-compatible guidance', async () => {
+    const capture = captureIO()
+    await expect(
+      run(['--bg', '--print', 'finish task'], capture.io, dependencies()),
+    ).resolves.toBe(1)
+    expect(capture.stderr.join('')).toContain('--bg and --print conflict')
+  })
+
   it('continues and forks the latest directory session while forwarding controls', async () => {
     const capture = captureIO()
     const calls: string[] = []

@@ -80,3 +80,7 @@ Protected assets:
   runner; redact before temporary output persistence, atomically replace and
   validate resumable sidecars, XML-escape notifications, and expose temporary
   output to `Read` only.
+- validate eight-hex top-level job IDs before path resolution; publish state and
+  dispatch exclusively, authenticate local attach/stop requests, verify worker
+  PID records before signaling, bound wire lines and recent output, repair dead
+  workers without process takeover, and remove terminal PID/socket/token data.

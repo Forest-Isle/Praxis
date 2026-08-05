@@ -52,6 +52,7 @@ export interface TranslationContext {
   cwd: string
   claudeVersion: string
   gitBranch: string | null
+  sessionKind?: 'bg'
   history?: readonly ClaudeTranscriptEntry[]
   createUuid?: () => string
   now?: () => string
@@ -276,6 +277,9 @@ export function translateProviderEvents(
       sessionId: context.sessionId,
       version: context.claudeVersion,
       gitBranch: context.gitBranch,
+      ...(context.sessionKind === undefined
+        ? {}
+        : { sessionKind: context.sessionKind }),
     }
     let entry: ClaudeTranscriptEntry
 

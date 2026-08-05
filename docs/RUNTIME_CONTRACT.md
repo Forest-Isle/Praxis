@@ -140,16 +140,16 @@ Included:
 - PNG, JPEG, GIF, and WebP results from the local `Read` tool;
 - local permissions, sessions, resume/fork, compaction, CLAUDE.md, auto memory,
   skills, commands, agents, hooks, and MCP compatible subset;
-- text and structured JSON output.
+- text and structured JSON output;
+- top-level persistent background sessions, durable task graphs, and
+  foreground/background Bash lifecycle.
 
 Deferred:
 
-- top-level background CLI sessions, background Bash, durable structured task
-  graphs, and scheduled orchestration; Agent background execution and messaging
-  follow `docs/SUBAGENT_CONTRACT.md`;
+- scheduled Cron/Monitor/Workflow orchestration;
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
-- transcript migration across unsupported Claude versions.
+- transcript migration across unsupported Claude versions;
 - user image attachments and MCP-specific image-result writers until their
   native Claude profiles are validated.
 

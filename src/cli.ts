@@ -4,7 +4,7 @@ import { realpathSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 
 import {
@@ -52,6 +52,11 @@ import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
 import { claudeBackgroundTaskParent } from './application/background-bash-manager.js'
+import {
+  runTopLevelAgentWorker,
+  TopLevelAgentManager,
+  type TopLevelAgentSummary,
+} from './application/top-level-agent-manager.js'
 import { FilteredToolRegistry } from './tools/filtered-tool-registry.js'
 import { WebToolRegistry } from './tools/web.js'
 import {
@@ -81,9 +86,15 @@ Usage:
   praxis sessions [--json]
   praxis inspect [--json] <session-id>
   praxis export [--json] <session-id>
+  praxis --bg [options] <prompt>
+  praxis agents [--json] [--all] [--cwd <path>]
+  praxis attach <agent-id>
+  praxis logs <agent-id>
+  praxis stop <agent-id>
 
 Options:
   -p, --print                         Print response and exit
+  --bg, --background                  Run as a persistent background agent
   -r, --resume <session-id>           Resume a session
   -c, --continue                      Continue latest session in this directory
   --fork-session                      Fork when resuming or continuing
@@ -239,6 +250,23 @@ interface SessionCommands {
   runtimeInfo?(): CliRuntimeInfo
 }
 
+interface TopLevelAgentCommands {
+  launch(options: {
+    prompt: string
+    argv: string[]
+    resumeSessionId?: string
+  }): Promise<{ id: string; sessionId: string }>
+  list(options: { cwd?: string; all: boolean }): Promise<TopLevelAgentSummary[]>
+  logs(id: string): Promise<string>
+  stop(id: string): Promise<void>
+  attach(
+    id: string,
+    input: AsyncIterable<string | Uint8Array>,
+    output: (text: string) => void,
+    signal?: AbortSignal,
+  ): Promise<void>
+}
+
 export interface CliDependencies extends InteractiveServiceFactory {
   createService(options: {
     eventSink: RuntimeEventSink
@@ -247,9 +275,11 @@ export interface CliDependencies extends InteractiveServiceFactory {
     approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
     agent?: string
     controls?: CliControls
+    sessionKind?: 'bg'
     signal?: AbortSignal
   }): Promise<SessionCommands>
   runInteractive?(options: { signal?: AbortSignal }): Promise<number>
+  topLevelAgents?: TopLevelAgentCommands
 }
 
 const consoleIO: CliIO = {
@@ -266,6 +296,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   approveTool,
   agent,
   controls = DEFAULT_CLI_CONTROLS,
+  sessionKind,
   signal,
 }) => {
   const claudeVersion = await detectInstalledClaudeVersion()
@@ -319,6 +350,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     claudeVersion,
     eventSink,
     sessionPersistence: cli.sessionPersistence,
+    ...(sessionKind === undefined ? {} : { sessionKind }),
   }
   if (!provider) return new ClaudeSessionService(options)
 
@@ -535,6 +567,34 @@ const defaultDependencies: CliDependencies = {
       factory: { createService: createDefaultService },
       ...(signal ? { signal } : {}),
     }),
+  topLevelAgents: new TopLevelAgentManager({
+    configRoot: resolve(
+      process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
+    ),
+    cwd: process.cwd(),
+    cliPath: fileURLToPath(import.meta.url),
+    version: VERSION,
+  }),
+}
+
+async function runBackgroundWorker(id: string): Promise<void> {
+  const configRoot = resolve(
+    process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
+  )
+  await runTopLevelAgentWorker({
+    configRoot,
+    id,
+    async createRuntime(workerSink, dispatch) {
+      const invocation = parseCliInvocation(dispatch.argv)
+      return createDefaultService({
+        eventSink: workerSink,
+        requireProvider: true,
+        ...(invocation.agent ? { agent: invocation.agent } : {}),
+        controls: invocation,
+        sessionKind: 'bg',
+      })
+    },
+  })
 }
 
 function writeJson(io: CliIO, value: unknown): void {
@@ -587,6 +647,39 @@ function promptFrom(values: readonly string[]): string {
   return prompt
 }
 
+function backgroundWorkerArgv(argv: readonly string[]): string[] {
+  const filtered: string[] = []
+  let optionsEnded = false
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index]
+    if (value === undefined) continue
+    if (!optionsEnded && value === '--') {
+      optionsEnded = true
+      filtered.push(value)
+      continue
+    }
+    if (!optionsEnded && (value === '--bg' || value === '--background')) {
+      continue
+    }
+    if (!optionsEnded && value === '--session-id') {
+      index += 1
+      continue
+    }
+    if (!optionsEnded && value.startsWith('--session-id=')) continue
+    filtered.push(value)
+  }
+  return filtered
+}
+
+function requireTopLevelAgentManager(
+  dependencies: CliDependencies,
+): TopLevelAgentCommands {
+  if (!dependencies.topLevelAgents) {
+    throw new Error('Top-level agent manager unavailable')
+  }
+  return dependencies.topLevelAgents
+}
+
 function isCancellation(error: unknown, signal?: AbortSignal): boolean {
   return (
     error instanceof AgentRunCancelledError ||
@@ -601,6 +694,10 @@ async function execute(
   dependencies: CliDependencies,
   signal?: AbortSignal,
 ): Promise<number> {
+  if (argv[0] === '__background-worker') {
+    await runBackgroundWorker(requireValue(argv[1], 'Agent ID'))
+    return 0
+  }
   if (argv.length === 0 && io.isTTY && dependencies.runInteractive) {
     return dependencies.runInteractive(signal ? { signal } : {})
   }
@@ -626,6 +723,10 @@ async function execute(
     'sessions',
     'inspect',
     'export',
+    'agents',
+    'attach',
+    'logs',
+    'stop',
   ].includes(command ?? '')
   if (retryInterruptedTools && command !== 'resume') {
     throw new Error('--retry-interrupted-tools is only valid with resume')
@@ -633,14 +734,129 @@ async function execute(
   if (agent && knownCommand && !['run', 'resume'].includes(command ?? 'run')) {
     throw new Error('--agent is only valid with run or resume')
   }
-  const expectedOperands = command === 'sessions' ? 1 : 2
   if (
-    ['sessions', 'fork', 'inspect', 'export'].includes(command ?? '') &&
+    (invocation.agentsAll || invocation.agentsCwd !== undefined) &&
+    command !== 'agents'
+  ) {
+    throw new Error('--all and --cwd are only valid with agents')
+  }
+  const expectedOperands =
+    command === 'sessions' || command === 'agents' ? 1 : 2
+  if (
+    [
+      'sessions',
+      'fork',
+      'inspect',
+      'export',
+      'agents',
+      'attach',
+      'logs',
+      'stop',
+    ].includes(command ?? '') &&
     args.length > expectedOperands
   ) {
     throw new Error(
       `Unexpected operand for ${command}: ${args[expectedOperands]}`,
     )
+  }
+  if (command === 'agents') {
+    const agents = await requireTopLevelAgentManager(dependencies).list({
+      ...(invocation.agentsCwd === undefined
+        ? {}
+        : { cwd: invocation.agentsCwd }),
+      all: invocation.agentsAll,
+    })
+    if (invocation.legacyJson) writeJson(io, agents)
+    else {
+      for (const current of agents) {
+        io.stdout(
+          `${current.id}\t${current.status ?? current.state}\t${current.cwd}\t${current.name}\n`,
+        )
+      }
+    }
+    return 0
+  }
+  if (command === 'logs') {
+    io.stdout(
+      await requireTopLevelAgentManager(dependencies).logs(
+        requireValue(args[1], 'Agent ID'),
+      ),
+    )
+    return 0
+  }
+  if (command === 'stop') {
+    const id = requireValue(args[1], 'Agent ID')
+    await requireTopLevelAgentManager(dependencies).stop(id)
+    io.stdout(`stopped ${id}\n`)
+    return 0
+  }
+  if (command === 'attach') {
+    const input = io.readStdinLines?.()
+    if (!input) throw new Error('attach requires stdin support')
+    await requireTopLevelAgentManager(dependencies).attach(
+      requireValue(args[1], 'Agent ID'),
+      input,
+      (text) => io.stdout(text),
+      signal,
+    )
+    return 0
+  }
+  if (invocation.background) {
+    if (!invocation.sessionPersistence) {
+      throw new Error('--bg requires session persistence')
+    }
+    if (inputFormat !== 'text' || outputFormat !== 'text') {
+      throw new Error('--bg only supports text input and output')
+    }
+    if (command && knownCommand && command !== 'run' && command !== 'resume') {
+      throw new Error(`--bg cannot be combined with ${command}`)
+    }
+    const prompt = promptFrom(
+      command === 'resume'
+        ? args.slice(2)
+        : command === 'run'
+          ? args.slice(1)
+          : args,
+    )
+    let resumeSessionId =
+      command === 'resume' ? requireValue(args[1], 'Session ID') : undefined
+    if (
+      invocation.continueSession ||
+      (resumeSessionId && invocation.forkSession)
+    ) {
+      const sessionService = await dependencies.createService({
+        eventSink: () => undefined,
+        requireProvider: false,
+        controls: invocation,
+      })
+      try {
+        if (!resumeSessionId) {
+          const latest = (await sessionService.sessions())[0]
+          if (!latest) throw new Error('No conversation found to continue')
+          resumeSessionId = latest.sessionId
+        }
+        if (invocation.forkSession) {
+          resumeSessionId = (await sessionService.fork(resumeSessionId))
+            .sessionId
+        }
+      } finally {
+        await sessionService.close?.()
+      }
+    }
+    if (invocation.sessionId) {
+      io.stderr(
+        'warning: --bg manages the session id; ignoring --session-id (use --resume <id> to continue an existing session)\n',
+      )
+    }
+    const launched = await requireTopLevelAgentManager(dependencies).launch({
+      prompt,
+      argv: backgroundWorkerArgv(argv),
+      ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
+    })
+    io.stdout(
+      `backgrounded · ${launched.id}\n  praxis agents             list sessions\n  praxis attach ${launched.id}    open in this terminal\n  praxis logs ${launched.id}      show recent output\n  praxis stop ${launched.id}      stop this session\n`,
+    )
+    return 0
   }
   let streamOutput: StreamJsonOutput | undefined
   let jsonModelTurns = 0

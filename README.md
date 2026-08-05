@@ -10,9 +10,9 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 20 durable tasks and background Bash compatibility is complete on top of WebFetch/
-WebSearch, MCP resource
-tools, native file globbing, notebook editing, CLI customization and session
+Sprint 21 top-level background sessions and agent management is complete on top
+of durable tasks, background Bash, WebFetch/WebSearch, MCP resource tools,
+native file globbing, notebook editing, CLI customization and session
 controls, print and machine-I/O support, image tool results, native foreground
 and background subagents, resilient sessions, native full-history forks, child-process
 credential boundaries, shared memory, and native Anthropic/OpenAI-compatible
@@ -64,6 +64,13 @@ cross-runtime update replay, and bidirectional resume. Bash accepts
 task path, and shares `TaskOutput`/`TaskStop` routing with Agent IDs. Resumable
 Bash sidecars use atomic replacement and malformed records are ignored. Only
 `Read` can access the temporary output root.
+Top-level `--bg`/`--background` launches a detached, persistent session whose
+eight-hex job ID owns an idle/active/stopped lifecycle. `praxis agents` supports
+JSON, historical, and cwd-filtered views; `logs`, `attach`, and `stop` use an
+owner-authenticated local control socket. Job state follows Claude's local
+`jobs/` and `sessions/` layout while Praxis-only dispatch ownership prevents
+cross-runtime process takeover. Background user/assistant entries carry native
+`sessionKind: "bg"` metadata, and either CLI can resume the shared transcript.
 Forks preserve the complete supported main-chain native history, including
 tool calls/results, compact boundaries/summaries, attachments, agent settings,
 titles, images, errors, and interrupted-tool denial records. Existing UUIDs,
@@ -164,6 +171,7 @@ later messages. Activated nested-memory rules remain active across compaction.
 - Shared local agent definitions plus background Agent launch, output, stop,
   same-ID messaging, completion notification, and native sidechains
 - Shared durable task graph plus foreground/background Bash lifecycle
+- Persistent top-level background sessions plus agents/logs/attach/stop controls
 
 ## Claude Code interoperability
 
@@ -221,6 +229,11 @@ node dist/cli.js export <session-id> > session.jsonl
 node dist/cli.js resume <session-id> "Continue"
 node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
 node dist/cli.js fork <session-id>
+node dist/cli.js --bg "Inspect this project"
+node dist/cli.js agents --json --all --cwd "$PWD"
+node dist/cli.js logs <agent-id>
+node dist/cli.js attach <agent-id>
+node dist/cli.js stop <agent-id>
 node dist/cli.js
 ```
 
@@ -260,6 +273,7 @@ probe uses a local provider fixture:
 npm run test:compat
 npm run test:background-agent-compat
 npm run test:task-compat
+npm run test:top-level-agent-compat
 npm run test:cli-controls-compat
 npm run test:compaction-compat
 npm run test:conditional-compat

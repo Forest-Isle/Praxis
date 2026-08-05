@@ -72,6 +72,50 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('marks background user and assistant transcript entries with native session metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-bg-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'abababab-1111-4111-8111-111111111111'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['background answer']),
+      sessionKind: 'bg',
+    })
+
+    await service.run('background prompt', undefined, sessionId)
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const source = await readFile(
+      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
+      'utf8',
+    )
+    const messages = source
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.type === 'user' || entry.type === 'assistant')
+
+    expect(messages).toHaveLength(2)
+    expect(messages).toEqual([
+      expect.objectContaining({
+        type: 'user',
+        sessionKind: 'bg',
+        userType: 'external',
+        entrypoint: 'cli',
+      }),
+      expect.objectContaining({
+        type: 'assistant',
+        sessionKind: 'bg',
+        userType: 'external',
+        entrypoint: 'cli',
+      }),
+    ])
+  })
+
   it('rejects subagents when session persistence is disabled', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
     roots.push(root)

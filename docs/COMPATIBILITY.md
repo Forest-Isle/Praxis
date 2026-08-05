@@ -294,6 +294,16 @@ normal workspace boundaries. Resumable Bash status metadata stays under
 is never authoritative conversation state. Dynamic completion-notification
 fields are XML escaped before transcript insertion.
 
+Top-level background sessions use Claude's observed `jobs/<8-hex-id>` and
+`sessions/<pid>.json` layout, including `template: "bg"`, active/idle tempo,
+managed session identity, timeline, and terminal state. A Praxis owner marker,
+dispatch record, control token, and bounded `output.log` are operational
+sidecars: they coordinate only Praxis workers and are not conversation state.
+Claude's private daemon does not discover a synthetic job from state files
+alone, so Praxis never fabricates or takes over Claude daemon sockets. Shared
+project JSONL remains authoritative and carries native `sessionKind: "bg"`,
+`userType: "external"`, and `entrypoint: "cli"` on background messages.
+
 Fork uses a separate versioned creation profile because it copies existing
 native records rather than appending newly generated records. For Claude Code
 2.1.208 it losslessly copies supported main-chain `user`, `assistant`, `system`,
@@ -328,6 +338,8 @@ remain explicitly rejected by the append adapter.
 | Settings, MCP                          | Shared         | Read only until semantic matrix passes    |
 | Hooks                                  | Shared         | Read/execute; declarations stay read only |
 | Durable task graph                     | Shared         | Read/write                                |
+| Background transcript                  | Shared         | Append/resume                             |
+| Background job control                 | Owner-scoped   | Praxis jobs only                          |
 | Provider payloads, indexes, locks      | Praxis sidecar | Read/write                                |
 
 This matrix is also encoded in `src/compatibility/claude/ownership.ts`; runtime
@@ -379,6 +391,10 @@ Praxis task/dependency/background-Bash lifecycle, has Claude resume and extend
 the same graph, then has Praxis resume Claude's public and internal tasks,
 exclude the internal task from `TaskList`, repair a stale high-watermark without
 ID collision, and persist an XML-safe completion notification.
+`npm run test:top-level-agent-compat` captures Claude's launch/list/idle/stop
+contract, drives a real detached Praxis worker through logs, attach, and stop,
+validates native job/session layout and background transcript metadata, then
+proves Claude -> Praxis and Praxis -> Claude resume.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork

@@ -85,6 +85,7 @@ export interface ClaudeSessionServiceOptions {
   taskToolNames?: readonly string[]
   providerForModel?: (model: string) => ModelProvider
   sessionPersistence?: boolean
+  sessionKind?: 'bg'
 }
 
 export interface SessionRunResult {
@@ -1048,6 +1049,9 @@ export class ClaudeSessionService {
       cwd: this.options.cwd,
       claudeVersion: this.options.claudeVersion,
       gitBranch: null,
+      ...(this.options.sessionKind === undefined
+        ? {}
+        : { sessionKind: this.options.sessionKind }),
       history: snapshot.entries,
     }
   }

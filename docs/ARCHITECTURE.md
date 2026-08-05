@@ -154,6 +154,15 @@ outer subagent registry routes `a...` IDs to Agent tasks and `b...` IDs to Bash
 tasks without duplicate definitions. Nested agents share their parent task
 graph and notification manager.
 
+`TopLevelAgentManager` publishes an exclusive Claude-shaped job directory,
+spawns the hidden detached worker entrypoint, lists owner-marked jobs, repairs
+dead workers, and routes logs/attach/stop. `ClaudeJobStore` atomically replaces
+state and dispatch files, serializes timeline changes, and bounds the recent
+output log. The worker keeps its session runtime alive after a completed turn,
+marks `sessions/<pid>.json` idle, and accepts serialized follow-up prompts over
+an authenticated local Unix socket. Job controls are operational state only;
+all resumable conversation content stays in shared project JSONL.
+
 Starting a caller-selected session ID reserves its transcript with exclusive
 creation while holding the Praxis lease. Any existing path, including an empty
 JSONL file, is an identity collision. A claimed ID remains claimed if later

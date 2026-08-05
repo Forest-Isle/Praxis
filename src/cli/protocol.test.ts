@@ -47,6 +47,7 @@ describe('CLI protocol', () => {
     ).toMatchObject({
       command: 'hello',
       args: ['hello'],
+      print: true,
       outputFormat: 'json',
       inputFormat: 'text',
       sessionId,
@@ -55,6 +56,44 @@ describe('CLI protocol', () => {
     expect(parseCliInvocation(['-r', sessionId, 'continue'])).toMatchObject({
       command: 'resume',
       args: ['resume', sessionId, 'continue'],
+    })
+  })
+
+  it('parses top-level background agent controls', () => {
+    expect(
+      parseCliInvocation([
+        '--background',
+        '--session-id',
+        sessionId,
+        '--bare',
+        'finish task',
+      ]),
+    ).toMatchObject({
+      args: ['finish task'],
+      background: true,
+      print: false,
+      sessionId,
+    })
+    expect(
+      parseCliInvocation(['agents', '--json', '--all', '--cwd', '/workspace']),
+    ).toMatchObject({
+      command: 'agents',
+      args: ['agents'],
+      agentsAll: true,
+      agentsCwd: '/workspace',
+      legacyJson: true,
+    })
+    expect(parseCliInvocation(['logs', 'abcd1234'])).toMatchObject({
+      command: 'logs',
+      args: ['logs', 'abcd1234'],
+    })
+    expect(parseCliInvocation(['stop', 'abcd1234'])).toMatchObject({
+      command: 'stop',
+      args: ['stop', 'abcd1234'],
+    })
+    expect(parseCliInvocation(['attach', 'abcd1234'])).toMatchObject({
+      command: 'attach',
+      args: ['attach', 'abcd1234'],
     })
   })
 
