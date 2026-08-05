@@ -26,6 +26,7 @@
     "test:conditional-compat": "npm run build && node scripts/verify-conditional-rules.mjs",
     "test:compaction-compat": "npm run build && node scripts/verify-compaction-compatibility.mjs",
     "test:extension-compat": "npm run build && node scripts/verify-extension-compatibility.mjs",
+    "test:glob-compat": "npm run build && node scripts/verify-glob-compatibility.mjs",
     "test:hook-compat": "npm run build && node scripts/verify-hook-compatibility.mjs",
     "test:image-compat": "npm run build && node scripts/verify-image-compatibility.mjs",
     "test:mcp-compat": "npm run build && node scripts/verify-mcp-compatibility.mjs",
@@ -46,6 +47,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ink": "^7.1.1",
+    "minimatch": "^10.2.6",
     "react": "^19.2.8",
     "yaml": "^2.9.0"
   },

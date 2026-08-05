@@ -278,3 +278,22 @@ Status: complete for local Jupyter notebook cell reads and edits.
 Notebook execution is not introduced; Praxis edits `.ipynb` JSON only. Web,
 worktree, background task, scheduling, and MCP resource tools remain separate
 stages in [PARITY_MATRIX.md](PARITY_MATRIX.md).
+
+## Sprint 16 — native file globbing
+
+Status: complete for local recursive file pattern matching.
+
+- [x] Claude-compatible `pattern`/optional `path` schema and default cwd behavior
+- [x] hidden and ignored file discovery with basename, globstar, and brace
+      matching
+- [x] relative/absolute output style and oldest-mtime-first ordering
+- [x] 100-result cap with exact native count suffix and bounded output bytes
+- [x] workspace/additional-root validation, symlink escape rejection, timeout,
+      cancellation, and allow/deny permission behavior
+- [x] live Claude 2.1.208 schema/result oracle, Praxis native tool round trip,
+      and Claude resume of the Praxis transcript
+
+Directories and symlinks are not returned. Praxis intentionally applies its
+canonical-root boundary to an explicitly selected symlink directory even
+though Claude 2.1.208 follows that root; this retains the established local
+threat model. Web and MCP resource tools remain separate stages.

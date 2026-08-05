@@ -75,6 +75,25 @@ describe('ClaudePermissionResolver', () => {
         input: { file_path: '/workspace/src/index.ts' },
       }),
     ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      new ClaudePermissionResolver({ cwd: '/workspace', settings: [] }).resolve(
+        { id: 'glob', name: 'Glob', input: { pattern: '**/*.ts' } },
+      ),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        disallowedTools: ['Glob(/workspace/private/**)'],
+      }).resolve({
+        id: 'glob-private',
+        name: 'Glob',
+        input: { pattern: '**/*', path: 'private/src' },
+      }),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule Glob(/workspace/private/**)',
+    })
     const notebookEdit = {
       id: 'notebook-edit',
       name: 'NotebookEdit',

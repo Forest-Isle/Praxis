@@ -187,6 +187,13 @@ unmodified notebook and cell fields, stay within configured file roots and
 size bounds, and use the same native tool-result persistence as other local
 tools.
 
+`Glob` recursively matches files with Claude-compatible basename, brace, and
+globstar patterns, including hidden and ignored paths. Results preserve
+relative or absolute path style, sort oldest modification time first, and cap
+at 100 entries with the native count suffix. Search roots may be the workspace
+or configured additional directories; unlike Claude 2.1.208's explicit
+symlink-root behavior, Praxis canonicalizes roots and rejects symlink escape.
+
 ## Version compatibility
 
 Claude Code's local format is an implementation contract and can change.

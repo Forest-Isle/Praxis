@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
-import { open, realpath } from 'node:fs/promises'
+import { open, realpath, stat } from 'node:fs/promises'
 import {
   basename,
   dirname,
@@ -29,6 +29,7 @@ import {
   sanitizeChildEnvironment,
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
+import { globFiles } from './glob.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
 
 export interface LocalToolRegistryOptions {
@@ -109,6 +110,27 @@ const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
         },
       },
       required: ['notebook_path', 'new_source'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'Glob',
+    description:
+      '- Fast file pattern matching tool that works with any codebase size\n- Supports glob patterns like "**/*.js" or "src/**/*.ts"\n- Returns matching file paths sorted by modification time\n- Use this tool when you need to find files by name patterns\n- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'The glob pattern to match files against',
+        },
+        path: {
+          type: 'string',
+          description:
+            'The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.',
+        },
+      },
+      required: ['pattern'],
       additionalProperties: false,
     },
   },
@@ -309,7 +331,7 @@ export class LocalToolRegistry implements ToolRegistry {
       return TOOL_DEFINITIONS
     }
     return TOOL_DEFINITIONS.map((definition) =>
-      ['Read', 'Write', 'Edit', 'NotebookEdit', 'Grep'].includes(
+      ['Read', 'Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep'].includes(
         definition.name,
       )
         ? {
@@ -319,7 +341,9 @@ export class LocalToolRegistry implements ToolRegistry {
                 ? ''
                 : ` Additional allowed directories: ${this.additionalDirectories.join(', ')}.`
             }${
-              !this.sharedMemoryDirectory || definition.name === 'Grep'
+              !this.sharedMemoryDirectory ||
+              definition.name === 'Glob' ||
+              definition.name === 'Grep'
                 ? ''
                 : ` Shared auto-memory files under ${this.sharedMemoryDirectory} are also allowed.`
             }`,
@@ -425,6 +449,19 @@ export class LocalToolRegistry implements ToolRegistry {
           },
         }
       }
+      case 'Glob': {
+        const pathInput = call.input.path
+        const requestedPath =
+          pathInput === undefined ? '.' : stringInput(call.input, 'path')
+        await this.globRoot(requestedPath)
+        return {
+          ...call,
+          input: {
+            pattern: stringInput(call.input, 'pattern', true),
+            ...(pathInput === undefined ? {} : { path: requestedPath }),
+          },
+        }
+      }
       case 'Grep': {
         const glob = optionalString(call.input, 'glob')
         return {
@@ -475,6 +512,8 @@ export class LocalToolRegistry implements ToolRegistry {
         return this.edit(prepared)
       case 'NotebookEdit':
         return this.notebookEdit(prepared)
+      case 'Glob':
+        return this.glob(prepared, context.signal)
       case 'Grep':
         return this.grep(prepared, context.signal)
       case 'Bash':
@@ -540,6 +579,27 @@ export class LocalToolRegistry implements ToolRegistry {
     if ((await realpath(filePath)) !== filePath) {
       throw new Error('Tool input changed after permission approval')
     }
+  }
+
+  private async globRoot(requestedPath: string): Promise<string> {
+    const displayedPath = isAbsolute(requestedPath)
+      ? resolve(requestedPath)
+      : resolve(this.cwd, requestedPath)
+    let root: string
+    try {
+      root = await this.workspacePath(requestedPath, false)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      throw new Error(
+        `<tool_use_error>Directory does not exist: ${displayedPath}. Note: your current working directory is ${await realpath(this.cwd)}.</tool_use_error>`,
+      )
+    }
+    if (!(await stat(root)).isDirectory()) {
+      throw new Error(
+        `<tool_use_error>Path is not a directory: ${displayedPath}</tool_use_error>`,
+      )
+    }
+    return root
   }
 
   private async wasSuccessfullyRead(
@@ -727,6 +787,43 @@ export class LocalToolRegistry implements ToolRegistry {
       return { content: result.content, isError: false }
     } finally {
       await handle.close()
+    }
+  }
+
+  private async glob(
+    call: ModelToolCall,
+    signal?: AbortSignal,
+  ): Promise<ToolExecutionResult> {
+    const requestedPath =
+      call.input.path === undefined ? '.' : stringInput(call.input, 'path')
+    const root = await this.globRoot(requestedPath)
+    const timeoutSignal = AbortSignal.timeout(this.maxShellTimeoutMs)
+    const searchSignal = signal
+      ? AbortSignal.any([signal, timeoutSignal])
+      : timeoutSignal
+    try {
+      const content = await globFiles({
+        root,
+        displayRoot: call.input.path === undefined ? '.' : requestedPath,
+        absoluteRoot: isAbsolute(requestedPath)
+          ? resolve(requestedPath)
+          : resolve(this.cwd, requestedPath),
+        pattern: stringInput(call.input, 'pattern', true),
+        signal: searchSignal,
+      })
+      return {
+        content: truncateOutput(content, this.maxOutputBytes),
+        isError: false,
+      }
+    } catch (error) {
+      if (signal?.aborted) throw abortError()
+      if (timeoutSignal.aborted) {
+        return {
+          content: `Search timed out after ${this.maxShellTimeoutMs}ms`,
+          isError: true,
+        }
+      }
+      throw error
     }
   }
 

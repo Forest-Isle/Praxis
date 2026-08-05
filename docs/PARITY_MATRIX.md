@@ -82,7 +82,7 @@ Evidence levels:
 | ------------------------------------ | -------- | ----------------------------------------------------------------------------- |
 | Read / Write / Edit / Grep / Bash    | Complete | Path, symlink, bounds, permissions, persistence gates                         |
 | Skill / foreground Agent / MCP tools | Complete | Provider-neutral registries and native persistence                            |
-| Glob                                 | Missing  | Dedicated compatible file enumeration surface                                 |
+| Glob                                 | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume    |
 | WebFetch / WebSearch                 | Missing  | Network tools, policy, citation/result bounds                                 |
 | NotebookEdit                         | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate |
 | Worktree enter/exit                  | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`                             |
@@ -104,7 +104,7 @@ Evidence levels:
 
 ## Remaining implementation order
 
-1. Missing local/web/notebook/resource tools.
+1. Missing web and MCP resource tools.
 2. Durable background tasks, agents, messaging, cron, monitor, and workflow.
 3. Worktree/tmux/background invocation, picker naming, ephemeral subagents,
    and permission `auto` classifier.

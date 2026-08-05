@@ -40,10 +40,18 @@ const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   Write: 'ask',
   Edit: 'ask',
   NotebookEdit: 'ask',
+  Glob: 'allow',
   Bash: 'ask',
 }
 
-const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'NotebookEdit', 'Grep'])
+const FILE_TOOLS = new Set([
+  'Read',
+  'Write',
+  'Edit',
+  'NotebookEdit',
+  'Glob',
+  'Grep',
+])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -122,6 +130,9 @@ function permissionTarget(call: ModelToolCall): string | null {
       ? call.input.subagent_type
       : null
   }
+  if (call.name === 'Glob') {
+    return typeof call.input.path === 'string' ? call.input.path : '.'
+  }
   if (call.name === 'Grep') {
     return typeof call.input.path === 'string' ? call.input.path : null
   }
@@ -141,7 +152,7 @@ function matchesRule(
 ): boolean {
   if (rule.toolName !== call.name) return false
   if (rule.pattern === null) return true
-  const target = permissionTarget(call)
+  let target = permissionTarget(call)
   if (target === null) return false
   if (
     call.name === 'Bash' &&
@@ -166,6 +177,7 @@ function matchesRule(
     } else if (!isAbsolute(permissionPattern)) {
       permissionPattern = resolve(cwd, permissionPattern)
     }
+    if (!isAbsolute(target)) target = resolve(cwd, target)
   }
   return globExpression(permissionPattern).test(target)
 }

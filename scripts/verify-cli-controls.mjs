@@ -204,7 +204,7 @@ try {
     [
       'safe',
       ['--safe-mode'],
-      ['Read', 'Write', 'Edit', 'NotebookEdit', 'Grep', 'Bash'],
+      ['Read', 'Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep', 'Bash'],
     ],
     ['bare', ['--bare'], ['Bash', 'Edit', 'Read']],
     ['empty tools', ['--tools='], []],

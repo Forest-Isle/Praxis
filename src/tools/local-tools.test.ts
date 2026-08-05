@@ -5,6 +5,7 @@ import {
   realpath,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -79,6 +80,7 @@ describe('LocalToolRegistry', () => {
       'Write',
       'Edit',
       'NotebookEdit',
+      'Glob',
       'Grep',
       'Bash',
     ])
@@ -225,6 +227,100 @@ describe('LocalToolRegistry', () => {
         { cwd, messages },
       ),
     ).rejects.toThrow('must be an absolute path')
+  })
+
+  it('finds files with Claude-compatible paths, ordering, and errors', async () => {
+    const { cwd } = await workspace()
+    await mkdir(join(cwd, 'src', '.hidden'), { recursive: true })
+    const oldPath = join(cwd, 'src', 'old.ts')
+    const hiddenPath = join(cwd, 'src', '.hidden', 'secret.ts')
+    const newPath = join(cwd, 'src', 'new.ts')
+    await Promise.all([
+      writeFile(oldPath, ''),
+      writeFile(hiddenPath, ''),
+      writeFile(newPath, ''),
+      writeFile(join(cwd, '.gitignore'), 'src/new.ts\n'),
+    ])
+    await Promise.all([
+      utimes(oldPath, 1_000, 1_000),
+      utimes(hiddenPath, 2_000, 2_000),
+      utimes(newPath, 3_000, 3_000),
+    ])
+    const registry = new LocalToolRegistry({ cwd })
+    const context = { cwd }
+
+    const relative = await registry.prepare(
+      { id: 'glob-relative', name: 'Glob', input: { pattern: '*.ts' } },
+      context,
+    )
+    expect(relative.input).toEqual({ pattern: '*.ts' })
+    await expect(registry.execute(relative, context)).resolves.toEqual({
+      content: 'src/old.ts\nsrc/.hidden/secret.ts\nsrc/new.ts',
+      isError: false,
+    })
+
+    const absolute = await registry.prepare(
+      {
+        id: 'glob-absolute',
+        name: 'Glob',
+        input: { pattern: '*.ts', path: join(cwd, 'src') },
+      },
+      context,
+    )
+    await expect(registry.execute(absolute, context)).resolves.toEqual({
+      content: `${oldPath}\n${hiddenPath}\n${newPath}`,
+      isError: false,
+    })
+    await expect(
+      registry.prepare(
+        {
+          id: 'glob-missing',
+          name: 'Glob',
+          input: { pattern: '*', path: join(cwd, 'missing') },
+        },
+        context,
+      ),
+    ).rejects.toThrow('<tool_use_error>Directory does not exist:')
+    await expect(
+      registry.prepare(
+        {
+          id: 'glob-file',
+          name: 'Glob',
+          input: { pattern: '*', path: oldPath },
+        },
+        context,
+      ),
+    ).rejects.toThrow(`<tool_use_error>Path is not a directory: ${oldPath}`)
+
+    const boundedRegistry = new LocalToolRegistry({ cwd, maxOutputBytes: 10 })
+    const bounded = await boundedRegistry.prepare(
+      { id: 'glob-bounded', name: 'Glob', input: { pattern: '*.ts' } },
+      context,
+    )
+    await expect(boundedRegistry.execute(bounded, context)).resolves.toEqual({
+      content: 'src/old.ts\n[output truncated]',
+      isError: false,
+    })
+
+    const manyDirectory = join(cwd, 'many')
+    await mkdir(manyDirectory)
+    await Promise.all(
+      Array.from({ length: 200 }, (_, index) =>
+        writeFile(join(manyDirectory, `${index}.txt`), ''),
+      ),
+    )
+    const timeoutRegistry = new LocalToolRegistry({
+      cwd,
+      maxShellTimeoutMs: 1,
+    })
+    const timeout = await timeoutRegistry.prepare(
+      { id: 'glob-timeout', name: 'Glob', input: { pattern: '**/*' } },
+      context,
+    )
+    await expect(timeoutRegistry.execute(timeout, context)).resolves.toEqual({
+      content: 'Search timed out after 1ms',
+      isError: true,
+    })
   })
 
   it('rejects lexical and symlink paths outside the workspace', async () => {
@@ -375,6 +471,7 @@ describe('LocalToolRegistry', () => {
     await Promise.all([mkdir(additional), mkdir(outside)])
     await Promise.all([
       writeFile(join(additional, 'allowed.txt'), 'ADDITIONAL_MARKER'),
+      writeFile(join(additional, 'allowed.ts'), 'ADDITIONAL_GLOB_MARKER'),
       writeFile(
         join(additional, 'allowed.ipynb'),
         JSON.stringify({
@@ -423,6 +520,18 @@ describe('LocalToolRegistry', () => {
     await expect(registry.execute(grep, context)).resolves.toMatchObject({
       isError: false,
     })
+    const glob = await registry.prepare(
+      {
+        id: 'additional-glob',
+        name: 'Glob',
+        input: { pattern: '*.ts', path: additional },
+      },
+      context,
+    )
+    await expect(registry.execute(glob, context)).resolves.toEqual({
+      content: join(additional, 'allowed.ts'),
+      isError: false,
+    })
     const notebookPath = join(additional, 'allowed.ipynb')
     const notebookRead = await registry.prepare(
       {
@@ -468,6 +577,16 @@ describe('LocalToolRegistry', () => {
           id: 'additional-escape',
           name: 'Read',
           input: { file_path: join(additional, 'escape', 'secret.txt') },
+        },
+        context,
+      ),
+    ).rejects.toThrow('outside workspace')
+    await expect(
+      registry.prepare(
+        {
+          id: 'additional-glob-escape',
+          name: 'Glob',
+          input: { pattern: '*.ts', path: join(additional, 'escape') },
         },
         context,
       ),

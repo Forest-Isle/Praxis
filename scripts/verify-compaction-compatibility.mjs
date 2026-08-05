@@ -107,7 +107,7 @@ try {
         PRAXIS_MODEL: 'fixture-model',
         PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
         PRAXIS_CONTEXT_WINDOW_TOKENS: '4000',
-        PRAXIS_CONTEXT_RESERVE_TOKENS: '3000',
+        PRAXIS_CONTEXT_RESERVE_TOKENS: '2000',
       },
       maxBuffer: 8 * 1024 * 1024,
       timeout: 120_000,

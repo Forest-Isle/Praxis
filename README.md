@@ -10,11 +10,11 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 15 native notebook editing is complete on top of CLI customization and
-session controls, print and machine-I/O support, image tool results, native foreground
-subagents, resilient sessions, native full-history forks, child-process
-credential boundaries, shared memory, and native Anthropic/OpenAI-compatible
-providers.
+Sprint 16 native file globbing is complete on top of notebook editing, CLI
+customization and session controls, print and machine-I/O support, image tool
+results, native foreground subagents, resilient sessions, native full-history
+forks, child-process credential boundaries, shared memory, and native
+Anthropic/OpenAI-compatible providers.
 Headless runs support Claude-style settings/source isolation, safe and bare
 modes, direct/file system prompts, additional canonical directory roots,
 explicit tool sets, CLI permission rules and modes, current-directory
@@ -30,8 +30,8 @@ When resume finds a tool call interrupted before its result was persisted, the
 UI shows the prepared tool name/input and requires a separate retry decision.
 Praxis can run, resume, fork, and list Claude-compatible sessions
 through a provider-neutral event loop and Anthropic-compatible or
-OpenAI-compatible streaming providers. Built-in read, write, edit, search, and
-shell and notebook tools execute behind Claude-compatible local permission rules
+OpenAI-compatible streaming providers. Built-in read, write, edit, glob, search,
+shell, and notebook tools execute behind Claude-compatible local permission rules
 with path checks, timeouts, cancellation, and bounded output. Notebook `Read`
 emits Claude-compatible cell IDs and `NotebookEdit` performs one structured
 replace, insert, or delete only after a successful read. `Read`, `Write`, and `Edit`
@@ -230,6 +230,7 @@ npm run test:compaction-compat
 npm run test:conditional-compat
 npm run test:context-compat
 npm run test:extension-compat
+npm run test:glob-compat
 npm run test:hook-compat
 npm run test:image-compat
 npm run test:mcp-compat
