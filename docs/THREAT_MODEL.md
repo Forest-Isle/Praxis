@@ -67,3 +67,7 @@ Protected assets:
   address to the HTTPS request lookup;
 - bound WebFetch DNS/request duration, redirect count, response bytes, processed
   output, and cache lifetime.
+- validate background agent IDs before path resolution, create sidechains
+  exclusively, and never let TaskStop cancel a different task or main run;
+- bound TaskOutput waits and returned content, serialize same-ID continuations,
+  and keep completion metadata inside native tool results and user messages.

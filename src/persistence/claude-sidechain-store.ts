@@ -1,4 +1,4 @@
-import { mkdir, open, rm } from 'node:fs/promises'
+import { mkdir, open, readFile, rm } from 'node:fs/promises'
 
 import type {
   ClaudeSchemaAdapter,
@@ -11,6 +11,7 @@ import type {
 import {
   ClaudeTranscriptStore,
   type ClaudeTranscriptLease,
+  type TranscriptSnapshot,
 } from './claude-transcript-store.js'
 
 export class ClaudeSidechainStore {
@@ -74,5 +75,32 @@ export class ClaudeSidechainStore {
       throw new Error('Claude sidechain transcript is locked')
     }
     return result.value
+  }
+
+  async loadReadOnly(): Promise<TranscriptSnapshot> {
+    return this.transcript.loadReadOnly()
+  }
+
+  async metadata(): Promise<ClaudeSidechainMetadata> {
+    const source = await readFile(this.paths.metadataFile, 'utf8')
+    const value: unknown = JSON.parse(source)
+    if (!value || typeof value !== 'object') {
+      throw new Error('Claude sidechain metadata must be an object')
+    }
+    const record = value as Record<string, unknown>
+    if (
+      typeof record.agentType !== 'string' ||
+      typeof record.description !== 'string' ||
+      typeof record.toolUseId !== 'string' ||
+      typeof record.spawnDepth !== 'number'
+    ) {
+      throw new Error('Claude sidechain metadata is invalid')
+    }
+    return {
+      agentType: record.agentType,
+      description: record.description,
+      toolUseId: record.toolUseId,
+      spawnDepth: record.spawnDepth,
+    }
   }
 }

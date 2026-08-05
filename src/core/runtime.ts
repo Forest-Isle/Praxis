@@ -170,7 +170,11 @@ export interface AgentRunRequest {
   observer?: AgentRunObserver
   reloadMessages?: () => Promise<readonly ModelMessage[]>
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
-  onStop?: (text: string) => Promise<readonly string[]>
+  onStop?: (
+    text: string,
+  ) => Promise<
+    readonly string[] | { messages: readonly string[]; usage?: ModelUsage }
+  >
   signal?: AbortSignal
 }
 
@@ -332,7 +336,19 @@ export class AgentRuntime {
         messages.push(assistantMessage)
 
         if (toolCalls.length === 0) {
-          const stopMessages = (await request.onStop?.(text)) ?? []
+          const stopResult = (await request.onStop?.(text)) ?? []
+          const stopBatch = Array.isArray(stopResult)
+            ? null
+            : (stopResult as {
+                messages: readonly string[]
+                usage?: ModelUsage
+              })
+          const stopMessages: readonly string[] = stopBatch
+            ? stopBatch.messages
+            : (stopResult as readonly string[])
+          if (stopBatch?.usage) {
+            usage = addUsage(usage, stopBatch.usage)
+          }
           if (stopMessages.length > 0) {
             await request.observer?.followUpUserMessagesCompleted?.(
               stopMessages,

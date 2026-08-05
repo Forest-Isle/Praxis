@@ -4,7 +4,7 @@ import type { ModelUsage } from '../../core/runtime.js'
 import { isClaudeSessionId } from './paths.js'
 import type { ClaudeTranscriptEntry } from './schema.js'
 
-const AGENT_ID_PATTERN = /^[0-9a-f]{16}$/u
+const AGENT_ID_PATTERN = /^a[0-9a-f]{16}$/u
 
 export interface ClaudeSidechainPaths {
   sessionId: string
@@ -124,5 +124,24 @@ export function createClaudeAgentToolUseResult(options: {
     totalTokens: options.usage.inputTokens + options.usage.outputTokens,
     totalToolUseCount: options.toolUseCount,
     usage: nativeUsage(options.usage),
+  }
+}
+
+export function createClaudeAsyncAgentToolUseResult(options: {
+  prompt: string
+  agentId: string
+  description: string
+  resolvedModel: string
+  outputFile: string
+}): Record<string, unknown> {
+  return {
+    isAsync: true,
+    status: 'async_launched',
+    agentId: options.agentId,
+    description: options.description,
+    resolvedModel: options.resolvedModel,
+    prompt: options.prompt,
+    outputFile: options.outputFile,
+    canReadOutputFile: true,
   }
 }

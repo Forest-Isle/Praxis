@@ -2,7 +2,7 @@
 
 ## Goal
 
-Praxis executes foreground subagents through the same provider-neutral runtime
+Praxis executes foreground and background subagents through the same provider-neutral runtime
 and writes Claude Code 2.1.208-compatible main-chain and sidechain records.
 Claude and Praxis can reopen the resulting main session without conversion.
 
@@ -10,10 +10,14 @@ Claude and Praxis can reopen the resulting main session without conversion.
 
 - `description`: non-empty task label;
 - `prompt`: non-empty isolated subagent prompt;
-- `subagent_type`: `general-purpose` or a shared user/project agent name;
-- `run_in_background`: omitted or `false` only.
+- `subagent_type`: optional; defaults to `general-purpose`, or names a shared
+  user/project agent;
+- `model`: optional provider model alias override;
+- `run_in_background`: optional; defaults to `true`;
+- `isolation`: schema-compatible but fails explicitly until worktree isolation
+  lands; remote execution stays outside the local product boundary.
 
-Unknown fields, unknown agent types, empty input, and background requests fail
+Unknown fields, unknown agent types, empty input, and unsupported isolation fail
 as an ordinary error tool result. `Agent` itself follows the active permission
 resolver before any sidechain file is created.
 Unscoped `Agent` and scoped `Agent(<subagent_type>)` allow, ask, and deny rules
@@ -26,13 +30,19 @@ use the same precedence as other Claude-compatible tool permissions.
 3. Sidechain root contains the requested prompt and the main prompt ID.
 4. Subagent runs with shared base context plus its selected agent definition.
 5. Local, MCP, Skill, hook, permission, cancellation, and redaction behavior is
-   reused from the main runtime. Nested foreground Agent calls use the same
+   reused from the main runtime. Nested Agent calls use the same
    path with incremented spawn depth.
 6. Completed assistant and tool-result records append immediately to sidechain.
    Validated local `Read` image results retain the same native image envelope as
    the main chain.
-7. Main tool result contains returned text and native structured execution
-   metadata, then the main agent continues.
+7. Foreground results contain returned text and completed native metadata.
+   Background results return `async_launched` metadata immediately while an
+   independent abort controller owns execution.
+8. `TaskOutput` performs bounded blocking or non-blocking reads; `TaskStop`
+   cancels only its selected task. `SendMessage` queues ordered continuation
+   turns and can hydrate a completed sidechain in a later main-session turn.
+9. At main-loop stop, completed work becomes a persisted
+   `<task-notification>` follow-up and its usage is added to main run totals.
 
 Bounds are explicit: maximum spawn depth 4, 16 subagent calls per main turn,
 16 model turns per subagent, 32 tool calls per model turn, 1 MiB model output,
@@ -46,35 +56,42 @@ Files live beside Claude sessions:
 
 ```text
 <project-root>/<session-id>/subagents/
-├── agent-<agent-id>.jsonl
-└── agent-<agent-id>.meta.json
+|-- agent-<agent-id>.jsonl
+`-- agent-<agent-id>.meta.json
 ```
 
-Every sidechain message has `isSidechain: true`, `agentId`, main `sessionId`,
+Agent IDs use `a` followed by 16 lowercase hex digits. Every sidechain message
+has `isSidechain: true`, `agentId`, main `sessionId`,
 and an independent UUID/parent chain. Assistant entries also include
 `attributionAgent`. Meta contains `agentType`, `description`, main `toolUseId`,
 and `spawnDepth`.
 
-Main `toolUseResult` records status, prompt, agent ID/type, returned content,
-resolved model, duration, usage, and tool-call count. Failed Agent execution is
-an error tool result; any already persisted sidechain remains available for
-inspection. Exclusive creation prevents overwriting native or Praxis output.
+Foreground `toolUseResult` records status, prompt, agent ID/type, returned
+content, resolved model, duration, usage, and tool-call count. Background launch
+records `isAsync`, `async_launched`, output path, and model before completion.
+Failed execution remains visible through output and notification status; any
+persisted sidechain remains available for inspection. Exclusive creation
+prevents overwriting native or Praxis output.
 
 ## Deferred
 
-- background Agent execution;
-- `SendMessage` and persistent agent inboxes;
-- concurrent/parallel scheduling and work stealing;
-- in-place continuation of a partially written sidechain.
+- worktree Agent isolation;
+- top-level `--background` sessions and `praxis agents` management;
+- background Bash and durable structured task graphs;
+- concurrent work stealing and process-independent live Agent ownership.
 
-These require separate black-box probes and lifecycle semantics. Foreground
-support must not advertise them or silently serialize a background request.
+These require separate black-box probes and lifecycle semantics. Current Agent
+background tasks remain owned by one Praxis process until their completion
+notification is delivered; completed native sidechains are resumable later.
 
 ## Acceptance
 
-- unit tests cover input, bounds, recursion, failure, cancellation, and native
-  schema validation;
+- unit tests cover input, bounds, concurrency, polling, ordered messaging,
+  recursion, failure, cancellation, usage, and native schema validation;
 - integration tests prove main and sidechain persistence plus custom agents;
-- installed OpenAI and Anthropic loops execute Agent and resume the result;
+- installed OpenAI and Anthropic loops execute foreground/background Agent and
+  resume results;
 - Claude 2.1.208 reopens Praxis-written main session and discovers sidechain;
+- live black-box gate compares Agent/task tool schemas and proves background
+  launch, output, messaging, notification, persistence, and Claude resume;
 - existing package, performance, recovery, and compatibility gates stay green.

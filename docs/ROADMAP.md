@@ -192,8 +192,8 @@ Status: complete for Claude Code 2.1.208 foreground Agent execution.
 - [x] native main-chain Agent result metadata and crash/failure semantics
 - [x] installed OpenAI/Anthropic execution and Claude reopen/discovery probes
 
-Background execution, `SendMessage`, and parallel scheduling remain a later
-sprint and are rejected explicitly rather than serialized or simulated.
+Background execution and `SendMessage` land in Sprint 19. Process-independent
+top-level dispatch and scheduled orchestration remain later stages.
 
 ## Sprint 12 — native image tool-result closure
 
@@ -325,3 +325,21 @@ Status: implementation complete; successful Claude WebFetch live oracle pending.
       fetch
 - [ ] successful Claude public WebFetch oracle with its external domain-safety
       service available
+
+## Sprint 19 — native background agents
+
+Status: complete for background Agent tasks owned by one Praxis invocation.
+
+- [x] Claude 2.1.208 Agent, SendMessage, TaskOutput, and TaskStop schema shapes
+- [x] background-by-default Agent plus explicit foreground execution
+- [x] concurrent native sidechain execution with independent cancellation
+- [x] bounded blocking/non-blocking output and task stop semantics
+- [x] ordered same-ID SendMessage continuation, including later-turn hydration
+- [x] native async launch metadata and persisted task completion notifications
+- [x] background usage aggregation into the main run result
+- [x] live Claude schema oracle, Praxis lifecycle gate, and Claude resume
+
+Top-level `--background` sessions, `agents --json`, background Bash, structured
+TaskCreate/Get/List/Update state, and Cron/Monitor/Workflow remain separate
+durable-process stages. Agent worktree isolation remains grouped with native
+worktree lifecycle; remote isolation stays outside the local product boundary.

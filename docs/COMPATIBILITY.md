@@ -261,14 +261,15 @@ before the first user entry or while renaming a resumed session. `agent-setting`
 `last-prompt` do not advance the logical UUID chain; `last-prompt` must name its
 current leaf. Message content blocks and attachment envelopes are validated
 before append, and every `tool_result` must match the historical `tool_use` plus
-`sourceToolAssistantUUID`. Foreground Agent sidechain entries become writable
+`sourceToolAssistantUUID`. Foreground and background Agent sidechain entries become writable
 only through the bounded runtime in `docs/SUBAGENT_CONTRACT.md` and its
-write/resume probes. Image, tool-denial, background-agent, messaging, and other
-entry writers remain disabled until their runtime implementations and probes
-pass. The validated exception is exactly one successful PNG, JPEG, GIF, or
+write/resume probes. Async launch metadata, `TaskOutput`, `TaskStop`,
+`SendMessage`, task notifications, and same-ID continuation use that validated
+path. Image, tool-denial, and other entry writers remain disabled until their
+runtime implementations and probes pass. The validated image exception is exactly one successful PNG, JPEG, GIF, or
 WebP image nested in a `tool_result`, with matching base64, media type, and
 decoded byte size in native `toolUseResult.file` metadata. It uses the same
-bounded runtime path on main chains and foreground sidechains. Top-level user
+bounded runtime path on main chains and Agent sidechains. Top-level user
 image attachments and MCP-specific image results remain write-disabled.
 
 Fork uses a separate versioned creation profile because it copies existing
@@ -291,7 +292,7 @@ other copied JSON token, including integers beyond JavaScript's safe range.
 
 Claude 2.1.208 fixtures cover text, tool use/results, manual compaction,
 subagent sidechains, image results, non-zero tool errors, and user interruption.
-Compaction, foreground sidechains, and `Read` image results have passed their
+Compaction, foreground/background sidechains, and `Read` image results have passed their
 native writer/reopen gates. Tool-denial and other unimplemented entry writers
 remain explicitly rejected by the append adapter.
 
@@ -346,6 +347,10 @@ generate a sidechain. `npm run test:shared-compat` proves Claude and Praxis
 observe the same worktree/non-git hierarchy, canonical shared memory including
 a linked detail, skill, hook, layered project MCP, command, agent, and ordered
 settings sources without copying or synchronization.
+`npm run test:background-agent-compat` captures Claude's current Agent,
+SendMessage, TaskOutput, and TaskStop schemas, then proves async launch, output
+polling, same-ID continuation, completion notification, sidechain persistence,
+usage aggregation, and Claude resume of the Praxis-written main session.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork

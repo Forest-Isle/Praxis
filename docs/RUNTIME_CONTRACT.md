@@ -134,7 +134,7 @@ Praxis-generated append metadata remains restricted to assistant leaves.
 Included:
 
 - interactive and print-mode CLI;
-- one foreground agent loop;
+- one foreground main loop with bounded foreground/background subagents;
 - Anthropic-compatible and OpenAI-compatible provider adapters;
 - file read/write/edit, search, shell, and MCP tools;
 - PNG, JPEG, GIF, and WebP results from the local `Read` tool;
@@ -144,8 +144,9 @@ Included:
 
 Deferred:
 
-- background, messaging, and parallel sub-agent orchestration; foreground
-  synchronous subagents follow `docs/SUBAGENT_CONTRACT.md`;
+- top-level background CLI sessions, background Bash, durable structured task
+  graphs, and scheduled orchestration; Agent background execution and messaging
+  follow `docs/SUBAGENT_CONTRACT.md`;
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
 - transcript migration across unsupported Claude versions.

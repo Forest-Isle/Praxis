@@ -13,7 +13,7 @@ import { ClaudeSidechainStore } from './claude-sidechain-store.js'
 
 const SESSION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const OTHER_SESSION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-const AGENT_ID = '0123456789abcdef'
+const AGENT_ID = 'a0123456789abcdef'
 const roots: string[] = []
 
 afterEach(async () => {

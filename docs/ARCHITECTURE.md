@@ -127,6 +127,13 @@ PID is dead; live and unknown artifacts remain untouched. Reusable `.reclaim`
 guards are reclaimed only inside the atomic guard protocol, never by the
 background pass.
 
+Background Agent calls return native async metadata immediately, then execute
+against an independently leased native sidechain. A per-turn task manager owns
+independent cancellation, bounded output waits, ordered messages, completion
+notifications, and usage aggregation. Completed sidechains remain authoritative:
+a later Praxis turn can hydrate one by its `a` plus 16-hex agent ID and continue
+it through `SendMessage` without a private conversation store.
+
 Starting a caller-selected session ID reserves its transcript with exclusive
 creation while holding the Praxis lease. Any existing path, including an empty
 JSONL file, is an identity collision. A claimed ID remains claimed if later

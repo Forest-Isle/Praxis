@@ -26,6 +26,7 @@ import {
 } from './compatibility/claude/shared-resources.js'
 import {
   AgentRunCancelledError,
+  type ModelProvider,
   type ModelToolCall,
   type RuntimeEventSink,
 } from './core/runtime.js'
@@ -274,7 +275,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ? join(configRoot, '.claude.json')
     : resolve(homedir(), '.claude.json')
   const cli = await resolveCliControls(controls, cwd)
-  let provider
+  let provider: ModelProvider | undefined
+  let providerForModel: ((model: string) => ModelProvider) | undefined
   const context = parseContextEnvironment(process.env)
   if (requireProvider) {
     const apiKey = process.env.PRAXIS_API_KEY
@@ -283,16 +285,16 @@ const createDefaultService: CliDependencies['createService'] = async ({
       throw new Error('PRAXIS_API_KEY and PRAXIS_MODEL are required')
     }
     const providerEnvironment = parseProviderEnvironment(process.env)
-    const providerOptions = {
-      apiKey,
-      model,
-      baseUrl: providerEnvironment.baseUrl,
-      ...('contextWindowTokens' in context
-        ? { contextWindowTokens: context.contextWindowTokens }
-        : {}),
-    }
-    provider =
-      providerEnvironment.provider === 'anthropic'
+    providerForModel = (selectedModel: string) => {
+      const providerOptions = {
+        apiKey,
+        model: selectedModel,
+        baseUrl: providerEnvironment.baseUrl,
+        ...('contextWindowTokens' in context
+          ? { contextWindowTokens: context.contextWindowTokens }
+          : {}),
+      }
+      return providerEnvironment.provider === 'anthropic'
         ? new AnthropicCompatibleProvider({
             ...providerOptions,
             ...('maxOutputTokens' in providerEnvironment
@@ -306,6 +308,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
               : {}),
           })
         : new OpenAICompatibleProvider(providerOptions)
+    }
+    provider = providerForModel(model)
   }
 
   const options = {
@@ -387,13 +391,24 @@ const createDefaultService: CliDependencies['createService'] = async ({
   })
   try {
     const extensionTools = new ClaudeExtensionToolRegistry(mcpTools, extensions)
-    const subagentsSelected =
-      cli.tools === undefined ||
-      cli.tools.includes('default') ||
-      cli.tools.includes('Agent')
+    const subagentToolNames = [
+      'Agent',
+      'SendMessage',
+      'TaskOutput',
+      'TaskStop',
+    ] as const
+    const selectedSubagentTools = subagentToolNames.filter(
+      (name) =>
+        (cli.tools === undefined ||
+          cli.tools.includes('default') ||
+          cli.tools.includes(name)) &&
+        !cli.disallowedTools.includes(name),
+    )
     const selectedBaseTools = cli.tools?.filter(
       (name) =>
-        name !== 'Agent' &&
+        !subagentToolNames.includes(
+          name as (typeof subagentToolNames)[number],
+        ) &&
         (!cli.bare || (name !== 'WebFetch' && name !== 'WebSearch')),
     )
     const filteredTools = new FilteredToolRegistry(extensionTools, {
@@ -405,17 +420,16 @@ const createDefaultService: CliDependencies['createService'] = async ({
       disallowedTools: cli.disallowedTools,
     })
     const enableSubagents =
-      cli.sessionPersistence &&
-      !cli.bare &&
-      subagentsSelected &&
-      !cli.disallowedTools.includes('Agent')
+      cli.sessionPersistence && !cli.bare && selectedSubagentTools.length > 0
     const service = new ClaudeSessionService({
       ...options,
       provider,
+      ...(providerForModel ? { providerForModel } : {}),
       tools: filteredTools,
       permissions,
       extensions,
       enableSubagents,
+      subagentToolNames: selectedSubagentTools,
       ...(cli.safeMode || cli.bare
         ? {}
         : { hooks: new ClaudeHookRunner({ settings, cwd }) }),
@@ -440,7 +454,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     })
     const toolNames = [
       ...filteredTools.definitions().map((definition) => definition.name),
-      ...(enableSubagents ? ['Agent'] : []),
+      ...(enableSubagents ? selectedSubagentTools : []),
     ]
     const runtimeInfo: CliRuntimeInfo = {
       cwd,

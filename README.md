@@ -10,10 +10,11 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 18 WebFetch/WebSearch compatibility is complete on top of MCP resource
+Sprint 19 native background Agent compatibility is complete on top of WebFetch/
+WebSearch, MCP resource
 tools, native file globbing, notebook editing, CLI customization and session
 controls, print and machine-I/O support, image tool results, native foreground
-subagents, resilient sessions, native full-history forks, child-process
+and background subagents, resilient sessions, native full-history forks, child-process
 credential boundaries, shared memory, and native Anthropic/OpenAI-compatible
 providers.
 Headless runs support Claude-style settings/source isolation, safe and bare
@@ -21,7 +22,7 @@ modes, direct/file system prompts, additional canonical directory roots,
 explicit tool sets, CLI permission rules and modes, current-directory
 continue/fork, native session names, and in-memory no-persistence execution.
 Classifier-backed `auto` permissions remain fail-closed until their dedicated
-runtime lands; no-persistence runs disable foreground Agent because native
+runtime lands; no-persistence runs disable Agent because native
 sidechains are disk-backed.
 Running `praxis` in a
 TTY opens an
@@ -152,8 +153,8 @@ later messages. Activated nested-memory rules remain active across compaction.
 - One local OS user, multiple workspaces and sessions
 - Provider-capability-aware rather than tied to one model vendor
 - Claude Code-compatible transcripts, configuration, permissions, and memory
-- Shared local agent definitions; durable background and parallel orchestration
-  remain required but are not implemented yet
+- Shared local agent definitions plus background Agent launch, output, stop,
+  same-ID messaging, completion notification, and native sidechains
 
 ## Claude Code interoperability
 
@@ -236,8 +237,9 @@ variables. Explicit per-server MCP `env` and HTTP headers are treated as
 intentional grants to that server, with matching output redaction.
 
 Permissions load from the shared global and current-project Claude settings.
-`Read` and `Grep` default to `allow`; `Write`, `Edit`, `Bash`, `WebFetch`, and
-`WebSearch` default to `ask`. Interactive mode prompts before an `ask` tool
+`Read`, `Grep`, `Agent`, `SendMessage`, `TaskOutput`, and `TaskStop` default to
+`allow`; `Write`, `Edit`, `Bash`, `WebFetch`, and `WebSearch` default to `ask`.
+Interactive mode prompts before an `ask` tool
 call. Headless commands remain non-interactive and return a denied tool result
 unless a compatible `allow` rule exists.
 
@@ -247,6 +249,7 @@ probe uses a local provider fixture:
 
 ```sh
 npm run test:compat
+npm run test:background-agent-compat
 npm run test:cli-controls-compat
 npm run test:compaction-compat
 npm run test:conditional-compat

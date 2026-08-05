@@ -126,7 +126,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const nativeResult = toolResult?.toolUseResult as Record<string, unknown>
     const agentId = String(nativeResult.agentId)
-    expect(agentId).toMatch(/^[0-9a-f]{16}$/)
+    expect(agentId).toMatch(/^a[0-9a-f]{16}$/)
 
     const subagentDirectory = join(
       paths.projectRoot,
@@ -196,6 +196,7 @@ describe('foreground Claude Agent execution', () => {
                 description: 'Review',
                 prompt: 'Review this',
                 subagent_type: 'reviewer',
+                run_in_background: false,
               },
             },
           }
@@ -235,16 +236,24 @@ describe('foreground Claude Agent execution', () => {
     ).toBe(true)
   })
 
-  it('rejects background requests without creating a sidechain', async () => {
+  it('runs a background agent and persists its completion notification', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-background-agent-test-'))
     roots.push(root)
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
-    let turn = 0
+    let launched = false
     const provider: ModelProvider = {
       capabilities: { streaming: true, usage: true, tools: true },
-      async *complete() {
-        if (turn++ === 0) {
+      async *complete(request) {
+        const source = JSON.stringify(request.messages)
+        if (source.includes('Do work') && !source.includes('call_background')) {
+          yield { type: 'text-delta', delta: 'BACKGROUND_CHILD_DONE' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 2, outputTokens: 1 },
+          }
+        } else if (!launched) {
+          launched = true
           yield {
             type: 'tool-call',
             call: {
@@ -258,8 +267,10 @@ describe('foreground Claude Agent execution', () => {
               },
             },
           }
+        } else if (source.includes('<task-notification>')) {
+          yield { type: 'text-delta', delta: 'BACKGROUND_MAIN_DONE' }
         } else {
-          yield { type: 'text-delta', delta: 'BACKGROUND_REJECTED' }
+          yield { type: 'text-delta', delta: 'BACKGROUND_RUNNING' }
         }
       },
     }
@@ -275,19 +286,193 @@ describe('foreground Claude Agent execution', () => {
 
     const result = await service.run('Try background.')
 
-    expect(result.text).toBe('BACKGROUND_REJECTED')
+    expect(result.text).toBe('BACKGROUND_MAIN_DONE')
     const paths = resolveClaudePaths({
       configDir: configRoot,
       cwd,
       sessionId: result.sessionId,
     })
     const mainEntries = entries(await readFile(paths.sessionFile, 'utf8'))
-    expect(JSON.stringify(mainEntries)).toContain(
-      'does not support background Agent execution yet',
+    const source = JSON.stringify(mainEntries)
+    expect(source).toContain('"status":"async_launched"')
+    expect(source).toContain('<status>completed</status>')
+    expect(source).toContain('BACKGROUND_CHILD_DONE')
+    expect(
+      await readdir(join(paths.projectRoot, result.sessionId, 'subagents')),
+    ).toHaveLength(2)
+  })
+
+  it('polls and resumes a completed background sidechain from a new executor', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-background-resume-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const provider = (text: string): ModelProvider => ({
+      model: 'fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        yield { type: 'text-delta', delta: text }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 2, outputTokens: 1 },
+        }
+      },
+    })
+    const options = {
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      baseTools: emptyTools,
+      permissions: {
+        resolve: () => ({ behavior: 'allow' as const }),
+      },
+    }
+    const first = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('FIRST_RESULT'),
+    })
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const firstRegistry = first.registry(sessionId, 0, () => promptId)
+    const launched = await firstRegistry.execute(
+      await firstRegistry.prepare(
+        {
+          id: 'call_launch',
+          name: 'Agent',
+          input: {
+            description: 'Resume test',
+            prompt: 'Initial work',
+            run_in_background: true,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
     )
+    const agentId = String(launched.nativeToolUseResult?.agentId)
+    const firstOutput = await firstRegistry.execute(
+      await firstRegistry.prepare(
+        {
+          id: 'call_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(firstOutput.content).toContain('FIRST_RESULT')
+
+    const resumed = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('SECOND_RESULT'),
+    })
+    const resumedRegistry = resumed.registry(sessionId, 0, () => promptId)
+    const sent = await resumedRegistry.execute(
+      await resumedRegistry.prepare(
+        {
+          id: 'call_message',
+          name: 'SendMessage',
+          input: {
+            to: agentId,
+            summary: 'resume completed agent',
+            message: 'Continue the work',
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(sent.content).toContain('"success":true')
+    const secondOutput = await resumedRegistry.execute(
+      await resumedRegistry.prepare(
+        {
+          id: 'call_output_again',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(secondOutput.content).toContain('SECOND_RESULT')
+
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const source = await readFile(
+      join(paths.projectRoot, sessionId, 'subagents', `agent-${agentId}.jsonl`),
+      'utf8',
+    )
+    expect(source).toContain('The coordinator sent a message')
+    expect(source).toContain('SECOND_RESULT')
+  })
+
+  it('defaults to background and accepts model overrides while rejecting unsupported isolation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-model-test-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    const selectedModels: string[] = []
+    const provider = (text: string, model: string): ModelProvider => ({
+      model,
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        yield { type: 'text-delta', delta: text }
+      },
+    })
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: provider('BASE', 'base-model'),
+      providerForModel(model) {
+        selectedModels.push(model)
+        return provider('OVERRIDE', model)
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+
+    const prepared = await registry.prepare(
+      {
+        id: 'call_model',
+        name: 'Agent',
+        input: {
+          description: 'Override model',
+          prompt: 'Use selected model',
+          model: 'haiku',
+        },
+      },
+      { cwd },
+    )
+    expect(prepared.input.run_in_background).toBe(true)
+    const launched = await registry.execute(prepared, { cwd })
+    expect(launched.nativeToolUseResult).toMatchObject({
+      status: 'async_launched',
+      resolvedModel: 'haiku',
+    })
+    expect(selectedModels).toEqual(['haiku'])
+    await expect(executor.notifications(true)).resolves.toMatchObject({
+      messages: [expect.stringContaining('OVERRIDE')],
+    })
+
     await expect(
-      readdir(join(paths.projectRoot, result.sessionId, 'subagents')),
-    ).rejects.toMatchObject({ code: 'ENOENT' })
+      registry.prepare(
+        {
+          id: 'call_isolation',
+          name: 'Agent',
+          input: {
+            description: 'Isolated work',
+            prompt: 'Use a worktree',
+            isolation: 'worktree',
+          },
+        },
+        { cwd },
+      ),
+    ).rejects.toThrow('Praxis does not support Agent isolation worktree yet')
   })
 
   it('enforces the session Agent call budget before creating another sidechain', async () => {
@@ -319,6 +504,7 @@ describe('foreground Claude Agent execution', () => {
       description: 'Budget child',
       prompt: 'Return marker',
       subagent_type: 'general-purpose',
+      run_in_background: false,
     }
     const first = await registry.prepare(
       { id: 'call_budget_1', name: 'Agent', input },
@@ -371,6 +557,7 @@ describe('foreground Claude Agent execution', () => {
                 description: 'Use probe',
                 prompt: 'Call Probe',
                 subagent_type: 'general-purpose',
+                run_in_background: false,
               },
             },
           }
@@ -454,6 +641,7 @@ describe('foreground Claude Agent execution', () => {
                 description: `Spawn depth ${nextDepth}`,
                 prompt: `DEPTH_${nextDepth}`,
                 subagent_type: 'general-purpose',
+                run_in_background: false,
               },
             },
           }
@@ -565,6 +753,7 @@ describe('foreground Claude Agent execution', () => {
               description: 'Wait',
               prompt: 'Wait for cancellation',
               subagent_type: 'general-purpose',
+              run_in_background: false,
             },
           },
         }
@@ -632,6 +821,7 @@ describe('foreground Claude Agent execution', () => {
                 description: 'Recover child',
                 prompt: 'Return RECOVERED_CHILD',
                 subagent_type: 'general-purpose',
+                run_in_background: false,
               },
             },
           }

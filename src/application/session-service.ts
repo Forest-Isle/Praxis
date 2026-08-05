@@ -80,6 +80,8 @@ export interface ClaudeSessionServiceOptions {
   contextBudget?: ContextBudget
   contextReserveTokens?: number
   enableSubagents?: boolean
+  subagentToolNames?: readonly string[]
+  providerForModel?: (model: string) => ModelProvider
   sessionPersistence?: boolean
 }
 
@@ -392,8 +394,14 @@ export class ClaudeSessionService {
               cwd: this.options.cwd,
               claudeVersion: this.options.claudeVersion,
               provider,
+              ...(this.options.providerForModel
+                ? { providerForModel: this.options.providerForModel }
+                : {}),
               baseTools: this.options.tools,
               permissions: this.options.permissions,
+              ...(this.options.subagentToolNames
+                ? { toolNames: this.options.subagentToolNames }
+                : {}),
               ...(this.options.extensions
                 ? { extensions: this.options.extensions }
                 : {}),
@@ -897,9 +905,10 @@ export class ClaudeSessionService {
               ...projectClaudeModelMessages(snapshot.entries),
             ]
           },
-          ...(this.options.hooks
+          ...(this.options.hooks || subagentExecutor
             ? {
                 onStop: async (text: string) => {
+                  const messages: string[] = []
                   const outcome = await this.options.hooks?.run(
                     {
                       ...hookSession,
@@ -910,11 +919,19 @@ export class ClaudeSessionService {
                     undefined,
                     signal,
                   )
-                  if (!outcome) return []
-                  await recordHookOutcome(outcome)
-                  if (!outcome.blockedReason) return []
-                  stopHookActive = true
-                  return [`Stop hook error: ${outcome.blockedReason}`]
+                  if (outcome) {
+                    await recordHookOutcome(outcome)
+                    if (outcome.blockedReason) {
+                      stopHookActive = true
+                      messages.push(`Stop hook error: ${outcome.blockedReason}`)
+                    }
+                  }
+                  const background = await subagentExecutor?.notifications(true)
+                  if (background) messages.push(...background.messages)
+                  return {
+                    messages,
+                    ...(background ? { usage: background.usage } : {}),
+                  }
                 },
               }
             : {}),

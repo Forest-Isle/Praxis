@@ -40,6 +40,7 @@
     "test:recovery-compat": "npm run build && node scripts/verify-crash-recovery.mjs",
     "test:shared-compat": "npm run build && node scripts/verify-claude-shared-resources.mjs",
     "test:subagent-compat": "npm run build && node scripts/verify-subagent-compatibility.mjs",
+    "test:background-agent-compat": "npm run build && node scripts/verify-background-agent-compatibility.mjs",
     "test:web-compat": "npm run build && node scripts/verify-web-compatibility.mjs",
     "typecheck": "tsc --noEmit"
   },

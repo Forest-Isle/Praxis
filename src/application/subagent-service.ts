@@ -3,11 +3,13 @@ import { join } from 'node:path'
 
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import {
+  createClaudeAsyncAgentToolUseResult,
   createClaudeAgentToolUseResult,
   createClaudeSidechainRoot,
   resolveClaudeSidechainPaths,
   toClaudeSidechainEntry,
 } from '../compatibility/claude/sidechain.js'
+import { projectClaudeModelMessages } from '../compatibility/claude/projection.js'
 import {
   type ClaudeTranscriptEntry,
   selectClaudeSchemaAdapter,
@@ -22,6 +24,7 @@ import {
   type ModelProvider,
   type ModelToolCall,
   type ModelToolDefinition,
+  type ModelUsage,
   type PermissionResolver,
   type RuntimeEvent,
   type RuntimeEventSink,
@@ -40,6 +43,10 @@ import type {
   ClaudeTranscriptLease,
   TranscriptSnapshot,
 } from '../persistence/claude-transcript-store.js'
+import {
+  BackgroundAgentManager,
+  type BackgroundAgentRunResult,
+} from './background-agent-manager.js'
 
 const DEFAULT_MAX_DEPTH = 4
 const DEFAULT_MAX_CALLS = 16
@@ -49,6 +56,8 @@ interface AgentInput {
   description: string
   prompt: string
   subagentType: string
+  model?: string
+  runInBackground: boolean
 }
 
 export interface ClaudeSubagentExecutorOptions {
@@ -66,6 +75,8 @@ export interface ClaudeSubagentExecutorOptions {
   maxDepth?: number
   maxCalls?: number
   maxOutputBytes?: number
+  providerForModel?: (model: string) => ModelProvider
+  toolNames?: readonly string[]
 }
 
 function parseAgentInput(call: ModelToolCall): AgentInput {
@@ -73,14 +84,18 @@ function parseAgentInput(call: ModelToolCall): AgentInput {
     'description',
     'prompt',
     'subagent_type',
+    'model',
     'run_in_background',
+    'isolation',
   ])
   for (const key of Object.keys(call.input)) {
     if (!allowed.has(key)) throw new Error(`Unknown Agent input field ${key}`)
   }
   const description = call.input.description
   const prompt = call.input.prompt
-  const subagentType = call.input.subagent_type
+  const subagentType = call.input.subagent_type ?? 'general-purpose'
+  const model = call.input.model
+  const isolation = call.input.isolation
   if (typeof description !== 'string' || description.trim().length === 0) {
     throw new Error('description must be a non-empty string')
   }
@@ -90,18 +105,38 @@ function parseAgentInput(call: ModelToolCall): AgentInput {
   if (typeof subagentType !== 'string' || subagentType.length === 0) {
     throw new Error('subagent_type must be a non-empty string')
   }
+  if (model !== undefined && typeof model !== 'string') {
+    throw new Error('model must be a string')
+  }
   if (
     call.input.run_in_background !== undefined &&
-    call.input.run_in_background !== false
+    typeof call.input.run_in_background !== 'boolean'
   ) {
-    throw new Error('Praxis does not support background Agent execution yet')
+    throw new Error('run_in_background must be a boolean')
   }
-  return { description, prompt, subagentType }
+  if (isolation !== undefined) {
+    if (isolation !== 'worktree' && isolation !== 'remote') {
+      throw new Error('isolation must be worktree or remote')
+    }
+    throw new Error(`Praxis does not support Agent isolation ${isolation} yet`)
+  }
+  return {
+    description,
+    prompt,
+    subagentType,
+    ...(model === undefined ? {} : { model }),
+    runInBackground: call.input.run_in_background !== false,
+  }
 }
 
 export class ClaudeSubagentExecutor {
   private readonly schema
   private calls = 0
+  private readonly background = new BackgroundAgentManager()
+
+  isEnabled(name: string): boolean {
+    return this.options.toolNames?.includes(name) ?? true
+  }
 
   constructor(private readonly options: ClaudeSubagentExecutorOptions) {
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
@@ -122,29 +157,129 @@ export class ClaudeSubagentExecutor {
   }
 
   definitions(): ModelToolDefinition {
-    const types = [
-      'general-purpose',
-      ...(this.options.extensions?.agentNames() ?? []),
-    ]
     return {
       name: 'Agent',
       description:
-        'Run an isolated foreground subagent and return its completed result.',
+        'Launch a new agent to handle complex, multi-step tasks. Agents run in the background by default; set run_in_background to false when the result is required synchronously.',
       inputSchema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
         type: 'object',
         properties: {
-          description: { type: 'string', minLength: 1 },
-          prompt: { type: 'string', minLength: 1 },
-          subagent_type: { type: 'string', enum: [...new Set(types)] },
-          run_in_background: { type: 'boolean', const: false },
+          description: {
+            description: 'A short (3-5 word) description of the task',
+            type: 'string',
+          },
+          prompt: {
+            description: 'The task for the agent to perform',
+            type: 'string',
+          },
+          subagent_type: {
+            description: 'The type of specialized agent to use for this task',
+            type: 'string',
+          },
+          model: {
+            description:
+              'Optional model override for this agent. Takes precedence over the agent definition\'s model frontmatter. If omitted, uses the agent definition\'s model, or inherits from the parent. Ignored for subagent_type: "fork" - forks always inherit the parent model.',
+            type: 'string',
+            enum: ['sonnet', 'opus', 'haiku', 'fable'],
+          },
+          run_in_background: {
+            description:
+              'Agents run in the background by default; you will be notified when one completes. Set to false to run this agent synchronously when you need its result before continuing.',
+            type: 'boolean',
+          },
+          isolation: {
+            description:
+              'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).',
+            type: 'string',
+            enum: ['worktree', 'remote'],
+          },
         },
-        required: ['description', 'prompt', 'subagent_type'],
+        required: ['description', 'prompt'],
         additionalProperties: false,
       },
     }
   }
 
+  managementDefinitions(): readonly ModelToolDefinition[] {
+    return [
+      {
+        name: 'SendMessage',
+        description: 'Send a message to another agent.',
+        inputSchema: {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          type: 'object',
+          properties: {
+            to: { description: 'Recipient: teammate name', type: 'string' },
+            summary: {
+              description:
+                'A 5-10 word summary shown as a preview in the UI (required when message is a string)',
+              type: 'string',
+              maxLength: 200,
+            },
+            message: {
+              description: 'Plain text message content',
+              type: 'string',
+            },
+          },
+          required: ['to', 'message'],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: 'TaskOutput',
+        description:
+          'Retrieves output and status from a running or completed background task.',
+        inputSchema: {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          type: 'object',
+          properties: {
+            task_id: {
+              description: 'The task ID to get output from',
+              type: 'string',
+            },
+            block: {
+              description: 'Whether to wait for completion',
+              default: true,
+              type: 'boolean',
+            },
+            timeout: {
+              description: 'Max wait time in ms',
+              default: 30000,
+              type: 'number',
+              minimum: 0,
+              maximum: 600000,
+            },
+          },
+          required: ['task_id', 'block', 'timeout'],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: 'TaskStop',
+        description: 'Stops a running background task by its ID.',
+        inputSchema: {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          type: 'object',
+          properties: {
+            task_id: {
+              description:
+                'The ID of the background task to stop. Agent-team teammates and named background agents are also accepted by agent ID or name.',
+              type: 'string',
+            },
+            shell_id: {
+              description: 'Deprecated: use task_id instead',
+              type: 'string',
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+    ]
+  }
+
   prepare(call: ModelToolCall, depth: number): ModelToolCall {
+    if (!this.isEnabled('Agent')) throw new Error('Tool Agent is unavailable')
     const input = parseAgentInput(call)
     const spawnDepth = depth + 1
     if (spawnDepth > (this.options.maxDepth ?? DEFAULT_MAX_DEPTH)) {
@@ -158,13 +293,17 @@ export class ClaudeSubagentExecutor {
     ) {
       throw new Error(`Unknown Claude agent ${input.subagentType}`)
     }
+    if (input.model && !this.options.providerForModel) {
+      throw new Error('Agent model overrides are unavailable for this provider')
+    }
     return {
       ...call,
       input: {
         description: input.description,
         prompt: input.prompt,
         subagent_type: input.subagentType,
-        run_in_background: false,
+        ...(input.model ? { model: input.model } : {}),
+        run_in_background: input.runInBackground,
       },
     }
   }
@@ -183,7 +322,7 @@ export class ClaudeSubagentExecutor {
     }
     const input = parseAgentInput(call)
     const spawnDepth = depth + 1
-    const agentId = randomBytes(8).toString('hex')
+    const agentId = `a${randomBytes(8).toString('hex')}`
     const paths = resolveClaudePaths({
       configDir: this.options.configRoot,
       cwd: this.options.cwd,
@@ -216,27 +355,79 @@ export class ClaudeSubagentExecutor {
       toolUseId: call.id,
       spawnDepth,
     })
-
-    const startedAt = Date.now()
-    const result = await sidechain.withLease(async (lease) =>
-      this.runSidechain({
-        lease,
-        root,
-        input,
+    const provider = input.model
+      ? (this.options.providerForModel?.(input.model) ?? this.options.provider)
+      : this.options.provider
+    const run = async (
+      message: string,
+      signal: AbortSignal,
+      continuation: boolean,
+    ): Promise<BackgroundAgentRunResult> => {
+      const startedAt = Date.now()
+      const result = await sidechain.withLease(async (lease) =>
+        this.runSidechain({
+          lease,
+          root,
+          input,
+          provider,
+          agentId,
+          spawnDepth,
+          promptId,
+          transcriptPath: sidechainPaths.transcriptFile,
+          toolResultDirectory: join(
+            paths.projectRoot,
+            sessionId,
+            'tool-results',
+          ),
+          ...(continuation ? { continuationMessage: message } : {}),
+          signal,
+        }),
+      )
+      return { ...result, durationMs: Date.now() - startedAt }
+    }
+    if (input.runInBackground) {
+      const resolvedModel = provider.model ?? 'praxis/provider'
+      this.background.launch({
         agentId,
-        spawnDepth,
-        promptId,
-        transcriptPath: sidechainPaths.transcriptFile,
-        toolResultDirectory: join(paths.projectRoot, sessionId, 'tool-results'),
-        ...(context.signal ? { signal: context.signal } : {}),
-      }),
-    )
+        agentType: input.subagentType,
+        description: input.description,
+        prompt: input.prompt,
+        toolUseId: call.id,
+        outputFile: sidechainPaths.transcriptFile,
+        resolvedModel,
+        run,
+      })
+      return {
+        content: this.asyncLaunchResult({
+          agentId,
+          description: input.description,
+          outputFile: sidechainPaths.transcriptFile,
+        }),
+        isError: false,
+        nativeToolUseResult: createClaudeAsyncAgentToolUseResult({
+          prompt: input.prompt,
+          agentId,
+          description: input.description,
+          resolvedModel,
+          outputFile: sidechainPaths.transcriptFile,
+        }),
+      }
+    }
+
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    context.signal?.addEventListener('abort', abort, { once: true })
+    let result: BackgroundAgentRunResult
+    try {
+      result = await run(input.prompt, controller.signal, false)
+    } finally {
+      context.signal?.removeEventListener('abort', abort)
+    }
     const maxOutputBytes =
       this.options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
     if (Buffer.byteLength(result.text) > maxOutputBytes) {
       throw new Error(`Agent result exceeded ${maxOutputBytes} bytes`)
     }
-    const durationMs = Date.now() - startedAt
     return {
       content: `${result.text}\n\nagentId: ${agentId}`,
       isError: false,
@@ -246,32 +437,272 @@ export class ClaudeSubagentExecutor {
         agentId,
         agentType: input.subagentType,
         text: result.text,
-        resolvedModel: this.options.provider.model ?? 'praxis/provider',
-        durationMs,
+        resolvedModel: provider.model ?? 'praxis/provider',
+        durationMs: result.durationMs,
         usage: result.usage,
         toolUseCount: result.toolUseCount,
       }),
     }
   }
 
+  prepareManagement(call: ModelToolCall): ModelToolCall {
+    if (!this.isEnabled(call.name)) {
+      throw new Error(`Tool ${call.name} is unavailable`)
+    }
+    const allowed = new Set(
+      this.managementDefinitions().map(({ name }) => name),
+    )
+    if (!allowed.has(call.name))
+      throw new Error(`Unknown task tool ${call.name}`)
+    if (call.name === 'TaskOutput') {
+      const taskId = call.input.task_id
+      const block = call.input.block ?? true
+      const timeout = call.input.timeout ?? 30_000
+      if (typeof taskId !== 'string' || taskId.length === 0) {
+        throw new Error('task_id must be a non-empty string')
+      }
+      if (typeof block !== 'boolean') throw new Error('block must be a boolean')
+      if (typeof timeout !== 'number')
+        throw new Error('timeout must be a number')
+      return { ...call, input: { task_id: taskId, block, timeout } }
+    }
+    if (call.name === 'TaskStop') {
+      const taskId = call.input.task_id ?? call.input.shell_id
+      if (typeof taskId !== 'string' || taskId.length === 0) {
+        throw new Error('task_id must be a non-empty string')
+      }
+      return { ...call, input: { task_id: taskId } }
+    }
+    const to = call.input.to
+    const message = call.input.message
+    const summary = call.input.summary
+    if (typeof to !== 'string' || to.length === 0) {
+      throw new Error('to must be a non-empty string')
+    }
+    if (typeof message !== 'string' || message.trim().length === 0) {
+      throw new Error('message must be a non-empty string')
+    }
+    if (summary !== undefined && typeof summary !== 'string') {
+      throw new Error('summary must be a string')
+    }
+    return {
+      ...call,
+      input: { to, message, ...(summary === undefined ? {} : { summary }) },
+    }
+  }
+
+  async executeManagement(
+    call: ModelToolCall,
+    sessionId: string,
+  ): Promise<ToolExecutionResult> {
+    if (call.name === 'TaskOutput') {
+      const taskId = String(call.input.task_id)
+      await this.hydrateCompletedTask(sessionId, taskId)
+      return {
+        content: await this.background.output(taskId, {
+          block: Boolean(call.input.block),
+          timeout: Number(call.input.timeout),
+        }),
+        isError: false,
+      }
+    }
+    if (call.name === 'TaskStop') {
+      const taskId = String(call.input.task_id)
+      await this.hydrateCompletedTask(sessionId, taskId)
+      return { content: this.background.stop(taskId), isError: false }
+    }
+    const agentId = String(call.input.to)
+    await this.hydrateCompletedTask(sessionId, agentId)
+    return {
+      content: this.background.send(
+        agentId,
+        String(call.input.message),
+        typeof call.input.summary === 'string' ? call.input.summary : undefined,
+        call.id,
+      ),
+      isError: false,
+    }
+  }
+
+  notifications(
+    waitForRunning: boolean,
+  ): Promise<{ messages: string[]; usage: ModelUsage }> {
+    return this.background.notifications({ waitForRunning })
+  }
+
+  private async hydrateCompletedTask(
+    sessionId: string,
+    agentId: string,
+  ): Promise<void> {
+    if (this.background.has(agentId)) return
+    const paths = resolveClaudePaths({
+      configDir: this.options.configRoot,
+      cwd: this.options.cwd,
+      sessionId,
+    })
+    const sidechainPaths = resolveClaudeSidechainPaths(
+      paths.projectRoot,
+      sessionId,
+      agentId,
+    )
+    const sidechain = new ClaudeSidechainStore(
+      sidechainPaths,
+      join(paths.praxisRoot, 'locks', `${sessionId}-${agentId}.lock`),
+      this.schema,
+    )
+    let metadata
+    let snapshot
+    try {
+      ;[metadata, snapshot] = await Promise.all([
+        sidechain.metadata(),
+        sidechain.loadReadOnly(),
+      ])
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    const root = snapshot.entries[0]
+    if (!root || root.type !== 'user') {
+      throw new Error(`Background agent ${agentId} has no sidechain root`)
+    }
+    const prompt =
+      typeof root.message === 'object' &&
+      root.message !== null &&
+      typeof (root.message as Record<string, unknown>).content === 'string'
+        ? String((root.message as Record<string, unknown>).content)
+        : ''
+    const projected = projectClaudeModelMessages(snapshot.entries)
+    const lastAssistant = projected.at(-1)
+    if (
+      !lastAssistant ||
+      lastAssistant.role !== 'assistant' ||
+      (lastAssistant.toolCalls?.length ?? 0) > 0
+    ) {
+      throw new Error(`Background agent ${agentId} is not completed`)
+    }
+    const input: AgentInput = {
+      description: metadata.description,
+      prompt,
+      subagentType: metadata.agentType,
+      runInBackground: true,
+    }
+    const provider = this.options.provider
+    const run = async (
+      message: string,
+      signal: AbortSignal,
+      continuation: boolean,
+    ): Promise<BackgroundAgentRunResult> => {
+      const startedAt = Date.now()
+      const result = await sidechain.withLease(async (lease) =>
+        this.runSidechain({
+          lease,
+          root,
+          input,
+          provider,
+          agentId,
+          spawnDepth: metadata.spawnDepth,
+          promptId: String(root.promptId ?? randomUUID()),
+          transcriptPath: sidechainPaths.transcriptFile,
+          toolResultDirectory: join(
+            paths.projectRoot,
+            sessionId,
+            'tool-results',
+          ),
+          ...(continuation ? { continuationMessage: message } : {}),
+          signal,
+        }),
+      )
+      return { ...result, durationMs: Date.now() - startedAt }
+    }
+    this.background.registerCompleted(
+      {
+        agentId,
+        agentType: metadata.agentType,
+        description: metadata.description,
+        prompt,
+        toolUseId: metadata.toolUseId,
+        outputFile: sidechainPaths.transcriptFile,
+        resolvedModel: provider.model ?? 'praxis/provider',
+        run,
+      },
+      {
+        text: lastAssistant.content,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        toolUseCount: 0,
+        durationMs: 0,
+      },
+    )
+  }
+
+  private asyncLaunchResult(options: {
+    agentId: string
+    description: string
+    outputFile: string
+  }): string {
+    return [
+      'Async agent launched successfully. (This tool result is internal metadata - never quote or paste any part of it into a user-facing reply.)',
+      `agentId: ${options.agentId} (internal ID - do not mention to user. Use SendMessage with to: '${options.agentId}' to continue this agent.)`,
+      'The agent is working in the background. You will be notified automatically when it completes.',
+      "Do not duplicate this agent's work - avoid working with the same files or topics it is using.",
+      `output_file: ${options.outputFile}`,
+      'Do NOT Read or tail this file via the shell tool - it is the full subagent JSONL transcript.',
+    ].join('\n')
+  }
+
   private async runSidechain(options: {
     lease: ClaudeTranscriptLease
     root: ClaudeTranscriptEntry
     input: AgentInput
+    provider: ModelProvider
     agentId: string
     spawnDepth: number
     promptId: string
     transcriptPath: string
     toolResultDirectory: string
+    continuationMessage?: string
     signal?: AbortSignal
   }): Promise<{
     text: string
     usage: { inputTokens: number; outputTokens: number }
     toolUseCount: number
   }> {
-    let snapshot: TranscriptSnapshot = {
-      entries: [options.root],
-      tail: (await options.lease.load()).tail,
+    let snapshot: TranscriptSnapshot = await options.lease.load()
+    if (options.continuationMessage !== undefined) {
+      const [entry] = translateProviderEvents(
+        [
+          {
+            type: 'user-text-block',
+            text: `The coordinator sent a message while you were working:\n${options.continuationMessage}\n\nAddress this before completing your current task.`,
+          },
+        ],
+        {
+          sessionId: String(options.root.sessionId),
+          parentUuid: snapshot.tail.lastUuid,
+          cwd: this.options.cwd,
+          claudeVersion: this.options.claudeVersion,
+          gitBranch: null,
+          history: snapshot.entries,
+        },
+      )
+      if (!entry) throw new Error('Could not translate subagent message')
+      const sidechainEntry = toClaudeSidechainEntry(
+        entry,
+        options.agentId,
+        options.input.subagentType,
+      )
+      const appendResult = await options.lease.append(
+        snapshot.tail,
+        sidechainEntry,
+      )
+      if (appendResult.status === 'conflict') {
+        throw new Error(
+          `Claude sidechain append conflict: ${appendResult.reason}`,
+        )
+      }
+      snapshot = {
+        entries: [...snapshot.entries, sidechainEntry],
+        tail: appendResult.tail,
+      }
     }
     let toolUseCount = 0
     const append = async (entry: ClaudeTranscriptEntry) => {
@@ -336,7 +767,7 @@ export class ClaudeSubagentExecutor {
         })
       }
     }
-    const runtime = new AgentRuntime(this.options.provider, emit, {
+    const runtime = new AgentRuntime(options.provider, emit, {
       tools: runtimeTools,
       permissions: runtimePermissions,
       maxModelTurns: 16,
@@ -357,7 +788,7 @@ export class ClaudeSubagentExecutor {
               text: message.content,
               toolCalls: message.toolCalls ?? [],
               providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
-              model: this.options.provider.model ?? 'praxis/provider',
+              model: options.provider.model ?? 'praxis/provider',
             },
           ],
           translationContext(),
@@ -471,7 +902,7 @@ export class ClaudeSubagentExecutor {
           messages: [
             ...((await this.options.contextAssembler?.assemble()) ?? []),
             { role: 'system', content: system },
-            { role: 'user', content: options.input.prompt },
+            ...projectClaudeModelMessages(snapshot.entries),
           ],
           cwd: this.options.cwd,
           toolResultDirectory: options.toolResultDirectory,
@@ -542,22 +973,43 @@ class ClaudeSubagentToolRegistry implements ToolRegistry {
   ) {}
 
   definitions(): readonly ModelToolDefinition[] {
-    return [...this.base.definitions(), this.executor.definitions()]
+    return [
+      ...this.base.definitions(),
+      ...(this.executor.isEnabled('Agent')
+        ? [this.executor.definitions()]
+        : []),
+      ...this.executor
+        .managementDefinitions()
+        .filter(({ name }) => this.executor.isEnabled(name)),
+    ]
   }
 
   async prepare(
     call: ModelToolCall,
     context: ToolExecutionContext,
   ): Promise<ModelToolCall> {
-    return call.name === 'Agent'
-      ? this.executor.prepare(call, this.depth)
-      : this.base.prepare(call, context)
+    if (call.name === 'Agent') return this.executor.prepare(call, this.depth)
+    if (
+      call.name === 'SendMessage' ||
+      call.name === 'TaskOutput' ||
+      call.name === 'TaskStop'
+    ) {
+      return this.executor.prepareManagement(call)
+    }
+    return this.base.prepare(call, context)
   }
 
   async execute(
     call: ModelToolCall,
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
+    if (
+      call.name === 'SendMessage' ||
+      call.name === 'TaskOutput' ||
+      call.name === 'TaskStop'
+    ) {
+      return this.executor.executeManagement(call, this.sessionId)
+    }
     if (call.name !== 'Agent') return this.base.execute(call, context)
     const promptId = this.promptIdForCall(call.id)
     if (!promptId)

@@ -464,7 +464,7 @@ function sendAnthropicEvents(response, events) {
   response.end()
 }
 
-function hasToolSchema(tools, name, requiredProperty) {
+function hasToolSchema(tools, name, property, required = true) {
   const tool = tools.find(
     (candidate) =>
       candidate?.type === 'function' && candidate?.function?.name === name,
@@ -473,21 +473,23 @@ function hasToolSchema(tools, name, requiredProperty) {
   return (
     typeof tool?.function?.description === 'string' &&
     parameters?.type === 'object' &&
-    parameters?.properties?.[requiredProperty]?.type === 'string' &&
-    Array.isArray(parameters?.required) &&
-    parameters.required.includes(requiredProperty)
+    parameters?.properties?.[property]?.type === 'string' &&
+    (!required ||
+      (Array.isArray(parameters?.required) &&
+        parameters.required.includes(property)))
   )
 }
 
-function hasAnthropicToolSchema(tools, name, requiredProperty) {
+function hasAnthropicToolSchema(tools, name, property, required = true) {
   const tool = tools.find((candidate) => candidate?.name === name)
   const inputSchema = tool?.input_schema
   return (
     typeof tool?.description === 'string' &&
     inputSchema?.type === 'object' &&
-    inputSchema?.properties?.[requiredProperty]?.type === 'string' &&
-    Array.isArray(inputSchema?.required) &&
-    inputSchema.required.includes(requiredProperty)
+    inputSchema?.properties?.[property]?.type === 'string' &&
+    (!required ||
+      (Array.isArray(inputSchema?.required) &&
+        inputSchema.required.includes(property)))
   )
 }
 
@@ -1133,12 +1135,23 @@ async function startSubagentProviderProbe(provider) {
         provider === 'anthropic'
           ? Array.isArray(body.tools) &&
             hasAnthropicToolSchema(body.tools, 'Agent', 'prompt') &&
-            hasAnthropicToolSchema(body.tools, 'Agent', 'subagent_type')
+            hasAnthropicToolSchema(body.tools, 'Agent', 'subagent_type', false)
           : Array.isArray(body.tools) &&
             hasToolSchema(body.tools, 'Agent', 'prompt') &&
-            hasToolSchema(body.tools, 'Agent', 'subagent_type')
+            hasToolSchema(body.tools, 'Agent', 'subagent_type', false)
       if (!hasAgentSchema) {
-        throw new Error('Installed CLI omitted Agent tool schema')
+        const agentSchema =
+          provider === 'anthropic'
+            ? body.tools?.find((tool) => tool.name === 'Agent')
+            : body.tools?.find((tool) => tool.function?.name === 'Agent')
+        throw new Error(
+          `Installed CLI omitted Agent tool schema: ${JSON.stringify(
+            agentSchema ??
+              body.tools?.map(
+                (tool) => tool.name ?? tool.function?.name ?? '<unknown>',
+              ),
+          )}`,
+        )
       }
       if (requests.length === 1) {
         if (
