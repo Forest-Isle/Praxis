@@ -565,6 +565,7 @@ export class ClaudeSessionService {
         const approveRecovery = this.options.approveRecovery
         const recoveryRequest = {
           cwd: this.options.cwd,
+          messages: projectClaudeModelMessages(snapshot.entries),
           observer,
           ...(signal ? { signal } : {}),
           ...(approveRecovery

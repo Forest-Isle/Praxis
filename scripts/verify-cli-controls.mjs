@@ -201,7 +201,11 @@ try {
   ])
   assertEqual(markers(userOnly.request), [userMarker], 'user source')
   for (const [label, args, expectedTools] of [
-    ['safe', ['--safe-mode'], ['Read', 'Write', 'Edit', 'Grep', 'Bash']],
+    [
+      'safe',
+      ['--safe-mode'],
+      ['Read', 'Write', 'Edit', 'NotebookEdit', 'Grep', 'Bash'],
+    ],
     ['bare', ['--bare'], ['Bash', 'Edit', 'Read']],
     ['empty tools', ['--tools='], []],
     ['read tools', ['--tools=Read'], ['Read']],

@@ -39,10 +39,11 @@ const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   Grep: 'allow',
   Write: 'ask',
   Edit: 'ask',
+  NotebookEdit: 'ask',
   Bash: 'ask',
 }
 
-const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'Grep'])
+const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'NotebookEdit', 'Grep'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -123,6 +124,11 @@ function permissionTarget(call: ModelToolCall): string | null {
   }
   if (call.name === 'Grep') {
     return typeof call.input.path === 'string' ? call.input.path : null
+  }
+  if (call.name === 'NotebookEdit') {
+    return typeof call.input.notebook_path === 'string'
+      ? call.input.notebook_path
+      : null
   }
   return typeof call.input.file_path === 'string' ? call.input.file_path : null
 }
@@ -206,7 +212,9 @@ export class ClaudePermissionResolver implements PermissionResolver {
     }
     if (
       this.permissionMode === 'plan' &&
-      (call.name === 'Write' || call.name === 'Edit')
+      (call.name === 'Write' ||
+        call.name === 'Edit' ||
+        call.name === 'NotebookEdit')
     ) {
       return {
         behavior: 'deny',
@@ -218,7 +226,9 @@ export class ClaudePermissionResolver implements PermissionResolver {
     if (matchingRule('allow')) return { behavior: 'allow' }
     if (
       this.permissionMode === 'acceptEdits' &&
-      (call.name === 'Write' || call.name === 'Edit')
+      (call.name === 'Write' ||
+        call.name === 'Edit' ||
+        call.name === 'NotebookEdit')
     ) {
       return { behavior: 'allow' }
     }

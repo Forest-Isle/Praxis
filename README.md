@@ -10,8 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 14 CLI customization and session controls are complete on top of print
-and machine-I/O support, image tool results, native foreground
+Sprint 15 native notebook editing is complete on top of CLI customization and
+session controls, print and machine-I/O support, image tool results, native foreground
 subagents, resilient sessions, native full-history forks, child-process
 credential boundaries, shared memory, and native Anthropic/OpenAI-compatible
 providers.
@@ -31,8 +31,10 @@ UI shows the prepared tool name/input and requires a separate retry decision.
 Praxis can run, resume, fork, and list Claude-compatible sessions
 through a provider-neutral event loop and Anthropic-compatible or
 OpenAI-compatible streaming providers. Built-in read, write, edit, search, and
-shell tools execute behind Claude-compatible local permission rules with path
-checks, timeouts, cancellation, and bounded output. `Read`, `Write`, and `Edit`
+shell and notebook tools execute behind Claude-compatible local permission rules
+with path checks, timeouts, cancellation, and bounded output. Notebook `Read`
+emits Claude-compatible cell IDs and `NotebookEdit` performs one structured
+replace, insert, or delete only after a successful read. `Read`, `Write`, and `Edit`
 also accept the canonical shared Claude project-memory root; other external
 paths and memory-root symlink escapes remain rejected.
 `Read` detects PNG, JPEG, GIF, and WebP by file signature and returns bounded
@@ -231,6 +233,7 @@ npm run test:extension-compat
 npm run test:hook-compat
 npm run test:image-compat
 npm run test:mcp-compat
+npm run test:notebook-compat
 npm run test:permission-compat
 npm run test:runtime-compat
 npm run test:recovery-compat

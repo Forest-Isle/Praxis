@@ -179,6 +179,14 @@ session imports its validated history into memory, continues there, and leaves
 the source bytes and lock directory unchanged. Foreground Agent is disabled in
 this mode because its Claude-compatible sidechain store is disk-backed.
 
+Notebook `Read` projects `.ipynb` cells as Claude-compatible `<cell id="...">`
+text, using `cell-N` for older cells without native IDs. `NotebookEdit` accepts
+an absolute canonical path and replaces, inserts, or deletes one cell only
+after a successful Read in the active transcript history. Writes preserve
+unmodified notebook and cell fields, stay within configured file roots and
+size bounds, and use the same native tool-result persistence as other local
+tools.
+
 ## Version compatibility
 
 Claude Code's local format is an implementation contract and can change.

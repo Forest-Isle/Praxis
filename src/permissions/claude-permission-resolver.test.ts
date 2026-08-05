@@ -75,6 +75,42 @@ describe('ClaudePermissionResolver', () => {
         input: { file_path: '/workspace/src/index.ts' },
       }),
     ).resolves.toEqual({ behavior: 'allow' })
+    const notebookEdit = {
+      id: 'notebook-edit',
+      name: 'NotebookEdit',
+      input: { notebook_path: '/workspace/notebook.ipynb' },
+    }
+    await expect(
+      new ClaudePermissionResolver({ cwd: '/workspace', settings: [] }).resolve(
+        notebookEdit,
+      ),
+    ).resolves.toEqual({ behavior: 'ask' })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        disallowedTools: ['NotebookEdit(/workspace/*.ipynb)'],
+      }).resolve(notebookEdit),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason:
+        'Denied by Claude permission rule NotebookEdit(/workspace/*.ipynb)',
+    })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'acceptEdits',
+      }).resolve(notebookEdit),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'plan',
+        allowedTools: ['NotebookEdit'],
+      }).resolve(notebookEdit),
+    ).resolves.toMatchObject({ behavior: 'deny' })
     await expect(
       resolver.resolve({
         id: 'npm_test',

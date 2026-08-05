@@ -260,3 +260,21 @@ session-name display in the Praxis picker remain explicit later work.
 No-persistence sessions expose the would-be Claude transcript path to hooks but
 do not create that file. Existing on-disk sessions can be imported for an
 ephemeral continuation without modifying the source JSONL.
+
+## Sprint 15 — native notebook editing
+
+Status: complete for local Jupyter notebook cell reads and edits.
+
+- [x] Claude-compatible `<cell id="...">` Read view with `cell-N` fallback IDs
+- [x] structured replace, insert, and delete with untouched notebook metadata
+      and cell fields preserved
+- [x] mandatory successful Read history across ordinary and recovered turns
+- [x] absolute canonical path, additional-root, symlink, size, and stable-file
+      boundaries shared with standard file tools
+- [x] NotebookEdit permission patterns plus acceptEdits/plan behavior
+- [x] live Claude 2.1.208 Read/Edit oracle, Praxis native tool round trip, and
+      Claude resume of the Praxis transcript
+
+Notebook execution is not introduced; Praxis edits `.ipynb` JSON only. Web,
+worktree, background task, scheduling, and MCP resource tools remain separate
+stages in [PARITY_MATRIX.md](PARITY_MATRIX.md).

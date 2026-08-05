@@ -78,16 +78,16 @@ Evidence levels:
 
 ## Tool surface
 
-| Capability                           | Status   | Evidence / remaining work                             |
-| ------------------------------------ | -------- | ----------------------------------------------------- |
-| Read / Write / Edit / Grep / Bash    | Complete | Path, symlink, bounds, permissions, persistence gates |
-| Skill / foreground Agent / MCP tools | Complete | Provider-neutral registries and native persistence    |
-| Glob                                 | Missing  | Dedicated compatible file enumeration surface         |
-| WebFetch / WebSearch                 | Missing  | Network tools, policy, citation/result bounds         |
-| NotebookEdit                         | Missing  | Notebook-aware structured edits                       |
-| Worktree enter/exit                  | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`     |
-| Task/Cron/Monitor/Workflow           | Missing  | Durable scheduling and process lifecycle              |
-| MCP resource tools                   | Missing  | list/read directory/resource/wait surfaces            |
+| Capability                           | Status   | Evidence / remaining work                                                     |
+| ------------------------------------ | -------- | ----------------------------------------------------------------------------- |
+| Read / Write / Edit / Grep / Bash    | Complete | Path, symlink, bounds, permissions, persistence gates                         |
+| Skill / foreground Agent / MCP tools | Complete | Provider-neutral registries and native persistence                            |
+| Glob                                 | Missing  | Dedicated compatible file enumeration surface                                 |
+| WebFetch / WebSearch                 | Missing  | Network tools, policy, citation/result bounds                                 |
+| NotebookEdit                         | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate |
+| Worktree enter/exit                  | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`                             |
+| Task/Cron/Monitor/Workflow           | Missing  | Durable scheduling and process lifecycle                                      |
+| MCP resource tools                   | Missing  | list/read directory/resource/wait surfaces                                    |
 
 ## Management commands
 

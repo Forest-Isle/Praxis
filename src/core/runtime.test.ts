@@ -254,6 +254,72 @@ describe('AgentRuntime', () => {
     })
   })
 
+  it('passes completed tool history to later tools and recovery', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn === 0) {
+        turn += 1
+        yield {
+          type: 'tool-call',
+          call: { id: 'read', name: 'Read', input: { file_path: 'a.ipynb' } },
+        }
+        return
+      }
+      if (turn === 1) {
+        turn += 1
+        yield {
+          type: 'tool-call',
+          call: {
+            id: 'edit',
+            name: 'NotebookEdit',
+            input: { notebook_path: '/workspace/a.ipynb', new_source: 'new' },
+          },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const histories: string[][] = []
+    const tools: ToolRegistry = {
+      definitions: () => [],
+      async prepare(call, context) {
+        histories.push((context.messages ?? []).map((message) => message.role))
+        return call
+      },
+      async execute(call) {
+        return { content: `${call.name} complete`, isError: false }
+      },
+    }
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const observer = {
+      async assistantCompleted() {},
+      async toolCompleted() {},
+    }
+
+    await runtime.run({
+      cwd: '/workspace',
+      messages: [{ role: 'user', content: 'edit notebook' }],
+      observer,
+    })
+    await runtime.recoverToolCalls(
+      [{ id: 'recover', name: 'NotebookEdit', input: {} }],
+      {
+        cwd: '/workspace',
+        messages: [{ role: 'user', content: 'persisted history' }],
+        observer,
+      },
+    )
+
+    expect(histories).toEqual([
+      ['user', 'assistant'],
+      ['user', 'assistant', 'tool', 'assistant'],
+      ['user'],
+    ])
+  })
+
   it('forwards image tool results only to image-capable providers', async () => {
     const requests: ModelRequest[] = []
     let turn = 0

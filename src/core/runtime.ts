@@ -108,6 +108,7 @@ export interface ToolExecutionResult {
 
 export interface ToolExecutionContext {
   cwd: string
+  messages?: readonly ModelMessage[]
   signal?: AbortSignal
 }
 
@@ -168,6 +169,7 @@ export interface AgentToolRecoveryRequest extends Pick<
   'approveTool' | 'cwd' | 'observer' | 'signal'
 > {
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
+  messages?: readonly ModelMessage[]
 }
 
 export interface AgentRunResult {
@@ -344,7 +346,7 @@ export class AgentRuntime {
 
         const followUpUserMessages: string[] = []
         for (const call of toolCalls) {
-          const result = await this.completeToolCall(call, request)
+          const result = await this.completeToolCall(call, request, messages)
           if (result.usage) usage = addUsage(usage, result.usage)
           messages.push({
             role: 'tool',
@@ -423,8 +425,9 @@ export class AgentRuntime {
   private async completeToolCall(
     call: ModelToolCall,
     request: AgentToolRecoveryRequest,
+    messages: readonly ModelMessage[] = request.messages ?? [],
   ): Promise<ToolExecutionResult> {
-    const executed = await this.executeTool(call, request)
+    const executed = await this.executeTool(call, request, messages)
     const result =
       executed.images?.length && this.provider.capabilities.images !== true
         ? {
@@ -447,6 +450,7 @@ export class AgentRuntime {
   private async executeTool(
     call: ModelToolCall,
     request: AgentToolRecoveryRequest,
+    messages: readonly ModelMessage[],
   ): Promise<ToolExecutionResult> {
     const tools = this.options.tools
     const permissions = this.options.permissions
@@ -458,7 +462,7 @@ export class AgentRuntime {
       }
     }
 
-    const context: ToolExecutionContext = { cwd: request.cwd ?? '' }
+    const context: ToolExecutionContext = { cwd: request.cwd ?? '', messages }
     if (request.signal) context.signal = request.signal
 
     let prepared: ModelToolCall

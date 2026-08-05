@@ -78,6 +78,7 @@ describe('LocalToolRegistry', () => {
       'Read',
       'Write',
       'Edit',
+      'NotebookEdit',
       'Grep',
       'Bash',
     ])
@@ -151,6 +152,79 @@ describe('LocalToolRegistry', () => {
       content: 'shell-ok',
       isError: false,
     })
+  })
+
+  it('renders and edits notebook cells only after a successful Read', async () => {
+    const { cwd } = await workspace()
+    const notebookPath = join(cwd, 'sample.ipynb')
+    await writeFile(
+      notebookPath,
+      JSON.stringify({
+        cells: [
+          {
+            cell_type: 'markdown',
+            id: 'intro',
+            metadata: { tag: 'keep' },
+            source: ['# Old\n', 'body'],
+          },
+        ],
+        metadata: { retained: true },
+        nbformat: 4,
+        nbformat_minor: 5,
+      }),
+    )
+    const registry = new LocalToolRegistry({ cwd })
+    const read = await registry.prepare(
+      { id: 'read-notebook', name: 'Read', input: { file_path: notebookPath } },
+      { cwd },
+    )
+    const readResult = await registry.execute(read, { cwd })
+    expect(readResult.content).toBe(
+      '<cell id="intro"><cell_type>markdown</cell_type># Old\nbody</cell id="intro">',
+    )
+
+    const replaceCall = {
+      id: 'replace-cell',
+      name: 'NotebookEdit',
+      input: {
+        notebook_path: notebookPath,
+        cell_id: 'intro',
+        new_source: '# New\nbody',
+      },
+    }
+    await expect(
+      registry.prepare(replaceCall, { cwd, messages: [] }),
+    ).rejects.toThrow('not been read yet')
+    const messages = [
+      { role: 'assistant' as const, content: '', toolCalls: [read] },
+      {
+        role: 'tool' as const,
+        toolCallId: read.id,
+        content: readResult.content,
+        isError: false,
+      },
+    ]
+    const replace = await registry.prepare(replaceCall, { cwd, messages })
+    await expect(registry.execute(replace, { cwd, messages })).resolves.toEqual(
+      {
+        content: 'Updated cell intro with # New\nbody',
+        isError: false,
+      },
+    )
+    await expect(readFile(notebookPath, 'utf8')).resolves.toContain(
+      '"source": "# New\\nbody"',
+    )
+
+    await expect(
+      registry.prepare(
+        {
+          ...replaceCall,
+          id: 'relative-notebook',
+          input: { ...replaceCall.input, notebook_path: 'sample.ipynb' },
+        },
+        { cwd, messages },
+      ),
+    ).rejects.toThrow('must be an absolute path')
   })
 
   it('rejects lexical and symlink paths outside the workspace', async () => {
@@ -301,7 +375,23 @@ describe('LocalToolRegistry', () => {
     await Promise.all([mkdir(additional), mkdir(outside)])
     await Promise.all([
       writeFile(join(additional, 'allowed.txt'), 'ADDITIONAL_MARKER'),
+      writeFile(
+        join(additional, 'allowed.ipynb'),
+        JSON.stringify({
+          cells: [
+            {
+              cell_type: 'markdown',
+              id: 'additional-cell',
+              metadata: {},
+              source: 'before',
+            },
+          ],
+          metadata: {},
+          nbformat: 4,
+        }),
+      ),
       writeFile(join(outside, 'secret.txt'), 'SECRET_MARKER'),
+      writeFile(join(outside, 'secret.ipynb'), '{}'),
     ])
     await symlink(outside, join(additional, 'escape'))
     const registry = new LocalToolRegistry({
@@ -333,6 +423,45 @@ describe('LocalToolRegistry', () => {
     await expect(registry.execute(grep, context)).resolves.toMatchObject({
       isError: false,
     })
+    const notebookPath = join(additional, 'allowed.ipynb')
+    const notebookRead = await registry.prepare(
+      {
+        id: 'additional-notebook-read',
+        name: 'Read',
+        input: { file_path: notebookPath },
+      },
+      context,
+    )
+    const notebookResult = await registry.execute(notebookRead, context)
+    const messages = [
+      {
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [notebookRead],
+      },
+      {
+        role: 'tool' as const,
+        toolCallId: notebookRead.id,
+        content: notebookResult.content,
+        isError: false,
+      },
+    ]
+    const notebookEdit = await registry.prepare(
+      {
+        id: 'additional-notebook-edit',
+        name: 'NotebookEdit',
+        input: {
+          notebook_path: notebookPath,
+          cell_id: 'additional-cell',
+          new_source: 'after',
+        },
+      },
+      { cwd, messages },
+    )
+    await registry.execute(notebookEdit, { cwd, messages })
+    expect(JSON.parse(await readFile(notebookPath, 'utf8'))).toMatchObject({
+      cells: [{ id: 'additional-cell', source: 'after' }],
+    })
     await expect(
       registry.prepare(
         {
@@ -341,6 +470,20 @@ describe('LocalToolRegistry', () => {
           input: { file_path: join(additional, 'escape', 'secret.txt') },
         },
         context,
+      ),
+    ).rejects.toThrow('outside workspace')
+    await expect(
+      registry.prepare(
+        {
+          id: 'additional-notebook-escape',
+          name: 'NotebookEdit',
+          input: {
+            notebook_path: join(additional, 'escape', 'secret.ipynb'),
+            cell_id: 'secret',
+            new_source: 'escaped',
+          },
+        },
+        { cwd, messages },
       ),
     ).rejects.toThrow('outside workspace')
   })

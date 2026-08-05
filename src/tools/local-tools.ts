@@ -4,6 +4,7 @@ import { open, realpath } from 'node:fs/promises'
 import {
   basename,
   dirname,
+  extname,
   isAbsolute,
   join,
   relative,
@@ -12,6 +13,7 @@ import {
 
 import type {
   ModelImageMediaType,
+  ModelMessage,
   ModelToolCall,
   ModelToolDefinition,
   ToolExecutionContext,
@@ -27,6 +29,7 @@ import {
   sanitizeChildEnvironment,
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
+import { editNotebook, formatNotebookForRead } from './notebook.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
@@ -86,6 +89,26 @@ const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
         replace_all: { type: 'boolean' },
       },
       required: ['file_path', 'old_string', 'new_string'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'NotebookEdit',
+    description:
+      'Replace, insert, or delete one cell in a Jupyter notebook after reading it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        notebook_path: { type: 'string' },
+        cell_id: { type: 'string' },
+        new_source: { type: 'string' },
+        cell_type: { type: 'string', enum: ['code', 'markdown'] },
+        edit_mode: {
+          type: 'string',
+          enum: ['replace', 'insert', 'delete'],
+        },
+      },
+      required: ['notebook_path', 'new_source'],
       additionalProperties: false,
     },
   },
@@ -286,7 +309,9 @@ export class LocalToolRegistry implements ToolRegistry {
       return TOOL_DEFINITIONS
     }
     return TOOL_DEFINITIONS.map((definition) =>
-      ['Read', 'Write', 'Edit', 'Grep'].includes(definition.name)
+      ['Read', 'Write', 'Edit', 'NotebookEdit', 'Grep'].includes(
+        definition.name,
+      )
         ? {
             ...definition,
             description: `${definition.description}${
@@ -354,6 +379,52 @@ export class LocalToolRegistry implements ToolRegistry {
           },
         }
       }
+      case 'NotebookEdit': {
+        const requestedPath = stringInput(call.input, 'notebook_path')
+        if (!isAbsolute(requestedPath)) {
+          throw new Error('notebook_path must be an absolute path')
+        }
+        const filePath = await this.filePath(requestedPath, false)
+        if (extname(filePath).toLowerCase() !== '.ipynb') {
+          throw new Error('notebook_path must reference an .ipynb file')
+        }
+        if (
+          !(await this.wasSuccessfullyRead(filePath, context.messages ?? []))
+        ) {
+          throw new Error(
+            '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>',
+          )
+        }
+        const cellId = optionalString(call.input, 'cell_id')
+        const cellType = optionalString(call.input, 'cell_type')
+        if (
+          cellType !== undefined &&
+          cellType !== 'code' &&
+          cellType !== 'markdown'
+        ) {
+          throw new Error('cell_type must be code or markdown')
+        }
+        const editMode = optionalString(call.input, 'edit_mode') ?? 'replace'
+        if (!['replace', 'insert', 'delete'].includes(editMode)) {
+          throw new Error('edit_mode must be replace, insert, or delete')
+        }
+        if (editMode === 'insert' && cellType === undefined) {
+          throw new Error('cell_type is required for insert')
+        }
+        if (editMode !== 'insert' && cellId === undefined) {
+          throw new Error(`cell_id is required for ${editMode}`)
+        }
+        return {
+          ...call,
+          input: {
+            notebook_path: filePath,
+            ...(cellId === undefined ? {} : { cell_id: cellId }),
+            new_source: stringInput(call.input, 'new_source', true),
+            ...(cellType === undefined ? {} : { cell_type: cellType }),
+            edit_mode: editMode,
+          },
+        }
+      }
       case 'Grep': {
         const glob = optionalString(call.input, 'glob')
         return {
@@ -402,6 +473,8 @@ export class LocalToolRegistry implements ToolRegistry {
         return this.write(prepared)
       case 'Edit':
         return this.edit(prepared)
+      case 'NotebookEdit':
+        return this.notebookEdit(prepared)
       case 'Grep':
         return this.grep(prepared, context.signal)
       case 'Bash':
@@ -469,6 +542,33 @@ export class LocalToolRegistry implements ToolRegistry {
     }
   }
 
+  private async wasSuccessfullyRead(
+    filePath: string,
+    messages: readonly ModelMessage[],
+  ): Promise<boolean> {
+    const successfulCalls = new Set(
+      messages.flatMap((message) =>
+        message.role === 'tool' && !message.isError ? [message.toolCallId] : [],
+      ),
+    )
+    for (const message of messages) {
+      if (message.role !== 'assistant') continue
+      for (const call of message.toolCalls ?? []) {
+        if (call.name !== 'Read' || !successfulCalls.has(call.id)) continue
+        const requestedPath = call.input.file_path
+        if (typeof requestedPath !== 'string') continue
+        try {
+          if ((await this.filePath(requestedPath, false)) === filePath) {
+            return true
+          }
+        } catch {
+          continue
+        }
+      }
+    }
+    return false
+  }
+
   private async read(call: ModelToolCall): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'file_path')
     const handle = await open(
@@ -499,7 +599,12 @@ export class LocalToolRegistry implements ToolRegistry {
           accessedPaths: [filePath],
         }
       }
-      const lines = source.toString('utf8').split('\n')
+      const text = source.toString('utf8')
+      const lines = (
+        extname(filePath).toLowerCase() === '.ipynb'
+          ? formatNotebookForRead(text)
+          : text
+      ).split('\n')
       const content = lines
         .slice(offset - 1, limit === undefined ? undefined : offset - 1 + limit)
         .join('\n')
@@ -581,6 +686,45 @@ export class LocalToolRegistry implements ToolRegistry {
         content: `Replaced ${replacementCount} occurrence(s)`,
         isError: false,
       }
+    } finally {
+      await handle.close()
+    }
+  }
+
+  private async notebookEdit(
+    call: ModelToolCall,
+  ): Promise<ToolExecutionResult> {
+    const filePath = stringInput(call.input, 'notebook_path')
+    const handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
+    try {
+      await this.assertStablePath(filePath)
+      const metadata = await handle.stat()
+      if (!metadata.isFile()) throw new Error(`Not a file: ${filePath}`)
+      if (metadata.size > this.maxFileBytes) {
+        throw new Error(`File exceeds ${this.maxFileBytes} byte edit limit`)
+      }
+      const result = editNotebook(await handle.readFile('utf8'), {
+        ...(call.input.cell_id === undefined
+          ? {}
+          : { cellId: stringInput(call.input, 'cell_id') }),
+        ...(call.input.cell_type === undefined
+          ? {}
+          : {
+              cellType: stringInput(call.input, 'cell_type') as
+                'code' | 'markdown',
+            }),
+        editMode: stringInput(call.input, 'edit_mode') as
+          'replace' | 'insert' | 'delete',
+        newSource: stringInput(call.input, 'new_source', true),
+      })
+      const encoded = Buffer.from(result.source)
+      if (encoded.length > this.maxFileBytes) {
+        throw new Error(`Content exceeds ${this.maxFileBytes} byte write limit`)
+      }
+      await handle.write(encoded, 0, encoded.length, 0)
+      await handle.truncate(encoded.length)
+      await handle.sync()
+      return { content: result.content, isError: false }
     } finally {
       await handle.close()
     }
