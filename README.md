@@ -192,6 +192,8 @@ export PRAXIS_PROVIDER=openai # or anthropic
 export PRAXIS_BASE_URL=https://api.openai.com/v1
 export PRAXIS_CONTEXT_WINDOW_TOKENS=200000
 export PRAXIS_CONTEXT_RESERVE_TOKENS=8192
+# Anthropic only: explicitly enable provider-native WebSearch.
+export PRAXIS_ANTHROPIC_WEB_SEARCH=true
 
 node dist/cli.js run "Inspect this project"
 node dist/cli.js -p --output-format json "Inspect this project"
@@ -222,8 +224,10 @@ than fabricated zeroes.
 `PRAXIS_PROVIDER` defaults to `openai`. `PRAXIS_BASE_URL` defaults to the
 selected provider's official `/v1` endpoint. Native Anthropic requests accept
 `PRAXIS_MAX_OUTPUT_TOKENS` (default 8192) and
-`PRAXIS_ANTHROPIC_VERSION` (default `2023-06-01`). Context window configuration
-is explicit because Praxis accepts arbitrary provider models; when
+`PRAXIS_ANTHROPIC_VERSION` (default `2023-06-01`). Native Anthropic WebSearch
+is advertised only with `PRAXIS_ANTHROPIC_WEB_SEARCH=true`, because arbitrary
+models and compatible relays do not necessarily implement it. Context window
+configuration is explicit because Praxis accepts arbitrary provider models; when
 `PRAXIS_CONTEXT_WINDOW_TOKENS` is absent, Praxis does not invent a model limit.
 Reserve defaults to 10% of the configured window, capped at 8192.
 Provider credentials stay in the Praxis process. Bash, hooks, Claude version

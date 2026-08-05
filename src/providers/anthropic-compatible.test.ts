@@ -9,6 +9,7 @@ describe('AnthropicCompatibleProvider', () => {
       baseUrl: 'https://api.anthropic.example/v1',
       apiKey: 'secret',
       model: 'fixture-model',
+      webSearch: true,
       contextWindowTokens: 200_000,
     })
 
@@ -31,12 +32,31 @@ describe('AnthropicCompatibleProvider', () => {
     ).toThrow('positive integer')
   })
 
+  it('requires native web search to be explicitly enabled', async () => {
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://relay.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+    })
+
+    expect(provider.capabilities.webSearch).toBe(false)
+    const stream = provider.complete({
+      messages: [{ role: 'user', content: 'search' }],
+      webSearch: { maxUses: 8 },
+    })
+    const events = stream[Symbol.asyncIterator]()
+    await expect(events.next()).rejects.toThrow(
+      'Provider does not support web search',
+    )
+  })
+
   it('serializes image tool results as native Anthropic content blocks', async () => {
     let body: Record<string, unknown> | undefined
     const provider = new AnthropicCompatibleProvider({
       baseUrl: 'https://api.anthropic.example/v1',
       apiKey: 'secret',
       model: 'fixture-model',
+      webSearch: true,
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
         return new Response(
@@ -215,6 +235,7 @@ describe('AnthropicCompatibleProvider', () => {
       baseUrl: 'https://api.anthropic.example/v1',
       apiKey: 'secret',
       model: 'fixture-model',
+      webSearch: true,
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
         return new Response(

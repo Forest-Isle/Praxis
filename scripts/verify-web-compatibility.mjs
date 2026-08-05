@@ -42,6 +42,14 @@ const calls = [
     },
   },
   {
+    id: 'fetch-public',
+    name: 'WebFetch',
+    input: {
+      url: 'https://example.com/',
+      prompt: 'Return the page title',
+    },
+  },
+  {
     id: 'fetch-private',
     name: 'WebFetch',
     input: { url: 'https://localhost/private', prompt: 'read it' },
@@ -215,6 +223,15 @@ function isInnerSearch(body) {
   )
 }
 
+function isInnerFetch(body) {
+  const messages = JSON.stringify(body.messages ?? [])
+  return (
+    !body.tools?.length &&
+    messages.includes('https://example.com/') &&
+    !messages.includes('"type":"tool_result"')
+  )
+}
+
 const provider = createServer(async (request, response) => {
   if (request.method === 'HEAD') {
     response.writeHead(200).end()
@@ -229,7 +246,11 @@ const provider = createServer(async (request, response) => {
   }
   const body = JSON.parse(source)
   requests.push(body)
-  const events = isInnerSearch(body) ? searchEvents() : outerResponses.shift()
+  const events = isInnerSearch(body)
+    ? searchEvents()
+    : isInnerFetch(body)
+      ? textEvents('FETCH_SUMMARY')
+      : outerResponses.shift()
   if (!events) throw new Error('Web provider response queue exhausted')
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
@@ -299,6 +320,24 @@ function assertResults(runRequests, label) {
       both.is_error === true,
     `${label} conflicting filters changed: ${JSON.stringify(both)}`,
   )
+  const publicFetch = toolResult(runRequests, 'fetch-public')
+  const innerFetchCount = runRequests.filter(isInnerFetch).length
+  const publicFetchSucceeded =
+    publicFetch?.content === 'FETCH_SUMMARY' && publicFetch.is_error !== true
+  const isolatedClaudeSafetyRejection =
+    label === 'Claude' &&
+    publicFetch?.is_error === true &&
+    String(publicFetch.content).includes(
+      'Unable to verify if domain example.com is safe to fetch',
+    )
+  assert(
+    publicFetchSucceeded || isolatedClaudeSafetyRejection,
+    `${label} public WebFetch result changed: ${JSON.stringify(publicFetch)}`,
+  )
+  assert(
+    innerFetchCount === (publicFetchSucceeded ? 1 : 0),
+    `${label} public WebFetch processing request changed`,
+  )
   const privateFetch = toolResult(runRequests, 'fetch-private')
   assert(
     privateFetch?.content === 'Invalid URL' && privateFetch.is_error === true,
@@ -364,6 +403,7 @@ async function runPraxis(address, extraArgs, prompt) {
         PRAXIS_API_KEY: 'fixture-key',
         PRAXIS_MODEL: 'fixture-model',
         PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+        PRAXIS_ANTHROPIC_WEB_SEARCH: 'true',
       },
       timeout: 120_000,
     },
@@ -383,8 +423,14 @@ try {
   const claudeStart = requests.length
   await runClaude(
     address,
-    ['--dangerously-skip-permissions', '--tools', 'WebFetch,WebSearch'],
-    'exercise web tools',
+    [
+      '--dangerously-skip-permissions',
+      '--allowedTools',
+      'WebFetch(domain:example.com)',
+      '--tools',
+      'WebFetch,WebSearch',
+    ],
+    'exercise web tools using https://example.com/',
   )
   const claudeRequests = requests.slice(claudeStart)
   assertResults(claudeRequests, 'Claude')
@@ -398,10 +444,12 @@ try {
       '--session-id',
       sessionId,
       '--dangerously-skip-permissions',
+      '--allowedTools',
+      'WebFetch(domain:example.com)',
       '--tools',
       'WebFetch,WebSearch',
     ],
-    'exercise web tools',
+    'exercise web tools using https://example.com/',
   )
   const praxisRequests = requests.slice(praxisStart)
   assertResults(praxisRequests, 'Praxis')
@@ -579,7 +627,7 @@ try {
 
   const version = await detectClaudeVersion('Web compatibility probe')
   console.log(
-    `Claude ${version} web compatibility passed: exact schemas, safe/bare exposure, native filtered search, links/citations, domain permissions, private fetch rejection, persistence, and resume`,
+    `Claude ${version} web compatibility passed: exact schemas, safe/bare exposure, native filtered search, links/citations, real Praxis public fetch, isolated Claude fetch safety behavior, domain permissions, private fetch rejection, persistence, and resume`,
   )
 } finally {
   if (provider.listening) await closeProvider()

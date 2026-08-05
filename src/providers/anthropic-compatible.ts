@@ -13,6 +13,7 @@ export interface AnthropicCompatibleProviderOptions {
   model: string
   maxOutputTokens?: number
   anthropicVersion?: string
+  webSearch?: boolean
   contextWindowTokens?: number
   maxStreamBufferBytes?: number
   maxToolArgumentsBytes?: number
@@ -508,7 +509,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       usage: true,
       tools: true,
       images: true,
-      webSearch: true,
+      webSearch: options.webSearch === true,
       ...(options.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: options.contextWindowTokens }),
@@ -529,6 +530,9 @@ export class AnthropicCompatibleProvider implements ModelProvider {
   }
 
   async *complete(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    if (request.webSearch && !this.capabilities.webSearch) {
+      throw new Error('Provider does not support web search')
+    }
     if (request.webSearch && request.tools?.length) {
       throw new Error('Web search cannot be combined with model tools')
     }

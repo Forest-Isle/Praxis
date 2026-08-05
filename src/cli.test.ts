@@ -107,18 +107,29 @@ describe('Praxis CLI', () => {
         PRAXIS_PROVIDER: 'anthropic',
         PRAXIS_MAX_OUTPUT_TOKENS: '4096',
         PRAXIS_ANTHROPIC_VERSION: '2023-06-01',
+        PRAXIS_ANTHROPIC_WEB_SEARCH: 'true',
       }),
     ).toEqual({
       provider: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
       maxOutputTokens: 4096,
       anthropicVersion: '2023-06-01',
+      webSearch: true,
     })
     expect(() =>
       parseProviderEnvironment({ PRAXIS_PROVIDER: 'unknown' }),
     ).toThrow('openai or anthropic')
     expect(() =>
       parseProviderEnvironment({ PRAXIS_MAX_OUTPUT_TOKENS: '4096' }),
+    ).toThrow('requires PRAXIS_PROVIDER=anthropic')
+    expect(() =>
+      parseProviderEnvironment({
+        PRAXIS_PROVIDER: 'anthropic',
+        PRAXIS_ANTHROPIC_WEB_SEARCH: 'sometimes',
+      }),
+    ).toThrow('must be true or false')
+    expect(() =>
+      parseProviderEnvironment({ PRAXIS_ANTHROPIC_WEB_SEARCH: 'true' }),
     ).toThrow('requires PRAXIS_PROVIDER=anthropic')
   })
 

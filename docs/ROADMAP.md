@@ -311,7 +311,7 @@ Status: complete for connected MCP resource-capable servers.
 
 ## Sprint 18 — web tools
 
-Status: complete for WebFetch and provider-native WebSearch.
+Status: implementation complete; successful Claude WebFetch live oracle pending.
 
 - [x] exact Claude 2.1.208 schemas, descriptions, safe/bare exposure, and
       permission defaults
@@ -320,5 +320,8 @@ Status: complete for WebFetch and provider-native WebSearch.
 - [x] provider-neutral page processing with untrusted-content isolation
 - [x] Anthropic-native `web_search_20250305` requests, domain filters,
       links/citations, usage, and source reminder
-- [x] capability omission for providers without native search
-- [x] live Claude/Praxis result parity, native persistence, and Claude resume
+- [x] explicit capability omission for providers without native search
+- [x] live schemas, search, errors, persistence, resume, and real Praxis public
+      fetch
+- [ ] successful Claude public WebFetch oracle with its external domain-safety
+      service available

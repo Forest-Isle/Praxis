@@ -93,11 +93,13 @@ result with a following user `image_url` message.
 Native web search is an optional `ModelProvider` capability, not a generic HTTP
 scraper. The Anthropic adapter translates the provider-neutral search request
 to its server tool and projects links, citations, text, and usage back into the
-runtime. `WebToolRegistry` composes over the local registry in normal and safe
+runtime only when explicitly configured for a supporting model/relay.
+`WebToolRegistry` composes over the local registry in normal and safe
 modes; bare mode omits the wrapper. WebFetch stays provider-neutral: it pins
 HTTPS requests to validated public DNS addresses, rechecks every same-host
 redirect, bounds network/content/model output, converts supported documents to
-Markdown, and asks the selected provider to process untrusted page content.
+Markdown, serializes untrusted page data behind a JSON boundary, and asks the
+selected provider to process it.
 
 ## Shared Claude data plane
 

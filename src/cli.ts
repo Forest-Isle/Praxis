@@ -116,6 +116,7 @@ Options:
 Provider environment:
   PRAXIS_PROVIDER=openai|anthropic, PRAXIS_API_KEY, PRAXIS_MODEL
   PRAXIS_BASE_URL, PRAXIS_MAX_OUTPUT_TOKENS, PRAXIS_ANTHROPIC_VERSION
+  PRAXIS_ANTHROPIC_WEB_SEARCH=true|false
   PRAXIS_CONTEXT_WINDOW_TOKENS, PRAXIS_CONTEXT_RESERVE_TOKENS
 `
 
@@ -124,6 +125,7 @@ export function parseProviderEnvironment(environment: NodeJS.ProcessEnv): {
   baseUrl: string
   maxOutputTokens?: number
   anthropicVersion?: string
+  webSearch?: boolean
 } {
   const provider = environment.PRAXIS_PROVIDER ?? 'openai'
   if (provider !== 'openai' && provider !== 'anthropic') {
@@ -152,6 +154,19 @@ export function parseProviderEnvironment(environment: NodeJS.ProcessEnv): {
   if (anthropicVersion !== undefined && anthropicVersion.trim().length === 0) {
     throw new Error('PRAXIS_ANTHROPIC_VERSION must not be empty')
   }
+  const webSearch = environment.PRAXIS_ANTHROPIC_WEB_SEARCH
+  if (
+    webSearch !== undefined &&
+    webSearch !== 'true' &&
+    webSearch !== 'false'
+  ) {
+    throw new Error('PRAXIS_ANTHROPIC_WEB_SEARCH must be true or false')
+  }
+  if (provider === 'openai' && webSearch !== undefined) {
+    throw new Error(
+      'PRAXIS_ANTHROPIC_WEB_SEARCH requires PRAXIS_PROVIDER=anthropic',
+    )
+  }
   return {
     provider,
     baseUrl:
@@ -163,6 +178,7 @@ export function parseProviderEnvironment(environment: NodeJS.ProcessEnv): {
       ? {}
       : { maxOutputTokens: Number(maxOutputTokens) }),
     ...(anthropicVersion === undefined ? {} : { anthropicVersion }),
+    ...(webSearch === undefined ? {} : { webSearch: webSearch === 'true' }),
   }
 }
 
@@ -284,6 +300,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
               : {}),
             ...('anthropicVersion' in providerEnvironment
               ? { anthropicVersion: providerEnvironment.anthropicVersion }
+              : {}),
+            ...('webSearch' in providerEnvironment
+              ? { webSearch: providerEnvironment.webSearch }
               : {}),
           })
         : new OpenAICompatibleProvider(providerOptions)

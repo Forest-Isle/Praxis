@@ -27,6 +27,7 @@ Protected assets:
 | Unsupported Claude format                      | Version adapter selects read-only fallback before any write                                                                                               |
 | Provider payload incompatibility               | Persist only translated Claude-native completed events; raw payload stays in sidecar                                                                      |
 | Web fetch SSRF or DNS rebinding                | Require HTTPS, reject private/loopback targets, pin requests to validated public DNS results, and revalidate redirects                                    |
+| Fetched-page prompt injection                  | Serialize page text as untrusted JSON data and keep the user request distinct under a higher-priority system instruction                                  |
 | Resource exhaustion                            | Bound model turns, post-redaction output, tool runtime, subprocess tree, and context size                                                                 |
 | Dependency compromise                          | Lockfile, minimal dependencies, CI audit, explicit release review                                                                                         |
 

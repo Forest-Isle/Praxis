@@ -210,7 +210,7 @@ tool names, descriptions, schemas, result wrappers, and local permission
 patterns. Normal and safe modes expose them; bare mode omits them even when
 explicitly selected. Both default to `ask`, so headless `dontAsk` runs deny
 them without an allow rule; WebFetch accepts Claude's `domain:<host>` rules.
-WebSearch is a provider capability: Anthropic uses
+WebSearch is a provider capability: explicitly enabled Anthropic adapters use
 the native `web_search_20250305` server tool with at most eight uses and maps
 allowed or blocked domains, while OpenAI-compatible providers currently omit
 the tool. WebFetch upgrades HTTP to HTTPS, rejects authenticated/private URLs,
@@ -368,8 +368,11 @@ execution, and Claude resume of the Praxis-written hook transcript.
 precedence, then exercises Praxis stdio and Streamable HTTP discovery, tool
 calls, permission flow, and stdio subprocess cleanup through the built CLI.
 `npm run test:web-compat` compares exact schemas and safe/bare exposure, native
-filtered search requests, links/citations, private-fetch rejection, result
-errors, transcript persistence, and Claude resume against Claude Code 2.1.208.
+filtered search requests, links/citations, domain permissions, private-fetch
+rejection, transcript persistence, and Claude resume against Claude Code
+2.1.208. It requires a real successful Praxis public fetch. Claude's matching
+public-success path accepts a successful oracle when its external domain-safety
+service is available and otherwise verifies the isolated safety rejection.
 `npm run test:recovery-compat` creates an interrupted native tool call, proves
 decline is append-free, approves the prepared retry exactly once, persists its
 native result, and requires Claude Code 2.1.208 to resume the recovered turn.

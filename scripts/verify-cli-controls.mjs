@@ -153,6 +153,7 @@ try {
     PRAXIS_API_KEY: 'fixture-key',
     PRAXIS_MODEL: 'fixture-model',
     PRAXIS_BASE_URL: `${baseUrl}/v1`,
+    PRAXIS_ANTHROPIC_WEB_SEARCH: 'true',
   }
   const cliPath = join(process.cwd(), 'dist', 'cli.js')
   async function runPraxis(args) {
