@@ -8,6 +8,7 @@ export type ClaudeDataResource =
   | 'mcp'
   | 'provider-payload'
   | 'search-index'
+  | 'scheduled-prompts'
   | 'session-lock'
   | 'settings'
   | 'skills'
@@ -41,6 +42,12 @@ export const CLAUDE_DATA_OWNERSHIP = [
     plane: 'shared',
     praxisAccess: 'read-write',
     location: 'tasks/<session-id>/',
+  },
+  {
+    resource: 'scheduled-prompts',
+    plane: 'shared',
+    praxisAccess: 'read-write',
+    location: '.claude/scheduled_tasks.json',
   },
   {
     resource: 'instructions',

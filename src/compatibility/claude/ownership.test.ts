@@ -17,6 +17,11 @@ describe('Claude shared-data ownership', () => {
       praxisAccess: 'read-write',
       location: 'tasks/<session-id>/',
     })
+    expect(getDataOwnership('scheduled-prompts')).toMatchObject({
+      plane: 'shared',
+      praxisAccess: 'read-write',
+      location: '.claude/scheduled_tasks.json',
+    })
   })
 
   it('starts settings, hooks, and MCP in compatibility-safe read-only mode', () => {

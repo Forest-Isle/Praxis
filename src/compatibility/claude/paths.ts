@@ -45,6 +45,18 @@ export function sanitizeClaudeProjectPath(path: string): string {
   return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${stablePathHash(path).toString(36)}`
 }
 
+export function resolveClaudeScheduledTaskFile(cwd: string): string {
+  const policy = getDataOwnership('scheduled-prompts')
+  if (
+    policy.plane !== 'shared' ||
+    policy.praxisAccess !== 'read-write' ||
+    policy.location !== '.claude/scheduled_tasks.json'
+  ) {
+    throw new Error('Invalid scheduled prompt ownership policy')
+  }
+  return resolve(cwd, '.claude', 'scheduled_tasks.json')
+}
+
 export function resolveClaudePaths({
   cwd,
   sessionId,

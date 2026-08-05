@@ -246,6 +246,9 @@ interface SessionCommands {
   sessions(): Promise<SessionSummary[]>
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
+  nextScheduledPrompt?(
+    signal?: AbortSignal,
+  ): Promise<{ id: string; prompt: string } | null>
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
 }
@@ -434,6 +437,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
       'TaskStop',
       'TaskUpdate',
     ] as const
+    const scheduledToolNames = [
+      'CronCreate',
+      'CronDelete',
+      'CronList',
+      'ScheduleWakeup',
+    ] as const
     const selectedAgentTools = agentToolNames.filter(
       (name) =>
         (cli.tools === undefined ||
@@ -444,6 +453,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const selectedTaskTools = taskToolNames.filter(
       (name) =>
         cli.sessionPersistence &&
+        !cli.bare &&
+        (cli.tools === undefined ||
+          cli.tools.includes('default') ||
+          cli.tools.includes(name)) &&
+        !cli.disallowedTools.includes(name),
+    )
+    const selectedScheduledTools = scheduledToolNames.filter(
+      (name) =>
         !cli.bare &&
         (cli.tools === undefined ||
           cli.tools.includes('default') ||
@@ -471,6 +488,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       (name) =>
         !agentToolNames.includes(name as (typeof agentToolNames)[number]) &&
         !taskToolNames.includes(name as (typeof taskToolNames)[number]) &&
+        !scheduledToolNames.includes(
+          name as (typeof scheduledToolNames)[number],
+        ) &&
         (!cli.bare || (name !== 'WebFetch' && name !== 'WebSearch')),
     )
     const filteredTools = new FilteredToolRegistry(extensionTools, {
@@ -493,6 +513,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       enableSubagents,
       subagentToolNames: routedSubagentTools,
       taskToolNames: selectedTaskRuntimeTools,
+      scheduledToolNames: selectedScheduledTools,
       ...(cli.safeMode || cli.bare
         ? {}
         : { hooks: new ClaudeHookRunner({ settings, cwd }) }),
@@ -518,6 +539,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const toolNames = [
       ...filteredTools.definitions().map((definition) => definition.name),
       ...selectedTaskTools,
+      ...selectedScheduledTools,
       ...(enableSubagents ? selectedAgentTools : []),
     ]
     const runtimeInfo: CliRuntimeInfo = {
@@ -547,7 +569,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
       sessions: () => service.sessions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
-      close: () => mcpTools.close(),
+      nextScheduledPrompt: (signal) => service.nextScheduledPrompt(signal),
+      close: async () => {
+        await service.close()
+        await mcpTools.close()
+      },
       runtimeInfo: () => runtimeInfo,
     }
   } catch (error) {
@@ -564,7 +590,10 @@ const defaultDependencies: CliDependencies = {
   createService: createDefaultService,
   runInteractive: ({ signal }) =>
     renderInteractive({
-      factory: { createService: createDefaultService },
+      factory: {
+        createService: createDefaultService,
+        scheduledPrompts: true,
+      },
       ...(signal ? { signal } : {}),
     }),
   topLevelAgents: new TopLevelAgentManager({

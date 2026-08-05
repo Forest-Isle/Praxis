@@ -2,7 +2,11 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { resolveClaudePaths, sanitizeClaudeProjectPath } from './paths.js'
+import {
+  resolveClaudePaths,
+  resolveClaudeScheduledTaskFile,
+  sanitizeClaudeProjectPath,
+} from './paths.js'
 
 describe('Claude project path compatibility', () => {
   it('uses Claude Code character replacement for ordinary paths', () => {
@@ -46,6 +50,9 @@ describe('Claude project path compatibility', () => {
       '/tmp/claude-config/tasks/bbd2f513-d9b7-4202-a632-32d33205b492',
     )
     expect(paths.praxisRoot).toBe(join('/tmp/claude-config', 'praxis'))
+    expect(resolveClaudeScheduledTaskFile('/tmp/project')).toBe(
+      '/tmp/project/.claude/scheduled_tasks.json',
+    )
   })
 
   it('rejects session identifiers that could escape the project directory', () => {

@@ -26,10 +26,14 @@ interface InteractiveSessionCommands {
   ): Promise<SessionRunResult>
   fork(sessionId: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
+  nextScheduledPrompt?(
+    signal?: AbortSignal,
+  ): Promise<{ id: string; prompt: string } | null>
   close?(): Promise<void>
 }
 
 export interface InteractiveServiceFactory {
+  scheduledPrompts?: boolean
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
@@ -101,6 +105,11 @@ export function InteractiveApp({
   const [history, setHistory] = useState<HistoryLine[]>([])
   const [permission, setPermission] = useState<PendingPermission | null>(null)
   const permissionRef = useRef<PendingPermission | null>(null)
+  const serviceRef = useRef<InteractiveSessionCommands | null>(null)
+  const serviceCreationRef = useRef<
+    Promise<InteractiveSessionCommands> | undefined
+  >(undefined)
+  const scheduledWaitRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (!signal) return
@@ -113,7 +122,14 @@ export function InteractiveApp({
     return () => signal.removeEventListener('abort', cancel)
   }, [exit, signal])
 
-  useEffect(() => () => permissionRef.current?.resolve(false), [])
+  useEffect(
+    () => () => {
+      permissionRef.current?.resolve(false)
+      scheduledWaitRef.current?.abort()
+      void serviceRef.current?.close?.().catch(() => undefined)
+    },
+    [],
+  )
 
   const append = (line: HistoryLine) =>
     setHistory((current) => [...current, line])
@@ -165,23 +181,39 @@ export function InteractiveApp({
   const approveRecovery = (call: ModelToolCall) =>
     requestApproval(call, 'recovery')
 
-  const submit = async (prompt: string) => {
-    setBusy(true)
-    setStatus('assembling-context')
-    setActiveText('')
-    append({ kind: 'user', text: prompt })
-    let service: InteractiveSessionCommands | undefined
-    try {
-      service = await factory.createService({
+  const service = async () => {
+    if (serviceRef.current) return serviceRef.current
+    const pending =
+      serviceCreationRef.current ??
+      factory.createService({
         eventSink: handleEvent,
         requireProvider: true,
         approveRecovery,
         approveTool,
         ...(signal ? { signal } : {}),
       })
+    serviceCreationRef.current = pending
+    try {
+      const created = await pending
+      serviceRef.current = created
+      return created
+    } finally {
+      serviceCreationRef.current = undefined
+    }
+  }
+
+  const submit = async (prompt: string) => {
+    scheduledWaitRef.current?.abort()
+    setBusy(true)
+    setStatus('assembling-context')
+    setActiveText('')
+    append({ kind: 'user', text: prompt })
+    let commands: InteractiveSessionCommands | undefined
+    try {
+      commands = await service()
       const result = sessionId
-        ? await service.resume(sessionId, prompt, signal)
-        : await service.run(prompt, signal)
+        ? await commands.resume(sessionId, prompt, signal)
+        : await commands.run(prompt, signal)
       setSessionId(result.sessionId)
       append({ kind: 'assistant', text: result.text })
       setActiveText('')
@@ -196,9 +228,48 @@ export function InteractiveApp({
       })
       setStatus('failed')
     } finally {
-      try {
-        await service?.close?.()
-      } catch (error) {
+      if (!factory.scheduledPrompts && commands) {
+        try {
+          await commands.close?.()
+        } catch (error) {
+          append({
+            kind: 'warning',
+            text: redactSensitiveText(
+              error instanceof Error ? error.message : String(error),
+              sensitiveValues,
+            ),
+          })
+        } finally {
+          if (serviceRef.current === commands) serviceRef.current = null
+        }
+      }
+      setBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!factory.scheduledPrompts || selectingSession || busy || permission) {
+      return
+    }
+    const controller = new AbortController()
+    scheduledWaitRef.current?.abort()
+    scheduledWaitRef.current = controller
+    const waitSignal = signal
+      ? AbortSignal.any([signal, controller.signal])
+      : controller.signal
+    void service()
+      .then((commands) => commands.nextScheduledPrompt?.(waitSignal) ?? null)
+      .then((scheduled) => {
+        if (!scheduled || waitSignal.aborted) return
+        const turn = submit(scheduled.prompt)
+        onTurnChange?.(turn)
+        void turn.then(
+          () => onTurnChange?.(null),
+          () => onTurnChange?.(null),
+        )
+      })
+      .catch((error: unknown) => {
+        if (waitSignal.aborted) return
         append({
           kind: 'warning',
           text: redactSensitiveText(
@@ -206,11 +277,9 @@ export function InteractiveApp({
             sensitiveValues,
           ),
         })
-      } finally {
-        setBusy(false)
-      }
-    }
-  }
+      })
+    return () => controller.abort()
+  }, [busy, permission, selectingSession, sessionId])
 
   useInput((value, key) => {
     if (key.ctrl && value.toLowerCase() === 'c') {

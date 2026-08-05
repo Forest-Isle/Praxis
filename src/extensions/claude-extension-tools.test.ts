@@ -57,14 +57,19 @@ describe('ClaudeExtensionToolRegistry', () => {
     })
   })
 
-  it('does not expose model-disabled skills', () => {
+  it('excludes model-disabled skills while retaining built-in commands', () => {
     const registry = new ClaudeExtensionToolRegistry(
       baseRegistry(),
       catalog(true),
     )
-    expect(registry.definitions().map((definition) => definition.name)).toEqual(
-      ['Read'],
-    )
+    const definitions = registry.definitions()
+    expect(definitions.map((definition) => definition.name)).toEqual([
+      'Read',
+      'Skill',
+    ])
+    expect(
+      definitions.find(({ name }) => name === 'Skill')?.inputSchema,
+    ).toMatchObject({ properties: { skill: { enum: ['loop'] } } })
   })
 })
 

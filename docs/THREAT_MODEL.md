@@ -29,6 +29,7 @@ Protected assets:
 | Web fetch SSRF or DNS rebinding                | Require HTTPS, reject private/loopback targets, pin requests to validated public DNS results, and revalidate redirects                                    |
 | Fetched-page prompt injection                  | Serialize page text as untrusted JSON data and keep the user request distinct under a higher-priority system instruction                                  |
 | Resource exhaustion                            | Bound model turns, post-redaction output, tool runtime, subprocess tree, and context size                                                                 |
+| Scheduled prompt loss or duplicate             | Validate native state, atomically replace with fingerprint retry, verify PID/start ownership, and consume due jobs once per scheduler service             |
 | Dependency compromise                          | Lockfile, minimal dependencies, CI audit, explicit release review                                                                                         |
 
 ## Explicit assumptions
@@ -42,6 +43,8 @@ Protected assets:
   credential services available to that user.
 - Claude Code does not honor Praxis locks; optimistic checks reduce but cannot
   eliminate a simultaneous append race from an uncooperative process.
+- Claude Code also does not honor the Praxis scheduled-task lease. Physical
+  fingerprint checks narrow but cannot eliminate the final check/replace race.
 - A process already running as the user can alter shared files and sidecars.
   Sidecars therefore provide coordination, not an authorization boundary.
 - Enterprise managed-policy enforcement and multi-user isolation are outside
@@ -84,3 +87,7 @@ Protected assets:
   dispatch exclusively, authenticate local attach/stop requests, verify worker
   PID records before signaling, bound wire lines and recent output, repair dead
   workers without process takeover, and remove terminal PID/socket/token data.
+- validate eight-hex scheduled IDs and five-field cron, preserve unknown native
+  fields, fail closed on corrupt state, retry changed-file mutations, compare
+  PID plus process start before takeover, deliver once, and clear waiters on
+  interactive teardown.

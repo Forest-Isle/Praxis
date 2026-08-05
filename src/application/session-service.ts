@@ -11,6 +11,7 @@ import {
 import {
   isClaudeSessionId,
   resolveClaudePaths,
+  resolveClaudeScheduledTaskFile,
 } from '../compatibility/claude/paths.js'
 import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
 import {
@@ -60,6 +61,8 @@ import {
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
 import { ModelCompactor } from './model-compactor.js'
 import { ClaudeSubagentExecutor } from './subagent-service.js'
+import { ScheduledPromptManager } from './scheduled-prompt-manager.js'
+import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
 
 export interface ClaudeSessionServiceOptions {
@@ -83,6 +86,7 @@ export interface ClaudeSessionServiceOptions {
   enableSubagents?: boolean
   subagentToolNames?: readonly string[]
   taskToolNames?: readonly string[]
+  scheduledToolNames?: readonly string[]
   providerForModel?: (model: string) => ModelProvider
   sessionPersistence?: boolean
   sessionKind?: 'bg'
@@ -120,6 +124,7 @@ export interface ForkResult {
 export class ClaudeSessionService {
   private readonly schema
   private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
+  private readonly scheduledPrompts: ScheduledPromptManager | null
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
     if (
@@ -129,6 +134,26 @@ export class ClaudeSessionService {
       throw new Error('Subagents require session persistence')
     }
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
+    this.scheduledPrompts =
+      options.tools && (options.scheduledToolNames?.length ?? 0) > 0
+        ? new ScheduledPromptManager({
+            filePath: resolveClaudeScheduledTaskFile(options.cwd),
+            lockFile: join(
+              options.configRoot,
+              'praxis',
+              'locks',
+              'scheduled-tasks.lock',
+            ),
+          })
+        : null
+  }
+
+  nextScheduledPrompt(signal?: AbortSignal) {
+    return this.scheduledPrompts?.next(signal) ?? Promise.resolve(null)
+  }
+
+  async close(): Promise<void> {
+    this.scheduledPrompts?.close()
   }
 
   async run(
@@ -401,7 +426,20 @@ export class ClaudeSessionService {
                 : {}),
             })
           : null
-      const baseTools = taskTools ?? this.options.tools
+      const scheduledTools =
+        this.scheduledPrompts &&
+        this.options.tools &&
+        (this.options.scheduledToolNames?.length ?? 0) > 0
+          ? new ClaudeScheduledToolRegistry({
+              base: taskTools ?? this.options.tools,
+              manager: this.scheduledPrompts,
+              sessionId,
+              ...(this.options.scheduledToolNames
+                ? { enabledTools: this.options.scheduledToolNames }
+                : {}),
+            })
+          : null
+      const baseTools = scheduledTools ?? taskTools ?? this.options.tools
       const subagentExecutor =
         this.options.enableSubagents && baseTools && this.options.permissions
           ? new ClaudeSubagentExecutor({
@@ -926,7 +964,10 @@ export class ClaudeSessionService {
               ...projectClaudeModelMessages(snapshot.entries),
             ]
           },
-          ...(this.options.hooks || subagentExecutor || taskTools
+          ...(this.options.hooks ||
+          subagentExecutor ||
+          taskTools ||
+          this.scheduledPrompts
             ? {
                 onStop: async (text: string) => {
                   const messages: string[] = []
@@ -951,6 +992,10 @@ export class ClaudeSessionService {
                   if (background) messages.push(...background.messages)
                   const bashMessages = await taskTools?.notifications(true)
                   if (bashMessages) messages.push(...bashMessages)
+                  const scheduled = await this.scheduledPrompts?.drainDue()
+                  if (scheduled) {
+                    messages.push(...scheduled.map(({ prompt }) => prompt))
+                  }
                   return {
                     messages,
                     ...(background ? { usage: background.usage } : {}),

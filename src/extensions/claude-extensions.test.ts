@@ -56,7 +56,9 @@ describe('ClaudeExtensionCatalog', () => {
     expect(catalog.expandPrompt('/check').userMessages.at(-1)).toContain(
       'PROJECT',
     )
-    expect(catalog.modelInvocableSkills()).toEqual([])
+    expect(catalog.modelInvocableSkills().map(({ name }) => name)).toEqual([
+      'loop',
+    ])
   })
 
   it('keeps unknown slash prompts unchanged and resolves agents', () => {
@@ -117,6 +119,7 @@ describe('ClaudeExtensionCatalog', () => {
       'SKILL',
     )
     expect(catalog.modelInvocableSkills().map((item) => item.name)).toEqual([
+      'loop',
       'probe',
       'broken',
       'invalid-description',
@@ -131,6 +134,21 @@ describe('ClaudeExtensionCatalog', () => {
     expect(catalog.expandPrompt('/invalid-flag').userMessages.at(-1)).toContain(
       'INVALID_FLAG',
     )
+  })
+
+  it('expands the built-in loop command without shared files', () => {
+    const catalog = new ClaudeExtensionCatalog({
+      agents: [],
+      commands: [],
+      skills: [],
+    })
+
+    const expanded = catalog.expandPrompt('/loop 5m check build').userMessages
+    expect(expanded[0]).toBe(
+      '<command-message>loop</command-message>\n<command-name>/loop</command-name>\n<command-args>5m check build</command-args>',
+    )
+    expect(expanded[1]).toContain('Input:\n5m check build')
+    expect(catalog.skill('loop')?.kind).toBe('command')
   })
 
   it('uses namespaced command paths, ignores command name metadata, and omits empty args', () => {

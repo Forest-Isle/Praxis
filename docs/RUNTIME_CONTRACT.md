@@ -10,6 +10,7 @@ keeping the domain provider-neutral and single-user.
 
 ```text
 idle
+  -> scheduled-prompt -> assembling-context ...
   -> assembling-context
   -> compacting -> awaiting-model ...
   -> awaiting-model
@@ -62,6 +63,11 @@ Rules:
     provider advertises image input. Unsupported providers receive an explicit
     error result; Praxis never persists an image the next model turn cannot
     consume. Native image writes require exact message/metadata pairing.
+14. Session-only scheduled prompts live for one interactive service. Durable
+    prompts preserve Claude's project-local document, avoid a live foreign
+    process owner, and enter the ordinary prompt/runtime path only once while
+    the UI is idle. Closing the service cancels waiters and clears in-memory
+    jobs; it does not delete durable jobs.
 
 ## Core ports
 
@@ -142,11 +148,12 @@ Included:
   skills, commands, agents, hooks, and MCP compatible subset;
 - text and structured JSON output;
 - top-level persistent background sessions, durable task graphs, and
-  foreground/background Bash lifecycle.
+  foreground/background Bash lifecycle;
+- session-only and shared durable Cron prompts plus fixed-interval `/loop`.
 
 Deferred:
 
-- scheduled Cron/Monitor/Workflow orchestration;
+- active dynamic `ScheduleWakeup` and Workflow orchestration;
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
 - transcript migration across unsupported Claude versions;

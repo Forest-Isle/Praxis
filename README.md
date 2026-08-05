@@ -10,8 +10,9 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 21 top-level background sessions and agent management is complete on top
-of durable tasks, background Bash, WebFetch/WebSearch, MCP resource tools,
+Stage 22 scheduled prompts is complete on top of Sprint 21 top-level background
+sessions and agent management, durable tasks, background Bash,
+WebFetch/WebSearch, MCP resource tools,
 native file globbing, notebook editing, CLI customization and session
 controls, print and machine-I/O support, image tool results, native foreground
 and background subagents, resilient sessions, native full-history forks, child-process
@@ -71,6 +72,17 @@ owner-authenticated local control socket. Job state follows Claude's local
 `jobs/` and `sessions/` layout while Praxis-only dispatch ownership prevents
 cross-runtime process takeover. Background user/assistant entries carry native
 `sessionKind: "bg"` metadata, and either CLI can resume the shared transcript.
+`CronCreate`, `CronList`, and `CronDelete` expose Claude Code 2.1.208-compatible
+schemas and results for session-only and durable prompts. Durable jobs share
+`<cwd>/.claude/scheduled_tasks.json`, preserve unknown native fields, use atomic
+optimistic mutations, avoid live foreign process owners, catch up missed
+one-shot jobs, and expire recurring jobs after a final seven-day execution. The
+interactive CLI keeps one service alive, submits due prompts while idle, and
+releases timers on exit. Built-in `/loop` expands fixed intervals through
+`CronCreate` and executes the prompt immediately once. `ScheduleWakeup` matches
+the observed inactive dynamic gate and stop result; active dynamic wakeups and
+the separate resumable `Workflow` engine remain Stage 23 work. Claude Code
+2.1.208 exposes no standalone `Monitor` tool.
 Forks preserve the complete supported main-chain native history, including
 tool calls/results, compact boundaries/summaries, attachments, agent settings,
 titles, images, errors, and interrupted-tool denial records. Existing UUIDs,
@@ -172,6 +184,7 @@ later messages. Activated nested-memory rules remain active across compaction.
   same-ID messaging, completion notification, and native sidechains
 - Shared durable task graph plus foreground/background Bash lifecycle
 - Persistent top-level background sessions plus agents/logs/attach/stop controls
+- Session-only and shared durable scheduled prompts plus fixed-interval `/loop`
 
 ## Claude Code interoperability
 
@@ -273,6 +286,7 @@ probe uses a local provider fixture:
 npm run test:compat
 npm run test:background-agent-compat
 npm run test:task-compat
+npm run test:scheduled-compat
 npm run test:top-level-agent-compat
 npm run test:cli-controls-compat
 npm run test:compaction-compat

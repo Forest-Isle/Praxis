@@ -21,6 +21,41 @@ export interface ClaudePromptExpansion {
   userMessages: readonly string[]
 }
 
+const BUILTIN_LOOP: ClaudeExtensionDefinition = {
+  path: '/__praxis_builtin__/commands/loop.md',
+  scope: 'user',
+  content: '',
+  kind: 'command',
+  name: 'loop',
+  description:
+    'Run a prompt or slash command on a recurring interval; defaults to 10 minutes.',
+  modelInvocable: true,
+  body: `# /loop — schedule a recurring prompt
+
+Parse the input into an optional interval followed by a prompt, then schedule it with CronCreate.
+
+Parsing order:
+1. A leading token matching ^\\d+[smhd]$ is the interval; the remainder is the prompt.
+2. Otherwise, a trailing "every <N><unit>" or "every <N> <unit-word>" clause is the interval when it is a valid time expression.
+3. Otherwise, use 10m and keep the complete input as the prompt.
+
+If the resulting prompt is empty, show usage /loop [interval] <prompt> and do not call CronCreate.
+
+Convert intervals to five-field cron:
+- Ns: ceil(N/60) minutes, minimum one minute.
+- Nm up to 59: */N * * * *.
+- Nm of 60 or more: 0 */H * * *, rounded to a clean hour divisor.
+- Nh up to 23: 0 */N * * * *.
+- Nd: 0 0 */N * *.
+
+If an interval cannot be represented evenly, choose the nearest clean interval and tell the user what was rounded.
+
+Call CronCreate with the derived cron, the parsed prompt verbatim, and recurring true. Confirm the prompt, cron, human cadence, seven-day auto-expiration, CronDelete cancellation, and job ID. Then immediately execute the parsed prompt once; invoke slash commands through Skill and otherwise act on the prompt directly.
+
+Input:
+$ARGUMENTS`,
+}
+
 function parseFrontmatter(resource: ClaudeTextResource): {
   metadata: Record<string, unknown>
   body: string
@@ -136,7 +171,10 @@ export class ClaudeExtensionCatalog {
   constructor(
     resources: Pick<ClaudeSharedResources, 'agents' | 'commands' | 'skills'>,
   ) {
-    this.commands = indexed('command', resources.commands)
+    this.commands = new Map([['loop', BUILTIN_LOOP]])
+    for (const [name, command] of indexed('command', resources.commands)) {
+      this.commands.set(name, command)
+    }
     this.skills = indexed('skill', resources.skills)
     this.agents = indexed('agent', resources.agents)
   }

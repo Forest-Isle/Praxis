@@ -79,17 +79,20 @@ Evidence levels:
 
 ## Tool surface
 
-| Capability                        | Status   | Evidence / remaining work                                                                                             |
-| --------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
-| Read / Write / Edit / Grep / Bash | Complete | Path, symlink, bounds, permissions, persistence gates                                                                 |
-| Skill / Agent / MCP tools         | Complete | Provider-neutral registries, foreground/background sidechains, and native persistence                                 |
-| Glob                              | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                                            |
-| WebFetch / WebSearch              | Partial  | Live schemas/search/errors/resume; real Praxis public fetch; Claude public-success oracle needs domain-safety service |
-| NotebookEdit                      | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                                         |
-| Worktree enter/exit               | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`                                                                     |
-| TaskCreate/Get/List/Update        | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate      |
-| Cron/Monitor/Workflow             | Missing  | Durable scheduling and process lifecycle                                                                              |
-| MCP resource tools                | Complete | Conditional schemas, paginated list, text/blob read, directory stub, status, persistence, live resume                 |
+| Capability                         | Status   | Evidence / remaining work                                                                                             |
+| ---------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
+| Read / Write / Edit / Grep / Bash  | Complete | Path, symlink, bounds, permissions, persistence gates                                                                 |
+| Skill / Agent / MCP tools          | Complete | Provider-neutral registries, foreground/background sidechains, and native persistence                                 |
+| Glob                               | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                                            |
+| WebFetch / WebSearch               | Partial  | Live schemas/search/errors/resume; real Praxis public fetch; Claude public-success oracle needs domain-safety service |
+| NotebookEdit                       | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                                         |
+| Worktree enter/exit                | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`                                                                     |
+| TaskCreate/Get/List/Update         | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate      |
+| CronCreate/List/Delete and `/loop` | Complete | Session/durable jobs, shared native file, idle delivery, expiry, and live bidirectional gate                          |
+| ScheduleWakeup                     | Partial  | Inactive dynamic gate and stop result match 2.1.208; active dynamic wakeup runtime missing                            |
+| Monitor                            | N/A      | Claude Code 2.1.208 exposes no standalone Monitor tool                                                                |
+| Workflow                           | Missing  | Separate resumable multi-agent scripts/runs/journals/task engine                                                      |
+| MCP resource tools                 | Complete | Conditional schemas, paginated list, text/blob read, directory stub, status, persistence, live resume                 |
 
 ## Management commands
 
@@ -108,7 +111,7 @@ Evidence levels:
 
 1. Complete a live successful Claude WebFetch oracle with its domain-safety
    service available.
-2. Cron, monitor, and workflow scheduling.
+2. Workflow engine and active dynamic `ScheduleWakeup` orchestration.
 3. Worktree/tmux invocation, picker naming, ephemeral subagents,
    and permission `auto` classifier.
 4. Plugin runtime and management.

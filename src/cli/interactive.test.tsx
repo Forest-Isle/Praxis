@@ -75,6 +75,69 @@ describe('InteractiveApp', () => {
     expect(closed).toBe(2)
   })
 
+  it('keeps one service alive and submits scheduled prompts while idle', async () => {
+    const calls: string[] = []
+    let created = 0
+    let waits = 0
+    const factory: InteractiveServiceFactory = {
+      scheduledPrompts: true,
+      async createService() {
+        created += 1
+        return {
+          async run(prompt) {
+            calls.push(`run:${prompt}`)
+            return {
+              sessionId: 'scheduled-session',
+              text: 'scheduled answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume(sessionId, prompt) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            return {
+              sessionId,
+              text: 'manual answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async nextScheduledPrompt(signal) {
+            waits += 1
+            if (waits === 1) return { id: 'abc12345', prompt: 'cron prompt' }
+            return new Promise((resolve) =>
+              signal?.addEventListener('abort', () => resolve(null), {
+                once: true,
+              }),
+            )
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    await flush()
+    await flush()
+    expect(app.lastFrame()).toContain('scheduled answer')
+
+    app.stdin.write('manual prompt')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(calls).toEqual([
+      'run:cron prompt',
+      'resume:scheduled-session:manual prompt',
+    ])
+    expect(created).toBe(1)
+  })
+
   it('redacts ambient credentials from interactive diagnostics', async () => {
     const secret = `interactive-diagnostic-secret-${'x'.repeat(200)}-canary`
     const variable = 'PRAXIS_TEST_API_KEY'

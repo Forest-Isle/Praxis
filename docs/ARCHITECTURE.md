@@ -56,8 +56,9 @@ application boundary. `StreamJsonOutput` projects provider-neutral
 `RuntimeEvent` values into init, assistant, tool-result, partial, and terminal
 result records; it never changes session state. Incremental stream input accepts
 bounded UTF-8 JSONL user text records. One headless invocation owns one service
-and MCP connection set across all streamed turns, then closes it exactly once;
-interactive submissions own and close their service independently. Unknown
+and MCP connection set across all streamed turns, then closes it exactly once.
+The interactive TUI keeps one service for its mounted lifetime so session-only
+scheduled prompts survive between turns, then closes it exactly once. Unknown
 provider cost and API-only duration values stay `null` until provider ports
 expose verified metering.
 
@@ -110,7 +111,8 @@ Praxis defaults to the same configuration root as Claude Code:
 - `CLAUDE.md`, `.claude/CLAUDE.md`, and `.claude/rules` instructions;
 - global and project skills, commands, and agent definitions;
 - auto memory under the Claude project memory directory;
-- compatible settings, hooks, and MCP configuration.
+- compatible settings, hooks, and MCP configuration;
+- project-local scheduled prompts in `.claude/scheduled_tasks.json`.
 
 Praxis-only indexes, provider payloads, and locks are non-authoritative
 sidecars under `<claude-config>/praxis/`. They must never be required to resume
@@ -162,6 +164,16 @@ output log. The worker keeps its session runtime alive after a completed turn,
 marks `sessions/<pid>.json` idle, and accepts serialized follow-up prompts over
 an authenticated local Unix socket. Job controls are operational state only;
 all resumable conversation content stays in shared project JSONL.
+
+`ScheduledPromptManager` owns session-only jobs in memory and durable jobs in
+the shared project-local `scheduled_tasks.json`. `ClaudeScheduledTaskStore`
+preserves Claude fields, serializes Praxis writers with a sidecar lease, and
+retries atomic replacement when the physical native file changes. The manager
+uses PID plus process-start identity to avoid stealing a live foreign job,
+catches up expired one-shot tasks, bounds deterministic jitter, and queues due
+prompts for the idle interactive runtime. Fixed `/loop` expansion remains an
+extension command; active dynamic wakeups and Workflow orchestration stay
+outside this component.
 
 Starting a caller-selected session ID reserves its transcript with exclusive
 creation while holding the Praxis lease. Any existing path, including an empty

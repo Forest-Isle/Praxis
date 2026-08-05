@@ -42,6 +42,7 @@
     "test:subagent-compat": "npm run build && node scripts/verify-subagent-compatibility.mjs",
     "test:background-agent-compat": "npm run build && node scripts/verify-background-agent-compatibility.mjs",
     "test:task-compat": "npm run build && node scripts/verify-task-compatibility.mjs",
+    "test:scheduled-compat": "npm run build && node scripts/verify-scheduled-tools-compatibility.mjs",
     "test:top-level-agent-compat": "npm run build && node scripts/verify-top-level-agent-compatibility.mjs",
     "test:web-compat": "npm run build && node scripts/verify-web-compatibility.mjs",
     "typecheck": "tsc --noEmit"
@@ -51,6 +52,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "cron-parser": "^5.7.0",
     "ink": "^7.1.1",
     "ipaddr.js": "^2.2.0",
     "minimatch": "^10.2.6",

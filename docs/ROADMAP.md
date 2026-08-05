@@ -359,7 +359,8 @@ by one Praxis invocation.
 - [x] bounded redacted Claude-path output with Read-only external access
 - [x] live Praxis -> Claude -> Praxis graph and background lifecycle gate
 
-Cron/Monitor/Workflow and native worktree/tmux lifecycle remain later stages.
+Scheduled prompts land in Stage 22. Workflow and native worktree/tmux lifecycle
+remain later stages; Claude Code 2.1.208 has no standalone Monitor tool.
 
 ## Sprint 21 — top-level background sessions
 
@@ -375,4 +376,22 @@ Status: complete for single-user local persistent sessions.
       repair, startup-stop race handling, and terminal control cleanup
 - [x] native background transcript metadata and live Claude <-> Praxis resume
 
-Cron/Monitor/Workflow and native worktree/tmux lifecycle remain later stages.
+Workflow and native worktree/tmux lifecycle remain later stages.
+
+## Stage 22 — scheduled prompts and fixed loops
+
+Status: complete for Claude Code 2.1.208 fixed scheduling behavior.
+
+- [x] exact `CronCreate`, `CronDelete`, `CronList`, and `ScheduleWakeup` schemas
+- [x] session-only jobs plus shared `.claude/scheduled_tasks.json` durable jobs
+- [x] eight-hex IDs, native metadata, unknown-field preservation, atomic retry,
+      and live PID/process-start ownership
+- [x] local five-field cron, bounded deterministic jitter, missed one-shot
+      catch-up, auto-delete, and recurring seven-day final execution
+- [x] one interactive service lifecycle with idle prompt submission and cleanup
+- [x] built-in fixed-interval `/loop` expansion plus immediate first execution
+- [x] live Praxis -> Claude -> Praxis state and bidirectional resume gate
+
+`ScheduleWakeup` matches the observed inactive dynamic gate and stop behavior.
+Active dynamic wakeups and the separate resumable multi-agent `Workflow` engine
+move to Stage 23. No standalone Monitor tool exists in Claude Code 2.1.208.

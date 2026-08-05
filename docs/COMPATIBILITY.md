@@ -34,6 +34,7 @@ Praxis follows the active Claude Code layout and path derivation for:
 | Agent definitions    | `<config>/agents/`, `.claude/agents/`                                           |
 | Settings and hooks   | User settings plus project/local `.claude/settings*.json` at original cwd       |
 | Project MCP          | Boundary-to-cwd `.mcp.json` sources                                             |
+| Scheduled prompts    | `<cwd>/.claude/scheduled_tasks.json`                                            |
 
 Praxis must reuse Claude Code's canonical project-path sanitization. A similar
 but independently invented directory name is not compatible.
@@ -304,6 +305,16 @@ alone, so Praxis never fabricates or takes over Claude daemon sockets. Shared
 project JSONL remains authoritative and carries native `sessionKind: "bg"`,
 `userType: "external"`, and `entrypoint: "cli"` on background messages.
 
+Scheduled prompts use Claude's observed project-local document with eight-hex
+IDs, five-field local-time cron, creation session/PID/start metadata, and no
+Praxis-private fields. Unknown document and task fields survive mutation.
+Session-only jobs never touch disk; durable mutations use a Praxis lease plus
+physical fingerprint retry because Claude does not honor that lease. A live
+foreign PID is skipped only when its observed process start also matches,
+preventing PID reuse from orphaning a task. Interactive delivery is once-only
+within one scheduler service, missed durable one-shots catch up and auto-delete,
+and recurring jobs execute once more at seven-day expiry before deletion.
+
 Fork uses a separate versioned creation profile because it copies existing
 native records rather than appending newly generated records. For Claude Code
 2.1.208 it losslessly copies supported main-chain `user`, `assistant`, `system`,
@@ -340,6 +351,7 @@ remain explicitly rejected by the append adapter.
 | Durable task graph                     | Shared         | Read/write                                |
 | Background transcript                  | Shared         | Append/resume                             |
 | Background job control                 | Owner-scoped   | Praxis jobs only                          |
+| Scheduled prompts                      | Shared         | Read/write                                |
 | Provider payloads, indexes, locks      | Praxis sidecar | Read/write                                |
 
 This matrix is also encoded in `src/compatibility/claude/ownership.ts`; runtime
@@ -395,6 +407,11 @@ ID collision, and persist an XML-safe completion notification.
 contract, drives a real detached Praxis worker through logs, attach, and stop,
 validates native job/session layout and background transcript metadata, then
 proves Claude -> Praxis and Praxis -> Claude resume.
+`npm run test:scheduled-compat` compares `CronCreate`, `CronDelete`, `CronList`,
+and `ScheduleWakeup` schemas, proves Praxis-created native jobs are visible and
+deletable after Claude resume, proves Claude-created jobs survive Praxis resume,
+and verifies the inactive dynamic-wakeup gate. Active dynamic wakeups and the
+separate Workflow engine are not claimed by this gate.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork
