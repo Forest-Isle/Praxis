@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -154,6 +154,30 @@ process.stdin.on('data', chunk => {
           { cwd: root },
         ),
       ).resolves.toEqual({ content: 'HTTP', isError: false })
+      await expect(
+        registry.execute(
+          {
+            id: 'list-tools-only',
+            name: 'ListMcpResourcesTool',
+            input: { server: 'stdio' },
+          },
+          { cwd: root },
+        ),
+      ).resolves.toEqual({
+        content:
+          'No resources found. MCP servers may still provide tools even if they have no resources.',
+        isError: false,
+      })
+      await expect(
+        registry.execute(
+          {
+            id: 'read-tools-only',
+            name: 'ReadMcpResourceTool',
+            input: { server: 'stdio', uri: 'fixture://alpha' },
+          },
+          { cwd: root },
+        ),
+      ).rejects.toThrow('Server "stdio" does not support resources')
     } finally {
       await registry.close()
       await new Promise<void>((resolve, reject) =>
@@ -200,6 +224,19 @@ process.stdin.on('data', chunk => {
     )
     expect(JSON.stringify(warning.mock.calls)).toContain('[REDACTED]')
     expect(JSON.stringify(warning.mock.calls)).not.toContain(secret)
+    expect(registry.serverStatuses()).toEqual([
+      { name: 'fixture', status: 'failed' },
+    ])
+    await expect(
+      registry.execute(
+        {
+          id: 'failed-resource',
+          name: 'ReadMcpResourceTool',
+          input: { server: 'fixture', uri: 'fixture://alpha' },
+        },
+        { cwd: '/tmp' },
+      ),
+    ).rejects.toThrow('Server "fixture" is not connected')
     await registry.close()
   })
 
@@ -378,6 +415,217 @@ process.stdin.on('data', chunk => {
       await new Promise<void>((resolve, reject) =>
         http.close((error) => (error ? reject(error) : resolve())),
       )
+    }
+  })
+
+  it('discovers, lists, and reads paginated MCP resources', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-resources-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'resource-server.mjs')
+    const resultDirectory = join(root, 'session', 'tool-results')
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    if (request.method === 'resources/read' && request.params.uri === 'fixture://missing') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32002, message: 'missing' } }) + '\\n')
+      continue
+    }
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { resources: {} }, serverInfo: { name: 'resource-fixture', version: '1' } }
+      : request.method === 'resources/list'
+        ? process.argv[2] === 'empty'
+          ? { resources: [] }
+          : request.params?.cursor === 'next'
+            ? { resources: [{ uri: 'fixture://second', name: 'Second' }] }
+            : { resources: [{ uri: 'fixture://alpha', name: 'Alpha', description: 'Alpha resource', mimeType: 'text/plain', size: 17 }], nextCursor: 'next' }
+        : request.params.uri === 'fixture://blob'
+          ? { contents: [{ uri: request.params.uri, mimeType: 'application/octet-stream', blob: 'AQID' }] }
+          : request.params.uri === 'fixture://invalid'
+            ? { contents: [{ uri: request.params.uri, blob: 'not-base64' }] }
+            : { contents: [{ uri: request.params.uri, mimeType: 'text/plain', text: 'RESOURCE_CONTENT', _meta: { private: true } }], _meta: { private: true } }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/mcp.json',
+          scope: 'project',
+          value: {
+            mcpServers: {
+              fixture: { command: process.execPath, args: [serverScript] },
+              empty: {
+                command: process.execPath,
+                args: [serverScript, 'empty'],
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    try {
+      expect(registry.serverStatuses()).toEqual([
+        { name: 'fixture', status: 'connected' },
+        { name: 'empty', status: 'connected' },
+      ])
+      expect(registry.definitions().map((tool) => tool.name)).toEqual([
+        'Read',
+        'ListMcpResourcesTool',
+        'ReadMcpResourceDirTool',
+        'ReadMcpResourceTool',
+      ])
+      const list = await registry.execute(
+        { id: 'list', name: 'ListMcpResourcesTool', input: {} },
+        { cwd: root },
+      )
+      expect(JSON.parse(list.content)).toEqual([
+        {
+          uri: 'fixture://alpha',
+          name: 'Alpha',
+          description: 'Alpha resource',
+          mimeType: 'text/plain',
+          size: 17,
+          server: 'fixture',
+        },
+        { uri: 'fixture://second', name: 'Second', server: 'fixture' },
+      ])
+      await expect(
+        registry.execute(
+          {
+            id: 'empty-server',
+            name: 'ListMcpResourcesTool',
+            input: { server: 'empty' },
+          },
+          { cwd: root },
+        ),
+      ).resolves.toEqual({
+        content:
+          'No resources found. MCP servers may still provide tools even if they have no resources.',
+        isError: false,
+      })
+      await expect(
+        registry.execute(
+          {
+            id: 'missing-server',
+            name: 'ListMcpResourcesTool',
+            input: { server: 'missing' },
+          },
+          { cwd: root },
+        ),
+      ).rejects.toThrow(
+        'Server "missing" not found. Available servers: fixture, empty',
+      )
+      await expect(
+        registry.execute(
+          {
+            id: 'read',
+            name: 'ReadMcpResourceTool',
+            input: { server: 'fixture', uri: 'fixture://alpha' },
+          },
+          { cwd: root },
+        ),
+      ).resolves.toEqual({
+        content:
+          '{"contents":[{"uri":"fixture://alpha","mimeType":"text/plain","text":"RESOURCE_CONTENT"}]}',
+        isError: false,
+      })
+      await expect(
+        registry.execute(
+          {
+            id: 'directory',
+            name: 'ReadMcpResourceDirTool',
+            input: { server: 'fixture', uri: 'fixture://directory' },
+          },
+          { cwd: root },
+        ),
+      ).resolves.toEqual({
+        content: 'Directory listing is not enabled in this build.',
+        isError: false,
+      })
+      await expect(
+        registry.execute(
+          {
+            id: 'missing-directory-server',
+            name: 'ReadMcpResourceDirTool',
+            input: { server: 'missing', uri: 'fixture://directory' },
+          },
+          { cwd: root },
+        ),
+      ).rejects.toThrow(
+        'Server "missing" not found. Available servers: fixture, empty',
+      )
+      const blob = await registry.execute(
+        {
+          id: 'blob',
+          name: 'ReadMcpResourceTool',
+          input: { server: 'fixture', uri: 'fixture://blob' },
+        },
+        { cwd: root, toolResultDirectory: resultDirectory },
+      )
+      const blobContent = JSON.parse(blob.content).contents[0]
+      expect(blobContent).toMatchObject({
+        uri: 'fixture://blob',
+        mimeType: 'application/octet-stream',
+      })
+      expect(blobContent.blobSavedTo).toMatch(
+        /tool-results\/mcp-resource-\d+-0-[a-f0-9]{6}\.bin$/,
+      )
+      expect(await readFile(blobContent.blobSavedTo)).toEqual(
+        Buffer.from([1, 2, 3]),
+      )
+      await expect(
+        registry.execute(
+          {
+            id: 'blob-without-directory',
+            name: 'ReadMcpResourceTool',
+            input: { server: 'fixture', uri: 'fixture://blob' },
+          },
+          { cwd: root },
+        ),
+      ).rejects.toThrow('MCP binary resource output directory is unavailable')
+      await expect(
+        registry.execute(
+          {
+            id: 'invalid-blob',
+            name: 'ReadMcpResourceTool',
+            input: { server: 'fixture', uri: 'fixture://invalid' },
+          },
+          { cwd: root, toolResultDirectory: resultDirectory },
+        ),
+      ).rejects.toThrow('Invalid Base64 string')
+      await expect(
+        registry.execute(
+          {
+            id: 'missing-resource',
+            name: 'ReadMcpResourceTool',
+            input: { server: 'fixture', uri: 'fixture://missing' },
+          },
+          { cwd: root },
+        ),
+      ).resolves.toEqual({
+        content:
+          'Resource not found: fixture://missing — it may have been deleted or the URI is stale. Re-run ListMcpResourcesTool to refresh.',
+        isError: false,
+      })
+    } finally {
+      await registry.close()
     }
   })
 })

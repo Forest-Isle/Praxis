@@ -194,6 +194,17 @@ at 100 entries with the native count suffix. Search roots may be the workspace
 or configured additional directories; unlike Claude 2.1.208's explicit
 symlink-root behavior, Praxis canonicalizes roots and rejects symlink escape.
 
+MCP resource tools are exposed only when a connected server advertises the
+resource capability. `ListMcpResourcesTool` caches every bounded discovery page
+and appends the originating server to each resource; `ReadMcpResourceTool`
+serializes Claude-visible URI, MIME, and text fields while stripping MCP result
+metadata, and maps the 2.1.208 not-found response.
+Binary resource contents are decoded with a size bound and exclusively written
+under `<project>/<session-id>/tool-results`, including no-persistence runs,
+without writing raw base64 to the transcript. `ReadMcpResourceDirTool` retains
+2.1.208's current fixed disabled response. Resource-only servers appear as
+connected in stream init status, and all clients close with the CLI lifecycle.
+
 ## Version compatibility
 
 Claude Code's local format is an implementation contract and can change.

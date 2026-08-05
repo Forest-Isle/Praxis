@@ -415,22 +415,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...filteredTools.definitions().map((definition) => definition.name),
       ...(enableSubagents ? ['Agent'] : []),
     ]
-    const mcpServerNames = [
-      ...new Set(
-        toolNames
-          .filter((name) => name.startsWith('mcp__'))
-          .map((name) => name.split('__')[1])
-          .filter((name): name is string => Boolean(name)),
-      ),
-    ]
     const runtimeInfo: CliRuntimeInfo = {
       cwd,
       model: provider.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
       tools: toolNames,
-      mcpServers: mcpServerNames.map((name) => ({
-        name,
-        status: 'connected',
-      })),
+      mcpServers: mcpTools.serverStatuses(),
       permissionMode: cli.dangerouslySkipPermissions
         ? 'bypassPermissions'
         : cli.permissionMode,

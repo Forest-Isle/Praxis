@@ -41,6 +41,9 @@ const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   Edit: 'ask',
   NotebookEdit: 'ask',
   Glob: 'allow',
+  ListMcpResourcesTool: 'allow',
+  ReadMcpResourceDirTool: 'allow',
+  ReadMcpResourceTool: 'allow',
   Bash: 'ask',
 }
 

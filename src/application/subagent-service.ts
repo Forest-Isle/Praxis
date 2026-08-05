@@ -227,6 +227,7 @@ export class ClaudeSubagentExecutor {
         spawnDepth,
         promptId,
         transcriptPath: sidechainPaths.transcriptFile,
+        toolResultDirectory: join(paths.projectRoot, sessionId, 'tool-results'),
         ...(context.signal ? { signal: context.signal } : {}),
       }),
     )
@@ -261,6 +262,7 @@ export class ClaudeSubagentExecutor {
     spawnDepth: number
     promptId: string
     transcriptPath: string
+    toolResultDirectory: string
     signal?: AbortSignal
   }): Promise<{
     text: string
@@ -472,6 +474,7 @@ export class ClaudeSubagentExecutor {
             { role: 'user', content: options.input.prompt },
           ],
           cwd: this.options.cwd,
+          toolResultDirectory: options.toolResultDirectory,
           observer,
           ...(this.options.approveTool
             ? { approveTool: this.options.approveTool }

@@ -81,6 +81,15 @@ describe('ClaudePermissionResolver', () => {
       ),
     ).resolves.toEqual({ behavior: 'allow' })
     await expect(
+      new ClaudePermissionResolver({ cwd: '/workspace', settings: [] }).resolve(
+        {
+          id: 'resource',
+          name: 'ReadMcpResourceTool',
+          input: { server: 'fixture', uri: 'fixture://alpha' },
+        },
+      ),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
       new ClaudePermissionResolver({
         cwd: '/workspace',
         settings: [],

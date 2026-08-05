@@ -159,6 +159,12 @@ Claude Code 2.1.208, it does not append stdout or stderr to the transcript.
 project-local Claude MCP sources. It delegates protocol behavior to the
 official MCP SDK, maps discovered tools to Claude's `mcp__server__tool` names,
 and wraps local tools without changing the provider-neutral runtime port.
+Capability-aware discovery keeps resource-only servers connected, caches
+bounded paginated resource listings, and exposes Claude's three resource tool
+schemas only while at least one resource-capable server is live. Text reads are
+serialized into ordinary tool results; binary reads use the session-scoped
+`tool-results` directory passed through `ToolExecutionContext` and never embed
+the raw blob in provider or transcript content.
 Stdio and HTTP clients are connected before model execution and closed after
 the run or resume turn completes. Stdio transports inherit sanitized ambient
 runtime variables, then apply server-local `env` as an explicit grant.

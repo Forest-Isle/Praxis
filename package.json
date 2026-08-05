@@ -30,6 +30,7 @@
     "test:hook-compat": "npm run build && node scripts/verify-hook-compatibility.mjs",
     "test:image-compat": "npm run build && node scripts/verify-image-compatibility.mjs",
     "test:mcp-compat": "npm run build && node scripts/verify-mcp-compatibility.mjs",
+    "test:mcp-resource-compat": "npm run build && node scripts/verify-mcp-resource-compatibility.mjs",
     "test:notebook-compat": "npm run build && node scripts/verify-notebook-compatibility.mjs",
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",

@@ -110,6 +110,7 @@ export interface ToolExecutionContext {
   cwd: string
   messages?: readonly ModelMessage[]
   signal?: AbortSignal
+  toolResultDirectory?: string
 }
 
 export interface ToolRegistry {
@@ -157,6 +158,7 @@ export interface AgentRuntimeOptions {
 export interface AgentRunRequest {
   messages: readonly ModelMessage[]
   cwd?: string
+  toolResultDirectory?: string
   observer?: AgentRunObserver
   reloadMessages?: () => Promise<readonly ModelMessage[]>
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
@@ -166,7 +168,7 @@ export interface AgentRunRequest {
 
 export interface AgentToolRecoveryRequest extends Pick<
   AgentRunRequest,
-  'approveTool' | 'cwd' | 'observer' | 'signal'
+  'approveTool' | 'cwd' | 'observer' | 'signal' | 'toolResultDirectory'
 > {
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
   messages?: readonly ModelMessage[]
@@ -464,6 +466,9 @@ export class AgentRuntime {
 
     const context: ToolExecutionContext = { cwd: request.cwd ?? '', messages }
     if (request.signal) context.signal = request.signal
+    if (request.toolResultDirectory) {
+      context.toolResultDirectory = request.toolResultDirectory
+    }
 
     let prepared: ModelToolCall
     try {

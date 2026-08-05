@@ -273,6 +273,11 @@ export class ClaudeSessionService {
     }
 
     const sessionPaths = this.paths(sessionId)
+    const toolResultDirectory = join(
+      sessionPaths.projectRoot,
+      sessionId,
+      'tool-results',
+    )
     const store = this.turnStore(sessionId)
     const leaseResult = await store.withLease(async (lease) => {
       if (!requireExisting) {
@@ -565,6 +570,7 @@ export class ClaudeSessionService {
         const approveRecovery = this.options.approveRecovery
         const recoveryRequest = {
           cwd: this.options.cwd,
+          toolResultDirectory,
           messages: projectClaudeModelMessages(snapshot.entries),
           observer,
           ...(signal ? { signal } : {}),
@@ -882,6 +888,7 @@ export class ClaudeSessionService {
             ...projectClaudeModelMessages(snapshot.entries),
           ],
           cwd: this.options.cwd,
+          toolResultDirectory,
           observer,
           reloadMessages: async () => {
             await compactIfNeeded([], currentTurnUserMessages ?? [])

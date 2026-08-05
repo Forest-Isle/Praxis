@@ -42,7 +42,7 @@ provider-neutral image data. Anthropic receives a native image tool-result
 block; OpenAI-compatible providers receive a paired tool confirmation and user
 `image_url`. The image persists in Claude Code 2.1.208's native
 `tool_result`/`toolUseResult` envelope and survives Praxis or Claude resume.
-User image attachments and MCP image-result writers remain disabled until
+User image attachments and MCP tool image-result writers remain disabled until
 their distinct native envelopes pass clean-room probes.
 
 Each run or resume holds one session lease through model completion and final
@@ -113,6 +113,12 @@ legacy SSE servers expose `mcp__<server>__<tool>` definitions through the same
 permission and hook pipeline as built-in tools. Unavailable servers emit a
 warning; connected clients and stdio subprocesses close after each CLI
 invocation. Multi-turn stream input intentionally reuses one connection set.
+Resource-capable servers also expose Claude-compatible list, read, and
+directory-resource tools. Resource discovery follows bounded MCP pagination;
+text results stay inline, while bounded binary blobs are exclusively saved under
+the active session's shared `tool-results` directory, including ephemeral
+sessions that do not write JSONL. Stream init reports connected and failed
+configured servers even when a server provides resources but no callable tools.
 Stdio servers receive a sanitized ambient environment; values declared in that
 server's explicit `env` config remain available to it. Credential-named MCP
 environment values and sensitive HTTP headers are redacted from tool results,
@@ -234,6 +240,7 @@ npm run test:glob-compat
 npm run test:hook-compat
 npm run test:image-compat
 npm run test:mcp-compat
+npm run test:mcp-resource-compat
 npm run test:notebook-compat
 npm run test:permission-compat
 npm run test:runtime-compat
