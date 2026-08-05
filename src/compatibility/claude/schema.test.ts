@@ -53,6 +53,16 @@ describe('ClaudeSchemaAdapter', () => {
         '"sessionId":"target","version"',
       ),
     )
+
+    const titleSource =
+      '{"type":"custom-title","customTitle":"Named","future":{"sessionId":"source"},"sessionId":"source"}'
+    const copiedTitle = copyClaudeEntryWithSessionId(
+      adapter.parse(titleSource),
+      'target',
+    )
+    expect(adapter.serializeForFork(copiedTitle)).toBe(
+      titleSource.replace(',"sessionId":"source"}', ',"sessionId":"target"}'),
+    )
   })
 
   it('accepts only the native append profile', async () => {
@@ -66,6 +76,32 @@ describe('ClaudeSchemaAdapter', () => {
     expect(() =>
       adapter.serializeForAppend({ type: 'praxis-provider-state' }),
     ).toThrow('not appendable')
+    const customTitle = {
+      type: 'custom-title',
+      customTitle: 'Named session',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    }
+    const agentName = {
+      type: 'agent-name',
+      agentName: 'Named session',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    }
+    expect(adapter.serializeForAppend(customTitle)).toBe(
+      JSON.stringify(customTitle),
+    )
+    expect(adapter.serializeForAppend(agentName)).toBe(
+      JSON.stringify(agentName),
+    )
+    expect(adapter.serializeForFork(customTitle)).toBe(
+      JSON.stringify(customTitle),
+    )
+    expect(adapter.serializeForFork(agentName)).toBe(JSON.stringify(agentName))
+    expect(() =>
+      adapter.serializeForAppend({ ...customTitle, customTitle: '' }),
+    ).toThrow('invalid metadata')
+    expect(() =>
+      adapter.serializeForAppend({ ...agentName, agentName: '' }),
+    ).toThrow('invalid metadata')
     expect(() => adapter.serializeForAppend({ type: 'user' })).toThrow(
       'missing uuid',
     )

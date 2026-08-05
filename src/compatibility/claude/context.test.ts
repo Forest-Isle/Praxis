@@ -65,6 +65,31 @@ MEMORY_CONTEXT`,
     await expect(assembler.assemble()).resolves.toEqual([])
   })
 
+  it('places custom and appended system prompts around shared context', async () => {
+    const assembler = new ClaudeContextAssembler({
+      systemPrompt: 'CUSTOM_SYSTEM',
+      appendSystemPrompt: 'APPENDED_SYSTEM',
+      loadResources: async () => ({
+        instructions: [
+          {
+            path: '/workspace/CLAUDE.md',
+            scope: 'project',
+            content: 'PROJECT_CONTEXT',
+          },
+        ],
+        conditionalRules: [],
+        memoryIndex: null,
+      }),
+    })
+
+    const messages = await assembler.assemble()
+    expect(messages.map((message) => message.content)).toEqual([
+      'CUSTOM_SYSTEM',
+      expect.stringContaining('PROJECT_CONTEXT'),
+      'APPENDED_SYSTEM',
+    ])
+  })
+
   it('limits the auto-memory index to the first 200 lines', async () => {
     const memoryLines = Array.from(
       { length: 201 },

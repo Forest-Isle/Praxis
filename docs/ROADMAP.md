@@ -233,3 +233,30 @@ results report those unknown values as `null` rather than zero.
 User image/file input records and SDK control request/response messages remain
 explicit gaps in [PARITY_MATRIX.md](PARITY_MATRIX.md); they are not silently
 accepted or reported as compatible.
+
+## Sprint 14 — CLI customization and session controls
+
+Status: complete for headless single-user controls. The classifier-backed
+`auto` permission mode, foreground subagents without sidechain persistence, and
+session-name display in the Praxis picker remain explicit later work.
+
+- [x] inline/file settings plus user/project/local source filtering across
+      context, extensions, hooks, permissions, and MCP
+- [x] safe mode and Claude-style bare mode with the minimal Bash/Edit/Read tool
+      surface
+- [x] direct/file system prompt replacement and append controls
+- [x] canonical additional Read/Write/Edit/Grep roots with symlink containment
+- [x] explicit/default/empty tool sets and CLI allow/deny permission rules
+- [x] acceptEdits, manual, dontAsk, plan, and bypass permission modes with deny
+      precedence
+- [x] current-directory continue, native resume/continue fork, and native
+      session names
+- [x] in-memory session execution with no transcript creation and fail-closed
+      foreground subagents
+- [x] repository worktree exclusions for formatter, ESLint, and Vitest
+- [x] local provider request gate and Claude 2.1.208 named-session reopen
+
+`auto` fails explicitly instead of degrading to a different permission mode.
+No-persistence sessions expose the would-be Claude transcript path to hooks but
+do not create that file. Existing on-disk sessions can be imported for an
+ephemeral continuation without modifying the source JSONL.

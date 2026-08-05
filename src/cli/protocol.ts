@@ -9,8 +9,38 @@ import type {
 
 export type CliInputFormat = 'text' | 'stream-json'
 export type CliOutputFormat = 'text' | 'json' | 'stream-json'
+export type CliPermissionMode =
+  | 'acceptEdits'
+  | 'auto'
+  | 'bypassPermissions'
+  | 'manual'
+  | 'dontAsk'
+  | 'plan'
+  | 'default'
 
-export interface CliInvocation {
+export interface CliControls {
+  settings: string | undefined
+  settingSources: readonly ('user' | 'project' | 'local')[] | undefined
+  safeMode: boolean
+  bare: boolean
+  systemPrompt: string | undefined
+  systemPromptFile: string | undefined
+  appendSystemPrompt: string | undefined
+  appendSystemPromptFile: string | undefined
+  addDirectories: readonly string[]
+  tools: readonly string[] | undefined
+  allowedTools: readonly string[]
+  disallowedTools: readonly string[]
+  permissionMode: CliPermissionMode
+  dangerouslySkipPermissions: boolean
+  allowDangerouslySkipPermissions: boolean
+  continueSession: boolean
+  forkSession: boolean
+  name: string | undefined
+  sessionPersistence: boolean
+}
+
+export interface CliInvocation extends CliControls {
   command: string | undefined
   args: string[]
   agent: string | undefined
@@ -109,6 +139,16 @@ export function createErrorResult(
 
 const INPUT_FORMATS = ['text', 'stream-json'] as const
 const OUTPUT_FORMATS = ['text', 'json', 'stream-json'] as const
+const PERMISSION_MODES = [
+  'acceptEdits',
+  'auto',
+  'bypassPermissions',
+  'manual',
+  'dontAsk',
+  'plan',
+  'default',
+] as const
+const SETTING_SOURCES = ['user', 'project', 'local'] as const
 const MAX_INPUT_LINE_BYTES = 1024 * 1024
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -152,6 +192,44 @@ function optionValue(
   return null
 }
 
+function listOptionValue(
+  argv: readonly string[],
+  index: number,
+  options: readonly string[],
+): { values: string[]; consumed: number } | null {
+  const current = argv[index]
+  const option = options.find((candidate) => current === candidate)
+  if (option) {
+    const values: string[] = []
+    let consumed = 0
+    while (index + consumed + 1 < argv.length) {
+      const candidate = argv[index + consumed + 1]
+      if (candidate === undefined || candidate === '--') break
+      if (candidate.startsWith('-') && candidate !== '-') break
+      values.push(candidate)
+      consumed += 1
+    }
+    if (values.length === 0) throw new Error(`${option} is required`)
+    return { values, consumed }
+  }
+  for (const candidate of options) {
+    const prefix = `${candidate}=`
+    if (current?.startsWith(prefix)) {
+      return { values: [current.slice(prefix.length)], consumed: 0 }
+    }
+  }
+  return null
+}
+
+function splitList(values: readonly string[]): string[] {
+  return values.flatMap((value) =>
+    value
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
+  )
+}
+
 export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   const args: string[] = []
   let agent: string | undefined
@@ -165,6 +243,25 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let verbose = false
   let legacyJson = false
   let optionsEnded = false
+  let settings: string | undefined
+  let settingSources: ('user' | 'project' | 'local')[] | undefined
+  let safeMode = false
+  let bare = false
+  let systemPrompt: string | undefined
+  let systemPromptFile: string | undefined
+  let appendSystemPrompt: string | undefined
+  let appendSystemPromptFile: string | undefined
+  const addDirectories: string[] = []
+  let tools: string[] | undefined
+  const allowedTools: string[] = []
+  const disallowedTools: string[] = []
+  let permissionMode: CliPermissionMode = 'default'
+  let dangerouslySkipPermissions = false
+  let allowDangerouslySkipPermissions = false
+  let continueSession = false
+  let forkSession = false
+  let name: string | undefined
+  let sessionPersistence = true
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
@@ -207,6 +304,130 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       index += selectedSession.consumed
       continue
     }
+    const selectedSettings = optionValue(argv, index, '--settings')
+    if (selectedSettings) {
+      if (settings !== undefined)
+        throw new Error('--settings may only be specified once')
+      settings = selectedSettings.value
+      index += selectedSettings.consumed
+      continue
+    }
+    const selectedSources =
+      value === '--setting-sources='
+        ? { value: '', consumed: 0 }
+        : optionValue(argv, index, '--setting-sources')
+    if (selectedSources) {
+      if (settingSources !== undefined)
+        throw new Error('--setting-sources may only be specified once')
+      const sources = splitList([selectedSources.value])
+      for (const source of sources) {
+        if (
+          !SETTING_SOURCES.includes(source as (typeof SETTING_SOURCES)[number])
+        ) {
+          throw new Error(`Invalid setting source: ${source}`)
+        }
+      }
+      settingSources = sources as ('user' | 'project' | 'local')[]
+      index += selectedSources.consumed
+      continue
+    }
+    const selectedSystemPrompt = optionValue(argv, index, '--system-prompt')
+    if (selectedSystemPrompt) {
+      if (systemPrompt !== undefined)
+        throw new Error('--system-prompt may only be specified once')
+      systemPrompt = selectedSystemPrompt.value
+      index += selectedSystemPrompt.consumed
+      continue
+    }
+    const selectedSystemPromptFile = optionValue(
+      argv,
+      index,
+      '--system-prompt-file',
+    )
+    if (selectedSystemPromptFile) {
+      if (systemPromptFile !== undefined)
+        throw new Error('--system-prompt-file may only be specified once')
+      systemPromptFile = selectedSystemPromptFile.value
+      index += selectedSystemPromptFile.consumed
+      continue
+    }
+    const selectedAppendPrompt = optionValue(
+      argv,
+      index,
+      '--append-system-prompt',
+    )
+    if (selectedAppendPrompt) {
+      if (appendSystemPrompt !== undefined)
+        throw new Error('--append-system-prompt may only be specified once')
+      appendSystemPrompt = selectedAppendPrompt.value
+      index += selectedAppendPrompt.consumed
+      continue
+    }
+    const selectedAppendPromptFile = optionValue(
+      argv,
+      index,
+      '--append-system-prompt-file',
+    )
+    if (selectedAppendPromptFile) {
+      if (appendSystemPromptFile !== undefined) {
+        throw new Error(
+          '--append-system-prompt-file may only be specified once',
+        )
+      }
+      appendSystemPromptFile = selectedAppendPromptFile.value
+      index += selectedAppendPromptFile.consumed
+      continue
+    }
+    const selectedDirectories = listOptionValue(argv, index, ['--add-dir'])
+    if (selectedDirectories) {
+      addDirectories.push(...splitList(selectedDirectories.values))
+      index += selectedDirectories.consumed
+      continue
+    }
+    const selectedTools = listOptionValue(argv, index, ['--tools'])
+    if (selectedTools) {
+      if (tools !== undefined)
+        throw new Error('--tools may only be specified once')
+      tools = splitList(selectedTools.values)
+      index += selectedTools.consumed
+      continue
+    }
+    const selectedAllowedTools = listOptionValue(argv, index, [
+      '--allowedTools',
+      '--allowed-tools',
+    ])
+    if (selectedAllowedTools) {
+      allowedTools.push(...splitList(selectedAllowedTools.values))
+      index += selectedAllowedTools.consumed
+      continue
+    }
+    const selectedDisallowedTools = listOptionValue(argv, index, [
+      '--disallowedTools',
+      '--disallowed-tools',
+    ])
+    if (selectedDisallowedTools) {
+      disallowedTools.push(...splitList(selectedDisallowedTools.values))
+      index += selectedDisallowedTools.consumed
+      continue
+    }
+    const selectedPermissionMode = optionValue(argv, index, '--permission-mode')
+    if (selectedPermissionMode) {
+      permissionMode = choice(
+        selectedPermissionMode.value,
+        '--permission-mode',
+        PERMISSION_MODES,
+      )
+      index += selectedPermissionMode.consumed
+      continue
+    }
+    const selectedName = optionValue(argv, index, '--name')
+    if (selectedName || value === '-n') {
+      if (name !== undefined)
+        throw new Error('--name may only be specified once')
+      name = selectedName?.value ?? requiredValue(argv, index, '--name')
+      index += selectedName?.consumed ?? 1
+      continue
+    }
     if (value === '-r' || value === '--resume') {
       if (resumeId !== undefined)
         throw new Error('--resume may only be specified once')
@@ -215,6 +436,34 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       continue
     }
     if (value === '-p' || value === '--print') continue
+    if (value === '-c' || value === '--continue') {
+      continueSession = true
+      continue
+    }
+    if (value === '--fork-session') {
+      forkSession = true
+      continue
+    }
+    if (value === '--no-session-persistence') {
+      sessionPersistence = false
+      continue
+    }
+    if (value === '--safe-mode') {
+      safeMode = true
+      continue
+    }
+    if (value === '--bare') {
+      bare = true
+      continue
+    }
+    if (value === '--dangerously-skip-permissions') {
+      dangerouslySkipPermissions = true
+      continue
+    }
+    if (value === '--allow-dangerously-skip-permissions') {
+      allowDangerouslySkipPermissions = true
+      continue
+    }
     if (value === '--verbose') {
       verbose = true
       continue
@@ -271,6 +520,17 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       '--replay-user-messages requires stream-json input and output',
     )
   }
+  if (systemPrompt !== undefined && systemPromptFile !== undefined) {
+    throw new Error('Cannot use both --system-prompt and --system-prompt-file')
+  }
+  if (
+    appendSystemPrompt !== undefined &&
+    appendSystemPromptFile !== undefined
+  ) {
+    throw new Error(
+      'Cannot use both --append-system-prompt and --append-system-prompt-file',
+    )
+  }
 
   if (resumeId !== undefined) {
     if (args[0] === 'resume')
@@ -280,9 +540,15 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   if (sessionId !== undefined && !UUID_PATTERN.test(sessionId)) {
     throw new Error('--session-id must be a valid UUID')
   }
+  const resumesSession = args[0] === 'resume' || continueSession
+  if (sessionId !== undefined && resumesSession && !forkSession) {
+    throw new Error(
+      '--session-id can only be used with --continue or --resume if --fork-session is also specified',
+    )
+  }
   if (
     sessionId !== undefined &&
-    ['resume', 'fork', 'sessions', 'inspect', 'export'].includes(args[0] ?? '')
+    ['fork', 'sessions', 'inspect', 'export'].includes(args[0] ?? '')
   ) {
     throw new Error('--session-id is only valid when starting a session')
   }
@@ -298,6 +564,25 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     sessionId,
     verbose,
     legacyJson,
+    settings,
+    settingSources,
+    safeMode,
+    bare,
+    systemPrompt,
+    systemPromptFile,
+    appendSystemPrompt,
+    appendSystemPromptFile,
+    addDirectories,
+    tools,
+    allowedTools,
+    disallowedTools,
+    permissionMode,
+    dangerouslySkipPermissions,
+    allowDangerouslySkipPermissions,
+    continueSession,
+    forkSession,
+    name,
+    sessionPersistence,
   }
 }
 

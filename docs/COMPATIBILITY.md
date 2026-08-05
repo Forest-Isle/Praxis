@@ -164,6 +164,21 @@ Only text user content blocks are writable through stream input in the current
 profile. Unsupported records and blocks fail closed; image/file input and SDK
 control messages require separate native/provider envelopes before enablement.
 
+Headless customization flags follow the same shared-data boundary.
+`--setting-sources` filters instructions, rules, memory, extensions, settings,
+hooks, and MCP by user/project/local scope; `--safe-mode` and `--bare` suppress
+automatic customizations. Direct/file system prompts stay provider context and
+are never persisted. `--add-dir` adds canonical file/search roots without
+allowing symlink escape. CLI deny rules still win in bypass mode. The
+classifier-backed `auto` permission mode fails closed until Praxis implements
+the classifier contract.
+
+`--no-session-persistence` uses an in-memory transcript. A new ephemeral
+session never creates its would-be JSONL path. Resuming an existing disk
+session imports its validated history into memory, continues there, and leaves
+the source bytes and lock directory unchanged. Foreground Agent is disabled in
+this mode because its Claude-compatible sidechain store is disk-backed.
+
 ## Version compatibility
 
 Claude Code's local format is an implementation contract and can change.
@@ -202,7 +217,8 @@ selected-agent `agent-setting` metadata, and the physical `last-prompt` record
 required by Claude resume for the selected adapter version. The append profile
 also includes the validated `compact_boundary` system record and its paired
 `isCompactSummary` user entry; both append atomically under one tail check.
-`agent-setting` and
+Native session naming adds paired `custom-title` and `agent-name` metadata
+before the first user entry or while renaming a resumed session. `agent-setting` and
 `last-prompt` do not advance the logical UUID chain; `last-prompt` must name its
 current leaf. Message content blocks and attachment envelopes are validated
 before append, and every `tool_result` must match the historical `tool_use` plus
@@ -219,8 +235,8 @@ image attachments and MCP-specific image results remain write-disabled.
 Fork uses a separate versioned creation profile because it copies existing
 native records rather than appending newly generated records. For Claude Code
 2.1.208 it losslessly copies supported main-chain `user`, `assistant`, `system`,
-`attachment`, and `agent-setting` entries plus `ai-title`, `mode`,
-`permission-mode`, and `last-prompt` metadata, replacing only `sessionId` in
+`attachment`, and `agent-setting` entries plus `custom-title`, `agent-name`,
+`ai-title`, `mode`, `permission-mode`, and `last-prompt` metadata, replacing only `sessionId` in
 each copied record. This preserves tool history, compact history, media and
 error payloads, hook/nested-memory attachments, agent state, UUIDs, and parent
 links. Latest title/mode/permission state is placed first and latest valid

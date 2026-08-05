@@ -177,6 +177,61 @@ describe('Claude shared resource discovery', () => {
     })
   })
 
+  it('filters all shared customization categories by selected setting sources', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-sources-')),
+    )
+    tempDirectories.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'workspace')
+    await Promise.all([
+      writeFixture(join(configRoot, 'CLAUDE.md'), 'USER_CONTEXT'),
+      writeFixture(join(cwd, 'CLAUDE.md'), 'PROJECT_CONTEXT'),
+      writeFixture(join(cwd, 'CLAUDE.local.md'), 'LOCAL_CONTEXT'),
+      writeFixture(
+        join(configRoot, 'skills', 'user-skill', 'SKILL.md'),
+        'USER_SKILL',
+      ),
+      writeFixture(
+        join(cwd, '.claude', 'skills', 'project-skill', 'SKILL.md'),
+        'PROJECT_SKILL',
+      ),
+      writeFixture(join(configRoot, 'settings.json'), '{"user":true}'),
+      writeFixture(join(cwd, '.claude', 'settings.json'), '{"project":true}'),
+      writeFixture(
+        join(cwd, '.claude', 'settings.local.json'),
+        '{"local":true}',
+      ),
+    ])
+
+    const user = await loadClaudeSharedResources({
+      configRoot,
+      cwd,
+      settingSources: ['user'],
+    })
+    expect(user.instructions.map((resource) => resource.content)).toEqual([
+      'USER_CONTEXT',
+    ])
+    expect(user.skills.map((resource) => resource.content)).toEqual([
+      'USER_SKILL',
+    ])
+    expect(user.settings.map((resource) => resource.value)).toEqual([
+      { user: true },
+    ])
+
+    const projectContext = await loadClaudeContextResources({
+      configRoot,
+      cwd,
+      settingSources: ['project'],
+    })
+    expect(
+      projectContext.instructions.map((resource) => resource.content),
+    ).toEqual(['PROJECT_CONTEXT'])
+    await expect(
+      loadClaudeSettings({ configRoot, cwd, settingSources: [] }),
+    ).resolves.toEqual([])
+  })
+
   it('reports malformed JSON with its shared resource path', async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), 'praxis-shared-invalid-')),

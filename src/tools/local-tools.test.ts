@@ -294,6 +294,57 @@ describe('LocalToolRegistry', () => {
     ).rejects.toThrow('outside workspace')
   })
 
+  it('allows file and search tools in additional canonical roots without symlink escape', async () => {
+    const { root, cwd } = await workspace()
+    const additional = join(root, 'additional')
+    const outside = join(root, 'outside')
+    await Promise.all([mkdir(additional), mkdir(outside)])
+    await Promise.all([
+      writeFile(join(additional, 'allowed.txt'), 'ADDITIONAL_MARKER'),
+      writeFile(join(outside, 'secret.txt'), 'SECRET_MARKER'),
+    ])
+    await symlink(outside, join(additional, 'escape'))
+    const registry = new LocalToolRegistry({
+      cwd,
+      additionalDirectories: [additional],
+    })
+    const context = { cwd }
+
+    const read = await registry.prepare(
+      {
+        id: 'additional-read',
+        name: 'Read',
+        input: { file_path: join(additional, 'allowed.txt') },
+      },
+      context,
+    )
+    await expect(registry.execute(read, context)).resolves.toMatchObject({
+      content: 'ADDITIONAL_MARKER',
+      isError: false,
+    })
+    const grep = await registry.prepare(
+      {
+        id: 'additional-grep',
+        name: 'Grep',
+        input: { pattern: 'ADDITIONAL', path: additional },
+      },
+      context,
+    )
+    await expect(registry.execute(grep, context)).resolves.toMatchObject({
+      isError: false,
+    })
+    await expect(
+      registry.prepare(
+        {
+          id: 'additional-escape',
+          name: 'Read',
+          input: { file_path: join(additional, 'escape', 'secret.txt') },
+        },
+        context,
+      ),
+    ).rejects.toThrow('outside workspace')
+  })
+
   it('bounds shell output, times out, and propagates cancellation', async () => {
     const { cwd } = await workspace()
     const registry = new LocalToolRegistry({

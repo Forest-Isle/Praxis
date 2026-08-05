@@ -19,24 +19,24 @@ Evidence levels:
 
 ## Invocation and machine I/O
 
-| Capability                           | Status                   | Evidence / remaining work                                                                                         |
-| ------------------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| Interactive TTY                      | Complete                 | Ink event adapter, permission/recovery prompts, session picker; package and unit gates                            |
-| Print/headless prompt                | Complete                 | `-p`, `--print`, top-level prompt, and legacy `run`; installed package gate                                       |
-| Resume syntax                        | Complete                 | `-r`, `--resume`, and legacy `resume`; shared transcript continuation                                             |
-| Explicit session ID                  | Complete                 | UUID validation, atomic `wx` reservation, existing/empty-file rejection matching live 2.1.208                     |
-| Text output                          | Complete                 | Realtime terminal deltas and final newline                                                                        |
-| Single JSON result                   | Partial                  | Success/error shape complete; provider cost and API-only duration are explicit `null` until metering lands        |
-| Stream JSON output                   | Partial                  | Init, assistant, tool result, result, warning, and error envelopes complete; result metering remains missing      |
-| Partial messages                     | Complete                 | message/content/tool delta lifecycle under `--include-partial-messages`                                           |
-| Stream JSON input                    | Complete for text blocks | Incremental UTF-8/CRLF NDJSON parser, bounds, empty-input no-op, multi-turn run-to-resume, replay; installed gate |
-| User image/file input records        | Missing                  | Requires native input attachment envelopes and provider projection                                                |
-| SDK control request/response records | Missing                  | Permission and interrupt control protocol not yet exposed over stdin/stdout                                       |
-| Legacy Praxis `--json`               | Complete                 | Existing runtime NDJSON retained without changing explicit Claude-style formats                                   |
-| `--continue`                         | Missing                  | Most-recent current-project session selection                                                                     |
-| `--fork-session`                     | Missing                  | Native fork exists as `praxis fork`; invocation behavior not aligned                                              |
-| Session name                         | Missing                  | `--name` and picker metadata                                                                                      |
-| No persistence                       | Missing                  | `--no-session-persistence` in-memory session lifecycle                                                            |
+| Capability                           | Status                   | Evidence / remaining work                                                                                                |
+| ------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| Interactive TTY                      | Complete                 | Ink event adapter, permission/recovery prompts, session picker; package and unit gates                                   |
+| Print/headless prompt                | Complete                 | `-p`, `--print`, top-level prompt, and legacy `run`; installed package gate                                              |
+| Resume syntax                        | Complete                 | `-r`, `--resume`, and legacy `resume`; shared transcript continuation                                                    |
+| Explicit session ID                  | Complete                 | UUID validation, atomic `wx` reservation, existing/empty-file rejection matching live 2.1.208                            |
+| Text output                          | Complete                 | Realtime terminal deltas and final newline                                                                               |
+| Single JSON result                   | Partial                  | Success/error shape complete; provider cost and API-only duration are explicit `null` until metering lands               |
+| Stream JSON output                   | Partial                  | Init, assistant, tool result, result, warning, and error envelopes complete; result metering remains missing             |
+| Partial messages                     | Complete                 | message/content/tool delta lifecycle under `--include-partial-messages`                                                  |
+| Stream JSON input                    | Complete for text blocks | Incremental UTF-8/CRLF NDJSON parser, bounds, empty-input no-op, multi-turn run-to-resume, replay; installed gate        |
+| User image/file input records        | Missing                  | Requires native input attachment envelopes and provider projection                                                       |
+| SDK control request/response records | Missing                  | Permission and interrupt control protocol not yet exposed over stdin/stdout                                              |
+| Legacy Praxis `--json`               | Complete                 | Existing runtime NDJSON retained without changing explicit Claude-style formats                                          |
+| `--continue`                         | Complete                 | Most-recent current-project selection with native resume behavior                                                        |
+| `--fork-session`                     | Complete                 | Resume/continue forks preserve native history and title with generated or explicit fresh session identity                |
+| Session name                         | Partial                  | `--name` writes native `custom-title`/`agent-name` and Claude resumes it; Praxis picker display remains                  |
+| No persistence                       | Partial                  | In-memory run and disk-session import leave JSONL untouched; foreground Agent remains disabled without sidechain storage |
 
 ## Shared Claude data plane
 
@@ -64,11 +64,11 @@ Evidence levels:
 | Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                            |
 | Background agents and tasks   | Missing                     | Persistent Task lifecycle, output polling, stop, resume, dispatch                                                      |
 | Agent messaging               | Missing                     | SendMessage and user communication controls                                                                            |
-| Permissions                   | Partial                     | Shared allow/ask/deny rules complete; CLI filters and modes missing                                                    |
-| Tool selection                | Missing                     | `--tools`, `--allowedTools`, `--disallowedTools`                                                                       |
-| Settings sources              | Missing                     | `--settings`, `--setting-sources`, safe/bare modes                                                                     |
-| System prompt controls        | Missing                     | replace/append prompt and file variants                                                                                |
-| Additional directories        | Missing                     | `--add-dir` context and permission roots                                                                               |
+| Permissions                   | Partial                     | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass complete; `auto` classifier missing                             |
+| Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                         |
+| Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                    |
+| System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                            |
+| Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                |
 | Model selection               | Partial                     | Environment selection complete; `--model` invocation option missing                                                    |
 | Effort and fallback           | Missing                     | `--effort`, retry fallback model chain                                                                                 |
 | Structured output             | Missing                     | `--json-schema` validation and `structured_output` result                                                              |
@@ -104,14 +104,13 @@ Evidence levels:
 
 ## Remaining implementation order
 
-1. Settings, prompts, directory roots, tool filters, permission modes, and
-   session controls.
-2. Missing local/web/notebook/resource tools.
-3. Durable background tasks, agents, messaging, cron, monitor, and workflow.
-4. Worktree/tmux/background invocation and session naming/continue/fork flags.
-5. Plugin runtime and management.
-6. MCP management and resource tools.
-7. Model effort/fallback, structured output, pricing/budget, suggestions,
+1. Missing local/web/notebook/resource tools.
+2. Durable background tasks, agents, messaging, cron, monitor, and workflow.
+3. Worktree/tmux/background invocation, picker naming, ephemeral subagents,
+   and permission `auto` classifier.
+4. Plugin runtime and management.
+5. MCP management and resource tools.
+6. Model effort/fallback, structured output, pricing/budget, suggestions,
    diagnostics, auth, and update commands.
-8. Final live black-box matrix, package/performance regression, and macOS/Linux
+7. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.

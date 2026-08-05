@@ -224,7 +224,7 @@ export function createClaudeNativeFork({
     }
   }
 
-  if (history.length === 0) {
+  if (!nativeHistory.some((entry) => typeof entry.uuid === 'string')) {
     throw new Error('Claude session has no native history to fork')
   }
   const logicalTailUuid = validateNativeHistory(nativeHistory)

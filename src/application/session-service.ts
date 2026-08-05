@@ -57,6 +57,7 @@ import {
   type TranscriptSnapshot,
   type TranscriptTail,
 } from '../persistence/claude-transcript-store.js'
+import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
 import { ModelCompactor } from './model-compactor.js'
 import { ClaudeSubagentExecutor } from './subagent-service.js'
 
@@ -79,6 +80,7 @@ export interface ClaudeSessionServiceOptions {
   contextBudget?: ContextBudget
   contextReserveTokens?: number
   enableSubagents?: boolean
+  sessionPersistence?: boolean
 }
 
 export interface SessionRunResult {
@@ -112,8 +114,15 @@ export interface ForkResult {
 
 export class ClaudeSessionService {
   private readonly schema
+  private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
+    if (
+      options.sessionPersistence === false &&
+      options.enableSubagents === true
+    ) {
+      throw new Error('Subagents require session persistence')
+    }
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
   }
 
@@ -121,16 +130,18 @@ export class ClaudeSessionService {
     prompt: string,
     signal?: AbortSignal,
     sessionId: string = randomUUID(),
+    name?: string,
   ): Promise<SessionRunResult> {
-    return this.executeTurn(sessionId, prompt, false, signal)
+    return this.executeTurn(sessionId, prompt, false, signal, name)
   }
 
   async resume(
     sessionId: string,
     prompt: string,
     signal?: AbortSignal,
+    name?: string,
   ): Promise<SessionRunResult> {
-    return this.executeTurn(sessionId, prompt, true, signal)
+    return this.executeTurn(sessionId, prompt, true, signal, name)
   }
 
   async sessions(): Promise<SessionSummary[]> {
@@ -179,6 +190,7 @@ export class ClaudeSessionService {
   }
 
   async inspect(sessionId: string): Promise<SessionInspection> {
+    this.assertSessionPersistence()
     const paths = this.paths(sessionId)
     let metadata
     try {
@@ -205,6 +217,7 @@ export class ClaudeSessionService {
   }
 
   async export(sessionId: string): Promise<Buffer> {
+    this.assertSessionPersistence()
     try {
       return await this.store(sessionId).exportReadOnly()
     } catch (error) {
@@ -215,7 +228,11 @@ export class ClaudeSessionService {
     }
   }
 
-  async fork(parentSessionId: string): Promise<ForkResult> {
+  async fork(
+    parentSessionId: string,
+    sessionId: string = randomUUID(),
+  ): Promise<ForkResult> {
+    this.assertSessionPersistence()
     this.assertWritable()
     const sourceResult = await this.store(parentSessionId).withLease((lease) =>
       lease.load(),
@@ -228,7 +245,6 @@ export class ClaudeSessionService {
       throw new Error(`Claude session not found: ${parentSessionId}`)
     }
 
-    const sessionId = randomUUID()
     const target = this.store(sessionId)
     const result = await target.create(
       createClaudeNativeFork({
@@ -248,21 +264,57 @@ export class ClaudeSessionService {
     prompt: string,
     requireExisting: boolean,
     signal?: AbortSignal,
+    name?: string,
   ): Promise<SessionRunResult> {
     this.assertWritable()
     if (prompt.length === 0) throw new Error('Prompt must not be empty')
+    if (name !== undefined && name.length === 0) {
+      throw new Error('Session name must not be empty')
+    }
 
-    const store = this.store(sessionId)
+    const sessionPaths = this.paths(sessionId)
+    const store = this.turnStore(sessionId)
     const leaseResult = await store.withLease(async (lease) => {
       if (!requireExisting) {
-        const reservation = await store.reserve()
-        if (reservation.status === 'conflict') {
+        const initialization =
+          name === undefined
+            ? await store.reserve()
+            : await store.create(this.sessionNameEntries(sessionId, name))
+        if (initialization.status === 'conflict') {
           throw new Error(`Session ID ${sessionId} is already in use`)
         }
       }
       let snapshot = await lease.load()
+      if (
+        requireExisting &&
+        this.options.sessionPersistence === false &&
+        snapshot.entries.length === 0
+      ) {
+        const persisted = await this.store(sessionId).load()
+        if (persisted.entries.length > 0) {
+          const imported = await store.create(persisted.entries)
+          if (imported.status === 'created') snapshot = await lease.load()
+        }
+      }
       if (requireExisting && snapshot.entries.length === 0) {
         throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      if (
+        requireExisting &&
+        name !== undefined &&
+        !this.hasSessionName(snapshot.entries, name)
+      ) {
+        const entries = this.sessionNameEntries(sessionId, name)
+        const appendResult = await lease.appendMany(snapshot.tail, entries)
+        if (appendResult.status === 'conflict') {
+          throw new Error(
+            `Claude transcript append conflict: ${appendResult.reason}`,
+          )
+        }
+        snapshot = {
+          entries: [...snapshot.entries, ...entries],
+          tail: appendResult.tail,
+        }
       }
       const provider = this.provider()
       let currentPromptId: string | null = null
@@ -275,7 +327,7 @@ export class ClaudeSessionService {
       const pendingRecoveryHookOutcomes: ClaudeHookOutcome[] = []
       const hookSession = {
         session_id: sessionId,
-        transcript_path: this.paths(sessionId).sessionFile,
+        transcript_path: sessionPaths.sessionFile,
         cwd: this.options.cwd,
         permission_mode: 'default',
       }
@@ -973,6 +1025,35 @@ export class ClaudeSessionService {
     return paths
   }
 
+  private sessionNameEntries(
+    sessionId: string,
+    name: string,
+  ): ClaudeTranscriptEntry[] {
+    return [
+      { type: 'custom-title', customTitle: name, sessionId },
+      { type: 'agent-name', agentName: name, sessionId },
+    ]
+  }
+
+  private hasSessionName(
+    entries: readonly ClaudeTranscriptEntry[],
+    name: string,
+  ): boolean {
+    let customTitle: unknown
+    let agentName: unknown
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index]
+      if (customTitle === undefined && entry?.type === 'custom-title') {
+        customTitle = entry.customTitle
+      }
+      if (agentName === undefined && entry?.type === 'agent-name') {
+        agentName = entry.agentName
+      }
+      if (customTitle !== undefined && agentName !== undefined) break
+    }
+    return customTitle === name && agentName === name
+  }
+
   private lastMessageUuid(
     entries: readonly ClaudeTranscriptEntry[],
   ): string | null {
@@ -1068,6 +1149,24 @@ export class ClaudeSessionService {
       lockFile: join(paths.praxisRoot, 'locks', `${sessionId}.lock`),
       schema: this.schema,
     })
+  }
+
+  private turnStore(
+    sessionId: string,
+  ): ClaudeTranscriptStore | InMemoryTranscriptStore {
+    if (this.options.sessionPersistence !== false) return this.store(sessionId)
+    let store = this.inMemoryStores.get(sessionId)
+    if (!store) {
+      store = new InMemoryTranscriptStore()
+      this.inMemoryStores.set(sessionId, store)
+    }
+    return store
+  }
+
+  private assertSessionPersistence(): void {
+    if (this.options.sessionPersistence === false) {
+      throw new Error('Session persistence is disabled')
+    }
   }
 
   private assertWritable(): void {

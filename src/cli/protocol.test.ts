@@ -58,6 +58,79 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('parses single-user CLI customization, tool, permission, and session controls', () => {
+    expect(
+      parseCliInvocation([
+        '-p',
+        '--settings',
+        '{"model":"fixture"}',
+        '--setting-sources=project,local',
+        '--safe-mode',
+        '--bare',
+        '--system-prompt-file',
+        'system.txt',
+        '--append-system-prompt',
+        'append',
+        '--add-dir',
+        '../one',
+        '../two',
+        '--tools=Read,Write',
+        '--allowed-tools',
+        'Write',
+        '--disallowedTools=Bash(rm *)',
+        '--permission-mode',
+        'acceptEdits',
+        '--dangerously-skip-permissions',
+        '--allow-dangerously-skip-permissions',
+        '--continue',
+        '--fork-session',
+        '--name',
+        'fixture',
+        '--no-session-persistence',
+        '--',
+        'hello',
+      ]),
+    ).toMatchObject({
+      args: ['hello'],
+      settings: '{"model":"fixture"}',
+      settingSources: ['project', 'local'],
+      safeMode: true,
+      bare: true,
+      systemPromptFile: 'system.txt',
+      appendSystemPrompt: 'append',
+      addDirectories: ['../one', '../two'],
+      tools: ['Read', 'Write'],
+      allowedTools: ['Write'],
+      disallowedTools: ['Bash(rm *)'],
+      permissionMode: 'acceptEdits',
+      dangerouslySkipPermissions: true,
+      allowDangerouslySkipPermissions: true,
+      continueSession: true,
+      forkSession: true,
+      name: 'fixture',
+      sessionPersistence: false,
+    })
+    expect(
+      parseCliInvocation(['--setting-sources=', '--tools=', '--', 'hello']),
+    ).toMatchObject({ settingSources: [], tools: [] })
+  })
+
+  it('rejects conflicting prompt sources and invalid customization choices', () => {
+    for (const argv of [
+      ['--system-prompt', 'direct', '--system-prompt-file', 'prompt.txt'],
+      [
+        '--append-system-prompt',
+        'direct',
+        '--append-system-prompt-file',
+        'prompt.txt',
+      ],
+      ['--setting-sources', 'user,bogus', 'hello'],
+      ['--permission-mode', 'unknown', 'hello'],
+    ]) {
+      expect(() => parseCliInvocation(argv)).toThrow()
+    }
+  })
+
   it('enforces machine protocol option relationships', () => {
     for (const argv of [
       ['-p', '--input-format', 'stream-json'],
@@ -66,11 +139,26 @@ describe('CLI protocol', () => {
       ['-p', '--replay-user-messages', 'hello'],
       ['-p', '--session-id', 'not-a-uuid', 'hello'],
       ['resume', sessionId, '--session-id', sessionId, 'hello'],
+      ['-p', '--continue', '--session-id', sessionId, 'hello'],
       ['-p', '--input-format', 'stream-json', '--json'],
       ['-p', '--include-partial-messages', '--json', 'hello'],
     ]) {
       expect(() => parseCliInvocation(argv)).toThrow()
     }
+    expect(
+      parseCliInvocation([
+        '-p',
+        '--continue',
+        '--fork-session',
+        '--session-id',
+        sessionId,
+        'hello',
+      ]),
+    ).toMatchObject({
+      continueSession: true,
+      forkSession: true,
+      sessionId,
+    })
   })
 
   it('parses multiple user messages across CRLF and UTF-8 chunk boundaries', async () => {

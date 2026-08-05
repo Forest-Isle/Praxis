@@ -234,6 +234,38 @@ describe('ClaudeTranscriptStore', () => {
     })
   })
 
+  it('appends native session naming metadata without advancing the logical tail', async () => {
+    const { sessionFile, store } = await createStore()
+    const snapshot = await store.load()
+    const entries = [
+      {
+        type: 'custom-title',
+        customTitle: 'Named session',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+      },
+      {
+        type: 'agent-name',
+        agentName: 'Named session',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+      },
+    ]
+
+    const result = await store.withLease((lease) =>
+      lease.appendMany(snapshot.tail, entries),
+    )
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      value: { status: 'appended', tail: { lastUuid: snapshot.tail.lastUuid } },
+    })
+    const source = await readFile(sessionFile, 'utf8')
+    expect(
+      source.endsWith(
+        `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+      ),
+    ).toBe(true)
+  })
+
   it('appends native last-prompt metadata without advancing the logical tail', async () => {
     const { sessionFile, store } = await createStore()
     const snapshot = await store.load()

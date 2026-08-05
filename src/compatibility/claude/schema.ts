@@ -14,18 +14,22 @@ export interface ClaudeSchemaAdapter {
 
 const SUPPORTED_VERSION = '2.1.208'
 const APPENDABLE_ENTRY_TYPES = new Set([
+  'agent-name',
   'agent-setting',
   'assistant',
   'attachment',
+  'custom-title',
   'last-prompt',
   'system',
   'user',
 ])
 const FORKABLE_ENTRY_TYPES = new Set([
+  'agent-name',
   'agent-setting',
   'ai-title',
   'assistant',
   'attachment',
+  'custom-title',
   'last-prompt',
   'mode',
   'permission-mode',
@@ -636,6 +640,24 @@ function validateCompactSummary(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'custom-title') {
+    if (
+      !isNonEmptyString(entry.customTitle) ||
+      !isNonEmptyString(entry.sessionId)
+    ) {
+      throw new Error('Claude custom-title entry has invalid metadata')
+    }
+    return
+  }
+  if (entry.type === 'agent-name') {
+    if (
+      !isNonEmptyString(entry.agentName) ||
+      !isNonEmptyString(entry.sessionId)
+    ) {
+      throw new Error('Claude agent-name entry has invalid metadata')
+    }
+    return
+  }
   if (entry.type === 'agent-setting') {
     if (
       !isNonEmptyString(entry.agentSetting) ||
@@ -774,6 +796,10 @@ function validateSidechainEntry(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateForkableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'custom-title' || entry.type === 'agent-name') {
+    validateAppendableEntry(entry)
+    return
+  }
   if (entry.type === 'ai-title') {
     if (
       !isNonEmptyString(entry.aiTitle) ||

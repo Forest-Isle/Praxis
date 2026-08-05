@@ -10,11 +10,18 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Sprint 13 print and machine-I/O support is complete on top of image tool
-results, native foreground
+Sprint 14 CLI customization and session controls are complete on top of print
+and machine-I/O support, image tool results, native foreground
 subagents, resilient sessions, native full-history forks, child-process
 credential boundaries, shared memory, and native Anthropic/OpenAI-compatible
 providers.
+Headless runs support Claude-style settings/source isolation, safe and bare
+modes, direct/file system prompts, additional canonical directory roots,
+explicit tool sets, CLI permission rules and modes, current-directory
+continue/fork, native session names, and in-memory no-persistence execution.
+Classifier-backed `auto` permissions remain fail-closed until their dedicated
+runtime lands; no-persistence runs disable foreground Agent because native
+sidechains are disk-backed.
 Running `praxis` in a
 TTY opens an
 Ink session UI with streaming
@@ -172,6 +179,10 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"Inspect this p
   node dist/cli.js -p --input-format stream-json --output-format stream-json --verbose
 node dist/cli.js run "/my-command arguments"
 node dist/cli.js run --agent reviewer "Inspect this project"
+node dist/cli.js -p --setting-sources project --tools Read,Grep "Inspect this project"
+node dist/cli.js -p --system-prompt-file prompt.txt --add-dir ../shared -- "Inspect both roots"
+node dist/cli.js -p --continue --fork-session --name experiment "Try another approach"
+node dist/cli.js -p --no-session-persistence "Inspect without saving"
 node dist/cli.js sessions --json
 node dist/cli.js inspect --json <session-id>
 node dist/cli.js export <session-id> > session.jsonl
@@ -212,6 +223,7 @@ probe uses a local provider fixture:
 
 ```sh
 npm run test:compat
+npm run test:cli-controls-compat
 npm run test:compaction-compat
 npm run test:conditional-compat
 npm run test:context-compat

@@ -94,6 +94,16 @@ describe('createClaudeNativeFork', () => {
       },
       { type: 'file-history-snapshot', snapshot: {}, messageId: 'snapshot' },
       { type: 'ai-title', aiTitle: 'Native fork', sessionId: user.sessionId },
+      {
+        type: 'custom-title',
+        customTitle: 'Named session',
+        sessionId: user.sessionId,
+      },
+      {
+        type: 'agent-name',
+        agentName: 'Named session',
+        sessionId: user.sessionId,
+      },
     ]
     const sessionId = '99999999-9999-4999-8999-999999999999'
 
@@ -109,6 +119,8 @@ describe('createClaudeNativeFork', () => {
       { type: 'permission-mode', permissionMode: 'default', sessionId },
       { ...user, sessionId },
       { ...assistant, sessionId },
+      { type: 'custom-title', customTitle: 'Named session', sessionId },
+      { type: 'agent-name', agentName: 'Named session', sessionId },
       { ...lastPrompt, sessionId },
     ])
   })
@@ -250,6 +262,29 @@ describe('createClaudeNativeFork', () => {
         sessionId,
       }),
     ).toThrow('not forkable')
+  })
+
+  it('does not treat session naming metadata as native conversation history', () => {
+    const sourceSessionId = '11111111-1111-4111-8111-111111111111'
+
+    expect(() =>
+      createClaudeNativeFork({
+        source: [
+          {
+            type: 'custom-title',
+            customTitle: 'Named session',
+            sessionId: sourceSessionId,
+          },
+          {
+            type: 'agent-name',
+            agentName: 'Named session',
+            sessionId: sourceSessionId,
+          },
+        ],
+        sourceSessionId,
+        sessionId: '99999999-9999-4999-8999-999999999999',
+      }),
+    ).toThrow('no native history')
   })
 
   it('validates graph and tool links independently of physical record order', async () => {

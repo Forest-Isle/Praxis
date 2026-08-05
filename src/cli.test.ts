@@ -179,6 +179,63 @@ describe('Praxis CLI', () => {
     expect(capture.stdout.join('')).toBe('answer:hello world\n')
   })
 
+  it('continues and forks the latest directory session while forwarding controls', async () => {
+    const capture = captureIO()
+    const calls: string[] = []
+    let controls: Parameters<CliDependencies['createService']>[0]['controls']
+    const base = dependencies()
+    const controlled: CliDependencies = {
+      async createService(options) {
+        controls = options.controls
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async fork(sessionId, targetSessionId) {
+            calls.push(`fork:${sessionId}:${targetSessionId ?? ''}`)
+            return {
+              sessionId:
+                targetSessionId ?? (await service.fork(sessionId)).sessionId,
+              parentSessionId: sessionId,
+            }
+          },
+          async resume(sessionId, prompt, signal) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            return service.resume(sessionId, prompt, signal)
+          },
+        }
+      },
+    }
+
+    await expect(
+      run(
+        [
+          '--continue',
+          '--fork-session',
+          '--session-id',
+          '33333333-3333-4333-8333-333333333333',
+          '--permission-mode',
+          'dontAsk',
+          '--tools=Read',
+          '--',
+          'hello',
+        ],
+        capture.io,
+        controlled,
+      ),
+    ).resolves.toBe(0)
+
+    expect(calls).toEqual([
+      'fork:11111111-1111-4111-8111-111111111111:33333333-3333-4333-8333-333333333333',
+      'resume:33333333-3333-4333-8333-333333333333:hello',
+    ])
+    expect(controls).toMatchObject({
+      continueSession: true,
+      forkSession: true,
+      permissionMode: 'dontAsk',
+      tools: ['Read'],
+    })
+  })
+
   it('prints non-terminal runtime warnings to stderr', async () => {
     const capture = captureIO()
 

@@ -102,6 +102,11 @@ interface LeaseLockMetadata {
 
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true })
 const MAX_STALE_ARTIFACT_CLEANUP = 64
+const NON_TAIL_ENTRY_TYPES = new Set([
+  'agent-name',
+  'agent-setting',
+  'custom-title',
+])
 
 export function classifyTranscriptAppend(
   written: Uint8Array,
@@ -693,14 +698,14 @@ export class ClaudeTranscriptStore {
             'Compact boundary logicalParentUuid does not reference transcript history',
           )
         }
-      } else if (entry.type !== 'agent-setting') {
+      } else if (!NON_TAIL_ENTRY_TYPES.has(entry.type)) {
         if (entry.parentUuid !== logicalTailUuid) {
           throw new Error('Entry parentUuid does not match transcript tail')
         }
       }
       if (
         entry.type !== 'last-prompt' &&
-        entry.type !== 'agent-setting' &&
+        !NON_TAIL_ENTRY_TYPES.has(entry.type) &&
         (typeof entry.uuid !== 'string' || entry.uuid.length === 0)
       ) {
         throw new Error('Appended Claude transcript entry must have a uuid')

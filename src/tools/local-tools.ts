@@ -31,6 +31,7 @@ import {
 export interface LocalToolRegistryOptions {
   cwd: string
   sharedMemoryDirectory?: string
+  additionalDirectories?: readonly string[]
   maxOutputBytes?: number
   maxFileBytes?: number
   maxShellTimeoutMs?: number
@@ -259,6 +260,7 @@ function imageMediaType(content: Buffer): ModelImageMediaType | null {
 export class LocalToolRegistry implements ToolRegistry {
   private readonly cwd: string
   private readonly sharedMemoryDirectory: string | undefined
+  private readonly additionalDirectories: readonly string[]
   private readonly maxOutputBytes: number
   private readonly maxFileBytes: number
   private readonly maxShellTimeoutMs: number
@@ -268,18 +270,34 @@ export class LocalToolRegistry implements ToolRegistry {
     this.sharedMemoryDirectory = options.sharedMemoryDirectory
       ? resolve(options.sharedMemoryDirectory)
       : undefined
+    this.additionalDirectories = (options.additionalDirectories ?? []).map(
+      (directory) => resolve(directory),
+    )
     this.maxOutputBytes = options.maxOutputBytes ?? 128 * 1024
     this.maxFileBytes = options.maxFileBytes ?? 10 * 1024 * 1024
     this.maxShellTimeoutMs = options.maxShellTimeoutMs ?? 120_000
   }
 
   definitions(): readonly ModelToolDefinition[] {
-    if (!this.sharedMemoryDirectory) return TOOL_DEFINITIONS
+    if (
+      !this.sharedMemoryDirectory &&
+      this.additionalDirectories.length === 0
+    ) {
+      return TOOL_DEFINITIONS
+    }
     return TOOL_DEFINITIONS.map((definition) =>
-      ['Read', 'Write', 'Edit'].includes(definition.name)
+      ['Read', 'Write', 'Edit', 'Grep'].includes(definition.name)
         ? {
             ...definition,
-            description: `${definition.description} Shared auto-memory files under ${this.sharedMemoryDirectory} are also allowed.`,
+            description: `${definition.description}${
+              this.additionalDirectories.length === 0
+                ? ''
+                : ` Additional allowed directories: ${this.additionalDirectories.join(', ')}.`
+            }${
+              !this.sharedMemoryDirectory || definition.name === 'Grep'
+                ? ''
+                : ` Shared auto-memory files under ${this.sharedMemoryDirectory} are also allowed.`
+            }`,
           }
         : definition,
     )
@@ -413,10 +431,16 @@ export class LocalToolRegistry implements ToolRegistry {
     includeSharedMemory: boolean,
   ): Promise<string> {
     const workspaceRoot = await realpath(this.cwd)
+    const workspaceRoots = [
+      workspaceRoot,
+      ...(await Promise.all(
+        this.additionalDirectories.map((directory) => realpath(directory)),
+      )),
+    ]
     const roots =
       includeSharedMemory && this.sharedMemoryDirectory
-        ? [workspaceRoot, await realpath(this.sharedMemoryDirectory)]
-        : [workspaceRoot]
+        ? [...workspaceRoots, await realpath(this.sharedMemoryDirectory)]
+        : workspaceRoots
     const candidate = isAbsolute(requestedPath)
       ? resolve(requestedPath)
       : resolve(workspaceRoot, requestedPath)

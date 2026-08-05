@@ -2,6 +2,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   symlink,
@@ -71,6 +72,415 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('rejects subagents when session persistence is disabled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
+    roots.push(root)
+
+    expect(
+      () =>
+        new ClaudeSessionService({
+          configRoot: join(root, 'config'),
+          cwd: join(root, 'project'),
+          claudeVersion: '2.1.208',
+          provider: queuedProvider(['unused']),
+          enableSubagents: true,
+          sessionPersistence: false,
+        }),
+    ).toThrow('Subagents require session persistence')
+  })
+
+  it('rejects an invalid non-persistent session ID without reserving it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
+    roots.push(root)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+      sessionPersistence: false,
+    })
+
+    await expect(
+      service.run('invalid identity', undefined, 'not-a-uuid'),
+    ).rejects.toThrow('Invalid Claude session ID: not-a-uuid')
+    await expect(
+      service.run('still invalid', undefined, 'not-a-uuid'),
+    ).rejects.toThrow('Invalid Claude session ID: not-a-uuid')
+  })
+
+  it('reports an empty persisted transcript as missing during ephemeral resume', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '15151515-1515-4515-8515-151515151515'
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    await mkdir(paths.projectRoot, { recursive: true })
+    await writeFile(paths.sessionFile, '')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+      sessionPersistence: false,
+    })
+
+    await expect(service.resume(sessionId, 'must not run')).rejects.toThrow(
+      `Claude session not found: ${sessionId}`,
+    )
+  })
+
+  it('runs and resumes a non-persistent session entirely in memory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '22222222-2222-4222-8222-222222222222'
+    const requests: ModelRequest[] = []
+    const hookTranscriptPaths: string[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        yield {
+          type: 'text-delta',
+          delta: requests.length === 1 ? 'first answer' : 'second answer',
+        }
+      },
+    }
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              SessionStart: [
+                { hooks: [{ type: 'command', command: 'capture-path' }] },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async (_command, input) => {
+        hookTranscriptPaths.push(input.transcript_path)
+        return {
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          durationMs: 1,
+        }
+      },
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      hooks,
+      sessionPersistence: false,
+    })
+
+    await expect(
+      service.run('first prompt', undefined, sessionId, 'Ephemeral session'),
+    ).resolves.toMatchObject({ sessionId, text: 'first answer' })
+    await expect(
+      service.resume(
+        sessionId,
+        'second prompt',
+        undefined,
+        'Ephemeral session',
+      ),
+    ).resolves.toMatchObject({ sessionId, text: 'second answer' })
+
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.messages).toEqual([
+      { role: 'user', content: 'first prompt' },
+    ])
+    expect(requests[1]?.messages).toEqual([
+      { role: 'user', content: 'first prompt' },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'second prompt' },
+    ])
+    await expect(
+      service.run('cannot reuse name', undefined, sessionId, 'Other name'),
+    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId,
+    })
+    expect(hookTranscriptPaths).toEqual([paths.sessionFile, paths.sessionFile])
+    await expect(readFile(paths.sessionFile)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(
+      readFile(join(paths.praxisRoot, 'locks', `${sessionId}.lock`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readdir(configRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(service.sessions()).resolves.toEqual([])
+    await expect(service.inspect(sessionId)).rejects.toThrow(
+      'Session persistence is disabled',
+    )
+    await expect(service.export(sessionId)).rejects.toThrow(
+      'Session persistence is disabled',
+    )
+    await expect(service.fork(sessionId)).rejects.toThrow(
+      'Session persistence is disabled',
+    )
+  })
+
+  it('imports a persisted session for an ephemeral resume without mutating disk', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '14141414-1414-4414-8414-141414141414'
+    const persisted = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['persisted answer']),
+    })
+    await persisted.run('persisted prompt', undefined, sessionId)
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const sourceBefore = await readFile(paths.sessionFile)
+    const lockDirectory = join(paths.praxisRoot, 'locks')
+    const locksBefore = await readdir(lockDirectory)
+    const requests: ModelRequest[] = []
+    const ephemeral = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          requests.push(request)
+          yield {
+            type: 'text-delta',
+            delta: requests.length === 1 ? 'ephemeral answer' : 'second answer',
+          }
+        },
+      },
+      sessionPersistence: false,
+    })
+
+    await expect(ephemeral.sessions()).resolves.toEqual([
+      expect.objectContaining({ sessionId, status: 'ready' }),
+    ])
+    await ephemeral.resume(
+      sessionId,
+      'ephemeral prompt',
+      undefined,
+      'Ephemeral name',
+    )
+    await ephemeral.resume(
+      sessionId,
+      'second prompt',
+      undefined,
+      'Ephemeral name',
+    )
+
+    expect(requests[0]?.messages).toEqual([
+      { role: 'user', content: 'persisted prompt' },
+      { role: 'assistant', content: 'persisted answer' },
+      { role: 'user', content: 'ephemeral prompt' },
+    ])
+    expect(requests[1]?.messages).toEqual([
+      { role: 'user', content: 'persisted prompt' },
+      { role: 'assistant', content: 'persisted answer' },
+      { role: 'user', content: 'ephemeral prompt' },
+      { role: 'assistant', content: 'ephemeral answer' },
+      { role: 'user', content: 'second prompt' },
+    ])
+    expect(await readFile(paths.sessionFile)).toEqual(sourceBefore)
+    expect(await readdir(lockDirectory)).toEqual(locksBefore)
+  })
+
+  it('rejects an empty session name without creating persistence artifacts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-name-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+    })
+
+    await expect(
+      service.run(
+        'must not persist',
+        undefined,
+        '13131313-1313-4313-8313-131313131313',
+        '',
+      ),
+    ).rejects.toThrow('Session name must not be empty')
+    await expect(readdir(configRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('keeps a failed non-persistent turn off disk', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '44444444-4444-4444-8444-444444444444'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield* []
+          throw new ModelProviderError('ephemeral provider failure', {
+            retryable: true,
+          })
+        },
+      },
+      sessionPersistence: false,
+    })
+
+    await expect(
+      service.run('never persist this', undefined, sessionId),
+    ).rejects.toThrow('ephemeral provider failure')
+    await expect(
+      service.run('cannot reclaim failed ID', undefined, sessionId),
+    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId,
+    })
+    await expect(readFile(paths.sessionFile)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(
+      readFile(join(paths.praxisRoot, 'locks', `${sessionId}.lock`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readdir(configRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('retains native tool history in a non-persistent session', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let providerTurn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        providerTurn += 1
+        if (providerTurn === 1) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_ephemeral',
+              name: 'Read',
+              input: { file_path: '/tmp/fixture' },
+            },
+          }
+          return
+        }
+        yield {
+          type: 'text-delta',
+          delta: providerTurn === 2 ? 'tool answer' : 'resume answer',
+        }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        { name: 'Read', description: 'Read', inputSchema: { type: 'object' } },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return { content: 'EPHEMERAL_TOOL_RESULT', isError: false }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      sessionPersistence: false,
+    })
+
+    const first = await service.run('use the tool')
+    await service.resume(first.sessionId, 'continue')
+
+    expect(requests).toHaveLength(3)
+    expect(JSON.stringify(requests[1]?.messages)).toContain('call_ephemeral')
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'EPHEMERAL_TOOL_RESULT',
+    )
+    expect(JSON.stringify(requests[2]?.messages)).toContain('call_ephemeral')
+    expect(JSON.stringify(requests[2]?.messages)).toContain(
+      'EPHEMERAL_TOOL_RESULT',
+    )
+    expect(JSON.stringify(requests[2]?.messages)).toContain('tool answer')
+    expect(JSON.stringify(requests[2]?.messages)).toContain('continue')
+    await expect(readdir(configRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('holds an in-memory session lease for the complete model turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '66666666-6666-4666-8666-666666666666'
+    let announceStarted: (() => void) | undefined
+    let releaseProvider: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      announceStarted = resolve
+    })
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          announceStarted?.()
+          await providerGate
+          yield { type: 'text-delta', delta: 'finished' }
+        },
+      },
+      sessionPersistence: false,
+    })
+
+    const activeTurn = service.run('first writer', undefined, sessionId)
+    await started
+    try {
+      await expect(service.resume(sessionId, 'second writer')).rejects.toThrow(
+        'conflict: locked',
+      )
+    } finally {
+      releaseProvider?.()
+    }
+    await expect(activeTurn).resolves.toMatchObject({ text: 'finished' })
+    await expect(readdir(configRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('starts a session with an explicit caller-provided UUID', async () => {
     const { service, configRoot, cwd } = await createService()
     const sessionId = '33333333-3333-4333-8333-333333333333'
@@ -102,6 +512,157 @@ describe('ClaudeSessionService', () => {
     await expect(
       service.run('must not claim empty file', undefined, emptySessionId),
     ).rejects.toThrow(`Session ID ${emptySessionId} is already in use`)
+  })
+
+  it('creates native session name records and preserves them across fork', async () => {
+    const { service, configRoot, cwd } = await createService()
+    const sessionId = '12121212-1212-4212-8212-121212121212'
+
+    await service.run('named prompt', undefined, sessionId, 'Named session')
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId,
+    })
+    const sourceEntries = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(sourceEntries.slice(0, 3)).toEqual([
+      { type: 'custom-title', customTitle: 'Named session', sessionId },
+      { type: 'agent-name', agentName: 'Named session', sessionId },
+      expect.objectContaining({ type: 'user', sessionId }),
+    ])
+
+    const forkSessionId = '34343434-3434-4434-8434-343434343434'
+    const fork = await service.fork(sessionId, forkSessionId)
+    expect(fork).toEqual({
+      sessionId: forkSessionId,
+      parentSessionId: sessionId,
+    })
+    const forkEntries = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: fork.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(forkEntries.slice(0, 2)).toEqual([
+      {
+        type: 'custom-title',
+        customTitle: 'Named session',
+        sessionId: fork.sessionId,
+      },
+      {
+        type: 'agent-name',
+        agentName: 'Named session',
+        sessionId: fork.sessionId,
+      },
+    ])
+  })
+
+  it('names a resumed session before the prompt without duplicating the same name', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-name-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['first', 'second', 'third']),
+    })
+    const first = await service.run('original prompt')
+
+    await service.resume(
+      first.sessionId,
+      'first named prompt',
+      undefined,
+      'Resume name',
+    )
+    await service.resume(
+      first.sessionId,
+      'same named prompt',
+      undefined,
+      'Resume name',
+    )
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const entries = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: first.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const namingEntries = entries.filter(
+      (entry) => entry.type === 'custom-title' || entry.type === 'agent-name',
+    )
+    expect(namingEntries).toEqual([
+      {
+        type: 'custom-title',
+        customTitle: 'Resume name',
+        sessionId: first.sessionId,
+      },
+      {
+        type: 'agent-name',
+        agentName: 'Resume name',
+        sessionId: first.sessionId,
+      },
+    ])
+    const firstNamedPromptIndex = entries.findIndex(
+      (entry) => entry.message?.content === 'first named prompt',
+    )
+    expect(entries.indexOf(namingEntries[1])).toBeLessThan(
+      firstNamedPromptIndex,
+    )
+
+    const fork = await service.fork(first.sessionId)
+    const forkEntries = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: fork.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(
+      forkEntries.filter(
+        (entry) => entry.type === 'custom-title' || entry.type === 'agent-name',
+      ),
+    ).toEqual([
+      {
+        type: 'custom-title',
+        customTitle: 'Resume name',
+        sessionId: fork.sessionId,
+      },
+      {
+        type: 'agent-name',
+        agentName: 'Resume name',
+        sessionId: fork.sessionId,
+      },
+    ])
   })
 
   it('keeps a caller-provided session ID reserved after startup fails', async () => {

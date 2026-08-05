@@ -48,6 +48,14 @@ export interface LoadClaudeSharedResourcesOptions {
   cwd: string
   homeDirectory?: string
   claudeStatePath?: string
+  settingSources?: readonly ClaudeResourceScope[]
+}
+
+function selectedScope(
+  scope: ClaudeResourceScope,
+  settingSources: readonly ClaudeResourceScope[] | undefined,
+): boolean {
+  return settingSources === undefined || settingSources.includes(scope)
 }
 
 async function readOptionalText(
@@ -321,8 +329,11 @@ async function loadProjectSettings(
 export async function loadClaudeSettings({
   configRoot,
   cwd,
+  settingSources,
 }: LoadClaudeSharedResourcesOptions): Promise<ClaudeJsonResource[]> {
-  return loadProjectSettings(configRoot, await canonicalPath(cwd))
+  return (
+    await loadProjectSettings(configRoot, await canonicalPath(cwd))
+  ).filter((resource) => selectedScope(resource.scope, settingSources))
 }
 
 export async function resolveClaudeProjectMemoryDirectory({
@@ -514,15 +525,29 @@ export async function loadClaudeContextResources({
   configRoot,
   cwd,
   homeDirectory = homedir(),
+  settingSources,
 }: LoadClaudeSharedResourcesOptions): Promise<ClaudeContextResources> {
   const { directories, homeBoundary, memoryIdentityRoot } =
     await resolveProjectContext(cwd, homeDirectory)
-  return loadResolvedClaudeContext(
+  const resources = await loadResolvedClaudeContext(
     configRoot,
     directories,
     homeBoundary,
     memoryIdentityRoot,
   )
+  return {
+    instructions: resources.instructions.filter((resource) =>
+      selectedScope(resource.scope, settingSources),
+    ),
+    conditionalRules: resources.conditionalRules.filter((resource) =>
+      selectedScope(resource.scope, settingSources),
+    ),
+    memoryIndex:
+      resources.memoryIndex &&
+      selectedScope(resources.memoryIndex.scope, settingSources)
+        ? resources.memoryIndex
+        : null,
+  }
 }
 
 export async function loadClaudeSharedResources({
@@ -530,6 +555,7 @@ export async function loadClaudeSharedResources({
   cwd,
   homeDirectory = homedir(),
   claudeStatePath = join(configRoot, '.claude.json'),
+  settingSources,
 }: LoadClaudeSharedResourcesOptions): Promise<ClaudeSharedResources> {
   const {
     directories: projectDirectories,
@@ -575,21 +601,29 @@ export async function loadClaudeSharedResources({
       extensionDirectories.map((path) => join(path, '.claude', 'agents')),
       (name) => name.endsWith('.md'),
     ),
-    loadClaudeSettings({ configRoot, cwd }),
+    loadClaudeSettings({
+      configRoot,
+      cwd,
+      ...(settingSources === undefined ? {} : { settingSources }),
+    }),
     loadProjectMcp(claudeStatePath, projectDirectories, memoryIdentityRoot),
   ])
 
+  const selected = <T extends { scope: ClaudeResourceScope }>(
+    resources: readonly T[],
+  ): T[] =>
+    resources.filter((resource) =>
+      selectedScope(resource.scope, settingSources),
+    )
   return {
-    instructions: [
-      globalInstruction,
-      ...globalRules,
-      ...projectInstructions,
-    ].filter(present),
-    memory,
-    skills,
-    commands,
-    agents,
+    instructions: [globalInstruction, ...globalRules, ...projectInstructions]
+      .filter(present)
+      .filter((resource) => selectedScope(resource.scope, settingSources)),
+    memory: selected(memory),
+    skills: selected(skills),
+    commands: selected(commands),
+    agents: selected(agents),
     settings,
-    mcp,
+    mcp: selected(mcp),
   }
 }

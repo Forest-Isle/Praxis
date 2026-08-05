@@ -19,7 +19,19 @@ export interface ClaudePermissionResolverOptions {
   cwd: string
   homeDirectory?: string
   settings: readonly ClaudeJsonResource[]
+  allowedTools?: readonly string[]
+  disallowedTools?: readonly string[]
+  permissionMode?: ClaudePermissionMode
 }
+
+export type ClaudePermissionMode =
+  | 'acceptEdits'
+  | 'auto'
+  | 'bypassPermissions'
+  | 'manual'
+  | 'dontAsk'
+  | 'plan'
+  | 'default'
 
 const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   Agent: 'allow',
@@ -156,34 +168,75 @@ export class ClaudePermissionResolver implements PermissionResolver {
   private readonly rules: readonly PermissionRule[]
   private readonly cwd: string
   private readonly homeDirectory: string
+  private readonly permissionMode: ClaudePermissionMode
 
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
     this.homeDirectory = resolve(options.homeDirectory ?? homedir())
-    this.rules = loadRules(options.settings)
+    this.rules = [
+      ...loadRules(options.settings),
+      ...readRuleStrings(options.disallowedTools ?? [], 'deny'),
+      ...readRuleStrings(options.allowedTools ?? [], 'allow'),
+    ]
+    this.permissionMode = options.permissionMode ?? 'default'
+    if (this.permissionMode === 'auto') {
+      throw new Error(
+        'Permission mode auto requires a classifier and is not implemented yet',
+      )
+    }
   }
 
   async resolve(call: ModelToolCall): Promise<PermissionDecision> {
-    for (const behavior of ['deny', 'ask', 'allow'] as const) {
-      const rule = this.rules.find(
+    const matchingRule = (behavior: PermissionBehavior) =>
+      this.rules.find(
         (candidate) =>
           candidate.behavior === behavior &&
           matchesRule(candidate, call, this.cwd, this.homeDirectory),
       )
-      if (!rule) continue
-      if (behavior === 'deny') {
-        const suffix = rule.pattern === null ? '' : `(${rule.pattern})`
-        return {
-          behavior,
-          reason: `Denied by Claude permission rule ${rule.toolName}${suffix}`,
-        }
+    const denied = matchingRule('deny')
+    if (denied) {
+      const suffix = denied.pattern === null ? '' : `(${denied.pattern})`
+      return {
+        behavior: 'deny',
+        reason: `Denied by Claude permission rule ${denied.toolName}${suffix}`,
       }
-      return { behavior }
+    }
+    if (this.permissionMode === 'bypassPermissions') {
+      return { behavior: 'allow' }
+    }
+    if (
+      this.permissionMode === 'plan' &&
+      (call.name === 'Write' || call.name === 'Edit')
+    ) {
+      return {
+        behavior: 'deny',
+        reason: `Cannot use ${call.name} while in plan mode`,
+      }
+    }
+
+    if (matchingRule('ask')) return this.askDecision(call)
+    if (matchingRule('allow')) return { behavior: 'allow' }
+    if (
+      this.permissionMode === 'acceptEdits' &&
+      (call.name === 'Write' || call.name === 'Edit')
+    ) {
+      return { behavior: 'allow' }
     }
 
     const defaultBehavior = DEFAULT_BEHAVIOR[call.name]
-    return defaultBehavior
-      ? { behavior: defaultBehavior }
-      : { behavior: 'deny', reason: `Unknown tool ${call.name}` }
+    return defaultBehavior === 'ask'
+      ? this.askDecision(call)
+      : defaultBehavior
+        ? { behavior: defaultBehavior }
+        : { behavior: 'deny', reason: `Unknown tool ${call.name}` }
+  }
+
+  private askDecision(call: ModelToolCall): PermissionDecision {
+    return this.permissionMode === 'dontAsk' || this.permissionMode === 'plan'
+      ? {
+          behavior: 'deny',
+          reason: `Permission to use ${call.name} is disabled in ${this.permissionMode} mode`,
+        }
+      : { behavior: 'ask' }
   }
 }

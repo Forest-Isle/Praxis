@@ -194,4 +194,50 @@ describe('ClaudePermissionResolver', () => {
       }),
     ).resolves.toMatchObject({ behavior: 'deny' })
   })
+
+  it('applies CLI rules and permission modes without bypassing explicit deny', async () => {
+    const write = {
+      id: 'write',
+      name: 'Write',
+      input: { file_path: '/workspace/output.txt' },
+    }
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'acceptEdits',
+      }).resolve(write),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'dontAsk',
+      }).resolve(write),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'plan',
+        allowedTools: ['Write'],
+      }).resolve(write),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'bypassPermissions',
+        disallowedTools: ['Write'],
+      }).resolve(write),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    expect(
+      () =>
+        new ClaudePermissionResolver({
+          cwd: '/workspace',
+          settings: [],
+          permissionMode: 'auto',
+        }),
+    ).toThrow('requires a classifier')
+  })
 })

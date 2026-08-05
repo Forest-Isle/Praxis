@@ -33,6 +33,7 @@ import {
   runInteractive as renderInteractive,
   type InteractiveServiceFactory,
 } from './cli/interactive.js'
+import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
 import { ClaudePermissionResolver } from './permissions/claude-permission-resolver.js'
 import {
   ClaudeExtensionPermissionResolver,
@@ -49,6 +50,7 @@ import {
 import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
+import { FilteredToolRegistry } from './tools/filtered-tool-registry.js'
 import {
   createErrorResult,
   createSuccessResult,
@@ -56,6 +58,7 @@ import {
   readStreamUserMessages,
   StreamJsonOutput,
   type CliOutputFormat,
+  type CliControls,
   type CliRuntimeInfo,
   type StreamUserMessage,
 } from './cli/protocol.js'
@@ -79,8 +82,26 @@ Usage:
 Options:
   -p, --print                         Print response and exit
   -r, --resume <session-id>           Resume a session
+  -c, --continue                      Continue latest session in this directory
+  --fork-session                      Fork when resuming or continuing
   --session-id <uuid>                 Use an explicit ID for a new session
+  -n, --name <name>                   Set session display name
+  --no-session-persistence            Keep print-mode session in memory only
   --agent <name>                      Select a shared agent definition
+  --settings <file-or-json>           Load additional settings
+  --setting-sources <sources>         user, project, local, or an empty list
+  --safe-mode                         Disable shared customizations
+  --bare                              Use only explicitly supplied context
+  --system-prompt <prompt>            Set system prompt
+  --append-system-prompt <prompt>     Append system prompt
+  --add-dir <directories...>          Allow access to additional directories
+  --tools <tools...>                  Select available tools; empty disables all
+  --allowedTools <tools...>           Add permission allow rules
+  --disallowedTools <tools...>        Add permission deny rules
+  --permission-mode <mode>            Set permission behavior
+  --dangerously-skip-permissions      Bypass checks except explicit deny rules
+  --allow-dangerously-skip-permissions
+                                      Allow bypass mode without enabling it
   --input-format <format>             text (default) or stream-json
   --output-format <format>            text (default), json, or stream-json
   --include-partial-messages          Emit stream_event records
@@ -191,7 +212,7 @@ interface SessionCommands {
     prompt: string,
     signal?: AbortSignal,
   ): Promise<SessionRunResult>
-  fork(sessionId: string): Promise<ForkResult>
+  fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
@@ -206,6 +227,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
     approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
     agent?: string
+    controls?: CliControls
     signal?: AbortSignal
   }): Promise<SessionCommands>
   runInteractive?(options: { signal?: AbortSignal }): Promise<number>
@@ -224,6 +246,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   approveRecovery,
   approveTool,
   agent,
+  controls = DEFAULT_CLI_CONTROLS,
   signal,
 }) => {
   const claudeVersion = await detectInstalledClaudeVersion()
@@ -233,6 +256,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const claudeStatePath = configuredRoot
     ? join(configRoot, '.claude.json')
     : resolve(homedir(), '.claude.json')
+  const cli = await resolveCliControls(controls, cwd)
   let provider
   const context = parseContextEnvironment(process.env)
   if (requireProvider) {
@@ -269,30 +293,69 @@ const createDefaultService: CliDependencies['createService'] = async ({
     cwd,
     claudeVersion,
     eventSink,
+    sessionPersistence: cli.sessionPersistence,
   }
   if (!provider) return new ClaudeSessionService(options)
 
-  const settings = await loadClaudeSettings({ configRoot, cwd })
-  const resources = await loadClaudeSharedResources({
+  const automaticSettingSources =
+    cli.safeMode || cli.bare ? [] : cli.settingSources
+  const settings = [
+    ...(await loadClaudeSettings({
+      configRoot,
+      cwd,
+      ...(cli.bare
+        ? { settingSources: [] }
+        : cli.settingSources === undefined
+          ? {}
+          : { settingSources: cli.settingSources }),
+    })),
+    ...(cli.additionalSettings ? [cli.additionalSettings] : []),
+  ]
+  const loadedResources = await loadClaudeSharedResources({
     configRoot,
     cwd,
     claudeStatePath,
+    ...(automaticSettingSources === undefined
+      ? {}
+      : { settingSources: automaticSettingSources }),
   })
+  const resources = {
+    ...loadedResources,
+    settings: [
+      ...loadedResources.settings,
+      ...(cli.additionalSettings ? [cli.additionalSettings] : []),
+    ],
+  }
   const extensions = new ClaudeExtensionCatalog(resources)
-  const memoryDirectory = await resolveClaudeProjectMemoryDirectory({
-    configRoot,
-    cwd,
-  })
-  await mkdir(memoryDirectory, { recursive: true })
+  const memoryDirectory =
+    cli.safeMode || cli.bare
+      ? undefined
+      : await resolveClaudeProjectMemoryDirectory({ configRoot, cwd })
+  if (memoryDirectory) await mkdir(memoryDirectory, { recursive: true })
   const loadContextResources = () =>
-    loadClaudeContextResources({ configRoot, cwd })
+    loadClaudeContextResources({
+      configRoot,
+      cwd,
+      ...(automaticSettingSources === undefined
+        ? {}
+        : { settingSources: automaticSettingSources }),
+    })
   const permissions = new ClaudeExtensionPermissionResolver(
-    new ClaudePermissionResolver({ cwd, settings }),
+    new ClaudePermissionResolver({
+      cwd,
+      settings,
+      allowedTools: cli.allowedTools,
+      disallowedTools: cli.disallowedTools,
+      permissionMode: cli.dangerouslySkipPermissions
+        ? 'bypassPermissions'
+        : cli.permissionMode,
+    }),
   )
   const mcpTools = await ClaudeMcpToolRegistry.connect({
     base: new LocalToolRegistry({
       cwd,
-      sharedMemoryDirectory: memoryDirectory,
+      ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
+      additionalDirectories: cli.additionalDirectories,
     }),
     resources: resources.mcp,
     cwd,
@@ -301,17 +364,43 @@ const createDefaultService: CliDependencies['createService'] = async ({
   })
   try {
     const extensionTools = new ClaudeExtensionToolRegistry(mcpTools, extensions)
+    const subagentsSelected =
+      cli.tools === undefined ||
+      cli.tools.includes('default') ||
+      cli.tools.includes('Agent')
+    const selectedBaseTools = cli.tools?.filter((name) => name !== 'Agent')
+    const filteredTools = new FilteredToolRegistry(extensionTools, {
+      ...(cli.tools === undefined
+        ? cli.bare
+          ? { tools: ['Bash', 'Edit', 'Read'] }
+          : {}
+        : { tools: selectedBaseTools ?? [] }),
+      disallowedTools: cli.disallowedTools,
+    })
+    const enableSubagents =
+      cli.sessionPersistence &&
+      !cli.bare &&
+      subagentsSelected &&
+      !cli.disallowedTools.includes('Agent')
     const service = new ClaudeSessionService({
       ...options,
       provider,
-      tools: extensionTools,
+      tools: filteredTools,
       permissions,
       extensions,
-      enableSubagents: true,
-      hooks: new ClaudeHookRunner({ settings, cwd }),
+      enableSubagents,
+      ...(cli.safeMode || cli.bare
+        ? {}
+        : { hooks: new ClaudeHookRunner({ settings, cwd }) }),
       ...(agent ? { agent } : {}),
       contextAssembler: new ClaudeContextAssembler({
         loadResources: loadContextResources,
+        ...(cli.systemPrompt === undefined
+          ? {}
+          : { systemPrompt: cli.systemPrompt }),
+        ...(cli.appendSystemPrompt === undefined
+          ? {}
+          : { appendSystemPrompt: cli.appendSystemPrompt }),
       }),
       conditionalRuleResolver: new ClaudeConditionalRuleResolver({
         loadResources: loadContextResources,
@@ -322,9 +411,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(approveTool ? { approveTool } : {}),
       ...(approveRecovery ? { approveRecovery } : {}),
     })
-    const toolNames = extensionTools
-      .definitions()
-      .map((definition) => definition.name)
+    const toolNames = [
+      ...filteredTools.definitions().map((definition) => definition.name),
+      ...(enableSubagents ? ['Agent'] : []),
+    ]
     const mcpServerNames = [
       ...new Set(
         toolNames
@@ -341,7 +431,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
         name,
         status: 'connected',
       })),
-      permissionMode: 'default',
+      permissionMode: cli.dangerouslySkipPermissions
+        ? 'bypassPermissions'
+        : cli.permissionMode,
       slashCommands: extensions
         .modelInvocableSkills()
         .map((definition) => definition.name),
@@ -353,10 +445,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
     }
     return {
       run: (prompt, signal, sessionId) =>
-        service.run(prompt, signal, sessionId),
+        service.run(prompt, signal, sessionId, cli.name),
       resume: (sessionId, prompt, signal) =>
-        service.resume(sessionId, prompt, signal),
-      fork: (sessionId) => service.fork(sessionId),
+        service.resume(sessionId, prompt, signal, cli.name),
+      fork: (sessionId, targetSessionId) =>
+        service.fork(sessionId, targetSessionId),
       sessions: () => service.sessions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
@@ -520,6 +613,7 @@ async function execute(
     ...(retryInterruptedTools ? { approveRecovery: () => true } : {}),
     ...(signal ? { signal } : {}),
     ...(agent ? { agent } : {}),
+    controls: invocation,
   })
   try {
     if (command === 'sessions') {
@@ -582,8 +676,18 @@ async function execute(
       skills: [],
       claudeCodeVersion: 'unknown',
     }
-    const existingSessionId =
+    let existingSessionId =
       command === 'resume' ? requireValue(args[1], 'Session ID') : undefined
+    if (!existingSessionId && invocation.continueSession) {
+      const latest = (await service.sessions())[0]
+      if (!latest) throw new Error('No conversation found to continue')
+      existingSessionId = latest.sessionId
+    }
+    if (existingSessionId && invocation.forkSession) {
+      existingSessionId = (
+        await service.fork(existingSessionId, invocation.sessionId)
+      ).sessionId
+    }
     let activeSessionId =
       existingSessionId ?? invocation.sessionId ?? randomUUID()
     if (outputFormat === 'stream-json' && !invocation.legacyJson) {
@@ -632,7 +736,7 @@ async function execute(
       let result: SessionRunResult
       try {
         result =
-          command === 'resume' || !isFirstTurn
+          existingSessionId !== undefined || !isFirstTurn
             ? signal
               ? await service.resume(activeSessionId, prompt, signal)
               : await service.resume(activeSessionId, prompt)

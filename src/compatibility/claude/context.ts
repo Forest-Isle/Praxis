@@ -34,6 +34,8 @@ function limitMemoryIndex(resource: ClaudeTextResource): ClaudeTextResource {
 
 export interface ClaudeContextAssemblerOptions {
   loadResources(): Promise<ClaudeContextResources>
+  systemPrompt?: string
+  appendSystemPrompt?: string
 }
 
 export type ClaudeConditionalRuleResolverOptions = ClaudeContextAssemblerOptions
@@ -79,17 +81,26 @@ export class ClaudeContextAssembler implements ContextAssembler {
         resources.memoryIndex ? [limitMemoryIndex(resources.memoryIndex)] : [],
       ),
     ].filter((section): section is string => section !== null)
-    if (sections.length === 0) return []
-
-    return [
-      {
+    const messages: SystemContextMessage[] = []
+    if (this.options.systemPrompt !== undefined) {
+      messages.push({ role: 'system', content: this.options.systemPrompt })
+    }
+    if (sections.length > 0) {
+      messages.push({
         role: 'system',
         content: `# Shared Claude context
 
 Instructions are ordered from broadest to most specific. Auto-memory is background context and does not override instructions.
 
 ${sections.join('\n\n')}`,
-      },
-    ]
+      })
+    }
+    if (this.options.appendSystemPrompt !== undefined) {
+      messages.push({
+        role: 'system',
+        content: this.options.appendSystemPrompt,
+      })
+    }
+    return messages
   }
 }
