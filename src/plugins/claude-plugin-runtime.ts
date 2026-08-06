@@ -16,6 +16,11 @@ import type {
   ClaudeResourceScope,
   ClaudeTextResource,
 } from '../compatibility/claude/shared-resources.js'
+import {
+  materializeClaudePluginSource,
+  replaceClaudePluginDirectory,
+  readClaudeInstalledPlugins,
+} from './claude-plugin-marketplace.js'
 
 interface ClaudePluginCommandDefinition {
   source?: string
@@ -343,6 +348,7 @@ async function loadPlugin(
   enabled: boolean,
   cwd: string,
   requireManifest = false,
+  resourceScope?: ClaudeResourceScope,
 ): Promise<{
   record: ClaudePluginRecord
   resources: Omit<ClaudePluginResources, 'plugins'>
@@ -351,7 +357,7 @@ async function loadPlugin(
   if (!(await isDirectory(canonical)))
     throw new Error(`Plugin path is not a directory: ${pluginPath}`)
   const manifest = await readManifest(canonical, requireManifest)
-  const scope = scopeForPath(canonical, cwd)
+  const scope = resourceScope ?? scopeForPath(canonical, cwd)
   const commandDefinitions = isRecord(manifest.commands)
     ? (manifest.commands as Record<string, ClaudePluginCommandDefinition>)
     : undefined
@@ -595,13 +601,56 @@ export async function loadClaudePlugins(options: {
   cwd: string
   pluginDirectories?: readonly string[]
   strictPluginDirectories?: boolean
+  pluginUrls?: readonly string[]
   loadInstalled?: boolean
 }): Promise<ClaudePluginResources> {
   const registry =
     options.loadInstalled === false
       ? []
       : await readPluginRegistry(options.configRoot)
-  const candidates = [
+  const nativeRegistry =
+    options.loadInstalled === false
+      ? []
+      : await readClaudeInstalledPlugins(options.configRoot, options.cwd)
+  const temporarySources: Array<() => Promise<void>> = []
+  const inlineSources = [
+    ...(options.pluginDirectories ?? []),
+    ...(options.pluginUrls ?? []),
+  ]
+  const inlineCandidates: Array<{
+    path: string
+    source: string
+    enabled: boolean
+    resourceScope?: ClaudeResourceScope
+  }> = []
+  for (const source of inlineSources) {
+    let materialized
+    try {
+      materialized = await materializeClaudePluginSource(source)
+    } catch (error) {
+      throw new Error(`Failed to load plugin ${source}`, { cause: error })
+    }
+    temporarySources.push(materialized.cleanup)
+    inlineCandidates.push({
+      path: materialized.path,
+      source: 'inline',
+      enabled: true,
+    })
+  }
+  const candidates: Array<{
+    path: string
+    source: string
+    enabled: boolean
+    resourceScope?: ClaudeResourceScope
+  }> = [
+    ...nativeRegistry
+      .filter((entry) => entry.enabled)
+      .map((entry) => ({
+        path: entry.installPath,
+        source: entry.id,
+        enabled: entry.enabled,
+        resourceScope: entry.scope as ClaudeResourceScope,
+      })),
     ...registry
       .filter((entry) => entry.enabled)
       .map((entry) => ({
@@ -609,71 +658,76 @@ export async function loadClaudePlugins(options: {
         source: entry.source,
         enabled: true,
       })),
-    ...(options.pluginDirectories ?? []).map((path) => ({
-      path,
-      source: 'inline',
-      enabled: true,
-    })),
+    ...inlineCandidates,
   ]
   const seen = new Set<string>()
-  const loaded = await Promise.all(
-    candidates.map(async (candidate) => {
-      try {
-        const canonical = await realpath(candidate.path)
-        if (seen.has(canonical)) return null
-        seen.add(canonical)
-        return await loadPlugin(
-          canonical,
-          candidate.source,
-          candidate.enabled,
-          options.cwd,
-        )
-      } catch (error) {
-        if (options.strictPluginDirectories && candidate.source === 'inline') {
-          throw new Error(`Failed to load plugin ${candidate.path}`, {
-            cause: error,
-          })
+  try {
+    const loaded = await Promise.all(
+      candidates.map(async (candidate) => {
+        try {
+          const canonical = await realpath(candidate.path)
+          if (seen.has(canonical)) return null
+          seen.add(canonical)
+          return await loadPlugin(
+            canonical,
+            candidate.source,
+            candidate.enabled,
+            options.cwd,
+            false,
+            candidate.resourceScope,
+          )
+        } catch (error) {
+          if (
+            options.strictPluginDirectories &&
+            candidate.source === 'inline'
+          ) {
+            throw new Error(`Failed to load plugin ${candidate.path}`, {
+              cause: error,
+            })
+          }
+          const path = resolve(candidate.path)
+          return {
+            record: {
+              name: basename(path),
+              path,
+              source: candidate.source,
+              enabled: candidate.enabled,
+              errors: [error instanceof Error ? error.message : String(error)],
+            },
+            resources: {
+              commands: [],
+              skills: [],
+              agents: [],
+              settings: [],
+              mcp: [],
+            },
+          }
         }
-        const path = resolve(candidate.path)
-        return {
-          record: {
-            name: basename(path),
-            path,
-            source: candidate.source,
-            enabled: candidate.enabled,
-            errors: [error instanceof Error ? error.message : String(error)],
-          },
-          resources: {
-            commands: [],
-            skills: [],
-            agents: [],
-            settings: [],
-            mcp: [],
-          },
-        }
-      }
-    }),
-  )
-  return loaded
-    .filter((value): value is NonNullable<typeof value> => value !== null)
-    .reduce<ClaudePluginResources>(
-      (result, current) => ({
-        plugins: [...result.plugins, current.record],
-        commands: [...result.commands, ...current.resources.commands],
-        skills: [...result.skills, ...current.resources.skills],
-        agents: [...result.agents, ...current.resources.agents],
-        settings: [...result.settings, ...current.resources.settings],
-        mcp: [...result.mcp, ...current.resources.mcp],
       }),
-      {
-        plugins: [],
-        commands: [],
-        skills: [],
-        agents: [],
-        settings: [],
-        mcp: [],
-      },
     )
+    return loaded
+      .filter((value): value is NonNullable<typeof value> => value !== null)
+      .reduce<ClaudePluginResources>(
+        (result, current) => ({
+          plugins: [...result.plugins, current.record],
+          commands: [...result.commands, ...current.resources.commands],
+          skills: [...result.skills, ...current.resources.skills],
+          agents: [...result.agents, ...current.resources.agents],
+          settings: [...result.settings, ...current.resources.settings],
+          mcp: [...result.mcp, ...current.resources.mcp],
+        }),
+        {
+          plugins: [],
+          commands: [],
+          skills: [],
+          agents: [],
+          settings: [],
+          mcp: [],
+        },
+      )
+  } finally {
+    await Promise.all(temporarySources.map((cleanup) => cleanup()))
+  }
 }
 
 export async function validateClaudePlugin(
@@ -725,26 +779,33 @@ export async function installClaudePlugin(
   source: string,
   enabled = true,
 ): Promise<ClaudePluginRegistryEntry> {
-  const sourcePath = await realpath(resolve(source))
-  const record = await validateClaudePlugin(sourcePath)
-  const target = join(configRoot, 'plugins', 'installed', record.name)
-  await mkdir(dirname(target), { recursive: true })
-  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`
-  await cp(sourcePath, temporary, { recursive: true, errorOnExist: true })
-  await rm(target, { recursive: true, force: true })
-  await rename(temporary, target)
-  const entry: ClaudePluginRegistryEntry = {
-    name: record.name,
-    path: target,
-    source: sourcePath,
-    enabled,
-    ...(record.version === undefined ? {} : { version: record.version }),
+  const materialized = await materializeClaudePluginSource(source)
+  try {
+    const sourcePath = await realpath(materialized.path)
+    const record = await validateClaudePlugin(sourcePath)
+    const target = join(configRoot, 'plugins', 'installed', record.name)
+    await mkdir(dirname(target), { recursive: true })
+    const temporary = `${target}.${process.pid}.${Date.now()}.tmp`
+    await cp(sourcePath, temporary, { recursive: true, errorOnExist: true })
+    await replaceClaudePluginDirectory(temporary, target)
+    const sourceReference = /^https:\/\//u.test(source)
+      ? source
+      : resolve(source)
+    const entry: ClaudePluginRegistryEntry = {
+      name: record.name,
+      path: target,
+      source: sourceReference,
+      enabled,
+      ...(record.version === undefined ? {} : { version: record.version }),
+    }
+    const registry = (await readPluginRegistry(configRoot)).filter(
+      (item) => item.name !== record.name,
+    )
+    await writePluginRegistry(configRoot, [...registry, entry])
+    return entry
+  } finally {
+    await materialized.cleanup()
   }
-  const registry = (await readPluginRegistry(configRoot)).filter(
-    (item) => item.name !== record.name,
-  )
-  await writePluginRegistry(configRoot, [...registry, entry])
-  return entry
 }
 
 export async function setClaudePluginEnabled(
