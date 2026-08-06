@@ -25,6 +25,39 @@ const image = {
 }
 
 describe('AgentRuntime', () => {
+  it('collects provider API duration only when metrics are requested', async () => {
+    const provider = providerFrom(async function* () {
+      yield { type: 'text-delta', delta: 'measured' }
+      yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+    })
+    const runtime = new AgentRuntime(provider)
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'measure' }],
+      collectMetrics: true,
+    })
+    expect(result.durationApiMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('stops before a new model turn after a priced budget is exhausted', async () => {
+    let calls = 0
+    const provider = providerFrom(async function* () {
+      calls += 1
+      yield { type: 'text-delta', delta: 'first' }
+      yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      costUsd: (usage) => usage.inputTokens / 1_000_000,
+      maxBudgetUsd: 0.000001,
+    })
+    await expect(
+      runtime.run({
+        messages: [{ role: 'user', content: 'budget' }],
+        onStop: async () => ['continue'],
+      }),
+    ).rejects.toThrow('Maximum budget')
+    expect(calls).toBe(1)
+  })
+
   it('emits typed state, text, usage, and completion events', async () => {
     const provider = providerFrom(async function* () {
       yield { type: 'text-delta', delta: 'hel' }

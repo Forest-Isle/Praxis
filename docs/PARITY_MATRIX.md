@@ -26,8 +26,8 @@ Evidence levels:
 | Resume syntax                        | Complete                 | `-r`, `--resume`, and legacy `resume`; shared transcript continuation                                                      |
 | Explicit session ID                  | Complete                 | UUID validation, atomic `wx` reservation, existing/empty-file rejection matching live 2.1.208                              |
 | Text output                          | Complete                 | Realtime terminal deltas and final newline                                                                                 |
-| Single JSON result                   | Partial                  | Success/error shape complete; provider cost and API-only duration are explicit `null` until metering lands                 |
-| Stream JSON output                   | Partial                  | Init, assistant, tool result, result, warning, and error envelopes complete; result metering remains missing               |
+| Single JSON result                   | Partial                  | Success/error shape plus measured API duration and priced usage; unknown model pricing remains explicitly `null`           |
+| Stream JSON output                   | Partial                  | Init, assistant, tool result, result, warning, error, and measured result metrics complete; prompt suggestions remain      |
 | Partial messages                     | Complete                 | message/content/tool delta lifecycle under `--include-partial-messages`                                                    |
 | Stream JSON input                    | Complete for text blocks | Incremental UTF-8/CRLF NDJSON parser, bounds, empty-input no-op, multi-turn run-to-resume, replay; installed gate          |
 | User image/file input records        | Missing                  | Requires native input attachment envelopes and provider projection                                                         |
@@ -70,10 +70,10 @@ Evidence levels:
 | Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                |
 | System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                                        |
 | Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                            |
-| Model selection               | Partial                     | Environment selection complete; `--model` invocation option missing                                                                |
-| Effort and fallback           | Missing                     | `--effort`, retry fallback model chain                                                                                             |
-| Structured output             | Missing                     | `--json-schema` validation and `structured_output` result                                                                          |
-| Cost and budget               | Missing                     | Provider pricing, accurate cost/API duration, `--max-budget-usd`; result metrics stay `null` rather than claiming zero             |
+| Model selection               | Complete                    | Environment and `--model` invocation selection, fallback model resolution                                                          |
+| Effort and fallback           | Complete                    | `--effort`, retryable three-attempt fallback chain, print-only validation                                                          |
+| Structured output             | Complete                    | `--json-schema` AJV validation, hidden tool capture, exact-once enforcement, `structured_output` result                            |
+| Cost and budget               | Partial                     | Built-in/explicit pricing, measured API duration, and `--max-budget-usd`; unknown/private model pricing remains null/fail-closed   |
 | Prompt suggestions            | Missing                     | Post-turn `prompt_suggestion` event                                                                                                |
 | Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                   |
 
@@ -116,7 +116,7 @@ Evidence levels:
 3. Picker naming, ephemeral subagents, and permission `auto` classifier.
 4. Plugin runtime and management.
 5. MCP management commands.
-6. Model effort/fallback, structured output, pricing/budget, suggestions,
-   diagnostics, auth, and update commands.
+6. Complete unknown-model pricing policy, prompt suggestions, diagnostics,
+   auth, and update commands.
 7. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.

@@ -50,6 +50,8 @@ export interface ModelToolDefinition {
 export interface ModelUsage {
   inputTokens: number
   outputTokens: number
+  cacheReadInputTokens?: number
+  cacheCreationInputTokens?: number
 }
 
 export interface ModelWebSearch {
@@ -113,6 +115,7 @@ export interface ToolExecutionResult {
   accessedPaths?: readonly string[]
   followUpUserMessages?: readonly string[]
   nativeToolUseResult?: Record<string, unknown>
+  durationApiMs?: number
 }
 
 export interface ToolExecutionContext {
@@ -162,6 +165,8 @@ export interface AgentRuntimeOptions {
   maxToolCallsPerTurn?: number
   maxToolInputBytes?: number
   emitInitialContextState?: boolean
+  costUsd?: (usage: ModelUsage) => number | undefined
+  maxBudgetUsd?: number
 }
 
 export interface AgentRunRequest {
@@ -178,6 +183,7 @@ export interface AgentRunRequest {
   >
   signal?: AbortSignal
   effort?: string
+  collectMetrics?: boolean
 }
 
 export interface AgentToolRecoveryRequest extends Pick<
@@ -191,6 +197,7 @@ export interface AgentToolRecoveryRequest extends Pick<
 export interface AgentRunResult {
   text: string
   usage: ModelUsage
+  durationApiMs?: number
 }
 
 export class ModelProviderError extends Error {
@@ -225,9 +232,15 @@ const emptyUsage = (): ModelUsage => ({ inputTokens: 0, outputTokens: 0 })
 const unsupportedImageResult = 'Provider does not support image tool results'
 
 function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
+  const cacheReadInputTokens =
+    (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
+  const cacheCreationInputTokens =
+    (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
   return {
     inputTokens: left.inputTokens + right.inputTokens,
     outputTokens: left.outputTokens + right.outputTokens,
+    ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
   }
 }
 
@@ -263,6 +276,8 @@ export class AgentRuntime {
 
     const messages = [...request.messages]
     let usage = emptyUsage()
+    let modelUsage = emptyUsage()
+    let durationApiMs = 0
     const definitions = this.provider.capabilities.tools
       ? (this.options.tools?.definitions() ?? [])
       : []
@@ -273,6 +288,25 @@ export class AgentRuntime {
 
     try {
       for (let turn = 0; turn < maxModelTurns; turn += 1) {
+        const spent = this.options.costUsd?.(modelUsage)
+        if (
+          this.options.maxBudgetUsd !== undefined &&
+          spent === undefined &&
+          (modelUsage.inputTokens > 0 || modelUsage.outputTokens > 0)
+        ) {
+          throw new Error(
+            'Cannot enforce maximum budget because model pricing is unavailable',
+          )
+        }
+        if (
+          this.options.maxBudgetUsd !== undefined &&
+          spent !== undefined &&
+          spent >= this.options.maxBudgetUsd
+        ) {
+          throw new Error(
+            `Maximum budget of $${this.options.maxBudgetUsd.toFixed(6)} exceeded`,
+          )
+        }
         this.emit({ type: 'state', state: 'awaiting-model' })
         const providerRequest: ModelRequest = {
           messages: prepareProviderMessages(
@@ -290,43 +324,53 @@ export class AgentRuntime {
         let streaming = false
         const toolCalls: ModelToolCall[] = []
 
-        for await (const event of this.provider.complete(providerRequest)) {
-          if (request.signal?.aborted) return this.cancel()
-          if (!streaming) {
-            streaming = true
-            this.emit({ type: 'state', state: 'streaming' })
+        const apiStartedAt = request.collectMetrics ? performance.now() : 0
+        try {
+          for await (const event of this.provider.complete(providerRequest)) {
+            if (request.signal?.aborted) return this.cancel()
+            if (!streaming) {
+              streaming = true
+              this.emit({ type: 'state', state: 'streaming' })
+            }
+            if (event.type === 'text-delta') {
+              textBytes += Buffer.byteLength(event.delta)
+              if (textBytes > maxModelOutputBytes) {
+                throw new Error(
+                  `Model output exceeded ${maxModelOutputBytes} bytes`,
+                )
+              }
+              text += event.delta
+              this.emit(event)
+            } else if (event.type === 'tool-call') {
+              if (toolCalls.length >= maxToolCallsPerTurn) {
+                throw new Error(
+                  `Model exceeded ${maxToolCallsPerTurn} tool calls in one turn`,
+                )
+              }
+              if (
+                Buffer.byteLength(JSON.stringify(event.call.input)) >
+                maxToolInputBytes
+              ) {
+                throw new Error(
+                  `Tool input exceeded ${maxToolInputBytes} bytes`,
+                )
+              }
+              toolCalls.push(event.call)
+              this.emit(event)
+            } else {
+              turnUsage = event.usage
+              this.emit(event)
+            }
           }
-          if (event.type === 'text-delta') {
-            textBytes += Buffer.byteLength(event.delta)
-            if (textBytes > maxModelOutputBytes) {
-              throw new Error(
-                `Model output exceeded ${maxModelOutputBytes} bytes`,
-              )
-            }
-            text += event.delta
-            this.emit(event)
-          } else if (event.type === 'tool-call') {
-            if (toolCalls.length >= maxToolCallsPerTurn) {
-              throw new Error(
-                `Model exceeded ${maxToolCallsPerTurn} tool calls in one turn`,
-              )
-            }
-            if (
-              Buffer.byteLength(JSON.stringify(event.call.input)) >
-              maxToolInputBytes
-            ) {
-              throw new Error(`Tool input exceeded ${maxToolInputBytes} bytes`)
-            }
-            toolCalls.push(event.call)
-            this.emit(event)
-          } else {
-            turnUsage = event.usage
-            this.emit(event)
+        } finally {
+          if (request.collectMetrics) {
+            durationApiMs += Math.max(0, performance.now() - apiStartedAt)
           }
         }
 
         if (!streaming) this.emit({ type: 'state', state: 'streaming' })
         usage = addUsage(usage, turnUsage)
+        modelUsage = addUsage(modelUsage, turnUsage)
         const assistantMessage =
           toolCalls.length === 0
             ? { role: 'assistant' as const, content: text }
@@ -370,13 +414,18 @@ export class AgentRuntime {
             continue
           }
           this.emit({ type: 'state', state: 'completed' })
-          return { text, usage }
+          return {
+            text,
+            usage,
+            ...(durationApiMs === 0 ? {} : { durationApiMs }),
+          }
         }
 
         const followUpUserMessages: string[] = []
         for (const call of toolCalls) {
           const result = await this.completeToolCall(call, request, messages)
           if (result.usage) usage = addUsage(usage, result.usage)
+          durationApiMs += result.durationApiMs ?? 0
           messages.push({
             role: 'tool',
             toolCallId: call.id,

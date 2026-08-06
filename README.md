@@ -246,6 +246,8 @@ node dist/cli.js run --agent reviewer "Inspect this project"
 node dist/cli.js -p --setting-sources project --tools Read,Grep "Inspect this project"
 node dist/cli.js -p --system-prompt-file prompt.txt --add-dir ../shared -- "Inspect both roots"
 node dist/cli.js -p --continue --fork-session --name experiment "Try another approach"
+node dist/cli.js -p --model claude-sonnet-4-20250514 --effort high "Try another approach"
+node dist/cli.js -p --max-budget-usd 0.50 --output-format json "Bound this run"
 node dist/cli.js -p --no-session-persistence "Inspect without saving"
 node dist/cli.js sessions --json
 node dist/cli.js inspect --json <session-id>
@@ -264,9 +266,13 @@ node dist/cli.js
 Claude-style `--output-format json` emits one result object. Stream input and
 output require `--verbose`; `--include-partial-messages` adds model delta
 records and `--replay-user-messages` echoes normalized input records. Multiple
-stdin messages share one session and service lifecycle. Provider pricing and
-API-only timing are not yet available, so those result fields are `null` rather
-than fabricated zeroes.
+stdin messages share one session and service lifecycle. Result JSON reports
+measured provider API duration and cost when selected model has built-in or
+explicit pricing. Unknown models remain `null` rather than invented estimates.
+Set `PRAXIS_PRICING_JSON` to a JSON object keyed by model, with
+`inputPerMillionUsd`, `outputPerMillionUsd`, and optional cache rates, to price
+a private or relay model. `--max-budget-usd` requires print mode and fails closed
+when no pricing is available.
 
 `PRAXIS_PROVIDER` defaults to `openai`. `PRAXIS_BASE_URL` defaults to the
 selected provider's official `/v1` endpoint. Native Anthropic requests accept

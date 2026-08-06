@@ -42,6 +42,7 @@ export interface CliControls {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   fallbackModels?: readonly string[]
   jsonSchema?: Record<string, unknown>
+  maxBudgetUsd?: number
   worktreeName?: string
   worktreeRequested?: boolean
   tmux?: 'classic'
@@ -90,6 +91,9 @@ export interface ProtocolResult {
   text: string
   usage: ModelUsage
   structuredOutput?: unknown
+  durationApiMs?: number
+  costUsd?: number
+  modelUsage?: Readonly<Record<string, ModelUsage>>
 }
 
 export function createSuccessResult(
@@ -99,29 +103,45 @@ export function createSuccessResult(
   modelTurns: number,
 ): Record<string, unknown> {
   const duration = Date.now() - startedAt
+  const modelUsage = result.modelUsage ?? { [info.model]: result.usage }
+  const usage = {
+    input_tokens: result.usage.inputTokens,
+    output_tokens: result.usage.outputTokens,
+    ...(result.usage.cacheReadInputTokens === undefined
+      ? {}
+      : { cache_read_input_tokens: result.usage.cacheReadInputTokens }),
+    ...(result.usage.cacheCreationInputTokens === undefined
+      ? {}
+      : {
+          cache_creation_input_tokens: result.usage.cacheCreationInputTokens,
+        }),
+  }
   return {
     type: 'result',
     subtype: 'success',
     is_error: false,
     duration_ms: duration,
-    duration_api_ms: null,
+    duration_api_ms:
+      result.durationApiMs === undefined
+        ? null
+        : Math.round(result.durationApiMs),
     num_turns: modelTurns,
     result: result.text,
     session_id: result.sessionId,
-    total_cost_usd: null,
-    usage: {
-      input_tokens: result.usage.inputTokens,
-      output_tokens: result.usage.outputTokens,
-    },
-    modelUsage: {
-      [info.model]: {
-        inputTokens: result.usage.inputTokens,
-        outputTokens: result.usage.outputTokens,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-        costUSD: null,
-      },
-    },
+    total_cost_usd: result.costUsd ?? null,
+    usage,
+    modelUsage: Object.fromEntries(
+      Object.entries(modelUsage).map(([model, modelUsage]) => [
+        model,
+        {
+          inputTokens: modelUsage.inputTokens,
+          outputTokens: modelUsage.outputTokens,
+          cacheReadInputTokens: modelUsage.cacheReadInputTokens ?? 0,
+          cacheCreationInputTokens: modelUsage.cacheCreationInputTokens ?? 0,
+          costUSD: model === info.model ? (result.costUsd ?? null) : null,
+        },
+      ]),
+    ),
     permission_denials: [],
     structured_output: result.structuredOutput ?? null,
   }
@@ -185,6 +205,14 @@ function choice<T extends string>(
     throw new Error(`${label} must be one of ${choices.join(', ')}`)
   }
   return value as T
+}
+
+function positiveDecimal(value: string, label: string): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive number`)
+  }
+  return parsed
 }
 
 function optionValue(
@@ -286,6 +314,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let effort: (typeof EFFORT_LEVELS)[number] | undefined
   let fallbackModels: string[] | undefined
   let jsonSchema: Record<string, unknown> | undefined
+  let maxBudgetUsd: number | undefined
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
@@ -360,6 +389,14 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       }
       jsonSchema = parsed as Record<string, unknown>
       index += selectedSchema.consumed
+      continue
+    }
+    const selectedBudget = optionValue(argv, index, '--max-budget-usd')
+    if (selectedBudget) {
+      if (maxBudgetUsd !== undefined)
+        throw new Error('--max-budget-usd may only be specified once')
+      maxBudgetUsd = positiveDecimal(selectedBudget.value, '--max-budget-usd')
+      index += selectedBudget.consumed
       continue
     }
     const selectedCwd = optionValue(argv, index, '--cwd')
@@ -728,6 +765,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(effort === undefined ? {} : { effort }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(jsonSchema === undefined ? {} : { jsonSchema }),
+    ...(maxBudgetUsd === undefined ? {} : { maxBudgetUsd }),
   }
 }
 
