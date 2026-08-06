@@ -113,6 +113,14 @@ export async function resolveCliControls(
     forkSession: controls.forkSession,
     name: controls.name,
     sessionPersistence: controls.sessionPersistence,
+    ...(controls.model === undefined ? {} : { model: controls.model }),
+    ...(controls.effort === undefined ? {} : { effort: controls.effort }),
+    ...(controls.fallbackModels === undefined
+      ? {}
+      : { fallbackModels: controls.fallbackModels }),
+    ...(controls.jsonSchema === undefined
+      ? {}
+      : { jsonSchema: controls.jsonSchema }),
     ...(controls.worktreeName === undefined
       ? {}
       : { worktreeName: controls.worktreeName }),
