@@ -34,6 +34,7 @@ export interface CliControls {
   appendSystemPrompt: string | undefined
   appendSystemPromptFile: string | undefined
   addDirectories: readonly string[]
+  pluginDirectories: readonly string[]
   tools: readonly string[] | undefined
   allowedTools: readonly string[]
   disallowedTools: readonly string[]
@@ -349,6 +350,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let appendSystemPrompt: string | undefined
   let appendSystemPromptFile: string | undefined
   const addDirectories: string[] = []
+  const pluginDirectories: string[] = []
   let tools: string[] | undefined
   const allowedTools: string[] = []
   const disallowedTools: string[] = []
@@ -556,6 +558,12 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     if (selectedDirectories) {
       addDirectories.push(...splitList(selectedDirectories.values))
       index += selectedDirectories.consumed
+      continue
+    }
+    const selectedPluginDirectory = optionValue(argv, index, '--plugin-dir')
+    if (selectedPluginDirectory) {
+      pluginDirectories.push(selectedPluginDirectory.value)
+      index += selectedPluginDirectory.consumed
       continue
     }
     const selectedTools = listOptionValue(argv, index, ['--tools'])
@@ -829,6 +837,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     appendSystemPrompt,
     appendSystemPromptFile,
     addDirectories,
+    pluginDirectories,
     tools,
     allowedTools,
     disallowedTools,

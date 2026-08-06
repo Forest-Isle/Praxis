@@ -87,6 +87,16 @@ import {
   type CliRuntimeInfo,
   type StreamUserMessage,
 } from './cli/protocol.js'
+import {
+  initClaudePlugin,
+  installClaudePlugin,
+  loadClaudePlugins,
+  readPluginRegistry,
+  setClaudePluginEnabled,
+  uninstallClaudePlugin,
+  updateClaudePlugin,
+  validateClaudePlugin,
+} from './plugins/claude-plugin-runtime.js'
 
 const VERSION = '0.1.0'
 
@@ -110,6 +120,7 @@ Usage:
   praxis stop <agent-id>
   praxis mcp <list|get|add|add-json|remove|reset-project-choices> ...
   praxis auto-mode <config|defaults>
+  praxis plugin <list|install|uninstall|enable|disable|update|init|validate> ...
 
 Options:
   -p, --print                         Print response and exit
@@ -135,6 +146,7 @@ Options:
   --system-prompt <prompt>            Set system prompt
   --append-system-prompt <prompt>     Append system prompt
   --add-dir <directories...>          Allow access to additional directories
+  --plugin-dir <path>                Load a local plugin for this session (repeatable)
   --tools <tools...>                  Select available tools; empty disables all
   --allowedTools <tools...>           Add permission allow rules
   --disallowedTools <tools...>        Add permission deny rules
@@ -453,12 +465,33 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ? {}
       : { settingSources: automaticSettingSources }),
   })
+  const pluginResources = await loadClaudePlugins({
+    configRoot,
+    cwd,
+    pluginDirectories: cli.pluginDirectories,
+    strictPluginDirectories: cli.pluginDirectories.length > 0,
+    loadInstalled: !cli.safeMode && !cli.bare,
+  })
+  for (const plugin of pluginResources.plugins) {
+    for (const error of plugin.errors) {
+      eventSink({
+        type: 'warning',
+        message: `Plugin ${plugin.name} could not be loaded: ${error}`,
+      })
+    }
+  }
+  settings.push(...pluginResources.settings)
   const resources = {
     ...loadedResources,
+    commands: [...loadedResources.commands, ...pluginResources.commands],
+    skills: [...loadedResources.skills, ...pluginResources.skills],
+    agents: [...loadedResources.agents, ...pluginResources.agents],
     settings: [
       ...loadedResources.settings,
+      ...pluginResources.settings,
       ...(cli.additionalSettings ? [cli.additionalSettings] : []),
     ],
+    mcp: [...loadedResources.mcp, ...pluginResources.mcp],
   }
   const extensions = new ClaudeExtensionCatalog(resources)
   const memoryDirectory =
@@ -839,6 +872,123 @@ async function executeAutoModeCommand(
   throw new Error(`Unknown auto-mode command: ${action}`)
 }
 
+function pluginOutput(
+  io: CliIO,
+  invocation: CliInvocation,
+  value: unknown,
+): void {
+  if (invocation.legacyJson || invocation.outputFormat !== 'text') {
+    writeJson(io, value)
+  } else if (typeof value === 'string') {
+    io.stdout(`${value}\n`)
+  } else {
+    io.stdout(`${JSON.stringify(value)}\n`)
+  }
+}
+
+async function executePluginCommand(
+  args: readonly string[],
+  invocation: CliInvocation,
+  io: CliIO,
+): Promise<number> {
+  const action = args[1]
+  const configRoot = resolve(
+    process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
+  )
+  if (!action || action === 'help') {
+    io.stdout(
+      'Usage: praxis plugin <list|install|uninstall|enable|disable|update|init|validate> ...\n',
+    )
+    return 0
+  }
+  if (action === 'list') {
+    if (args.length !== 2) throw new Error('plugin list takes no operands')
+    const registry = await readPluginRegistry(configRoot)
+    const output = await Promise.all(
+      registry.map(async (entry) => {
+        try {
+          const record = await validateClaudePlugin(entry.path)
+          return {
+            ...entry,
+            status: entry.enabled ? 'enabled' : 'disabled',
+            valid: true,
+            version: record.version ?? entry.version,
+          }
+        } catch (error) {
+          return {
+            ...entry,
+            status: entry.enabled ? 'enabled' : 'disabled',
+            valid: false,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        }
+      }),
+    )
+    pluginOutput(io, invocation, output)
+    return 0
+  }
+  if (action === 'install') {
+    if (args.length !== 3)
+      throw new Error('plugin install requires a local plugin directory')
+    pluginOutput(io, invocation, {
+      type: 'plugin-installed',
+      plugin: await installClaudePlugin(configRoot, args[2] as string),
+    })
+    return 0
+  }
+  if (action === 'uninstall') {
+    if (args.length !== 3)
+      throw new Error('plugin uninstall requires a plugin name')
+    await uninstallClaudePlugin(configRoot, args[2] as string)
+    pluginOutput(io, invocation, { type: 'plugin-uninstalled', name: args[2] })
+    return 0
+  }
+  if (action === 'enable' || action === 'disable') {
+    if (args.length !== 3)
+      throw new Error(`plugin ${action} requires a plugin name`)
+    const plugin = await setClaudePluginEnabled(
+      configRoot,
+      args[2] as string,
+      action === 'enable',
+    )
+    pluginOutput(io, invocation, {
+      type: action === 'enable' ? 'plugin-enabled' : 'plugin-disabled',
+      plugin,
+    })
+    return 0
+  }
+  if (action === 'update') {
+    if (args.length !== 3)
+      throw new Error('plugin update requires a plugin name')
+    pluginOutput(io, invocation, {
+      type: 'plugin-updated',
+      plugin: await updateClaudePlugin(configRoot, args[2] as string),
+    })
+    return 0
+  }
+  if (action === 'validate') {
+    if (args.length !== 3)
+      throw new Error('plugin validate requires a plugin directory')
+    pluginOutput(io, invocation, {
+      type: 'plugin-valid',
+      plugin: await validateClaudePlugin(args[2] as string),
+    })
+    return 0
+  }
+  if (action === 'init') {
+    if (args.length < 3 || args.length > 4)
+      throw new Error('plugin init requires a directory and optional name')
+    await initClaudePlugin(args[2] as string, args[3])
+    pluginOutput(io, invocation, {
+      type: 'plugin-initialized',
+      path: resolve(args[2] as string),
+      ...(args[3] ? { name: args[3] } : {}),
+    })
+    return 0
+  }
+  throw new Error(`Unknown plugin command: ${action}`)
+}
+
 async function executeMcpCommand(
   args: readonly string[],
   invocation: CliInvocation,
@@ -1096,6 +1246,7 @@ async function execute(
     'stop',
     'mcp',
     'auto-mode',
+    'plugin',
   ].includes(command ?? '')
   if (retryInterruptedTools && command !== 'resume') {
     throw new Error('--retry-interrupted-tools is only valid with resume')
@@ -1117,6 +1268,9 @@ async function execute(
   }
   if (command === 'auto-mode') {
     return executeAutoModeCommand(args, invocation, io)
+  }
+  if (command === 'plugin') {
+    return executePluginCommand(args, invocation, io)
   }
   const expectedOperands =
     command === 'sessions' || command === 'agents' ? 1 : 2
