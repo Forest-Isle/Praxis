@@ -105,6 +105,34 @@ export interface StreamUserMessage {
   documents?: readonly ModelDocument[]
 }
 
+export interface StreamControlResponse {
+  type: 'control_response'
+  response:
+    | {
+        subtype: 'success'
+        request_id: string
+        response?: Record<string, unknown>
+      }
+    | { subtype: 'error'; request_id: string; error: string }
+}
+
+export interface StreamControlCancelRequest {
+  type: 'control_cancel_request'
+  request_id: string
+}
+
+export interface StreamControlRequest {
+  type: 'control_request'
+  request_id: string
+  request: { subtype: 'interrupt' }
+}
+
+export type StreamJsonMessage =
+  | StreamUserMessage
+  | StreamControlResponse
+  | StreamControlCancelRequest
+  | StreamControlRequest
+
 export interface CliRuntimeInfo {
   cwd: string
   model: string
@@ -1005,13 +1033,113 @@ function parseUserMessage(
   }
 }
 
-export async function* readStreamUserMessages(
+function parseStreamJsonMessage(
+  value: unknown,
+  lineNumber: number,
+): StreamJsonMessage {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`stream-json input line ${lineNumber} must be an object`)
+  }
+  const record = value as Record<string, unknown>
+  if (record.type === 'user') return parseUserMessage(value, lineNumber)
+  if (record.type === 'control_cancel_request') {
+    if (
+      typeof record.request_id !== 'string' ||
+      record.request_id.length === 0
+    ) {
+      throw new Error(
+        `stream-json input line ${lineNumber} has invalid request_id`,
+      )
+    }
+    return { type: 'control_cancel_request', request_id: record.request_id }
+  }
+  if (record.type === 'control_request') {
+    const request = record.request
+    if (
+      typeof record.request_id !== 'string' ||
+      record.request_id.length === 0 ||
+      !request ||
+      typeof request !== 'object' ||
+      Array.isArray(request) ||
+      (request as Record<string, unknown>).subtype !== 'interrupt'
+    ) {
+      throw new Error(
+        `stream-json input line ${lineNumber} has invalid interrupt request`,
+      )
+    }
+    return {
+      type: 'control_request',
+      request_id: record.request_id,
+      request: { subtype: 'interrupt' },
+    }
+  }
+  if (record.type === 'control_response') {
+    const response = record.response
+    if (!response || typeof response !== 'object' || Array.isArray(response)) {
+      throw new Error(
+        `stream-json input line ${lineNumber} has invalid control response`,
+      )
+    }
+    const responseRecord = response as Record<string, unknown>
+    if (
+      typeof responseRecord.request_id !== 'string' ||
+      responseRecord.request_id.length === 0
+    ) {
+      throw new Error(
+        `stream-json input line ${lineNumber} has invalid request_id`,
+      )
+    }
+    if (responseRecord.subtype === 'success') {
+      if (
+        responseRecord.response !== undefined &&
+        (!responseRecord.response ||
+          typeof responseRecord.response !== 'object' ||
+          Array.isArray(responseRecord.response))
+      ) {
+        throw new Error(
+          `stream-json input line ${lineNumber} has invalid success response`,
+        )
+      }
+      return {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: responseRecord.request_id,
+          ...(responseRecord.response === undefined
+            ? {}
+            : { response: responseRecord.response as Record<string, unknown> }),
+        },
+      }
+    }
+    if (
+      responseRecord.subtype === 'error' &&
+      typeof responseRecord.error === 'string'
+    ) {
+      return {
+        type: 'control_response',
+        response: {
+          subtype: 'error',
+          request_id: responseRecord.request_id,
+          error: responseRecord.error,
+        },
+      }
+    }
+    throw new Error(
+      `stream-json input line ${lineNumber} has invalid control response`,
+    )
+  }
+  throw new Error(
+    `stream-json input line ${lineNumber} must have type user or a supported control type`,
+  )
+}
+
+export async function* readStreamJsonMessages(
   input: AsyncIterable<string | Uint8Array>,
-): AsyncGenerator<StreamUserMessage> {
+): AsyncGenerator<StreamJsonMessage> {
   const decoder = new TextDecoder('utf-8', { fatal: true })
   let buffer = ''
   let lineNumber = 0
-  const parseLine = (line: string): StreamUserMessage | null => {
+  const parseLine = (line: string): StreamJsonMessage | null => {
     lineNumber += 1
     if (line.trim().length === 0) return null
     if (Buffer.byteLength(line) > MAX_INPUT_LINE_BYTES) {
@@ -1025,7 +1153,7 @@ export async function* readStreamUserMessages(
     } catch {
       throw new Error(`Invalid stream-json input at line ${lineNumber}`)
     }
-    return parseUserMessage(value, lineNumber)
+    return parseStreamJsonMessage(value, lineNumber)
   }
 
   try {
@@ -1060,6 +1188,14 @@ export async function* readStreamUserMessages(
   if (buffer.length > 0) {
     const message = parseLine(buffer.replace(/\r$/, ''))
     if (message) yield message
+  }
+}
+
+export async function* readStreamUserMessages(
+  input: AsyncIterable<string | Uint8Array>,
+): AsyncGenerator<StreamUserMessage> {
+  for await (const message of readStreamJsonMessages(input)) {
+    if (!('type' in message)) yield message
   }
 }
 
@@ -1103,6 +1239,13 @@ export class StreamJsonOutput {
 
   replayUser(message: StreamUserMessage['message']): void {
     this.write({ type: 'user', message, session_id: this.sessionId })
+  }
+
+  controlRequest(request: {
+    request_id: string
+    request: Record<string, unknown>
+  }): void {
+    this.write({ type: 'control_request', ...request })
   }
 
   readonly sink: RuntimeEventSink = (event) => this.onEvent(event)

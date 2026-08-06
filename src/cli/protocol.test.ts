@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   parseCliInvocation,
+  readStreamJsonMessages,
   readStreamUserMessages,
   StreamJsonOutput,
   type CliRuntimeInfo,
@@ -340,6 +341,50 @@ describe('CLI protocol', () => {
           content: [{ type: 'text', text: '第二条' }],
         },
         prompt: '第二条',
+      },
+    ])
+  })
+
+  it('parses Claude SDK control responses, cancellation, and interrupt requests', async () => {
+    const input = [
+      JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'permission-1',
+          response: { behavior: 'allow', updatedInput: {} },
+        },
+      }),
+      JSON.stringify({
+        type: 'control_cancel_request',
+        request_id: 'permission-2',
+      }),
+      JSON.stringify({
+        type: 'control_request',
+        request_id: 'interrupt-1',
+        request: { subtype: 'interrupt' },
+      }),
+    ].join('\n')
+    const messages = []
+    const chunks = (async function* () {
+      yield input
+    })()
+    for await (const message of readStreamJsonMessages(chunks))
+      messages.push(message)
+    expect(messages).toEqual([
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'permission-1',
+          response: { behavior: 'allow', updatedInput: {} },
+        },
+      },
+      { type: 'control_cancel_request', request_id: 'permission-2' },
+      {
+        type: 'control_request',
+        request_id: 'interrupt-1',
+        request: { subtype: 'interrupt' },
       },
     ])
   })
