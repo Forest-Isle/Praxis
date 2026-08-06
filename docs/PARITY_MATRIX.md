@@ -8,8 +8,9 @@ implementation; module names and private source structure are not compatibility
 contracts.
 
 Permanent exclusions are limited to organization, tenant, RBAC, billing,
-enterprise gateway, IDE, Chrome, Remote Control, and hosted Ultrareview product
-surfaces. A missing CLI feature is not an exclusion.
+enterprise gateway, IDE, Chrome, Remote Control, Claude Desktop migration/import,
+and hosted Ultrareview product surfaces. A missing CLI feature is not an
+exclusion.
 
 Evidence levels:
 
@@ -30,31 +31,31 @@ Evidence levels:
 | Stream JSON output                   | Partial                  | Init, assistant, tool result, result, warning, error, measured result metrics, and `prompt_suggestion` records complete; other controls remain |
 | Partial messages                     | Complete                 | message/content/tool delta lifecycle under `--include-partial-messages`                                                                        |
 | Stream JSON input                    | Complete for text blocks | Incremental UTF-8/CRLF NDJSON parser, bounds, empty-input no-op, multi-turn run-to-resume, replay; installed gate                              |
-| User image/file input records        | Missing                  | Requires native input attachment envelopes and provider projection                                                                             |
-| SDK control request/response records | Missing                  | Permission and interrupt control protocol not yet exposed over stdin/stdout                                                                    |
+| User image/file input records        | Complete                 | Native image/document input envelopes, validation, provider projection, and Claude transcript compatibility                                    |
+| SDK control request/response records | Complete                 | Permission, interrupt, and initialization control protocol over stream-json stdin/stdout                                                       |
 | Legacy Praxis `--json`               | Complete                 | Existing runtime NDJSON retained without changing explicit Claude-style formats                                                                |
 | `--continue`                         | Complete                 | Most-recent current-project selection with native resume behavior                                                                              |
 | `--fork-session`                     | Complete                 | Resume/continue forks preserve native history and title with generated or explicit fresh session identity                                      |
 | Session name                         | Complete                 | `--name` writes native `custom-title`/`agent-name`, Claude resumes it, and Praxis session summaries/picker display the native name             |
-| No persistence                       | Partial                  | In-memory run and disk-session import leave JSONL untouched; foreground Agent remains disabled without sidechain storage                       |
+| No persistence                       | Complete                 | `--no-session-persistence` keeps print-mode sessions in memory; disk-session import leaves JSONL untouched                                     |
 | Top-level background session         | Complete                 | `--bg`/`--background`, managed session ID, detached persistent worker, idle attach, logs, stop, and live cross-resume gate                     |
 
 ## Shared Claude data plane
 
-| Capability                                 | Status                              | Evidence / remaining work                                                                                                        |
-| ------------------------------------------ | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Session discovery and bidirectional resume | Complete                            | Live Claude -> Praxis -> Claude and Praxis -> Claude gates for 2.1.208                                                           |
-| Native message/tool JSONL                  | Complete                            | Versioned schema, strict links, optimistic tail checks, leases                                                                   |
-| Native fork fidelity                       | Complete                            | Full main-chain copy and live Claude reopen                                                                                      |
-| Read-only recovery/export                  | Complete                            | Unsupported/corrupt session inspect and byte-exact export                                                                        |
-| CLAUDE.md and rules                        | Complete                            | Hierarchy, conditional attachment, live fixtures                                                                                 |
-| Auto memory                                | Complete                            | Canonical main-worktree memory path, standard tool access                                                                        |
-| Skills and commands                        | Complete at runtime                 | Shared discovery, slash expansion, model-invocable Skill                                                                         |
-| Agents                                     | Complete for local runtime          | Shared definitions, foreground/background Agent sidechains, and persistent top-level dispatch with bidirectional resume          |
-| Hooks                                      | Complete for current runtime events | Shared settings, bounded child execution, native attachments                                                                     |
-| MCP                                        | Partial                             | Shared config, tool/resource calls, configured-server status, and local lifecycle management complete; OAuth/import/serve remain |
-| Plugins                                    | Missing                             | Plugin discovery, lifecycle, marketplace, validation, and session loading                                                        |
-| Version gate                               | Complete for 2.1.208                | Exact read-write allowlist; all other versions read-only                                                                         |
+| Capability                                 | Status                              | Evidence / remaining work                                                                                                 |
+| ------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Session discovery and bidirectional resume | Complete                            | Live Claude -> Praxis -> Claude and Praxis -> Claude gates for 2.1.208                                                    |
+| Native message/tool JSONL                  | Complete                            | Versioned schema, strict links, optimistic tail checks, leases                                                            |
+| Native fork fidelity                       | Complete                            | Full main-chain copy and live Claude reopen                                                                               |
+| Read-only recovery/export                  | Complete                            | Unsupported/corrupt session inspect and byte-exact export                                                                 |
+| CLAUDE.md and rules                        | Complete                            | Hierarchy, conditional attachment, live fixtures                                                                          |
+| Auto memory                                | Complete                            | Canonical main-worktree memory path, standard tool access                                                                 |
+| Skills and commands                        | Complete at runtime                 | Shared discovery, slash expansion, model-invocable Skill                                                                  |
+| Agents                                     | Complete for local runtime          | Shared definitions, foreground/background Agent sidechains, and persistent top-level dispatch with bidirectional resume   |
+| Hooks                                      | Complete for current runtime events | Shared settings, bounded child execution, native attachments                                                              |
+| MCP                                        | Partial                             | Shared config, tool/resource calls, configured-server status, and local lifecycle management complete; OAuth/serve remain |
+| Plugins                                    | Partial                             | Local plugin discovery, validation, lifecycle, and session loading complete; marketplace/distributed install remain       |
+| Version gate                               | Complete for 2.1.208                | Exact read-write allowlist; all other versions read-only                                                                  |
 
 ## Runtime and controls
 
@@ -65,7 +66,7 @@ Evidence levels:
 | Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                                                   |
 | Background agents and tasks   | Complete for local runtime  | Agent/Bash task lifecycle plus top-level persistent dispatch, live logs, attach, stop, stale-worker repair, and shared transcripts            |
 | Agent messaging               | Complete for local Agent    | Ordered SendMessage to running/completed IDs, later-turn sidechain hydration, completion notification                                         |
-| Permissions                   | Partial                     | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass complete; `auto` classifier missing                                                    |
+| Permissions                   | Complete                    | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass, and context-aware `auto` classifier complete                                          |
 | Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                                                |
 | Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                           |
 | System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                                                   |
@@ -96,16 +97,15 @@ Evidence levels:
 
 ## Management commands
 
-| Capability             | Status   | Evidence / remaining work                                                            |
-| ---------------------- | -------- | ------------------------------------------------------------------------------------ |
-| `agents`               | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                      |
-| `mcp`                  | Partial  | add/add-json/get/list/remove/reset-project-choices; login/logout/serve/import remain |
-| `plugin`               | Missing  | install/enable/disable/update/list/init/validate/marketplace                         |
-| `doctor`               | Missing  | Local installation, provider, config, MCP, and permission diagnostics                |
-| `auth` / `setup-token` | Missing  | Provider-neutral credential profiles and validation                                  |
-| `install` / `update`   | Missing  | Distribution channel and self-update behavior                                        |
-| `project purge`        | Missing  | Safe project state cleanup                                                           |
-| `auto-mode`            | Missing  | Classifier configuration surface                                                     |
+| Capability           | Status   | Evidence / remaining work                                                                        |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                  |
+| `mcp`                | Partial  | add/add-json/get/list/remove/reset-project-choices; OAuth login/logout and serve remain          |
+| `plugin`             | Partial  | Local install/enable/disable/update/list/init/validate; marketplace/distributed install remain   |
+| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics |
+| `install` / `update` | Missing  | Distribution channel and self-update behavior                                                    |
+| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                        |
+| `auto-mode`          | Complete | `config` and `defaults` configuration surface plus permission classifier                         |
 
 ## Remaining implementation order
 
@@ -113,10 +113,9 @@ Evidence levels:
    service available.
 2. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
    key if observable from future black-box evidence.
-3. Ephemeral subagents and permission `auto` classifier.
-4. Plugin runtime and management.
-5. Complete MCP OAuth/login/logout, Desktop import, and server hosting.
-6. Complete unknown-model pricing policy, diagnostics,
-   auth, and update commands.
-7. Final live black-box matrix, package/performance regression, and macOS/Linux
+3. Complete plugin marketplace/distributed install behavior.
+4. Complete MCP OAuth/login/logout and server hosting.
+5. Complete unknown-model pricing policy, diagnostics, and update
+   commands.
+6. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.
