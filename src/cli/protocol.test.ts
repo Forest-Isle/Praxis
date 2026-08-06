@@ -196,6 +196,20 @@ describe('CLI protocol', () => {
     ).toThrow('--scope must be one of')
   })
 
+  it('parses repeatable local plugin directories', () => {
+    expect(
+      parseCliInvocation([
+        '--plugin-dir=/tmp/one',
+        '--plugin-dir',
+        '/tmp/two',
+        'hello',
+      ]),
+    ).toMatchObject({
+      pluginDirectories: ['/tmp/one', '/tmp/two'],
+      args: ['hello'],
+    })
+  })
+
   it('parses single-user CLI customization, tool, permission, and session controls', () => {
     expect(
       parseCliInvocation([

@@ -14,6 +14,7 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
   appendSystemPrompt: undefined,
   appendSystemPromptFile: undefined,
   addDirectories: [],
+  pluginDirectories: [],
   tools: undefined,
   allowedTools: [],
   disallowedTools: [],
@@ -133,5 +134,6 @@ export async function resolveCliControls(
     ...(controls.tmux === undefined ? {} : { tmux: controls.tmux }),
     additionalSettings,
     additionalDirectories: directories,
+    pluginDirectories: controls.pluginDirectories,
   }
 }
