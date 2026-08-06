@@ -121,6 +121,9 @@ export async function resolveCliControls(
     ...(controls.jsonSchema === undefined
       ? {}
       : { jsonSchema: controls.jsonSchema }),
+    ...(controls.maxBudgetUsd === undefined
+      ? {}
+      : { maxBudgetUsd: controls.maxBudgetUsd }),
     ...(controls.worktreeName === undefined
       ? {}
       : { worktreeName: controls.worktreeName }),

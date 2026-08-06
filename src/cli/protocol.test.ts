@@ -132,6 +132,7 @@ describe('CLI protocol', () => {
         'haiku,opus',
         '--json-schema',
         '{"type":"object","required":["answer"]}',
+        '--max-budget-usd=0.25',
         'prompt',
       ]),
     ).toMatchObject({
@@ -140,6 +141,7 @@ describe('CLI protocol', () => {
       effort: 'xhigh',
       fallbackModels: ['haiku', 'opus'],
       jsonSchema: { type: 'object', required: ['answer'] },
+      maxBudgetUsd: 0.25,
       args: ['prompt'],
     })
     expect(() => parseCliInvocation(['--effort', 'turbo'])).toThrow(

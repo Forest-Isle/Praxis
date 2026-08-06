@@ -42,6 +42,8 @@ import {
   type RuntimeEventSink,
   type ToolRegistry,
 } from '../core/runtime.js'
+import { usageCostUsd } from '../core/usage.js'
+import type { ModelPricingRegistry } from '../core/usage.js'
 import type { Compactor } from '../core/compaction.js'
 import { ContextBudget } from '../core/context-budget.js'
 import type { ContextAssembler } from '../core/context.js'
@@ -103,6 +105,9 @@ export interface ClaudeSessionServiceOptions {
   providerForModel?: (model: string) => ModelProvider
   effort?: string
   structuredOutputSchema?: Record<string, unknown>
+  pricing?: ModelPricingRegistry
+  maxBudgetUsd?: number
+  collectMetrics?: boolean
   sessionPersistence?: boolean
   sessionKind?: 'bg'
   workspace?: WorkspaceContext
@@ -117,6 +122,9 @@ export interface SessionRunResult {
   text: string
   usage: ModelUsage
   structuredOutput?: unknown
+  durationApiMs?: number
+  costUsd?: number
+  modelUsage?: Readonly<Record<string, ModelUsage>>
 }
 
 export interface SessionSummary {
@@ -146,6 +154,19 @@ const emptyToolRegistry: ToolRegistry = {
   definitions: () => [],
   prepare: async (call) => call,
   execute: async () => ({ content: '', isError: false }),
+}
+
+function mergeUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
+  const cacheReadInputTokens =
+    (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
+  const cacheCreationInputTokens =
+    (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  return {
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+  }
 }
 
 export function workflowTokenTarget(prompt: string): number | null {
@@ -437,6 +458,14 @@ export class ClaudeSessionService {
         }
       }
       const provider = this.provider()
+      const initialPricing = this.options.pricing?.resolve(
+        provider.model ?? 'praxis/provider',
+      )
+      if (this.options.maxBudgetUsd !== undefined && !initialPricing) {
+        throw new Error(
+          `Cannot enforce --max-budget-usd: no pricing is configured for model ${provider.model ?? 'praxis/provider'}`,
+        )
+      }
       let currentPromptId: string | null = null
       const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
         snapshot.entries,
@@ -632,6 +661,19 @@ export class ClaudeSessionService {
           : null
       const runtime = new AgentRuntime(provider, this.options.eventSink, {
         emitInitialContextState: false,
+        ...(this.options.pricing
+          ? {
+              costUsd: (usage) => {
+                const pricing = this.options.pricing?.resolve(
+                  provider.model ?? 'praxis/provider',
+                )
+                return pricing ? usageCostUsd(usage, pricing) : undefined
+              },
+            }
+          : {}),
+        ...(this.options.maxBudgetUsd === undefined
+          ? {}
+          : { maxBudgetUsd: this.options.maxBudgetUsd }),
         ...(hookTools
           ? { tools: hookTools, permissions: hookTools }
           : {
@@ -1117,6 +1159,7 @@ export class ClaudeSessionService {
           toolResultDirectory,
           observer,
           ...(this.options.effort ? { effort: this.options.effort } : {}),
+          ...(this.options.collectMetrics ? { collectMetrics: true } : {}),
           reloadMessages: async () => {
             await compactIfNeeded([], currentTurnUserMessages ?? [])
             return [
@@ -1205,22 +1248,33 @@ export class ClaudeSessionService {
             leafUuid: finalLeafUuid,
           }),
         )
+        const totalUsage = mergeUsage(
+          mergeUsage(recoveryUsage, compactionUsage),
+          result.usage,
+        )
         return {
           sessionId,
           text:
             structuredCapture && structuredCapture.calls === 1
               ? JSON.stringify(structuredCapture.value)
               : result.text,
-          usage: {
-            inputTokens:
-              recoveryUsage.inputTokens +
-              compactionUsage.inputTokens +
-              result.usage.inputTokens,
-            outputTokens:
-              recoveryUsage.outputTokens +
-              compactionUsage.outputTokens +
-              result.usage.outputTokens,
-          },
+          usage: totalUsage,
+          ...(result.durationApiMs === undefined
+            ? {}
+            : { durationApiMs: result.durationApiMs }),
+          ...(this.options.pricing
+            ? (() => {
+                const pricing = this.options.pricing?.resolve(
+                  provider.model ?? 'praxis/provider',
+                )
+                return pricing
+                  ? { costUsd: usageCostUsd(result.usage, pricing) }
+                  : {}
+              })()
+            : {}),
+          ...(provider.model
+            ? { modelUsage: { [provider.model]: result.usage } }
+            : {}),
           ...(structuredCapture && structuredCapture.calls === 1
             ? { structuredOutput: structuredCapture.value }
             : {}),

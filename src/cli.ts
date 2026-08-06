@@ -51,6 +51,7 @@ import {
 import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
 import { FallbackModelProvider } from './providers/fallback-provider.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
+import { ModelPricingRegistry } from './core/usage.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
 import { claudeBackgroundTaskParent } from './application/background-bash-manager.js'
 import {
@@ -107,6 +108,7 @@ Options:
   --effort <level>                    low, medium, high, xhigh, or max
   --fallback-model <models>           Comma-separated print-mode fallbacks
   --json-schema <schema>              Print-mode JSON Schema for structured output
+  --max-budget-usd <amount>           Maximum print-mode API spend
   --no-session-persistence            Keep print-mode session in memory only
   --agent <name>                      Select a shared agent definition
   --settings <file-or-json>           Load additional settings
@@ -382,6 +384,13 @@ const createDefaultService: CliDependencies['createService'] = async ({
     sessionPersistence: cli.sessionPersistence,
     effort: cli.effort ?? 'high',
     ...(cli.jsonSchema ? { structuredOutputSchema: cli.jsonSchema } : {}),
+    ...(cli.maxBudgetUsd === undefined
+      ? {}
+      : { maxBudgetUsd: cli.maxBudgetUsd }),
+    pricing: ModelPricingRegistry.fromEnvironment(
+      process.env.PRAXIS_PRICING_JSON,
+    ),
+    collectMetrics: true,
     ...(sessionKind === undefined ? {} : { sessionKind }),
     workspace,
     ...(cli.worktreeRequested
@@ -827,10 +836,13 @@ async function execute(
     invocation
   if (
     (invocation.fallbackModels !== undefined ||
-      invocation.jsonSchema !== undefined) &&
+      invocation.jsonSchema !== undefined ||
+      invocation.maxBudgetUsd !== undefined) &&
     !invocation.print
   ) {
-    throw new Error('--fallback-model and --json-schema require --print')
+    throw new Error(
+      '--fallback-model, --json-schema, and --max-budget-usd require --print',
+    )
   }
   if (invocation.tmux) {
     if (!dependencies.launchTmux) throw new Error('tmux launcher unavailable')

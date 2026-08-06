@@ -175,7 +175,15 @@ describe('AnthropicCompatibleProvider', () => {
 
     expect(events).toEqual([
       { type: 'text-delta', delta: 'hello' },
-      { type: 'usage', usage: { inputTokens: 12, outputTokens: 3 } },
+      {
+        type: 'usage',
+        usage: {
+          inputTokens: 12,
+          outputTokens: 3,
+          cacheCreationInputTokens: 2,
+          cacheReadInputTokens: 3,
+        },
+      },
     ])
     expect(capturedUrl).toBe('https://api.anthropic.example/v1/messages')
     expect(capturedInit).toMatchObject({

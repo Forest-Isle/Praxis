@@ -35,6 +35,7 @@
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",
     "test:performance": "npm run build && node --expose-gc scripts/verify-performance-budgets.mjs",
+    "test:metering-compat": "npm run build && node scripts/verify-metering-budget.mjs",
     "test:package": "npm run build && node scripts/verify-release-package.mjs",
     "test:runtime-compat": "npm run build && node scripts/verify-runtime-compatibility.mjs",
     "test:recovery-compat": "npm run build && node scripts/verify-crash-recovery.mjs",

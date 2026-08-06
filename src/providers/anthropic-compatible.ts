@@ -36,6 +36,8 @@ interface StreamState {
   toolCallsSeen: number
   metadataBytes: number
   inputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
   outputTokens: number
   usageSeen: boolean
   messageStarted: boolean
@@ -164,6 +166,14 @@ function parseSseEvent(
         0,
       )
       state.inputTokens = inputTokens
+      state.cacheCreationInputTokens =
+        typeof usage.cache_creation_input_tokens === 'number'
+          ? usage.cache_creation_input_tokens
+          : 0
+      state.cacheReadInputTokens =
+        typeof usage.cache_read_input_tokens === 'number'
+          ? usage.cache_read_input_tokens
+          : 0
       state.usageSeen = true
     }
     return []
@@ -402,6 +412,12 @@ function parseSseEvent(
         usage: {
           inputTokens: state.inputTokens,
           outputTokens: state.outputTokens,
+          ...(state.cacheReadInputTokens === 0
+            ? {}
+            : { cacheReadInputTokens: state.cacheReadInputTokens }),
+          ...(state.cacheCreationInputTokens === 0
+            ? {}
+            : { cacheCreationInputTokens: state.cacheCreationInputTokens }),
         },
       })
       state.usageSeen = false
@@ -662,6 +678,8 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       toolCallsSeen: 0,
       metadataBytes: 0,
       inputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
       outputTokens: 0,
       usageSeen: false,
       messageStarted: false,
