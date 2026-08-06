@@ -97,6 +97,30 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('parses worktree and tmux controls', () => {
+    expect(
+      parseCliInvocation([
+        '--worktree',
+        'review',
+        '--tmux=classic',
+        '--',
+        'prompt',
+      ]),
+    ).toMatchObject({
+      worktreeRequested: true,
+      worktreeName: 'review',
+      tmux: 'classic',
+      args: ['prompt'],
+    })
+    expect(parseCliInvocation(['--worktree', '--', 'prompt'])).toMatchObject({
+      worktreeRequested: true,
+      args: ['prompt'],
+    })
+    expect(() => parseCliInvocation(['--tmux', 'prompt'])).toThrow(
+      '--tmux requires --worktree',
+    )
+  })
+
   it('parses single-user CLI customization, tool, permission, and session controls', () => {
     expect(
       parseCliInvocation([

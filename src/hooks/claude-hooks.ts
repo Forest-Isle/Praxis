@@ -191,14 +191,12 @@ function abortError(): DOMException {
 
 export class ClaudeHookRunner {
   private readonly settings: readonly ClaudeJsonResource[]
-  private readonly cwd: string
   private readonly maxOutputBytes: number
   private readonly maxTimeoutMs: number
   private readonly executeCommand: ClaudeHookCommandExecutor
 
   constructor(options: ClaudeHookRunnerOptions) {
     this.settings = options.settings
-    this.cwd = options.cwd
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
     this.maxTimeoutMs = options.maxTimeoutMs ?? DEFAULT_TIMEOUT_MS
     this.executeCommand = options.executeCommand ?? this.runCommand.bind(this)
@@ -315,7 +313,7 @@ export class ClaudeHookRunner {
     return new Promise((resolve, reject) => {
       const startedAt = Date.now()
       const child = spawn(commandShell(), commandShellArguments(command), {
-        cwd: this.cwd,
+        cwd: input.cwd,
         env: sanitizeChildEnvironment({ CLAUDE_PROJECT_DIR: input.cwd }),
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',

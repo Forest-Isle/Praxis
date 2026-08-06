@@ -50,6 +50,7 @@ interface PersistedBackgroundBashTask {
 
 export interface BackgroundBashManagerOptions {
   cwd: string
+  cwdProvider?: () => string
   sessionId: string
   stateRoot: string
   maxOutputBytes?: number
@@ -284,6 +285,7 @@ export class BackgroundBashManager {
         command: commandShell(),
         args: commandShellArguments(task.command),
         timeoutMs: timeout,
+        cwd: this.options.cwdProvider?.() ?? this.options.cwd,
         signal: task.controller.signal,
         onOutput: async (output) => {
           task.output = output

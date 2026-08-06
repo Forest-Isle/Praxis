@@ -86,7 +86,7 @@ Evidence levels:
 | Glob                               | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                                                      |
 | WebFetch / WebSearch               | Partial  | Live schemas/search/errors/resume; real Praxis public fetch; Claude public-success oracle needs domain-safety service           |
 | NotebookEdit                       | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                                                   |
-| Worktree enter/exit                | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`                                                                               |
+| Worktree enter/exit                | Complete | Native Git lifecycle, state entries, dynamic cwd, CLI `--worktree`, and classic tmux launcher; live bidirectional gate          |
 | TaskCreate/Get/List/Update         | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate                |
 | CronCreate/List/Delete and `/loop` | Complete | Session/durable jobs, shared native file, idle delivery, expiry, and live bidirectional gate                                    |
 | ScheduleWakeup                     | Partial  | Praxis interactive one-shot/stop lifecycle complete; Claude inactive gate live; active Claude gate/result still unobservable    |
@@ -113,8 +113,7 @@ Evidence levels:
    service available.
 2. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
    key if observable from future black-box evidence.
-3. Worktree/tmux invocation, picker naming, ephemeral subagents,
-   and permission `auto` classifier.
+3. Picker naming, ephemeral subagents, and permission `auto` classifier.
 4. Plugin runtime and management.
 5. MCP management commands.
 6. Model effort/fallback, structured output, pricing/budget, suggestions,

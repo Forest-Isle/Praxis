@@ -38,6 +38,9 @@ export interface CliControls {
   forkSession: boolean
   name: string | undefined
   sessionPersistence: boolean
+  worktreeName?: string
+  worktreeRequested?: boolean
+  tmux?: 'classic'
 }
 
 export interface CliInvocation extends CliControls {
@@ -270,6 +273,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let forkSession = false
   let name: string | undefined
   let sessionPersistence = true
+  let worktreeName: string | undefined
+  let worktreeRequested = false
+  let tmux: 'classic' | undefined
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
@@ -444,6 +450,32 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       index += selectedName?.consumed ?? 1
       continue
     }
+    if (value === '--worktree' || value === '-w') {
+      worktreeRequested = true
+      const candidate = argv[index + 1]
+      if (
+        candidate !== undefined &&
+        candidate !== '--' &&
+        !candidate.startsWith('-')
+      ) {
+        worktreeName = candidate
+        index += 1
+      }
+      continue
+    }
+    if (value.startsWith('--worktree=')) {
+      worktreeRequested = true
+      worktreeName = value.slice('--worktree='.length)
+      if (!worktreeName) throw new Error('--worktree name must not be empty')
+      continue
+    }
+    if (value === '--tmux' || value === '--tmux=classic') {
+      if (tmux !== undefined)
+        throw new Error('--tmux may only be specified once')
+      tmux = 'classic'
+      continue
+    }
+    if (value.startsWith('--tmux=')) throw new Error('--tmux must be classic')
     if (value === '-r' || value === '--resume') {
       if (resumeId !== undefined)
         throw new Error('--resume may only be specified once')
@@ -563,6 +595,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       'Cannot use both --append-system-prompt and --append-system-prompt-file',
     )
   }
+  if (tmux !== undefined && !worktreeRequested) {
+    throw new Error('--tmux requires --worktree')
+  }
 
   if (resumeId !== undefined) {
     if (args[0] === 'resume')
@@ -633,6 +668,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     forkSession,
     name,
     sessionPersistence,
+    ...(worktreeName === undefined ? {} : { worktreeName }),
+    ...(worktreeRequested ? { worktreeRequested: true } : {}),
+    ...(tmux === undefined ? {} : { tmux }),
   }
 }
 

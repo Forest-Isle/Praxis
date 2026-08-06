@@ -22,6 +22,7 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'last-prompt',
   'system',
   'user',
+  'worktree-state',
 ])
 const FORKABLE_ENTRY_TYPES = new Set([
   'agent-name',
@@ -640,6 +641,34 @@ function validateCompactSummary(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'worktree-state') {
+    if (!isNonEmptyString(entry.sessionId)) {
+      throw new Error('Claude worktree-state entry has invalid sessionId')
+    }
+    if (entry.worktreeSession === null) return
+    if (!isRecord(entry.worktreeSession)) {
+      throw new Error('Claude worktree-state entry has invalid state')
+    }
+    for (const field of [
+      'originalCwd',
+      'preEnterOriginalCwd',
+      'worktreePath',
+      'worktreeName',
+      'originalHeadCommit',
+      'sessionId',
+    ]) {
+      if (!isNonEmptyString(entry.worktreeSession[field])) {
+        throw new Error(`Claude worktree-state is missing ${field}`)
+      }
+    }
+    for (const field of ['worktreeBranch', 'originalBranch']) {
+      const value = entry.worktreeSession[field]
+      if (value !== null && !isNonEmptyString(value)) {
+        throw new Error(`Claude worktree-state has invalid ${field}`)
+      }
+    }
+    return
+  }
   if (entry.type === 'custom-title') {
     if (
       !isNonEmptyString(entry.customTitle) ||

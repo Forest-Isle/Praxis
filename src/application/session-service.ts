@@ -66,6 +66,12 @@ import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
 import { ClaudeWorkflowToolRegistry } from '../tools/claude-workflow-tools.js'
 import { WorkflowManager } from './workflow-manager.js'
+import { SessionWorktreeManager } from './session-worktree.js'
+import type {
+  WorktreeSessionState,
+  WorkspaceContext,
+} from './session-worktree.js'
+import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -94,6 +100,11 @@ export interface ClaudeSessionServiceOptions {
   providerForModel?: (model: string) => ModelProvider
   sessionPersistence?: boolean
   sessionKind?: 'bg'
+  workspace?: WorkspaceContext
+  initialWorktree?: boolean
+  initialWorktreeName?: string
+  enableWorktrees?: boolean
+  worktreeToolNames?: readonly ('EnterWorktree' | 'ExitWorktree')[]
 }
 
 export interface SessionRunResult {
@@ -140,6 +151,8 @@ export class ClaudeSessionService {
   private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
   private readonly scheduledPrompts: ScheduledPromptManager | null
   private readonly workflowManager: WorkflowManager | null
+  private readonly worktreeManager: SessionWorktreeManager | null
+  private readonly sessionCwds = new Map<string, string>()
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
     if (
@@ -165,8 +178,17 @@ export class ClaudeSessionService {
           })
         : null
     this.workflowManager = options.enableWorkflows
-      ? new WorkflowManager(options.configRoot, options.cwd)
+      ? new WorkflowManager(options.configRoot, options.cwd, () =>
+          this.activeCwd(),
+        )
       : null
+    this.worktreeManager =
+      options.enableWorktrees && options.workspace
+        ? new SessionWorktreeManager({
+            workspace: options.workspace,
+            sessionId: '',
+          })
+        : null
   }
 
   nextScheduledPrompt(signal?: AbortSignal) {
@@ -188,6 +210,7 @@ export class ClaudeSessionService {
     sessionId: string = randomUUID(),
     name?: string,
   ): Promise<SessionRunResult> {
+    this.worktreeManager?.bindSession(sessionId)
     return this.executeTurn(sessionId, prompt, false, signal, name)
   }
 
@@ -197,6 +220,7 @@ export class ClaudeSessionService {
     signal?: AbortSignal,
     name?: string,
   ): Promise<SessionRunResult> {
+    this.worktreeManager?.bindSession(sessionId)
     return this.executeTurn(sessionId, prompt, true, signal, name)
   }
 
@@ -328,6 +352,14 @@ export class ClaudeSessionService {
       throw new Error('Session name must not be empty')
     }
 
+    this.worktreeManager?.bindSession(sessionId)
+    if (this.options.initialWorktree) {
+      await this.worktreeManager?.ensureInitial(
+        this.options.initialWorktreeName,
+      )
+    }
+    const pinnedCwd = this.sessionCwds.get(sessionId) ?? this.activeCwd()
+    this.sessionCwds.set(sessionId, pinnedCwd)
     const sessionPaths = this.paths(sessionId)
     const toolResultDirectory = join(
       sessionPaths.projectRoot,
@@ -360,6 +392,21 @@ export class ClaudeSessionService {
       if (requireExisting && snapshot.entries.length === 0) {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
+      const initialTransition =
+        this.worktreeManager?.consumeTransition('__initial__')
+      if (initialTransition && snapshot.entries.length === 0) {
+        const stateEntry: ClaudeTranscriptEntry = {
+          type: 'worktree-state',
+          worktreeSession: initialTransition.state,
+          sessionId,
+        }
+        const stateTail = await this.append(lease, snapshot.tail, stateEntry)
+        snapshot = {
+          entries: [...snapshot.entries, stateEntry],
+          tail: stateTail,
+        }
+      }
+      this.restoreWorktree(snapshot.entries)
       if (
         requireExisting &&
         name !== undefined &&
@@ -386,10 +433,13 @@ export class ClaudeSessionService {
         unresolvedToolCalls.map((call) => call.id),
       )
       const pendingRecoveryHookOutcomes: ClaudeHookOutcome[] = []
+      const currentHookCwd = () => this.activeCwd()
       const hookSession = {
         session_id: sessionId,
         transcript_path: sessionPaths.sessionFile,
-        cwd: this.options.cwd,
+        get cwd() {
+          return currentHookCwd()
+        },
         permission_mode: 'default',
       }
       const appendHookOutcome = async (outcome: ClaudeHookOutcome) => {
@@ -443,7 +493,8 @@ export class ClaudeSessionService {
         this.options.tools && (this.options.taskToolNames?.length ?? 0) > 0
           ? new ClaudeTaskToolRegistry({
               base: this.options.tools,
-              cwd: this.options.cwd,
+              cwd: this.activeCwd(),
+              cwdProvider: () => this.activeCwd(),
               praxisRoot: sessionPaths.praxisRoot,
               sessionId,
               taskRoot: sessionPaths.taskRoot,
@@ -472,7 +523,8 @@ export class ClaudeSessionService {
         this.options.permissions
           ? new ClaudeSubagentExecutor({
               configRoot: this.options.configRoot,
-              cwd: this.options.cwd,
+              cwd: this.activeCwd(),
+              cwdProvider: () => this.activeCwd(),
               claudeVersion: this.options.claudeVersion,
               provider,
               ...(this.options.providerForModel
@@ -519,7 +571,8 @@ export class ClaudeSessionService {
               base: agentTools,
               manager: this.workflowManager,
               executor: subagentExecutor,
-              cwd: this.options.cwd,
+              cwd: this.activeCwd(),
+              cwdProvider: () => this.activeCwd(),
               configRoot: this.options.configRoot,
               sessionId,
               promptIdForCall: (callId) =>
@@ -530,10 +583,22 @@ export class ClaudeSessionService {
               enabled: true,
             })
           : agentTools
+      const workspaceTools =
+        this.worktreeManager &&
+        turnTools &&
+        this.options.workspace &&
+        (this.options.worktreeToolNames?.length ?? 0) > 0
+          ? new ClaudeWorktreeToolRegistry({
+              base: turnTools,
+              manager: this.worktreeManager,
+              workspace: this.options.workspace,
+              enabledTools: this.options.worktreeToolNames ?? [],
+            })
+          : turnTools
       const hookTools =
-        this.options.hooks && turnTools && this.options.permissions
+        this.options.hooks && workspaceTools && this.options.permissions
           ? new ClaudeHookToolCoordinator({
-              tools: turnTools,
+              tools: workspaceTools,
               permissions: this.options.permissions,
               hooks: this.options.hooks,
               session: hookSession,
@@ -547,7 +612,7 @@ export class ClaudeSessionService {
         ...(hookTools
           ? { tools: hookTools, permissions: hookTools }
           : {
-              ...(turnTools ? { tools: turnTools } : {}),
+              ...(workspaceTools ? { tools: workspaceTools } : {}),
               ...(this.options.permissions
                 ? { permissions: this.options.permissions }
                 : {}),
@@ -589,6 +654,23 @@ export class ClaudeSessionService {
             nativeToolUseResult?: Record<string, unknown>
           },
         ) => {
+          const transition = this.worktreeManager?.consumeTransition(call.id)
+          if (transition) {
+            const stateEntry: ClaudeTranscriptEntry = {
+              type: 'worktree-state',
+              worktreeSession: transition.state,
+              sessionId,
+            }
+            const stateTail = await this.append(
+              lease,
+              snapshot.tail,
+              stateEntry,
+            )
+            snapshot = {
+              entries: [...snapshot.entries, stateEntry],
+              tail: stateTail,
+            }
+          }
           const [entry] = translateProviderEvents(
             [
               {
@@ -681,7 +763,7 @@ export class ClaudeSessionService {
         }
         const approveRecovery = this.options.approveRecovery
         const recoveryRequest = {
-          cwd: this.options.cwd,
+          cwd: this.activeCwd(),
           toolResultDirectory,
           messages: projectClaudeModelMessages(snapshot.entries),
           observer,
@@ -872,7 +954,7 @@ export class ClaudeSessionService {
                 snapshot.entries,
               ),
               durationMs: compacted.durationMs,
-              cwd: this.options.cwd,
+              cwd: this.activeCwd(),
               claudeVersion: this.options.claudeVersion,
               gitBranch: null,
               createUuid: () => uuids.shift() ?? randomUUID(),
@@ -894,7 +976,7 @@ export class ClaudeSessionService {
             {
               sessionId,
               parentUuid: compactSummaryUuid,
-              cwd: this.options.cwd,
+              cwd: this.activeCwd(),
               claudeVersion: this.options.claudeVersion,
               gitBranch: null,
               history: [...snapshot.entries, ...provisionalEntries],
@@ -999,7 +1081,7 @@ export class ClaudeSessionService {
             ...contextMessages,
             ...projectClaudeModelMessages(snapshot.entries),
           ],
-          cwd: this.options.cwd,
+          cwd: this.activeCwd(),
           toolResultDirectory,
           observer,
           reloadMessages: async () => {
@@ -1151,7 +1233,7 @@ export class ClaudeSessionService {
     return {
       sessionId,
       parentUuid: snapshot.tail.lastUuid,
-      cwd: this.options.cwd,
+      cwd: this.activeCwd(),
       claudeVersion: this.options.claudeVersion,
       gitBranch: null,
       ...(this.options.sessionKind === undefined
@@ -1284,16 +1366,30 @@ export class ClaudeSessionService {
   }
 
   private displayRulePath(rulePath: string): string {
-    const pathFromCwd = relative(this.options.cwd, rulePath)
+    const pathFromCwd = relative(this.activeCwd(), rulePath)
     return pathFromCwd.startsWith('..') || isAbsolute(pathFromCwd)
       ? rulePath
       : pathFromCwd
   }
 
+  private activeCwd(): string {
+    return this.options.workspace?.cwd() ?? this.options.cwd
+  }
+
+  private restoreWorktree(entries: readonly ClaudeTranscriptEntry[]): void {
+    const latest = [...entries]
+      .reverse()
+      .find((entry) => entry.type === 'worktree-state')
+    if (!latest || !this.worktreeManager) return
+    const state = latest.worktreeSession
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return
+    this.worktreeManager.restore(state as WorktreeSessionState)
+  }
+
   private paths(sessionId: string) {
     return resolveClaudePaths({
       configDir: this.options.configRoot,
-      cwd: this.options.cwd,
+      cwd: this.sessionCwds.get(sessionId) ?? this.options.cwd,
       sessionId,
     })
   }

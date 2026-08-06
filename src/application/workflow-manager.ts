@@ -230,7 +230,7 @@ export class WorkflowManager {
     const taskId = this.uniqueTaskId()
     const claudePaths = resolveClaudePaths({
       configDir: this.configRoot,
-      cwd: this.cwd,
+      cwd: this.currentCwd(),
       sessionId: options.sessionId,
     })
     const paths = resolveClaudeWorkflowPaths({
@@ -382,7 +382,12 @@ export class WorkflowManager {
   constructor(
     private readonly configRoot: string,
     private readonly cwd: string,
+    private readonly cwdProvider?: () => string,
   ) {}
+
+  private currentCwd(): string {
+    return this.cwdProvider?.() ?? this.cwd
+  }
 
   private async execute(
     task: WorkflowTask,
