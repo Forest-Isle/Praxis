@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -65,6 +72,37 @@ describe('BackgroundBashManager', () => {
     })
     await expect(manager.notifications(true)).resolves.toEqual([])
     await expect(manager.notifications(false)).resolves.toEqual([])
+  })
+
+  it('uses active cwd when worktree changes before launch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-background-bash-cwd-'))
+    roots.push(root)
+    const original = join(root, 'original')
+    const worktree = join(root, 'worktree')
+    await mkdir(original)
+    await mkdir(worktree)
+    const stateRoot = join(root, 'state')
+    let active = original
+    const manager = new BackgroundBashManager({
+      cwd: original,
+      cwdProvider: () => active,
+      sessionId: '21212121-2121-4121-8121-212121212121',
+      stateRoot,
+    })
+    active = worktree
+    const launch = await manager.launch({
+      command: 'pwd',
+      description: 'Print active cwd',
+      toolUseId: 'call_cwd',
+      timeout: 30_000,
+    })
+    const output = await manager.output(launch.taskId, {
+      block: true,
+      timeout: 30_000,
+    })
+    expect(output.nativeToolUseResult.task).toMatchObject({
+      output: `${await realpath(worktree)}\n`,
+    })
   })
 
   it('returns timeout without consuming a still-running completion', async () => {

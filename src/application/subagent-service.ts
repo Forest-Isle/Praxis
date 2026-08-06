@@ -158,6 +158,7 @@ class StructuredOutputRegistry implements ToolRegistry {
 export interface ClaudeSubagentExecutorOptions {
   configRoot: string
   cwd: string
+  cwdProvider?: () => string
   claudeVersion: string
   provider: ModelProvider
   baseTools: ToolRegistry
@@ -236,6 +237,10 @@ export class ClaudeSubagentExecutor {
 
   constructor(private readonly options: ClaudeSubagentExecutorOptions) {
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
+  }
+
+  private cwd(): string {
+    return this.options.cwdProvider?.() ?? this.options.cwd
   }
 
   registry(
@@ -421,7 +426,7 @@ export class ClaudeSubagentExecutor {
     const agentId = `a${randomBytes(8).toString('hex')}`
     const paths = resolveClaudePaths({
       configDir: this.options.configRoot,
-      cwd: this.options.cwd,
+      cwd: this.cwd(),
       sessionId,
     })
     const sidechainPaths = resolveClaudeSidechainPaths(
@@ -439,7 +444,7 @@ export class ClaudeSubagentExecutor {
       promptId,
       prompt: input.prompt,
       agentId,
-      cwd: this.options.cwd,
+      cwd: this.cwd(),
       claudeVersion: this.options.claudeVersion,
       gitBranch: null,
       uuid: randomUUID(),
@@ -590,18 +595,18 @@ export class ClaudeSubagentExecutor {
     )
     const claudePaths = resolveClaudePaths({
       configDir: this.options.configRoot,
-      cwd: this.options.cwd,
+      cwd: this.cwd(),
       sessionId: options.sessionId,
     })
     const isolation = options.isolation
       ? await createWorkflowWorktree({
-          cwd: this.options.cwd,
+          cwd: this.cwd(),
           praxisRoot: claudePaths.praxisRoot,
           runId: options.runId,
           agentId: options.agentId,
         })
       : null
-    const agentCwd = isolation?.cwd ?? this.options.cwd
+    const agentCwd = isolation?.cwd ?? this.cwd()
     const root = createClaudeSidechainRoot({
       sessionId: options.sessionId,
       promptId: options.promptId,
@@ -757,7 +762,7 @@ export class ClaudeSubagentExecutor {
     if (this.background.has(agentId)) return
     const paths = resolveClaudePaths({
       configDir: this.options.configRoot,
-      cwd: this.options.cwd,
+      cwd: this.cwd(),
       sessionId,
     })
     const sidechainPaths = resolveClaudeSidechainPaths(
@@ -890,7 +895,7 @@ export class ClaudeSubagentExecutor {
     usage: { inputTokens: number; outputTokens: number }
     toolUseCount: number
   }> {
-    const cwd = options.cwd ?? this.options.cwd
+    const cwd = options.cwd ?? this.cwd()
     let snapshot: TranscriptSnapshot = await options.lease.load()
     if (options.continuationMessage !== undefined) {
       const [entry] = translateProviderEvents(

@@ -59,6 +59,8 @@ import {
 } from './application/top-level-agent-manager.js'
 import { FilteredToolRegistry } from './tools/filtered-tool-registry.js'
 import { WebToolRegistry } from './tools/web.js'
+import { WorkspaceContext } from './application/session-worktree.js'
+import { launchTmuxWorktree } from './platform/tmux-worktree.js'
 import {
   createErrorResult,
   createSuccessResult,
@@ -125,6 +127,8 @@ Options:
   --json                              Legacy Praxis runtime NDJSON output
   -h, --help                          Show help
   -v, --version                       Show version
+  -w, --worktree [name]               Start in an isolated Git worktree
+  --tmux[=classic]                    Launch the worktree session in tmux
 
 Provider environment:
   PRAXIS_PROVIDER=openai|anthropic, PRAXIS_API_KEY, PRAXIS_MODEL
@@ -288,6 +292,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     signal?: AbortSignal
   }): Promise<number>
   topLevelAgents?: TopLevelAgentCommands
+  launchTmux?: typeof launchTmuxWorktree
 }
 
 const consoleIO: CliIO = {
@@ -310,6 +315,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
 }) => {
   const claudeVersion = await detectInstalledClaudeVersion()
   const cwd = process.cwd()
+  const workspace = new WorkspaceContext(cwd)
   const configuredRoot = process.env.CLAUDE_CONFIG_DIR
   const configRoot = resolve(configuredRoot ?? resolve(homedir(), '.claude'))
   const claudeStatePath = configuredRoot
@@ -360,6 +366,15 @@ const createDefaultService: CliDependencies['createService'] = async ({
     eventSink,
     sessionPersistence: cli.sessionPersistence,
     ...(sessionKind === undefined ? {} : { sessionKind }),
+    workspace,
+    ...(cli.worktreeRequested
+      ? {
+          initialWorktree: true,
+          ...(cli.worktreeName === undefined
+            ? {}
+            : { initialWorktreeName: cli.worktreeName }),
+        }
+      : {}),
   }
   if (!provider) return new ClaudeSessionService(options)
 
@@ -401,7 +416,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const loadContextResources = () =>
     loadClaudeContextResources({
       configRoot,
-      cwd,
+      cwd: workspace.cwd(),
       ...(automaticSettingSources === undefined
         ? {}
         : { settingSources: automaticSettingSources }),
@@ -409,6 +424,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const permissions = new ClaudeExtensionPermissionResolver(
     new ClaudePermissionResolver({
       cwd,
+      cwdProvider: () => workspace.cwd(),
       settings,
       allowedTools: cli.allowedTools,
       disallowedTools: cli.disallowedTools,
@@ -419,6 +435,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   )
   const localTools = new LocalToolRegistry({
     cwd,
+    cwdProvider: () => workspace.cwd(),
     ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
     additionalDirectories: cli.additionalDirectories,
     additionalReadDirectories: [claudeBackgroundTaskParent(cwd)],
@@ -450,6 +467,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       'ScheduleWakeup',
     ] as const
     const workflowToolNames = ['Workflow'] as const
+    const worktreeToolNames = ['EnterWorktree', 'ExitWorktree'] as const
     const selectedAgentTools = agentToolNames.filter(
       (name) =>
         (cli.tools === undefined ||
@@ -483,6 +501,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
           cli.tools.includes(name)) &&
         !cli.disallowedTools.includes(name),
     )
+    const selectedWorktreeTools = worktreeToolNames.filter(
+      (name) =>
+        !cli.bare &&
+        (cli.tools === undefined ||
+          cli.tools.includes('default') ||
+          cli.tools.includes(name)) &&
+        !cli.disallowedTools.includes(name),
+    )
     const enableBackgroundBash =
       cli.sessionPersistence &&
       !cli.bare &&
@@ -510,6 +536,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
         !workflowToolNames.includes(
           name as (typeof workflowToolNames)[number],
         ) &&
+        !worktreeToolNames.includes(
+          name as (typeof worktreeToolNames)[number],
+        ) &&
         (!cli.bare || (name !== 'WebFetch' && name !== 'WebSearch')),
     )
     const filteredTools = new FilteredToolRegistry(extensionTools, {
@@ -535,6 +564,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       scheduledToolNames: selectedScheduledTools,
       enableDynamicWakeups: interactive,
       enableWorkflows: selectedWorkflowTools.length > 0,
+      enableWorktrees:
+        cli.worktreeRequested || selectedWorktreeTools.length > 0,
+      worktreeToolNames: selectedWorktreeTools,
       ...(cli.safeMode || cli.bare
         ? {}
         : { hooks: new ClaudeHookRunner({ settings, cwd }) }),
@@ -562,10 +594,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...selectedTaskTools,
       ...selectedScheduledTools,
       ...selectedWorkflowTools,
+      ...selectedWorktreeTools,
       ...(enableSubagents ? selectedAgentTools : []),
     ]
     const runtimeInfo: CliRuntimeInfo = {
-      cwd,
+      cwd: workspace.cwd(),
       model: provider.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
       tools: toolNames,
       mcpServers: mcpTools.serverStatuses(),
@@ -596,7 +629,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         await service.close()
         await mcpTools.close()
       },
-      runtimeInfo: () => runtimeInfo,
+      runtimeInfo: () => ({ ...runtimeInfo, cwd: workspace.cwd() }),
     }
   } catch (error) {
     try {
@@ -632,6 +665,7 @@ const defaultDependencies: CliDependencies = {
     cliPath: fileURLToPath(import.meta.url),
     version: VERSION,
   }),
+  launchTmux: launchTmuxWorktree,
 }
 
 async function runBackgroundWorker(id: string): Promise<void> {
@@ -770,6 +804,20 @@ async function execute(
   const invocation = parseCliInvocation(argv)
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
+  if (invocation.tmux) {
+    if (!dependencies.launchTmux) throw new Error('tmux launcher unavailable')
+    const launched = await dependencies.launchTmux({
+      argv,
+      cwd: process.cwd(),
+      cliPath: fileURLToPath(import.meta.url),
+      ...(invocation.worktreeName === undefined
+        ? {}
+        : { worktreeName: invocation.worktreeName }),
+      attach: Boolean(io.isTTY),
+    })
+    if (!io.isTTY) io.stdout(`Started tmux session ${launched.sessionName}\n`)
+    return 0
+  }
   if (
     io.isTTY &&
     dependencies.runInteractive &&

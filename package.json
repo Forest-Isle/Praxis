@@ -46,6 +46,7 @@
     "test:top-level-agent-compat": "npm run build && node scripts/verify-top-level-agent-compatibility.mjs",
     "test:web-compat": "npm run build && node scripts/verify-web-compatibility.mjs",
     "test:workflow-compat": "npm run build && node scripts/verify-workflow-compatibility.mjs",
+    "test:worktree-compat": "npm run build && node scripts/verify-worktree-compatibility.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

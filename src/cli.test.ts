@@ -208,6 +208,33 @@ describe('Praxis CLI', () => {
     })
   })
 
+  it('launches tmux worktree sessions before creating a provider', async () => {
+    const capture = captureIO()
+    let launched:
+      Parameters<NonNullable<CliDependencies['launchTmux']>>[0] | undefined
+    const isolated: CliDependencies = {
+      async createService() {
+        throw new Error('provider must not be created')
+      },
+      async launchTmux(options) {
+        launched = options
+        return { sessionName: 'praxis-review', worktreeName: 'review' }
+      },
+    }
+    await expect(
+      run(
+        ['--worktree=review', '--tmux', '--', 'inspect'],
+        capture.io,
+        isolated,
+      ),
+    ).resolves.toBe(0)
+    expect(launched).toMatchObject({
+      worktreeName: 'review',
+      attach: false,
+    })
+    expect(capture.stdout).toEqual(['Started tmux session praxis-review\n'])
+  })
+
   it('runs a prompt in plain output mode', async () => {
     const capture = captureIO()
 

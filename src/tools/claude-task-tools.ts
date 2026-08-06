@@ -184,6 +184,7 @@ const TASK_DEFINITIONS: readonly ModelToolDefinition[] = [
 export interface ClaudeTaskToolRegistryOptions {
   base: ToolRegistry
   cwd: string
+  cwdProvider?: () => string
   praxisRoot: string
   sessionId: string
   taskRoot: string
@@ -283,6 +284,7 @@ export class ClaudeTaskToolRegistry implements ToolRegistry {
     })
     this.background = new BackgroundBashManager({
       cwd: options.cwd,
+      ...(options.cwdProvider ? { cwdProvider: options.cwdProvider } : {}),
       sessionId: options.sessionId,
       stateRoot: resolve(options.praxisRoot, 'background-tasks'),
       ...(options.maxOutputBytes === undefined

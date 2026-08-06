@@ -50,6 +50,14 @@ generic JSON merge because hook, permission, environment, and server fields
 have different precedence semantics. User/local MCP registry formats beyond
 project `.mcp.json` remain a Sprint 3 compatibility subset.
 
+Worktree lifecycle follows Claude Code's shared project layout. Dynamic
+`EnterWorktree`/`ExitWorktree` keeps session transcript in its pinned project
+directory while changing active tool/context cwd. Each transition uses native
+`worktree-state` and matching `toolUseResult` metadata. Initial CLI
+`--worktree` entry happens before transcript pinning, so its session file uses
+worktree project key. Existing worktrees entered by path are keep-only; Praxis
+never removes a worktree it did not create in current process.
+
 Memory location is resolved asynchronously by
 `resolveClaudeProjectMemoryDirectory` and `loadClaudeSharedResources` because
 worktree identity requires reading Git metadata. Callers must not infer a

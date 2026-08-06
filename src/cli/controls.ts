@@ -113,6 +113,11 @@ export async function resolveCliControls(
     forkSession: controls.forkSession,
     name: controls.name,
     sessionPersistence: controls.sessionPersistence,
+    ...(controls.worktreeName === undefined
+      ? {}
+      : { worktreeName: controls.worktreeName }),
+    ...(controls.worktreeRequested ? { worktreeRequested: true } : {}),
+    ...(controls.tmux === undefined ? {} : { tmux: controls.tmux }),
     additionalSettings,
     additionalDirectories: directories,
   }

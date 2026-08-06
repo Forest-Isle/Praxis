@@ -24,6 +24,7 @@ export interface RunProcessOptions {
   command: string
   args: readonly string[]
   timeoutMs: number
+  cwd?: string
   signal?: AbortSignal
   onOutput?: (output: string) => void | Promise<void>
 }
@@ -145,7 +146,7 @@ export class BoundedProcessRunner {
       const rawOutputLimit =
         this.options.maxOutputBytes + Math.max(3, longestSensitiveValueBytes)
       const child = spawn(options.command, options.args, {
-        cwd: this.options.cwd,
+        cwd: options.cwd ?? this.options.cwd,
         detached: process.platform !== 'win32',
         env: sanitizeChildEnvironment(),
         stdio: ['ignore', 'pipe', 'pipe'],

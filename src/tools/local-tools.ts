@@ -32,6 +32,7 @@ import { editNotebook, formatNotebookForRead } from './notebook.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
+  cwdProvider?: () => string
   sharedMemoryDirectory?: string
   additionalDirectories?: readonly string[]
   additionalReadDirectories?: readonly string[]
@@ -259,6 +260,7 @@ function imageMediaType(content: Buffer): ModelImageMediaType | null {
 
 export class LocalToolRegistry implements ToolRegistry {
   private readonly cwd: string
+  private readonly cwdProvider: (() => string) | undefined
   private readonly sharedMemoryDirectory: string | undefined
   private readonly additionalDirectories: readonly string[]
   private readonly additionalReadDirectories: readonly string[]
@@ -269,6 +271,7 @@ export class LocalToolRegistry implements ToolRegistry {
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
+    this.cwdProvider = options.cwdProvider
     this.sharedMemoryDirectory = options.sharedMemoryDirectory
       ? resolve(options.sharedMemoryDirectory)
       : undefined
@@ -285,6 +288,10 @@ export class LocalToolRegistry implements ToolRegistry {
       cwd: this.cwd,
       maxOutputBytes: this.maxOutputBytes,
     })
+  }
+
+  private currentCwd(): string {
+    return resolve(this.cwdProvider?.() ?? this.cwd)
   }
 
   definitions(): readonly ModelToolDefinition[] {
@@ -515,7 +522,7 @@ export class LocalToolRegistry implements ToolRegistry {
     includeSharedMemory: boolean,
     includeReadOnly = false,
   ): Promise<string> {
-    const workspaceRoot = await realpath(this.cwd)
+    const workspaceRoot = await realpath(this.currentCwd())
     const workspaceRoots = [
       workspaceRoot,
       ...(await Promise.all(
@@ -576,14 +583,14 @@ export class LocalToolRegistry implements ToolRegistry {
   private async globRoot(requestedPath: string): Promise<string> {
     const displayedPath = isAbsolute(requestedPath)
       ? resolve(requestedPath)
-      : resolve(this.cwd, requestedPath)
+      : resolve(this.currentCwd(), requestedPath)
     let root: string
     try {
       root = await this.workspacePath(requestedPath, false)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       throw new Error(
-        `<tool_use_error>Directory does not exist: ${displayedPath}. Note: your current working directory is ${await realpath(this.cwd)}.</tool_use_error>`,
+        `<tool_use_error>Directory does not exist: ${displayedPath}. Note: your current working directory is ${await realpath(this.currentCwd())}.</tool_use_error>`,
       )
     }
     if (!(await stat(root)).isDirectory()) {
@@ -799,7 +806,7 @@ export class LocalToolRegistry implements ToolRegistry {
         displayRoot: call.input.path === undefined ? '.' : requestedPath,
         absoluteRoot: isAbsolute(requestedPath)
           ? resolve(requestedPath)
-          : resolve(this.cwd, requestedPath),
+          : resolve(this.currentCwd(), requestedPath),
         pattern: stringInput(call.input, 'pattern', true),
         signal: searchSignal,
       })
@@ -823,7 +830,7 @@ export class LocalToolRegistry implements ToolRegistry {
     call: ModelToolCall,
     signal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
-    const workspaceRoot = await realpath(this.cwd)
+    const workspaceRoot = await realpath(this.currentCwd())
     const searchPath = stringInput(call.input, 'path')
     const relativeSearchPath = relative(workspaceRoot, searchPath) || '.'
     const args = [
@@ -840,6 +847,7 @@ export class LocalToolRegistry implements ToolRegistry {
       command: 'rg',
       args,
       timeoutMs: this.maxShellTimeoutMs,
+      cwd: this.currentCwd(),
       ...(signal ? { signal } : {}),
     })
     if (result.timedOut) {
@@ -869,6 +877,7 @@ export class LocalToolRegistry implements ToolRegistry {
       command: commandShell(),
       args: commandShellArguments(stringInput(call.input, 'command')),
       timeoutMs: timeout,
+      cwd: this.currentCwd(),
       ...(signal ? { signal } : {}),
     })
     if (result.timedOut) {

@@ -433,5 +433,22 @@ Status: implemented with one documented live-oracle limitation.
       remained inactive under all observable gate inputs
 
 The active Praxis path is fixture-verified and deliberately creates no shared
-artifact. Claude headless/manual inactive behavior remains live-verified. Native
-top-level worktree enter/exit is the next independent parity stage.
+artifact. Claude headless/manual inactive behavior remains live-verified.
+
+## Stage 25 - native worktree lifecycle
+
+Status: implemented with live Claude 2.1.208 schema and bidirectional resume
+gates.
+
+- [x] Claude-compatible `EnterWorktree` and `ExitWorktree` schemas and default
+      permissions
+- [x] Git worktree creation under `.claude/worktrees`, `worktree-*` branches,
+      clean/dirty/forced removal, existing-path keep-only behavior
+- [x] dynamic workspace cwd for local tools, permissions, hooks, context, and
+      foreground subagents without changing process-global cwd
+- [x] native `worktree-state` transcript entries and `toolUseResult` payloads
+- [x] CLI `--worktree [name]` initial entry and worktree-scoped transcript path
+- [x] detached classic `--tmux` launcher with argument forwarding and TTY attach
+- [x] live schema capture, Enter/Bash/Exit lifecycle, native layout, and
+      Claude/Praxis bidirectional resume gates
+- [x] focused lifecycle, protocol, tool, tmux, and permission tests

@@ -17,6 +17,7 @@ interface PermissionRule {
 
 export interface ClaudePermissionResolverOptions {
   cwd: string
+  cwdProvider?: () => string
   homeDirectory?: string
   settings: readonly ClaudeJsonResource[]
   allowedTools?: readonly string[]
@@ -59,6 +60,8 @@ const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   WebSearch: 'ask',
   Bash: 'ask',
   Workflow: 'ask',
+  EnterWorktree: 'allow',
+  ExitWorktree: 'allow',
 }
 
 const FILE_TOOLS = new Set([
@@ -217,11 +220,13 @@ function matchesRule(
 export class ClaudePermissionResolver implements PermissionResolver {
   private readonly rules: readonly PermissionRule[]
   private readonly cwd: string
+  private readonly cwdProvider: (() => string) | undefined
   private readonly homeDirectory: string
   private readonly permissionMode: ClaudePermissionMode
 
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
+    this.cwdProvider = options.cwdProvider
     this.homeDirectory = resolve(options.homeDirectory ?? homedir())
     this.rules = [
       ...loadRules(options.settings),
@@ -241,7 +246,12 @@ export class ClaudePermissionResolver implements PermissionResolver {
       this.rules.find(
         (candidate) =>
           candidate.behavior === behavior &&
-          matchesRule(candidate, call, this.cwd, this.homeDirectory),
+          matchesRule(
+            candidate,
+            call,
+            resolve(this.cwdProvider?.() ?? this.cwd),
+            this.homeDirectory,
+          ),
       )
     const denied = matchingRule('deny')
     if (denied) {

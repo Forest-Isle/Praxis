@@ -90,6 +90,7 @@ export interface ClaudeWorkflowToolRegistryOptions {
   manager: WorkflowManager
   executor: ClaudeSubagentExecutor
   cwd: string
+  cwdProvider?: () => string
   configRoot: string
   sessionId: string
   promptIdForCall(callId: string): string | null
@@ -262,7 +263,10 @@ export class ClaudeWorkflowToolRegistry implements ToolRegistry {
     if (input.scriptPath) {
       const path = isAbsolute(input.scriptPath)
         ? input.scriptPath
-        : resolve(this.options.cwd, input.scriptPath)
+        : resolve(
+            this.options.cwdProvider?.() ?? this.options.cwd,
+            input.scriptPath,
+          )
       let script: string
       try {
         script = await readFile(path, 'utf8')
@@ -277,7 +281,12 @@ export class ClaudeWorkflowToolRegistry implements ToolRegistry {
     if (input.script) return this.source(input.script)
     const name = String(input.name)
     for (const path of [
-      resolve(this.options.cwd, '.claude', 'workflows', `${name}.js`),
+      resolve(
+        this.options.cwdProvider?.() ?? this.options.cwd,
+        '.claude',
+        'workflows',
+        `${name}.js`,
+      ),
       resolve(this.options.configRoot, 'workflows', `${name}.js`),
     ]) {
       try {
