@@ -109,6 +109,7 @@ Options:
   --fallback-model <models>           Comma-separated print-mode fallbacks
   --json-schema <schema>              Print-mode JSON Schema for structured output
   --max-budget-usd <amount>           Maximum print-mode API spend
+  --prompt-suggestions                Emit a suggested next prompt (stream-json print mode)
   --no-session-persistence            Keep print-mode session in memory only
   --agent <name>                      Select a shared agent definition
   --settings <file-or-json>           Load additional settings
@@ -262,6 +263,10 @@ interface SessionCommands {
   ): Promise<{ id: string; prompt: string } | null>
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
+  promptSuggestion?(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null>
 }
 
 interface TopLevelAgentCommands {
@@ -660,6 +665,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
         cwd: workspace.cwd(),
         model: provider.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
       }),
+      promptSuggestion: (sessionId, suggestionSignal) =>
+        service.promptSuggestion(sessionId, suggestionSignal),
     }
   } catch (error) {
     try {
@@ -1215,6 +1222,17 @@ async function execute(
       } else if (outputFormat !== 'text')
         writeJson(io, { type: 'result', ...result })
       else io.stdout('\n')
+      if (streamOutput && invocation.promptSuggestions) {
+        try {
+          const suggestion = await service.promptSuggestion?.(
+            activeSessionId,
+            signal,
+          )
+          if (suggestion) streamOutput.promptSuggestion(suggestion)
+        } catch {
+          // Prompt suggestions are auxiliary and must not change turn success.
+        }
+      }
       isFirstTurn = false
       return true
     }

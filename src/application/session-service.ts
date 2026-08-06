@@ -179,6 +179,24 @@ export function workflowTokenTarget(prompt: string): number | null {
   )
 }
 
+const PROMPT_SUGGESTION_INSTRUCTION = `[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.]
+
+FIRST: Look at the user's recent messages and original request.
+
+Your job is to predict what THEY would type - not what you think they should do.
+
+Reply with ONLY the suggestion, no quotes or explanation.
+Use 2-12 words. Do not ask a question, evaluate the prior response, introduce a new idea, or use a Claude voice. If the topic is unsafe or sensitive, reply with an empty string.`
+
+function validPromptSuggestion(value: string): string | null {
+  const suggestion = value.trim()
+  if (!suggestion) return null
+  const words = suggestion.split(/\s+/u)
+  if (words.length < 2 || words.length > 12) return null
+  if (/[?？\n\r]/u.test(suggestion) || /[.!。！]/u.test(suggestion)) return null
+  return suggestion
+}
+
 export class ClaudeSessionService {
   private readonly schema
   private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
@@ -255,6 +273,55 @@ export class ClaudeSessionService {
   ): Promise<SessionRunResult> {
     this.worktreeManager?.bindSession(sessionId)
     return this.executeTurn(sessionId, prompt, true, signal, name)
+  }
+
+  async promptSuggestion(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const provider = this.provider()
+    const loaded =
+      this.options.sessionPersistence === false
+        ? await this.turnStore(sessionId).withLease((lease) => lease.load())
+        : {
+            status: 'completed' as const,
+            value: await this.store(sessionId).loadReadOnly(),
+          }
+    if (loaded.status === 'conflict') return null
+    const entries = loaded.value
+    this.restoreWorktree(entries.entries)
+    const agentName =
+      this.options.agent ?? getClaudeAgentSetting(entries.entries)
+    const agent = agentName ? this.options.extensions?.agent(agentName) : null
+    const contextMessages = [
+      ...((await this.options.contextAssembler?.assemble()) ?? []),
+      ...(agent
+        ? [
+            {
+              role: 'system' as const,
+              content: `# Agent definition: ${agent.name}\n\n${agent.body}`,
+            },
+          ]
+        : []),
+    ]
+    const messages = [
+      ...contextMessages,
+      ...projectClaudeModelMessages(entries.entries),
+      { role: 'user' as const, content: PROMPT_SUGGESTION_INSTRUCTION },
+    ]
+    let suggestion = ''
+    for await (const event of provider.complete({
+      messages,
+      ...(provider.capabilities.tools
+        ? { tools: this.options.tools?.definitions() ?? [] }
+        : {}),
+      ...(this.options.effort ? { effort: this.options.effort } : {}),
+      ...(signal ? { signal } : {}),
+    })) {
+      if (event.type === 'text-delta') suggestion += event.delta
+      if (event.type === 'tool-call') return null
+    }
+    return validPromptSuggestion(suggestion)
   }
 
   async sessions(): Promise<SessionSummary[]> {

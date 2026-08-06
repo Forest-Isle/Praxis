@@ -24,6 +24,7 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
   forkSession: false,
   name: undefined,
   sessionPersistence: true,
+  promptSuggestions: false,
 }
 
 export interface ResolvedCliControls extends Omit<
@@ -124,6 +125,7 @@ export async function resolveCliControls(
     ...(controls.maxBudgetUsd === undefined
       ? {}
       : { maxBudgetUsd: controls.maxBudgetUsd }),
+    promptSuggestions: controls.promptSuggestions ?? false,
     ...(controls.worktreeName === undefined
       ? {}
       : { worktreeName: controls.worktreeName }),

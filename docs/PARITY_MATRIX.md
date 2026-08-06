@@ -19,25 +19,25 @@ Evidence levels:
 
 ## Invocation and machine I/O
 
-| Capability                           | Status                   | Evidence / remaining work                                                                                                  |
-| ------------------------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| Interactive TTY                      | Complete                 | Ink event adapter, permission/recovery prompts, session picker; package and unit gates                                     |
-| Print/headless prompt                | Complete                 | `-p`, `--print`, top-level prompt, and legacy `run`; installed package gate                                                |
-| Resume syntax                        | Complete                 | `-r`, `--resume`, and legacy `resume`; shared transcript continuation                                                      |
-| Explicit session ID                  | Complete                 | UUID validation, atomic `wx` reservation, existing/empty-file rejection matching live 2.1.208                              |
-| Text output                          | Complete                 | Realtime terminal deltas and final newline                                                                                 |
-| Single JSON result                   | Partial                  | Success/error shape plus measured API duration and priced usage; unknown model pricing remains explicitly `null`           |
-| Stream JSON output                   | Partial                  | Init, assistant, tool result, result, warning, error, and measured result metrics complete; prompt suggestions remain      |
-| Partial messages                     | Complete                 | message/content/tool delta lifecycle under `--include-partial-messages`                                                    |
-| Stream JSON input                    | Complete for text blocks | Incremental UTF-8/CRLF NDJSON parser, bounds, empty-input no-op, multi-turn run-to-resume, replay; installed gate          |
-| User image/file input records        | Missing                  | Requires native input attachment envelopes and provider projection                                                         |
-| SDK control request/response records | Missing                  | Permission and interrupt control protocol not yet exposed over stdin/stdout                                                |
-| Legacy Praxis `--json`               | Complete                 | Existing runtime NDJSON retained without changing explicit Claude-style formats                                            |
-| `--continue`                         | Complete                 | Most-recent current-project selection with native resume behavior                                                          |
-| `--fork-session`                     | Complete                 | Resume/continue forks preserve native history and title with generated or explicit fresh session identity                  |
-| Session name                         | Partial                  | `--name` writes native `custom-title`/`agent-name` and Claude resumes it; Praxis picker display remains                    |
-| No persistence                       | Partial                  | In-memory run and disk-session import leave JSONL untouched; foreground Agent remains disabled without sidechain storage   |
-| Top-level background session         | Complete                 | `--bg`/`--background`, managed session ID, detached persistent worker, idle attach, logs, stop, and live cross-resume gate |
+| Capability                           | Status                   | Evidence / remaining work                                                                                                                      |
+| ------------------------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Interactive TTY                      | Complete                 | Ink event adapter, permission/recovery prompts, session picker; package and unit gates                                                         |
+| Print/headless prompt                | Complete                 | `-p`, `--print`, top-level prompt, and legacy `run`; installed package gate                                                                    |
+| Resume syntax                        | Complete                 | `-r`, `--resume`, and legacy `resume`; shared transcript continuation                                                                          |
+| Explicit session ID                  | Complete                 | UUID validation, atomic `wx` reservation, existing/empty-file rejection matching live 2.1.208                                                  |
+| Text output                          | Complete                 | Realtime terminal deltas and final newline                                                                                                     |
+| Single JSON result                   | Partial                  | Success/error shape plus measured API duration and priced usage; unknown model pricing remains explicitly `null`                               |
+| Stream JSON output                   | Partial                  | Init, assistant, tool result, result, warning, error, measured result metrics, and `prompt_suggestion` records complete; other controls remain |
+| Partial messages                     | Complete                 | message/content/tool delta lifecycle under `--include-partial-messages`                                                                        |
+| Stream JSON input                    | Complete for text blocks | Incremental UTF-8/CRLF NDJSON parser, bounds, empty-input no-op, multi-turn run-to-resume, replay; installed gate                              |
+| User image/file input records        | Missing                  | Requires native input attachment envelopes and provider projection                                                                             |
+| SDK control request/response records | Missing                  | Permission and interrupt control protocol not yet exposed over stdin/stdout                                                                    |
+| Legacy Praxis `--json`               | Complete                 | Existing runtime NDJSON retained without changing explicit Claude-style formats                                                                |
+| `--continue`                         | Complete                 | Most-recent current-project selection with native resume behavior                                                                              |
+| `--fork-session`                     | Complete                 | Resume/continue forks preserve native history and title with generated or explicit fresh session identity                                      |
+| Session name                         | Partial                  | `--name` writes native `custom-title`/`agent-name` and Claude resumes it; Praxis picker display remains                                        |
+| No persistence                       | Partial                  | In-memory run and disk-session import leave JSONL untouched; foreground Agent remains disabled without sidechain storage                       |
+| Top-level background session         | Complete                 | `--bg`/`--background`, managed session ID, detached persistent worker, idle attach, logs, stop, and live cross-resume gate                     |
 
 ## Shared Claude data plane
 
@@ -58,24 +58,24 @@ Evidence levels:
 
 ## Runtime and controls
 
-| Capability                    | Status                      | Evidence / remaining work                                                                                                          |
-| ----------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Provider-neutral agent loop   | Complete                    | OpenAI-compatible and Anthropic streaming/tool loops                                                                               |
-| Context budget and compaction | Complete                    | Provider capability budget, native compact records, live reopen                                                                    |
-| Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                                        |
-| Background agents and tasks   | Complete for local runtime  | Agent/Bash task lifecycle plus top-level persistent dispatch, live logs, attach, stop, stale-worker repair, and shared transcripts |
-| Agent messaging               | Complete for local Agent    | Ordered SendMessage to running/completed IDs, later-turn sidechain hydration, completion notification                              |
-| Permissions                   | Partial                     | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass complete; `auto` classifier missing                                         |
-| Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                                     |
-| Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                |
-| System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                                        |
-| Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                            |
-| Model selection               | Complete                    | Environment and `--model` invocation selection, fallback model resolution                                                          |
-| Effort and fallback           | Complete                    | `--effort`, retryable three-attempt fallback chain, print-only validation                                                          |
-| Structured output             | Complete                    | `--json-schema` AJV validation, hidden tool capture, exact-once enforcement, `structured_output` result                            |
-| Cost and budget               | Partial                     | Built-in/explicit pricing, measured API duration, and `--max-budget-usd`; unknown/private model pricing remains null/fail-closed   |
-| Prompt suggestions            | Missing                     | Post-turn `prompt_suggestion` event                                                                                                |
-| Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                   |
+| Capability                    | Status                      | Evidence / remaining work                                                                                                                     |
+| ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider-neutral agent loop   | Complete                    | OpenAI-compatible and Anthropic streaming/tool loops                                                                                          |
+| Context budget and compaction | Complete                    | Provider capability budget, native compact records, live reopen                                                                               |
+| Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                                                   |
+| Background agents and tasks   | Complete for local runtime  | Agent/Bash task lifecycle plus top-level persistent dispatch, live logs, attach, stop, stale-worker repair, and shared transcripts            |
+| Agent messaging               | Complete for local Agent    | Ordered SendMessage to running/completed IDs, later-turn sidechain hydration, completion notification                                         |
+| Permissions                   | Partial                     | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass complete; `auto` classifier missing                                                    |
+| Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                                                |
+| Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                           |
+| System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                                                   |
+| Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                                       |
+| Model selection               | Complete                    | Environment and `--model` invocation selection, fallback model resolution                                                                     |
+| Effort and fallback           | Complete                    | `--effort`, retryable three-attempt fallback chain, print-only validation                                                                     |
+| Structured output             | Complete                    | `--json-schema` AJV validation, hidden tool capture, exact-once enforcement, `structured_output` result                                       |
+| Cost and budget               | Partial                     | Built-in/explicit pricing, measured API duration, and `--max-budget-usd`; unknown/private model pricing remains null/fail-closed              |
+| Prompt suggestions            | Complete                    | `--prompt-suggestions` validates print/stream-json mode, performs an unpersisted auxiliary request, and emits post-result `prompt_suggestion` |
+| Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                              |
 
 ## Tool surface
 

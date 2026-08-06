@@ -152,6 +152,37 @@ describe('CLI protocol', () => {
     )
   })
 
+  it('parses and restricts prompt suggestions', () => {
+    expect(
+      parseCliInvocation([
+        '-p',
+        '--output-format=stream-json',
+        '--verbose',
+        '--prompt-suggestions',
+        'hello',
+      ]),
+    ).toMatchObject({ promptSuggestions: true })
+    expect(
+      parseCliInvocation([
+        '-p',
+        '--output-format=stream-json',
+        '--verbose',
+        '--prompt-suggestions=false',
+      ]),
+    ).toMatchObject({ promptSuggestions: false })
+    expect(() => parseCliInvocation(['--prompt-suggestions'])).toThrow(
+      '--prompt-suggestions requires --print and --output-format=stream-json',
+    )
+    expect(() =>
+      parseCliInvocation([
+        '-p',
+        '--output-format=stream-json',
+        '--verbose',
+        '--prompt-suggestions=maybe',
+      ]),
+    ).toThrow('must be a boolean')
+  })
+
   it('parses single-user CLI customization, tool, permission, and session controls', () => {
     expect(
       parseCliInvocation([
@@ -438,6 +469,31 @@ describe('CLI protocol', () => {
         }),
       }),
     )
+  })
+
+  it('emits prompt suggestion records after the result', () => {
+    const records: Record<string, unknown>[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      false,
+    )
+    output.result(
+      { sessionId, text: 'done', usage: { inputTokens: 1, outputTokens: 1 } },
+      Date.now(),
+    )
+    output.promptSuggestion('continue the implementation')
+    expect(records.map((record) => record.type)).toEqual([
+      'result',
+      'prompt_suggestion',
+    ])
+    expect(records[1]).toMatchObject({
+      type: 'prompt_suggestion',
+      suggestion: 'continue the implementation',
+      session_id: sessionId,
+      uuid: expect.any(String),
+    })
   })
 
   it('emits a terminal error result without resetting session identity', () => {
