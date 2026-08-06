@@ -443,9 +443,12 @@ export async function planClaudeProjectPurge(
   }
 
   const historyPath = join(configRoot, 'history.jsonl')
-  const historySource = await readOptionalFile(historyPath)
+  const historyExists = await pathExists(historyPath)
+  if (historyExists) await assertSafePurgePath(configRoot, historyPath)
+  const historySource = historyExists
+    ? await readOptionalFile(historyPath)
+    : null
   if (historySource !== null) {
-    await assertSafePurgePath(configRoot, historyPath)
     const { removed } = filterProjectHistory(historySource, targetPath)
     if (removed > 0) {
       items.push({
