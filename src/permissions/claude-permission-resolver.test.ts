@@ -377,6 +377,153 @@ describe('ClaudePermissionResolver', () => {
     ).toThrow('requires a classifier')
   })
 
+  it('routes risky auto-mode actions through a context-aware classifier', async () => {
+    const seen: Array<{ name: string; cwd: string; messages: number }> = []
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      permissionMode: 'auto',
+      autoClassifier: async ({ call, cwd, messages }) => {
+        seen.push({ name: call.name, cwd, messages: messages.length })
+        return {
+          behavior: call.name === 'Write' ? 'ask' : 'allow',
+          ...(call.name === 'Write' ? { reason: 'classifier review' } : {}),
+        }
+      },
+    })
+
+    await expect(
+      resolver.resolve(
+        {
+          id: 'read',
+          name: 'Read',
+          input: { file_path: '/workspace/src/index.ts' },
+        },
+        { cwd: '/workspace', messages: [{ role: 'user', content: 'inspect' }] },
+      ),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'safe-shell',
+        name: 'Bash',
+        input: { command: 'pwd' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'code-shell',
+        name: 'Bash',
+        input: { command: 'node -e "console.log(42)"' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve(
+        {
+          id: 'write',
+          name: 'Write',
+          input: { file_path: '/workspace/src/index.ts', content: 'next' },
+        },
+        { cwd: '/workspace', messages: [{ role: 'user', content: 'edit' }] },
+      ),
+    ).resolves.toEqual({ behavior: 'ask', reason: 'classifier review' })
+    await expect(
+      resolver.resolve(
+        {
+          id: 'agent',
+          name: 'Agent',
+          input: { subagent_type: 'general-purpose' },
+        },
+        { cwd: '/workspace', messages: [] },
+      ),
+    ).resolves.toEqual({ behavior: 'allow' })
+    expect(seen).toEqual([
+      { name: 'Bash', cwd: '/workspace', messages: 0 },
+      { name: 'Write', cwd: '/workspace', messages: 1 },
+      { name: 'Agent', cwd: '/workspace', messages: 0 },
+    ])
+  })
+
+  it('loads auto-mode rule lists and supports $defaults composition', async () => {
+    let configured: unknown
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      permissionMode: 'auto',
+      settings: [
+        {
+          path: '/config/settings.json',
+          scope: 'user',
+          value: {
+            autoMode: {
+              allow: ['$defaults', 'custom allow'],
+              soft_deny: ['custom soft deny'],
+              hard_deny: ['$defaults', 'custom hard deny'],
+              environment: ['custom environment'],
+              classifyAllShell: true,
+            },
+          },
+        },
+      ],
+      autoClassifier: async (input) => {
+        configured = input.config
+        return { behavior: 'allow' }
+      },
+    })
+
+    await resolver.resolve({
+      id: 'shell',
+      name: 'Bash',
+      input: { command: 'printf safe' },
+    })
+    expect(configured).toMatchObject({
+      allow: expect.arrayContaining(['custom allow']),
+      softDeny: ['custom soft deny'],
+      hardDeny: expect.arrayContaining(['custom hard deny']),
+      environment: ['custom environment'],
+      classifyAllShell: true,
+    })
+  })
+
+  it('fails closed when auto classifier throws', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      permissionMode: 'auto',
+      autoClassifier: async () => {
+        throw new Error('classifier unavailable')
+      },
+    })
+    await expect(
+      resolver.resolve({
+        id: 'write',
+        name: 'Write',
+        input: { file_path: '/workspace/output.txt', content: 'x' },
+      }),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Auto mode classifier failed: classifier unavailable',
+    })
+  })
+
+  it('does not let an allow rule bypass auto classification for risky actions', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Agent'],
+      permissionMode: 'auto',
+      autoClassifier: async () => ({
+        behavior: 'deny',
+        reason: 'classifier policy',
+      }),
+    })
+    await expect(
+      resolver.resolve({
+        id: 'agent',
+        name: 'Agent',
+        input: { subagent_type: 'general-purpose' },
+      }),
+    ).resolves.toEqual({ behavior: 'deny', reason: 'classifier policy' })
+  })
+
   it('allows built-in scheduling lifecycle tools by default', async () => {
     const resolver = new ClaudePermissionResolver({
       cwd: '/workspace',

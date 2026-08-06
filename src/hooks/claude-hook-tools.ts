@@ -2,6 +2,7 @@ import type {
   ModelToolCall,
   PermissionDecision,
   PermissionResolver,
+  PermissionResolutionContext,
   ToolExecutionContext,
   ToolExecutionResult,
   ToolRegistry,
@@ -97,10 +98,13 @@ export class ClaudeHookToolCoordinator
     return this.options.tools.prepare({ ...call, input: hookInput }, context)
   }
 
-  async resolve(call: ModelToolCall): Promise<PermissionDecision> {
+  async resolve(
+    call: ModelToolCall,
+    context?: PermissionResolutionContext,
+  ): Promise<PermissionDecision> {
     const prepared = this.prepared.get(call.id)
     if (prepared?.permissionDecision) return prepared.permissionDecision
-    const decision = await this.options.permissions.resolve(call)
+    const decision = await this.options.permissions.resolve(call, context)
     if (decision.behavior !== 'ask') return decision
 
     const outcome = await this.options.hooks.run(

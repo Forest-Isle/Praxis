@@ -6,8 +6,14 @@ import type {
   ModelToolCall,
   PermissionBehavior,
   PermissionDecision,
+  PermissionResolutionContext,
   PermissionResolver,
 } from '../core/runtime.js'
+import {
+  loadClaudeAutoModeConfig,
+  type ClaudeAutoClassifier,
+  type ClaudeAutoModeConfig,
+} from './claude-auto-classifier.js'
 
 interface PermissionRule {
   behavior: PermissionBehavior
@@ -23,6 +29,8 @@ export interface ClaudePermissionResolverOptions {
   allowedTools?: readonly string[]
   disallowedTools?: readonly string[]
   permissionMode?: ClaudePermissionMode
+  autoClassifier?: ClaudeAutoClassifier
+  autoModeConfig?: ClaudeAutoModeConfig
 }
 
 export type ClaudePermissionMode =
@@ -224,6 +232,8 @@ export class ClaudePermissionResolver implements PermissionResolver {
   private readonly cwdProvider: (() => string) | undefined
   private readonly homeDirectory: string
   private readonly permissionMode: ClaudePermissionMode
+  private readonly autoClassifier: ClaudeAutoClassifier | undefined
+  private readonly autoModeConfig: ClaudeAutoModeConfig
 
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
@@ -235,24 +245,26 @@ export class ClaudePermissionResolver implements PermissionResolver {
       ...readRuleStrings(options.allowedTools ?? [], 'allow'),
     ]
     this.permissionMode = options.permissionMode ?? 'default'
+    this.autoModeConfig =
+      options.autoModeConfig ?? loadClaudeAutoModeConfig(options.settings)
+    this.autoClassifier = options.autoClassifier
     if (this.permissionMode === 'auto') {
-      throw new Error(
-        'Permission mode auto requires a classifier and is not implemented yet',
-      )
+      if (!this.autoClassifier) {
+        throw new Error('Permission mode auto requires a classifier')
+      }
     }
   }
 
-  async resolve(call: ModelToolCall): Promise<PermissionDecision> {
+  async resolve(
+    call: ModelToolCall,
+    context?: PermissionResolutionContext,
+  ): Promise<PermissionDecision> {
+    const cwd = resolve(this.cwdProvider?.() ?? this.cwd)
     const matchingRule = (behavior: PermissionBehavior) =>
       this.rules.find(
         (candidate) =>
           candidate.behavior === behavior &&
-          matchesRule(
-            candidate,
-            call,
-            resolve(this.cwdProvider?.() ?? this.cwd),
-            this.homeDirectory,
-          ),
+          matchesRule(candidate, call, cwd, this.homeDirectory),
       )
     const denied = matchingRule('deny')
     if (denied) {
@@ -278,13 +290,42 @@ export class ClaudePermissionResolver implements PermissionResolver {
     }
 
     if (matchingRule('ask')) return this.askDecision(call)
-    if (matchingRule('allow')) return { behavior: 'allow' }
+    if (
+      matchingRule('allow') &&
+      (this.permissionMode !== 'auto' || !this.shouldClassify(call))
+    ) {
+      return { behavior: 'allow' }
+    }
     if (
       this.permissionMode === 'acceptEdits' &&
       (call.name === 'Write' ||
         call.name === 'Edit' ||
         call.name === 'NotebookEdit')
     ) {
+      return { behavior: 'allow' }
+    }
+
+    if (
+      this.permissionMode === 'auto' &&
+      this.shouldClassify(call) &&
+      this.autoClassifier
+    ) {
+      try {
+        return await this.autoClassifier({
+          call,
+          cwd,
+          messages: context?.messages ?? [],
+          config: this.autoModeConfig,
+        })
+      } catch (error) {
+        return {
+          behavior: 'deny',
+          reason: `Auto mode classifier failed: ${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
+    }
+
+    if (this.permissionMode === 'auto' && call.name === 'Bash') {
       return { behavior: 'allow' }
     }
 
@@ -308,5 +349,26 @@ export class ClaudePermissionResolver implements PermissionResolver {
             ? { reason: 'Review dynamic workflow before running' }
             : {}),
         }
+  }
+
+  private shouldClassify(call: ModelToolCall): boolean {
+    if (call.name === 'Agent') return true
+    if (
+      call.name === 'Write' ||
+      call.name === 'Edit' ||
+      call.name === 'NotebookEdit' ||
+      call.name === 'WebFetch' ||
+      call.name === 'WebSearch' ||
+      call.name === 'Workflow'
+    ) {
+      return true
+    }
+    if (call.name !== 'Bash') return false
+    if (this.autoModeConfig.classifyAllShell) return true
+    const command =
+      typeof call.input.command === 'string' ? call.input.command : ''
+    return /\b(node|deno|bun|python(?:3)?|ruby|perl)\s+-[ec]\b|\beval\s|\b(curl|wget)\b.*\|\s*(sh|bash)\b|\b(rm|sudo|chmod|chown|docker|kubectl)\b|\bgit\s+(push|reset|clean)\b|[<>]\s*[^=]/u.test(
+      command,
+    )
   }
 }
