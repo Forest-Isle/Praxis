@@ -37,6 +37,11 @@ import {
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
 import { ClaudePermissionResolver } from './permissions/claude-permission-resolver.js'
 import {
+  createClaudeModelAutoClassifier,
+  defaultClaudeAutoModeConfig,
+  loadClaudeAutoModeConfig,
+} from './permissions/claude-auto-classifier.js'
+import {
   ClaudeExtensionPermissionResolver,
   ClaudeExtensionToolRegistry,
 } from './extensions/claude-extension-tools.js'
@@ -102,6 +107,7 @@ Usage:
   praxis logs <agent-id>
   praxis stop <agent-id>
   praxis mcp <list|get|add|add-json|remove|reset-project-choices> ...
+  praxis auto-mode <config|defaults>
 
 Options:
   -p, --print                         Print response and exit
@@ -470,6 +476,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       permissionMode: cli.dangerouslySkipPermissions
         ? 'bypassPermissions'
         : cli.permissionMode,
+      ...(cli.permissionMode === 'auto'
+        ? { autoClassifier: createClaudeModelAutoClassifier(provider) }
+        : {}),
     }),
   )
   const localTools = new LocalToolRegistry({
@@ -761,6 +770,53 @@ function mcpRecordJson(record: McpServerRecord): Record<string, unknown> {
   }
 }
 
+function autoModeJson(config: ReturnType<typeof defaultClaudeAutoModeConfig>) {
+  return {
+    allow: config.allow,
+    soft_deny: config.softDeny,
+    hard_deny: config.hardDeny,
+    environment: config.environment,
+    classifyAllShell: config.classifyAllShell,
+  }
+}
+
+async function executeAutoModeCommand(
+  args: readonly string[],
+  invocation: CliInvocation,
+  io: CliIO,
+): Promise<number> {
+  const action = args[1]
+  if (!action || action === 'help') {
+    io.stdout('Usage: praxis auto-mode <config|defaults>\n')
+    return 0
+  }
+  if (args.length !== 2) {
+    throw new Error(`auto-mode ${action} takes no operands`)
+  }
+  if (action === 'defaults') {
+    const output = autoModeJson(defaultClaudeAutoModeConfig())
+    if (invocation.legacyJson || invocation.outputFormat !== 'text')
+      writeJson(io, output)
+    else io.stdout(`${JSON.stringify(output)}\n`)
+    return 0
+  }
+  if (action === 'config') {
+    const configRoot = resolve(
+      process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
+    )
+    const settings = await loadClaudeSettings({
+      configRoot,
+      cwd: process.cwd(),
+    })
+    const output = autoModeJson(loadClaudeAutoModeConfig(settings))
+    if (invocation.legacyJson || invocation.outputFormat !== 'text')
+      writeJson(io, output)
+    else io.stdout(`${JSON.stringify(output)}\n`)
+    return 0
+  }
+  throw new Error(`Unknown auto-mode command: ${action}`)
+}
+
 async function executeMcpCommand(
   args: readonly string[],
   invocation: CliInvocation,
@@ -1017,6 +1073,7 @@ async function execute(
     'logs',
     'stop',
     'mcp',
+    'auto-mode',
   ].includes(command ?? '')
   if (retryInterruptedTools && command !== 'resume') {
     throw new Error('--retry-interrupted-tools is only valid with resume')
@@ -1035,6 +1092,9 @@ async function execute(
   }
   if (command === 'mcp') {
     return executeMcpCommand(args, invocation, io)
+  }
+  if (command === 'auto-mode') {
+    return executeAutoModeCommand(args, invocation, io)
   }
   const expectedOperands =
     command === 'sessions' || command === 'agents' ? 1 : 2

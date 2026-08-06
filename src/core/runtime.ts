@@ -139,13 +139,22 @@ export interface ToolRegistry {
 
 export type PermissionBehavior = 'allow' | 'ask' | 'deny'
 
+export interface PermissionResolutionContext {
+  cwd: string
+  messages?: readonly ModelMessage[]
+  signal?: AbortSignal
+}
+
 export type PermissionDecision =
   | { behavior: 'allow' }
   | { behavior: 'ask'; reason?: string }
   | { behavior: 'deny'; reason: string }
 
 export interface PermissionResolver {
-  resolve(call: ModelToolCall): PermissionDecision | Promise<PermissionDecision>
+  resolve(
+    call: ModelToolCall,
+    context?: PermissionResolutionContext,
+  ): PermissionDecision | Promise<PermissionDecision>
 }
 
 export interface AgentRunObserver {
@@ -558,7 +567,7 @@ export class AgentRuntime {
     }
     await this.requireRecoveryApproval(prepared, request)
 
-    const decision = await permissions.resolve(prepared)
+    const decision = await permissions.resolve(prepared, context)
     this.emit({
       type: 'permission-decision',
       callId: call.id,
