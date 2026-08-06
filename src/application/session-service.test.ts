@@ -72,6 +72,55 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('generates prompt suggestions without mutating transcript or main usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-suggestion-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      model: 'suggestion-model',
+      async *complete(request) {
+        requests.push(request)
+        yield {
+          type: 'text-delta',
+          delta:
+            requests.length === 1
+              ? 'main answer'
+              : 'continue the implementation',
+        }
+        yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+    })
+    const result = await service.run('implement the feature')
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    }).sessionFile
+    const before = await readFile(sessionFile)
+    await expect(service.promptSuggestion(result.sessionId)).resolves.toBe(
+      'continue the implementation',
+    )
+    const after = await readFile(sessionFile)
+    expect(after).toEqual(before)
+    expect(result.usage).toEqual({ inputTokens: 4, outputTokens: 2 })
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'user',
+      content: expect.stringContaining('[SUGGESTION MODE:'),
+    })
+  })
+
   it('marks background user and assistant transcript entries with native session metadata', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-bg-'))
     roots.push(root)

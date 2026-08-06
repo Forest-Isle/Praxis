@@ -43,6 +43,7 @@ export interface CliControls {
   fallbackModels?: readonly string[]
   jsonSchema?: Record<string, unknown>
   maxBudgetUsd?: number
+  promptSuggestions?: boolean
   worktreeName?: string
   worktreeRequested?: boolean
   tmux?: 'classic'
@@ -315,6 +316,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let fallbackModels: string[] | undefined
   let jsonSchema: Record<string, unknown> | undefined
   let maxBudgetUsd: number | undefined
+  let promptSuggestions = false
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
@@ -633,6 +635,20 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       retryInterruptedTools = true
       continue
     }
+    if (value === '--prompt-suggestions') {
+      promptSuggestions = true
+      continue
+    }
+    if (value.startsWith('--prompt-suggestions=')) {
+      const raw = value.slice('--prompt-suggestions='.length).toLowerCase()
+      if (
+        !['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'].includes(raw)
+      ) {
+        throw new Error('--prompt-suggestions must be a boolean')
+      }
+      promptSuggestions = ['true', '1', 'yes', 'on'].includes(raw)
+      continue
+    }
     throw new Error(`Unknown option: ${value}`)
   }
 
@@ -665,6 +681,11 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   }
   if (includePartialMessages && legacyJson) {
     throw new Error('--include-partial-messages cannot be combined with --json')
+  }
+  if (promptSuggestions && (!print || outputFormat !== 'stream-json')) {
+    throw new Error(
+      '--prompt-suggestions requires --print and --output-format=stream-json',
+    )
   }
   if (
     replayUserMessages &&
@@ -766,6 +787,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(jsonSchema === undefined ? {} : { jsonSchema }),
     ...(maxBudgetUsd === undefined ? {} : { maxBudgetUsd }),
+    promptSuggestions,
   }
 }
 
@@ -940,6 +962,15 @@ export class StreamJsonOutput {
       createSuccessResult(result, this.info, startedAt, this.modelTurns),
     )
     this.modelTurns = 0
+  }
+
+  promptSuggestion(suggestion: string): void {
+    this.write({
+      type: 'prompt_suggestion',
+      suggestion,
+      uuid: randomUUID(),
+      session_id: this.sessionId,
+    })
   }
 
   error(message: string, startedAt: number): void {

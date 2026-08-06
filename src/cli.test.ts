@@ -582,6 +582,46 @@ describe('Praxis CLI', () => {
     ])
   })
 
+  it('emits prompt suggestions after stream-json result', async () => {
+    const capture = captureIO()
+    const base = dependencies()
+    const calls: string[] = []
+    const suggestionDeps: CliDependencies = {
+      ...base,
+      async createService(options) {
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async promptSuggestion(sessionId) {
+            calls.push(sessionId)
+            return 'continue the implementation'
+          },
+        }
+      },
+    }
+    await expect(
+      run(
+        [
+          '-p',
+          '--output-format=stream-json',
+          '--verbose',
+          '--prompt-suggestions',
+          'hello',
+        ],
+        capture.io,
+        suggestionDeps,
+      ),
+    ).resolves.toBe(0)
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records.map((record) => record.type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+      'prompt_suggestion',
+    ])
+    expect(calls).toEqual([expect.any(String)])
+  })
+
   it('consumes text user messages from stream-json stdin for run and resume', async () => {
     const sessionId = '11111111-1111-4111-8111-111111111111'
     const input =

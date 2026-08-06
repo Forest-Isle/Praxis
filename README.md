@@ -248,6 +248,7 @@ node dist/cli.js -p --system-prompt-file prompt.txt --add-dir ../shared -- "Insp
 node dist/cli.js -p --continue --fork-session --name experiment "Try another approach"
 node dist/cli.js -p --model claude-sonnet-4-20250514 --effort high "Try another approach"
 node dist/cli.js -p --max-budget-usd 0.50 --output-format json "Bound this run"
+node dist/cli.js -p --output-format stream-json --verbose --prompt-suggestions "Suggest the next step"
 node dist/cli.js -p --no-session-persistence "Inspect without saving"
 node dist/cli.js sessions --json
 node dist/cli.js inspect --json <session-id>
@@ -273,6 +274,9 @@ Set `PRAXIS_PRICING_JSON` to a JSON object keyed by model, with
 `inputPerMillionUsd`, `outputPerMillionUsd`, and optional cache rates, to price
 a private or relay model. `--max-budget-usd` requires print mode and fails closed
 when no pricing is available.
+`--prompt-suggestions` is available only with print-mode stream JSON; it emits
+one auxiliary `prompt_suggestion` record after each successful result without
+mutating the session transcript.
 
 `PRAXIS_PROVIDER` defaults to `openai`. `PRAXIS_BASE_URL` defaults to the
 selected provider's official `/v1` endpoint. Native Anthropic requests accept
