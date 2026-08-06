@@ -35,7 +35,7 @@ Evidence levels:
 | Legacy Praxis `--json`               | Complete                 | Existing runtime NDJSON retained without changing explicit Claude-style formats                                                                |
 | `--continue`                         | Complete                 | Most-recent current-project selection with native resume behavior                                                                              |
 | `--fork-session`                     | Complete                 | Resume/continue forks preserve native history and title with generated or explicit fresh session identity                                      |
-| Session name                         | Partial                  | `--name` writes native `custom-title`/`agent-name` and Claude resumes it; Praxis picker display remains                                        |
+| Session name                         | Complete                 | `--name` writes native `custom-title`/`agent-name`, Claude resumes it, and Praxis session summaries/picker display the native name             |
 | No persistence                       | Partial                  | In-memory run and disk-session import leave JSONL untouched; foreground Agent remains disabled without sidechain storage                       |
 | Top-level background session         | Complete                 | `--bg`/`--background`, managed session ID, detached persistent worker, idle attach, logs, stop, and live cross-resume gate                     |
 
@@ -113,7 +113,7 @@ Evidence levels:
    service available.
 2. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
    key if observable from future black-box evidence.
-3. Picker naming, ephemeral subagents, and permission `auto` classifier.
+3. Ephemeral subagents and permission `auto` classifier.
 4. Plugin runtime and management.
 5. MCP management commands.
 6. Complete unknown-model pricing policy, prompt suggestions, diagnostics,

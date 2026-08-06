@@ -613,6 +613,10 @@ describe('ClaudeSessionService', () => {
 
     await service.run('named prompt', undefined, sessionId, 'Named session')
 
+    await expect(service.sessions()).resolves.toEqual([
+      expect.objectContaining({ sessionId, name: 'Named session' }),
+    ])
+
     const { resolveClaudePaths } =
       await import('../compatibility/claude/paths.js')
     const paths = resolveClaudePaths({
