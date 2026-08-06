@@ -84,6 +84,59 @@ function parseFrontmatter(resource: ClaudeTextResource): {
   }
 }
 
+export function validateClaudeExtensions(
+  resources: readonly ClaudeTextResource[],
+): void {
+  for (const resource of resources) {
+    const lines = resource.content.split(/\r?\n/)
+    if (lines[0]?.trim() !== '---') continue
+    const closingIndex = lines.findIndex(
+      (line, index) => index > 0 && line.trim() === '---',
+    )
+    if (closingIndex < 0) {
+      throw new Error(`Unterminated extension frontmatter: ${resource.path}`)
+    }
+    let metadata: unknown
+    try {
+      metadata = parseYaml(lines.slice(1, closingIndex).join('\n'))
+    } catch (error) {
+      throw new Error(`Invalid extension frontmatter: ${resource.path}`, {
+        cause: error,
+      })
+    }
+    if (metadata !== null && typeof metadata !== 'object') {
+      throw new Error(
+        `Extension frontmatter must be an object: ${resource.path}`,
+      )
+    }
+    const record = (metadata ?? {}) as Record<string, unknown>
+    if (
+      record.name !== undefined &&
+      (typeof record.name !== 'string' || record.name.length === 0)
+    ) {
+      throw new Error(
+        `Extension name must be a non-empty string: ${resource.path}`,
+      )
+    }
+    if (
+      record.description !== undefined &&
+      typeof record.description !== 'string'
+    ) {
+      throw new Error(
+        `Extension description must be a string: ${resource.path}`,
+      )
+    }
+    if (
+      record['disable-model-invocation'] !== undefined &&
+      typeof record['disable-model-invocation'] !== 'boolean'
+    ) {
+      throw new Error(
+        `Extension disable-model-invocation must be a boolean: ${resource.path}`,
+      )
+    }
+  }
+}
+
 function defaultName(kind: ClaudeExtensionKind, path: string): string {
   if (kind === 'command') {
     const normalized = path.replaceAll('\\', '/')

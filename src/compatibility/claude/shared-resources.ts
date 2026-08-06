@@ -407,6 +407,22 @@ async function loadProjectMcp(
   ]
 }
 
+export async function loadClaudeMcpResources({
+  configRoot,
+  cwd,
+  homeDirectory = homedir(),
+  claudeStatePath = join(configRoot, '.claude.json'),
+  settingSources,
+}: LoadClaudeSharedResourcesOptions): Promise<ClaudeJsonResource[]> {
+  const { directories, memoryIdentityRoot } = await resolveProjectContext(
+    cwd,
+    homeDirectory,
+  )
+  return (
+    await loadProjectMcp(claudeStatePath, directories, memoryIdentityRoot)
+  ).filter((resource) => selectedScope(resource.scope, settingSources))
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

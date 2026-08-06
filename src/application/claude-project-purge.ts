@@ -33,6 +33,7 @@ export interface ClaudeProjectPurgeItem {
   count: number
   operation: ClaudeProjectPurgeOperation
   projectIdentity?: string
+  projectIdentities?: string[]
 }
 
 export interface ClaudeProjectPurgePlan {
@@ -87,7 +88,14 @@ async function canonicalPath(path: string): Promise<string> {
   try {
     return await realpath(absolute)
   } catch (error) {
-    if (errorCode(error) === 'ENOENT') return absolute
+    if (errorCode(error) === 'ENOENT') {
+      const parent = dirname(absolute)
+      if (parent === absolute) return absolute
+      return join(
+        await canonicalPath(parent),
+        absolute.slice(parent.length + 1),
+      )
+    }
     throw error
   }
 }
@@ -216,8 +224,9 @@ function historyProject(line: string): string | null {
 
 function filterProjectHistory(
   source: string,
-  projectPath: string,
+  projectPaths: readonly string[],
 ): { content: string; removed: number } {
+  const paths = new Set(projectPaths)
   let cursor = 0
   let content = ''
   let removed = 0
@@ -226,7 +235,7 @@ function filterProjectHistory(
     const end = newline === -1 ? source.length : newline
     const line = source.slice(cursor, end)
     const segment = source.slice(cursor, newline === -1 ? end : end + 1)
-    if (historyProject(line) === projectPath) removed += 1
+    if (paths.has(historyProject(line) ?? '')) removed += 1
     else content += segment
     cursor = newline === -1 ? source.length : end + 1
   }
@@ -258,7 +267,7 @@ async function discoverSessionIds(projectRoot: string): Promise<string[]> {
 
 async function discoverProjectRoots(
   configRoot: string,
-  targetPath: string,
+  targetPaths: readonly string[],
 ): Promise<string[]> {
   const projectsRoot = join(configRoot, 'projects')
   if (!(await pathExists(projectsRoot))) return []
@@ -272,12 +281,14 @@ async function discoverProjectRoots(
     }
     throw error
   }
-  const targetKey = sanitizeClaudeProjectPath(targetPath)
-  const worktreePrefix = `${targetKey}--worktrees-`
+  const targetKeys = targetPaths.map(sanitizeClaudeProjectPath)
   return entries
-    .filter(
-      (entry) =>
-        entry.name === targetKey || entry.name.startsWith(worktreePrefix),
+    .filter((entry) =>
+      targetKeys.some(
+        (targetKey) =>
+          entry.name === targetKey ||
+          entry.name.startsWith(`${targetKey}--worktrees-`),
+      ),
     )
     .map((entry) => join(projectsRoot, entry.name))
     .sort()
@@ -316,15 +327,13 @@ export async function planClaudeProjectPurge(
   }
   const configuredRoot =
     options.configRoot ??
-    process.env.CLAUDE_CONFIG_DIR ??
-    join(homedir(), '.claude')
+    (process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'))
   const configRoot = await canonicalPath(configuredRoot)
   const defaultStatePath =
-    options.configRoot !== undefined ||
-    process.env.CLAUDE_CONFIG_DIR !== undefined
+    options.configRoot !== undefined || Boolean(process.env.CLAUDE_CONFIG_DIR)
       ? join(configRoot, '.claude.json')
       : resolve(homedir(), '.claude.json')
-  const statePath = resolve(options.statePath ?? defaultStatePath)
+  const statePath = await canonicalPath(options.statePath ?? defaultStatePath)
   await assertMutableRegularFile(statePath)
   const state = parseState(await readOptionalFile(statePath), statePath)
   const projects = stateProjects(state)
@@ -391,12 +400,14 @@ export async function planClaudeProjectPurge(
     }
   }
 
-  const targetPath = await canonicalPath(options.path ?? options.cwd)
+  const requestedPath = resolve(options.path ?? options.cwd)
+  const targetPath = await canonicalPath(requestedPath)
+  const targetPaths = [...new Set([requestedPath, targetPath])]
   const projectIdentity = await resolveClaudeProjectIdentity({
     cwd: targetPath,
     homeDirectory: options.homeDirectory ?? homedir(),
   })
-  const projectRootPaths = await discoverProjectRoots(configRoot, targetPath)
+  const projectRootPaths = await discoverProjectRoots(configRoot, targetPaths)
   const sessionIdSet = new Set<string>()
   for (const projectRoot of projectRootPaths) {
     await assertSafePurgePath(configRoot, projectRoot)
@@ -449,7 +460,7 @@ export async function planClaudeProjectPurge(
     ? await readOptionalFile(historyPath)
     : null
   if (historySource !== null) {
-    const { removed } = filterProjectHistory(historySource, targetPath)
+    const { removed } = filterProjectHistory(historySource, targetPaths)
     if (removed > 0) {
       items.push({
         id: `prompt-history:${historyPath}:${targetPath}`,
@@ -459,18 +470,21 @@ export async function planClaudeProjectPurge(
         count: removed,
         operation: 'filter-history',
         projectIdentity: targetPath,
+        projectIdentities: targetPaths,
       })
     }
   }
-  if (Object.hasOwn(projects, projectIdentity)) {
+  const projectIdentities = [...new Set([projectIdentity, ...targetPaths])]
+  for (const identity of projectIdentities) {
+    if (!Object.hasOwn(projects, identity)) continue
     items.push({
-      id: `config-key:${statePath}:${projectIdentity}`,
+      id: `config-key:${statePath}:${identity}`,
       kind: 'config-key',
       path: statePath,
       description: 'project entry in Claude state',
       count: 1,
       operation: 'remove-project-config',
-      projectIdentity,
+      projectIdentity: identity,
     })
   }
   return {
@@ -514,10 +528,11 @@ async function executeItem(
   if (item.operation === 'filter-history') {
     const projectPath = item.projectIdentity
     if (!projectPath) throw new Error('Missing project path for history purge')
+    const projectPaths = item.projectIdentities ?? [projectPath]
     await assertSafePurgePath(plan.configRoot, item.path)
     await atomicallyUpdate(item.path, (source) => {
       if (source === null) return null
-      return filterProjectHistory(source, projectPath).content
+      return filterProjectHistory(source, projectPaths).content
     })
     return
   }
@@ -582,13 +597,4 @@ export async function executeClaudeProjectPurge(
     }
   }
   return { dryRun: false, aborted, deleted, skipped, failures }
-}
-
-export async function purgeClaudeProject(
-  planOptions: PlanClaudeProjectPurgeOptions,
-  executeOptions: ExecuteClaudeProjectPurgeOptions = {},
-): Promise<{ plan: ClaudeProjectPurgePlan; result: ClaudeProjectPurgeResult }> {
-  const plan = await planClaudeProjectPurge(planOptions)
-  const result = await executeClaudeProjectPurge(plan, executeOptions)
-  return { plan, result }
 }

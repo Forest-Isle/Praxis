@@ -86,6 +86,17 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024
 const KILL_GRACE_MS = 250
 
+const HOOK_EVENTS: readonly ClaudeHookEventName[] = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PermissionRequest',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'Stop',
+  'SessionEnd',
+]
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -162,6 +173,20 @@ function eventSettings(
     }
   }
   return matchers
+}
+
+export function validateClaudeHooks(
+  settings: readonly ClaudeJsonResource[],
+  maxTimeoutMs = DEFAULT_TIMEOUT_MS,
+): void {
+  if (
+    !Number.isFinite(maxTimeoutMs) ||
+    maxTimeoutMs <= 0 ||
+    !Number.isInteger(maxTimeoutMs)
+  ) {
+    throw new Error('Hook max timeout must be a positive integer')
+  }
+  for (const event of HOOK_EVENTS) eventSettings(settings, event, maxTimeoutMs)
 }
 
 function outputRecord(stdout: string): Record<string, unknown> | null {

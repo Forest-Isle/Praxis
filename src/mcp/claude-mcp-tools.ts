@@ -62,6 +62,19 @@ export interface ClaudeMcpServerStatus {
   status: 'connected' | 'failed'
 }
 
+export interface ClaudeMcpConfigurationStatus {
+  name: string
+  path: string
+  transport: 'stdio' | 'http' | 'sse'
+  command?: string
+  cwd?: string
+}
+
+export interface ClaudeMcpConfigurationReport {
+  servers: readonly ClaudeMcpConfigurationStatus[]
+  warnings: readonly string[]
+}
+
 export interface ClaudeMcpToolRegistryOptions {
   base: ToolRegistry
   resources: readonly ClaudeJsonResource[]
@@ -224,6 +237,47 @@ function configuredServers(
     }
   }
   return [...servers.values()]
+}
+
+export function validateClaudeMcpConfiguration(
+  resources: readonly ClaudeJsonResource[],
+): ClaudeMcpConfigurationReport {
+  const warnings: string[] = []
+  const servers = configuredServers(resources, (message) =>
+    warnings.push(message),
+  ).map((server) => {
+    const config = parseServerConfig(server.name, server.value, server.path)
+    if (config.type !== 'stdio') {
+      let endpoint: URL
+      try {
+        endpoint = new URL(config.url)
+      } catch (error) {
+        throw new Error(
+          `Invalid MCP server URL ${server.name}: ${server.path}`,
+          {
+            cause: error,
+          },
+        )
+      }
+      if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') {
+        throw new Error(
+          `MCP server URL must use http or https ${server.name}: ${server.path}`,
+        )
+      }
+    }
+    return {
+      name: server.name,
+      path: server.path,
+      transport: config.type,
+      ...(config.type === 'stdio'
+        ? {
+            command: config.command,
+            ...(config.cwd === undefined ? {} : { cwd: config.cwd }),
+          }
+        : {}),
+    }
+  })
+  return { servers, warnings }
 }
 
 function transport(config: McpServerConfig, cwd: string) {

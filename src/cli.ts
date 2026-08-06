@@ -63,6 +63,10 @@ import {
 import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
 import { FallbackModelProvider } from './providers/fallback-provider.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
+import {
+  parseContextEnvironment,
+  parseProviderEnvironment,
+} from './providers/environment.js'
 import { ModelPricingRegistry } from './core/usage.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
 import { claudeBackgroundTaskParent } from './application/background-bash-manager.js'
@@ -99,6 +103,14 @@ import {
   updateClaudePlugin,
   validateClaudePlugin,
 } from './plugins/claude-plugin-runtime.js'
+import { formatDoctorReport, runDoctor } from './maintenance/doctor.js'
+import {
+  executeClaudeProjectPurge,
+  planClaudeProjectPurge,
+  type ClaudeProjectPurgeItem,
+  type ClaudeProjectPurgeResult,
+  type ClaudeProjectPurgeSelection,
+} from './application/claude-project-purge.js'
 
 const VERSION = '0.1.0'
 
@@ -123,6 +135,8 @@ Usage:
   praxis mcp <list|get|add|add-json|remove|reset-project-choices> ...
   praxis auto-mode <config|defaults>
   praxis plugin <list|install|uninstall|enable|disable|update|init|validate> ...
+  praxis doctor [--json]
+  praxis project purge [options] [path]
 
 Options:
   -p, --print                         Print response and exit
@@ -175,96 +189,29 @@ Provider environment:
   PRAXIS_CONTEXT_WINDOW_TOKENS, PRAXIS_CONTEXT_RESERVE_TOKENS
 `
 
-export function parseProviderEnvironment(environment: NodeJS.ProcessEnv): {
-  provider: 'openai' | 'anthropic'
-  baseUrl: string
-  maxOutputTokens?: number
-  anthropicVersion?: string
-  webSearch?: boolean
-} {
-  const provider = environment.PRAXIS_PROVIDER ?? 'openai'
-  if (provider !== 'openai' && provider !== 'anthropic') {
-    throw new Error('PRAXIS_PROVIDER must be openai or anthropic')
-  }
-  const maxOutputTokens = environment.PRAXIS_MAX_OUTPUT_TOKENS
-  if (
-    maxOutputTokens !== undefined &&
-    (!/^\d+$/.test(maxOutputTokens) ||
-      Number(maxOutputTokens) <= 0 ||
-      !Number.isSafeInteger(Number(maxOutputTokens)))
-  ) {
-    throw new Error('PRAXIS_MAX_OUTPUT_TOKENS must be a positive integer')
-  }
-  if (provider === 'openai' && maxOutputTokens !== undefined) {
-    throw new Error(
-      'PRAXIS_MAX_OUTPUT_TOKENS requires PRAXIS_PROVIDER=anthropic',
-    )
-  }
-  const anthropicVersion = environment.PRAXIS_ANTHROPIC_VERSION
-  if (provider === 'openai' && anthropicVersion !== undefined) {
-    throw new Error(
-      'PRAXIS_ANTHROPIC_VERSION requires PRAXIS_PROVIDER=anthropic',
-    )
-  }
-  if (anthropicVersion !== undefined && anthropicVersion.trim().length === 0) {
-    throw new Error('PRAXIS_ANTHROPIC_VERSION must not be empty')
-  }
-  const webSearch = environment.PRAXIS_ANTHROPIC_WEB_SEARCH
-  if (
-    webSearch !== undefined &&
-    webSearch !== 'true' &&
-    webSearch !== 'false'
-  ) {
-    throw new Error('PRAXIS_ANTHROPIC_WEB_SEARCH must be true or false')
-  }
-  if (provider === 'openai' && webSearch !== undefined) {
-    throw new Error(
-      'PRAXIS_ANTHROPIC_WEB_SEARCH requires PRAXIS_PROVIDER=anthropic',
-    )
-  }
-  return {
-    provider,
-    baseUrl:
-      environment.PRAXIS_BASE_URL ??
-      (provider === 'anthropic'
-        ? 'https://api.anthropic.com/v1'
-        : 'https://api.openai.com/v1'),
-    ...(maxOutputTokens === undefined
-      ? {}
-      : { maxOutputTokens: Number(maxOutputTokens) }),
-    ...(anthropicVersion === undefined ? {} : { anthropicVersion }),
-    ...(webSearch === undefined ? {} : { webSearch: webSearch === 'true' }),
-  }
-}
+const DOCTOR_HELP = `Usage: praxis doctor [options]
 
-export function parseContextEnvironment(environment: NodeJS.ProcessEnv): {
-  contextWindowTokens?: number
-  contextReserveTokens?: number
-} {
-  const parse = (name: string): number | undefined => {
-    const raw = environment[name]
-    if (raw === undefined) return undefined
-    if (
-      !/^\d+$/.test(raw) ||
-      Number(raw) <= 0 ||
-      !Number.isSafeInteger(Number(raw))
-    ) {
-      throw new Error(`${name} must be a positive integer`)
-    }
-    return Number(raw)
-  }
-  const contextWindowTokens = parse('PRAXIS_CONTEXT_WINDOW_TOKENS')
-  const contextReserveTokens = parse('PRAXIS_CONTEXT_RESERVE_TOKENS')
-  if (contextReserveTokens !== undefined && contextWindowTokens === undefined) {
-    throw new Error(
-      'PRAXIS_CONTEXT_RESERVE_TOKENS requires PRAXIS_CONTEXT_WINDOW_TOKENS',
-    )
-  }
-  return {
-    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
-    ...(contextReserveTokens === undefined ? {} : { contextReserveTokens }),
-  }
-}
+Check Praxis installation and local single-user configuration health.
+
+Options:
+  --json      Output a machine-readable report
+  -h, --help  Show help
+`
+
+const PROJECT_PURGE_HELP = `Usage: praxis project purge [options] [path]
+
+Delete all Claude Code state for a project (transcripts, tasks, file history,
+config entry)
+
+Options:
+  --all              Purge state for every project (mutually exclusive with [path])
+  --dry-run          List what would be deleted without deleting anything
+  -i, --interactive  Prompt for each item before deleting
+  -y, --yes          Skip confirmation prompt
+  -h, --help         Show help
+`
+
+export { parseContextEnvironment, parseProviderEnvironment }
 
 export interface CliIO {
   stdout(message: string | Uint8Array): void
@@ -364,7 +311,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const claudeVersion = await detectInstalledClaudeVersion()
   const cwd = process.cwd()
   const workspace = new WorkspaceContext(cwd)
-  const configuredRoot = process.env.CLAUDE_CONFIG_DIR
+  const configuredRoot = process.env.CLAUDE_CONFIG_DIR || undefined
   const configRoot = resolve(configuredRoot ?? resolve(homedir(), '.claude'))
   const claudeStatePath = configuredRoot
     ? join(configRoot, '.claude.json')
@@ -874,6 +821,211 @@ async function executeAutoModeCommand(
   throw new Error(`Unknown auto-mode command: ${action}`)
 }
 
+async function executeDoctorCommand(
+  args: readonly string[],
+  invocation: CliInvocation,
+  io: CliIO,
+): Promise<number> {
+  if (args.length !== 1) throw new Error('doctor takes no operands')
+  if (
+    invocation.outputFormat !== 'text' &&
+    invocation.outputFormat !== 'json' &&
+    !invocation.legacyJson
+  ) {
+    throw new Error('doctor output format must be text or json')
+  }
+  const configuredRoot = process.env.CLAUDE_CONFIG_DIR || undefined
+  const configRoot = resolve(configuredRoot ?? resolve(homedir(), '.claude'))
+  const claudeStatePath = configuredRoot
+    ? join(configRoot, '.claude.json')
+    : resolve(homedir(), '.claude.json')
+  const report = await runDoctor({
+    version: VERSION,
+    executablePath: fileURLToPath(import.meta.url),
+    nodeExecutablePath: process.execPath,
+    nodeVersion: process.version,
+    configRoot,
+    claudeStatePath,
+    cwd: process.cwd(),
+    environment: process.env,
+  })
+  if (invocation.legacyJson || invocation.outputFormat === 'json') {
+    writeJson(io, report)
+  } else {
+    io.stdout(formatDoctorReport(report))
+  }
+  return report.ok ? 0 : 1
+}
+
+async function executeProjectPurgeCommand(
+  argv: readonly string[],
+  io: CliIO,
+): Promise<number> {
+  let all = false
+  let dryRun = false
+  let interactive = false
+  let yes = false
+  let help = false
+  let json = false
+  const passthrough: string[] = []
+  let path: string | undefined
+  let optionsEnded = false
+  for (let index = 2; index < argv.length; index += 1) {
+    const value = argv[index]
+    if (value === undefined) continue
+    if (!optionsEnded && value === '--') {
+      optionsEnded = true
+      continue
+    }
+    if (value === '--all') {
+      all = true
+      continue
+    }
+    if (value === '--dry-run') {
+      dryRun = true
+      continue
+    }
+    if (value === '-i' || value === '--interactive') {
+      interactive = true
+      continue
+    }
+    if (value === '-y' || value === '--yes') {
+      yes = true
+      continue
+    }
+    if (value === '--json') {
+      json = true
+      continue
+    }
+    if (value === '-h' || value === '--help') {
+      help = true
+      continue
+    }
+    if (!optionsEnded && value.startsWith('-')) {
+      passthrough.push(value)
+      continue
+    }
+    if (path !== undefined) throw new Error('project purge accepts one path')
+    path = value
+  }
+  if (help) {
+    io.stdout(PROJECT_PURGE_HELP)
+    return 0
+  }
+  if (passthrough.length > 0) {
+    throw new Error(`Unknown project purge option: ${passthrough[0]}`)
+  }
+  if (all && path !== undefined) {
+    throw new Error('Cannot specify both a path and --all')
+  }
+  if (interactive && yes) {
+    throw new Error('--interactive cannot be combined with --yes')
+  }
+  const configuredRoot = process.env.CLAUDE_CONFIG_DIR || undefined
+  const configRoot = resolve(configuredRoot ?? resolve(homedir(), '.claude'))
+  const statePath = configuredRoot
+    ? join(configRoot, '.claude.json')
+    : resolve(homedir(), '.claude.json')
+  const plan = await planClaudeProjectPurge({
+    cwd: process.cwd(),
+    ...(path === undefined ? {} : { path }),
+    ...(all ? { all: true } : {}),
+    configRoot,
+    statePath,
+  })
+  const jsonValue = (result: ClaudeProjectPurgeResult) => ({
+    type: 'project-purge',
+    plan,
+    result: {
+      ...result,
+      failures: result.failures.map((failure) => ({
+        item: failure.item,
+        error: redactSensitiveText(
+          failure.error.message,
+          sensitiveEnvironmentValues(process.env),
+        ),
+      })),
+    },
+  })
+  if (dryRun) {
+    const result = await executeClaudeProjectPurge(plan, { dryRun: true })
+    if (json) writeJson(io, jsonValue(result))
+    else {
+      io.stdout(
+        `${plan.items.length} item(s) would be deleted for ${plan.mode === 'all' ? 'all projects' : plan.targetPath}\n`,
+      )
+      for (const item of plan.items) io.stdout(`  ${item.kind}\t${item.path}\n`)
+    }
+    return 0
+  }
+  if (plan.items.length === 0) {
+    if (json) {
+      writeJson(
+        io,
+        jsonValue({
+          dryRun: false,
+          aborted: false,
+          deleted: [],
+          skipped: [],
+          failures: [],
+        }),
+      )
+    } else io.stdout('No project state found.\n')
+    return 0
+  }
+
+  let inputIterator: AsyncIterator<string | Uint8Array> | undefined
+  if (!yes) {
+    const input = io.readStdinLines?.()
+    if (!input) throw new Error('project purge requires --yes without stdin')
+    inputIterator = input[Symbol.asyncIterator]()
+  }
+  const nextAnswer = async (): Promise<string> => {
+    const next = await inputIterator?.next()
+    return typeof next?.value === 'string'
+      ? next.value.trim().toLowerCase()
+      : next?.value instanceof Uint8Array
+        ? Buffer.from(next.value).toString('utf8').trim().toLowerCase()
+        : ''
+  }
+  let confirmed = yes
+  if (!yes && !interactive) {
+    io.stderr(
+      `Delete ${plan.items.length} item(s) for ${plan.mode === 'all' ? 'all projects' : plan.targetPath}? [y/N] `,
+    )
+    confirmed = ['y', 'yes'].includes(await nextAnswer())
+    if (!confirmed) {
+      io.stderr('Purge cancelled.\n')
+      return 1
+    }
+  }
+  const selectItem = interactive
+    ? async (
+        item: ClaudeProjectPurgeItem,
+      ): Promise<ClaudeProjectPurgeSelection> => {
+        io.stderr(`Delete ${item.description} (${item.path})? [y/N/a/q] `)
+        const answer = await nextAnswer()
+        if (answer === 'a' || answer === 'all') return 'delete-all'
+        if (answer === 'q' || answer === 'quit') return 'abort'
+        return answer === 'y' || answer === 'yes' ? 'delete' : 'skip'
+      }
+    : undefined
+  const result = await executeClaudeProjectPurge(plan, {
+    ...(selectItem ? { selectItem } : {}),
+  })
+  if (json) {
+    writeJson(io, jsonValue(result))
+  } else {
+    for (const item of result.deleted) io.stdout(`deleted\t${item.path}\n`)
+    for (const item of result.skipped) io.stdout(`skipped\t${item.path}\n`)
+    for (const failure of result.failures) {
+      io.stderr(`failed\t${failure.item.path}\t${failure.error.message}\n`)
+    }
+    if (result.aborted) io.stderr('Purge cancelled.\n')
+  }
+  return result.failures.length === 0 && !result.aborted ? 0 : 1
+}
+
 function pluginOutput(
   io: CliIO,
   invocation: CliInvocation,
@@ -1183,6 +1335,31 @@ async function execute(
   if (argv.length === 0 && io.isTTY && dependencies.runInteractive) {
     return dependencies.runInteractive(signal ? { signal } : {})
   }
+  if (
+    argv[0] === 'doctor' &&
+    (argv.includes('--help') || argv.includes('-h'))
+  ) {
+    io.stdout(DOCTOR_HELP)
+    return 0
+  }
+  if (argv[0] === 'project' && argv[1] === 'purge') {
+    return executeProjectPurgeCommand(argv, io)
+  }
+  if (
+    argv[0]?.startsWith('-') &&
+    argv[argv.indexOf('project') + 1] === 'purge'
+  ) {
+    const commandIndex = argv.indexOf('project')
+    return executeProjectPurgeCommand(
+      [
+        'project',
+        'purge',
+        ...argv.slice(0, commandIndex),
+        ...argv.slice(commandIndex + 2),
+      ],
+      io,
+    )
+  }
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
     io.stdout(HELP)
     return 0
@@ -1249,6 +1426,7 @@ async function execute(
     'mcp',
     'auto-mode',
     'plugin',
+    'doctor',
   ].includes(command ?? '')
   if (retryInterruptedTools && command !== 'resume') {
     throw new Error('--retry-interrupted-tools is only valid with resume')
@@ -1273,6 +1451,9 @@ async function execute(
   }
   if (command === 'plugin') {
     return executePluginCommand(args, invocation, io)
+  }
+  if (command === 'doctor') {
+    return executeDoctorCommand(args, invocation, io)
   }
   const expectedOperands =
     command === 'sessions' || command === 'agents' ? 1 : 2

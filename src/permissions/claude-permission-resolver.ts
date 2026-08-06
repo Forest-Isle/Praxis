@@ -119,6 +119,38 @@ function loadRules(settings: readonly ClaudeJsonResource[]): PermissionRule[] {
   })
 }
 
+export function validateClaudePermissionSettings(
+  settings: readonly ClaudeJsonResource[],
+): void {
+  for (const resource of settings) {
+    if (!isRecord(resource.value)) continue
+    const permissions = resource.value.permissions
+    if (permissions === undefined) continue
+    if (!isRecord(permissions)) {
+      throw new Error(`permissions must be an object: ${resource.path}`)
+    }
+    for (const field of ['allow', 'ask', 'deny'] as const) {
+      const rules = permissions[field]
+      if (rules === undefined) continue
+      if (
+        !Array.isArray(rules) ||
+        rules.some((rule) => typeof rule !== 'string')
+      ) {
+        throw new Error(
+          `permissions.${field} must be an array of strings: ${resource.path}`,
+        )
+      }
+      for (const rule of rules) {
+        if (!/^([A-Za-z][\w-]*)(?:\(.*\))?$/.test(rule)) {
+          throw new Error(
+            `Invalid permission rule in ${resource.path}: ${rule}`,
+          )
+        }
+      }
+    }
+  }
+}
+
 function escapeRegularExpression(character: string): string {
   return /[\\^$.*+?()[\]{}|]/.test(character) ? `\\${character}` : character
 }
