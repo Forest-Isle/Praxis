@@ -79,13 +79,15 @@ import {
   createErrorResult,
   createSuccessResult,
   parseCliInvocation,
-  readStreamUserMessages,
+  readStreamJsonMessages,
   StreamJsonOutput,
   type CliOutputFormat,
   type CliControls,
   type CliInvocation,
   type CliRuntimeInfo,
   type StreamUserMessage,
+  type StreamJsonMessage,
+  type StreamControlResponse,
 } from './cli/protocol.js'
 import {
   initClaudePlugin,
@@ -1393,6 +1395,122 @@ async function execute(
   let streamOutput: StreamJsonOutput | undefined
   let jsonModelTurns = 0
   const pendingEvents: Parameters<RuntimeEventSink>[0][] = []
+  let streamIterator: AsyncGenerator<StreamJsonMessage> | undefined
+  let firstStreamMessage: StreamUserMessage | undefined
+  const queuedStreamUsers: StreamUserMessage[] = []
+  const earlyControlResponses = new Map<string, StreamControlResponse>()
+  let currentTurnAbort: AbortController | undefined
+  if (inputFormat === 'stream-json' && !invocation.legacyJson) {
+    const input = io.readStdinLines?.()
+    if (!input) throw new Error('stream-json input requires stdin support')
+    streamIterator = readStreamJsonMessages(input)
+  }
+  const receiveStreamControl = (message: StreamJsonMessage): void => {
+    if (!('type' in message)) {
+      queuedStreamUsers.push(message)
+      return
+    }
+    if (message.type === 'control_request') {
+      if (message.request.subtype === 'interrupt') currentTurnAbort?.abort()
+      return
+    }
+    if (message.type === 'control_response') {
+      earlyControlResponses.set(message.response.request_id, message)
+      return
+    }
+    if (message.type === 'control_cancel_request') {
+      earlyControlResponses.set(message.request_id, {
+        type: 'control_response',
+        response: {
+          subtype: 'error',
+          request_id: message.request_id,
+          error: 'Control request cancelled',
+        },
+      })
+    }
+  }
+  const nextStreamMessage = async (): Promise<StreamJsonMessage | null> => {
+    if (!streamIterator) return null
+    const next = await streamIterator.next()
+    return next.done ? null : next.value
+  }
+  const nextStreamUser = async (): Promise<StreamUserMessage | null> => {
+    const queued = queuedStreamUsers.shift()
+    if (queued) return queued
+    for (;;) {
+      const message = await nextStreamMessage()
+      if (!message) return null
+      if (!('type' in message)) return message
+      receiveStreamControl(message)
+    }
+  }
+  const awaitControlResponse = async (
+    requestId: string,
+  ): Promise<StreamControlResponse | null> => {
+    const early = earlyControlResponses.get(requestId)
+    if (early) {
+      earlyControlResponses.delete(requestId)
+      return early
+    }
+    for (;;) {
+      const message = await nextStreamMessage()
+      if (!message) return null
+      if (!('type' in message)) {
+        queuedStreamUsers.push(message)
+        continue
+      }
+      if (message.type === 'control_response') {
+        if (message.response.request_id === requestId) return message
+        earlyControlResponses.set(message.response.request_id, message)
+        continue
+      }
+      if (
+        message.type === 'control_cancel_request' &&
+        message.request_id === requestId
+      ) {
+        return {
+          type: 'control_response',
+          response: {
+            subtype: 'error',
+            request_id: requestId,
+            error: 'Control request cancelled',
+          },
+        }
+      }
+      receiveStreamControl(message)
+      if (currentTurnAbort?.signal.aborted) {
+        return {
+          type: 'control_response',
+          response: {
+            subtype: 'error',
+            request_id: requestId,
+            error: 'Control request interrupted',
+          },
+        }
+      }
+    }
+  }
+  const approveStreamTool = async (call: ModelToolCall): Promise<boolean> => {
+    if (!streamOutput || !streamIterator) return false
+    const requestId = randomUUID()
+    streamOutput.controlRequest({
+      request_id: requestId,
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: call.name,
+        input: call.input,
+        tool_use_id: call.id,
+      },
+    })
+    const response = await awaitControlResponse(requestId)
+    if (!response || response.response.subtype === 'error') return false
+    const result = response.response.response
+    if (!result || result.behavior !== 'allow') {
+      if (result?.interrupt === true) currentTurnAbort?.abort()
+      return false
+    }
+    return true
+  }
   const service = await dependencies.createService({
     eventSink:
       outputFormat === 'stream-json' && !invocation.legacyJson
@@ -1421,6 +1539,7 @@ async function execute(
       command ?? 'run',
     ),
     ...(retryInterruptedTools ? { approveRecovery: () => true } : {}),
+    ...(streamIterator ? { approveTool: approveStreamTool } : {}),
     ...(signal ? { signal } : {}),
     ...(agent ? { agent } : {}),
     controls: invocation,
@@ -1508,16 +1627,10 @@ async function execute(
         includePartialMessages,
       )
     }
-    let streamIterator: AsyncGenerator<StreamUserMessage> | undefined
-    let firstStreamMessage: StreamUserMessage | undefined
-    if (inputFormat === 'stream-json' && !invocation.legacyJson) {
-      const input = io.readStdinLines?.()
-      if (!input) throw new Error('stream-json input requires stdin support')
-      const iterator = readStreamUserMessages(input)
-      const first = await iterator.next()
-      if (first.done || !first.value) return 0
-      streamIterator = iterator
-      firstStreamMessage = first.value
+    if (streamIterator) {
+      const first = await nextStreamUser()
+      if (!first) return 0
+      firstStreamMessage = first
     }
 
     const initialPrompt =
@@ -1535,6 +1648,12 @@ async function execute(
       streamMessage?: StreamUserMessage,
     ): Promise<boolean> => {
       const startedAt = Date.now()
+      const turnAbort = new AbortController()
+      const forwardAbort = () => turnAbort.abort()
+      if (signal?.aborted) turnAbort.abort()
+      signal?.addEventListener('abort', forwardAbort, { once: true })
+      currentTurnAbort = streamIterator ? turnAbort : undefined
+      const runSignal = streamIterator ? turnAbort.signal : signal
       if (streamOutput) {
         streamOutput.init()
         if (isFirstTurn) {
@@ -1547,11 +1666,11 @@ async function execute(
       try {
         result =
           existingSessionId !== undefined || !isFirstTurn
-            ? signal
+            ? runSignal
               ? await service.resume(
                   activeSessionId,
                   prompt,
-                  signal,
+                  runSignal,
                   undefined,
                   streamMessage?.images,
                   streamMessage?.documents,
@@ -1564,10 +1683,10 @@ async function execute(
                   streamMessage?.images,
                   streamMessage?.documents,
                 )
-            : signal
+            : runSignal
               ? await service.run(
                   prompt,
-                  signal,
+                  runSignal,
                   activeSessionId,
                   undefined,
                   streamMessage?.images,
@@ -1582,7 +1701,11 @@ async function execute(
                   streamMessage?.documents,
                 )
       } catch (error) {
-        if (isCancellation(error, signal)) throw error
+        if (isCancellation(error, turnAbort.signal)) {
+          if (currentTurnAbort === turnAbort) currentTurnAbort = undefined
+          signal?.removeEventListener('abort', forwardAbort)
+          throw error
+        }
         const message = redactSensitiveText(
           error instanceof Error ? error.message : String(error),
           sensitiveEnvironmentValues(process.env),
@@ -1598,7 +1721,13 @@ async function execute(
               jsonModelTurns,
             ),
           )
-        } else throw error
+        } else {
+          if (currentTurnAbort === turnAbort) currentTurnAbort = undefined
+          signal?.removeEventListener('abort', forwardAbort)
+          throw error
+        }
+        if (currentTurnAbort === turnAbort) currentTurnAbort = undefined
+        signal?.removeEventListener('abort', forwardAbort)
         return false
       }
       activeSessionId = result.sessionId
@@ -1621,7 +1750,7 @@ async function execute(
         try {
           const suggestion = await service.promptSuggestion?.(
             activeSessionId,
-            signal,
+            runSignal,
           )
           if (suggestion) streamOutput.promptSuggestion(suggestion)
         } catch {
@@ -1629,12 +1758,16 @@ async function execute(
         }
       }
       isFirstTurn = false
+      if (currentTurnAbort === turnAbort) currentTurnAbort = undefined
+      signal?.removeEventListener('abort', forwardAbort)
       return true
     }
 
     if (!(await runTurn(initialPrompt, firstStreamMessage))) return 1
     if (streamIterator) {
-      for await (const message of streamIterator) {
+      for (;;) {
+        const message = await nextStreamUser()
+        if (!message) break
         if (!(await runTurn(message.prompt, message))) return 1
       }
     }

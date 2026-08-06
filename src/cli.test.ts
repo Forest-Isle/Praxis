@@ -796,6 +796,114 @@ describe('Praxis CLI', () => {
     )
   })
 
+  it('round-trips SDK permission control records over stream-json', async () => {
+    const capture = captureIO()
+    const user = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: 'run protected tool' },
+    })
+    capture.io.readStdinLines = () =>
+      (async function* () {
+        yield `${user}\n`
+        while (
+          !capture.stdout.some((line) => line.includes('control_request'))
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 1))
+        }
+        const request = capture.stdout
+          .map((line) => {
+            try {
+              return JSON.parse(line)
+            } catch {
+              return null
+            }
+          })
+          .find((record) => record?.type === 'control_request')
+        yield `${JSON.stringify({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: request.request_id,
+            response: { behavior: 'allow', updatedInput: {} },
+          },
+        })}\n`
+      })()
+    const controlled: CliDependencies = {
+      async createService({ eventSink, approveTool }) {
+        return {
+          async run(prompt, _signal, sessionId) {
+            const allowed = await approveTool?.({
+              id: 'tool-call-1',
+              name: 'Bash',
+              input: { command: 'echo ok' },
+            })
+            eventSink({
+              type: 'text-delta',
+              delta: allowed ? 'allowed' : 'denied',
+            })
+            return {
+              sessionId: sessionId ?? '44444444-4444-4444-8444-444444444444',
+              text: `${prompt}:${allowed ? 'allowed' : 'denied'}`,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async inspect() {
+            throw new Error('unused')
+          },
+          async export() {
+            throw new Error('unused')
+          },
+          runtimeInfo() {
+            return {
+              cwd: '/workspace',
+              model: 'test-model',
+              tools: ['Bash'],
+              mcpServers: [],
+              permissionMode: 'default',
+              slashCommands: [],
+              agents: [],
+              skills: [],
+              claudeCodeVersion: '2.1.208',
+            }
+          },
+        }
+      },
+    }
+    await expect(
+      run(
+        [
+          '-p',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+        ],
+        capture.io,
+        controlled,
+      ),
+    ).resolves.toBe(0)
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'control_request',
+          request: expect.objectContaining({ subtype: 'can_use_tool' }),
+        }),
+        expect.objectContaining({ type: 'result', subtype: 'success' }),
+      ]),
+    )
+  })
+
   it('returns redacted terminal result envelopes for structured execution failures', async () => {
     const variable = 'PRAXIS_PROTOCOL_TEST_API_KEY'
     const secret = 'protocol-failure-secret'
