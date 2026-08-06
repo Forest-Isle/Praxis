@@ -45,6 +45,21 @@ describe('ClaudePermissionResolver', () => {
     })
   })
 
+  it('requires explicit review for dynamic workflows', async () => {
+    await expect(
+      new ClaudePermissionResolver({ cwd: '/workspace', settings: [] }).resolve(
+        {
+          id: 'workflow',
+          name: 'Workflow',
+          input: { script: 'source' },
+        },
+      ),
+    ).resolves.toEqual({
+      behavior: 'ask',
+      reason: 'Review dynamic workflow before running',
+    })
+  })
+
   it('allows durable task graph tools by default with explicit deny precedence', async () => {
     const resolver = new ClaudePermissionResolver({
       cwd: '/workspace',

@@ -34,6 +34,20 @@ export class ClaudeSidechainStore {
     root: ClaudeTranscriptEntry,
     metadata: ClaudeSidechainMetadata,
   ): Promise<void> {
+    await this.createWithMetadata(root, metadata)
+  }
+
+  async createWorkflow(
+    root: ClaudeTranscriptEntry,
+    metadata: { agentType: string; spawnDepth: 1 },
+  ): Promise<void> {
+    await this.createWithMetadata(root, metadata)
+  }
+
+  private async createWithMetadata(
+    root: ClaudeTranscriptEntry,
+    metadata: ClaudeSidechainMetadata | { agentType: string; spawnDepth: 1 },
+  ): Promise<void> {
     if (
       root.sessionId !== this.paths.sessionId ||
       root.agentId !== this.paths.agentId

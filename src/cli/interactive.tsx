@@ -26,6 +26,7 @@ interface InteractiveSessionCommands {
   ): Promise<SessionRunResult>
   fork(sessionId: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
+  workflows?(): readonly Record<string, unknown>[]
   nextScheduledPrompt?(
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
@@ -329,6 +330,37 @@ export function InteractiveApp({
         selectedIndexRef.current = 0
         setSelectedIndex(0)
         setSelectingSession(true)
+      } else if (prompt === '/workflows') {
+        const turn = (async () => {
+          setBusy(true)
+          try {
+            const workflows = (await service()).workflows?.() ?? []
+            append({
+              kind: 'notice',
+              text:
+                workflows.length === 0
+                  ? 'No workflows.'
+                  : workflows
+                      .map(
+                        (workflow) =>
+                          `${String(workflow.task_id)} [${String(workflow.status)}] ${String(workflow.summary)}`,
+                      )
+                      .join('\n'),
+            })
+          } catch (error) {
+            append({
+              kind: 'warning',
+              text: redactSensitiveText(
+                error instanceof Error ? error.message : String(error),
+                sensitiveValues,
+              ),
+            })
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(turn)
+        void turn.finally(() => onTurnChange?.(null))
       } else {
         const turn = submit(prompt)
         onTurnChange?.(turn)
@@ -390,7 +422,7 @@ export function InteractiveApp({
           ) : (
             <>
               <Text>› {input}</Text>
-              <Text dimColor>/new · /sessions · /exit</Text>
+              <Text dimColor>/new · /sessions · /workflows · /exit</Text>
             </>
           )}
         </>

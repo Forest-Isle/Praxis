@@ -54,6 +54,7 @@ const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   WebFetch: 'ask',
   WebSearch: 'ask',
   Bash: 'ask',
+  Workflow: 'ask',
 }
 
 const FILE_TOOLS = new Set([
@@ -286,6 +287,11 @@ export class ClaudePermissionResolver implements PermissionResolver {
           behavior: 'deny',
           reason: `Permission to use ${call.name} is disabled in ${this.permissionMode} mode`,
         }
-      : { behavior: 'ask' }
+      : {
+          behavior: 'ask',
+          ...(call.name === 'Workflow'
+            ? { reason: 'Review dynamic workflow before running' }
+            : {}),
+        }
   }
 }

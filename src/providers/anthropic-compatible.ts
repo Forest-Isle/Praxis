@@ -549,6 +549,9 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         max_tokens: this.maxOutputTokens,
         messages: serialized.messages,
         stream: true,
+        ...(request.effort
+          ? { output_config: { effort: request.effort } }
+          : {}),
         ...(serialized.system ? { system: serialized.system } : {}),
         ...(request.webSearch
           ? {

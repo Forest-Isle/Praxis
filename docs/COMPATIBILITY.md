@@ -410,8 +410,17 @@ proves Claude -> Praxis and Praxis -> Claude resume.
 `npm run test:scheduled-compat` compares `CronCreate`, `CronDelete`, `CronList`,
 and `ScheduleWakeup` schemas, proves Praxis-created native jobs are visible and
 deletable after Claude resume, proves Claude-created jobs survive Praxis resume,
-and verifies the inactive dynamic-wakeup gate. Active dynamic wakeups and the
-separate Workflow engine are not claimed by this gate.
+and verifies the inactive dynamic-wakeup gate. Active dynamic wakeups are not
+claimed by this gate.
+`npm run test:workflow-compat` compares the Claude 2.1.208 Workflow schema, proves
+default permission denial is artifact-free, drives background launch/notification/
+resume with zero repeated child requests, checks structured output and effort
+forwarding, validates native run/journal/sidechain metadata, and requires Claude to
+resume the Praxis-written main transcript. Praxis also prompt-fallback replays a
+unique Claude-created no-options journal entry. Exact Praxis-created journal cache
+reuse in Claude remains unclaimed because Claude's private replay-key derivation is
+not observable; calls with semantic model/effort/agentType/schema/isolation options
+never use prompt fallback.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork

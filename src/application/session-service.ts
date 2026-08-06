@@ -64,6 +64,8 @@ import { ClaudeSubagentExecutor } from './subagent-service.js'
 import { ScheduledPromptManager } from './scheduled-prompt-manager.js'
 import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
+import { ClaudeWorkflowToolRegistry } from '../tools/claude-workflow-tools.js'
+import { WorkflowManager } from './workflow-manager.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -87,6 +89,7 @@ export interface ClaudeSessionServiceOptions {
   subagentToolNames?: readonly string[]
   taskToolNames?: readonly string[]
   scheduledToolNames?: readonly string[]
+  enableWorkflows?: boolean
   providerForModel?: (model: string) => ModelProvider
   sessionPersistence?: boolean
   sessionKind?: 'bg'
@@ -121,10 +124,21 @@ export interface ForkResult {
   parentSessionId: string
 }
 
+export function workflowTokenTarget(prompt: string): number | null {
+  const match = /(?:^|\s)\+(\d+(?:\.\d+)?)([km])\b/iu.exec(prompt)
+  if (!match) return null
+  const value = Number(match[1])
+  if (!Number.isFinite(value) || value <= 0) return null
+  return Math.floor(
+    value * (match[2]?.toLowerCase() === 'm' ? 1_000_000 : 1_000),
+  )
+}
+
 export class ClaudeSessionService {
   private readonly schema
   private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
   private readonly scheduledPrompts: ScheduledPromptManager | null
+  private readonly workflowManager: WorkflowManager | null
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
     if (
@@ -146,14 +160,22 @@ export class ClaudeSessionService {
             ),
           })
         : null
+    this.workflowManager = options.enableWorkflows
+      ? new WorkflowManager(options.configRoot, options.cwd)
+      : null
   }
 
   nextScheduledPrompt(signal?: AbortSignal) {
     return this.scheduledPrompts?.next(signal) ?? Promise.resolve(null)
   }
 
+  workflows(): readonly Record<string, unknown>[] {
+    return this.workflowManager?.list() ?? []
+  }
+
   async close(): Promise<void> {
     this.scheduledPrompts?.close()
+    await this.workflowManager?.close()
   }
 
   async run(
@@ -441,7 +463,9 @@ export class ClaudeSessionService {
           : null
       const baseTools = scheduledTools ?? taskTools ?? this.options.tools
       const subagentExecutor =
-        this.options.enableSubagents && baseTools && this.options.permissions
+        (this.options.enableSubagents || this.options.enableWorkflows) &&
+        baseTools &&
+        this.options.permissions
           ? new ClaudeSubagentExecutor({
               configRoot: this.options.configRoot,
               cwd: this.options.cwd,
@@ -476,7 +500,7 @@ export class ClaudeSessionService {
                 : {}),
             })
           : null
-      const turnTools = subagentExecutor
+      const agentTools = subagentExecutor
         ? subagentExecutor.registry(
             sessionId,
             0,
@@ -485,6 +509,23 @@ export class ClaudeSessionService {
               this.promptIdForToolCall(snapshot.entries, callId),
           )
         : baseTools
+      const turnTools =
+        this.workflowManager && subagentExecutor && agentTools
+          ? new ClaudeWorkflowToolRegistry({
+              base: agentTools,
+              manager: this.workflowManager,
+              executor: subagentExecutor,
+              cwd: this.options.cwd,
+              configRoot: this.options.configRoot,
+              sessionId,
+              promptIdForCall: (callId) =>
+                currentPromptId ??
+                this.promptIdForToolCall(snapshot.entries, callId),
+              defaultModel: provider.model ?? 'praxis/provider',
+              tokenBudget: workflowTokenTarget(prompt),
+              enabled: true,
+            })
+          : agentTools
       const hookTools =
         this.options.hooks && turnTools && this.options.permissions
           ? new ClaudeHookToolCoordinator({
@@ -967,7 +1008,8 @@ export class ClaudeSessionService {
           ...(this.options.hooks ||
           subagentExecutor ||
           taskTools ||
-          this.scheduledPrompts
+          this.scheduledPrompts ||
+          this.workflowManager
             ? {
                 onStop: async (text: string) => {
                   const messages: string[] = []
@@ -990,6 +1032,9 @@ export class ClaudeSessionService {
                   }
                   const background = await subagentExecutor?.notifications(true)
                   if (background) messages.push(...background.messages)
+                  const workflow =
+                    await this.workflowManager?.notifications(true)
+                  if (workflow) messages.push(...workflow.messages)
                   const bashMessages = await taskTools?.notifications(true)
                   if (bashMessages) messages.push(...bashMessages)
                   const scheduled = await this.scheduledPrompts?.drainDue()
@@ -998,7 +1043,18 @@ export class ClaudeSessionService {
                   }
                   return {
                     messages,
-                    ...(background ? { usage: background.usage } : {}),
+                    ...(background || workflow
+                      ? {
+                          usage: {
+                            inputTokens:
+                              (background?.usage.inputTokens ?? 0) +
+                              (workflow?.usage.inputTokens ?? 0),
+                            outputTokens:
+                              (background?.usage.outputTokens ?? 0) +
+                              (workflow?.usage.outputTokens ?? 0),
+                          },
+                        }
+                      : {}),
                   }
                 },
               }

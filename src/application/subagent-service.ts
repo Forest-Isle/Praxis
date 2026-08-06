@@ -1,7 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 
+import { Ajv2020 } from 'ajv/dist/2020.js'
+
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import { workflowAgentFiles } from '../compatibility/claude/workflow.js'
 import {
   createClaudeAsyncAgentToolUseResult,
   createClaudeAgentToolUseResult,
@@ -48,10 +51,38 @@ import {
   type BackgroundAgentRunResult,
 } from './background-agent-manager.js'
 import { isBackgroundBashTaskId } from './background-task-id.js'
+import { createWorkflowWorktree } from './workflow-worktree.js'
 
 const DEFAULT_MAX_DEPTH = 4
 const DEFAULT_MAX_CALLS = 16
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
+
+export interface WorkflowAgentRunOptions {
+  sessionId: string
+  promptId: string
+  runId: string
+  agentId: string
+  transcriptDirectory: string
+  prompt: string
+  label?: string
+  model?: string
+  effort?: string
+  isolation?: 'worktree'
+  agentType?: string
+  schema?: Record<string, unknown>
+  signal?: AbortSignal
+}
+
+export interface WorkflowAgentRunResult {
+  result: unknown
+  usage: ModelUsage
+  toolUseCount: number
+  durationMs: number
+  resolvedModel: string
+  isolationPath?: string
+  isolationRetained?: boolean
+  isolationWarning?: string
+}
 
 interface AgentInput {
   description: string
@@ -59,6 +90,69 @@ interface AgentInput {
   subagentType: string
   model?: string
   runInBackground: boolean
+}
+
+class StructuredOutputRegistry implements ToolRegistry {
+  private readonly validate
+
+  constructor(
+    private readonly base: ToolRegistry,
+    private readonly schema: Record<string, unknown>,
+    private readonly capture?: { calls: number; value: unknown },
+  ) {
+    this.validate = new Ajv2020({ allErrors: true, strict: false }).compile(
+      schema,
+    )
+  }
+
+  definitions(): readonly ModelToolDefinition[] {
+    return [
+      {
+        name: 'StructuredOutput',
+        description:
+          'Use this tool to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response to provide the structured output.',
+        inputSchema: this.schema,
+      },
+    ]
+  }
+
+  prepare(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ModelToolCall> {
+    if (call.name !== 'StructuredOutput')
+      return this.base.prepare(call, context)
+    if (this.capture && this.capture.calls > 0) {
+      throw new Error('StructuredOutput must be called exactly once')
+    }
+    if (!this.validate(call.input)) {
+      throw new Error(
+        `StructuredOutput validation failed: ${this.validate.errors
+          ?.map(
+            (error) =>
+              `${error.instancePath || '/'} ${error.message ?? 'is invalid'}`,
+          )
+          .join('; ')}`,
+      )
+    }
+    return Promise.resolve(call)
+  }
+
+  execute(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    if (call.name !== 'StructuredOutput')
+      return this.base.execute(call, context)
+    if (!this.capture)
+      throw new Error('StructuredOutput capture is unavailable')
+    this.capture.calls += 1
+    this.capture.value = structuredClone(call.input)
+    return Promise.resolve({
+      content: 'Structured output recorded.',
+      isError: false,
+    })
+  }
 }
 
 export interface ClaudeSubagentExecutorOptions {
@@ -447,6 +541,130 @@ export class ClaudeSubagentExecutor {
     }
   }
 
+  async runWorkflowAgent(
+    options: WorkflowAgentRunOptions,
+  ): Promise<WorkflowAgentRunResult> {
+    if (
+      options.agentType &&
+      options.agentType !== 'general-purpose' &&
+      !this.options.extensions?.agent(options.agentType)
+    ) {
+      throw new Error(`Unknown Claude agent ${options.agentType}`)
+    }
+    if (options.model && !this.options.providerForModel) {
+      throw new Error(
+        'Workflow agent model overrides are unavailable for this provider',
+      )
+    }
+    const provider = options.model
+      ? (this.options.providerForModel?.(options.model) ??
+        this.options.provider)
+      : this.options.provider
+    const input: AgentInput = {
+      description: options.label ?? 'Workflow agent',
+      prompt: options.prompt,
+      subagentType: options.agentType ?? 'workflow-subagent',
+      ...(options.model ? { model: options.model } : {}),
+      runInBackground: false,
+    }
+    const agentFiles = workflowAgentFiles(
+      options.transcriptDirectory,
+      options.agentId,
+    )
+    const paths = {
+      sessionId: options.sessionId,
+      agentId: options.agentId,
+      directory: options.transcriptDirectory,
+      transcriptFile: agentFiles.transcriptFile,
+      metadataFile: agentFiles.metadataFile,
+    }
+    const sidechain = new ClaudeSidechainStore(
+      paths,
+      join(
+        this.options.configRoot,
+        'praxis',
+        'locks',
+        `${options.sessionId}-${options.runId}-${options.agentId}.lock`,
+      ),
+      this.schema,
+    )
+    const claudePaths = resolveClaudePaths({
+      configDir: this.options.configRoot,
+      cwd: this.options.cwd,
+      sessionId: options.sessionId,
+    })
+    const isolation = options.isolation
+      ? await createWorkflowWorktree({
+          cwd: this.options.cwd,
+          praxisRoot: claudePaths.praxisRoot,
+          runId: options.runId,
+          agentId: options.agentId,
+        })
+      : null
+    const agentCwd = isolation?.cwd ?? this.options.cwd
+    const root = createClaudeSidechainRoot({
+      sessionId: options.sessionId,
+      promptId: options.promptId,
+      prompt: options.prompt,
+      agentId: options.agentId,
+      cwd: agentCwd,
+      claudeVersion: this.options.claudeVersion,
+      gitBranch: null,
+      uuid: randomUUID(),
+      timestamp: new Date().toISOString(),
+    })
+    const startedAt = Date.now()
+    const structured = { calls: 0, value: undefined as unknown }
+    let run
+    let cleanup: { retained: boolean; reason?: string } | undefined
+    try {
+      await sidechain.createWorkflow(root, {
+        agentType: options.agentType ?? 'workflow-subagent',
+        spawnDepth: 1,
+      })
+      run = await sidechain.withLease((lease) =>
+        this.runSidechain({
+          lease,
+          root,
+          input,
+          provider,
+          agentId: options.agentId,
+          spawnDepth: 1,
+          promptId: options.promptId,
+          transcriptPath: paths.transcriptFile,
+          toolResultDirectory: join(
+            claudePaths.projectRoot,
+            options.sessionId,
+            'tool-results',
+          ),
+          ...(options.schema
+            ? { outputSchema: options.schema, structuredOutput: structured }
+            : {}),
+          ...(options.effort ? { effort: options.effort } : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+          cwd: agentCwd,
+        }),
+      )
+    } finally {
+      cleanup = await isolation?.cleanup()
+    }
+    if (options.schema && structured.calls !== 1) {
+      throw new Error(
+        `StructuredOutput must be called exactly once (received ${structured.calls})`,
+      )
+    }
+    return {
+      result: options.schema ? structured.value : run.text,
+      usage: run.usage,
+      toolUseCount: run.toolUseCount,
+      durationMs: Date.now() - startedAt,
+      resolvedModel: provider.model ?? 'praxis/provider',
+      ...(isolation ? { isolationPath: isolation.cwd } : {}),
+      ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
+      ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
+    }
+  }
+
   prepareManagement(call: ModelToolCall): ModelToolCall {
     if (!this.isEnabled(call.name)) {
       throw new Error(`Tool ${call.name} is unavailable`)
@@ -662,12 +880,17 @@ export class ClaudeSubagentExecutor {
     transcriptPath: string
     toolResultDirectory: string
     continuationMessage?: string
+    outputSchema?: Record<string, unknown>
+    structuredOutput?: { calls: number; value: unknown }
+    effort?: string
+    cwd?: string
     signal?: AbortSignal
   }): Promise<{
     text: string
     usage: { inputTokens: number; outputTokens: number }
     toolUseCount: number
   }> {
+    const cwd = options.cwd ?? this.options.cwd
     let snapshot: TranscriptSnapshot = await options.lease.load()
     if (options.continuationMessage !== undefined) {
       const [entry] = translateProviderEvents(
@@ -680,7 +903,7 @@ export class ClaudeSubagentExecutor {
         {
           sessionId: String(options.root.sessionId),
           parentUuid: snapshot.tail.lastUuid,
-          cwd: this.options.cwd,
+          cwd,
           claudeVersion: this.options.claudeVersion,
           gitBranch: null,
           history: snapshot.entries,
@@ -717,7 +940,7 @@ export class ClaudeSubagentExecutor {
     const translationContext = () => ({
       sessionId: String(options.root.sessionId),
       parentUuid: snapshot.tail.lastUuid,
-      cwd: this.options.cwd,
+      cwd,
       claudeVersion: this.options.claudeVersion,
       gitBranch: null,
       history: snapshot.entries,
@@ -739,7 +962,7 @@ export class ClaudeSubagentExecutor {
     const hookSession = {
       session_id: String(options.root.sessionId),
       transcript_path: options.transcriptPath,
-      cwd: this.options.cwd,
+      cwd,
       permission_mode: 'default',
     }
     const nestedTools = this.registry(
@@ -747,15 +970,22 @@ export class ClaudeSubagentExecutor {
       options.spawnDepth,
       () => options.promptId,
     )
+    const agentTools = options.outputSchema
+      ? new StructuredOutputRegistry(
+          nestedTools,
+          options.outputSchema,
+          options.structuredOutput,
+        )
+      : nestedTools
     const runtimeTools = this.options.hooks
       ? new ClaudeHookToolCoordinator({
-          tools: nestedTools,
+          tools: agentTools,
           permissions: this.options.permissions,
           hooks: this.options.hooks,
           session: hookSession,
           recordOutcome: recordHookOutcome,
         })
-      : nestedTools
+      : agentTools
     const runtimePermissions = this.options.hooks
       ? (runtimeTools as ClaudeHookToolCoordinator)
       : this.options.permissions
@@ -894,10 +1124,15 @@ export class ClaudeSubagentExecutor {
       const customAgent = this.options.extensions?.agent(
         options.input.subagentType,
       )
-      const system =
+      const baseSystem =
         options.input.subagentType === 'general-purpose'
           ? 'You are a general-purpose subagent. Complete the isolated task and return a concise result.'
-          : `# Agent definition: ${options.input.subagentType}\n\n${customAgent?.body ?? ''}`
+          : options.input.subagentType === 'workflow-subagent'
+            ? 'You are a workflow subagent. Complete the isolated task. Your final text is the raw return value consumed by the workflow, not a user-facing message.'
+            : `# Agent definition: ${options.input.subagentType}\n\n${customAgent?.body ?? ''}`
+      const system = options.outputSchema
+        ? `${baseSystem}\n\nYou MUST call StructuredOutput exactly once at the end with a value matching its schema.`
+        : baseSystem
       let stopHookActive = false
       return {
         ...(await runtime.run({
@@ -906,7 +1141,8 @@ export class ClaudeSubagentExecutor {
             { role: 'system', content: system },
             ...projectClaudeModelMessages(snapshot.entries),
           ],
-          cwd: this.options.cwd,
+          cwd,
+          ...(options.effort ? { effort: options.effort } : {}),
           toolResultDirectory: options.toolResultDirectory,
           observer,
           ...(this.options.approveTool

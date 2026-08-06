@@ -68,6 +68,7 @@ export interface ModelRequest {
   tools?: readonly ModelToolDefinition[]
   webSearch?: ModelWebSearch
   signal?: AbortSignal
+  effort?: string
 }
 
 export interface ModelProviderCapabilities {
@@ -176,6 +177,7 @@ export interface AgentRunRequest {
     readonly string[] | { messages: readonly string[]; usage?: ModelUsage }
   >
   signal?: AbortSignal
+  effort?: string
 }
 
 export interface AgentToolRecoveryRequest extends Pick<
@@ -280,6 +282,7 @@ export class AgentRuntime {
         }
         if (definitions.length > 0) providerRequest.tools = definitions
         if (request.signal) providerRequest.signal = request.signal
+        if (request.effort) providerRequest.effort = request.effort
 
         let text = ''
         let textBytes = 0
@@ -523,7 +526,9 @@ export class AgentRuntime {
       const reason =
         decision.behavior === 'deny'
           ? decision.reason
-          : 'Permission approval was not provided'
+          : decision.behavior === 'ask'
+            ? (decision.reason ?? 'Permission approval was not provided')
+            : 'Permission approval was not provided'
       return { content: reason, isError: true }
     }
     if (request.signal?.aborted) return this.cancel()

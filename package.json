@@ -45,6 +45,7 @@
     "test:scheduled-compat": "npm run build && node scripts/verify-scheduled-tools-compatibility.mjs",
     "test:top-level-agent-compat": "npm run build && node scripts/verify-top-level-agent-compatibility.mjs",
     "test:web-compat": "npm run build && node scripts/verify-web-compatibility.mjs",
+    "test:workflow-compat": "npm run build && node scripts/verify-workflow-compatibility.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
@@ -52,10 +53,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "acorn": "^8.18.0",
+    "ajv": "^8.20.0",
     "cron-parser": "^5.7.0",
     "ink": "^7.1.1",
     "ipaddr.js": "^2.2.0",
     "minimatch": "^10.2.6",
+    "quickjs-emscripten": "^0.32.0",
     "react": "^19.2.8",
     "turndown": "^7.2.0",
     "yaml": "^2.9.0"

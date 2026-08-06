@@ -10,8 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Stage 22 scheduled prompts is complete on top of Sprint 21 top-level background
-sessions and agent management, durable tasks, background Bash,
+Stage 23 Workflow is implemented on top of Stage 22 scheduled prompts, Sprint 21
+top-level background sessions and agent management, durable tasks, background Bash,
 WebFetch/WebSearch, MCP resource tools,
 native file globbing, notebook editing, CLI customization and session
 controls, print and machine-I/O support, image tool results, native foreground
@@ -80,9 +80,14 @@ one-shot jobs, and expire recurring jobs after a final seven-day execution. The
 interactive CLI keeps one service alive, submits due prompts while idle, and
 releases timers on exit. Built-in `/loop` expands fixed intervals through
 `CronCreate` and executes the prompt immediately once. `ScheduleWakeup` matches
-the observed inactive dynamic gate and stop result; active dynamic wakeups and
-the separate resumable `Workflow` engine remain Stage 23 work. Claude Code
-2.1.208 exposes no standalone `Monitor` tool.
+the observed inactive dynamic gate and stop result; active dynamic wakeups remain.
+The opt-in `Workflow` tool runs sandboxed JavaScript orchestration with agents,
+parallel/pipeline helpers, structured results, token targets, worktree isolation,
+background task control, native run/journal files, and same-run replay. Praxis can
+fallback-replay a unique Claude-created prompt without semantic options. Exact
+Praxis-created journal cache reuse in Claude remains partial because Claude's private
+replay-key derivation is not observable. Claude Code 2.1.208 exposes no standalone
+`Monitor` tool.
 Forks preserve the complete supported main-chain native history, including
 tool calls/results, compact boundaries/summaries, attachments, agent settings,
 titles, images, errors, and interrupted-tool denial records. Existing UUIDs,

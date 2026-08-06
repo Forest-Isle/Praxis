@@ -359,8 +359,9 @@ by one Praxis invocation.
 - [x] bounded redacted Claude-path output with Read-only external access
 - [x] live Praxis -> Claude -> Praxis graph and background lifecycle gate
 
-Scheduled prompts land in Stage 22. Workflow and native worktree/tmux lifecycle
-remain later stages; Claude Code 2.1.208 has no standalone Monitor tool.
+Scheduled prompts land in Stage 22. At this stage, Workflow and native
+worktree/tmux lifecycle remained later work; Claude Code 2.1.208 has no standalone
+Monitor tool.
 
 ## Sprint 21 — top-level background sessions
 
@@ -376,7 +377,7 @@ Status: complete for single-user local persistent sessions.
       repair, startup-stop race handling, and terminal control cleanup
 - [x] native background transcript metadata and live Claude <-> Praxis resume
 
-Workflow and native worktree/tmux lifecycle remain later stages.
+At this stage, Workflow and native worktree/tmux lifecycle remained later work.
 
 ## Stage 22 — scheduled prompts and fixed loops
 
@@ -395,3 +396,25 @@ Status: complete for Claude Code 2.1.208 fixed scheduling behavior.
 `ScheduleWakeup` matches the observed inactive dynamic gate and stop behavior.
 Active dynamic wakeups and the separate resumable multi-agent `Workflow` engine
 move to Stage 23. No standalone Monitor tool exists in Claude Code 2.1.208.
+
+## Stage 23 — resumable Workflow engine
+
+Status: implemented with one documented cross-runtime replay limitation.
+
+- [x] exact Claude 2.1.208 public schema, opt-in permission gate, source precedence,
+      saved project/user workflows, and built-ins
+- [x] Acorn pure-literal metadata parsing and QuickJS sandbox with deterministic
+      time/random guards, memory/deadline/collection/agent limits
+- [x] agent, parallel, pipeline, nested workflow, phase/log, args, and token-budget
+      APIs with model/effort/agentType/schema/worktree options
+- [x] background task output/stop/notifications, abort propagation, run uniqueness,
+      native scripts/runs/journals/progress/sidechains, and interactive status
+- [x] same-runtime replay plus conservative unique-prompt fallback for Claude-created
+      journal entries without semantic options
+- [x] live schema, permissions, lifecycle, structured output, effort, artifacts, and
+      shared-main-session Claude resume gate
+- [ ] exact Praxis-created journal cache reuse in Claude; observed `v2` keys do not
+      reveal Claude's private semantic key derivation
+
+Active dynamic `ScheduleWakeup` remains next. Native top-level EnterWorktree,
+ExitWorktree, `--worktree`, and tmux lifecycle remain separate tool/CLI work.

@@ -443,6 +443,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       'CronList',
       'ScheduleWakeup',
     ] as const
+    const workflowToolNames = ['Workflow'] as const
     const selectedAgentTools = agentToolNames.filter(
       (name) =>
         (cli.tools === undefined ||
@@ -461,6 +462,15 @@ const createDefaultService: CliDependencies['createService'] = async ({
     )
     const selectedScheduledTools = scheduledToolNames.filter(
       (name) =>
+        !cli.bare &&
+        (cli.tools === undefined ||
+          cli.tools.includes('default') ||
+          cli.tools.includes(name)) &&
+        !cli.disallowedTools.includes(name),
+    )
+    const selectedWorkflowTools = workflowToolNames.filter(
+      (name) =>
+        cli.sessionPersistence &&
         !cli.bare &&
         (cli.tools === undefined ||
           cli.tools.includes('default') ||
@@ -491,6 +501,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
         !scheduledToolNames.includes(
           name as (typeof scheduledToolNames)[number],
         ) &&
+        !workflowToolNames.includes(
+          name as (typeof workflowToolNames)[number],
+        ) &&
         (!cli.bare || (name !== 'WebFetch' && name !== 'WebSearch')),
     )
     const filteredTools = new FilteredToolRegistry(extensionTools, {
@@ -514,6 +527,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       subagentToolNames: routedSubagentTools,
       taskToolNames: selectedTaskRuntimeTools,
       scheduledToolNames: selectedScheduledTools,
+      enableWorkflows: selectedWorkflowTools.length > 0,
       ...(cli.safeMode || cli.bare
         ? {}
         : { hooks: new ClaudeHookRunner({ settings, cwd }) }),
@@ -540,6 +554,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...filteredTools.definitions().map((definition) => definition.name),
       ...selectedTaskTools,
       ...selectedScheduledTools,
+      ...selectedWorkflowTools,
       ...(enableSubagents ? selectedAgentTools : []),
     ]
     const runtimeInfo: CliRuntimeInfo = {

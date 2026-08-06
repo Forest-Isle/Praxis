@@ -138,6 +138,7 @@ describe('AnthropicCompatibleProvider', () => {
 
     const events = []
     for await (const event of provider.complete({
+      effort: 'low',
       messages: [
         { role: 'system', content: 'system one' },
         { role: 'system', content: 'system two' },
@@ -190,6 +191,7 @@ describe('AnthropicCompatibleProvider', () => {
       max_tokens: 4096,
       system: 'system one\n\nsystem two',
       stream: true,
+      output_config: { effort: 'low' },
       messages: [
         {
           role: 'user',

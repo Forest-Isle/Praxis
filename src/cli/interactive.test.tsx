@@ -18,6 +18,45 @@ const flush = async () => {
 }
 
 describe('InteractiveApp', () => {
+  it('lists live workflows without sending a model prompt', async () => {
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          workflows() {
+            return [
+              {
+                task_id: 'w12345678',
+                status: 'running',
+                summary: 'Review repository',
+              },
+            ]
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    await flush()
+    app.stdin.write('/workflows')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('w12345678 [running] Review repository')
+  })
+
   it('streams a new session and then resumes it', async () => {
     const calls: string[] = []
     let closed = 0

@@ -290,6 +290,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         model: this.options.model,
         messages: serializeMessages(request.messages),
         stream: true,
+        ...(request.effort ? { reasoning_effort: request.effort } : {}),
         stream_options: { include_usage: true },
         ...(request.tools?.length
           ? {

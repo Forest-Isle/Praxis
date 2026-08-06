@@ -49,6 +49,7 @@ describe('OpenAICompatibleProvider', () => {
 
     const events = []
     for await (const event of provider.complete({
+      effort: 'high',
       messages: [{ role: 'user', content: 'hello' }],
     })) {
       events.push(event)
@@ -63,6 +64,7 @@ describe('OpenAICompatibleProvider', () => {
     expect(capturedInit).toMatchObject({ method: 'POST' })
     expect(JSON.parse(String(capturedInit?.body))).toMatchObject({
       model: 'fixture-model',
+      reasoning_effort: 'high',
       stream: true,
       stream_options: { include_usage: true },
     })
