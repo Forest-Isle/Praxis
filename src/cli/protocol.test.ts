@@ -183,6 +183,19 @@ describe('CLI protocol', () => {
     ).toThrow('must be a boolean')
   })
 
+  it('parses MCP management scope', () => {
+    expect(
+      parseCliInvocation(['mcp', '--scope', 'project', 'list']),
+    ).toMatchObject({
+      command: 'mcp',
+      args: ['mcp', 'list'],
+      mcpScope: 'project',
+    })
+    expect(() =>
+      parseCliInvocation(['mcp', '--scope', 'invalid', 'list']),
+    ).toThrow('--scope must be one of')
+  })
+
   it('parses single-user CLI customization, tool, permission, and session controls', () => {
     expect(
       parseCliInvocation([
