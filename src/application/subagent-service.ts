@@ -57,6 +57,12 @@ const DEFAULT_MAX_DEPTH = 4
 const DEFAULT_MAX_CALLS = 16
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 
+const structuredOnlyTools: ToolRegistry = {
+  definitions: () => [],
+  prepare: async (call) => call,
+  execute: async () => ({ content: '', isError: false }),
+}
+
 export interface WorkflowAgentRunOptions {
   sessionId: string
   promptId: string
@@ -92,7 +98,7 @@ interface AgentInput {
   runInBackground: boolean
 }
 
-class StructuredOutputRegistry implements ToolRegistry {
+export class StructuredOutputRegistry implements ToolRegistry {
   private readonly validate
 
   constructor(
@@ -106,13 +112,20 @@ class StructuredOutputRegistry implements ToolRegistry {
   }
 
   definitions(): readonly ModelToolDefinition[] {
+    const base = this.base.definitions()
+    const existing = new Set(base.map(({ name }) => name))
     return [
-      {
-        name: 'StructuredOutput',
-        description:
-          'Use this tool to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response to provide the structured output.',
-        inputSchema: this.schema,
-      },
+      ...base,
+      ...(existing.has('StructuredOutput')
+        ? []
+        : [
+            {
+              name: 'StructuredOutput',
+              description:
+                'Use this tool to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response to provide the structured output.',
+              inputSchema: this.schema,
+            },
+          ]),
     ]
   }
 
@@ -977,7 +990,7 @@ export class ClaudeSubagentExecutor {
     )
     const agentTools = options.outputSchema
       ? new StructuredOutputRegistry(
-          nestedTools,
+          structuredOnlyTools,
           options.outputSchema,
           options.structuredOutput,
         )

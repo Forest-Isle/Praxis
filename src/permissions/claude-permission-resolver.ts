@@ -60,6 +60,7 @@ const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   WebSearch: 'ask',
   Bash: 'ask',
   Workflow: 'ask',
+  StructuredOutput: 'allow',
   EnterWorktree: 'allow',
   ExitWorktree: 'allow',
 }

@@ -60,7 +60,10 @@ import {
 } from '../persistence/claude-transcript-store.js'
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
 import { ModelCompactor } from './model-compactor.js'
-import { ClaudeSubagentExecutor } from './subagent-service.js'
+import {
+  ClaudeSubagentExecutor,
+  StructuredOutputRegistry,
+} from './subagent-service.js'
 import { ScheduledPromptManager } from './scheduled-prompt-manager.js'
 import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
@@ -98,6 +101,8 @@ export interface ClaudeSessionServiceOptions {
   enableDynamicWakeups?: boolean
   enableWorkflows?: boolean
   providerForModel?: (model: string) => ModelProvider
+  effort?: string
+  structuredOutputSchema?: Record<string, unknown>
   sessionPersistence?: boolean
   sessionKind?: 'bg'
   workspace?: WorkspaceContext
@@ -111,6 +116,7 @@ export interface SessionRunResult {
   sessionId: string
   text: string
   usage: ModelUsage
+  structuredOutput?: unknown
 }
 
 export interface SessionSummary {
@@ -134,6 +140,12 @@ export interface SessionInspection extends SessionSummary {
 export interface ForkResult {
   sessionId: string
   parentSessionId: string
+}
+
+const emptyToolRegistry: ToolRegistry = {
+  definitions: () => [],
+  prepare: async (call) => call,
+  execute: async () => ({ content: '', isError: false }),
 }
 
 export function workflowTokenTarget(prompt: string): number | null {
@@ -595,10 +607,21 @@ export class ClaudeSessionService {
               enabledTools: this.options.worktreeToolNames ?? [],
             })
           : turnTools
+      const structuredCapture = this.options.structuredOutputSchema
+        ? { calls: 0, value: undefined as unknown }
+        : undefined
+      const structuredTools =
+        this.options.structuredOutputSchema && structuredCapture
+          ? new StructuredOutputRegistry(
+              workspaceTools ?? this.options.tools ?? emptyToolRegistry,
+              this.options.structuredOutputSchema,
+              structuredCapture,
+            )
+          : workspaceTools
       const hookTools =
-        this.options.hooks && workspaceTools && this.options.permissions
+        this.options.hooks && structuredTools && this.options.permissions
           ? new ClaudeHookToolCoordinator({
-              tools: workspaceTools,
+              tools: structuredTools,
               permissions: this.options.permissions,
               hooks: this.options.hooks,
               session: hookSession,
@@ -612,7 +635,7 @@ export class ClaudeSessionService {
         ...(hookTools
           ? { tools: hookTools, permissions: hookTools }
           : {
-              ...(workspaceTools ? { tools: workspaceTools } : {}),
+              ...(structuredTools ? { tools: structuredTools } : {}),
               ...(this.options.permissions
                 ? { permissions: this.options.permissions }
                 : {}),
@@ -841,6 +864,15 @@ export class ClaudeSessionService {
                 },
               ]
             : []),
+          ...(this.options.structuredOutputSchema
+            ? [
+                {
+                  role: 'system' as const,
+                  content:
+                    'You MUST call StructuredOutput exactly once at the end with a value matching the requested JSON Schema.',
+                },
+              ]
+            : []),
         ]
 
         const expansion = this.options.extensions?.expandPrompt(prompt) ?? {
@@ -856,7 +888,7 @@ export class ClaudeSessionService {
           outputTokens: 0,
         }
         const definitions = provider.capabilities.tools
-          ? (turnTools?.definitions() ?? [])
+          ? (structuredTools?.definitions() ?? [])
           : []
         const budget = this.contextBudget(provider)
         const pendingUserMessages = expansion.userMessages.map((content) => ({
@@ -1084,6 +1116,7 @@ export class ClaudeSessionService {
           cwd: this.activeCwd(),
           toolResultDirectory,
           observer,
+          ...(this.options.effort ? { effort: this.options.effort } : {}),
           reloadMessages: async () => {
             await compactIfNeeded([], currentTurnUserMessages ?? [])
             return [
@@ -1153,6 +1186,12 @@ export class ClaudeSessionService {
           ? await runtime.run({ ...runtimeRequest, signal })
           : await runtime.run(runtimeRequest)
 
+        if (structuredCapture && structuredCapture.calls !== 1) {
+          throw new Error(
+            `StructuredOutput must be called exactly once (received ${structuredCapture.calls})`,
+          )
+        }
+
         const finalLeafUuid = lastAssistantUuid
         if (!finalLeafUuid) {
           throw new Error('Could not locate final assistant response')
@@ -1168,7 +1207,10 @@ export class ClaudeSessionService {
         )
         return {
           sessionId,
-          text: result.text,
+          text:
+            structuredCapture && structuredCapture.calls === 1
+              ? JSON.stringify(structuredCapture.value)
+              : result.text,
           usage: {
             inputTokens:
               recoveryUsage.inputTokens +
@@ -1179,6 +1221,9 @@ export class ClaudeSessionService {
               compactionUsage.outputTokens +
               result.usage.outputTokens,
           },
+          ...(structuredCapture && structuredCapture.calls === 1
+            ? { structuredOutput: structuredCapture.value }
+            : {}),
         }
       } finally {
         try {

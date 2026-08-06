@@ -38,6 +38,10 @@ export interface CliControls {
   forkSession: boolean
   name: string | undefined
   sessionPersistence: boolean
+  model?: string
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  fallbackModels?: readonly string[]
+  jsonSchema?: Record<string, unknown>
   worktreeName?: string
   worktreeRequested?: boolean
   tmux?: 'classic'
@@ -85,6 +89,7 @@ export interface ProtocolResult {
   sessionId: string
   text: string
   usage: ModelUsage
+  structuredOutput?: unknown
 }
 
 export function createSuccessResult(
@@ -118,7 +123,7 @@ export function createSuccessResult(
       },
     },
     permission_denials: [],
-    structured_output: null,
+    structured_output: result.structuredOutput ?? null,
   }
 }
 
@@ -156,6 +161,7 @@ const PERMISSION_MODES = [
   'default',
 ] as const
 const SETTING_SOURCES = ['user', 'project', 'local'] as const
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const MAX_INPUT_LINE_BYTES = 1024 * 1024
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -276,6 +282,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let worktreeName: string | undefined
   let worktreeRequested = false
   let tmux: 'classic' | undefined
+  let model: string | undefined
+  let effort: (typeof EFFORT_LEVELS)[number] | undefined
+  let fallbackModels: string[] | undefined
+  let jsonSchema: Record<string, unknown> | undefined
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
@@ -307,6 +317,49 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--agent may only be specified once')
       agent = selectedAgent.value
       index += selectedAgent.consumed
+      continue
+    }
+    const selectedModel = optionValue(argv, index, '--model')
+    if (selectedModel) {
+      if (model !== undefined)
+        throw new Error('--model may only be specified once')
+      model = selectedModel.value
+      index += selectedModel.consumed
+      continue
+    }
+    const selectedEffort = optionValue(argv, index, '--effort')
+    if (selectedEffort) {
+      if (effort !== undefined)
+        throw new Error('--effort may only be specified once')
+      effort = choice(selectedEffort.value, '--effort', EFFORT_LEVELS)
+      index += selectedEffort.consumed
+      continue
+    }
+    const selectedFallback = optionValue(argv, index, '--fallback-model')
+    if (selectedFallback) {
+      if (fallbackModels !== undefined)
+        throw new Error('--fallback-model may only be specified once')
+      fallbackModels = splitList([selectedFallback.value])
+      if (fallbackModels.length === 0)
+        throw new Error('--fallback-model requires at least one model')
+      index += selectedFallback.consumed
+      continue
+    }
+    const selectedSchema = optionValue(argv, index, '--json-schema')
+    if (selectedSchema) {
+      if (jsonSchema !== undefined)
+        throw new Error('--json-schema may only be specified once')
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(selectedSchema.value)
+      } catch (error) {
+        throw new Error('--json-schema must be valid JSON', { cause: error })
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('--json-schema must be a JSON object')
+      }
+      jsonSchema = parsed as Record<string, unknown>
+      index += selectedSchema.consumed
       continue
     }
     const selectedCwd = optionValue(argv, index, '--cwd')
@@ -671,6 +724,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(worktreeName === undefined ? {} : { worktreeName }),
     ...(worktreeRequested ? { worktreeRequested: true } : {}),
     ...(tmux === undefined ? {} : { tmux }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
+    ...(fallbackModels === undefined ? {} : { fallbackModels }),
+    ...(jsonSchema === undefined ? {} : { jsonSchema }),
   }
 }
 

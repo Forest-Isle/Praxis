@@ -49,6 +49,7 @@ import {
   sensitiveEnvironmentValues,
 } from './platform/sensitive-data.js'
 import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
+import { FallbackModelProvider } from './providers/fallback-provider.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
 import { claudeBackgroundTaskParent } from './application/background-bash-manager.js'
@@ -102,6 +103,10 @@ Options:
   --fork-session                      Fork when resuming or continuing
   --session-id <uuid>                 Use an explicit ID for a new session
   -n, --name <name>                   Set session display name
+  --model <model>                     Select model for this session
+  --effort <level>                    low, medium, high, xhigh, or max
+  --fallback-model <models>           Comma-separated print-mode fallbacks
+  --json-schema <schema>              Print-mode JSON Schema for structured output
   --no-session-persistence            Keep print-mode session in memory only
   --agent <name>                      Select a shared agent definition
   --settings <file-or-json>           Load additional settings
@@ -327,9 +332,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const context = parseContextEnvironment(process.env)
   if (requireProvider) {
     const apiKey = process.env.PRAXIS_API_KEY
-    const model = process.env.PRAXIS_MODEL
+    const model = cli.model ?? process.env.PRAXIS_MODEL
     if (!apiKey || !model) {
-      throw new Error('PRAXIS_API_KEY and PRAXIS_MODEL are required')
+      throw new Error(
+        'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
+      )
     }
     const providerEnvironment = parseProviderEnvironment(process.env)
     providerForModel = (selectedModel: string) => {
@@ -356,7 +363,15 @@ const createDefaultService: CliDependencies['createService'] = async ({
           })
         : new OpenAICompatibleProvider(providerOptions)
     }
-    provider = providerForModel(model)
+    const models = [model, ...(cli.fallbackModels ?? [])].filter(
+      (candidate, index, all) => all.indexOf(candidate) === index,
+    )
+    const createProvider = providerForModel
+    const providers = models.map((candidate) => createProvider(candidate))
+    provider =
+      providers.length > 1
+        ? new FallbackModelProvider({ providers })
+        : providers[0]
   }
 
   const options = {
@@ -365,6 +380,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
     claudeVersion,
     eventSink,
     sessionPersistence: cli.sessionPersistence,
+    effort: cli.effort ?? 'high',
+    ...(cli.jsonSchema ? { structuredOutputSchema: cli.jsonSchema } : {}),
     ...(sessionKind === undefined ? {} : { sessionKind }),
     workspace,
     ...(cli.worktreeRequested
@@ -629,7 +646,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
         await service.close()
         await mcpTools.close()
       },
-      runtimeInfo: () => ({ ...runtimeInfo, cwd: workspace.cwd() }),
+      runtimeInfo: () => ({
+        ...runtimeInfo,
+        cwd: workspace.cwd(),
+        model: provider.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
+      }),
     }
   } catch (error) {
     try {
@@ -804,6 +825,13 @@ async function execute(
   const invocation = parseCliInvocation(argv)
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
+  if (
+    (invocation.fallbackModels !== undefined ||
+      invocation.jsonSchema !== undefined) &&
+    !invocation.print
+  ) {
+    throw new Error('--fallback-model and --json-schema require --print')
+  }
   if (invocation.tmux) {
     if (!dependencies.launchTmux) throw new Error('tmux launcher unavailable')
     const launched = await dependencies.launchTmux({
@@ -1162,11 +1190,12 @@ async function execute(
       activeSessionId = result.sessionId
       if (streamOutput) streamOutput.result(result, startedAt)
       else if (outputFormat === 'json') {
+        const resultRuntimeInfo = service.runtimeInfo?.() ?? runtimeInfo
         writeJson(
           io,
           createSuccessResult(
             result,
-            runtimeInfo,
+            resultRuntimeInfo,
             startedAt,
             Math.max(1, jsonModelTurns),
           ),

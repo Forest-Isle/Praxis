@@ -121,6 +121,35 @@ describe('CLI protocol', () => {
     )
   })
 
+  it('parses model effort fallback and structured output controls', () => {
+    expect(
+      parseCliInvocation([
+        '-p',
+        '--model',
+        'sonnet',
+        '--effort=xhigh',
+        '--fallback-model',
+        'haiku,opus',
+        '--json-schema',
+        '{"type":"object","required":["answer"]}',
+        'prompt',
+      ]),
+    ).toMatchObject({
+      print: true,
+      model: 'sonnet',
+      effort: 'xhigh',
+      fallbackModels: ['haiku', 'opus'],
+      jsonSchema: { type: 'object', required: ['answer'] },
+      args: ['prompt'],
+    })
+    expect(() => parseCliInvocation(['--effort', 'turbo'])).toThrow(
+      '--effort must be one of',
+    )
+    expect(() => parseCliInvocation(['--json-schema', '{invalid'])).toThrow(
+      'valid JSON',
+    )
+  })
+
   it('parses single-user CLI customization, tool, permission, and session controls', () => {
     expect(
       parseCliInvocation([

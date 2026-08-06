@@ -14,7 +14,10 @@ import type {
 import { AgentRunCancelledError } from '../core/runtime.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeSessionService } from './session-service.js'
-import { ClaudeSubagentExecutor } from './subagent-service.js'
+import {
+  ClaudeSubagentExecutor,
+  StructuredOutputRegistry,
+} from './subagent-service.js'
 
 const roots: string[] = []
 
@@ -27,6 +30,50 @@ const emptyTools: ToolRegistry = {
     throw new Error(`Unexpected base tool ${call.name}`)
   },
 }
+
+describe('StructuredOutputRegistry', () => {
+  it('appends a hidden schema tool, validates input, and captures exactly once', async () => {
+    const capture = { calls: 0, value: undefined as unknown }
+    const registry = new StructuredOutputRegistry(
+      emptyTools,
+      {
+        type: 'object',
+        properties: { answer: { type: 'string' } },
+        required: ['answer'],
+        additionalProperties: false,
+      },
+      capture,
+    )
+    expect(registry.definitions().map(({ name }) => name)).toEqual([
+      'StructuredOutput',
+    ])
+    const call = {
+      id: 'structured',
+      name: 'StructuredOutput',
+      input: { answer: 'ok' },
+    }
+    await registry.prepare(call, { cwd: '/tmp' })
+    await registry.execute(call, { cwd: '/tmp' })
+    expect(capture).toEqual({ calls: 1, value: { answer: 'ok' } })
+    expect(() => registry.prepare(call, { cwd: '/tmp' })).toThrow(
+      'exactly once',
+    )
+  })
+
+  it('rejects schema-invalid structured values before execution', async () => {
+    const registry = new StructuredOutputRegistry(
+      emptyTools,
+      { type: 'object', required: ['answer'] },
+      { calls: 0, value: undefined },
+    )
+    expect(() =>
+      registry.prepare(
+        { id: 'structured', name: 'StructuredOutput', input: {} },
+        { cwd: '/tmp' },
+      ),
+    ).toThrow('validation failed')
+  })
+})
 
 afterEach(async () => {
   await Promise.all(
