@@ -10,7 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Stage 23 Workflow is implemented on top of Stage 22 scheduled prompts, Sprint 21
+Stage 24 interactive dynamic wakeups and Stage 23 Workflow are implemented on
+top of Stage 22 scheduled prompts, Sprint 21
 top-level background sessions and agent management, durable tasks, background Bash,
 WebFetch/WebSearch, MCP resource tools,
 native file globbing, notebook editing, CLI customization and session
@@ -79,8 +80,12 @@ optimistic mutations, avoid live foreign process owners, catch up missed
 one-shot jobs, and expire recurring jobs after a final seven-day execution. The
 interactive CLI keeps one service alive, submits due prompts while idle, and
 releases timers on exit. Built-in `/loop` expands fixed intervals through
-`CronCreate` and executes the prompt immediately once. `ScheduleWakeup` matches
-the observed inactive dynamic gate and stop result; active dynamic wakeups remain.
+`CronCreate` and executes the prompt immediately once. In an interactive Praxis
+service, `ScheduleWakeup` clamps session-only one-shot delays, submits the prompt
+through the same idle queue, and supports stop/close cancellation. Headless runs
+retain the observed Claude inactive result. Claude's active gate could not be
+triggered through the isolated API-auth black-box fixture, so active result-shape
+parity remains explicitly partial.
 The opt-in `Workflow` tool runs sandboxed JavaScript orchestration with agents,
 parallel/pipeline helpers, structured results, token targets, worktree isolation,
 background task control, native run/journal files, and same-run replay. Praxis can
@@ -189,7 +194,8 @@ later messages. Activated nested-memory rules remain active across compaction.
   same-ID messaging, completion notification, and native sidechains
 - Shared durable task graph plus foreground/background Bash lifecycle
 - Persistent top-level background sessions plus agents/logs/attach/stop controls
-- Session-only and shared durable scheduled prompts plus fixed-interval `/loop`
+- Session-only dynamic wakeups, shared durable scheduled prompts, and
+  fixed-interval `/loop`
 
 ## Claude Code interoperability
 

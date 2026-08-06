@@ -89,6 +89,7 @@ export interface ClaudeSessionServiceOptions {
   subagentToolNames?: readonly string[]
   taskToolNames?: readonly string[]
   scheduledToolNames?: readonly string[]
+  enableDynamicWakeups?: boolean
   enableWorkflows?: boolean
   providerForModel?: (model: string) => ModelProvider
   sessionPersistence?: boolean
@@ -158,6 +159,9 @@ export class ClaudeSessionService {
               'locks',
               'scheduled-tasks.lock',
             ),
+            ...(options.enableDynamicWakeups === undefined
+              ? {}
+              : { dynamicWakeupsEnabled: options.enableDynamicWakeups }),
           })
         : null
     this.workflowManager = options.enableWorkflows

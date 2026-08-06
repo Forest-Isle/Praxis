@@ -313,17 +313,37 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
       }
       case 'ScheduleWakeup':
         if (call.input.stop === true) {
+          const cancelledWakeups = this.options.manager.stopWakeups()
           return {
             content:
-              'Loop stopped — any dynamic loop in this session is ended; there was no pending wakeup to cancel. If you are running a fixed-interval /loop (a recurring cron), it is NOT stopped by this call — cancel it with CronDelete. If you armed a Monitor for this loop, TaskStop it now; otherwise nothing more to do this turn.',
+              cancelledWakeups === 0
+                ? 'Loop stopped — any dynamic loop in this session is ended; there was no pending wakeup to cancel. If you are running a fixed-interval /loop (a recurring cron), it is NOT stopped by this call — cancel it with CronDelete. If you armed a Monitor for this loop, TaskStop it now; otherwise nothing more to do this turn.'
+                : `Loop stopped — cancelled ${cancelledWakeups} pending dynamic wakeup${cancelledWakeups === 1 ? '' : 's'}. Fixed-interval /loop cron jobs are unaffected; use CronDelete for those.`,
             isError: false,
             nativeToolUseResult: {
               scheduledFor: 0,
               clampedDelaySeconds: 0,
               wasClamped: false,
               stopped: true,
-              cancelledWakeups: 0,
+              cancelledWakeups,
             },
+          }
+        }
+        {
+          const wakeup = this.options.manager.scheduleWakeup({
+            delaySeconds: Number(call.input.delaySeconds),
+            prompt: String(call.input.prompt),
+          })
+          if (wakeup) {
+            return {
+              content: `Wakeup scheduled in ${wakeup.clampedDelaySeconds} seconds: ${String(call.input.reason)}`,
+              isError: false,
+              nativeToolUseResult: {
+                scheduledFor: wakeup.scheduledFor,
+                clampedDelaySeconds: wakeup.clampedDelaySeconds,
+                wasClamped: wakeup.wasClamped,
+              },
+            }
           }
         }
         return {

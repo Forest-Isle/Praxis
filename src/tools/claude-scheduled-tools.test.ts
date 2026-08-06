@@ -19,7 +19,7 @@ afterEach(async () => {
   )
 })
 
-async function fixture() {
+async function fixture(dynamicWakeupsEnabled = false) {
   const root = await mkdtemp(join(tmpdir(), 'praxis-cron-tools-'))
   roots.push(root)
   const cwd = join(root, 'work')
@@ -28,6 +28,7 @@ async function fixture() {
     lockFile: join(root, 'config', 'praxis', 'locks', 'cron.lock'),
     now: () => new Date('2026-08-05T14:00:00Z').getTime(),
     processStart: async () => 'Wed Aug  5 14:16:36 2026',
+    dynamicWakeupsEnabled,
   })
   return {
     cwd,
@@ -157,6 +158,28 @@ describe('ClaudeScheduledToolRegistry', () => {
     ).rejects.toThrow(
       "Invalid cron expression 'bad cron'. Expected 5 fields: M H DoM Mon DoW.",
     )
+  })
+
+  it('schedules and stops wakeups when the interactive gate is active', async () => {
+    const { registry, cwd } = await fixture(true)
+    await expect(
+      execute(registry, cwd, 'ScheduleWakeup', {
+        delaySeconds: 1,
+        reason: 'keep the loop warm',
+        prompt: 'continue probe',
+      }),
+    ).resolves.toMatchObject({
+      content: 'Wakeup scheduled in 60 seconds: keep the loop warm',
+      nativeToolUseResult: {
+        clampedDelaySeconds: 60,
+        wasClamped: true,
+      },
+    })
+    await expect(
+      execute(registry, cwd, 'ScheduleWakeup', { stop: true }),
+    ).resolves.toMatchObject({
+      nativeToolUseResult: { stopped: true, cancelledWakeups: 1 },
+    })
   })
 
   it('formats observed common schedules', () => {

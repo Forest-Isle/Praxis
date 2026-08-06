@@ -416,5 +416,22 @@ Status: implemented with one documented cross-runtime replay limitation.
 - [ ] exact Praxis-created journal cache reuse in Claude; observed `v2` keys do not
       reveal Claude's private semantic key derivation
 
-Active dynamic `ScheduleWakeup` remains next. Native top-level EnterWorktree,
-ExitWorktree, `--worktree`, and tmux lifecycle remain separate tool/CLI work.
+Native top-level EnterWorktree, ExitWorktree, `--worktree`, and tmux lifecycle
+remain separate tool/CLI work.
+
+## Stage 24 - interactive dynamic wakeups
+
+Status: implemented with one documented live-oracle limitation.
+
+- [x] process-local one-shot scheduling with documented 60-3600 second clamp
+- [x] shared idle delivery queue, multiple pending wakeups, and exactly-once fire
+- [x] stop cancellation for pending/queued dynamic work without touching Cron
+- [x] close/abort cleanup and headless inactive gate
+- [x] default scheduling-tool permissions and option-only TTY control forwarding
+- [x] focused manager/tool/CLI/permission tests
+- [ ] exact active Claude result/native shape; isolated API-auth interactive PTY
+      remained inactive under all observable gate inputs
+
+The active Praxis path is fixture-verified and deliberately creates no shared
+artifact. Claude headless/manual inactive behavior remains live-verified. Native
+top-level worktree enter/exit is the next independent parity stage.

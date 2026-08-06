@@ -89,7 +89,7 @@ Evidence levels:
 | Worktree enter/exit                | Missing  | `EnterWorktree`, `ExitWorktree`, CLI `--worktree`                                                                               |
 | TaskCreate/Get/List/Update         | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate                |
 | CronCreate/List/Delete and `/loop` | Complete | Session/durable jobs, shared native file, idle delivery, expiry, and live bidirectional gate                                    |
-| ScheduleWakeup                     | Partial  | Inactive dynamic gate and stop result match 2.1.208; active dynamic wakeup runtime missing                                      |
+| ScheduleWakeup                     | Partial  | Praxis interactive one-shot/stop lifecycle complete; Claude inactive gate live; active Claude gate/result still unobservable    |
 | Monitor                            | N/A      | Claude Code 2.1.208 exposes no standalone Monitor tool                                                                          |
 | Workflow                           | Partial  | Runtime, sandbox, task lifecycle, native files, options and same-run replay complete; exact Praxis -> Claude replay key unknown |
 | MCP resource tools                 | Complete | Conditional schemas, paginated list, text/blob read, directory stub, status, persistence, live resume                           |
@@ -111,8 +111,8 @@ Evidence levels:
 
 1. Complete a live successful Claude WebFetch oracle with its domain-safety
    service available.
-2. Active dynamic `ScheduleWakeup` orchestration and exact cross-runtime Workflow
-   replay-key derivation if observable from future black-box evidence.
+2. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
+   key if observable from future black-box evidence.
 3. Worktree/tmux invocation, picker naming, ephemeral subagents,
    and permission `auto` classifier.
 4. Plugin runtime and management.

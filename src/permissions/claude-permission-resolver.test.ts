@@ -376,4 +376,30 @@ describe('ClaudePermissionResolver', () => {
         }),
     ).toThrow('requires a classifier')
   })
+
+  it('allows built-in scheduling lifecycle tools by default', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+    })
+
+    for (const name of [
+      'CronCreate',
+      'CronDelete',
+      'CronList',
+      'ScheduleWakeup',
+    ]) {
+      await expect(
+        resolver.resolve({ id: `call_${name}`, name, input: {} }),
+      ).resolves.toEqual({ behavior: 'allow' })
+    }
+
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        disallowedTools: ['ScheduleWakeup'],
+      }).resolve({ id: 'denied', name: 'ScheduleWakeup', input: {} }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+  })
 })

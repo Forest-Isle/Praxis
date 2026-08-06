@@ -17,7 +17,7 @@ afterEach(async () => {
   )
 })
 
-async function fixture(now: () => number) {
+async function fixture(now: () => number, dynamicWakeupsEnabled = false) {
   const root = await mkdtemp(join(tmpdir(), 'praxis-cron-manager-'))
   roots.push(root)
   const filePath = join(root, 'work', '.claude', 'scheduled_tasks.json')
@@ -27,6 +27,7 @@ async function fixture(now: () => number) {
       filePath,
       lockFile: join(root, 'config', 'praxis', 'locks', 'cron.lock'),
       now,
+      dynamicWakeupsEnabled,
       processStart: async () => 'Wed Aug  5 14:16:36 2026',
     }),
   }
@@ -191,6 +192,67 @@ describe('ScheduledPromptManager', () => {
       await Promise.all([manager.drainDue(), manager.drainDue()])
     ).flat()
     expect(delivered).toEqual([{ id: task.id, prompt: 'single delivery' }])
+  })
+
+  it('clamps, delivers, and cancels interactive dynamic wakeups', async () => {
+    let now = new Date(2026, 0, 1, 0, 0).getTime()
+    const { manager } = await fixture(() => now, true)
+    expect(
+      manager.scheduleWakeup({ delaySeconds: 1, prompt: 'continue loop' }),
+    ).toEqual({
+      scheduledFor: now + 60_000,
+      clampedDelaySeconds: 60,
+      wasClamped: true,
+    })
+    expect(manager.stopWakeups()).toBe(1)
+    await expect(manager.drainDue()).resolves.toEqual([])
+
+    expect(
+      manager.scheduleWakeup({ delaySeconds: 4_000, prompt: 'upper clamp' }),
+    ).toEqual({
+      scheduledFor: now + 3_600_000,
+      clampedDelaySeconds: 3_600,
+      wasClamped: true,
+    })
+    expect(manager.stopWakeups()).toBe(1)
+
+    manager.scheduleWakeup({ delaySeconds: 60, prompt: 'continue loop' })
+    now += 60_000
+    await expect(manager.drainDue()).resolves.toEqual([
+      expect.objectContaining({ prompt: 'continue loop' }),
+    ])
+    expect(manager.stopWakeups()).toBe(0)
+  })
+
+  it('keeps dynamic wakeups inactive outside the interactive runtime', async () => {
+    const now = () => new Date(2026, 0, 1, 0, 0).getTime()
+    const { manager } = await fixture(now)
+    expect(
+      manager.scheduleWakeup({ delaySeconds: 60, prompt: 'do not queue' }),
+    ).toBeNull()
+  })
+
+  it('delivers multiple dynamic wakeups exactly once and clears them on close', async () => {
+    let now = new Date(2026, 0, 1, 0, 0).getTime()
+    const { manager } = await fixture(() => now, true)
+    manager.scheduleWakeup({ delaySeconds: 60, prompt: 'first wakeup' })
+    manager.scheduleWakeup({ delaySeconds: 120, prompt: 'second wakeup' })
+
+    now += 120_000
+    const delivered = (
+      await Promise.all([manager.drainDue(), manager.drainDue()])
+    ).flat()
+    expect(delivered.map(({ prompt }) => prompt).sort()).toEqual([
+      'first wakeup',
+      'second wakeup',
+    ])
+    await expect(manager.drainDue()).resolves.toEqual([])
+
+    manager.scheduleWakeup({ delaySeconds: 60, prompt: 'closed wakeup' })
+    manager.close()
+    now += 60_000
+    await expect(manager.drainDue()).resolves.toEqual([])
+    expect(manager.stopWakeups()).toBe(0)
   })
 
   it('does not repopulate timers when closed during initialization', async () => {

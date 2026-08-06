@@ -181,6 +181,33 @@ describe('Praxis CLI', () => {
     expect(capture.stdout).toEqual([])
   })
 
+  it('forwards option-only TTY invocations to the interactive runtime', async () => {
+    const capture = captureIO()
+    capture.io.isTTY = true
+    let controls:
+      Parameters<NonNullable<CliDependencies['runInteractive']>>[0] | undefined
+    const interactive: CliDependencies = {
+      ...dependencies(),
+      async runInteractive(options) {
+        controls = options
+        return 0
+      },
+    }
+
+    await expect(
+      run(
+        ['--permission-mode', 'manual', '--agent', 'reviewer'],
+        capture.io,
+        interactive,
+      ),
+    ).resolves.toBe(0)
+
+    expect(controls).toMatchObject({
+      agent: 'reviewer',
+      controls: { permissionMode: 'manual' },
+    })
+  })
+
   it('runs a prompt in plain output mode', async () => {
     const capture = captureIO()
 

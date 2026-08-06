@@ -278,10 +278,15 @@ export interface CliDependencies extends InteractiveServiceFactory {
     approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
     agent?: string
     controls?: CliControls
+    interactive?: boolean
     sessionKind?: 'bg'
     signal?: AbortSignal
   }): Promise<SessionCommands>
-  runInteractive?(options: { signal?: AbortSignal }): Promise<number>
+  runInteractive?(options: {
+    agent?: string
+    controls?: CliControls
+    signal?: AbortSignal
+  }): Promise<number>
   topLevelAgents?: TopLevelAgentCommands
 }
 
@@ -299,6 +304,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   approveTool,
   agent,
   controls = DEFAULT_CLI_CONTROLS,
+  interactive = false,
   sessionKind,
   signal,
 }) => {
@@ -527,6 +533,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       subagentToolNames: routedSubagentTools,
       taskToolNames: selectedTaskRuntimeTools,
       scheduledToolNames: selectedScheduledTools,
+      enableDynamicWakeups: interactive,
       enableWorkflows: selectedWorkflowTools.length > 0,
       ...(cli.safeMode || cli.bare
         ? {}
@@ -603,10 +610,16 @@ const createDefaultService: CliDependencies['createService'] = async ({
 
 const defaultDependencies: CliDependencies = {
   createService: createDefaultService,
-  runInteractive: ({ signal }) =>
+  runInteractive: ({ agent, controls, signal }) =>
     renderInteractive({
       factory: {
-        createService: createDefaultService,
+        createService: (options) =>
+          createDefaultService({
+            ...options,
+            ...(agent === undefined ? {} : { agent }),
+            ...(controls === undefined ? {} : { controls }),
+            interactive: true,
+          }),
         scheduledPrompts: true,
       },
       ...(signal ? { signal } : {}),
@@ -757,6 +770,19 @@ async function execute(
   const invocation = parseCliInvocation(argv)
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
+  if (
+    io.isTTY &&
+    dependencies.runInteractive &&
+    args.length === 0 &&
+    !invocation.print &&
+    !invocation.background
+  ) {
+    return dependencies.runInteractive({
+      ...(agent === undefined ? {} : { agent }),
+      controls: invocation,
+      ...(signal ? { signal } : {}),
+    })
+  }
   const { retryInterruptedTools } = invocation
   const command = args[0]
   if (command === 'resume') requireValue(args[1], 'Session ID')

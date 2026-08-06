@@ -68,6 +68,9 @@ Rules:
     process owner, and enter the ordinary prompt/runtime path only once while
     the UI is idle. Closing the service cancels waiters and clears in-memory
     jobs; it does not delete durable jobs.
+15. Dynamic wakeups are independent process-local one-shots. They clamp delay,
+    enter the same idle queue, and are removed before delivery. Stop and close
+    cancel pending or queued dynamic work without modifying fixed Cron jobs.
 
 ## Core ports
 
@@ -150,10 +153,12 @@ Included:
 - top-level persistent background sessions, durable task graphs, and
   foreground/background Bash lifecycle;
 - session-only and shared durable Cron prompts plus fixed-interval `/loop`.
+- interactive process-local dynamic `ScheduleWakeup` one-shots.
 
 Deferred:
 
-- active dynamic `ScheduleWakeup` and Workflow orchestration;
+- exact Claude active `ScheduleWakeup` result shape and Workflow replay-key
+  interoperability where private derivations remain unobservable;
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
 - transcript migration across unsupported Claude versions;

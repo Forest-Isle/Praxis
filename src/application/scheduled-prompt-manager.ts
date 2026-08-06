@@ -17,6 +17,7 @@ const DURABLE_REFRESH_MS = 5_000
 export interface ScheduledPromptManagerOptions {
   filePath: string
   lockFile: string
+  dynamicWakeupsEnabled?: boolean
   now?: () => number
   processStart?: (pid: number) => Promise<string | null>
 }
@@ -36,6 +37,12 @@ export interface ScheduledPrompt {
 
 export interface ListedScheduledPrompt extends ClaudeScheduledTask {
   durable: boolean
+}
+
+export interface DynamicWakeupResult {
+  scheduledFor: number
+  clampedDelaySeconds: number
+  wasClamped: boolean
 }
 
 function nextOccurrence(cron: string, after: number): number {
@@ -108,9 +115,11 @@ export class ScheduledPromptManager {
   private readonly sessionTasks = new Map<string, ClaudeScheduledTask>()
   private readonly dueAt = new Map<string, number>()
   private readonly dueQueue: ScheduledPrompt[] = []
+  private readonly dynamicWakeups = new Map<string, ScheduledPrompt>()
   private readonly durableIds = new Set<string>()
   private readonly changeWaiters = new Set<() => void>()
   private readonly now: () => number
+  private readonly dynamicWakeupsEnabled: boolean
   private readonly readProcessStart: (pid: number) => Promise<string | null>
   private readonly ownProcessStart: Promise<string>
   private initialization: Promise<void> | undefined
@@ -122,6 +131,7 @@ export class ScheduledPromptManager {
       lockFile: options.lockFile,
     })
     this.now = options.now ?? Date.now
+    this.dynamicWakeupsEnabled = options.dynamicWakeupsEnabled === true
     this.readProcessStart = options.processStart ?? processStart
     this.ownProcessStart = this.readProcessStart(process.pid).then(
       (value) => value ?? new Date(this.now()).toString(),
@@ -185,6 +195,42 @@ export class ScheduledPromptManager {
     return removed
   }
 
+  scheduleWakeup(input: {
+    delaySeconds: number
+    prompt: string
+  }): DynamicWakeupResult | null {
+    if (!this.dynamicWakeupsEnabled || this.closed) return null
+    const clampedDelaySeconds = Math.min(
+      3_600,
+      Math.max(60, input.delaySeconds),
+    )
+    const id = `wakeup-${randomBytes(8).toString('hex')}`
+    const scheduledFor = this.now() + clampedDelaySeconds * 1_000
+    this.dynamicWakeups.set(id, { id, prompt: input.prompt })
+    this.dueAt.set(id, scheduledFor)
+    this.notifyChange()
+    return {
+      scheduledFor,
+      clampedDelaySeconds,
+      wasClamped: clampedDelaySeconds !== input.delaySeconds,
+    }
+  }
+
+  stopWakeups(): number {
+    const ids = new Set(this.dynamicWakeups.keys())
+    for (const id of ids) this.dueAt.delete(id)
+    this.dynamicWakeups.clear()
+    let cancelled = ids.size
+    for (let index = this.dueQueue.length - 1; index >= 0; index -= 1) {
+      const queued = this.dueQueue[index]
+      if (!queued?.id.startsWith('wakeup-')) continue
+      this.dueQueue.splice(index, 1)
+      cancelled += 1
+    }
+    if (cancelled > 0) this.notifyChange()
+    return cancelled
+  }
+
   async drainDue(): Promise<ScheduledPrompt[]> {
     await this.initialize()
     if (this.closed) return []
@@ -221,6 +267,7 @@ export class ScheduledPromptManager {
 
   close(): void {
     this.closed = true
+    this.dynamicWakeups.clear()
     this.sessionTasks.clear()
     this.dueAt.clear()
     this.durableIds.clear()
@@ -273,10 +320,17 @@ export class ScheduledPromptManager {
       .map(([id]) => id)
     if (dueIds.length === 0) return
     for (const id of dueIds) this.dueAt.delete(id)
+    for (const id of dueIds) {
+      const wakeup = this.dynamicWakeups.get(id)
+      if (!wakeup) continue
+      this.dynamicWakeups.delete(id)
+      this.dueQueue.push(wakeup)
+    }
     const tasks = await this.list()
     if (this.closed) return
     const byId = new Map(tasks.map((task) => [task.id, task]))
     for (const id of dueIds) {
+      if (id.startsWith('wakeup-')) continue
       const task = byId.get(id)
       if (!task) continue
       const expired =

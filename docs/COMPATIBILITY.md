@@ -410,8 +410,11 @@ proves Claude -> Praxis and Praxis -> Claude resume.
 `npm run test:scheduled-compat` compares `CronCreate`, `CronDelete`, `CronList`,
 and `ScheduleWakeup` schemas, proves Praxis-created native jobs are visible and
 deletable after Claude resume, proves Claude-created jobs survive Praxis resume,
-and verifies the inactive dynamic-wakeup gate. Active dynamic wakeups are not
-claimed by this gate.
+and verifies the inactive dynamic-wakeup gate. Fixture tests additionally prove
+Praxis interactive delay clamping, one-shot idle delivery, stop, exactly-once,
+and close cleanup. Claude's active gate/result remain unclaimed because the
+isolated API-auth PTY oracle stayed inactive with auto mode, allowlisted tool,
+cached feature flags, and the documented sentinel.
 `npm run test:workflow-compat` compares the Claude 2.1.208 Workflow schema, proves
 default permission denial is artifact-free, drives background launch/notification/
 resume with zero repeated child requests, checks structured output and effort
