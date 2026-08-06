@@ -588,8 +588,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : { tools: selectedBaseTools ?? [] }),
       disallowedTools: cli.disallowedTools,
     })
-    const enableSubagents =
-      cli.sessionPersistence && !cli.bare && selectedAgentTools.length > 0
+    const enableSubagents = !cli.bare && selectedAgentTools.length > 0
     const service = new ClaudeSessionService({
       ...options,
       provider,

@@ -24,6 +24,16 @@ const maxPackageBytes = 1024 * 1024
 const maxUnpackedBytes = 4 * 1024 * 1024
 const maxProviderRequestBytes = 1024 * 1024
 
+async function assertMissing(path, label) {
+  try {
+    await access(path)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
+  }
+  throw new Error(`${label} unexpectedly exists: ${path}`)
+}
+
 function run(file, args, options = {}) {
   return new Promise((resolve, reject) => {
     const { input, ...spawnOptions } = options
@@ -1806,6 +1816,51 @@ try {
         `Installed ${provider} CLI wrote invalid native subagent state`,
       )
     }
+    providerProbe.assertComplete()
+    await providerProbe.close()
+    providerProbe = undefined
+
+    providerProbe = await startSubagentProviderProbe(provider)
+    subagentEnvironment.PRAXIS_BASE_URL = providerProbe.baseUrl
+    const installedEphemeralSubagent = resultFrom(
+      (
+        await run(
+          praxis,
+          [
+            'run',
+            '--json',
+            '--no-session-persistence',
+            'delegate release subagent',
+          ],
+          { cwd: workDirectory, env: subagentEnvironment },
+        )
+      ).stdout,
+    )
+    if (
+      installedEphemeralSubagent.text !== 'installed subagent response' ||
+      installedEphemeralSubagent.usage?.inputTokens !== 23 ||
+      installedEphemeralSubagent.usage?.outputTokens !== 11
+    ) {
+      throw new Error(
+        `Installed ${provider} CLI returned invalid ephemeral subagent result`,
+      )
+    }
+    const ephemeralSubagentPaths = pathsModule.resolveClaudePaths({
+      configDir: configRoot,
+      cwd: await realpath(workDirectory),
+      sessionId: installedEphemeralSubagent.sessionId,
+    })
+    await assertMissing(
+      ephemeralSubagentPaths.sessionFile,
+      `Installed ${provider} ephemeral main transcript`,
+    )
+    await assertMissing(
+      join(
+        ephemeralSubagentPaths.projectRoot,
+        installedEphemeralSubagent.sessionId,
+      ),
+      `Installed ${provider} ephemeral session directory`,
+    )
     providerProbe.assertComplete()
     await providerProbe.close()
     providerProbe = undefined

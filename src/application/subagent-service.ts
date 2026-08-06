@@ -11,6 +11,7 @@ import {
   createClaudeSidechainRoot,
   resolveClaudeSidechainPaths,
   toClaudeSidechainEntry,
+  type ClaudeSidechainPaths,
 } from '../compatibility/claude/sidechain.js'
 import { projectClaudeModelMessages } from '../compatibility/claude/projection.js'
 import {
@@ -42,6 +43,7 @@ import type {
   ClaudeHookRunner,
 } from '../hooks/claude-hooks.js'
 import { ClaudeSidechainStore } from '../persistence/claude-sidechain-store.js'
+import { InMemorySidechainStore } from '../persistence/in-memory-sidechain-store.js'
 import type {
   ClaudeTranscriptLease,
   TranscriptSnapshot,
@@ -187,6 +189,7 @@ export interface ClaudeSubagentExecutorOptions {
   providerForModel?: (model: string) => ModelProvider
   toolNames?: readonly string[]
   backgroundTaskNotifications?: (waitForRunning: boolean) => Promise<string[]>
+  persistence?: 'disk' | 'memory'
 }
 
 function parseAgentInput(call: ModelToolCall): AgentInput {
@@ -243,6 +246,10 @@ export class ClaudeSubagentExecutor {
   private readonly schema
   private calls = 0
   private readonly background = new BackgroundAgentManager()
+  private readonly ephemeralSidechains = new Map<
+    string,
+    InMemorySidechainStore
+  >()
 
   isEnabled(name: string): boolean {
     return this.options.toolNames?.includes(name) ?? true
@@ -395,6 +402,9 @@ export class ClaudeSubagentExecutor {
   prepare(call: ModelToolCall, depth: number): ModelToolCall {
     if (!this.isEnabled('Agent')) throw new Error('Tool Agent is unavailable')
     const input = parseAgentInput(call)
+    if (input.runInBackground && this.options.persistence === 'memory') {
+      throw new Error('Background agents require session persistence')
+    }
     const spawnDepth = depth + 1
     if (spawnDepth > (this.options.maxDepth ?? DEFAULT_MAX_DEPTH)) {
       throw new Error(
@@ -447,11 +457,7 @@ export class ClaudeSubagentExecutor {
       sessionId,
       agentId,
     )
-    const sidechain = new ClaudeSidechainStore(
-      sidechainPaths,
-      join(paths.praxisRoot, 'locks', `${sessionId}-${agentId}.lock`),
-      this.schema,
-    )
+    const sidechain = this.sidechainStore(sessionId, agentId, sidechainPaths)
     const root = createClaudeSidechainRoot({
       sessionId,
       promptId,
@@ -559,9 +565,38 @@ export class ClaudeSubagentExecutor {
     }
   }
 
+  private sidechainStore(
+    sessionId: string,
+    agentId: string,
+    paths: ClaudeSidechainPaths,
+  ): ClaudeSidechainStore | InMemorySidechainStore {
+    if (this.options.persistence !== 'memory') {
+      return new ClaudeSidechainStore(
+        paths,
+        join(
+          this.options.configRoot,
+          'praxis',
+          'locks',
+          `${sessionId}-${agentId}.lock`,
+        ),
+        this.schema,
+      )
+    }
+    const key = `${sessionId}/${agentId}`
+    let store = this.ephemeralSidechains.get(key)
+    if (!store) {
+      store = new InMemorySidechainStore(paths)
+      this.ephemeralSidechains.set(key, store)
+    }
+    return store
+  }
+
   async runWorkflowAgent(
     options: WorkflowAgentRunOptions,
   ): Promise<WorkflowAgentRunResult> {
+    if (this.options.persistence === 'memory') {
+      throw new Error('Workflow agents require session persistence')
+    }
     if (
       options.agentType &&
       options.agentType !== 'general-purpose' &&

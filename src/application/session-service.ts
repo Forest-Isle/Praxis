@@ -207,12 +207,6 @@ export class ClaudeSessionService {
   private readonly sessionCwds = new Map<string, string>()
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
-    if (
-      options.sessionPersistence === false &&
-      options.enableSubagents === true
-    ) {
-      throw new Error('Subagents require session persistence')
-    }
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
     this.scheduledPrompts =
       options.tools && (options.scheduledToolNames?.length ?? 0) > 0
@@ -638,6 +632,8 @@ export class ClaudeSessionService {
               cwdProvider: () => this.activeCwd(),
               claudeVersion: this.options.claudeVersion,
               provider,
+              persistence:
+                this.options.sessionPersistence === false ? 'memory' : 'disk',
               ...(this.options.providerForModel
                 ? { providerForModel: this.options.providerForModel }
                 : {}),
