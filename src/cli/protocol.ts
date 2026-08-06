@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 
 import type {
+  ModelDocument,
+  ModelDocumentMediaType,
+  ModelImage,
+  ModelImageMediaType,
   ModelToolCall,
   ModelUsage,
   RuntimeEvent,
@@ -73,9 +77,31 @@ export interface CliInvocation extends CliControls {
 export interface StreamUserMessage {
   message: {
     role: 'user'
-    content: string | readonly { type: 'text'; text: string }[]
+    content:
+      | string
+      | readonly (
+          | { type: 'text'; text: string }
+          | {
+              type: 'image'
+              source: {
+                type: 'base64'
+                media_type: ModelImageMediaType
+                data: string
+              }
+            }
+          | {
+              type: 'document'
+              source: {
+                type: 'base64'
+                media_type: ModelDocumentMediaType
+                data: string
+              }
+            }
+        )[]
   }
   prompt: string
+  images?: readonly ModelImage[]
+  documents?: readonly ModelDocument[]
 }
 
 export interface CliRuntimeInfo {
@@ -188,6 +214,27 @@ const SETTING_SOURCES = ['user', 'project', 'local'] as const
 const MCP_SCOPES = ['local', 'project', 'user'] as const
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const MAX_INPUT_LINE_BYTES = 1024 * 1024
+const IMAGE_MEDIA_TYPES = new Set<ModelImageMediaType>([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
+const DOCUMENT_MEDIA_TYPES = new Set<ModelDocumentMediaType>([
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'application/json',
+])
+
+function isBase64Data(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length % 4 === 0 &&
+    /^[A-Za-z0-9+/]*={0,2}$/.test(value) &&
+    Buffer.from(value, 'base64').toString('base64') === value
+  )
+}
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -845,27 +892,108 @@ function parseUserMessage(
       `stream-json input line ${lineNumber} requires text content`,
     )
   }
+  const images: ModelImage[] = []
+  const documents: ModelDocument[] = []
   const blocks = content.map((block) => {
     if (
       !block ||
       typeof block !== 'object' ||
       Array.isArray(block) ||
-      (block as Record<string, unknown>).type !== 'text' ||
-      typeof (block as Record<string, unknown>).text !== 'string'
+      typeof (block as Record<string, unknown>).type !== 'string'
     ) {
       throw new Error(
         `stream-json input line ${lineNumber} contains unsupported content`,
       )
     }
-    return { type: 'text' as const, text: (block as { text: string }).text }
+    const record = block as Record<string, unknown>
+    if (record.type === 'text' && typeof record.text === 'string') {
+      return { type: 'text' as const, text: record.text }
+    }
+    const source = record.source
+    if (
+      record.type === 'image' &&
+      source &&
+      typeof source === 'object' &&
+      !Array.isArray(source) &&
+      (source as Record<string, unknown>).type === 'base64' &&
+      typeof (source as Record<string, unknown>).media_type === 'string' &&
+      IMAGE_MEDIA_TYPES.has(
+        (source as Record<string, unknown>).media_type as ModelImageMediaType,
+      ) &&
+      typeof (source as Record<string, unknown>).data === 'string' &&
+      isBase64Data((source as Record<string, unknown>).data as string)
+    ) {
+      const image = {
+        type: 'image' as const,
+        mediaType: (source as Record<string, unknown>)
+          .media_type as ModelImageMediaType,
+        data: (source as Record<string, unknown>).data as string,
+      }
+      images.push(image)
+      return {
+        type: 'image' as const,
+        source: {
+          type: 'base64' as const,
+          media_type: image.mediaType,
+          data: image.data,
+        },
+      }
+    }
+    if (
+      record.type === 'document' &&
+      source &&
+      typeof source === 'object' &&
+      !Array.isArray(source) &&
+      (source as Record<string, unknown>).type === 'base64' &&
+      typeof (source as Record<string, unknown>).media_type === 'string' &&
+      DOCUMENT_MEDIA_TYPES.has(
+        (source as Record<string, unknown>)
+          .media_type as ModelDocumentMediaType,
+      ) &&
+      typeof (source as Record<string, unknown>).data === 'string' &&
+      isBase64Data((source as Record<string, unknown>).data as string)
+    ) {
+      const document = {
+        type: 'document' as const,
+        mediaType: (source as Record<string, unknown>)
+          .media_type as ModelDocumentMediaType,
+        data: (source as Record<string, unknown>).data as string,
+      }
+      documents.push(document)
+      return {
+        type: 'document' as const,
+        source: {
+          type: 'base64' as const,
+          media_type: document.mediaType,
+          data: document.data,
+        },
+      }
+    }
+    throw new Error(
+      `stream-json input line ${lineNumber} contains unsupported content`,
+    )
   })
-  const prompt = blocks.map((block) => block.text).join('')
-  if (prompt.trim().length === 0) {
+  const prompt = blocks
+    .filter(
+      (block): block is { type: 'text'; text: string } => block.type === 'text',
+    )
+    .map((block) => block.text)
+    .join('')
+  if (
+    prompt.trim().length === 0 &&
+    images.length === 0 &&
+    documents.length === 0
+  ) {
     throw new Error(
       `stream-json input line ${lineNumber} has empty user content`,
     )
   }
-  return { message: { role: 'user', content: blocks }, prompt }
+  return {
+    message: { role: 'user', content: blocks },
+    prompt,
+    ...(images.length > 0 ? { images } : {}),
+    ...(documents.length > 0 ? { documents } : {}),
+  }
 }
 
 export async function* readStreamUserMessages(

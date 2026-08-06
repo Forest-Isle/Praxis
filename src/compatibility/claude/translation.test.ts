@@ -44,6 +44,37 @@ describe('provider to Claude transcript translation', () => {
     })
   })
 
+  it('writes native Claude user image blocks', () => {
+    const [entry] = translateProviderEvents(
+      [
+        {
+          type: 'user-message',
+          text: 'inspect',
+          images: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+        },
+      ],
+      {
+        sessionId: 'session',
+        parentUuid: null,
+        cwd: '/tmp/project',
+        claudeVersion: '2.1.208',
+        gitBranch: null,
+        createUuid: () => '10000000-0000-4000-8000-000000000001',
+        now: () => '2026-08-03T08:00:00.000Z',
+      },
+    )
+    expect(entry?.message).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect' },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' },
+        },
+      ],
+    })
+  })
+
   it('creates the Claude 2.1.208 nested-memory attachment observed for a path rule', () => {
     const entry = createClaudeRuleAttachmentEntry(
       {

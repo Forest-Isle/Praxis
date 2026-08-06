@@ -18,6 +18,7 @@ describe('AnthropicCompatibleProvider', () => {
       usage: true,
       tools: true,
       images: true,
+      documents: true,
       webSearch: true,
       contextWindowTokens: 200_000,
     })
@@ -103,6 +104,63 @@ describe('AnthropicCompatibleProvider', () => {
               },
             ],
             is_error: false,
+          },
+        ],
+      },
+    ])
+  })
+
+  it('serializes user image attachments as native Anthropic content blocks', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+        )
+      },
+    })
+    for await (const event of provider.complete({
+      messages: [
+        {
+          role: 'user',
+          content: 'inspect',
+          images: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+          documents: [
+            {
+              type: 'document',
+              mediaType: 'application/pdf',
+              data: 'JVBERg==',
+            },
+          ],
+        },
+      ],
+    })) {
+      void event
+    }
+    expect(body?.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'inspect' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'aGVsbG8=',
+            },
+          },
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: 'JVBERg==',
+            },
           },
         ],
       },

@@ -127,6 +127,42 @@ describe('OpenAICompatibleProvider', () => {
     ])
   })
 
+  it('serializes user image attachments as OpenAI vision content', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response('data: [DONE]\n\n')
+      },
+    })
+    for await (const event of provider.complete({
+      messages: [
+        {
+          role: 'user',
+          content: 'inspect',
+          images: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+        },
+      ],
+    })) {
+      void event
+    }
+    expect(body?.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'inspect' },
+          {
+            type: 'image_url',
+            image_url: { url: 'data:image/png;base64,aGVsbG8=' },
+          },
+        ],
+      },
+    ])
+  })
+
   it('classifies retryable HTTP failures', async () => {
     const provider = new OpenAICompatibleProvider({
       baseUrl: 'https://provider.example/v1',

@@ -34,6 +34,7 @@ import {
 import {
   AgentRunCancelledError,
   AgentRuntime,
+  type ModelDocument,
   type ModelImage,
   type ModelToolCall,
   type ModelProvider,
@@ -255,9 +256,19 @@ export class ClaudeSessionService {
     signal?: AbortSignal,
     sessionId: string = randomUUID(),
     name?: string,
+    images?: readonly ModelImage[],
+    documents?: readonly ModelDocument[],
   ): Promise<SessionRunResult> {
     this.worktreeManager?.bindSession(sessionId)
-    return this.executeTurn(sessionId, prompt, false, signal, name)
+    return this.executeTurn(
+      sessionId,
+      prompt,
+      false,
+      signal,
+      name,
+      images,
+      documents,
+    )
   }
 
   async resume(
@@ -265,9 +276,19 @@ export class ClaudeSessionService {
     prompt: string,
     signal?: AbortSignal,
     name?: string,
+    images?: readonly ModelImage[],
+    documents?: readonly ModelDocument[],
   ): Promise<SessionRunResult> {
     this.worktreeManager?.bindSession(sessionId)
-    return this.executeTurn(sessionId, prompt, true, signal, name)
+    return this.executeTurn(
+      sessionId,
+      prompt,
+      true,
+      signal,
+      name,
+      images,
+      documents,
+    )
   }
 
   async promptSuggestion(
@@ -442,9 +463,12 @@ export class ClaudeSessionService {
     requireExisting: boolean,
     signal?: AbortSignal,
     name?: string,
+    images: readonly ModelImage[] = [],
+    documents: readonly ModelDocument[] = [],
   ): Promise<SessionRunResult> {
     this.assertWritable()
-    if (prompt.length === 0) throw new Error('Prompt must not be empty')
+    if (prompt.length === 0 && images.length === 0 && documents.length === 0)
+      throw new Error('Prompt must not be empty')
     if (name !== undefined && name.length === 0) {
       throw new Error('Session name must not be empty')
     }
@@ -999,10 +1023,14 @@ export class ClaudeSessionService {
           ? (structuredTools?.definitions() ?? [])
           : []
         const budget = this.contextBudget(provider)
-        const pendingUserMessages = expansion.userMessages.map((content) => ({
-          role: 'user' as const,
-          content,
-        }))
+        const pendingUserMessages = expansion.userMessages.map(
+          (content, index) => ({
+            role: 'user' as const,
+            content,
+            ...(index === 0 && images.length > 0 ? { images } : {}),
+            ...(index === 0 && documents.length > 0 ? { documents } : {}),
+          }),
+        )
         let compactionAnchorUuid = this.lastMessageUuid(snapshot.entries)
         const compactIfNeeded = async (
           pendingMessages: readonly {
@@ -1166,9 +1194,11 @@ export class ClaudeSessionService {
         for (const [index, text] of expansion.userMessages.entries()) {
           const [userEntry] = translateProviderEvents(
             [
-              index === 0
-                ? { type: 'user-text', text }
-                : { type: 'user-text-block', text },
+              index === 0 && (images.length > 0 || documents.length > 0)
+                ? { type: 'user-message', text, images, documents }
+                : index === 0
+                  ? { type: 'user-text', text }
+                  : { type: 'user-text-block', text },
             ],
             this.translationContext(sessionId, snapshot),
           )

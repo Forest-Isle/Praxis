@@ -435,6 +435,36 @@ describe('AgentRuntime', () => {
     ])
   })
 
+  it('rejects user image input before calling an image-incapable provider', async () => {
+    let called = false
+    const runtime = new AgentRuntime({
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        images: false,
+      },
+      async *complete() {
+        called = true
+        yield { type: 'text-delta' as const, delta: 'unexpected' }
+      },
+    })
+    await expect(
+      runtime.run({
+        messages: [
+          {
+            role: 'user',
+            content: 'inspect',
+            images: [
+              { type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow('does not support user image inputs')
+    expect(called).toBe(false)
+  })
+
   it('replaces image results restored before each unsupported provider request', async () => {
     const requests: ModelRequest[] = []
     let turn = 0

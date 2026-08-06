@@ -330,6 +330,54 @@ describe('CLI protocol', () => {
     ])
   })
 
+  it('parses Claude image content blocks into provider-neutral attachments', async () => {
+    const image = {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' },
+    }
+    const [message] = await collectInput([
+      `${JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'inspect' }, image],
+        },
+      })}\n`,
+    ])
+    expect(message).toEqual({
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'inspect' }, image],
+      },
+      prompt: 'inspect',
+      images: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+    })
+  })
+
+  it('parses Claude document content blocks into provider-neutral attachments', async () => {
+    const document = {
+      type: 'document',
+      source: {
+        type: 'base64',
+        media_type: 'application/pdf',
+        data: 'JVBERg==',
+      },
+    }
+    const [message] = await collectInput([
+      `${JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [document] },
+      })}\n`,
+    ])
+    expect(message).toEqual({
+      message: { role: 'user', content: [document] },
+      prompt: '',
+      documents: [
+        { type: 'document', mediaType: 'application/pdf', data: 'JVBERg==' },
+      ],
+    })
+  })
+
   it('rejects invalid UTF-8, non-user records, unsupported blocks, and oversized lines', async () => {
     await expect(collectInput([Uint8Array.from([0xff, 0x0a])])).rejects.toThrow(
       'valid UTF-8',

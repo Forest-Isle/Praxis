@@ -26,6 +26,8 @@ import {
 } from './compatibility/claude/shared-resources.js'
 import {
   AgentRunCancelledError,
+  type ModelDocument,
+  type ModelImage,
   type ModelProvider,
   type ModelToolCall,
   type RuntimeEventSink,
@@ -262,11 +264,17 @@ interface SessionCommands {
     prompt: string,
     signal?: AbortSignal,
     sessionId?: string,
+    name?: string,
+    images?: readonly ModelImage[],
+    documents?: readonly ModelDocument[],
   ): Promise<SessionRunResult>
   resume(
     sessionId: string,
     prompt: string,
     signal?: AbortSignal,
+    name?: string,
+    images?: readonly ModelImage[],
+    documents?: readonly ModelDocument[],
   ): Promise<SessionRunResult>
   fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
@@ -662,10 +670,24 @@ const createDefaultService: CliDependencies['createService'] = async ({
       claudeCodeVersion: claudeVersion,
     }
     return {
-      run: (prompt, signal, sessionId) =>
-        service.run(prompt, signal, sessionId, cli.name),
-      resume: (sessionId, prompt, signal) =>
-        service.resume(sessionId, prompt, signal, cli.name),
+      run: (prompt, signal, sessionId, name, images, documents) =>
+        service.run(
+          prompt,
+          signal,
+          sessionId,
+          name ?? cli.name,
+          images,
+          documents,
+        ),
+      resume: (sessionId, prompt, signal, name, images, documents) =>
+        service.resume(
+          sessionId,
+          prompt,
+          signal,
+          name ?? cli.name,
+          images,
+          documents,
+        ),
       fork: (sessionId, targetSessionId) =>
         service.fork(sessionId, targetSessionId),
       sessions: () => service.sessions(),
@@ -1372,11 +1394,39 @@ async function execute(
         result =
           existingSessionId !== undefined || !isFirstTurn
             ? signal
-              ? await service.resume(activeSessionId, prompt, signal)
-              : await service.resume(activeSessionId, prompt)
+              ? await service.resume(
+                  activeSessionId,
+                  prompt,
+                  signal,
+                  undefined,
+                  streamMessage?.images,
+                  streamMessage?.documents,
+                )
+              : await service.resume(
+                  activeSessionId,
+                  prompt,
+                  undefined,
+                  undefined,
+                  streamMessage?.images,
+                  streamMessage?.documents,
+                )
             : signal
-              ? await service.run(prompt, signal, activeSessionId)
-              : await service.run(prompt, undefined, activeSessionId)
+              ? await service.run(
+                  prompt,
+                  signal,
+                  activeSessionId,
+                  undefined,
+                  streamMessage?.images,
+                  streamMessage?.documents,
+                )
+              : await service.run(
+                  prompt,
+                  undefined,
+                  activeSessionId,
+                  undefined,
+                  streamMessage?.images,
+                  streamMessage?.documents,
+                )
       } catch (error) {
         if (isCancellation(error, signal)) throw error
         const message = redactSensitiveText(

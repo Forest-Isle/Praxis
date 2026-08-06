@@ -54,6 +54,15 @@ function estimateMessageTokens(message: ModelMessage): number {
     return tokens + (message.isError ? 1 : 0)
   }
   tokens += estimateTextTokens(message.content)
+  if (message.role === 'user') {
+    for (const image of message.images ?? []) {
+      tokens +=
+        8 + estimateTextTokens(image.mediaType) + estimateTextTokens(image.data)
+    }
+    for (const document of message.documents ?? []) {
+      tokens += 8 + estimateTextTokens(document.mediaType) + 2000
+    }
+  }
   if (message.role !== 'assistant' || !message.toolCalls) return tokens
   for (const call of message.toolCalls) {
     tokens +=

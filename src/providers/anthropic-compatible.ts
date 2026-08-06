@@ -455,7 +455,27 @@ function serializeMessages(messages: readonly ModelMessage[]): {
       continue
     }
     if (message.role === 'user') {
-      append('user', [{ type: 'text', text: message.content }])
+      append('user', [
+        ...(message.content.length > 0
+          ? [{ type: 'text', text: message.content }]
+          : []),
+        ...(message.images ?? []).map((image) => ({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: image.mediaType,
+            data: image.data,
+          },
+        })),
+        ...(message.documents ?? []).map((document) => ({
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: document.mediaType,
+            data: document.data,
+          },
+        })),
+      ])
       continue
     }
     if (message.role === 'tool') {
@@ -525,6 +545,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       usage: true,
       tools: true,
       images: true,
+      documents: true,
       webSearch: options.webSearch === true,
       ...(options.contextWindowTokens === undefined
         ? {}

@@ -290,6 +290,10 @@ function validateForkAssistantMessage(message: Record<string, unknown>): void {
       throw new Error('Claude transcript has invalid assistant content block')
     }
     if (block.type === 'text' && typeof block.text === 'string') continue
+    if (block.type === 'image' || block.type === 'document') {
+      validateMediaSource(block.source)
+      continue
+    }
     if (
       block.type === 'thinking' &&
       typeof block.thinking === 'string' &&
@@ -320,6 +324,10 @@ function validateUserContent(content: unknown): void {
       throw new Error('Claude transcript has invalid user content block')
     }
     if (block.type === 'text' && typeof block.text === 'string') continue
+    if (block.type === 'image' || block.type === 'document') {
+      validateMediaSource(block.source)
+      continue
+    }
     if (
       block.type !== 'tool_result' ||
       !isNonEmptyString(block.tool_use_id) ||
@@ -417,10 +425,7 @@ function validateImageToolResultMetadata(
         )
       : [],
   )
-  const hasTopLevelImage = message.content.some(
-    (block) => isRecord(block) && block.type === 'image',
-  )
-  if (images.length === 0 && !hasTopLevelImage && !hasImageMetadata) return
+  if (images.length === 0 && !hasImageMetadata) return
   const toolResult = toolResults.find(
     (block) =>
       Array.isArray(block.content) &&
@@ -431,7 +436,6 @@ function validateImageToolResultMetadata(
   const image = images[0]
   if (
     entry.type !== 'user' ||
-    hasTopLevelImage ||
     message.content.length !== 1 ||
     toolResults.length !== 1 ||
     images.length !== 1 ||
