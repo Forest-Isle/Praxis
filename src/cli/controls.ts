@@ -15,6 +15,7 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
   appendSystemPromptFile: undefined,
   addDirectories: [],
   pluginDirectories: [],
+  pluginUrls: [],
   tools: undefined,
   allowedTools: [],
   disallowedTools: [],
@@ -135,5 +136,6 @@ export async function resolveCliControls(
     additionalSettings,
     additionalDirectories: directories,
     pluginDirectories: controls.pluginDirectories,
+    pluginUrls: controls.pluginUrls,
   }
 }

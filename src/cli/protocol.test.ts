@@ -211,6 +211,23 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('parses repeatable plugin URLs', () => {
+    expect(
+      parseCliInvocation([
+        '--plugin-url=https://example.test/one.zip',
+        '--plugin-url',
+        'https://example.test/two.zip',
+        'hello',
+      ]),
+    ).toMatchObject({
+      pluginUrls: [
+        'https://example.test/one.zip',
+        'https://example.test/two.zip',
+      ],
+      args: ['hello'],
+    })
+  })
+
   it('parses single-user CLI customization, tool, permission, and session controls', () => {
     expect(
       parseCliInvocation([
