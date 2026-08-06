@@ -18,6 +18,47 @@ const flush = async () => {
 }
 
 describe('InteractiveApp', () => {
+  it('uses native session names in the session picker', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[
+          {
+            sessionId: 'named-session',
+            name: 'Release review',
+            lastPrompt: 'inspect the release',
+            updatedAt: '2026-08-06T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+      />,
+    )
+    await flush()
+    app.stdin.write('/sessions')
+    await flush()
+    expect(app.lastFrame()).toContain('Release review · named-session')
+    app.stdin.write('\r')
+    await flush()
+  })
+
   it('lists live workflows without sending a model prompt', async () => {
     const factory: InteractiveServiceFactory = {
       async createService() {

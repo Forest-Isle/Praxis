@@ -390,7 +390,7 @@ export function InteractiveApp({
             <Text key={session?.sessionId ?? 'new'}>
               {index === selectedIndex ? '› ' : '  '}
               {session
-                ? `${session.lastPrompt ?? 'Untitled'} · ${session.sessionId}${session.status === 'ready' ? '' : ` · ${session.status}`}`
+                ? `${session.name ?? session.lastPrompt ?? 'Untitled'} · ${session.sessionId}${session.status === 'ready' ? '' : ` · ${session.status}`}`
                 : 'New session'}
             </Text>
           ))}

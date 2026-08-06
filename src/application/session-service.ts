@@ -129,6 +129,7 @@ export interface SessionRunResult {
 
 export interface SessionSummary {
   sessionId: string
+  name?: string
   lastPrompt: string | null
   updatedAt: string
   status: SessionStatus
@@ -346,8 +347,10 @@ export class ClaudeSessionService {
             if (!metadata.isFile()) return null
             const recovery = await this.store(sessionId).loadReadOnly()
             if (!(await lstat(sessionFile)).isFile()) return null
+            const name = this.sessionName(recovery.entries)
             return {
               sessionId,
+              ...(name === null ? {} : { name }),
               lastPrompt: getClaudeLastPrompt(recovery.entries),
               updatedAt: metadata.mtime.toISOString(),
               status: this.sessionStatus(
@@ -1443,6 +1446,12 @@ export class ClaudeSessionService {
     entries: readonly ClaudeTranscriptEntry[],
     name: string,
   ): boolean {
+    return this.sessionName(entries) === name
+  }
+
+  private sessionName(
+    entries: readonly ClaudeTranscriptEntry[],
+  ): string | null {
     let customTitle: unknown
     let agentName: unknown
     for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -1455,7 +1464,12 @@ export class ClaudeSessionService {
       }
       if (customTitle !== undefined && agentName !== undefined) break
     }
-    return customTitle === name && agentName === name
+    if (typeof customTitle === 'string' && customTitle === agentName) {
+      return customTitle
+    }
+    if (typeof customTitle === 'string') return customTitle
+    if (typeof agentName === 'string') return agentName
+    return null
   }
 
   private lastMessageUuid(
