@@ -210,6 +210,20 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
       })),
     }
   }
+  if (message.role === 'user' && message.images?.length) {
+    return {
+      role: 'user',
+      content: [
+        ...(message.content.length > 0
+          ? [{ type: 'text', text: message.content }]
+          : []),
+        ...message.images.map((image) => ({
+          type: 'image_url',
+          image_url: { url: `data:${image.mediaType};base64,${image.data}` },
+        })),
+      ],
+    }
+  }
   return { role: message.role, content: message.content }
 }
 

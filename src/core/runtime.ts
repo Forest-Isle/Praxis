@@ -12,7 +12,13 @@ export type RuntimeState =
   | 'failed'
 
 export type ModelMessage =
-  | { role: 'system' | 'user'; content: string }
+  | { role: 'system'; content: string }
+  | {
+      role: 'user'
+      content: string
+      images?: readonly ModelImage[]
+      documents?: readonly ModelDocument[]
+    }
   | {
       role: 'assistant'
       content: string
@@ -32,6 +38,15 @@ export type ModelImageMediaType =
 export interface ModelImage {
   type: 'image'
   mediaType: ModelImageMediaType
+  data: string
+}
+
+export type ModelDocumentMediaType =
+  'application/pdf' | 'text/plain' | 'text/markdown' | 'application/json'
+
+export interface ModelDocument {
+  type: 'document'
+  mediaType: ModelDocumentMediaType
   data: string
 }
 
@@ -78,6 +93,7 @@ export interface ModelProviderCapabilities {
   usage: boolean
   tools: boolean
   images?: boolean
+  documents?: boolean
   webSearch?: boolean
   contextWindowTokens?: number
 }
@@ -256,10 +272,26 @@ function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
 function prepareProviderMessages(
   messages: readonly ModelMessage[],
   supportsImages: boolean,
+  supportsDocuments: boolean,
 ): ModelMessage[] {
-  if (supportsImages) return [...messages]
+  if (supportsImages && supportsDocuments) return [...messages]
+  if (
+    messages.some(
+      (message) => message.role === 'user' && message.images?.length,
+    )
+  ) {
+    throw new Error('Provider does not support user image inputs')
+  }
+  if (
+    !supportsDocuments &&
+    messages.some(
+      (message) => message.role === 'user' && message.documents?.length,
+    )
+  ) {
+    throw new Error('Provider does not support user document inputs')
+  }
   return messages.map((message) =>
-    message.role === 'tool' && message.images?.length
+    !supportsImages && message.role === 'tool' && message.images?.length
       ? {
           role: 'tool',
           toolCallId: message.toolCallId,
@@ -321,6 +353,7 @@ export class AgentRuntime {
           messages: prepareProviderMessages(
             messages,
             this.provider.capabilities.images === true,
+            this.provider.capabilities.documents === true,
           ),
         }
         if (definitions.length > 0) providerRequest.tools = definitions

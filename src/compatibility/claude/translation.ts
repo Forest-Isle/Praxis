@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { ClaudeTranscriptEntry } from './schema.js'
 import type { ClaudeConditionalRule } from './shared-resources.js'
 import { indexClaudeToolLinks } from './tool-links.js'
-import type { ModelImage } from '../../core/runtime.js'
+import type { ModelDocument, ModelImage } from '../../core/runtime.js'
 import type {
   ClaudeHookExecution,
   ClaudeHookOutcome,
@@ -12,6 +12,12 @@ import type {
 export type ProviderPersistenceEvent =
   | { type: 'user-text'; text: string }
   | { type: 'user-text-block'; text: string }
+  | {
+      type: 'user-message'
+      text: string
+      images?: readonly ModelImage[]
+      documents?: readonly ModelDocument[]
+    }
   | {
       type: 'assistant-message'
       text: string
@@ -308,6 +314,42 @@ export function translateProviderEvents(
           },
         }
         break
+
+      case 'user-message': {
+        const content: Record<string, unknown>[] = []
+        if (event.text.length > 0)
+          content.push({ type: 'text', text: event.text })
+        for (const image of event.images ?? []) {
+          content.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: image.mediaType,
+              data: image.data,
+            },
+          })
+        }
+        for (const document of event.documents ?? []) {
+          content.push({
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: document.mediaType,
+              data: document.data,
+            },
+          })
+        }
+        if (content.length === 0) throw new Error('User message has no content')
+        entry = {
+          ...common,
+          type: 'user',
+          promptId: uuid,
+          permissionMode: 'default',
+          promptSource: 'interactive',
+          message: { role: 'user', content },
+        }
+        break
+      }
 
       case 'assistant-message': {
         const content: Record<string, unknown>[] = []

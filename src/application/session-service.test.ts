@@ -72,6 +72,61 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('persists and projects user image and document attachments', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-attachment-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        images: true,
+        documents: true,
+      },
+      async *complete(request) {
+        requests.push(request)
+        yield { type: 'text-delta', delta: 'done' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+    })
+    const result = await service.run(
+      'inspect',
+      undefined,
+      undefined,
+      undefined,
+      [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+      [{ type: 'document', mediaType: 'application/pdf', data: 'JVBERg==' }],
+    )
+    expect(requests[0]?.messages.at(-1)).toEqual({
+      role: 'user',
+      content: 'inspect',
+      images: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+      documents: [
+        { type: 'document', mediaType: 'application/pdf', data: 'JVBERg==' },
+      ],
+    })
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: result.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('"type":"image"')
+    expect(transcript).toContain('"type":"document"')
+  })
+
   it('generates prompt suggestions without mutating transcript or main usage', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-suggestion-'))
     roots.push(root)

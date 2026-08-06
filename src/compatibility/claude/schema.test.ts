@@ -361,6 +361,32 @@ describe('ClaudeSchemaAdapter', () => {
         },
       }),
     ).toContain('literal JSON')
+    expect(
+      adapter.serializeForAppend({
+        ...user,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'aGVsbG8=',
+              },
+            },
+            {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: 'application/pdf',
+                data: 'JVBERg==',
+              },
+            },
+          ],
+        },
+      }),
+    ).toContain('application/pdf')
   })
 
   it('rejects malformed transcript lines', () => {

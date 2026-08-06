@@ -1,4 +1,6 @@
 import type {
+  ModelDocument,
+  ModelDocumentMediaType,
   ModelImage,
   ModelImageMediaType,
   ModelMessage,
@@ -20,6 +22,12 @@ const IMAGE_MEDIA_TYPES = new Set<ModelImageMediaType>([
   'image/jpeg',
   'image/gif',
   'image/webp',
+])
+const DOCUMENT_MEDIA_TYPES = new Set<ModelDocumentMediaType>([
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'application/json',
 ])
 
 function projectToolResultContent(
@@ -174,7 +182,56 @@ export function projectClaudeModelMessages(
         .map((block) => block.text)
         .filter((value): value is string => typeof value === 'string')
         .join('')
-      if (text.length > 0) messages.push({ role: 'user', content: text })
+      const images = content.flatMap((block): ModelImage[] => {
+        if (
+          !isRecord(block) ||
+          block.type !== 'image' ||
+          !isRecord(block.source) ||
+          block.source.type !== 'base64' ||
+          typeof block.source.media_type !== 'string' ||
+          !IMAGE_MEDIA_TYPES.has(
+            block.source.media_type as ModelImageMediaType,
+          ) ||
+          typeof block.source.data !== 'string'
+        )
+          return []
+        return [
+          {
+            type: 'image',
+            mediaType: block.source.media_type as ModelImageMediaType,
+            data: block.source.data,
+          },
+        ]
+      })
+      const documents = content.flatMap((block): ModelDocument[] => {
+        if (
+          !isRecord(block) ||
+          block.type !== 'document' ||
+          !isRecord(block.source) ||
+          block.source.type !== 'base64' ||
+          typeof block.source.media_type !== 'string' ||
+          !DOCUMENT_MEDIA_TYPES.has(
+            block.source.media_type as ModelDocumentMediaType,
+          ) ||
+          typeof block.source.data !== 'string'
+        )
+          return []
+        return [
+          {
+            type: 'document',
+            mediaType: block.source.media_type as ModelDocumentMediaType,
+            data: block.source.data,
+          },
+        ]
+      })
+      if (text.length > 0 || images.length > 0 || documents.length > 0) {
+        messages.push({
+          role: 'user',
+          content: text,
+          ...(images.length > 0 ? { images } : {}),
+          ...(documents.length > 0 ? { documents } : {}),
+        })
+      }
       for (const block of content) {
         if (
           !isRecord(block) ||

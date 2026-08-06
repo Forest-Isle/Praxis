@@ -143,6 +143,67 @@ describe('Claude transcript projection', () => {
     ])
   })
 
+  it('projects native Claude user images for resume', () => {
+    expect(
+      projectClaudeModelMessages([
+        {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'inspect' },
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: 'aGVsbG8=',
+                },
+              },
+            ],
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        role: 'user',
+        content: 'inspect',
+        images: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+      },
+    ])
+  })
+
+  it('projects native Claude user documents for resume', () => {
+    expect(
+      projectClaudeModelMessages([
+        {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: 'JVBERg==',
+                },
+              },
+            ],
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        role: 'user',
+        content: '',
+        documents: [
+          { type: 'document', mediaType: 'application/pdf', data: 'JVBERg==' },
+        ],
+      },
+    ])
+  })
+
   it('keeps every tool result adjacent when a Read activates a rule', () => {
     const entries = [
       {
