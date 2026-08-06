@@ -18,6 +18,8 @@ export type CliPermissionMode =
   | 'plan'
   | 'default'
 
+export type CliMcpScope = 'local' | 'project' | 'user'
+
 export interface CliControls {
   settings: string | undefined
   settingSources: readonly ('user' | 'project' | 'local')[] | undefined
@@ -65,6 +67,7 @@ export interface CliInvocation extends CliControls {
   sessionId: string | undefined
   verbose: boolean
   legacyJson: boolean
+  mcpScope?: CliMcpScope
 }
 
 export interface StreamUserMessage {
@@ -182,6 +185,7 @@ const PERMISSION_MODES = [
   'default',
 ] as const
 const SETTING_SOURCES = ['user', 'project', 'local'] as const
+const MCP_SCOPES = ['local', 'project', 'user'] as const
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const MAX_INPUT_LINE_BYTES = 1024 * 1024
 const UUID_PATTERN =
@@ -317,6 +321,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let jsonSchema: Record<string, unknown> | undefined
   let maxBudgetUsd: number | undefined
   let promptSuggestions = false
+  let mcpScope: CliMcpScope | undefined
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
@@ -399,6 +404,14 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--max-budget-usd may only be specified once')
       maxBudgetUsd = positiveDecimal(selectedBudget.value, '--max-budget-usd')
       index += selectedBudget.consumed
+      continue
+    }
+    const selectedMcpScope = optionValue(argv, index, '--scope')
+    if (selectedMcpScope) {
+      if (mcpScope !== undefined)
+        throw new Error('--scope may only be specified once')
+      mcpScope = choice(selectedMcpScope.value, '--scope', MCP_SCOPES)
+      index += selectedMcpScope.consumed
       continue
     }
     const selectedCwd = optionValue(argv, index, '--cwd')
@@ -788,6 +801,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(jsonSchema === undefined ? {} : { jsonSchema }),
     ...(maxBudgetUsd === undefined ? {} : { maxBudgetUsd }),
     promptSuggestions,
+    ...(mcpScope === undefined ? {} : { mcpScope }),
   }
 }
 

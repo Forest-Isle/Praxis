@@ -43,6 +43,11 @@ import {
 import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
 import { ClaudeHookRunner } from './hooks/claude-hooks.js'
 import { ClaudeMcpToolRegistry } from './mcp/claude-mcp-tools.js'
+import {
+  ClaudeMcpManagement,
+  mcpScope,
+  type McpServerRecord,
+} from './mcp/claude-mcp-management.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import {
   redactSensitiveText,
@@ -71,6 +76,7 @@ import {
   StreamJsonOutput,
   type CliOutputFormat,
   type CliControls,
+  type CliInvocation,
   type CliRuntimeInfo,
   type StreamUserMessage,
 } from './cli/protocol.js'
@@ -95,6 +101,7 @@ Usage:
   praxis attach <agent-id>
   praxis logs <agent-id>
   praxis stop <agent-id>
+  praxis mcp <list|get|add|add-json|remove|reset-project-choices> ...
 
 Options:
   -p, --print                         Print response and exit
@@ -110,6 +117,7 @@ Options:
   --json-schema <schema>              Print-mode JSON Schema for structured output
   --max-budget-usd <amount>           Maximum print-mode API spend
   --prompt-suggestions                Emit a suggested next prompt (stream-json print mode)
+  --scope <scope>                     MCP scope: local, project, or user
   --no-session-persistence            Keep print-mode session in memory only
   --agent <name>                      Select a shared agent definition
   --settings <file-or-json>           Load additional settings
@@ -735,6 +743,123 @@ function formatSessionIssue(issue: SessionSummary['issue']): string {
     : ''
 }
 
+function mcpOutput(io: CliIO, invocation: CliInvocation, value: unknown): void {
+  if (invocation.legacyJson || invocation.outputFormat !== 'text') {
+    writeJson(io, value)
+  } else if (typeof value === 'string') {
+    io.stdout(`${value}\n`)
+  } else {
+    io.stdout(`${JSON.stringify(value)}\n`)
+  }
+}
+
+function mcpRecordJson(record: McpServerRecord): Record<string, unknown> {
+  return {
+    name: record.name,
+    scope: record.scope,
+    path: record.path,
+    config: record.config,
+  }
+}
+
+async function executeMcpCommand(
+  args: readonly string[],
+  invocation: CliInvocation,
+  io: CliIO,
+): Promise<number> {
+  const action = args[1]
+  if (!action || action === 'help') {
+    io.stdout(
+      'Usage: praxis mcp <list|get|add|add-json|remove|reset-project-choices>\n',
+    )
+    return 0
+  }
+  const management = new ClaudeMcpManagement({ cwd: process.cwd() })
+  const scope = invocation.mcpScope ? mcpScope(invocation.mcpScope) : undefined
+  if (action === 'list') {
+    if (args.length !== 2) throw new Error('mcp list takes no operands')
+    const servers = await management.list(scope)
+    if (invocation.legacyJson || invocation.outputFormat !== 'text') {
+      mcpOutput(io, invocation, {
+        type: 'mcp-list',
+        servers: servers.map(mcpRecordJson),
+      })
+    } else {
+      for (const server of servers) {
+        io.stdout(
+          `${server.name}\t${server.scope}\t${JSON.stringify(server.config)}\n`,
+        )
+      }
+    }
+    return 0
+  }
+  if (action === 'get') {
+    if (args.length !== 3) throw new Error('mcp get requires a server name')
+    const server = await management.get(args[2] as string, scope)
+    mcpOutput(io, invocation, {
+      type: 'mcp-server',
+      server: mcpRecordJson(server),
+    })
+    return 0
+  }
+  if (action === 'add-json') {
+    if (args.length !== 4)
+      throw new Error('mcp add-json requires name and JSON')
+    let config: unknown
+    try {
+      config = JSON.parse(args[3] as string)
+    } catch (error) {
+      throw new Error('mcp add-json requires valid JSON', { cause: error })
+    }
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      throw new Error('mcp add-json server config must be an object')
+    }
+    const server = await management.add(
+      args[2] as string,
+      config as Record<string, unknown>,
+      scope ?? 'local',
+    )
+    mcpOutput(io, invocation, {
+      type: 'mcp-added',
+      server: mcpRecordJson(server),
+    })
+    return 0
+  }
+  if (action === 'add') {
+    if (args.length < 4)
+      throw new Error('mcp add requires name and command or URL')
+    const name = args[2] as string
+    const commandOrUrl = args[3] as string
+    const config = /^https?:\/\//u.test(commandOrUrl)
+      ? { type: 'http', url: commandOrUrl }
+      : { type: 'stdio', command: commandOrUrl, args: args.slice(4) }
+    const server = await management.add(name, config, scope ?? 'local')
+    mcpOutput(io, invocation, {
+      type: 'mcp-added',
+      server: mcpRecordJson(server),
+    })
+    return 0
+  }
+  if (action === 'remove') {
+    if (args.length !== 3) throw new Error('mcp remove requires a server name')
+    const server = await management.remove(args[2] as string, scope)
+    mcpOutput(io, invocation, {
+      type: 'mcp-removed',
+      server: mcpRecordJson(server),
+    })
+    return 0
+  }
+  if (action === 'reset-project-choices') {
+    if (args.length !== 2) {
+      throw new Error('mcp reset-project-choices takes no operands')
+    }
+    await management.resetProjectChoices()
+    mcpOutput(io, invocation, 'Reset project MCP choices')
+    return 0
+  }
+  throw new Error(`Unknown mcp command: ${action}`)
+}
+
 function eventSink(
   io: CliIO,
   outputFormat: CliOutputFormat,
@@ -892,6 +1017,7 @@ async function execute(
     'attach',
     'logs',
     'stop',
+    'mcp',
   ].includes(command ?? '')
   if (retryInterruptedTools && command !== 'resume') {
     throw new Error('--retry-interrupted-tools is only valid with resume')
@@ -904,6 +1030,12 @@ async function execute(
     command !== 'agents'
   ) {
     throw new Error('--all and --cwd are only valid with agents')
+  }
+  if (invocation.mcpScope !== undefined && command !== 'mcp') {
+    throw new Error('--scope is only valid with mcp commands')
+  }
+  if (command === 'mcp') {
+    return executeMcpCommand(args, invocation, io)
   }
   const expectedOperands =
     command === 'sessions' || command === 'agents' ? 1 : 2

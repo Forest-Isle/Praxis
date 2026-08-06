@@ -311,6 +311,16 @@ async function resolveProjectContext(
   }
 }
 
+export async function resolveClaudeProjectIdentity({
+  cwd,
+  homeDirectory = homedir(),
+}: {
+  cwd: string
+  homeDirectory?: string
+}): Promise<string> {
+  return (await resolveProjectContext(cwd, homeDirectory)).memoryIdentityRoot
+}
+
 async function loadProjectSettings(
   configRoot: string,
   cwd: string,
