@@ -89,6 +89,148 @@ function entries(source: string): Record<string, unknown>[] {
 }
 
 describe('foreground Claude Agent execution', () => {
+  it('keeps foreground and nested Agent transcripts in memory without disk sidechains', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-subagent-ephemeral-test-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      model: 'ephemeral-fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        const serialized = JSON.stringify(request.messages)
+        if (serialized.includes('NESTED_CHILD_RESULT')) {
+          yield { type: 'text-delta', delta: 'FOREGROUND_CHILD_RESULT' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 4, outputTokens: 2 },
+          }
+        } else if (serialized.includes('Run nested child')) {
+          yield { type: 'text-delta', delta: 'NESTED_CHILD_RESULT' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 2, outputTokens: 1 },
+          }
+        } else if (serialized.includes('foreground child')) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'nested_agent',
+              name: 'Agent',
+              input: {
+                description: 'Nested child',
+                prompt: 'Run nested child',
+                subagent_type: 'general-purpose',
+                run_in_background: false,
+              },
+            },
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 3, outputTokens: 1 },
+          }
+        } else {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'foreground_agent',
+              name: 'Agent',
+              input: {
+                description: 'Foreground child',
+                prompt: 'Run foreground child',
+                subagent_type: 'general-purpose',
+                run_in_background: false,
+              },
+            },
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 5, outputTokens: 2 },
+          }
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+      sessionPersistence: false,
+    })
+
+    const result = await service.run('Delegate ephemerally.')
+
+    expect(result.text).toBe('FOREGROUND_CHILD_RESULT')
+    expect(result.usage.inputTokens).toBeGreaterThan(0)
+    expect(result.usage.outputTokens).toBeGreaterThan(0)
+    expect(requests.length).toBeGreaterThanOrEqual(4)
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    await expect(readFile(paths.sessionFile)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(
+      readdir(join(paths.projectRoot, result.sessionId)),
+    ).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('rejects background Agent execution when persistence is disabled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-ephemeral-bg-'))
+    roots.push(root)
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'unused' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      persistence: 'memory',
+    })
+
+    expect(() =>
+      executor.prepare(
+        {
+          id: 'background_agent',
+          name: 'Agent',
+          input: {
+            description: 'Background child',
+            prompt: 'Run in background',
+            subagent_type: 'general-purpose',
+            run_in_background: true,
+          },
+        },
+        0,
+      ),
+    ).toThrow('Background agents require session persistence')
+    await expect(
+      executor.runWorkflowAgent({
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        promptId: 'prompt',
+        runId: 'run',
+        agentId: 'agent',
+        transcriptDirectory: join(root, 'workflow'),
+        prompt: 'Run workflow',
+      }),
+    ).rejects.toThrow('Workflow agents require session persistence')
+  })
+
   it('persists native main result metadata, sidechain JSONL, and metadata', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-test-'))
     roots.push(root)

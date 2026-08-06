@@ -165,10 +165,8 @@ describe('ClaudeSessionService', () => {
     ])
   })
 
-  it('rejects subagents when session persistence is disabled', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
-    roots.push(root)
-
+  it('allows foreground subagents when session persistence is disabled', () => {
+    const root = join(tmpdir(), 'praxis-runtime-ephemeral-construction')
     expect(
       () =>
         new ClaudeSessionService({
@@ -179,7 +177,7 @@ describe('ClaudeSessionService', () => {
           enableSubagents: true,
           sessionPersistence: false,
         }),
-    ).toThrow('Subagents require session persistence')
+    ).not.toThrow()
   })
 
   it('rejects an invalid non-persistent session ID without reserving it', async () => {
