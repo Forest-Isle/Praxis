@@ -127,6 +127,10 @@ import {
 } from './plugins/claude-plugin-marketplace.js'
 import { formatDoctorReport, runDoctor } from './maintenance/doctor.js'
 import {
+  runSelfUpdate,
+  type SelfUpdateResult,
+} from './maintenance/self-update.js'
+import {
   executeClaudeProjectPurge,
   planClaudeProjectPurge,
   type ClaudeProjectPurgeItem,
@@ -158,6 +162,8 @@ Usage:
   praxis auto-mode <config|defaults>
   praxis plugin <list|install|uninstall|enable|disable|update|init|validate> ...
   praxis doctor [--json]
+  praxis install [--force] [stable|latest|version]
+  praxis update|upgrade
   praxis project purge [options] [path]
 
 Options:
@@ -234,6 +240,26 @@ Options:
   -i, --interactive  Prompt for each item before deleting
   -y, --yes          Skip confirmation prompt
   -h, --help         Show help
+`
+
+const INSTALL_HELP = `Usage: praxis install [options] [target]
+
+Install Praxis global npm package. Target may be stable, latest, next, beta,
+canary, or an exact semantic version.
+
+Options:
+  --force     Force installation even if already installed
+  --json      Output a machine-readable result
+  -h, --help  Show help
+`
+
+const UPDATE_HELP = `Usage: praxis update|upgrade [options]
+
+Install latest Praxis global npm package.
+
+Options:
+  --json      Output a machine-readable result
+  -h, --help  Show help
 `
 
 export { parseContextEnvironment, parseProviderEnvironment }
@@ -317,6 +343,11 @@ export interface CliDependencies extends InteractiveServiceFactory {
   launchTmux?: typeof launchTmuxWorktree
   mcpAuthenticate?: typeof authenticateMcpServer
   mcpServe?: typeof servePraxisMcpStdio
+  selfUpdate?: (options: {
+    operation: 'install' | 'update'
+    target?: string
+    force?: boolean
+  }) => Promise<SelfUpdateResult>
 }
 
 const consoleIO: CliIO = {
@@ -800,6 +831,7 @@ const defaultDependencies: CliDependencies = {
     version: VERSION,
   }),
   launchTmux: launchTmuxWorktree,
+  selfUpdate: runSelfUpdate,
 }
 
 async function runBackgroundWorker(id: string): Promise<void> {
@@ -932,6 +964,47 @@ async function executeDoctorCommand(
     io.stdout(formatDoctorReport(report))
   }
   return report.ok ? 0 : 1
+}
+
+async function executeSelfUpdateCommand(
+  argv: readonly string[],
+  io: CliIO,
+  dependencies: CliDependencies,
+): Promise<number> {
+  const command = argv[0]
+  const values = argv.slice(1)
+  if (values.includes('--help') || values.includes('-h')) {
+    io.stdout(command === 'install' ? INSTALL_HELP : UPDATE_HELP)
+    return 0
+  }
+  const json = values.includes('--json')
+  const operands = values.filter((value) => value !== '--json')
+  if (command === 'update' || command === 'upgrade') {
+    if (operands.length > 0) {
+      throw new Error(`${command} takes no operands`)
+    }
+    const result = await dependencies.selfUpdate?.({ operation: 'update' })
+    if (!result) throw new Error('Self-update unavailable')
+    if (json) writeJson(io, result)
+    else io.stdout(`Praxis update completed: ${result.output}\n`)
+    return 0
+  }
+  let force = false
+  const targets = []
+  for (const value of operands) {
+    if (value === '--force') force = true
+    else targets.push(value)
+  }
+  if (targets.length > 1) throw new Error('install accepts at most one target')
+  const result = await dependencies.selfUpdate?.({
+    operation: 'install',
+    force,
+    ...(targets[0] === undefined ? {} : { target: targets[0] }),
+  })
+  if (!result) throw new Error('Self-update unavailable')
+  if (json) writeJson(io, result)
+  else io.stdout(`Praxis install completed: ${result.output}\n`)
+  return 0
 }
 
 async function executeProjectPurgeCommand(
@@ -1605,6 +1678,9 @@ async function execute(
   }
   if (argv[0] === 'project' && argv[1] === 'purge') {
     return executeProjectPurgeCommand(argv, io)
+  }
+  if (['install', 'update', 'upgrade'].includes(argv[0] ?? '')) {
+    return executeSelfUpdateCommand(argv, io, dependencies)
   }
   if (
     argv[0]?.startsWith('-') &&

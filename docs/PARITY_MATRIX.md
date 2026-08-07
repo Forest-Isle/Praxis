@@ -100,15 +100,15 @@ Evidence levels:
 
 ## Management commands
 
-| Capability           | Status   | Evidence / remaining work                                                                                                |
-| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                          |
-| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; shared OAuth credentials and stdio protocol gates |
-| `plugin`             | Complete | Local and Claude-native marketplace install/enable/disable/update/list/init/validate with bounded sources and recovery   |
-| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                         |
-| `install` / `update` | Missing  | Distribution channel and self-update behavior                                                                            |
-| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                |
-| `auto-mode`          | Complete | `config` and `defaults` configuration surface plus permission classifier                                                 |
+| Capability           | Status   | Evidence / remaining work                                                                                                               |
+| -------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                         |
+| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; shared OAuth credentials and stdio protocol gates                |
+| `plugin`             | Complete | Local and Claude-native marketplace install/enable/disable/update/list/init/validate with bounded sources and recovery                  |
+| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                        |
+| `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate |
+| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                               |
+| `auto-mode`          | Complete | `config` and `defaults` configuration surface plus permission classifier                                                                |
 
 ## Remaining implementation order
 
@@ -116,7 +116,6 @@ Evidence levels:
    service available.
 2. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
    key if observable from future black-box evidence.
-3. Complete `install` / `update` distribution and self-update behavior.
-4. Complete unknown-model pricing policy and diagnostics.
-5. Final live black-box matrix, package/performance regression, and macOS/Linux
+3. Complete unknown-model pricing policy and diagnostics.
+4. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.

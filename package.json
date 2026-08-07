@@ -30,6 +30,7 @@
     "test:hook-compat": "npm run build && node scripts/verify-hook-compatibility.mjs",
     "test:image-compat": "npm run build && node scripts/verify-image-compatibility.mjs",
     "test:local-tool-compat": "npm run build && node scripts/probe-local-read-contract.mjs",
+    "test:self-update": "npm run build && node scripts/verify-self-update-contract.mjs",
     "test:mcp-compat": "npm run build && node scripts/verify-mcp-compatibility.mjs",
     "test:mcp-resource-compat": "npm run build && node scripts/verify-mcp-resource-compatibility.mjs",
     "test:notebook-compat": "npm run build && node scripts/verify-notebook-compatibility.mjs",

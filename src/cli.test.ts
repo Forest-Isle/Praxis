@@ -97,6 +97,70 @@ function dependencies(
 }
 
 describe('Praxis CLI', () => {
+  it('routes install, update, and upgrade without constructing a session', async () => {
+    const requested: unknown[] = []
+    const cliDependencies = dependencies()
+    cliDependencies.selfUpdate = async (options) => {
+      requested.push(options)
+      return {
+        type: 'self-update',
+        operation: options.operation,
+        package: 'praxis-agent',
+        target: options.target ?? 'latest',
+        force: options.force === true,
+        command: ['npm'],
+        output: 'fixture complete',
+      }
+    }
+
+    const installed = captureIO()
+    await expect(
+      run(
+        ['install', '--force', '1.2.3', '--json'],
+        installed.io,
+        cliDependencies,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(installed.stdout.join(''))).toMatchObject({
+      type: 'self-update',
+      operation: 'install',
+      target: '1.2.3',
+      force: true,
+    })
+
+    const updated = captureIO()
+    await expect(run(['update'], updated.io, cliDependencies)).resolves.toBe(0)
+    expect(updated.stdout.join('')).toContain('Praxis update completed')
+    const upgraded = captureIO()
+    await expect(
+      run(['upgrade', '--json'], upgraded.io, cliDependencies),
+    ).resolves.toBe(0)
+    expect(requested).toEqual([
+      { operation: 'install', force: true, target: '1.2.3' },
+      { operation: 'update' },
+      { operation: 'update' },
+    ])
+  })
+
+  it('validates self-update operands and exposes command help', async () => {
+    const cliDependencies = dependencies()
+    const invalid = captureIO()
+    await expect(
+      run(['install', 'latest', 'stable'], invalid.io, cliDependencies),
+    ).resolves.toBe(1)
+    expect(invalid.stderr.join('')).toContain(
+      'install accepts at most one target',
+    )
+
+    const help = captureIO()
+    await expect(
+      run(['install', '--help'], help.io, cliDependencies),
+    ).resolves.toBe(0)
+    expect(help.stdout.join('')).toContain(
+      'Usage: praxis install [options] [target]',
+    )
+  })
+
   it('selects provider-specific environment defaults', () => {
     expect(parseProviderEnvironment({})).toEqual({
       provider: 'openai',
