@@ -227,7 +227,8 @@ function isInnerFetch(body) {
   const messages = JSON.stringify(body.messages ?? [])
   return (
     !body.tools?.length &&
-    messages.includes('https://example.com/') &&
+    (messages.includes('Web page content:') ||
+      messages.includes('Fetched page data follows as JSON')) &&
     !messages.includes('"type":"tool_result"')
   )
 }
@@ -324,18 +325,12 @@ function assertResults(runRequests, label) {
   const innerFetchCount = runRequests.filter(isInnerFetch).length
   const publicFetchSucceeded =
     publicFetch?.content === 'FETCH_SUMMARY' && publicFetch.is_error !== true
-  const isolatedClaudeSafetyRejection =
-    label === 'Claude' &&
-    publicFetch?.is_error === true &&
-    String(publicFetch.content).includes(
-      'Unable to verify if domain example.com is safe to fetch',
-    )
   assert(
-    publicFetchSucceeded || isolatedClaudeSafetyRejection,
+    publicFetchSucceeded,
     `${label} public WebFetch result changed: ${JSON.stringify(publicFetch)}`,
   )
   assert(
-    innerFetchCount === (publicFetchSucceeded ? 1 : 0),
+    innerFetchCount === 1,
     `${label} public WebFetch processing request changed`,
   )
   const privateFetch = toolResult(runRequests, 'fetch-private')
@@ -424,6 +419,8 @@ try {
   await runClaude(
     address,
     [
+      '--settings',
+      '{"skipWebFetchPreflight":true}',
       '--dangerously-skip-permissions',
       '--allowedTools',
       'WebFetch(domain:example.com)',
@@ -627,7 +624,7 @@ try {
 
   const version = await detectClaudeVersion('Web compatibility probe')
   console.log(
-    `Claude ${version} web compatibility passed: exact schemas, safe/bare exposure, native filtered search, links/citations, real Praxis public fetch, isolated Claude fetch safety behavior, domain permissions, private fetch rejection, persistence, and resume`,
+    `Claude ${version} web compatibility passed: exact schemas, safe/bare exposure, native filtered search, links/citations, real Claude and Praxis public fetch, domain permissions, private fetch rejection, persistence, and resume`,
   )
 } finally {
   if (provider.listening) await closeProvider()

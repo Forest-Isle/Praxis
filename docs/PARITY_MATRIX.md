@@ -89,7 +89,7 @@ started/optional-progress/response ordering.
 | Read / Write / Edit / Grep / Bash  | Complete | Claude schemas, text/PDF media, path/symlink/bounds/permission gates; live local-tool gate                                      |
 | Skill / Agent / MCP tools          | Complete | Provider-neutral registries, foreground/background sidechains, and native persistence                                           |
 | Glob                               | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                                                      |
-| WebFetch / WebSearch               | Partial  | Live schemas/search/errors/resume; real Praxis public fetch; Claude public-success oracle needs domain-safety service           |
+| WebFetch / WebSearch               | Complete | Live schemas/search/errors/resume; real Claude/Praxis fetch and filtered search; bidirectional resume                           |
 | NotebookEdit                       | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                                                   |
 | Worktree enter/exit                | Complete | Native Git lifecycle, state entries, dynamic cwd, CLI `--worktree`, and classic tmux launcher; live bidirectional gate          |
 | TaskCreate/Get/List/Update         | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate                |
@@ -116,9 +116,7 @@ started/optional-progress/response ordering.
 
 ## Remaining implementation order
 
-1. Complete a live successful Claude WebFetch oracle with its domain-safety
-   service available.
-2. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
+1. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
    key if observable from future black-box evidence.
-3. Final live black-box matrix, package/performance regression, and macOS/Linux
+2. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.

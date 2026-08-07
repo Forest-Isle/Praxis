@@ -447,18 +447,23 @@ Code 2.1.208.
 model-selected `Skill` tool injection, selected-agent metadata, and live resume
 in both Claude→Praxis and Praxis→Claude directions.
 `npm run test:hook-compat` proves command-hook event order and stdin envelopes,
-PreToolUse input/permission changes, native success/error/context attachments,
-exit-code-2 blocking, non-persisted SessionEnd output, Praxis built-CLI
-execution, and Claude resume of the Praxis-written hook transcript.
+Claude-compatible stream lifecycle records, PreToolUse input/permission
+changes, native success/error/context attachments, exit-code-2 blocking,
+non-persisted SessionEnd output, Praxis built-CLI execution, and Claude resume
+of the Praxis-written hook transcript.
 `npm run test:mcp-compat` proves Claude and Praxis share user/project-local
 precedence, then exercises Praxis stdio and Streamable HTTP discovery, tool
 calls, permission flow, and stdio subprocess cleanup through the built CLI.
 `npm run test:web-compat` compares exact schemas and safe/bare exposure, native
 filtered search requests, links/citations, domain permissions, private-fetch
-rejection, transcript persistence, and Claude resume against Claude Code
-2.1.208. It requires a real successful Praxis public fetch. Claude's matching
-public-success path accepts a successful oracle when its external domain-safety
-service is available and otherwise verifies the isolated safety rejection.
+rejection, transcript persistence, and bidirectional resume against Claude Code
+2.1.208. WebFetch also enforces Claude's URL, response, timeout, markdown,
+redirect, and 50 MiB LRU cache bounds, persists binary responses under the
+session `tool-results` directory, and bypasses secondary processing for the
+native preapproved Markdown hosts. It requires real successful Claude and
+Praxis public fetches; the isolated Claude run supplies `skipWebFetchPreflight`
+so the probe is independent of the external domain-safety service while
+retaining the production fetch and secondary-model paths.
 `npm run test:recovery-compat` creates an interrupted native tool call, proves
 decline is append-free, approves the prepared retry exactly once, persists its
 native result, and requires Claude Code 2.1.208 to resume the recovered turn.

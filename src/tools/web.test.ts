@@ -1,3 +1,7 @@
+import { mkdtemp, readFile, readdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -166,6 +170,136 @@ describe('WebToolRegistry', () => {
     })
   })
 
+  it('enforces Claude URL validation limits', async () => {
+    const registry = new WebToolRegistry({
+      base,
+      provider: provider([], 'unused'),
+    })
+    await expect(
+      registry.prepare(
+        {
+          id: 'long-url',
+          name: 'WebFetch',
+          input: {
+            url: `https://example.com/${'a'.repeat(2_000)}`,
+            prompt: 'read',
+          },
+        },
+        { cwd: '/workspace' },
+      ),
+    ).rejects.toThrow('Invalid URL')
+    await expect(
+      registry.prepare(
+        {
+          id: 'single-label',
+          name: 'WebFetch',
+          input: { url: 'https://localhost', prompt: 'read' },
+        },
+        { cwd: '/workspace' },
+      ),
+    ).rejects.toThrow('Invalid URL')
+  })
+
+  it('persists binary responses in the session tool-results directory', async () => {
+    const requests: ModelRequest[] = []
+    const toolResultDirectory = await mkdtemp(
+      join(tmpdir(), 'praxis-webfetch-results-'),
+    )
+    const body = Buffer.from('%PDF-1.7\nfixture')
+    const registry = new WebToolRegistry({
+      base,
+      provider: provider(requests, 'PDF_SUMMARY'),
+      resolveHostname: publicDns,
+      requestPage: async () => ({
+        status: 200,
+        headers: { 'content-type': 'application/pdf' },
+        body,
+      }),
+    })
+    const context = { cwd: '/workspace', toolResultDirectory }
+    const call = await registry.prepare(
+      {
+        id: 'binary',
+        name: 'WebFetch',
+        input: { url: 'https://example.com/file.pdf', prompt: 'summarize' },
+      },
+      context,
+    )
+
+    const result = await registry.execute(call, context)
+    expect(result.content).toMatch(
+      /PDF_SUMMARY\n\n\[Binary content \(application\/pdf, 16 bytes\) also saved to .+\.pdf\]/,
+    )
+    const files = await readdir(toolResultDirectory)
+    expect(files).toHaveLength(1)
+    const [file] = files
+    if (!file) throw new Error('WebFetch did not persist binary content')
+    expect(file).toMatch(/^webfetch-[0-9]+-[a-f0-9]{8}\.pdf$/)
+    await expect(readFile(join(toolResultDirectory, file))).resolves.toEqual(
+      body,
+    )
+    expect(requests[0]?.messages[1]).toMatchObject({
+      content: expect.stringContaining('%PDF-1.7'),
+    })
+  })
+
+  it('truncates oversized markdown before secondary processing', async () => {
+    const requests: ModelRequest[] = []
+    const registry = new WebToolRegistry({
+      base,
+      provider: provider(requests, 'SUMMARY'),
+      resolveHostname: publicDns,
+      requestPage: async () => ({
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+        body: Buffer.from('x'.repeat(100_001)),
+      }),
+    })
+    const context = { cwd: '/workspace' }
+    const call = await registry.prepare(
+      {
+        id: 'markdown-limit',
+        name: 'WebFetch',
+        input: { url: 'https://example.com/large.txt', prompt: 'read' },
+      },
+      context,
+    )
+
+    await registry.execute(call, context)
+    const content = String(requests[0]?.messages[1]?.content)
+    expect(content).toContain('[Content truncated due to length...]')
+    expect(content).not.toContain('x'.repeat(100_001))
+  })
+
+  it('returns short preapproved markdown without secondary processing', async () => {
+    const requests: ModelRequest[] = []
+    const registry = new WebToolRegistry({
+      base,
+      provider: provider(requests, 'SHOULD_NOT_RUN'),
+      resolveHostname: publicDns,
+      requestPage: async () => ({
+        status: 200,
+        headers: { 'content-type': 'text/markdown' },
+        body: Buffer.from('# Python docs'),
+      }),
+    })
+    const context = { cwd: '/workspace' }
+    const call = await registry.prepare(
+      {
+        id: 'preapproved-markdown',
+        name: 'WebFetch',
+        input: { url: 'https://docs.python.org/3/library', prompt: 'read' },
+      },
+      context,
+    )
+
+    await expect(registry.execute(call, context)).resolves.toEqual({
+      content: '# Python docs',
+      isError: false,
+    })
+    expect(requests).toHaveLength(0)
+  })
+
   it('serializes fetched content so page text cannot escape its data boundary', async () => {
     const requests: ModelRequest[] = []
     const registry = new WebToolRegistry({
@@ -228,7 +362,7 @@ describe('WebToolRegistry', () => {
       expect.objectContaining({ hostname: 'example.com' }),
       [{ address: '93.184.216.34', family: 4 }],
       expect.any(AbortSignal),
-      5 * 1024 * 1024,
+      10 * 1024 * 1024,
     )
   })
 
@@ -274,7 +408,36 @@ describe('WebToolRegistry', () => {
       redirectRegistry.execute(redirectCall, { cwd: '/workspace' }),
     ).resolves.toEqual({
       content:
-        '<tool_use_error>REDIRECT_DETECTED: https://other.example/result</tool_use_error>',
+        'REDIRECT DETECTED: The URL redirects to a different host.\n\nOriginal URL: https://example.com/start\nRedirect URL: https://other.example/result\nStatus: 302 Found\n\nTo complete your request, I need to fetch content from the redirected URL. Please use WebFetch again with these parameters:\n- url: "https://other.example/result"\n- prompt: "read"',
+      isError: false,
+    })
+  })
+
+  it('does not follow protocol or port changing redirects', async () => {
+    const registry = new WebToolRegistry({
+      base,
+      provider: provider([], 'unused'),
+      resolveHostname: publicDns,
+      requestPage: async () => ({
+        status: 302,
+        headers: { location: 'http://example.com:8443/result' },
+        body: Buffer.alloc(0),
+      }),
+    })
+    const context = { cwd: '/workspace' }
+    const call = await registry.prepare(
+      {
+        id: 'unsafe-same-host-redirect',
+        name: 'WebFetch',
+        input: { url: 'https://example.com/start', prompt: 'read' },
+      },
+      context,
+    )
+
+    await expect(registry.execute(call, context)).resolves.toMatchObject({
+      content: expect.stringContaining(
+        'Redirect URL: http://example.com:8443/result',
+      ),
       isError: false,
     })
   })
@@ -285,7 +448,7 @@ describe('WebToolRegistry', () => {
       .fn()
       .mockResolvedValueOnce({
         status: 302,
-        headers: { location: '/final' },
+        headers: { location: 'https://www.example.com/final' },
         body: Buffer.alloc(0),
       })
       .mockResolvedValueOnce({
@@ -316,8 +479,36 @@ describe('WebToolRegistry', () => {
     expect(resolveHostname).toHaveBeenCalledTimes(2)
     expect(requestPage).toHaveBeenCalledTimes(2)
     expect(requestPage.mock.calls[1]?.[0].href).toBe(
-      'https://example.com/final',
+      'https://www.example.com/final',
     )
+  })
+
+  it('stops after Claude max same-host redirects', async () => {
+    const requestPage = vi.fn(async () => ({
+      status: 302,
+      headers: { location: '/loop' },
+      body: Buffer.alloc(0),
+    }))
+    const registry = new WebToolRegistry({
+      base,
+      provider: provider([], 'unused'),
+      resolveHostname: publicDns,
+      requestPage,
+    })
+    const context = { cwd: '/workspace' }
+    const call = await registry.prepare(
+      {
+        id: 'redirect-loop',
+        name: 'WebFetch',
+        input: { url: 'https://example.com/loop', prompt: 'read' },
+      },
+      context,
+    )
+
+    await expect(registry.execute(call, context)).rejects.toThrow(
+      'Too many redirects (exceeded 10)',
+    )
+    expect(requestPage).toHaveBeenCalledTimes(11)
   })
 
   it('refetches a cached page after its TTL expires', async () => {
@@ -352,6 +543,40 @@ describe('WebToolRegistry', () => {
     await registry.execute(call, context)
 
     expect(requestPage).toHaveBeenCalledTimes(2)
+  })
+
+  it('evicts least-recently-used pages by byte size', async () => {
+    const requestPage = vi.fn(async (url: URL) => ({
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+      body: Buffer.from(url.pathname === '/one' ? '11111111' : '22222222'),
+    }))
+    const registry = new WebToolRegistry({
+      base,
+      provider: provider([], 'FETCH_RESULT'),
+      resolveHostname: publicDns,
+      requestPage,
+      maxCacheBytes: 10,
+    })
+    const context = { cwd: '/workspace' }
+    const prepare = (id: string, path: string) =>
+      registry.prepare(
+        {
+          id,
+          name: 'WebFetch',
+          input: { url: `https://example.com${path}`, prompt: 'read' },
+        },
+        context,
+      )
+
+    const first = await prepare('one', '/one')
+    await registry.execute(first, context)
+    const second = await prepare('two', '/two')
+    await registry.execute(second, context)
+    const firstAgain = await prepare('one-again', '/one')
+    await registry.execute(firstAgain, context)
+
+    expect(requestPage).toHaveBeenCalledTimes(3)
   })
 
   it('bounds fetch duration, response size, and processed output', async () => {

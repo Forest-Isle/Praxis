@@ -311,20 +311,22 @@ Status: complete for connected MCP resource-capable servers.
 
 ## Sprint 18 — web tools
 
-Status: implementation complete; successful Claude WebFetch live oracle pending.
+Status: complete for Claude Code 2.1.208.
 
 - [x] exact Claude 2.1.208 schemas, descriptions, safe/bare exposure, and
       permission defaults
 - [x] HTTPS-only public fetching with DNS pinning, redirect revalidation, SSRF
       rejection, HTML-to-Markdown conversion, timeout, byte, and cache bounds
+- [x] Claude URL/redirect limits, preapproved Markdown fast path, and binary
+      response persistence under the session `tool-results` directory
 - [x] provider-neutral page processing with untrusted-content isolation
 - [x] Anthropic-native `web_search_20250305` requests, domain filters,
       links/citations, usage, and source reminder
 - [x] explicit capability omission for providers without native search
 - [x] live schemas, search, errors, persistence, resume, and real Praxis public
       fetch
-- [ ] successful Claude public WebFetch oracle with its external domain-safety
-      service available
+- [x] successful Claude public WebFetch oracle using an isolated preflight-bypass
+      fixture while retaining real public fetch and secondary-model processing
 
 ## Sprint 19 — native background agents
 
