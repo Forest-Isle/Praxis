@@ -249,6 +249,40 @@ describe('Claude MCP OAuth compatibility', () => {
     })
   })
 
+  it('re-registers a dynamic client when the loopback callback port changes', async () => {
+    const configRoot = await temporaryConfigRoot()
+    const server: McpOAuthServerIdentity = {
+      name: 'redirect-change',
+      type: 'http',
+      url: 'https://redirect-change.example/mcp',
+    }
+    const store = new ClaudeMcpOAuthStore({ configRoot, useKeychain: false })
+    const provider = new ClaudeMcpOAuthProvider(
+      store,
+      server,
+      'http://localhost:10001/callback',
+      async () => undefined,
+      {
+        serverName: server.name,
+        serverUrl: server.url,
+        accessToken: 'expired',
+        clientId: 'old-client',
+        clientSecret: 'old-secret',
+        redirectUri: 'http://localhost:10000/callback',
+      },
+    )
+
+    expect(provider.clientInformation()).toBeUndefined()
+    await provider.saveClientInformation({
+      client_id: 'new-client',
+      client_secret: 'new-secret',
+    })
+    expect(provider.clientInformation()).toMatchObject({
+      client_id: 'new-client',
+      redirect_uris: ['http://localhost:10001/callback'],
+    })
+  })
+
   it('completes discovery, DCR, PKCE, token exchange, and refresh', async () => {
     vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
     const configRoot = await temporaryConfigRoot()

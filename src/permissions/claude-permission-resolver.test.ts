@@ -300,6 +300,34 @@ describe('ClaudePermissionResolver', () => {
     })
   })
 
+  it('resolves relative path rules against the execution context cwd', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace/main',
+      cwdProvider: () => '/workspace/main',
+      settings: [
+        {
+          path: '/config/settings.json',
+          scope: 'user',
+          value: { permissions: { deny: ['Write(src/**)'] } },
+        },
+      ],
+    })
+
+    await expect(
+      resolver.resolve(
+        {
+          id: 'isolated-write',
+          name: 'Write',
+          input: { file_path: '/workspace/agent-worktree/src/index.ts' },
+        },
+        { cwd: '/workspace/agent-worktree' },
+      ),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule Write(src/**)',
+    })
+  })
+
   it('lets deny rules win across user, project, and local settings', async () => {
     const resolver = new ClaudePermissionResolver({
       cwd: '/workspace',

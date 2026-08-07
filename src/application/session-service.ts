@@ -208,6 +208,7 @@ export class ClaudeSessionService {
   private readonly workflowManager: WorkflowManager | null
   private readonly worktreeManager: SessionWorktreeManager | null
   private readonly sessionCwds = new Map<string, string>()
+  private readonly hostedSubagents = new Set<ClaudeSubagentExecutor>()
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
@@ -250,6 +251,10 @@ export class ClaudeSessionService {
 
   async close(): Promise<void> {
     this.scheduledPrompts?.close()
+    await Promise.all(
+      [...this.hostedSubagents].map((executor) => executor.close()),
+    )
+    this.hostedSubagents.clear()
     await this.workflowManager?.close()
   }
 
@@ -336,6 +341,7 @@ export class ClaudeSessionService {
               : {}),
           })
         : null
+    if (subagentExecutor) this.hostedSubagents.add(subagentExecutor)
     const agentTools = subagentExecutor
       ? subagentExecutor.registry(sessionId, 0, (callId) => callId)
       : wrappedBase

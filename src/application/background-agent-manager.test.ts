@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  BackgroundAgentRunError,
   BackgroundAgentManager,
   type BackgroundAgentRunResult,
 } from './background-agent-manager.js'
@@ -91,11 +92,48 @@ describe('BackgroundAgentManager', () => {
     await Promise.resolve()
     expect(aborted).toBe(true)
     await expect(
-      manager.output('a0123456789abcdef', { block: false, timeout: 0 }),
+      manager.output('a0123456789abcdef', { block: true, timeout: 30_000 }),
     ).resolves.toContain('<status>stopped</status>')
     expect(() => manager.stop('a0123456789abcdef')).toThrow(
       'is not running (status: stopped)',
     )
+  })
+
+  it('publishes retained isolation metadata only after TaskStop cleanup settles', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(
+        (_message, signal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener(
+              'abort',
+              () =>
+                reject(
+                  new BackgroundAgentRunError('aborted', {
+                    text: 'aborted',
+                    usage: { inputTokens: 0, outputTokens: 0 },
+                    toolUseCount: 0,
+                    durationMs: 1,
+                    isolationPath: '/tmp/retained-agent',
+                    isolationRetained: true,
+                    isolationWarning: 'worktree was retained',
+                  }),
+                ),
+              { once: true },
+            )
+          }),
+      ),
+    )
+
+    manager.stop('a0123456789abcdef')
+    await expect(
+      manager.output('a0123456789abcdef', { block: true, timeout: 30_000 }),
+    ).resolves.toMatch(/worktree_path>\/tmp\/retained-agent/u)
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).resolves.toMatchObject({
+      messages: [expect.stringContaining('/tmp/retained-agent')],
+    })
   })
 
   it('resumes a completed task under the same agent ID', async () => {
@@ -242,5 +280,25 @@ describe('BackgroundAgentManager', () => {
     await expect(
       manager.output('reviewer', { block: true, timeout: 30_000 }),
     ).resolves.toContain('NAMED_SECOND')
+  })
+
+  it('rejects duplicate agent names and escapes notification identifiers', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch({
+      ...spec(async () => completed('first')),
+      name: 'reviewer',
+      toolUseId: 'call<bad&',
+    })
+    expect(() =>
+      manager.launch({
+        ...spec(async () => completed('second')),
+        agentId: 'a1123456789abcdef',
+        name: 'reviewer',
+      }),
+    ).toThrow('name already exists')
+    const notification = await manager.notifications({ waitForRunning: true })
+    expect(notification.messages[0]).toContain(
+      '<tool-use-id>call&lt;bad&amp;</tool-use-id>',
+    )
   })
 })

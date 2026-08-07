@@ -13,6 +13,17 @@ export interface BackgroundAgentRunResult {
   isolationWarning?: string
 }
 
+export class BackgroundAgentRunError extends Error {
+  constructor(
+    message: string,
+    readonly result?: BackgroundAgentRunResult,
+    cause?: unknown,
+  ) {
+    super(message, cause === undefined ? undefined : { cause })
+    this.name = 'BackgroundAgentRunError'
+  }
+}
+
 export interface BackgroundAgentTaskSpec {
   agentId: string
   name?: string
@@ -96,8 +107,10 @@ function waitBounded(
 export class BackgroundAgentManager {
   private readonly tasks = new Map<string, BackgroundAgentTask>()
   private readonly names = new Map<string, string>()
+  private closed = false
 
   launch(spec: BackgroundAgentTaskSpec): BackgroundAgentSnapshot {
+    if (this.closed) throw new Error('Background agent manager is closed')
     assertAgentId(spec.agentId)
     if (
       spec.name !== undefined &&
@@ -108,6 +121,7 @@ export class BackgroundAgentManager {
     if (this.tasks.has(spec.agentId)) {
       throw new Error(`Background agent ${spec.agentId} already exists`)
     }
+    this.assertNameAvailable(spec.name, spec.agentId)
     if (spec.name !== undefined) this.names.set(spec.name, spec.agentId)
     const task: BackgroundAgentTask = {
       spec,
@@ -129,6 +143,7 @@ export class BackgroundAgentManager {
     spec: BackgroundAgentTaskSpec,
     result: BackgroundAgentRunResult,
   ): BackgroundAgentSnapshot {
+    if (this.closed) throw new Error('Background agent manager is closed')
     assertAgentId(spec.agentId)
     if (
       spec.name !== undefined &&
@@ -138,6 +153,7 @@ export class BackgroundAgentManager {
     }
     const existing = this.tasks.get(spec.agentId)
     if (existing) return this.snapshot(existing)
+    this.assertNameAvailable(spec.name, spec.agentId)
     if (spec.name !== undefined) this.names.set(spec.name, spec.agentId)
     const task: BackgroundAgentTask = {
       spec,
@@ -177,7 +193,7 @@ export class BackgroundAgentManager {
     }
     const task = this.tasks.get(agentId)
     if (!task) throw new Error(`No task found with ID: ${agentId}`)
-    if (options.block && task.promise && task.status === 'running') {
+    if (options.block && task.promise) {
       if (options.timeout === 0) {
         await task.promise
       } else {
@@ -196,15 +212,24 @@ export class BackgroundAgentManager {
     }
     task.status = 'stopped'
     task.error = 'Stopped by TaskStop'
-    task.notifications.push({
-      status: 'stopped',
-      result: null,
-      error: task.error,
-      toolUseId: task.spec.toolUseId,
-    })
     task.queuedMessages.length = 0
     task.controller.abort()
     return `Task ${agentId} stopped successfully`
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    const running: Promise<void>[] = []
+    for (const task of this.tasks.values()) {
+      if (task.status !== 'running' || !task.controller) continue
+      task.status = 'stopped'
+      task.error = 'Stopped because the background agent manager closed'
+      task.queuedMessages.length = 0
+      task.controller.abort()
+      if (task.promise) running.push(task.promise)
+    }
+    await Promise.allSettled(running)
   }
 
   send(
@@ -285,7 +310,11 @@ export class BackgroundAgentManager {
     task.promise = task.spec
       .run(message, controller.signal, continuation)
       .then((result) => {
-        if (task.generation !== generation || task.status === 'stopped') return
+        if (task.generation !== generation) return
+        if (task.status === 'stopped') {
+          this.finishStopped(task, result)
+          return
+        }
         task.status = 'completed'
         task.result = result
         task.error = null
@@ -297,7 +326,14 @@ export class BackgroundAgentManager {
         })
       })
       .catch((error: unknown) => {
-        if (task.generation !== generation || task.status === 'stopped') return
+        if (task.generation !== generation) return
+        if (task.status === 'stopped') {
+          this.finishStopped(
+            task,
+            error instanceof BackgroundAgentRunError ? error.result : undefined,
+          )
+          return
+        }
         task.status = 'failed'
         task.result = null
         task.error = error instanceof Error ? error.message : String(error)
@@ -322,6 +358,33 @@ export class BackgroundAgentManager {
   private resolveOptional(identifier: string): string | undefined {
     if (AGENT_ID_PATTERN.test(identifier)) return identifier
     return this.names.get(identifier)
+  }
+
+  private assertNameAvailable(name: string | undefined, agentId: string): void {
+    if (name === undefined) return
+    const existing = this.names.get(name)
+    if (existing !== undefined && existing !== agentId) {
+      throw new Error(`Background agent name already exists: ${name}`)
+    }
+  }
+
+  private finishStopped(
+    task: BackgroundAgentTask,
+    result: BackgroundAgentRunResult | undefined,
+  ): void {
+    const stoppedResult: BackgroundAgentRunResult = result ?? {
+      text: task.error ?? 'Stopped by TaskStop',
+      usage: { inputTokens: 0, outputTokens: 0 },
+      toolUseCount: 0,
+      durationMs: 0,
+    }
+    task.result = stoppedResult
+    task.notifications.push({
+      status: 'stopped',
+      result: stoppedResult,
+      error: task.error,
+      toolUseId: task.spec.toolUseId,
+    })
   }
 
   private resolveRequired(identifier: string): string {
@@ -380,7 +443,7 @@ export class BackgroundAgentManager {
     return [
       '<task-notification>',
       `<task-id>${task.spec.agentId}</task-id>`,
-      `<tool-use-id>${notification.toolUseId}</tool-use-id>`,
+      `<tool-use-id>${escapeXml(notification.toolUseId)}</tool-use-id>`,
       `<output-file>${escapeXml(task.spec.outputFile)}</output-file>`,
       `<status>${notification.status}</status>`,
       `<summary>Agent &quot;${escapeXml(task.spec.description)}&quot; finished</summary>`,

@@ -819,26 +819,15 @@ describe('foreground Claude Agent execution', () => {
       () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     )
 
-    expect(executor.definitions().inputSchema).toMatchObject({
-      properties: {
-        name: {
-          type: 'string',
-          pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$',
-        },
-        team_name: { type: 'string' },
-        mode: {
-          type: 'string',
-          enum: [
-            'acceptEdits',
-            'auto',
-            'bypassPermissions',
-            'default',
-            'dontAsk',
-            'plan',
-          ],
-        },
-      },
-    })
+    expect(executor.definitions().inputSchema.properties).not.toHaveProperty(
+      'name',
+    )
+    expect(executor.definitions().inputSchema.properties).not.toHaveProperty(
+      'team_name',
+    )
+    expect(executor.definitions().inputSchema.properties).not.toHaveProperty(
+      'mode',
+    )
 
     const prepared = await registry.prepare(
       {

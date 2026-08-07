@@ -383,7 +383,12 @@ export class ClaudeMcpOAuthProvider implements OAuthClientProvider {
   }
 
   clientInformation(): OAuthClientInformationMixed | undefined {
-    if (!this.recordValue?.clientId) return undefined
+    if (
+      !this.recordValue?.clientId ||
+      this.recordValue.redirectUri !== this.redirectUri
+    ) {
+      return undefined
+    }
     return {
       client_id: this.recordValue.clientId,
       ...(this.recordValue.clientSecret

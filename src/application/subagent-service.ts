@@ -52,6 +52,7 @@ import type {
 } from '../persistence/claude-transcript-store.js'
 import {
   BackgroundAgentManager,
+  BackgroundAgentRunError,
   type BackgroundAgentRunResult,
   type BackgroundAgentTaskSpec,
 } from './background-agent-manager.js'
@@ -309,6 +310,11 @@ export class ClaudeSubagentExecutor {
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
   }
 
+  async close(): Promise<void> {
+    await this.background.close()
+    this.ephemeralSidechains.clear()
+  }
+
   private cwd(): string {
     return this.options.cwdProvider?.() ?? this.options.cwd
   }
@@ -358,30 +364,6 @@ export class ClaudeSubagentExecutor {
             description:
               'Agents run in the background by default; you will be notified when one completes. Set to false to run this agent synchronously when you need its result before continuing.',
             type: 'boolean',
-          },
-          name: {
-            description:
-              'Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running.',
-            type: 'string',
-            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$',
-          },
-          team_name: {
-            description:
-              'Deprecated; ignored. The session has a single implicit team.',
-            type: 'string',
-          },
-          mode: {
-            description:
-              'Permission mode for spawned teammate (e.g., "plan" to require plan approval).',
-            type: 'string',
-            enum: [
-              'acceptEdits',
-              'auto',
-              'bypassPermissions',
-              'default',
-              'dontAsk',
-              'plan',
-            ],
           },
           isolation: {
             description:
@@ -770,6 +752,24 @@ export class ClaudeSubagentExecutor {
         retainedIsolation = cleanup?.retained ? isolation : undefined
       }
       if (failure !== undefined) {
+        if (isolation && cleanup) {
+          const message =
+            failure instanceof Error ? failure.message : String(failure)
+          const result: BackgroundAgentRunResult = {
+            text: message,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            toolUseCount: 0,
+            durationMs: Date.now() - startedAt,
+            isolationPath: isolation.cwd,
+            isolationRetained: cleanup.retained,
+            ...(cleanup.reason ? { isolationWarning: cleanup.reason } : {}),
+          }
+          throw new BackgroundAgentRunError(
+            cleanup.reason ? `${message}\n${cleanup.reason}` : message,
+            result,
+            failure,
+          )
+        }
         if (cleanup?.reason) {
           throw new Error(
             `${failure instanceof Error ? failure.message : String(failure)}\n${cleanup.reason}`,

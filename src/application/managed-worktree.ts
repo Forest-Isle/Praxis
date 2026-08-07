@@ -89,49 +89,56 @@ export async function createManagedWorktree(options: {
     }
   }
 
-  let cleanupResult: ManagedWorktreeCleanup | undefined
+  let removedResult: ManagedWorktreeCleanup | undefined
+  let cleanupInFlight: Promise<ManagedWorktreeCleanup> | undefined
   return {
     cwd: path,
     cleanup: async () => {
-      if (cleanupResult) return cleanupResult
-      let status: string
-      let head: string
+      if (removedResult) return removedResult
+      if (cleanupInFlight) return cleanupInFlight
+      cleanupInFlight = (async () => {
+        let status: string
+        let head: string
+        try {
+          ;[status, head] = await Promise.all([
+            git(path, ['status', '--porcelain']),
+            git(path, ['rev-parse', 'HEAD']),
+          ])
+        } catch (error) {
+          return {
+            retained: true,
+            reason: `Could not inspect ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
+          }
+        }
+        if (status.length > 0) {
+          return {
+            retained: true,
+            reason: `${options.label} worktree has uncommitted changes and was retained at ${path}`,
+          }
+        }
+        if (head !== initialHead) {
+          return {
+            retained: true,
+            reason: `${options.label} worktree has commits and was retained at ${path}`,
+          }
+        }
+        try {
+          await git(root, ['worktree', 'remove', path])
+          return { retained: false }
+        } catch (error) {
+          return {
+            retained: true,
+            reason: `Could not remove ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
+          }
+        }
+      })()
       try {
-        ;[status, head] = await Promise.all([
-          git(path, ['status', '--porcelain']),
-          git(path, ['rev-parse', 'HEAD']),
-        ])
-      } catch (error) {
-        cleanupResult = {
-          retained: true,
-          reason: `Could not inspect ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
-        }
-        return cleanupResult
+        const result = await cleanupInFlight
+        if (!result.retained) removedResult = result
+        return result
+      } finally {
+        cleanupInFlight = undefined
       }
-      if (status.length > 0) {
-        cleanupResult = {
-          retained: true,
-          reason: `${options.label} worktree has uncommitted changes and was retained at ${path}`,
-        }
-        return cleanupResult
-      }
-      if (head !== initialHead) {
-        cleanupResult = {
-          retained: true,
-          reason: `${options.label} worktree has commits and was retained at ${path}`,
-        }
-        return cleanupResult
-      }
-      try {
-        await git(root, ['worktree', 'remove', path])
-        cleanupResult = { retained: false }
-      } catch (error) {
-        cleanupResult = {
-          retained: true,
-          reason: `Could not remove ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
-        }
-      }
-      return cleanupResult
     },
   }
 }

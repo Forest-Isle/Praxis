@@ -291,7 +291,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
     call: ModelToolCall,
     context?: PermissionResolutionContext,
   ): Promise<PermissionDecision> {
-    const cwd = resolve(this.cwdProvider?.() ?? this.cwd)
+    const cwd = resolve(context?.cwd || this.cwdProvider?.() || this.cwd)
     const matchingRule = (behavior: PermissionBehavior) =>
       this.rules.find(
         (candidate) =>

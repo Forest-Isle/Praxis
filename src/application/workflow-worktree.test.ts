@@ -70,6 +70,11 @@ describe('createWorkflowWorktree', () => {
     expect(await readFile(join(worktree.cwd, 'tracked.txt'), 'utf8')).toBe(
       'changed\n',
     )
+    await writeFile(join(worktree.cwd, 'tracked.txt'), 'base\n')
+    expect(await worktree.cleanup()).toEqual({ retained: false })
+    await expect(
+      readFile(join(worktree.cwd, 'tracked.txt'), 'utf8'),
+    ).rejects.toThrow()
   })
 
   it('retains a clean checkout whose detached HEAD contains commits', async () => {

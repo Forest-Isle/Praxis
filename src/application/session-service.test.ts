@@ -148,6 +148,65 @@ describe('ClaudeSessionService', () => {
     }
   })
 
+  it('closes background hosted Agents when the session service closes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-close-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let aborted = false
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        markStarted()
+        await new Promise<void>((resolve) => {
+          request.signal?.addEventListener(
+            'abort',
+            () => {
+              aborted = true
+              resolve()
+            },
+            { once: true },
+          )
+        })
+        yield* []
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+      subagentToolNames: ['Agent', 'TaskOutput'],
+      sessionPersistence: true,
+    })
+    const registry = service.createHostedToolRegistry(
+      '22222222-2222-4222-8222-222222222222',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'background-agent',
+        name: 'Agent',
+        input: {
+          description: 'Hanging agent',
+          prompt: 'hang',
+          run_in_background: true,
+        },
+      },
+      { cwd },
+    )
+    await registry.execute(call, { cwd })
+    await started
+    await service.close()
+    expect(aborted).toBe(true)
+  })
+
   it('persists and projects user image and document attachments', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-attachment-'))
     roots.push(root)
