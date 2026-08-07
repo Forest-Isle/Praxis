@@ -223,12 +223,19 @@ export class ClaudeExtensionCatalog {
 
   constructor(
     resources: Pick<ClaudeSharedResources, 'agents' | 'commands' | 'skills'>,
+    options: { disableSlashCommands?: boolean } = {},
   ) {
-    this.commands = new Map([['loop', BUILTIN_LOOP]])
-    for (const [name, command] of indexed('command', resources.commands)) {
-      this.commands.set(name, command)
+    this.commands = options.disableSlashCommands
+      ? new Map()
+      : new Map([['loop', BUILTIN_LOOP]])
+    if (!options.disableSlashCommands) {
+      for (const [name, command] of indexed('command', resources.commands)) {
+        this.commands.set(name, command)
+      }
     }
-    this.skills = indexed('skill', resources.skills)
+    this.skills = options.disableSlashCommands
+      ? new Map()
+      : indexed('skill', resources.skills)
     this.agents = indexed('agent', resources.agents)
   }
 

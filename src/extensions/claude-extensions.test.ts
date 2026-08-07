@@ -151,6 +151,33 @@ describe('ClaudeExtensionCatalog', () => {
     expect(catalog.skill('loop')?.kind).toBe('command')
   })
 
+  it('disables slash commands while retaining agent definitions', () => {
+    const catalog = new ClaudeExtensionCatalog(
+      {
+        agents: [
+          {
+            path: '/config/agents/reviewer.md',
+            scope: 'user',
+            content: '---\nname: reviewer\n---\nREVIEW',
+          },
+        ],
+        commands: [
+          {
+            path: '/config/commands/check.md',
+            scope: 'user',
+            content: 'CHECK',
+          },
+        ],
+        skills: [],
+      },
+      { disableSlashCommands: true },
+    )
+
+    expect(catalog.expandPrompt('/check').userMessages).toEqual(['/check'])
+    expect(catalog.modelInvocableSkills()).toEqual([])
+    expect(catalog.agent('reviewer')?.body).toBe('REVIEW')
+  })
+
   it('uses namespaced command paths, ignores command name metadata, and omits empty args', () => {
     const catalog = new ClaudeExtensionCatalog({
       agents: [],

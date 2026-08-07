@@ -103,6 +103,10 @@ function toolNames(request) {
     : []
 }
 
+function systemText(request) {
+  return JSON.stringify(request?.system ?? request?.messages ?? [])
+}
+
 function assertEqual(actual, expected, label) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(
@@ -201,6 +205,30 @@ try {
     'user source',
   ])
   assertEqual(markers(userOnly.request), [userMarker], 'user source')
+
+  const inlineAgentMarker = 'INLINE_AGENT_MARKER_6110'
+  const inlineAgent = await runPraxis([
+    '--no-session-persistence',
+    '--agents',
+    JSON.stringify({
+      reviewer: { description: 'Review files', prompt: inlineAgentMarker },
+    }),
+    '--agent',
+    'reviewer',
+    'inline agent',
+  ])
+  if (!systemText(inlineAgent.request).includes(inlineAgentMarker)) {
+    throw new Error('Inline --agents prompt was not included in agent context')
+  }
+
+  const slashDisabled = await runPraxis([
+    '--no-session-persistence',
+    '--disable-slash-commands',
+    'slash disabled',
+  ])
+  if (toolNames(slashDisabled.request).includes('Skill')) {
+    throw new Error('--disable-slash-commands left Skill tool enabled')
+  }
   for (const [label, args, expectedTools] of [
     [
       'safe',
@@ -405,7 +433,7 @@ try {
   )
 
   console.log(
-    `Claude ${version} CLI controls passed: prompts, sources, modes, tools, explicit fork identity, ephemeral storage, and named resume`,
+    `Claude ${version} CLI controls passed: prompts, sources, modes, inline agents, disabled slash commands, tools, explicit fork identity, ephemeral storage, and named resume`,
   )
 } finally {
   if (server.listening) await closeServer()

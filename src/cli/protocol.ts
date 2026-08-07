@@ -36,6 +36,10 @@ export interface CliControls {
   addDirectories: readonly string[]
   pluginDirectories: readonly string[]
   pluginUrls: readonly string[]
+  agentDefinitions?: string
+  mcpConfigs: readonly string[]
+  strictMcpConfig: boolean
+  disableSlashCommands: boolean
   tools: readonly string[] | undefined
   allowedTools: readonly string[]
   disallowedTools: readonly string[]
@@ -424,6 +428,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let legacyJson = false
   let optionsEnded = false
   let settings: string | undefined
+  let agentDefinitions: string | undefined
+  const mcpConfigs: string[] = []
+  let strictMcpConfig = false
+  let disableSlashCommands = false
   let settingSources: ('user' | 'project' | 'local')[] | undefined
   let safeMode = false
   let bare = false
@@ -571,6 +579,20 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--settings may only be specified once')
       settings = selectedSettings.value
       index += selectedSettings.consumed
+      continue
+    }
+    const selectedAgents = optionValue(argv, index, '--agents')
+    if (selectedAgents) {
+      if (agentDefinitions !== undefined)
+        throw new Error('--agents may only be specified once')
+      agentDefinitions = selectedAgents.value
+      index += selectedAgents.consumed
+      continue
+    }
+    const selectedMcpConfigs = listOptionValue(argv, index, ['--mcp-config'])
+    if (selectedMcpConfigs) {
+      mcpConfigs.push(...selectedMcpConfigs.values)
+      index += selectedMcpConfigs.consumed
       continue
     }
     const selectedSources =
@@ -766,6 +788,14 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       bare = true
       continue
     }
+    if (value === '--strict-mcp-config') {
+      strictMcpConfig = true
+      continue
+    }
+    if (value === '--disable-slash-commands') {
+      disableSlashCommands = true
+      continue
+    }
     if (value === '--dangerously-skip-permissions') {
       dangerouslySkipPermissions = true
       continue
@@ -941,6 +971,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     verbose,
     legacyJson,
     settings,
+    ...(agentDefinitions === undefined ? {} : { agentDefinitions }),
+    mcpConfigs,
+    strictMcpConfig,
+    disableSlashCommands,
     settingSources,
     safeMode,
     bare,

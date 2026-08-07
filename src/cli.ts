@@ -187,6 +187,10 @@ Options:
   -d, --debug                        Enable MCP server debug logging
   --no-session-persistence            Keep print-mode session in memory only
   --agent <name>                      Select a shared agent definition
+  --agents <json>                      Define inline agents for this session
+  --mcp-config <configs...>            Load MCP server JSON files or objects
+  --strict-mcp-config                  Ignore configured MCP servers
+  --disable-slash-commands             Disable skills and slash commands
   --settings <file-or-json>           Load additional settings
   --setting-sources <sources>         user, project, local, or an empty list
   --safe-mode                         Disable shared customizations
@@ -536,15 +540,23 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ...loadedResources,
     commands: [...loadedResources.commands, ...pluginResources.commands],
     skills: [...loadedResources.skills, ...pluginResources.skills],
-    agents: [...loadedResources.agents, ...pluginResources.agents],
+    agents: [
+      ...loadedResources.agents,
+      ...pluginResources.agents,
+      ...cli.inlineAgents,
+    ],
     settings: [
       ...loadedResources.settings,
       ...pluginResources.settings,
       ...(cli.additionalSettings ? [cli.additionalSettings] : []),
     ],
-    mcp: [...loadedResources.mcp, ...pluginResources.mcp],
+    mcp: cli.strictMcpConfig
+      ? cli.mcpResources
+      : [...loadedResources.mcp, ...pluginResources.mcp, ...cli.mcpResources],
   }
-  const extensions = new ClaudeExtensionCatalog(resources)
+  const extensions = new ClaudeExtensionCatalog(resources, {
+    disableSlashCommands: cli.disableSlashCommands,
+  })
   const memoryDirectory =
     cli.safeMode || cli.bare
       ? undefined

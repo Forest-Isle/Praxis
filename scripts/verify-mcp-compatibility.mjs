@@ -24,6 +24,7 @@ const markers = {
   done: 'MCP_PRAXIS_DONE_4075',
 }
 let providerMessages = ''
+const providerRequests = []
 
 const server = createServer(async (request, response) => {
   let body = ''
@@ -64,40 +65,52 @@ const server = createServer(async (request, response) => {
   }
 
   const providerRequest = JSON.parse(body)
+  providerRequests.push(providerRequest)
   providerMessages = JSON.stringify(providerRequest.messages ?? [])
+  const availableTools = new Set(
+    (providerRequest.tools ?? []).map((tool) => tool.function?.name),
+  )
+  const expectedMarkers = [
+    ...(availableTools.has('mcp__fixture__marker') ? [markers.local] : []),
+    ...(availableTools.has('mcp__http_fixture__marker') ? [markers.http] : []),
+  ]
   response.writeHead(200, { 'content-type': 'text/event-stream' })
-  if (
-    providerMessages.includes(markers.local) &&
-    providerMessages.includes(markers.http)
-  ) {
+  if (expectedMarkers.every((marker) => providerMessages.includes(marker))) {
     response.end(
       `data: ${JSON.stringify({ choices: [{ delta: { content: markers.done } }] })}\n\ndata: [DONE]\n\n`,
     )
     return
   }
+  const toolCalls = [
+    ...(availableTools.has('mcp__fixture__marker')
+      ? [
+          {
+            index: 0,
+            id: 'call_stdio',
+            type: 'function',
+            function: { name: 'mcp__fixture__marker', arguments: '{}' },
+          },
+        ]
+      : []),
+    ...(availableTools.has('mcp__http_fixture__marker')
+      ? [
+          {
+            index: availableTools.has('mcp__fixture__marker') ? 1 : 0,
+            id: 'call_http',
+            type: 'function',
+            function: {
+              name: 'mcp__http_fixture__marker',
+              arguments: '{}',
+            },
+          },
+        ]
+      : []),
+  ]
   response.end(
     `data: ${JSON.stringify({
       choices: [
         {
-          delta: {
-            tool_calls: [
-              {
-                index: 0,
-                id: 'call_stdio',
-                type: 'function',
-                function: { name: 'mcp__fixture__marker', arguments: '{}' },
-              },
-              {
-                index: 1,
-                id: 'call_http',
-                type: 'function',
-                function: {
-                  name: 'mcp__http_fixture__marker',
-                  arguments: '{}',
-                },
-              },
-            ],
-          },
+          delta: { tool_calls: toolCalls },
           finish_reason: 'tool_calls',
         },
       ],
@@ -227,6 +240,57 @@ process.stdin.on('data', chunk => {
   if (providerMessages.includes(markers.user)) {
     throw new Error('Praxis did not apply local-over-user MCP precedence')
   }
+
+  providerMessages = ''
+  providerRequests.length = 0
+  const explicitMcp = JSON.stringify({
+    mcpServers: {
+      http_fixture: {
+        type: 'http',
+        url: `http://127.0.0.1:${address.port}/mcp`,
+      },
+    },
+  })
+  const strictExecution = await execFileAsync(
+    process.execPath,
+    [
+      cli,
+      'run',
+      '--json',
+      '--strict-mcp-config',
+      '--mcp-config',
+      explicitMcp,
+      '--',
+      'Call the available MCP marker tool.',
+    ],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: configRoot,
+        PRAXIS_API_KEY: 'fixture-key',
+        PRAXIS_MODEL: 'fixture-model',
+        PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+      },
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  )
+  assertContains(strictExecution.stdout, markers.done, 'strict MCP result')
+  assertContains(providerMessages, markers.http, 'strict explicit MCP call')
+  if (providerMessages.includes(markers.local)) {
+    throw new Error('--strict-mcp-config loaded configured local MCP server')
+  }
+  const firstStrictTools = new Set(
+    (providerRequests[0]?.tools ?? []).map((tool) => tool.function?.name),
+  )
+  if (
+    firstStrictTools.has('mcp__fixture__marker') ||
+    !firstStrictTools.has('mcp__http_fixture__marker')
+  ) {
+    throw new Error(
+      `Strict MCP tool set mismatch: ${JSON.stringify([...firstStrictTools])}`,
+    )
+  }
   const pid = Number(await readFile(pidFile, 'utf8'))
   try {
     process.kill(pid, 0)
@@ -240,7 +304,7 @@ process.stdin.on('data', chunk => {
   }
 
   console.log(
-    `Claude ${version} MCP compatibility passed: user/local precedence, stdio and HTTP discovery/call, and subprocess cleanup`,
+    `Claude ${version} MCP compatibility passed: user/local precedence, explicit strict config, stdio and HTTP discovery/call, and subprocess cleanup`,
   )
 } finally {
   if (server.listening) await closeServer()

@@ -84,4 +84,53 @@ describe('CLI controls', () => {
       ),
     ).rejects.toThrow('not a directory')
   })
+
+  it('resolves inline agents and MCP config files or JSON values', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-cli-controls-'))
+    roots.push(cwd)
+    await writeFile(
+      join(cwd, 'mcp.json'),
+      JSON.stringify({ mcpServers: { file: { command: 'fixture' } } }),
+    )
+
+    await expect(
+      resolveCliControls(
+        {
+          ...DEFAULT_CLI_CONTROLS,
+          agentDefinitions: JSON.stringify({
+            reviewer: { description: 'Review', prompt: 'Review files' },
+          }),
+          mcpConfigs: [
+            'mcp.json',
+            JSON.stringify({ mcpServers: { inline: { command: 'fixture' } } }),
+          ],
+          strictMcpConfig: true,
+          disableSlashCommands: true,
+        },
+        cwd,
+      ),
+    ).resolves.toMatchObject({
+      inlineAgents: [
+        {
+          path: '<command-line-agent:reviewer>',
+          content: expect.stringContaining('Review files'),
+        },
+      ],
+      mcpResources: [
+        { path: join(cwd, 'mcp.json') },
+        { path: '<command-line:2>' },
+      ],
+      strictMcpConfig: true,
+      disableSlashCommands: true,
+    })
+    await expect(
+      resolveCliControls(
+        {
+          ...DEFAULT_CLI_CONTROLS,
+          agentDefinitions: JSON.stringify({ reviewer: { prompt: '' } }),
+        },
+        cwd,
+      ),
+    ).rejects.toThrow('requires a non-empty prompt')
+  })
 })

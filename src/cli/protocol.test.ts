@@ -255,6 +255,40 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('parses inline agents and explicit MCP injection controls', () => {
+    expect(
+      parseCliInvocation([
+        '--agents',
+        '{"reviewer":{"description":"Review","prompt":"Review files"}}',
+        '--mcp-config',
+        'one.json',
+        '{"mcpServers":{"fixture":{"command":"fixture"}}}',
+        '--strict-mcp-config',
+        '--disable-slash-commands',
+        'hello',
+      ]),
+    ).toMatchObject({
+      agentDefinitions:
+        '{"reviewer":{"description":"Review","prompt":"Review files"}}',
+      mcpConfigs: [
+        'one.json',
+        '{"mcpServers":{"fixture":{"command":"fixture"}}}',
+      ],
+      strictMcpConfig: true,
+      disableSlashCommands: true,
+      args: ['hello'],
+    })
+  })
+
+  it('requires an option boundary after variadic MCP configs', () => {
+    expect(
+      parseCliInvocation(['--mcp-config', 'one.json', '--', 'prompt']),
+    ).toMatchObject({ mcpConfigs: ['one.json'], args: ['prompt'] })
+    expect(
+      parseCliInvocation(['--mcp-config', 'one.json', 'prompt']),
+    ).toMatchObject({ mcpConfigs: ['one.json', 'prompt'], args: [] })
+  })
+
   it('parses repeatable plugin URLs', () => {
     expect(
       parseCliInvocation([
