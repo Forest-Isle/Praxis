@@ -471,8 +471,8 @@ records require a Praxis producer before they can be marked complete.
 - [x] foreground/background Agent and background Bash task lifecycle records
 - [x] protocol field mapping and focused runtime/CLI compatibility tests
 - [x] built-package `test:stream-json-compat` gate against a local Anthropic SSE provider
-- [ ] local command output and file persistence events with real single-user
-      producers
+- [x] local command output classified as assistant records by the 2.1.208
+      mapper; remote BYOC file persistence excluded from single-user CLI scope
 
 ## Stage 46 - machine result envelope contract
 
@@ -505,3 +505,14 @@ summary request; summary failures never fail the primary turn.
 - [x] asynchronous provider-backed summary producer using Claude's prompt
       contract and bounded tool input/output context
 - [x] native `tool_use_summary` stream record and runtime/protocol tests
+
+## Stage 49 - machine-I/O scope closure
+
+Status: complete for the single-user local CLI boundary.
+
+- [x] source and black-box evidence prove local slash-command output uses
+      assistant records rather than `local_command_output`
+- [x] `files_persisted` classified as remote BYOC/session-ingress behavior and
+      excluded with the enterprise product surface
+- [x] provider-neutral unknown price and failed-request timing remain explicit
+      `null` instead of fabricated values
