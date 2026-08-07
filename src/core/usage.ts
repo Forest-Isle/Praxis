@@ -9,6 +9,16 @@ export interface ModelPricing {
 
 export type ModelPricingTable = Readonly<Record<string, ModelPricing>>
 
+export type ModelPricingSource = 'builtin' | 'environment' | 'unknown'
+
+export interface ModelPricingDiagnosis {
+  model: string
+  source: ModelPricingSource
+  pricing?: ModelPricing
+  policy: 'fail-closed'
+  budgetBehavior: 'enforce' | 'reject-before-provider'
+}
+
 const BUILTIN_PRICING: ModelPricingTable = {
   'claude-3-5-sonnet-20241022': {
     inputPerMillionUsd: 3,
@@ -84,13 +94,34 @@ function parsePricing(value: unknown, label: string): ModelPricing {
 
 export class ModelPricingRegistry {
   private readonly table: ModelPricingTable
+  private readonly environmentModels: ReadonlySet<string>
 
   constructor(overrides: ModelPricingTable = {}) {
     this.table = { ...BUILTIN_PRICING, ...overrides }
+    this.environmentModels = new Set(Object.keys(overrides))
   }
 
   resolve(model: string): ModelPricing | undefined {
     return this.table[model]
+  }
+
+  diagnose(model: string): ModelPricingDiagnosis {
+    const pricing = this.resolve(model)
+    if (!pricing) {
+      return {
+        model,
+        source: 'unknown',
+        policy: 'fail-closed',
+        budgetBehavior: 'reject-before-provider',
+      }
+    }
+    return {
+      model,
+      source: this.environmentModels.has(model) ? 'environment' : 'builtin',
+      pricing,
+      policy: 'fail-closed',
+      budgetBehavior: 'enforce',
+    }
   }
 
   static fromEnvironment(value: string | undefined): ModelPricingRegistry {

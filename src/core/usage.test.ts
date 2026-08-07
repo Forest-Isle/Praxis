@@ -43,8 +43,25 @@ describe('ModelPricingRegistry', () => {
   })
 
   it('returns no pricing for unknown models', () => {
-    expect(
-      new ModelPricingRegistry().resolve('fixture-unknown'),
-    ).toBeUndefined()
+    const registry = new ModelPricingRegistry()
+    expect(registry.resolve('fixture-unknown')).toBeUndefined()
+    expect(registry.diagnose('fixture-unknown')).toEqual({
+      model: 'fixture-unknown',
+      source: 'unknown',
+      policy: 'fail-closed',
+      budgetBehavior: 'reject-before-provider',
+    })
+  })
+
+  it('identifies builtin and environment pricing sources', () => {
+    const registry = new ModelPricingRegistry({
+      'private-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 2 },
+    })
+    expect(registry.diagnose('gpt-4o').source).toBe('builtin')
+    expect(registry.diagnose('private-model')).toMatchObject({
+      source: 'environment',
+      budgetBehavior: 'enforce',
+      policy: 'fail-closed',
+    })
   })
 })

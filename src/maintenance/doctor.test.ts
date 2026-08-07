@@ -64,6 +64,39 @@ afterEach(async () => {
 })
 
 describe('Praxis doctor', () => {
+  it('diagnoses unknown model pricing without weakening fail-closed policy', async () => {
+    const value = await fixture()
+    const report = await runDoctor({
+      version: '0.1.0',
+      executablePath: value.executablePath,
+      nodeExecutablePath: process.execPath,
+      nodeVersion: 'v24.1.0',
+      configRoot: value.configRoot,
+      claudeStatePath: join(value.configRoot, '.claude.json'),
+      cwd: value.projectRoot,
+      environment: {
+        PRAXIS_PROVIDER: 'anthropic',
+        PRAXIS_API_KEY: 'secret-not-for-output',
+        PRAXIS_MODEL: 'private-provider-model',
+      },
+      detectClaudeVersion: async () => '2.1.208',
+    })
+    const provider = report.checks.find(({ id }) => id === 'provider')
+    expect(report.ok).toBe(true)
+    expect(provider).toMatchObject({
+      status: 'warn',
+      details: {
+        pricing: {
+          model: 'private-provider-model',
+          source: 'unknown',
+          policy: 'fail-closed',
+          budgetBehavior: 'reject-before-provider',
+        },
+      },
+    })
+    expect(JSON.stringify(report)).not.toContain('secret-not-for-output')
+  })
+
   it('validates installation, runtime, provider, settings, plugins, and MCP', async () => {
     const value = await fixture()
     const pluginRoot = join(value.root, 'plugin')

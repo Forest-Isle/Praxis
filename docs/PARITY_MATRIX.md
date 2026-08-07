@@ -59,24 +59,24 @@ Evidence levels:
 
 ## Runtime and controls
 
-| Capability                    | Status                      | Evidence / remaining work                                                                                                                     |
-| ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Provider-neutral agent loop   | Complete                    | OpenAI-compatible and Anthropic streaming/tool loops                                                                                          |
-| Context budget and compaction | Complete                    | Provider capability budget, native compact records, live reopen                                                                               |
-| Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                                                   |
-| Background agents and tasks   | Complete for local runtime  | Agent/Bash task lifecycle plus top-level persistent dispatch, live logs, attach, stop, stale-worker repair, and shared transcripts            |
-| Agent messaging               | Complete for local Agent    | Ordered SendMessage to running/completed IDs, later-turn sidechain hydration, completion notification                                         |
-| Permissions                   | Complete                    | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass, and context-aware `auto` classifier complete                                          |
-| Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                                                |
-| Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                           |
-| System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                                                   |
-| Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                                       |
-| Model selection               | Complete                    | Environment and `--model` invocation selection, fallback model resolution                                                                     |
-| Effort and fallback           | Complete                    | `--effort`, retryable three-attempt fallback chain, print-only validation                                                                     |
-| Structured output             | Complete                    | `--json-schema` AJV validation, hidden tool capture, exact-once enforcement, `structured_output` result                                       |
-| Cost and budget               | Partial                     | Built-in/explicit pricing, measured API duration, and `--max-budget-usd`; unknown/private model pricing remains null/fail-closed              |
-| Prompt suggestions            | Complete                    | `--prompt-suggestions` validates print/stream-json mode, performs an unpersisted auxiliary request, and emits post-result `prompt_suggestion` |
-| Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                              |
+| Capability                    | Status                      | Evidence / remaining work                                                                                                                                   |
+| ----------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider-neutral agent loop   | Complete                    | OpenAI-compatible and Anthropic streaming/tool loops                                                                                                        |
+| Context budget and compaction | Complete                    | Provider capability budget, native compact records, live reopen                                                                                             |
+| Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                                                                 |
+| Background agents and tasks   | Complete for local runtime  | Agent/Bash task lifecycle plus top-level persistent dispatch, live logs, attach, stop, stale-worker repair, and shared transcripts                          |
+| Agent messaging               | Complete for local Agent    | Ordered SendMessage to running/completed IDs, later-turn sidechain hydration, completion notification                                                       |
+| Permissions                   | Complete                    | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass, and context-aware `auto` classifier complete                                                        |
+| Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                                                              |
+| Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                                         |
+| System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                                                                 |
+| Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                                                     |
+| Model selection               | Complete                    | Environment and `--model` invocation selection, fallback model resolution                                                                                   |
+| Effort and fallback           | Complete                    | `--effort`, retryable three-attempt fallback chain, print-only validation                                                                                   |
+| Structured output             | Complete                    | `--json-schema` AJV validation, hidden tool capture, exact-once enforcement, `structured_output` result                                                     |
+| Cost and budget               | Complete                    | Built-in/environment pricing, explicit unknown-model diagnosis, measured API duration, null cost fail-closed, and `--max-budget-usd` pre-provider rejection |
+| Prompt suggestions            | Complete                    | `--prompt-suggestions` validates print/stream-json mode, performs an unpersisted auxiliary request, and emits post-result `prompt_suggestion`               |
+| Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                                            |
 
 ## Tool surface
 

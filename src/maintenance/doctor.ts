@@ -298,15 +298,18 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       const pricing = ModelPricingRegistry.fromEnvironment(
         options.environment.PRAXIS_PRICING_JSON,
       )
-      const knownPricing = pricing.resolve(model.trim()) !== undefined
+      const pricingDiagnosis = pricing.diagnose(model.trim())
+      const knownPricing = pricingDiagnosis.source !== 'unknown'
       return {
         ...(knownPricing ? {} : { status: 'warn' as const }),
-        summary: `${provider.provider} provider environment is valid`,
+        summary: knownPricing
+          ? `${provider.provider} provider environment is valid; model pricing is ${pricingDiagnosis.source}`
+          : `${provider.provider} provider environment is valid; model pricing is unavailable and fail-closed`,
         details: {
           provider: provider.provider,
           model,
           baseUrl,
-          ...(knownPricing ? {} : { pricing: 'model has no configured price' }),
+          pricing: pricingDiagnosis,
         },
       }
     }),
