@@ -82,7 +82,7 @@ Evidence levels:
 
 | Capability                         | Status   | Evidence / remaining work                                                                                                       |
 | ---------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Read / Write / Edit / Grep / Bash  | Complete | Path, symlink, bounds, permissions, persistence gates                                                                           |
+| Read / Write / Edit / Grep / Bash  | Complete | Claude schemas, text/PDF media, path/symlink/bounds/permission gates; live local-tool gate                                      |
 | Skill / Agent / MCP tools          | Complete | Provider-neutral registries, foreground/background sidechains, and native persistence                                           |
 | Glob                               | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                                                      |
 | WebFetch / WebSearch               | Partial  | Live schemas/search/errors/resume; real Praxis public fetch; Claude public-success oracle needs domain-safety service           |
