@@ -232,18 +232,19 @@ if (event.hook_event_name === 'SessionEnd') console.log('${markers.sessionEnd}')
     throw new Error('Hook compatibility provider did not bind')
   }
   const cli = join(process.cwd(), 'dist', 'cli.js')
+  const praxisEnvironment = {
+    ...process.env,
+    CLAUDE_CONFIG_DIR: configRoot,
+    PRAXIS_API_KEY: 'fixture-key',
+    PRAXIS_MODEL: 'fixture-model',
+    PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+  }
   const { stdout } = await execFileAsync(
     process.execPath,
     [cli, 'run', '--json', 'Run the hook compatibility tool.'],
     {
       cwd,
-      env: {
-        ...process.env,
-        CLAUDE_CONFIG_DIR: configRoot,
-        PRAXIS_API_KEY: 'fixture-key',
-        PRAXIS_MODEL: 'fixture-model',
-        PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
-      },
+      env: praxisEnvironment,
       maxBuffer: 4 * 1024 * 1024,
     },
   )
@@ -285,6 +286,57 @@ if (event.hook_event_name === 'SessionEnd') console.log('${markers.sessionEnd}')
   if (parseEntries(praxisTranscript).at(-1)?.type !== 'last-prompt') {
     throw new Error('Praxis SessionEnd changed the native transcript tail')
   }
+
+  const { stdout: streamStdout } = await execFileAsync(
+    process.execPath,
+    [
+      cli,
+      '-p',
+      '--verbose',
+      '--output-format',
+      'stream-json',
+      '--include-hook-events',
+      'Run the hook compatibility tool.',
+    ],
+    {
+      cwd,
+      env: praxisEnvironment,
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  )
+  const hookRecords = parseEntries(streamStdout).filter(
+    (record) =>
+      record.type === 'system' &&
+      ['hook_started', 'hook_progress', 'hook_response'].includes(
+        record.subtype,
+      ),
+  )
+  const startedIds = new Set(
+    hookRecords
+      .filter((record) => record.subtype === 'hook_started')
+      .map((record) => record.hook_id),
+  )
+  const responses = hookRecords.filter(
+    (record) => record.subtype === 'hook_response',
+  )
+  if (startedIds.size === 0 || responses.length === 0) {
+    throw new Error(`Praxis emitted no hook lifecycle records: ${streamStdout}`)
+  }
+  for (const response of responses) {
+    if (!startedIds.has(response.hook_id)) {
+      throw new Error(`Praxis hook response has no start: ${response.hook_id}`)
+    }
+    if (
+      typeof response.output !== 'string' ||
+      typeof response.stdout !== 'string' ||
+      typeof response.stderr !== 'string' ||
+      !['success', 'error', 'cancelled'].includes(response.outcome)
+    ) {
+      throw new Error(
+        `Invalid Praxis hook response: ${JSON.stringify(response)}`,
+      )
+    }
+  }
   await closeServer()
 
   const reopened = await runClaudeJson(
@@ -312,7 +364,7 @@ if (event.hook_event_name === 'SessionEnd') console.log('${markers.sessionEnd}')
   )
 
   console.log(
-    `Claude ${version} hook compatibility passed: lifecycle order, stdin envelope, input rewrite, context attachments, exit-2 blocking, Praxis execution, and Claude resume`,
+    `Claude ${version} hook compatibility passed: lifecycle order, stream records, stdin envelope, input rewrite, context attachments, exit-2 blocking, Praxis execution, and Claude resume`,
   )
 } finally {
   if (server.listening) await closeServer()

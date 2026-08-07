@@ -204,6 +204,7 @@ Options:
   --input-format <format>             text (default) or stream-json
   --output-format <format>            text (default), json, or stream-json
   --include-partial-messages          Emit stream_event records
+  --include-hook-events               Emit hook_started/progress/response records
   --replay-user-messages              Echo stream-json user records
   --retry-interrupted-tools           Approve prepared interrupted tools
   --verbose                           Required for stream-json output
@@ -710,7 +711,13 @@ const createDefaultService: CliDependencies['createService'] = async ({
       worktreeToolNames: selectedWorktreeTools,
       ...(cli.safeMode || cli.bare
         ? {}
-        : { hooks: new ClaudeHookRunner({ settings, cwd }) }),
+        : {
+            hooks: new ClaudeHookRunner({
+              settings,
+              cwd,
+              onEvent: (event) => eventSink({ type: 'hook', event }),
+            }),
+          }),
       ...(agent ? { agent } : {}),
       contextAssembler: new ClaudeContextAssembler({
         loadResources: loadContextResources,
@@ -2152,6 +2159,7 @@ async function execute(
         runtimeInfo,
         activeSessionId,
         includePartialMessages,
+        invocation.includeHookEvents,
       )
     }
     if (streamIterator) {

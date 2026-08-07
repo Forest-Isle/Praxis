@@ -6,7 +6,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
-import { ClaudeHookRunner, type ClaudeHookInput } from './claude-hooks.js'
+import {
+  ClaudeHookRunner,
+  type ClaudeHookInput,
+  type ClaudeHookStreamEvent,
+} from './claude-hooks.js'
 
 const input: ClaudeHookInput = {
   session_id: 'session',
@@ -112,6 +116,137 @@ describe('ClaudeHookRunner', () => {
     expect(executeCommand.mock.calls.map((call) => call[2])).toEqual([
       2_000, 600_000,
     ])
+  })
+
+  it('emits Claude-compatible hook lifecycle events without changing hook semantics', async () => {
+    const events: unknown[] = []
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              PreToolUse: [
+                { hooks: [{ type: 'command', command: 'fixture' }] },
+              ],
+            },
+          },
+          'user',
+        ),
+      ],
+      cwd: '/workspace',
+      onEvent: (event) => events.push(event),
+      executeCommand: async (...args) => {
+        args[4]?.({
+          stdout: 'partial',
+          stderr: '',
+          output: 'partial',
+        })
+        return {
+          stdout: JSON.stringify({
+            hookSpecificOutput: { additionalContext: 'ok' },
+          }),
+          stderr: '',
+          exitCode: 0,
+          durationMs: 3,
+          output: '{"hookSpecificOutput":{"additionalContext":"ok"}}',
+        }
+      },
+    })
+
+    await runner.run(input, 'Bash')
+    expect(events).toHaveLength(3)
+    expect(events.map((event) => (event as { type: string }).type)).toEqual([
+      'started',
+      'progress',
+      'response',
+    ])
+    expect(events[0]).toMatchObject({
+      type: 'started',
+      hookName: 'PreToolUse:Bash',
+      hookEvent: 'PreToolUse',
+      hookId: expect.any(String),
+    })
+    expect(events[2]).toMatchObject({
+      type: 'response',
+      outcome: 'success',
+      exitCode: 0,
+      output: '{"hookSpecificOutput":{"additionalContext":"ok"}}',
+    })
+  })
+
+  it('emits cancelled terminal events when hook execution aborts', async () => {
+    const events: ClaudeHookStreamEvent[] = []
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              PreToolUse: [
+                { hooks: [{ type: 'command', command: 'fixture' }] },
+              ],
+            },
+          },
+          'user',
+        ),
+      ],
+      cwd: '/workspace',
+      onEvent: (event) => events.push(event),
+      executeCommand: async () => {
+        throw new DOMException('cancelled', 'AbortError')
+      },
+    })
+
+    await expect(runner.run(input, 'Bash')).rejects.toThrow('cancelled')
+    expect(events.at(-1)).toMatchObject({
+      type: 'response',
+      outcome: 'cancelled',
+      output: 'cancelled',
+    })
+  })
+
+  it('emits cumulative progress from a long-running command hook', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-hook-progress-'))
+    const events: ClaudeHookStreamEvent[] = []
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+      "process.stdout.write('partial');setTimeout(()=>process.stdout.write('-done'),1300)",
+    )}`
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              PreToolUse: [{ hooks: [{ type: 'command', command }] }],
+            },
+          },
+          'user',
+        ),
+      ],
+      cwd: root,
+      onEvent: (event) => events.push(event),
+      maxTimeoutMs: 3_000,
+    })
+
+    try {
+      await runner.run({ ...input, cwd: root }, 'Bash')
+      expect(events.map((event) => event.type)).toEqual([
+        'started',
+        'progress',
+        'response',
+      ])
+      expect(events[1]).toMatchObject({
+        type: 'progress',
+        stdout: 'partial',
+        output: 'partial',
+      })
+      expect(events[2]).toMatchObject({
+        type: 'response',
+        stdout: 'partial-done',
+        output: 'partial-done',
+        outcome: 'success',
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('uses plain stdout as prompt context and exit two as a blocker', async () => {

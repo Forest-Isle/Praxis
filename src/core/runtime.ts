@@ -122,6 +122,20 @@ export type RuntimeEvent =
       isError: boolean
     }
   | { type: 'warning'; message: string }
+  | {
+      type: 'hook'
+      event: {
+        type: 'started' | 'progress' | 'response'
+        hookId: string
+        hookName: string
+        hookEvent: string
+        stdout?: string
+        stderr?: string
+        output?: string
+        exitCode?: number
+        outcome?: 'success' | 'error' | 'cancelled'
+      }
+    }
   | { type: 'failed'; message: string; retryable: boolean }
 
 export interface ToolExecutionResult {

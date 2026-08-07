@@ -40,6 +40,10 @@ Evidence levels:
 | No persistence                       | Complete                 | `--no-session-persistence` keeps print-mode sessions in memory; disk-session import leaves JSONL untouched                                     |
 | Top-level background session         | Complete                 | `--bg`/`--background`, managed session ID, detached persistent worker, idle attach, logs, stop, and live cross-resume gate                     |
 
+Stage 42 additionally verifies opt-in `hook_started`, `hook_progress`, and
+`hook_response` stream records, including Claude 2.1.208 string fields and
+started/optional-progress/response ordering.
+
 ## Shared Claude data plane
 
 | Capability                                 | Status                              | Evidence / remaining work                                                                                                                           |
@@ -116,6 +120,5 @@ Evidence levels:
    service available.
 2. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
    key if observable from future black-box evidence.
-3. Complete unknown-model pricing policy and diagnostics.
-4. Final live black-box matrix, package/performance regression, and macOS/Linux
+3. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.

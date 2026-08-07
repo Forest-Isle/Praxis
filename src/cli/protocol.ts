@@ -68,6 +68,7 @@ export interface CliInvocation extends CliControls {
   inputFormat: CliInputFormat
   outputFormat: CliOutputFormat
   includePartialMessages: boolean
+  includeHookEvents: boolean
   replayUserMessages: boolean
   retryInterruptedTools: boolean
   sessionId: string | undefined
@@ -365,6 +366,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let inputFormat: CliInputFormat = 'text'
   let outputFormat: CliOutputFormat = 'text'
   let includePartialMessages = false
+  let includeHookEvents = false
   let replayUserMessages = false
   let retryInterruptedTools = false
   let sessionId: string | undefined
@@ -743,6 +745,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       includePartialMessages = true
       continue
     }
+    if (value === '--include-hook-events') {
+      includeHookEvents = true
+      continue
+    }
     if (value === '--replay-user-messages') {
       replayUserMessages = true
       continue
@@ -797,6 +803,14 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   }
   if (includePartialMessages && legacyJson) {
     throw new Error('--include-partial-messages cannot be combined with --json')
+  }
+  if (includeHookEvents && outputFormat !== 'stream-json') {
+    throw new Error(
+      '--include-hook-events requires --output-format=stream-json',
+    )
+  }
+  if (includeHookEvents && legacyJson) {
+    throw new Error('--include-hook-events cannot be combined with --json')
   }
   if (promptSuggestions && (!print || outputFormat !== 'stream-json')) {
     throw new Error(
@@ -871,6 +885,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     inputFormat,
     outputFormat,
     includePartialMessages,
+    includeHookEvents,
     replayUserMessages,
     retryInterruptedTools,
     sessionId,
@@ -1239,6 +1254,7 @@ export class StreamJsonOutput {
     private readonly info: CliRuntimeInfo,
     private readonly sessionId: string,
     private readonly includePartialMessages: boolean,
+    private readonly includeHookEvents = false,
   ) {}
 
   init(): void {
@@ -1355,6 +1371,25 @@ export class StreamJsonOutput {
         type: 'system',
         subtype: 'warning',
         message: event.message,
+        session_id: this.sessionId,
+      })
+      return
+    }
+    if (event.type === 'hook') {
+      if (!this.includeHookEvents) return
+      const hook = event.event
+      this.write({
+        type: 'system',
+        subtype: `hook_${hook.type}`,
+        hook_id: hook.hookId,
+        hook_name: hook.hookName,
+        hook_event: hook.hookEvent,
+        ...(hook.stdout === undefined ? {} : { stdout: hook.stdout }),
+        ...(hook.stderr === undefined ? {} : { stderr: hook.stderr }),
+        ...(hook.output === undefined ? {} : { output: hook.output }),
+        ...(hook.exitCode === undefined ? {} : { exit_code: hook.exitCode }),
+        ...(hook.outcome === undefined ? {} : { outcome: hook.outcome }),
+        uuid: randomUUID(),
         session_id: this.sessionId,
       })
       return

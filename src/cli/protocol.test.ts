@@ -332,6 +332,15 @@ describe('CLI protocol', () => {
       ['-p', '--continue', '--session-id', sessionId, 'hello'],
       ['-p', '--input-format', 'stream-json', '--json'],
       ['-p', '--include-partial-messages', '--json', 'hello'],
+      ['-p', '--include-hook-events', 'hello'],
+      [
+        '-p',
+        '--output-format',
+        'stream-json',
+        '--include-hook-events',
+        '--json',
+        'hello',
+      ],
     ]) {
       expect(() => parseCliInvocation(argv)).toThrow()
     }
@@ -582,6 +591,82 @@ describe('CLI protocol', () => {
         'test-model': { costUSD: null },
       },
     })
+  })
+
+  it('emits hook lifecycle system records only when requested', () => {
+    const records: Record<string, unknown>[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      false,
+      true,
+    )
+    output.sink({
+      type: 'hook',
+      event: {
+        type: 'started',
+        hookId: 'hook-1',
+        hookName: 'PreToolUse:Bash',
+        hookEvent: 'PreToolUse',
+      },
+    })
+    output.sink({
+      type: 'hook',
+      event: {
+        type: 'progress',
+        hookId: 'hook-1',
+        hookName: 'PreToolUse:Bash',
+        hookEvent: 'PreToolUse',
+        stdout: 'out',
+        stderr: '',
+        output: '{"ok":true}',
+      },
+    })
+    output.sink({
+      type: 'hook',
+      event: {
+        type: 'response',
+        hookId: 'hook-1',
+        hookName: 'PreToolUse:Bash',
+        hookEvent: 'PreToolUse',
+        stdout: 'out',
+        stderr: '',
+        output: '{"ok":true}',
+        exitCode: 0,
+        outcome: 'success',
+      },
+    })
+    expect(records.map((record) => record.subtype)).toEqual([
+      'hook_started',
+      'hook_progress',
+      'hook_response',
+    ])
+    expect(records[2]).toMatchObject({
+      hook_id: 'hook-1',
+      hook_name: 'PreToolUse:Bash',
+      exit_code: 0,
+      outcome: 'success',
+      uuid: expect.any(String),
+    })
+
+    const hidden: Record<string, unknown>[] = []
+    const defaultOutput = new StreamJsonOutput(
+      (record) => hidden.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      false,
+    )
+    defaultOutput.sink({
+      type: 'hook',
+      event: {
+        type: 'started',
+        hookId: 'hook-2',
+        hookName: 'PreToolUse:Bash',
+        hookEvent: 'PreToolUse',
+      },
+    })
+    expect(hidden).toEqual([])
   })
 
   it('emits complete partial text and tool event sequences when requested', () => {

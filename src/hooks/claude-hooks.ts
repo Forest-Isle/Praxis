@@ -41,6 +41,40 @@ export interface ClaudeHookExecution {
   durationMs: number
 }
 
+export interface ClaudeHookCommandProgress {
+  stdout: string
+  stderr: string
+  output?: string
+}
+
+export type ClaudeHookStreamEvent =
+  | {
+      type: 'started'
+      hookId: string
+      hookName: string
+      hookEvent: ClaudeHookEventName
+    }
+  | {
+      type: 'progress'
+      hookId: string
+      hookName: string
+      hookEvent: ClaudeHookEventName
+      stdout: string
+      stderr: string
+      output: string
+    }
+  | {
+      type: 'response'
+      hookId: string
+      hookName: string
+      hookEvent: ClaudeHookEventName
+      stdout: string
+      stderr: string
+      output: string
+      exitCode?: number
+      outcome: 'success' | 'error' | 'cancelled'
+    }
+
 export interface ClaudeHookOutcome {
   executions: readonly ClaudeHookExecution[]
   additionalContext: readonly string[]
@@ -65,6 +99,8 @@ interface ProcessResult {
   stderr: string
   exitCode: number
   durationMs: number
+  output?: string
+  aborted?: boolean
 }
 
 export type ClaudeHookCommandExecutor = (
@@ -72,6 +108,7 @@ export type ClaudeHookCommandExecutor = (
   input: ClaudeHookInput,
   timeoutMs: number,
   signal?: AbortSignal,
+  onProgress?: (progress: ClaudeHookCommandProgress) => void,
 ) => Promise<ProcessResult>
 
 export interface ClaudeHookRunnerOptions {
@@ -80,6 +117,7 @@ export interface ClaudeHookRunnerOptions {
   maxOutputBytes?: number
   maxTimeoutMs?: number
   executeCommand?: ClaudeHookCommandExecutor
+  onEvent?: (event: ClaudeHookStreamEvent) => void
 }
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
@@ -200,6 +238,18 @@ function outputRecord(stdout: string): Record<string, unknown> | null {
   }
 }
 
+function hookErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function hookWasCancelled(error: unknown, signal?: AbortSignal): boolean {
+  return (
+    signal?.aborted === true ||
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError')
+  )
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
@@ -219,12 +269,14 @@ export class ClaudeHookRunner {
   private readonly maxOutputBytes: number
   private readonly maxTimeoutMs: number
   private readonly executeCommand: ClaudeHookCommandExecutor
+  private readonly onEvent: ((event: ClaudeHookStreamEvent) => void) | undefined
 
   constructor(options: ClaudeHookRunnerOptions) {
     this.settings = options.settings
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
     this.maxTimeoutMs = options.maxTimeoutMs ?? DEFAULT_TIMEOUT_MS
     this.executeCommand = options.executeCommand ?? this.runCommand.bind(this)
+    this.onEvent = options.onEvent
   }
 
   async run(
@@ -250,25 +302,106 @@ export class ClaudeHookRunner {
 
     for (const group of groups) {
       for (const hook of group.hooks) {
-        const result = await this.executeCommand(
-          hook.command,
-          input,
-          hook.timeoutMs,
-          signal,
-        )
+        const hookId = crypto.randomUUID()
+        const hookName = `${input.hook_event_name}${matcherValue ? `:${matcherValue}` : ''}`
+        this.onEvent?.({
+          type: 'started',
+          hookId,
+          hookName,
+          hookEvent: input.hook_event_name,
+        })
+        let result: ProcessResult
+        const reportProgress = (progress: ClaudeHookCommandProgress) => {
+          const stdout = redactSensitiveText(progress.stdout, sensitiveValues)
+          const stderr = redactSensitiveText(progress.stderr, sensitiveValues)
+          const output = redactSensitiveText(
+            progress.output ?? `${progress.stdout}${progress.stderr}`,
+            sensitiveValues,
+          )
+          if (
+            Buffer.byteLength(stdout) + Buffer.byteLength(stderr) >
+            this.maxOutputBytes
+          ) {
+            return
+          }
+          this.onEvent?.({
+            type: 'progress',
+            hookId,
+            hookName,
+            hookEvent: input.hook_event_name,
+            stdout,
+            stderr,
+            output,
+          })
+        }
+        try {
+          result = await this.executeCommand(
+            hook.command,
+            input,
+            hook.timeoutMs,
+            signal,
+            reportProgress,
+          )
+        } catch (error) {
+          const message = hookErrorMessage(error)
+          const cancelled = hookWasCancelled(error, signal)
+          this.onEvent?.({
+            type: 'response',
+            hookId,
+            hookName,
+            hookEvent: input.hook_event_name,
+            output: message,
+            stdout: '',
+            stderr: message,
+            ...(cancelled ? {} : { exitCode: 1 }),
+            outcome: cancelled ? 'cancelled' : 'error',
+          })
+          throw error
+        }
         const toolUseId =
           optionalString(input.tool_use_id) ?? crypto.randomUUID()
         const stdout = redactSensitiveText(result.stdout, sensitiveValues)
         const stderr = redactSensitiveText(result.stderr, sensitiveValues)
+        const output = redactSensitiveText(
+          result.output ?? `${result.stdout}${result.stderr}`,
+          sensitiveValues,
+        )
         if (
           Buffer.byteLength(stdout) + Buffer.byteLength(stderr) >
           this.maxOutputBytes
         ) {
-          throw new Error('Hook output exceeded byte limit')
+          const error = new Error('Hook output exceeded byte limit')
+          this.onEvent?.({
+            type: 'response',
+            hookId,
+            hookName,
+            hookEvent: input.hook_event_name,
+            output: hookErrorMessage(error),
+            stdout: '',
+            stderr: hookErrorMessage(error),
+            exitCode: 1,
+            outcome: 'error',
+          })
+          throw error
         }
+        this.onEvent?.({
+          type: 'response',
+          hookId,
+          hookName,
+          hookEvent: input.hook_event_name,
+          stdout,
+          stderr,
+          output,
+          exitCode: result.exitCode,
+          outcome: result.aborted
+            ? 'cancelled'
+            : result.exitCode === 0
+              ? 'success'
+              : 'error',
+        })
         executions.push({
           event: input.hook_event_name,
-          hookName: `${input.hook_event_name}${matcherValue ? `:${matcherValue}` : ''}`,
+          hookName,
           toolUseId,
           command: redactSensitiveText(hook.command, sensitiveValues),
           stdout,
@@ -287,9 +420,9 @@ export class ClaudeHookRunner {
         }
         if (result.exitCode !== 0) continue
 
-        const output = outputRecord(result.stdout)
-        const specific = isRecord(output?.hookSpecificOutput)
-          ? output.hookSpecificOutput
+        const parsedOutput = outputRecord(result.stdout)
+        const specific = isRecord(parsedOutput?.hookSpecificOutput)
+          ? parsedOutput.hookSpecificOutput
           : null
         const context = optionalString(specific?.additionalContext)
         if (context) {
@@ -306,10 +439,13 @@ export class ClaudeHookRunner {
         permissionDecisionReason = nextPermissionReason
           ? redactSensitiveText(nextPermissionReason, sensitiveValues)
           : permissionDecisionReason
-        if (output?.continue === false || output?.decision === 'block') {
+        if (
+          parsedOutput?.continue === false ||
+          parsedOutput?.decision === 'block'
+        ) {
           blockedReason = redactSensitiveText(
-            optionalString(output.stopReason) ??
-              optionalString(output.reason) ??
+            optionalString(parsedOutput.stopReason) ??
+              optionalString(parsedOutput.reason) ??
               'Hook blocked action',
             sensitiveValues,
           )
@@ -334,6 +470,7 @@ export class ClaudeHookRunner {
     input: ClaudeHookInput,
     timeoutMs: number,
     signal?: AbortSignal,
+    onProgress?: (progress: ClaudeHookCommandProgress) => void,
   ): Promise<ProcessResult> {
     return new Promise((resolve, reject) => {
       const startedAt = Date.now()
@@ -345,15 +482,29 @@ export class ClaudeHookRunner {
       })
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
+      const output: Buffer[] = []
       let outputBytes = 0
       let settled = false
       let terminationError: Error | undefined
       let spawnError: Error | undefined
       let killTimer: ReturnType<typeof setTimeout> | undefined
+      let lastProgressOutput = ''
+      const progressTimer = setInterval(() => {
+        const currentOutput = Buffer.concat(output).toString('utf8')
+        if (currentOutput === lastProgressOutput) return
+        lastProgressOutput = currentOutput
+        onProgress?.({
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: Buffer.concat(stderr).toString('utf8'),
+          output: currentOutput,
+        })
+      }, 1000)
+      progressTimer.unref()
       const finish = (callback: () => void) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        clearInterval(progressTimer)
         if (killTimer) clearTimeout(killTimer)
         signal?.removeEventListener('abort', abort)
         callback()
@@ -389,6 +540,7 @@ export class ClaudeHookRunner {
           return
         }
         target.push(chunk)
+        output.push(chunk)
       }
       child.stdout.on('data', collect(stdout))
       child.stderr.on('data', collect(stderr))
@@ -408,13 +560,15 @@ export class ClaudeHookRunner {
             stderr: Buffer.concat(stderr).toString('utf8'),
             exitCode: code ?? 1,
             durationMs: Date.now() - startedAt,
+            output: Buffer.concat(output).toString('utf8'),
           })
         })
       })
-      const timer = setTimeout(
-        () => terminate(new Error(`Hook timed out after ${timeoutMs}ms`)),
-        timeoutMs,
-      )
+      const timer = setTimeout(() => {
+        terminate(
+          new DOMException(`Hook timed out after ${timeoutMs}ms`, 'AbortError'),
+        )
+      }, timeoutMs)
       signal?.addEventListener('abort', abort, { once: true })
       if (signal?.aborted) abort()
       child.stdin.end(JSON.stringify(input))
