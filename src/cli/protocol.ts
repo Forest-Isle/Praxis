@@ -36,6 +36,8 @@ export interface CliControls {
   addDirectories: readonly string[]
   pluginDirectories: readonly string[]
   pluginUrls: readonly string[]
+  maxTurns?: number
+  betas: readonly string[]
   agentDefinitions?: string
   mcpConfigs: readonly string[]
   strictMcpConfig: boolean
@@ -409,6 +411,16 @@ function splitList(values: readonly string[]): string[] {
   )
 }
 
+function positiveInteger(value: string, label: string): number {
+  if (!/^\d+$/.test(value))
+    throw new Error(`${label} must be a positive integer`)
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} must be a positive integer`)
+  }
+  return parsed
+}
+
 export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   const args: string[] = []
   let agent: string | undefined
@@ -428,6 +440,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let legacyJson = false
   let optionsEnded = false
   let settings: string | undefined
+  let maxTurns: number | undefined
+  const betas: string[] = []
   let agentDefinitions: string | undefined
   const mcpConfigs: string[] = []
   let strictMcpConfig = false
@@ -579,6 +593,20 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--settings may only be specified once')
       settings = selectedSettings.value
       index += selectedSettings.consumed
+      continue
+    }
+    const selectedMaxTurns = optionValue(argv, index, '--max-turns')
+    if (selectedMaxTurns) {
+      if (maxTurns !== undefined)
+        throw new Error('--max-turns may only be specified once')
+      maxTurns = positiveInteger(selectedMaxTurns.value, '--max-turns')
+      index += selectedMaxTurns.consumed
+      continue
+    }
+    const selectedBetas = listOptionValue(argv, index, ['--betas'])
+    if (selectedBetas) {
+      betas.push(...splitList(selectedBetas.values))
+      index += selectedBetas.consumed
       continue
     }
     const selectedAgents = optionValue(argv, index, '--agents')
@@ -896,6 +924,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       '--prompt-suggestions requires --print and --output-format=stream-json',
     )
   }
+  if (maxTurns !== undefined && !print) {
+    throw new Error('--max-turns requires --print')
+  }
   if (
     replayUserMessages &&
     (inputFormat !== 'stream-json' || outputFormat !== 'stream-json')
@@ -985,6 +1016,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     addDirectories,
     pluginDirectories,
     pluginUrls,
+    ...(maxTurns === undefined ? {} : { maxTurns }),
+    betas,
     tools,
     allowedTools,
     disallowedTools,

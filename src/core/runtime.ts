@@ -95,6 +95,7 @@ export interface ModelRequest {
   webSearch?: ModelWebSearch
   signal?: AbortSignal
   effort?: string
+  betas?: readonly string[]
 }
 
 export interface ModelProviderCapabilities {
@@ -304,6 +305,8 @@ export interface AgentRunRequest {
   signal?: AbortSignal
   effort?: string
   collectMetrics?: boolean
+  maxModelTurns?: number
+  betas?: readonly string[]
 }
 
 export interface AgentToolRecoveryRequest extends Pick<
@@ -462,7 +465,8 @@ export class AgentRuntime {
     const definitions = this.provider.capabilities.tools
       ? (this.options.tools?.definitions() ?? [])
       : []
-    const maxModelTurns = this.options.maxModelTurns ?? 16
+    const maxModelTurns =
+      request.maxModelTurns ?? this.options.maxModelTurns ?? 16
     const maxModelOutputBytes = this.options.maxModelOutputBytes ?? 1024 * 1024
     const maxToolCallsPerTurn = this.options.maxToolCallsPerTurn ?? 32
     const maxToolInputBytes = this.options.maxToolInputBytes ?? 1024 * 1024
@@ -521,6 +525,7 @@ export class AgentRuntime {
         if (definitions.length > 0) providerRequest.tools = definitions
         if (request.signal) providerRequest.signal = request.signal
         if (request.effort) providerRequest.effort = request.effort
+        if (request.betas?.length) providerRequest.betas = request.betas
 
         let text = ''
         let textBytes = 0

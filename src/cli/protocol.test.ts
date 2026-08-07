@@ -177,6 +177,31 @@ describe('CLI protocol', () => {
     )
   })
 
+  it('parses print-only turn and beta controls', () => {
+    expect(
+      parseCliInvocation([
+        '-p',
+        '--max-turns',
+        '3',
+        '--betas',
+        'context-1m-2025-08-07',
+        'second-beta',
+        '--',
+        'prompt',
+      ]),
+    ).toMatchObject({
+      maxTurns: 3,
+      betas: ['context-1m-2025-08-07', 'second-beta'],
+      args: ['prompt'],
+    })
+    expect(() => parseCliInvocation(['--max-turns', '3'])).toThrow(
+      '--max-turns requires --print',
+    )
+    expect(() => parseCliInvocation(['-p', '--max-turns', '0'])).toThrow(
+      'positive integer',
+    )
+  })
+
   it('parses and restricts prompt suggestions', () => {
     expect(
       parseCliInvocation([

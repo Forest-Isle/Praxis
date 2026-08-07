@@ -108,6 +108,8 @@ export interface ClaudeSessionServiceOptions {
   enableWorkflows?: boolean
   providerForModel?: (model: string) => ModelProvider
   effort?: string
+  maxModelTurns?: number
+  betas?: readonly string[]
   structuredOutputSchema?: Record<string, unknown>
   pricing?: ModelPricingRegistry
   maxBudgetUsd?: number
@@ -1458,6 +1460,10 @@ export class ClaudeSessionService {
           toolResultDirectory,
           observer,
           ...(this.options.effort ? { effort: this.options.effort } : {}),
+          ...(this.options.maxModelTurns
+            ? { maxModelTurns: this.options.maxModelTurns }
+            : {}),
+          ...(this.options.betas?.length ? { betas: this.options.betas } : {}),
           ...(this.options.collectMetrics ? { collectMetrics: true } : {}),
           reloadMessages: async () => {
             await compactIfNeeded([], currentTurnUserMessages ?? [])

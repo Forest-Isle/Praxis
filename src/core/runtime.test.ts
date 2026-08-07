@@ -58,6 +58,23 @@ describe('AgentRuntime', () => {
     expect(calls).toBe(1)
   })
 
+  it('honors a per-run maximum model turn limit', async () => {
+    let calls = 0
+    const provider = providerFrom(async function* () {
+      calls += 1
+      yield { type: 'text-delta', delta: `turn-${calls}` }
+    })
+
+    await expect(
+      new AgentRuntime(provider).run({
+        messages: [{ role: 'user', content: 'limit' }],
+        maxModelTurns: 1,
+        onStop: async () => ['continue'],
+      }),
+    ).rejects.toThrow('Agent exceeded 1 model turns')
+    expect(calls).toBe(1)
+  })
+
   it('emits typed state, text, usage, and completion events', async () => {
     const provider = providerFrom(async function* () {
       yield { type: 'text-delta', delta: 'hel' }

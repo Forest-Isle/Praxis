@@ -187,6 +187,8 @@ Options:
   -d, --debug                        Enable MCP server debug logging
   --no-session-persistence            Keep print-mode session in memory only
   --agent <name>                      Select a shared agent definition
+  --max-turns <turns>                  Limit print-mode model round trips
+  --betas <betas...>                   Include Anthropic beta headers
   --agents <json>                      Define inline agents for this session
   --mcp-config <configs...>            Load MCP server JSON files or objects
   --strict-mcp-config                  Ignore configured MCP servers
@@ -445,6 +447,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
     eventSink,
     sessionPersistence: cli.sessionPersistence,
     effort: cli.effort ?? 'high',
+    ...(cli.maxTurns === undefined ? {} : { maxModelTurns: cli.maxTurns }),
+    ...(cli.betas.length ? { betas: cli.betas } : {}),
     ...(cli.jsonSchema ? { structuredOutputSchema: cli.jsonSchema } : {}),
     ...(cli.maxBudgetUsd === undefined
       ? {}

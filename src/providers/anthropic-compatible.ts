@@ -584,6 +584,9 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         'anthropic-version': this.anthropicVersion,
         'content-type': 'application/json',
         'x-api-key': this.options.apiKey,
+        ...(request.betas?.length
+          ? { 'anthropic-beta': request.betas.join(',') }
+          : {}),
       },
       body: JSON.stringify({
         model: this.options.model,

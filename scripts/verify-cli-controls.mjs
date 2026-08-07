@@ -19,6 +19,7 @@ import { detectClaudeVersion, writeFixture } from './lib/claude-probe.mjs'
 const execFileAsync = promisify(execFile)
 const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-cli-controls-'))
 const requests = []
+const betaHeaders = []
 let responseNumber = 0
 
 const server = createServer(async (request, response) => {
@@ -34,6 +35,7 @@ const server = createServer(async (request, response) => {
     return
   }
   requests.push(JSON.parse(source))
+  betaHeaders.push(request.headers['anthropic-beta'] ?? null)
   responseNumber += 1
   const text = `CLI_CONTROL_RESPONSE_${responseNumber}`
   const events = [
@@ -205,6 +207,18 @@ try {
     'user source',
   ])
   assertEqual(markers(userOnly.request), [userMarker], 'user source')
+
+  await runPraxis([
+    '--no-session-persistence',
+    '--betas',
+    'fixture-beta-a',
+    'fixture-beta-b',
+    '--',
+    'beta headers',
+  ])
+  if (betaHeaders.at(-1) !== 'fixture-beta-a,fixture-beta-b') {
+    throw new Error(`Anthropic beta header mismatch: ${betaHeaders.at(-1)}`)
+  }
 
   const inlineAgentMarker = 'INLINE_AGENT_MARKER_6110'
   const inlineAgent = await runPraxis([
@@ -433,7 +447,7 @@ try {
   )
 
   console.log(
-    `Claude ${version} CLI controls passed: prompts, sources, modes, inline agents, disabled slash commands, tools, explicit fork identity, ephemeral storage, and named resume`,
+    `Claude ${version} CLI controls passed: prompts, sources, modes, inline agents, disabled slash commands, beta headers, tools, explicit fork identity, ephemeral storage, and named resume`,
   )
 } finally {
   if (server.listening) await closeServer()

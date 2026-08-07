@@ -51,6 +51,44 @@ describe('AnthropicCompatibleProvider', () => {
     )
   })
 
+  it('serializes explicit beta headers', async () => {
+    let headers: Headers | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://relay.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        headers = new Headers(init?.headers)
+        return new Response(
+          [
+            'data: {"type":"message_start","message":{"usage":{}}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\n',
+            'data: {"type":"message_stop"}\n\n',
+          ].join(''),
+          {
+            headers: { 'content-type': 'text/event-stream' },
+          },
+        )
+      },
+    })
+    const events = []
+    for await (const event of provider.complete({
+      messages: [{ role: 'user', content: 'beta' }],
+      betas: [
+        'context-1m-2025-08-07',
+        'fine-grained-tool-streaming-2025-05-14',
+      ],
+    })) {
+      events.push(event)
+    }
+    expect(events).toEqual([
+      { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } },
+    ])
+    expect(headers?.get('anthropic-beta')).toBe(
+      'context-1m-2025-08-07,fine-grained-tool-streaming-2025-05-14',
+    )
+  })
+
   it('serializes image tool results as native Anthropic content blocks', async () => {
     let body: Record<string, unknown> | undefined
     const provider = new AnthropicCompatibleProvider({

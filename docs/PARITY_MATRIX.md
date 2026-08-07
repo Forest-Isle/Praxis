@@ -43,6 +43,8 @@ Evidence levels:
 | Explicit MCP config                  | Complete                            | `--mcp-config` file/JSON loading, variadic option boundary, command-line precedence, and strict runtime isolation gate                                                                                                                                                                                                                                                                                      |
 | Strict MCP config                    | Complete                            | `--strict-mcp-config` excludes user/project/plugin MCP and uses only explicit command-line servers                                                                                                                                                                                                                                                                                                          |
 | Disable slash commands               | Complete                            | `--disable-slash-commands` removes shared/built-in Skill and slash expansion while retaining agent definitions                                                                                                                                                                                                                                                                                              |
+| Maximum model turns                  | Complete                            | Hidden-compatible `--max-turns`, positive print-mode validation, per-run runtime enforcement, and provider call-count test                                                                                                                                                                                                                                                                                  |
+| Anthropic beta headers               | Complete                            | Variadic `--betas` parsing and exact `anthropic-beta` provider-request gate; OpenAI-compatible endpoints receive no Anthropic headers                                                                                                                                                                                                                                                                       |
 
 Stage 42 additionally verifies opt-in `hook_started`, `hook_progress`, and
 `hook_response` stream records, including Claude 2.1.208 string fields and
@@ -127,7 +129,7 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 
 Remaining audit items are limited to the still-unimplemented single-user CLI
 controls discovered from the installed 2.1.208 surface (`--debug-file`,
-`--brief`, `--betas`, `--file`, `--from-pr`, accessibility output, dynamic
+`--brief`, `--file`, `--from-pr`, accessibility output, dynamic
 system-prompt exclusion, and hidden resume/rewind controls). They are tracked
 as the next implementation stages; they are not enterprise or desktop
 exclusions. Unsupported Claude versions remain deliberately read-only, and
