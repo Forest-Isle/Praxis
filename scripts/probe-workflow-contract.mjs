@@ -19,6 +19,7 @@ const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
 let captured
 const mode = process.env.PRAXIS_WORKFLOW_PROBE_MODE ?? 'schema'
+const keepRoot = process.env.PRAXIS_WORKFLOW_PROBE_KEEP_ROOT === '1'
 const prompt = process.env.PRAXIS_WORKFLOW_PROBE_PROMPT
 const workflowInput = process.env.PRAXIS_WORKFLOW_INPUT
   ? JSON.parse(process.env.PRAXIS_WORKFLOW_INPUT)
@@ -392,6 +393,10 @@ return { marker: 'SAVED_WORKFLOW_RESULT', args }`,
       JSON.stringify(
         process.env.PRAXIS_WORKFLOW_PROBE_SUMMARY === '1'
           ? {
+              root,
+              configRoot,
+              cwd,
+              sessionId: JSON.parse(result.stdout).session_id,
               requests: requests.map(({ model, thinking, output_config }) => ({
                 model,
                 thinking,
@@ -431,5 +436,5 @@ return { marker: 'SAVED_WORKFLOW_RESULT', args }`,
   }
 } finally {
   await closeProvider().catch(() => undefined)
-  await rm(root, { recursive: true, force: true })
+  if (!keepRoot) await rm(root, { recursive: true, force: true })
 }

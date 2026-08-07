@@ -107,10 +107,12 @@ the observed inputs and artifacts. Black-box probes prove that prompt, model, ef
 agentType, and schema affect the key while label, an empty options object, and option
 property order do not. Praxis writes full semantic descriptors to the private
 `.praxis-replay-metadata.jsonl` sidecar, so its own completed agents replay even if a
-foreign runtime rewrites the journal key. For Claude-created journals, Praxis can match a
-unique prompt only when the current call has no semantic options. Native run metadata
-cannot prove the absence of model/effort/agentType/schema/isolation options, so semantic
-foreign-key calls remain fail-closed. Claude can read Praxis workflow files and main
-session history, but does not cache-hit Praxis-created journal entries because its exact
-key derivation is unknown. This remains an explicit partial interoperability item, not a
-claimed exact match.
+foreign runtime rewrites the journal key. For Claude-created journals, an unchanged
+script and args can replay completed journal slots by started order, including semantic
+model/effort/schema/isolation options, because the QuickJS workflow surface is
+deterministic. Sources that use nested `workflow` or `budget` are excluded from this
+ordinal proof; changed script/args and missing result slots fail closed. A unique prompt
+fallback remains available only for current calls without semantic options. Claude can
+read Praxis workflow files and main session history, but does not cache-hit
+Praxis-created journal entries because its exact key derivation is unknown. This remains
+an explicit partial interoperability item, not a claimed exact match.

@@ -19,8 +19,10 @@ const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-compat-'))
 const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
+const keepRoot = process.env.PRAXIS_WORKFLOW_COMPAT_KEEP_ROOT === '1'
 const sessionId = '33333333-3333-4333-8333-333333333333'
 const deniedSessionId = '44444444-4444-4444-8444-444444444444'
+const claudeCreatedSessionId = '55555555-5555-4555-8555-555555555555'
 let mode = 'claude-schema'
 let outerTurn = 0
 let messageNumber = 0
@@ -29,6 +31,8 @@ let praxisDefinition
 let childRequests = 0
 let deniedResult
 let effortRequest
+let removedReplayMetadata
+let claudeCreatedWorkflow
 
 const workflowScript = `export const meta = {
   name: 'compat-probe',
@@ -134,11 +138,15 @@ function toolResult(body, id) {
 }
 
 function workflowResume(body) {
-  const source = String(toolResult(body, 'workflow_launch')?.content ?? '')
+  return workflowResumeFromTool(body, 'workflow_launch')
+}
+
+function workflowResumeFromTool(body, toolId) {
+  const source = String(toolResult(body, toolId)?.content ?? '')
   const scriptPath = /Script file: ([^\n]+)/u.exec(source)?.[1]
   const runId = /Run ID: (wf_[a-z0-9-]+)/u.exec(source)?.[1]
   assert(scriptPath && runId, 'Could not parse Praxis workflow launch result')
-  return { scriptPath, resumeFromRunId: runId }
+  return { scriptPath, resumeFromRunId: runId, args: { probe: 23 } }
 }
 
 async function replaceReplayKey({ scriptPath, resumeFromRunId }) {
@@ -153,11 +161,20 @@ async function replaceReplayKey({ scriptPath, resumeFromRunId }) {
   const journal = (await readFile(journalFile, 'utf8'))
     .trim()
     .split('\n')
-    .map((line) => ({ ...JSON.parse(line), key: 'v2:foreign-key' }))
+    .map((line) => ({ ...JSON.parse(line), key: `v2:${'f'.repeat(64)}` }))
   await writeFile(
     journalFile,
     `${journal.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
   )
+  const replayMetadataFile = join(
+    dirname(journalFile),
+    '.praxis-replay-metadata.jsonl',
+  )
+  removedReplayMetadata = {
+    path: replayMetadataFile,
+    source: await readFile(replayMetadataFile, 'utf8'),
+  }
+  await rm(replayMetadataFile)
 }
 
 function isChild(body) {
@@ -193,6 +210,54 @@ const provider = createServer(async (request, response) => {
       events = textEvents('PRAXIS_WORKFLOW_DENIED_DONE')
     }
     outerTurn += 1
+  } else if (mode === 'claude-create' && outerTurn === 0) {
+    events = toolEvents('claude_create_workflow', 'Workflow', {
+      script: workflowScript,
+      args: { probe: 23 },
+    })
+    outerTurn += 1
+  } else if (mode === 'claude-create' && isChild(body)) {
+    childRequests += 1
+    const completed = toolResult(body, 'structured_result')
+    events = completed
+      ? textEvents('CLAUDE_CREATED_WORKFLOW_DONE')
+      : toolEvents('structured_result', 'StructuredOutput', {
+          value: 'CLAUDE_CREATED_WORKFLOW_VALUE',
+        })
+  } else if (mode === 'claude-create') {
+    claudeCreatedWorkflow = workflowResumeFromTool(
+      body,
+      'claude_create_workflow',
+    )
+    events = textEvents('CLAUDE_CREATED_WORKFLOW_DONE')
+    outerTurn += 1
+  } else if (mode === 'praxis-from-claude' && outerTurn === 0) {
+    assert(claudeCreatedWorkflow, 'Claude workflow was not captured')
+    events = toolEvents(
+      'praxis_resume_workflow',
+      'Workflow',
+      claudeCreatedWorkflow,
+    )
+    outerTurn += 1
+  } else if (
+    mode === 'praxis-from-claude' &&
+    body.tools?.some(({ name }) => name === 'Workflow')
+  ) {
+    const completed = JSON.stringify(body.messages ?? []).includes(
+      '<task-notification>',
+    )
+    events = textEvents(
+      completed ? 'PRAXIS_FROM_CLAUDE_DONE' : 'PRAXIS_FROM_CLAUDE_WAITING',
+    )
+    outerTurn += 1
+  } else if (mode === 'praxis-from-claude') {
+    childRequests += 1
+    const completed = toolResult(body, 'structured_result')
+    events = completed
+      ? textEvents('PRAXIS_REPLAY_MISS_CHILD_DONE')
+      : toolEvents('structured_result', 'StructuredOutput', {
+          value: 'PRAXIS_REPLAY_MISS_VALUE',
+        })
   } else if (isChild(body)) {
     childRequests += 1
     effortRequest = body.output_config
@@ -229,6 +294,10 @@ const provider = createServer(async (request, response) => {
     events = toolEvents('workflow_resume', 'Workflow', resume)
     outerTurn += 1
   } else if (outerTurn === 3) {
+    if (removedReplayMetadata) {
+      await writeFile(removedReplayMetadata.path, removedReplayMetadata.source)
+      removedReplayMetadata = undefined
+    }
     events = textEvents('PRAXIS_WORKFLOW_RESUME_WAITING')
     outerTurn += 1
   } else {
@@ -471,8 +540,80 @@ try {
     ],
     { cwd, env: environment(address.port, false), timeout: 120_000 },
   )
+
+  mode = 'claude-create'
+  outerTurn = 0
+  childRequests = 0
+  const claudeCreated = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--session-id',
+      claudeCreatedSessionId,
+      '--model',
+      'claude-sonnet-4-5-20250929',
+      '--max-turns',
+      '6',
+      '--dangerously-skip-permissions',
+      '--output-format',
+      'json',
+      'create a workflow and wait for its completion',
+    ],
+    { cwd, env: environment(address.port, false), timeout: 120_000 },
+  )
+  assert(
+    JSON.parse(claudeCreated.stdout).result === 'CLAUDE_CREATED_WORKFLOW_DONE',
+    `Claude-created workflow failed: ${claudeCreated.stdout}`,
+  )
+  assert(
+    claudeCreatedWorkflow,
+    'Claude-created workflow launch was not captured',
+  )
+  assert(childRequests === 1, `Claude workflow child calls: ${childRequests}`)
+  const createdJournalFile = join(
+    dirname(dirname(dirname(claudeCreatedWorkflow.scriptPath))),
+    'subagents',
+    'workflows',
+    claudeCreatedWorkflow.resumeFromRunId,
+    'journal.jsonl',
+  )
+  const createdJournal = (await readFile(createdJournalFile, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+  assert(
+    createdJournal.length === 2 && createdJournal[0]?.type === 'started',
+    'Claude-created workflow journal is incomplete',
+  )
+
+  mode = 'praxis-from-claude'
+  outerTurn = 0
+  childRequests = 0
+  const praxisFromClaude = await runPraxis(
+    [
+      '--resume',
+      claudeCreatedSessionId,
+      '--dangerously-skip-permissions',
+      '--tools',
+      'Workflow,TaskOutput,TaskStop',
+      '--output-format',
+      'json',
+      '--',
+      'resume the Claude-created workflow',
+    ],
+    address.port,
+  )
+  assert(
+    JSON.parse(praxisFromClaude.stdout).result === 'PRAXIS_FROM_CLAUDE_DONE',
+    `Praxis did not resume Claude workflow: ${praxisFromClaude.stdout}`,
+  )
+  assert(
+    childRequests === 0,
+    `Praxis made provider child calls while resuming Claude workflow: ${childRequests}`,
+  )
   console.log('Workflow compatibility checks passed.')
 } finally {
   await closeProvider().catch(() => undefined)
-  await rm(root, { recursive: true, force: true })
+  if (keepRoot) console.error(`Workflow compatibility root: ${root}`)
+  else await rm(root, { recursive: true, force: true })
 }

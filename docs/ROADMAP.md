@@ -412,11 +412,13 @@ Status: implemented with one documented cross-runtime replay limitation.
 - [x] background task output/stop/notifications, abort propagation, run uniqueness,
       native scripts/runs/journals/progress/sidechains, and interactive status
 - [x] exact semantic descriptor sidecar replay independent of journal key, plus
-      conservative unique-prompt fallback for Claude-created journal entries
-      when the current call has no semantic options
+      deterministic started-order replay for unchanged script/args Claude journals
+      (with nested workflow/budget sources fail-closed), plus conservative
+      unique-prompt fallback when the current call has no semantic options
 - [x] live schema, permissions, lifecycle, structured output, effort, artifacts, and
-      shared-main-session Claude resume gate; live resume rewrites the journal key to
-      prove descriptor fallback without repeated provider calls
+      shared-main-session Claude resume gates; Praxis -> Claude resume removes the
+      sidecar and rewrites the journal key, while Claude -> Praxis creates a native
+      Claude workflow and resumes it with zero repeated child provider requests
 - [ ] exact Praxis-created journal cache reuse in Claude; observed `v2` keys do not
       reveal Claude's private semantic key derivation
 

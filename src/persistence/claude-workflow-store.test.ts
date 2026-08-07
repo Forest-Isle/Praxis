@@ -101,4 +101,48 @@ describe('ClaudeWorkflowStore', () => {
       'Invalid workflow replay metadata at line 1',
     )
   })
+
+  it('replays deterministic unchanged runs by started order while preserving holes', async () => {
+    const value = await store()
+    await value.initialize('script')
+    await value.writeRun({
+      script: 'script',
+      args: { probe: 23 },
+      status: 'completed',
+    })
+    await value.append({
+      type: 'started',
+      key: 'v2:foreign-a',
+      agentId: 'a0000000000000001',
+    })
+    await value.append({
+      type: 'started',
+      key: 'v2:foreign-b',
+      agentId: 'a0000000000000002',
+    })
+    await value.append({
+      type: 'result',
+      key: 'v2:foreign-a',
+      agentId: 'a0000000000000001',
+      result: 'first',
+    })
+    await expect(
+      value.replayByOrderedSequence('script', { probe: 23 }, true),
+    ).resolves.toEqual([
+      { agentId: 'a0000000000000001', result: 'first' },
+      undefined,
+    ])
+    await expect(
+      value.replayByOrderedSequence('changed', { probe: 23 }, true),
+    ).resolves.toEqual([])
+    await expect(
+      value.replayByOrderedSequence('script', { probe: 23 }, true),
+    ).resolves.toEqual([
+      { agentId: 'a0000000000000001', result: 'first' },
+      undefined,
+    ])
+    await expect(
+      value.replayByOrderedSequence('script', { probe: 23 }, false),
+    ).resolves.toEqual([])
+  })
 })

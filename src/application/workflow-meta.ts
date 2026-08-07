@@ -16,12 +16,26 @@ export interface WorkflowMeta {
 export interface ParsedWorkflowScript {
   meta: WorkflowMeta
   body: string
+  orderedReplaySafe: boolean
 }
 
 type AstNode = Record<string, unknown> & {
   type: string
   start: number
   end: number
+}
+
+function referencesReplaySensitiveGlobal(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(referencesReplaySensitiveGlobal)
+  if (!value || typeof value !== 'object') return false
+  const node = value as Record<string, unknown>
+  if (
+    node.type === 'Identifier' &&
+    (node.name === 'workflow' || node.name === 'budget')
+  ) {
+    return true
+  }
+  return Object.values(node).some(referencesReplaySensitiveGlobal)
 }
 
 function literal(node: AstNode): unknown {
@@ -157,5 +171,11 @@ export function parseWorkflowScript(script: string): ParsedWorkflowScript {
         : `Invalid workflow script: meta must be a pure literal: ${message}`,
     )
   }
-  return { meta, body: script.slice(first.end) }
+  return {
+    meta,
+    body: script.slice(first.end),
+    orderedReplaySafe: !statements
+      .slice(1)
+      .some(referencesReplaySensitiveGlobal),
+  }
 }

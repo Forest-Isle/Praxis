@@ -428,13 +428,16 @@ resume with zero repeated child requests, checks structured output and effort
 forwarding, validates native run/journal/sidechain metadata, and requires Claude to
 resume the Praxis-written main transcript. Before Praxis resumes the workflow, the
 gate replaces its journal key with a foreign key; the private
-`.praxis-replay-metadata.jsonl` descriptor must still produce a zero-request cache
-hit. Praxis also replays Claude-created entries only when a unique prompt is paired
-with a current call that has no semantic options. Exact Praxis-created journal cache
-reuse in Claude remains unclaimed because Claude's private replay-key derivation is
-not observable.
-All model/effort/agentType/schema/isolation calls remain fail-closed without Praxis
-descriptor metadata; they never use prompt-only fallback.
+`.praxis-replay-metadata.jsonl` is removed during resume, so unchanged script/args
+ordered replay must still produce a zero-request cache hit. The same gate first
+creates a native Claude 2.1.208 workflow, then resumes that session with Praxis;
+the Claude journal is used without a Praxis sidecar and produces zero child
+provider requests. Praxis replays Claude-created entries only when an unchanged
+deterministic script/args pair is available; nested `workflow` and `budget` sources fail closed. A unique prompt is
+the final fallback only for a current call with no semantic options. Exact
+Praxis-created journal cache reuse in Claude remains unclaimed because Claude's
+private replay-key derivation is not observable. All semantic-option calls without
+unchanged-script proof remain fail-closed without Praxis descriptor metadata.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork

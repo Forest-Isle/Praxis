@@ -370,6 +370,11 @@ export class WorkflowManager {
     const semaphore = new Semaphore(MAX_CONCURRENCY)
     const replay = await task.store.replayIndex()
     const replayByDescriptor = await task.store.replayByDescriptor()
+    const replayByOrder = await task.store.replayByOrderedSequence(
+      task.script,
+      task.args,
+      options.parsed.orderedReplaySafe,
+    )
     const promptReplay = await task.store.replayByPrompt()
     let currentPhase: string | undefined
     const host = (depth: number) => ({
@@ -410,10 +415,15 @@ export class WorkflowManager {
           agentOptions.schema !== undefined ||
           agentOptions.isolation !== undefined
         const descriptor = workflowReplayDescriptor(prompt, agentOptions)
+        const orderedIndex = task.agentCount - 1
+        const orderedReplayKnown = orderedIndex < replayByOrder.length
         const cached =
           replay.get(key) ||
           replayByDescriptor.get(descriptor) ||
-          (!hasSemanticOptions ? promptReplay.get(prompt) : undefined)
+          replayByOrder[orderedIndex] ||
+          (!orderedReplayKnown && !hasSemanticOptions
+            ? promptReplay.get(prompt)
+            : undefined)
         const label = agentOptions.label ?? prompt.slice(0, 80)
         const phaseTitle = agentOptions.phase ?? currentPhase
         const queuedAt = Date.now()

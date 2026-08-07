@@ -17,6 +17,25 @@ return { ok: true }`)
       phases: [{ title: 'Scan', detail: 'Find issues' }],
     })
     expect(parsed.body).toContain("phase('Scan')")
+    expect(parsed.orderedReplaySafe).toBe(true)
+  })
+
+  it('marks direct and aliased nested/budget access unsafe for ordered replay', () => {
+    const parseBody = (body: string) =>
+      parseWorkflowScript(`export const meta = {
+  name: 'replay-check',
+  description: 'Check replay safety',
+}
+${body}`).orderedReplaySafe
+
+    expect(parseBody("return workflow('nested')")).toBe(false)
+    expect(parseBody('const nested = workflow\nreturn nested()')).toBe(false)
+    expect(parseBody('const { remaining } = budget\nreturn remaining()')).toBe(
+      false,
+    )
+    expect(
+      parseBody("return { note: 'workflow and budget are ordinary words' }"),
+    ).toBe(true)
   })
 
   it('rejects missing, impure, and incomplete metadata before execution', () => {

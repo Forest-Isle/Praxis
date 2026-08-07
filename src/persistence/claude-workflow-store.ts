@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 
 import type { ClaudeWorkflowPaths } from '../compatibility/claude/workflow.js'
 import {
@@ -28,6 +29,8 @@ export interface WorkflowReplayEntry {
   agentId: string
   result: unknown
 }
+
+export type WorkflowReplaySequence = Array<WorkflowReplayEntry | undefined>
 
 export interface WorkflowReplayMetadata {
   agentId: string
@@ -229,6 +232,39 @@ export class ClaudeWorkflowStore {
     return candidates
   }
 
+  async replayByOrderedSequence(
+    script: string,
+    args: unknown,
+    orderedReplaySafe: boolean,
+  ): Promise<WorkflowReplaySequence> {
+    if (!orderedReplaySafe) return []
+    const run = await this.workflowRun()
+    if (
+      !run ||
+      run.script !== script ||
+      !isDeepStrictEqual(run.args, args) ||
+      !['completed', 'failed', 'killed'].includes(String(run.status))
+    ) {
+      return []
+    }
+    const starts: { key: string; agentId: string }[] = []
+    const started = new Map<string, { key: string; agentId: string }>()
+    const results = new Map<string, WorkflowReplayEntry>()
+    for (const entry of await this.journal()) {
+      if (entry.type === 'started') {
+        const record = { key: entry.key, agentId: entry.agentId }
+        starts.push(record)
+        started.set(entry.agentId, record)
+      } else if (started.get(entry.agentId)?.key === entry.key) {
+        results.set(entry.agentId, {
+          agentId: entry.agentId,
+          result: entry.result,
+        })
+      }
+    }
+    return starts.map(({ agentId }) => results.get(agentId))
+  }
+
   private async replayMetadata(): Promise<Map<string, WorkflowReplayMetadata>> {
     const path = join(
       this.paths.transcriptDirectory,
@@ -266,5 +302,19 @@ export class ClaudeWorkflowStore {
       result.set(record.agentId, record as unknown as WorkflowReplayMetadata)
     }
     return result
+  }
+
+  private async workflowRun(): Promise<Record<string, unknown> | undefined> {
+    let source: string
+    try {
+      source = await readFile(this.paths.runFile, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+    const value: unknown = JSON.parse(source)
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined
   }
 }

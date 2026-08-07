@@ -153,7 +153,7 @@ describe('WorkflowManager', () => {
     await manager.close()
   })
 
-  it('replays foreign journal keys by exact persisted semantic options', async () => {
+  it('replays foreign journal keys by deterministic ordered semantic replay', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-manager-'))
     roots.push(root)
     const manager = new WorkflowManager(
@@ -205,6 +205,7 @@ return agent('semantic prompt', {
       join(first.transcriptDirectory, 'journal.jsonl'),
       `${journal.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
     )
+    await rm(join(first.transcriptDirectory, '.praxis-replay-metadata.jsonl'))
 
     const resumed = await launch(first.runId)
     await manager.output(resumed.taskId, { block: true, timeout: 5_000 })
