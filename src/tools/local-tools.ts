@@ -1,5 +1,12 @@
 import { constants } from 'node:fs'
-import { open, realpath, stat } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  realpath,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import {
   basename,
   dirname,
@@ -9,8 +16,13 @@ import {
   relative,
   resolve,
 } from 'node:path'
+import { tmpdir } from 'node:os'
+
+import { pdf } from 'pdf-to-img'
+import sharp from 'sharp'
 
 import type {
+  ModelImage,
   ModelImageMediaType,
   ModelMessage,
   ModelToolCall,
@@ -114,13 +126,34 @@ const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
   {
     name: 'Read',
     description:
-      'Read a UTF-8 text file or supported PNG, JPEG, GIF, or WebP image inside the active workspace.',
+      'Reads a file from the local filesystem. You can access any file directly by using this tool.\nAssume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- The file_path parameter must be an absolute path, not a relative path\n- By default, it reads up to 2000 lines starting from the beginning of the file\n- You can optionally specify a line offset and limit (especially handy for long files), but it\'s recommended to read the whole file by not providing these parameters\n- Results are returned using cat -n format, with line numbers starting at 1\n- This tool allows Claude Code to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as Claude Code is a multimodal LLM.\n- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.\n- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.\n- This tool can only read files, not directories. To list files in a directory, use the registered shell tool.\n- You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.\n- Do NOT re-read a file you just edited to verify — Edit/Write would have errored if the change failed, and the harness tracks file state for you.',
     inputSchema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
       properties: {
-        file_path: { type: 'string' },
-        offset: { type: 'integer', minimum: 1 },
-        limit: { type: 'integer', minimum: 1 },
+        file_path: {
+          description: 'The absolute path to the file to read',
+          type: 'string',
+        },
+        offset: {
+          description:
+            'The line number to start reading from. Only provide if the file is too large to read at once',
+          type: 'integer',
+          minimum: 0,
+          maximum: Number.MAX_SAFE_INTEGER,
+        },
+        limit: {
+          description:
+            'The number of lines to read. Only provide if the file is too large to read at once.',
+          type: 'integer',
+          exclusiveMinimum: 0,
+          maximum: Number.MAX_SAFE_INTEGER,
+        },
+        pages: {
+          description:
+            'Page range for PDF files (e.g., "1-5", "3", "10-20"). Only applicable to PDF files. Maximum 20 pages per request.',
+          type: 'string',
+        },
       },
       required: ['file_path'],
       additionalProperties: false,
@@ -128,12 +161,21 @@ const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
   },
   {
     name: 'Write',
-    description: 'Write a UTF-8 text file inside the active workspace.',
+    description:
+      "Writes a file to the local filesystem.\n\nUsage:\n- This tool will overwrite the existing file if there is one at the provided path.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents. This tool will fail if you did not read the file first.\n- Prefer the Edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.\n- NEVER create documentation files (*.md) or README files unless explicitly requested by the User.\n- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.",
     inputSchema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
       properties: {
-        file_path: { type: 'string' },
-        content: { type: 'string' },
+        file_path: {
+          description:
+            'The absolute path to the file to write (must be absolute, not relative)',
+          type: 'string',
+        },
+        content: {
+          description: 'The content to write to the file',
+          type: 'string',
+        },
       },
       required: ['file_path', 'content'],
       additionalProperties: false,
@@ -141,14 +183,27 @@ const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
   },
   {
     name: 'Edit',
-    description: 'Replace exact text in a file inside the active workspace.',
+    description:
+      'Performs exact string replacements in files.\n\nUsage:\n- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.\n- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.\n- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.\n- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.\n- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.',
     inputSchema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
       properties: {
-        file_path: { type: 'string' },
-        old_string: { type: 'string' },
-        new_string: { type: 'string' },
-        replace_all: { type: 'boolean' },
+        file_path: {
+          description: 'The absolute path to the file to modify',
+          type: 'string',
+        },
+        old_string: { description: 'The text to replace', type: 'string' },
+        new_string: {
+          description:
+            'The text to replace it with (must be different from old_string)',
+          type: 'string',
+        },
+        replace_all: {
+          description: 'Replace all occurrences of old_string (default false)',
+          default: false,
+          type: 'boolean',
+        },
       },
       required: ['file_path', 'old_string', 'new_string'],
       additionalProperties: false,
@@ -211,12 +266,31 @@ const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
   },
   {
     name: 'Bash',
-    description: 'Run a shell command in the active workspace.',
+    description:
+      "Executes a given bash command and returns its output.\n\nThe working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).",
     inputSchema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
       properties: {
-        command: { type: 'string' },
-        timeout: { type: 'integer', minimum: 1 },
+        command: { description: 'The command to execute', type: 'string' },
+        timeout: {
+          description: 'Optional timeout in milliseconds (max 600000)',
+          type: 'number',
+        },
+        description: {
+          description:
+            'Clear, concise description of what this command does in active voice. Never use words like "complex" or "risk" in the description - just describe what it does.\n\nFor simple commands (git, npm, standard CLI tools), keep it brief (5-10 words):\n- ls → "List files in current directory"\n- git status → "Show working tree status"\n- npm install → "Install package dependencies"\n\nFor commands that are harder to parse at a glance (piped commands, obscure flags, etc.), add enough context to clarify what it does:\n- find . -name "*.tmp" -exec rm {} \\; → "Find and delete all .tmp files recursively"\n- git reset --hard origin/main → "Discard all local changes and match remote main"\n- curl -s url | jq \'.data[]\' → "Fetch JSON from URL and extract data array elements"',
+          type: 'string',
+        },
+        run_in_background: {
+          description: 'Set to true to run this command in the background.',
+          type: 'boolean',
+        },
+        dangerouslyDisableSandbox: {
+          description:
+            'Set this to true to dangerously override sandbox mode and run commands without sandboxing.',
+          type: 'boolean',
+        },
       },
       required: ['command'],
       additionalProperties: false,
@@ -256,6 +330,18 @@ function optionalPositiveInteger(
   if (value === undefined) return undefined
   if (!Number.isInteger(value) || typeof value !== 'number' || value <= 0) {
     throw new Error(`${name} must be a positive integer`)
+  }
+  return value
+}
+
+function optionalNonNegativeInteger(
+  input: Record<string, unknown>,
+  name: string,
+): number | undefined {
+  const value = input[name]
+  if (value === undefined) return undefined
+  if (!Number.isInteger(value) || typeof value !== 'number' || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`)
   }
   return value
 }
@@ -421,6 +507,37 @@ function imageMediaType(content: Buffer): ModelImageMediaType | null {
   return null
 }
 
+function isPdf(content: Buffer): boolean {
+  return content.subarray(0, 5).toString('ascii') === '%PDF-'
+}
+
+function formatKilobytes(bytes: number): string {
+  const value = bytes / 1024
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)}KB`.replace(
+    '.0KB',
+    'KB',
+  )
+}
+
+function parsePdfPages(value: string): { start: number; end: number } {
+  const match = /^(\d+)(?:-(\d+))?$/u.exec(value)
+  if (!match) throw new Error(`Invalid PDF page range: ${value}`)
+  const start = Number(match[1])
+  const end = Number(match[2] ?? match[1])
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 1 ||
+    end < start
+  ) {
+    throw new Error(`Invalid PDF page range: ${value}`)
+  }
+  if (end - start + 1 > 20) {
+    throw new Error('PDF page range cannot exceed 20 pages')
+  }
+  return { start, end }
+}
+
 export class LocalToolRegistry implements ToolRegistry {
   private readonly cwd: string
   private readonly cwdProvider: (() => string) | undefined
@@ -503,7 +620,10 @@ export class LocalToolRegistry implements ToolRegistry {
   ): Promise<ModelToolCall> {
     if (context.signal?.aborted) throw abortError()
     switch (call.name) {
-      case 'Read':
+      case 'Read': {
+        const offset = optionalNonNegativeInteger(call.input, 'offset')
+        const limit = optionalPositiveInteger(call.input, 'limit')
+        const pages = optionalString(call.input, 'pages')
         return {
           ...call,
           input: {
@@ -513,14 +633,12 @@ export class LocalToolRegistry implements ToolRegistry {
               true,
               context,
             ),
-            ...(optionalPositiveInteger(call.input, 'offset') === undefined
-              ? {}
-              : { offset: optionalPositiveInteger(call.input, 'offset') }),
-            ...(optionalPositiveInteger(call.input, 'limit') === undefined
-              ? {}
-              : { limit: optionalPositiveInteger(call.input, 'limit') }),
+            ...(offset === undefined ? {} : { offset }),
+            ...(limit === undefined ? {} : { limit }),
+            ...(pages === undefined ? {} : { pages }),
           },
         }
+      }
       case 'Write':
         return {
           ...call,
@@ -668,7 +786,7 @@ export class LocalToolRegistry implements ToolRegistry {
     }
     switch (prepared.name) {
       case 'Read':
-        return this.read(prepared)
+        return this.read(prepared, context)
       case 'Write':
         return this.write(prepared)
       case 'Edit':
@@ -840,7 +958,10 @@ export class LocalToolRegistry implements ToolRegistry {
     return false
   }
 
-  private async read(call: ModelToolCall): Promise<ToolExecutionResult> {
+  private async read(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'file_path')
     const handle = await open(
       filePath,
@@ -854,7 +975,7 @@ export class LocalToolRegistry implements ToolRegistry {
         throw new Error(`File exceeds ${this.maxFileBytes} byte read limit`)
       }
       const source = await handle.readFile()
-      const requestedOffset = optionalPositiveInteger(call.input, 'offset')
+      const requestedOffset = optionalNonNegativeInteger(call.input, 'offset')
       const offset = requestedOffset ?? 1
       const limit = optionalPositiveInteger(call.input, 'limit')
       const mediaType = imageMediaType(source)
@@ -870,23 +991,142 @@ export class LocalToolRegistry implements ToolRegistry {
           accessedPaths: [filePath],
         }
       }
+      if (isPdf(source)) {
+        return this.readPdf(source, filePath, call.input.pages, context)
+      }
       const text = source.toString('utf8')
-      const lines = (
-        extname(filePath).toLowerCase() === '.ipynb'
-          ? formatNotebookForRead(text)
-          : text
-      ).split('\n')
-      const content = lines
-        .slice(offset - 1, limit === undefined ? undefined : offset - 1 + limit)
-        .join('\n')
+      const notebook = extname(filePath).toLowerCase() === '.ipynb'
+      const lines = (notebook ? formatNotebookForRead(text) : text).split('\n')
+      const start = offset === 0 ? 0 : offset - 1
+      const effectiveLimit = notebook ? limit : (limit ?? 2000)
+      const selected = lines.slice(
+        start,
+        effectiveLimit === undefined ? undefined : start + effectiveLimit,
+      )
+      const rawContent = selected.join('\n')
+      const content = notebook
+        ? rawContent
+        : selected
+            .map(
+              (line, index) =>
+                `${(offset === 0 ? 0 : offset) + index}\t${line}`,
+            )
+            .join('\n')
       return {
         content: truncateOutput(content, this.maxOutputBytes),
         isError: false,
         accessedPaths: [filePath],
+        ...(notebook
+          ? {}
+          : {
+              nativeToolUseResult: {
+                type: 'text',
+                file: {
+                  filePath,
+                  content: rawContent,
+                  numLines: selected.length,
+                  startLine: offset,
+                  totalLines: lines.length,
+                },
+              },
+            }),
       }
     } finally {
       await handle.close()
     }
+  }
+
+  private async readPdf(
+    source: Buffer,
+    filePath: string,
+    pagesInput: unknown,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    const document = await pdf(source)
+    try {
+      const pages =
+        pagesInput === undefined
+          ? undefined
+          : parsePdfPages(stringInput({ pages: pagesInput }, 'pages'))
+      if (pages === undefined) {
+        if (document.length > 10) {
+          throw new Error(
+            'PDF has more than 10 pages; provide pages to read a maximum of 20 pages per request',
+          )
+        }
+        return {
+          content: `PDF file read: ${filePath} (${formatKilobytes(source.length)})`,
+          documents: [
+            {
+              type: 'document',
+              mediaType: 'application/pdf',
+              data: source.toString('base64'),
+            },
+          ],
+          isError: false,
+          accessedPaths: [filePath],
+          nativeToolUseResult: {
+            type: 'pdf',
+            file: {
+              filePath,
+              base64: source.toString('base64'),
+              originalSize: source.length,
+            },
+          },
+        }
+      }
+      if (pages.end > document.length) {
+        throw new Error(
+          `PDF page range ${pages.start}-${pages.end} exceeds document page count ${document.length}`,
+        )
+      }
+      const images: ModelImage[] = []
+      const outputDirectory = await this.createPdfOutputDirectory(context)
+      for (
+        let pageNumber = pages.start;
+        pageNumber <= pages.end;
+        pageNumber += 1
+      ) {
+        if (context.signal?.aborted) throw abortError()
+        const png = await document.getPage(pageNumber)
+        const jpeg = await sharp(png).jpeg({ quality: 90 }).toBuffer()
+        if (jpeg.length > this.maxFileBytes) {
+          throw new Error(
+            `Rendered PDF page exceeds ${this.maxFileBytes} byte read limit`,
+          )
+        }
+        const data = jpeg.toString('base64')
+        images.push({ type: 'image', mediaType: 'image/jpeg', data })
+        await writeFile(join(outputDirectory, `page-${pageNumber}.jpg`), jpeg)
+      }
+      return {
+        content: `PDF pages extracted: ${images.length} page(s) from ${filePath} (${formatKilobytes(source.length)})`,
+        images,
+        isError: false,
+        accessedPaths: [filePath],
+        nativeToolUseResult: {
+          type: 'parts',
+          file: {
+            filePath,
+            originalSize: source.length,
+            outputDir: outputDirectory,
+            count: images.length,
+          },
+        },
+      }
+    } finally {
+      await document.destroy()
+    }
+  }
+
+  private async createPdfOutputDirectory(
+    context: ToolExecutionContext,
+  ): Promise<string> {
+    const parent = context.toolResultDirectory
+      ? resolve(context.toolResultDirectory)
+      : tmpdir()
+    await mkdir(parent, { recursive: true })
+    return mkdtemp(join(parent, 'pdf-'))
   }
 
   private async write(call: ModelToolCall): Promise<ToolExecutionResult> {

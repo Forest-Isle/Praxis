@@ -29,6 +29,7 @@
     "test:glob-compat": "npm run build && node scripts/verify-glob-compatibility.mjs",
     "test:hook-compat": "npm run build && node scripts/verify-hook-compatibility.mjs",
     "test:image-compat": "npm run build && node scripts/verify-image-compatibility.mjs",
+    "test:local-tool-compat": "npm run build && node scripts/probe-local-read-contract.mjs",
     "test:mcp-compat": "npm run build && node scripts/verify-mcp-compatibility.mjs",
     "test:mcp-resource-compat": "npm run build && node scripts/verify-mcp-resource-compatibility.mjs",
     "test:notebook-compat": "npm run build && node scripts/verify-notebook-compatibility.mjs",
@@ -67,10 +68,18 @@
     "ink": "^7.1.1",
     "ipaddr.js": "^2.2.0",
     "minimatch": "^10.2.6",
+    "pdf-lib": "^1.17.1",
+    "pdf-to-img": "^6.2.0",
     "quickjs-emscripten": "^0.32.0",
     "react": "^19.2.8",
+    "sharp": "^0.35.3",
     "turndown": "^7.2.0",
     "yaml": "^2.9.0"
+  },
+  "overrides": {
+    "pdf-to-img": {
+      "pdfjs-dist": "6.2.108"
+    }
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

@@ -351,6 +351,70 @@ describe('Claude transcript projection', () => {
     ])
   })
 
+  it('projects document blocks from native tool results', () => {
+    expect(
+      projectClaudeModelMessages([
+        {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'call_document',
+                name: 'Read',
+                input: { file_path: '/tmp/report.pdf' },
+              },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'call_document',
+                content: [
+                  {
+                    type: 'document',
+                    source: {
+                      type: 'base64',
+                      media_type: 'application/pdf',
+                      data: 'JVBERg==',
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          {
+            id: 'call_document',
+            name: 'Read',
+            input: { file_path: '/tmp/report.pdf' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_document',
+        content: '',
+        documents: [
+          { type: 'document', mediaType: 'application/pdf', data: 'JVBERg==' },
+        ],
+        isError: false,
+      },
+    ])
+  })
+
   it('projects only the latest compact summary and later messages', () => {
     const entries = [
       { type: 'user', message: { role: 'user', content: 'DROPPED_USER' } },

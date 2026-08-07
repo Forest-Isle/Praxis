@@ -29,6 +29,7 @@ export type ModelMessage =
       toolCallId: string
       content: string
       images?: readonly ModelImage[]
+      documents?: readonly ModelDocument[]
       isError: boolean
     }
 
@@ -126,6 +127,7 @@ export type RuntimeEvent =
 export interface ToolExecutionResult {
   content: string
   images?: readonly ModelImage[]
+  documents?: readonly ModelDocument[]
   isError: boolean
   usage?: ModelUsage
   accessedPaths?: readonly string[]
@@ -255,6 +257,8 @@ export type RuntimeEventSink = (event: RuntimeEvent) => void
 
 const emptyUsage = (): ModelUsage => ({ inputTokens: 0, outputTokens: 0 })
 const unsupportedImageResult = 'Provider does not support image tool results'
+const unsupportedDocumentResult =
+  'Provider does not support document tool results'
 
 function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
   const cacheReadInputTokens =
@@ -298,7 +302,19 @@ function prepareProviderMessages(
           content: unsupportedImageResult,
           isError: true,
         }
-      : message,
+      : !supportsDocuments &&
+          message.role === 'tool' &&
+          message.documents?.length
+        ? {
+            role: 'tool',
+            toolCallId: message.toolCallId,
+            content: unsupportedDocumentResult,
+            ...(supportsImages && message.images?.length
+              ? { images: message.images }
+              : {}),
+            isError: true,
+          }
+        : message,
   )
 }
 
@@ -473,6 +489,7 @@ export class AgentRuntime {
             toolCallId: call.id,
             content: result.content,
             ...(result.images ? { images: result.images } : {}),
+            ...(result.documents ? { documents: result.documents } : {}),
             isError: result.isError,
           })
           followUpUserMessages.push(...(result.followUpUserMessages ?? []))
@@ -548,10 +565,20 @@ export class AgentRuntime {
     messages: readonly ModelMessage[] = request.messages ?? [],
   ): Promise<ToolExecutionResult> {
     const executed = await this.executeTool(call, request, messages)
-    const result =
+    const unsupportedImages =
       executed.images?.length && this.provider.capabilities.images !== true
+    const unsupportedDocuments =
+      executed.documents?.length &&
+      this.provider.capabilities.documents !== true
+    const result =
+      unsupportedImages || unsupportedDocuments
         ? {
-            content: unsupportedImageResult,
+            content: unsupportedImages
+              ? unsupportedImageResult
+              : unsupportedDocumentResult,
+            ...(this.provider.capabilities.images === true && executed.images
+              ? { images: executed.images }
+              : {}),
             isError: true,
             ...(executed.usage ? { usage: executed.usage } : {}),
           }

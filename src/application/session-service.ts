@@ -976,6 +976,7 @@ export class ClaudeSessionService {
           toolResult: {
             content: string
             images?: readonly ModelImage[]
+            documents?: readonly ModelDocument[]
             isError: boolean
             accessedPaths?: readonly string[]
             followUpUserMessages?: readonly string[]
@@ -1006,6 +1007,9 @@ export class ClaudeSessionService {
                 toolCallId: call.id,
                 content: toolResult.content,
                 ...(toolResult.images ? { images: toolResult.images } : {}),
+                ...(toolResult.documents
+                  ? { documents: toolResult.documents }
+                  : {}),
                 isError: toolResult.isError,
                 ...(toolResult.nativeToolUseResult
                   ? { nativeToolUseResult: toolResult.nativeToolUseResult }

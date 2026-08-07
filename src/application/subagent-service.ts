@@ -1381,6 +1381,7 @@ export class ClaudeSubagentExecutor {
               toolCallId: call.id,
               content: result.content,
               ...(result.images ? { images: result.images } : {}),
+              ...(result.documents ? { documents: result.documents } : {}),
               isError: result.isError,
               ...(result.nativeToolUseResult
                 ? { nativeToolUseResult: result.nativeToolUseResult }

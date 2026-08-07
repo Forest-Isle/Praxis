@@ -282,6 +282,81 @@ describe('provider to Claude transcript translation', () => {
     })
   })
 
+  it('persists multiple image and document blocks in tool results', () => {
+    const entries = translateProviderEvents(
+      [
+        {
+          type: 'assistant-tool-call',
+          toolCallId: 'call_media',
+          name: 'Read',
+          input: { file_path: '/tmp/report.pdf' },
+          providerMessageId: 'provider-media',
+          model: 'provider/model',
+        },
+        {
+          type: 'tool-result',
+          toolCallId: 'call_media',
+          content: 'PDF pages extracted',
+          images: [
+            { type: 'image', mediaType: 'image/jpeg', data: 'aW1hZ2Ux' },
+            { type: 'image', mediaType: 'image/jpeg', data: 'aW1hZ2Uy' },
+          ],
+          documents: [
+            {
+              type: 'document',
+              mediaType: 'application/pdf',
+              data: 'JVBERg==',
+            },
+          ],
+          isError: false,
+        },
+      ],
+      {
+        sessionId: '20000000-0000-4000-8000-000000000001',
+        parentUuid: null,
+        cwd: '/tmp/project',
+        claudeVersion: '2.1.208',
+        gitBranch: 'main',
+      },
+    )
+    expect(entries[1]?.message).toEqual({
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'call_media',
+          content: [
+            { type: 'text', text: 'PDF pages extracted' },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/jpeg',
+                data: 'aW1hZ2Ux',
+              },
+            },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/jpeg',
+                data: 'aW1hZ2Uy',
+              },
+            },
+            {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: 'application/pdf',
+                data: 'JVBERg==',
+              },
+            },
+          ],
+        },
+      ],
+    })
+  })
+
   it('persists text and multiple tool calls as one native assistant message', () => {
     const [entry] = translateProviderEvents(
       [

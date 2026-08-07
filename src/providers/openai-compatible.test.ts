@@ -127,6 +127,35 @@ describe('OpenAICompatibleProvider', () => {
     ])
   })
 
+  it('fails closed when a document is passed directly to the provider', async () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () => new Response('data: [DONE]\n\n'),
+    })
+    const stream = provider.complete({
+      messages: [
+        {
+          role: 'tool',
+          toolCallId: 'call_pdf',
+          content: '',
+          documents: [
+            {
+              type: 'document',
+              mediaType: 'application/pdf',
+              data: 'JVBERg==',
+            },
+          ],
+          isError: false,
+        },
+      ],
+    })
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toThrow(
+      'does not support document tool results',
+    )
+  })
+
   it('serializes user image attachments as OpenAI vision content', async () => {
     let body: Record<string, unknown> | undefined
     const provider = new OpenAICompatibleProvider({

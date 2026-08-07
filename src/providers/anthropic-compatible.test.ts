@@ -93,17 +93,73 @@ describe('AnthropicCompatibleProvider', () => {
           {
             type: 'tool_result',
             tool_use_id: 'call_image',
-            content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: 'image/png',
-                  data: 'aGVsbG8=',
-                },
-              },
-            ],
+            content: '',
             is_error: false,
+          },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'aGVsbG8=',
+            },
+          },
+        ],
+      },
+    ])
+  })
+
+  it('serializes document tool results as native Anthropic content blocks', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+        )
+      },
+    })
+
+    for await (const event of provider.complete({
+      messages: [
+        {
+          role: 'tool',
+          toolCallId: 'call_pdf',
+          content: 'PDF extracted',
+          documents: [
+            {
+              type: 'document',
+              mediaType: 'application/pdf',
+              data: 'JVBERg==',
+            },
+          ],
+          isError: false,
+        },
+      ],
+    })) {
+      void event
+    }
+
+    expect(body?.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call_pdf',
+            content: 'PDF extracted',
+            is_error: false,
+          },
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: 'JVBERg==',
+            },
           },
         ],
       },

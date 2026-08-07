@@ -48,6 +48,7 @@ export type ProviderPersistenceEvent =
       toolCallId: string
       content: string
       images?: readonly ModelImage[]
+      documents?: readonly ModelDocument[]
       isError: boolean
       nativeToolUseResult?: Record<string, unknown>
     }
@@ -419,28 +420,74 @@ export function translateProviderEvents(
             `Tool result has no matching tool call: ${event.toolCallId}`,
           )
         }
-        if (event.images && event.images.length !== 1) {
-          throw new Error('Claude image tool results require exactly one image')
+        const media = [
+          ...(event.images ?? []).map((image) => ({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: image.mediaType,
+              data: image.data,
+            },
+          })),
+          ...(event.documents ?? []).map((document) => ({
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: document.mediaType,
+              data: document.data,
+            },
+          })),
+        ]
+        if (media.length > 0 && event.isError) {
+          throw new Error('Claude media tool results cannot be errors')
         }
-        if (event.images && event.content.length > 0) {
-          throw new Error('Claude image tool results cannot include text')
-        }
-        if (event.images && event.isError) {
-          throw new Error('Claude image tool results cannot be errors')
-        }
-        const image = event.images?.[0]
-        const toolResultContent = image
-          ? [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: image.mediaType,
-                  data: image.data,
-                },
-              },
-            ]
-          : event.content
+        const toolResultContent =
+          media.length === 0
+            ? event.content
+            : [
+                ...(event.content.length > 0
+                  ? [{ type: 'text', text: event.content }]
+                  : []),
+                ...media,
+              ]
+        const nativeToolUseResult = event.nativeToolUseResult
+        const fallbackToolUseResult =
+          media.length === 0
+            ? {
+                stdout: event.isError ? '' : event.content,
+                stderr: event.isError ? event.content : '',
+                interrupted: false,
+                isImage: false,
+                noOutputExpected: false,
+              }
+            : event.images?.length === 1 && !event.documents?.length
+              ? {
+                  type: 'image',
+                  file: {
+                    base64: event.images[0]?.data,
+                    type: event.images[0]?.mediaType,
+                    originalSize: Buffer.from(
+                      event.images[0]?.data ?? '',
+                      'base64',
+                    ).length,
+                  },
+                }
+              : event.documents?.length === 1 && !event.images?.length
+                ? {
+                    type: 'document',
+                    file: {
+                      base64: event.documents[0]?.data,
+                      type: event.documents[0]?.mediaType,
+                      originalSize: Buffer.from(
+                        event.documents[0]?.data ?? '',
+                        'base64',
+                      ).length,
+                    },
+                  }
+                : {
+                    type: 'media',
+                    count: media.length,
+                  }
         entry = {
           ...common,
           type: 'user',
@@ -453,28 +500,11 @@ export function translateProviderEvents(
                 type: 'tool_result',
                 tool_use_id: event.toolCallId,
                 content: toolResultContent,
-                ...(image ? {} : { is_error: event.isError }),
+                ...(media.length === 0 ? { is_error: event.isError } : {}),
               },
             ],
           },
-          toolUseResult:
-            event.nativeToolUseResult ??
-            (image
-              ? {
-                  type: 'image',
-                  file: {
-                    base64: image.data,
-                    type: image.mediaType,
-                    originalSize: Buffer.from(image.data, 'base64').length,
-                  },
-                }
-              : {
-                  stdout: event.isError ? '' : event.content,
-                  stderr: event.isError ? event.content : '',
-                  interrupted: false,
-                  isImage: false,
-                  noOutputExpected: false,
-                }),
+          toolUseResult: nativeToolUseResult ?? fallbackToolUseResult,
         }
         break
       }

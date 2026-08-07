@@ -4,12 +4,15 @@ import {
   readFile,
   realpath,
   rm,
+  stat,
   symlink,
   utimes,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import { PDFDocument, StandardFonts } from 'pdf-lib'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -32,6 +35,80 @@ afterEach(async () => {
 })
 
 describe('LocalToolRegistry', () => {
+  it('matches Claude Read schema and preserves native PDF media results', async () => {
+    const { cwd } = await workspace()
+    const document = await PDFDocument.create()
+    const font = await document.embedFont(StandardFonts.Helvetica)
+    for (const pageNumber of [1, 2]) {
+      const page = document.addPage([240, 240])
+      page.drawText(`Page ${pageNumber}`, { x: 24, y: 190, font, size: 18 })
+    }
+    const pdfPath = join(cwd, 'fixture.pdf')
+    await writeFile(pdfPath, await document.save())
+    const registry = new LocalToolRegistry({ cwd })
+    const definition = registry
+      .definitions()
+      .find((tool) => tool.name === 'Read')
+    expect(definition).toMatchObject({
+      description: expect.stringContaining(
+        'By default, it reads up to 2000 lines',
+      ),
+      inputSchema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        properties: {
+          offset: { minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          limit: {
+            exclusiveMinimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+          },
+          pages: { type: 'string' },
+        },
+      },
+    })
+
+    const context = { cwd, toolResultDirectory: join(cwd, 'tool-results') }
+    const whole = await registry.execute(
+      await registry.prepare(
+        { id: 'read-pdf', name: 'Read', input: { file_path: pdfPath } },
+        context,
+      ),
+      context,
+    )
+    expect(whole).toMatchObject({
+      content: expect.stringContaining('PDF file read:'),
+      documents: [{ type: 'document', mediaType: 'application/pdf' }],
+      nativeToolUseResult: {
+        type: 'pdf',
+        file: {
+          filePath: await realpath(pdfPath),
+          originalSize: (await stat(pdfPath)).size,
+        },
+      },
+    })
+    const pages = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'read-pdf-pages',
+          name: 'Read',
+          input: { file_path: pdfPath, pages: '1-2' },
+        },
+        context,
+      ),
+      context,
+    )
+    expect(pages).toMatchObject({
+      content: expect.stringContaining('PDF pages extracted: 2 page(s)'),
+      images: [
+        { type: 'image', mediaType: 'image/jpeg' },
+        { type: 'image', mediaType: 'image/jpeg' },
+      ],
+      nativeToolUseResult: {
+        type: 'parts',
+        file: { count: 2 },
+      },
+    })
+  })
+
   it('reports validated code-review findings with the Claude schema', async () => {
     const { cwd } = await workspace()
     const registry = new LocalToolRegistry({ cwd, enableReportFindings: true })
@@ -185,9 +262,19 @@ describe('LocalToolRegistry', () => {
     )
     expect(read.input.file_path).toBe(await realpath(join(cwd, 'source.txt')))
     await expect(registry.execute(read, context)).resolves.toEqual({
-      content: 'beta',
+      content: '2\tbeta',
       isError: false,
       accessedPaths: [await realpath(join(cwd, 'source.txt'))],
+      nativeToolUseResult: {
+        type: 'text',
+        file: {
+          filePath: await realpath(join(cwd, 'source.txt')),
+          content: 'beta',
+          numLines: 1,
+          startLine: 2,
+          totalLines: 4,
+        },
+      },
     })
 
     const write = await registry.prepare(
@@ -478,7 +565,7 @@ describe('LocalToolRegistry', () => {
       { cwd },
     )
     await expect(registry.execute(read, { cwd })).resolves.toMatchObject({
-      content: 'BACKGROUND_OUTPUT',
+      content: '1\tBACKGROUND_OUTPUT',
     })
     await expect(
       registry.prepare(
@@ -508,7 +595,7 @@ describe('LocalToolRegistry', () => {
       { cwd },
     )
     await expect(registry.execute(read, { cwd })).resolves.toMatchObject({
-      content: 'WORKSPACE',
+      content: '1\tWORKSPACE',
     })
   })
 
@@ -543,7 +630,7 @@ describe('LocalToolRegistry', () => {
       context,
     )
     await expect(registry.execute(read, context)).resolves.toMatchObject({
-      content: 'shared detail',
+      content: '1\tshared detail',
       isError: false,
     })
     const write = await registry.prepare(
@@ -649,7 +736,7 @@ describe('LocalToolRegistry', () => {
       context,
     )
     await expect(registry.execute(read, context)).resolves.toMatchObject({
-      content: 'ADDITIONAL_MARKER',
+      content: '1\tADDITIONAL_MARKER',
       isError: false,
     })
     const grep = await registry.prepare(

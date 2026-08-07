@@ -30,13 +30,18 @@ const DOCUMENT_MEDIA_TYPES = new Set<ModelDocumentMediaType>([
   'application/json',
 ])
 
-function projectToolResultContent(
-  content: unknown,
-): { content: string; images: ModelImage[] } | null {
-  if (typeof content === 'string') return { content, images: [] }
+function projectToolResultContent(content: unknown): {
+  content: string
+  images: ModelImage[]
+  documents: ModelDocument[]
+} | null {
+  if (typeof content === 'string') {
+    return { content, images: [], documents: [] }
+  }
   if (!Array.isArray(content)) return null
   const parts: string[] = []
   const images: ModelImage[] = []
+  const documents: ModelDocument[] = []
   for (const block of content) {
     if (!isRecord(block)) {
       parts.push('[structured tool result omitted]')
@@ -61,13 +66,33 @@ function projectToolResultContent(
       })
       continue
     }
+    if (
+      block.type === 'document' &&
+      isRecord(block.source) &&
+      block.source.type === 'base64' &&
+      typeof block.source.media_type === 'string' &&
+      DOCUMENT_MEDIA_TYPES.has(
+        block.source.media_type as ModelDocumentMediaType,
+      ) &&
+      typeof block.source.data === 'string'
+    ) {
+      documents.push({
+        type: 'document',
+        mediaType: block.source.media_type as ModelDocumentMediaType,
+        data: block.source.data,
+      })
+      continue
+    }
     parts.push(`[${String(block.type ?? 'structured')} tool result omitted]`)
   }
   return {
     content:
       parts.join('\n') ||
-      (images.length > 0 ? '' : '[empty structured tool result]'),
+      (images.length > 0 || documents.length > 0
+        ? ''
+        : '[empty structured tool result]'),
     images,
+    documents,
   }
 }
 
@@ -248,6 +273,9 @@ export function projectClaudeModelMessages(
           content: toolContent.content,
           ...(toolContent.images.length > 0
             ? { images: toolContent.images }
+            : {}),
+          ...(toolContent.documents.length > 0
+            ? { documents: toolContent.documents }
             : {}),
           isError: block.is_error === true,
         })

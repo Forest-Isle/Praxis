@@ -288,6 +288,15 @@ function mcpContent(result: ToolExecutionResult) {
     | { type: 'text'; text: string }
     | { type: 'image'; data: string; mimeType: string }
   )[] = []
+  const nativeType = result.nativeToolUseResult?.type
+  if (nativeType === 'text' || nativeType === 'pdf' || nativeType === 'parts') {
+    return [
+      {
+        type: 'text',
+        text: JSON.stringify(result.nativeToolUseResult),
+      },
+    ]
+  }
   if (result.content.length > 0 || !result.images?.length) {
     content.push({ type: 'text', text: result.content })
   }
@@ -299,6 +308,47 @@ function mcpContent(result: ToolExecutionResult) {
     })
   }
   return content
+}
+
+function hostedAgentDefinition(
+  definition: ModelToolDefinition,
+): ModelToolDefinition {
+  if (definition.name !== 'Agent') return definition
+  const schema = definition.inputSchema
+  const properties = isRecord(schema.properties) ? schema.properties : {}
+  return {
+    ...definition,
+    inputSchema: {
+      ...schema,
+      properties: {
+        ...properties,
+        name: {
+          description:
+            'Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running.',
+          type: 'string',
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$',
+        },
+        team_name: {
+          description:
+            'Deprecated; ignored. The session has a single implicit team.',
+          type: 'string',
+        },
+        mode: {
+          description:
+            'Permission mode for spawned teammate (e.g., "plan" to require plan approval).',
+          type: 'string',
+          enum: [
+            'acceptEdits',
+            'auto',
+            'bypassPermissions',
+            'default',
+            'dontAsk',
+            'plan',
+          ],
+        },
+      },
+    },
+  }
 }
 
 class PraxisMcpRuntime {
@@ -330,16 +380,18 @@ class PraxisMcpRuntime {
       'Grep',
     ]
     const registry = await this.toolRegistryPromise
-    const shared = registry
-      ? [...registry.definitions()]
-      : [...this.localTools.definitions()].sort((left, right) => {
-          const leftIndex = preferredOrder.indexOf(left.name)
-          const rightIndex = preferredOrder.indexOf(right.name)
-          return (
-            (leftIndex < 0 ? preferredOrder.length : leftIndex) -
-            (rightIndex < 0 ? preferredOrder.length : rightIndex)
-          )
-        })
+    const shared = (
+      registry
+        ? [...registry.definitions()]
+        : [...this.localTools.definitions()].sort((left, right) => {
+            const leftIndex = preferredOrder.indexOf(left.name)
+            const rightIndex = preferredOrder.indexOf(right.name)
+            return (
+              (leftIndex < 0 ? preferredOrder.length : leftIndex) -
+              (rightIndex < 0 ? preferredOrder.length : rightIndex)
+            )
+          })
+    ).map(hostedAgentDefinition)
     if (!this.options.createAgentService) return shared
     const sharedNames = new Set(shared.map((definition) => definition.name))
     return [

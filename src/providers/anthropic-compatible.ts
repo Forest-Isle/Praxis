@@ -479,28 +479,32 @@ function serializeMessages(messages: readonly ModelMessage[]): {
       continue
     }
     if (message.role === 'tool') {
-      const content = message.images?.length
-        ? [
-            ...(message.content.length > 0
-              ? [{ type: 'text', text: message.content }]
-              : []),
-            ...message.images.map((image) => ({
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: image.mediaType,
-                data: image.data,
-              },
-            })),
-          ]
-        : message.content
+      const media = [
+        ...(message.images ?? []).map((image) => ({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: image.mediaType,
+            data: image.data,
+          },
+        })),
+        ...(message.documents ?? []).map((document) => ({
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: document.mediaType,
+            data: document.data,
+          },
+        })),
+      ]
       append('user', [
         {
           type: 'tool_result',
           tool_use_id: message.toolCallId,
-          content,
+          content: message.content,
           is_error: message.isError,
         },
+        ...media,
       ])
       continue
     }

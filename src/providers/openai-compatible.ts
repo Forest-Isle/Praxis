@@ -188,6 +188,11 @@ function parseSseEvent(
 
 function serializeMessage(message: ModelMessage): Record<string, unknown> {
   if (message.role === 'tool') {
+    if (message.documents?.length) {
+      throw new Error(
+        'OpenAI-compatible provider does not support document tool results',
+      )
+    }
     return {
       role: 'tool',
       tool_call_id: message.toolCallId,
@@ -211,6 +216,11 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
     }
   }
   if (message.role === 'user' && message.images?.length) {
+    if (message.documents?.length) {
+      throw new Error(
+        'OpenAI-compatible provider does not support user documents',
+      )
+    }
     return {
       role: 'user',
       content: [
@@ -223,6 +233,11 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
         })),
       ],
     }
+  }
+  if (message.role === 'user' && message.documents?.length) {
+    throw new Error(
+      'OpenAI-compatible provider does not support user documents',
+    )
   }
   return { role: message.role, content: message.content }
 }

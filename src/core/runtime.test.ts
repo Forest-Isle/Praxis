@@ -465,6 +465,64 @@ describe('AgentRuntime', () => {
     expect(called).toBe(false)
   })
 
+  it('fails closed for unsupported document tool results and user documents', async () => {
+    const document = {
+      type: 'document' as const,
+      mediaType: 'application/pdf' as const,
+      data: 'JVBERg==',
+    }
+    let turn = 0
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_pdf', name: 'Read', input: {} },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'fallback' }
+      },
+    }
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return { content: 'attached', documents: [document], isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    await runtime.run({ messages: [{ role: 'user', content: 'inspect' }] })
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'call_pdf',
+      content: 'Provider does not support document tool results',
+      isError: true,
+    })
+
+    let called = false
+    const userRuntime = new AgentRuntime({
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        called = true
+        yield { type: 'text-delta' as const, delta: 'unexpected' }
+      },
+    })
+    await expect(
+      userRuntime.run({
+        messages: [{ role: 'user', content: 'inspect', documents: [document] }],
+      }),
+    ).rejects.toThrow('does not support user document inputs')
+    expect(called).toBe(false)
+  })
+
   it('replaces image results restored before each unsupported provider request', async () => {
     const requests: ModelRequest[] = []
     let turn = 0
