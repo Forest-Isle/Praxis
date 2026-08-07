@@ -376,6 +376,7 @@ export class WorkflowManager {
       options.parsed.orderedReplaySafe,
     )
     const promptReplay = await task.store.replayByPrompt()
+    let previousReplayKey = ''
     let currentPhase: string | undefined
     const host = (depth: number) => ({
       total: options.tokenBudget ?? null,
@@ -407,7 +408,8 @@ export class WorkflowManager {
         if (task.agentCount > MAX_AGENTS) {
           throw new Error(`Workflow agent count exceeded ${MAX_AGENTS}`)
         }
-        const key = workflowReplayKey(prompt, agentOptions)
+        const key = workflowReplayKey(prompt, agentOptions, previousReplayKey)
+        previousReplayKey = key
         const hasSemanticOptions =
           agentOptions.model !== undefined ||
           agentOptions.effort !== undefined ||

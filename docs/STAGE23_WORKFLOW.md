@@ -94,25 +94,28 @@ Stop / process exit  -> abort task -> abort every active agent -> persist killed
   notification consumption, failure/resume, named/built-in workflows, persisted shape.
 - Live gate: capture Claude schema; run and same-runtime-resume Praxis workflows with no
   repeated provider call after replacing the journal key; verify private semantic replay
-  metadata, native artifacts/metadata, and Claude resume of the shared main transcript.
-- Black-box probe: retain captured Claude run/journal/progress/request evidence used to
-  define runtime behavior without reading Claude implementation source.
+  metadata and native artifacts; require Claude to exact-replay a Praxis-created journal
+  without changing it; require Praxis to replay a Claude-created journal without a child
+  request.
+- Compatibility fixtures: retain captured Claude run/journal/progress/request evidence and
+  fixed first/subsequent key values used to define replay behavior.
 - Release gates: full Vitest, typecheck/lint/format/build, package, performance, existing
   task/subagent/scheduled compatibility suites.
 
-## Known compatibility boundary
+## Replay compatibility
 
-Claude 2.1.208 journal keys use a private `v2:<sha256>` derivation not recoverable from
-the observed inputs and artifacts. Black-box probes prove that prompt, model, effort,
-agentType, and schema affect the key while label, an empty options object, and option
-property order do not. Praxis writes full semantic descriptors to the private
-`.praxis-replay-metadata.jsonl` sidecar, so its own completed agents replay even if a
-foreign runtime rewrites the journal key. For Claude-created journals, an unchanged
-script and args can replay completed journal slots by started order, including semantic
-model/effort/schema/isolation options, because the QuickJS workflow surface is
-deterministic. Sources that use nested `workflow` or `budget` are excluded from this
-ordinal proof; changed script/args and missing result slots fail closed. A unique prompt
-fallback remains available only for current calls without semantic options. Claude can
-read Praxis workflow files and main session history, but does not cache-hit
-Praxis-created journal entries because its exact key derivation is unknown. This remains
-an explicit partial interoperability item, not a claimed exact match.
+Claude 2.1.208 journal keys are a chained `v2:<sha256>` identity. Each call hashes the
+previous replay key, a NUL separator, prompt, another NUL separator, and JSON for
+recursively key-sorted `schema`, `model`, `effort`, `isolation`, and `agentType` options.
+The chain starts empty and is shared by top-level and nested agent calls. Label, phase,
+callbacks, and undefined values do not affect identity. Fixed first/subsequent-call
+fixtures and the live Claude cache-hit gate protect this contract.
+
+Praxis also writes full semantic descriptors to the private
+`.praxis-replay-metadata.jsonl` sidecar, so its completed agents replay if a foreign
+runtime rewrites the journal key. Without that sidecar, an unchanged script and args can
+replay completed journal slots by started order, including semantic
+model/effort/schema/isolation options. Sources using nested `workflow` or `budget` are
+excluded from this ordinal proof; changed script/args and missing result slots fail
+closed. A unique-prompt fallback remains available only for current calls without
+semantic options.

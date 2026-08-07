@@ -216,6 +216,107 @@ return agent('semantic prompt', {
     await manager.close()
   })
 
+  it('writes Claude v2 chained keys for repeated agent calls', async () => {
+    const { manager } = await fixture()
+    const script = `export const meta = {
+  name: 'exact-key',
+  description: 'Write exact replay keys',
+}
+const first = await agent('P0')
+const second = await agent('P0')
+return { first, second }`
+    const runAgent = vi.fn(async () => ({
+      result: 'done',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      toolUseCount: 0,
+      durationMs: 1,
+      resolvedModel: 'fixture-model',
+    }))
+    const launch = (resumeFromRunId?: string) =>
+      manager.launch({
+        sessionId,
+        promptId: resumeFromRunId ? 'prompt-exact-resume' : 'prompt-exact-key',
+        script,
+        parsed: parseWorkflowScript(script),
+        args: null,
+        ...(resumeFromRunId ? { resumeFromRunId } : {}),
+        defaultModel: 'fixture-model',
+        runAgent,
+        resolveNested: async () => {
+          throw new Error('not used')
+        },
+      })
+    const first = await launch()
+    await manager.output(first.taskId, { block: true, timeout: 5_000 })
+    const journalFile = join(first.transcriptDirectory, 'journal.jsonl')
+    const journalSource = await readFile(journalFile, 'utf8')
+    const started = journalSource
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter(({ type }) => type === 'started')
+      .map(({ key }) => key)
+    expect(started).toEqual([
+      'v2:8cb48efd10ba515c873fbaa3762384198b6c850c61e7ce05e8c16e342e6e1799',
+      'v2:7f8f9a0b8fc028cb45d5aed858181c40dd3cc583a966fa73ece75cc40df1ff80',
+    ])
+
+    const resumed = await launch(first.runId)
+    await manager.output(resumed.taskId, { block: true, timeout: 5_000 })
+    expect(runAgent).toHaveBeenCalledTimes(2)
+    expect(await readFile(journalFile, 'utf8')).toBe(journalSource)
+    await manager.close()
+  })
+
+  it('shares the Claude replay chain with nested workflow agents', async () => {
+    const { manager } = await fixture()
+    const script = `export const meta = {
+  name: 'nested-key',
+  description: 'Write a nested replay key',
+}
+const first = await agent('P0')
+const nested = await workflow('nested-key-child', null)
+return { first, nested }`
+    const nestedScript = `export const meta = {
+  name: 'nested-key-child',
+  description: 'Write nested key',
+}
+return agent('P1')`
+    const launch = await manager.launch({
+      sessionId,
+      promptId: 'prompt-nested-key',
+      script,
+      parsed: parseWorkflowScript(script),
+      args: null,
+      defaultModel: 'fixture-model',
+      runAgent: async () => ({
+        result: 'done',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        toolUseCount: 0,
+        durationMs: 1,
+        resolvedModel: 'fixture-model',
+      }),
+      resolveNested: async () => ({
+        script: nestedScript,
+        parsed: parseWorkflowScript(nestedScript),
+      }),
+    })
+    await manager.output(launch.taskId, { block: true, timeout: 5_000 })
+    const started = (
+      await readFile(join(launch.transcriptDirectory, 'journal.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter(({ type }) => type === 'started')
+      .map(({ key }) => key)
+    expect(started).toEqual([
+      'v2:8cb48efd10ba515c873fbaa3762384198b6c850c61e7ce05e8c16e342e6e1799',
+      'v2:e79773bad244a9b1d1228d1f9e50d701f4f0779df69cf1e4fe6652ce86b4cbac',
+    ])
+    await manager.close()
+  })
+
   it('rejects concurrent resume of the same running session and run ID', async () => {
     const { manager, script, parsed } = await fixture()
     let release!: () => void

@@ -89,23 +89,23 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 
 ## Tool surface
 
-| Capability                         | Status   | Evidence / remaining work                                                                                                                                                                                                                    |
-| ---------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Read / Write / Edit / Grep / Bash  | Complete | Claude schemas, text/PDF media, path/symlink/bounds/permission gates; live local-tool gate                                                                                                                                                   |
-| Skill / Agent / MCP tools          | Complete | Provider-neutral registries, foreground/background sidechains, and native persistence                                                                                                                                                        |
-| Glob                               | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                                                                                                                                                                   |
-| WebFetch / WebSearch               | Complete | Live schemas/search/errors/resume; real Claude/Praxis fetch and filtered search; bidirectional resume                                                                                                                                        |
-| NotebookEdit                       | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                                                                                                                                                                |
-| Worktree enter/exit                | Complete | Native Git lifecycle, state entries, dynamic cwd, CLI `--worktree`, and classic tmux launcher; live bidirectional gate                                                                                                                       |
-| TaskCreate/Get/List/Update         | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate                                                                                                                             |
-| CronCreate/List/Delete and `/loop` | Complete | Session/durable jobs, shared native file, idle delivery, expiry, and live bidirectional gate                                                                                                                                                 |
-| ScheduleWakeup                     | Complete | Exact SDK schema/executable result; minute-aligned replacement lifecycle, max age, stop, inactive gate, and native result                                                                                                                    |
-| Monitor                            | N/A      | Claude Code 2.1.208 exposes no standalone Monitor tool                                                                                                                                                                                       |
-| ReportFindings                     | Complete | Local MCP-only typed finding validation and Claude-shaped count/level/findings result; installed schema and call gate                                                                                                                        |
-| DesignSync                         | Excluded | Claude 2.1.208 exposes hosted design-system synchronization surface; outside local single-user CLI scope                                                                                                                                     |
-| PushNotification                   | N/A      | Claude Code 2.1.208 exposes no standalone PushNotification tool in isolated `mcp serve`                                                                                                                                                      |
-| Workflow                           | Partial  | Runtime, sandbox, task lifecycle, native files/options, Claude-created unchanged-script/args ordered replay, Praxis semantic sidecar replay, and live Claude -> Praxis zero-child resume complete; exact Praxis -> Claude replay key unknown |
-| MCP resource tools                 | Complete | Conditional schemas, paginated list, text/blob read, directory stub, status, persistence, live resume                                                                                                                                        |
+| Capability                         | Status   | Evidence / remaining work                                                                                                                                               |
+| ---------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read / Write / Edit / Grep / Bash  | Complete | Claude schemas, text/PDF media, path/symlink/bounds/permission gates; live local-tool gate                                                                              |
+| Skill / Agent / MCP tools          | Complete | Provider-neutral registries, foreground/background sidechains, and native persistence                                                                                   |
+| Glob                               | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                                                                                              |
+| WebFetch / WebSearch               | Complete | Live schemas/search/errors/resume; real Claude/Praxis fetch and filtered search; bidirectional resume                                                                   |
+| NotebookEdit                       | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                                                                                           |
+| Worktree enter/exit                | Complete | Native Git lifecycle, state entries, dynamic cwd, CLI `--worktree`, and classic tmux launcher; live bidirectional gate                                                  |
+| TaskCreate/Get/List/Update         | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate                                                        |
+| CronCreate/List/Delete and `/loop` | Complete | Session/durable jobs, shared native file, idle delivery, expiry, and live bidirectional gate                                                                            |
+| ScheduleWakeup                     | Complete | Exact SDK schema/executable result; minute-aligned replacement lifecycle, max age, stop, inactive gate, and native result                                               |
+| Monitor                            | N/A      | Claude Code 2.1.208 exposes no standalone Monitor tool                                                                                                                  |
+| ReportFindings                     | Complete | Local MCP-only typed finding validation and Claude-shaped count/level/findings result; installed schema and call gate                                                   |
+| DesignSync                         | Excluded | Claude 2.1.208 exposes hosted design-system synchronization surface; outside local single-user CLI scope                                                                |
+| PushNotification                   | N/A      | Claude Code 2.1.208 exposes no standalone PushNotification tool in isolated `mcp serve`                                                                                 |
+| Workflow                           | Complete | Runtime, sandbox, task lifecycle, native files/options, exact chained `v2` keys, semantic sidecar and ordered fallbacks, plus live zero-child replay in both directions |
+| MCP resource tools                 | Complete | Conditional schemas, paginated list, text/blob read, directory stub, status, persistence, live resume                                                                   |
 
 ## Management commands
 
@@ -121,7 +121,5 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 
 ## Remaining implementation order
 
-1. Exact cross-runtime Workflow replay key if observable from future black-box
-   evidence.
-2. Final live black-box matrix, package/performance regression, and macOS/Linux
+1. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.

@@ -31,7 +31,8 @@ let praxisDefinition
 let childRequests = 0
 let deniedResult
 let effortRequest
-let removedReplayMetadata
+let replacedReplayFiles
+let praxisCreatedWorkflow
 let claudeCreatedWorkflow
 
 const workflowScript = `export const meta = {
@@ -158,7 +159,8 @@ async function replaceReplayKey({ scriptPath, resumeFromRunId }) {
     resumeFromRunId,
     'journal.jsonl',
   )
-  const journal = (await readFile(journalFile, 'utf8'))
+  const journalSource = await readFile(journalFile, 'utf8')
+  const journal = journalSource
     .trim()
     .split('\n')
     .map((line) => ({ ...JSON.parse(line), key: `v2:${'f'.repeat(64)}` }))
@@ -170,9 +172,12 @@ async function replaceReplayKey({ scriptPath, resumeFromRunId }) {
     dirname(journalFile),
     '.praxis-replay-metadata.jsonl',
   )
-  removedReplayMetadata = {
-    path: replayMetadataFile,
-    source: await readFile(replayMetadataFile, 'utf8'),
+  replacedReplayFiles = {
+    journal: { path: journalFile, source: journalSource },
+    metadata: {
+      path: replayMetadataFile,
+      source: await readFile(replayMetadataFile, 'utf8'),
+    },
   }
   await rm(replayMetadataFile)
 }
@@ -199,6 +204,33 @@ const provider = createServer(async (request, response) => {
     events = textEvents('CLAUDE_WORKFLOW_SCHEMA_DONE')
   } else if (mode === 'claude-resume') {
     events = textEvents('CLAUDE_READ_PRAXIS_WORKFLOW_DONE')
+  } else if (mode === 'claude-exact-resume' && outerTurn === 0) {
+    assert(praxisCreatedWorkflow, 'Praxis workflow was not captured')
+    events = toolEvents(
+      'claude_resume_praxis_workflow',
+      'Workflow',
+      praxisCreatedWorkflow,
+    )
+    outerTurn += 1
+  } else if (
+    mode === 'claude-exact-resume' &&
+    body.tools?.some(({ name }) => name === 'Workflow')
+  ) {
+    const completed = JSON.stringify(body.messages ?? []).includes(
+      '<task-notification>',
+    )
+    events = textEvents(
+      completed ? 'CLAUDE_EXACT_REPLAY_DONE' : 'CLAUDE_EXACT_REPLAY_WAITING',
+    )
+    outerTurn += 1
+  } else if (mode === 'claude-exact-resume') {
+    childRequests += 1
+    const completed = toolResult(body, 'structured_result')
+    events = completed
+      ? textEvents('CLAUDE_EXACT_REPLAY_MISS_CHILD_DONE')
+      : toolEvents('structured_result', 'StructuredOutput', {
+          value: 'CLAUDE_EXACT_REPLAY_MISS_VALUE',
+        })
   } else if (mode === 'denied') {
     if (outerTurn === 0) {
       praxisDefinition = body.tools?.find(({ name }) => name === 'Workflow')
@@ -289,14 +321,23 @@ const provider = createServer(async (request, response) => {
       JSON.stringify(body.messages ?? []).includes('<task-notification>'),
       'Praxis did not inject workflow completion notification',
     )
-    const resume = workflowResume(body)
-    await replaceReplayKey(resume)
-    events = toolEvents('workflow_resume', 'Workflow', resume)
+    praxisCreatedWorkflow = workflowResume(body)
+    await replaceReplayKey(praxisCreatedWorkflow)
+    events = toolEvents('workflow_resume', 'Workflow', praxisCreatedWorkflow)
     outerTurn += 1
   } else if (outerTurn === 3) {
-    if (removedReplayMetadata) {
-      await writeFile(removedReplayMetadata.path, removedReplayMetadata.source)
-      removedReplayMetadata = undefined
+    if (replacedReplayFiles) {
+      await Promise.all([
+        writeFile(
+          replacedReplayFiles.journal.path,
+          replacedReplayFiles.journal.source,
+        ),
+        writeFile(
+          replacedReplayFiles.metadata.path,
+          replacedReplayFiles.metadata.source,
+        ),
+      ])
+      replacedReplayFiles = undefined
     }
     events = textEvents('PRAXIS_WORKFLOW_RESUME_WAITING')
     outerTurn += 1
@@ -523,6 +564,40 @@ try {
     'Workflow agent metadata differs from Claude',
   )
 
+  const exactJournal = await readFile(journalFile, 'utf8')
+  mode = 'claude-exact-resume'
+  outerTurn = 0
+  childRequests = 0
+  const claudeExactResume = await execFileAsync(
+    'claude',
+    [
+      '-p',
+      '--resume',
+      sessionId,
+      '--model',
+      'claude-sonnet-4-5-20250929',
+      '--max-turns',
+      '6',
+      '--dangerously-skip-permissions',
+      '--output-format',
+      'json',
+      'resume the Praxis-created workflow using its existing journal',
+    ],
+    { cwd, env: environment(address.port, false), timeout: 120_000 },
+  )
+  assert(
+    JSON.parse(claudeExactResume.stdout).result === 'CLAUDE_EXACT_REPLAY_DONE',
+    `Claude exact workflow replay failed: ${claudeExactResume.stdout}`,
+  )
+  assert(
+    childRequests === 0,
+    `Claude made provider child calls on exact Praxis replay: ${childRequests}`,
+  )
+  assert(
+    (await readFile(journalFile, 'utf8')) === exactJournal,
+    'Claude exact replay appended or changed the Praxis journal',
+  )
+
   mode = 'claude-resume'
   await execFileAsync(
     'claude',
@@ -570,20 +645,35 @@ try {
     'Claude-created workflow launch was not captured',
   )
   assert(childRequests === 1, `Claude workflow child calls: ${childRequests}`)
+  const claudeCreatedSessionDirectory = dirname(
+    dirname(dirname(claudeCreatedWorkflow.scriptPath)),
+  )
   const createdJournalFile = join(
-    dirname(dirname(dirname(claudeCreatedWorkflow.scriptPath))),
+    claudeCreatedSessionDirectory,
     'subagents',
     'workflows',
     claudeCreatedWorkflow.resumeFromRunId,
     'journal.jsonl',
   )
-  const createdJournal = (await readFile(createdJournalFile, 'utf8'))
-    .trim()
-    .split('\n')
-    .map(JSON.parse)
+  const createdJournalSource = await readFile(createdJournalFile, 'utf8')
+  const createdJournal = createdJournalSource.trim().split('\n').map(JSON.parse)
   assert(
     createdJournal.length === 2 && createdJournal[0]?.type === 'started',
     'Claude-created workflow journal is incomplete',
+  )
+  const createdRunFile = join(
+    claudeCreatedSessionDirectory,
+    'workflows',
+    `${claudeCreatedWorkflow.resumeFromRunId}.json`,
+  )
+  const createdRun = JSON.parse(await readFile(createdRunFile, 'utf8'))
+  await writeFile(
+    createdRunFile,
+    `${JSON.stringify(
+      { ...createdRun, script: `${createdRun.script}\n// exact-key gate` },
+      null,
+      2,
+    )}\n`,
   )
 
   mode = 'praxis-from-claude'
@@ -610,6 +700,10 @@ try {
   assert(
     childRequests === 0,
     `Praxis made provider child calls while resuming Claude workflow: ${childRequests}`,
+  )
+  assert(
+    (await readFile(createdJournalFile, 'utf8')) === createdJournalSource,
+    'Praxis exact replay appended or changed the Claude journal',
   )
   console.log('Workflow compatibility checks passed.')
 } finally {

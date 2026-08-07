@@ -401,7 +401,7 @@ move to Stage 23. No standalone Monitor tool exists in Claude Code 2.1.208.
 
 ## Stage 23 — resumable Workflow engine
 
-Status: implemented with one documented cross-runtime replay limitation.
+Status: complete for Claude Code 2.1.208.
 
 - [x] exact Claude 2.1.208 public schema, opt-in permission gate, source precedence,
       saved project/user workflows, and built-ins
@@ -415,12 +415,12 @@ Status: implemented with one documented cross-runtime replay limitation.
       deterministic started-order replay for unchanged script/args Claude journals
       (with nested workflow/budget sources fail-closed), plus conservative
       unique-prompt fallback when the current call has no semantic options
+- [x] Claude-compatible chained `v2` replay keys over previous key, prompt, and
+      canonical schema/model/effort/isolation/agentType options
 - [x] live schema, permissions, lifecycle, structured output, effort, artifacts, and
-      shared-main-session Claude resume gates; Praxis -> Claude resume removes the
-      sidecar and rewrites the journal key, while Claude -> Praxis creates a native
-      Claude workflow and resumes it with zero repeated child provider requests
-- [ ] exact Praxis-created journal cache reuse in Claude; observed `v2` keys do not
-      reveal Claude's private semantic key derivation
+      shared-main-session gates; real Claude exact-replays a Praxis-created journal,
+      and Praxis exact/ordered-replays Claude-created or deliberately foreign-key
+      journals with zero repeated child provider requests
 
 Native top-level EnterWorktree, ExitWorktree, `--worktree`, and tmux lifecycle
 remain separate tool/CLI work.

@@ -18,6 +18,35 @@ function stable(value: unknown): string {
     .join(',')}}`
 }
 
+function canonicalReplayOptions(options: WorkflowReplayOptions): string {
+  const selected: Record<string, unknown> = {}
+  for (const field of [
+    'schema',
+    'model',
+    'effort',
+    'isolation',
+    'agentType',
+  ] as const) {
+    const value = options[field]
+    if (value !== undefined && typeof value !== 'function') {
+      selected[field] = value
+    }
+  }
+  const canonical = (value: unknown): unknown => {
+    if (typeof value === 'function') return undefined
+    if (Array.isArray(value)) return value.map(canonical)
+    if (value && typeof value === 'object') {
+      const result = Object.create(null) as Record<string, unknown>
+      for (const key of Object.keys(value).sort()) {
+        result[key] = canonical((value as Record<string, unknown>)[key])
+      }
+      return result
+    }
+    return value
+  }
+  return JSON.stringify(canonical(selected))
+}
+
 export function workflowReplayDescriptor(
   prompt: string,
   options: WorkflowReplayOptions = {},
@@ -39,8 +68,13 @@ export function workflowReplayDescriptor(
 export function workflowReplayKey(
   prompt: string,
   options: WorkflowReplayOptions = {},
+  previousKey = '',
 ): string {
   return `v2:${createHash('sha256')
-    .update(workflowReplayDescriptor(prompt, options))
+    .update(previousKey)
+    .update('\0')
+    .update(prompt)
+    .update('\0')
+    .update(canonicalReplayOptions(options))
     .digest('hex')}`
 }

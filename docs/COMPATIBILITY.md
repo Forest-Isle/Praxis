@@ -425,19 +425,21 @@ time, pending-wakeup replacement, stop cancellation, and native result fields.
 `npm run test:workflow-compat` compares the Claude 2.1.208 Workflow schema, proves
 default permission denial is artifact-free, drives background launch/notification/
 resume with zero repeated child requests, checks structured output and effort
-forwarding, validates native run/journal/sidechain metadata, and requires Claude to
-resume the Praxis-written main transcript. Before Praxis resumes the workflow, the
-gate replaces its journal key with a foreign key; the private
+forwarding, and validates native run/journal/sidechain metadata. Praxis writes Claude's
+exact chained `v2` replay keys from the previous key, prompt, and canonical semantic
+options; the gate has Claude resume that Praxis-created run with zero child provider
+requests and verifies that Claude does not append or change the journal. Before Praxis
+exercises its ordered fallback, the gate replaces the journal key with a foreign key; the
+private
 `.praxis-replay-metadata.jsonl` is removed during resume, so unchanged script/args
 ordered replay must still produce a zero-request cache hit. The same gate first
 creates a native Claude 2.1.208 workflow, then resumes that session with Praxis;
 the Claude journal is used without a Praxis sidecar and produces zero child
 provider requests. Praxis replays Claude-created entries only when an unchanged
-deterministic script/args pair is available; nested `workflow` and `budget` sources fail closed. A unique prompt is
-the final fallback only for a current call with no semantic options. Exact
-Praxis-created journal cache reuse in Claude remains unclaimed because Claude's
-private replay-key derivation is not observable. All semantic-option calls without
-unchanged-script proof remain fail-closed without Praxis descriptor metadata.
+deterministic script/args pair is available; nested `workflow` and `budget` sources fail
+closed. A unique prompt is the final fallback only for a current call with no semantic
+options. All semantic-option calls without exact identity, unchanged-script proof, or
+Praxis descriptor metadata remain fail-closed.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork
