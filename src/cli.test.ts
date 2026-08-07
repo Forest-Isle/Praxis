@@ -1025,7 +1025,7 @@ describe('Praxis CLI', () => {
             type: 'result',
             subtype: 'error_during_execution',
             is_error: true,
-            result: 'provider [REDACTED]',
+            errors: ['provider [REDACTED]'],
           }),
         )
         expect(capture.stdout.join('')).not.toContain(secret)

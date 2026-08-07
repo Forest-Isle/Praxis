@@ -473,3 +473,14 @@ records require a Praxis producer before they can be marked complete.
 - [x] built-package `test:stream-json-compat` gate against a local Anthropic SSE provider
 - [ ] local command output, tool-use summaries, file persistence events, and
       elicitation events with real single-user producers
+
+## Stage 46 - machine result envelope contract
+
+Status: implemented for observable SDK fields; provider-neutral unknown pricing
+and failed-request API duration remain explicit `null` rather than fabricated.
+
+- [x] init UUID, output style, fast-mode state, and loaded plugin name/path list
+- [x] success UUID, stop reason, fast-mode state, and optional structured output
+- [x] error subtype classification, `errors`, complete zero usage, empty
+      `modelUsage`, stop reason, fast-mode state, and UUID
+- [x] exact protocol and CLI redaction tests

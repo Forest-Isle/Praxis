@@ -760,6 +760,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       skills: extensions
         .modelInvocableSkills()
         .map((definition) => definition.name),
+      plugins: pluginResources.plugins
+        .filter((plugin) => plugin.enabled && plugin.errors.length === 0)
+        .map((plugin) => ({ name: plugin.name, path: plugin.path })),
       claudeCodeVersion: claudeVersion,
     }
     const toolRegistry = exposeToolRegistry

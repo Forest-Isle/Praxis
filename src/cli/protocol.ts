@@ -146,6 +146,7 @@ export interface CliRuntimeInfo {
   slashCommands: readonly string[]
   agents: readonly string[]
   skills: readonly string[]
+  plugins?: readonly { name: string; path: string }[]
   claudeCodeVersion: string
 }
 
@@ -190,6 +191,7 @@ export function createSuccessResult(
         : Math.round(result.durationApiMs),
     num_turns: modelTurns,
     result: result.text,
+    stop_reason: null,
     session_id: result.sessionId,
     total_cost_usd: result.costUsd ?? null,
     usage,
@@ -206,8 +208,22 @@ export function createSuccessResult(
       ]),
     ),
     permission_denials: [],
-    structured_output: result.structuredOutput ?? null,
+    ...(result.structuredOutput === undefined
+      ? {}
+      : { structured_output: result.structuredOutput }),
+    fast_mode_state: 'off',
+    uuid: randomUUID(),
   }
+}
+
+function errorResultSubtype(message: string): string {
+  if (/maximum budget|budget .* exceeded/iu.test(message))
+    return 'error_max_budget_usd'
+  if (/maximum model turns|model turn limit/iu.test(message))
+    return 'error_max_turns'
+  if (/StructuredOutput/iu.test(message))
+    return 'error_max_structured_output_retries'
+  return 'error_during_execution'
 }
 
 export function createErrorResult(
@@ -219,16 +235,25 @@ export function createErrorResult(
   const duration = Date.now() - startedAt
   return {
     type: 'result',
-    subtype: 'error_during_execution',
+    subtype: errorResultSubtype(message),
     is_error: true,
     duration_ms: duration,
     duration_api_ms: null,
     num_turns: modelTurns,
-    result: message,
+    stop_reason: null,
     session_id: sessionId,
     total_cost_usd: null,
-    usage: { input_tokens: 0, output_tokens: 0 },
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+    modelUsage: {},
     permission_denials: [],
+    errors: [message],
+    fast_mode_state: 'off',
+    uuid: randomUUID(),
   }
 }
 
@@ -1275,6 +1300,10 @@ export class StreamJsonOutput {
       claude_code_version: this.info.claudeCodeVersion,
       agents: this.info.agents,
       skills: this.info.skills,
+      output_style: 'default',
+      plugins: this.info.plugins ?? [],
+      fast_mode_state: 'off',
+      uuid: randomUUID(),
     })
   }
 

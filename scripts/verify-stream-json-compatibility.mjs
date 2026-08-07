@@ -98,10 +98,28 @@ try {
     if (!subtypes.includes(subtype))
       throw new Error(`Missing stream-json system subtype: ${subtype}`)
   }
+  const init = records.find(
+    (record) => record.type === 'system' && record.subtype === 'init',
+  )
+  if (
+    typeof init?.uuid !== 'string' ||
+    init.output_style !== 'default' ||
+    !Array.isArray(init.plugins)
+  ) {
+    throw new Error(`Invalid init envelope: ${JSON.stringify(init)}`)
+  }
   if (records.at(-1)?.type !== 'result')
     throw new Error(`Missing terminal result: ${JSON.stringify(records)}`)
   if (!records.some((record) => record.type === 'assistant'))
     throw new Error('Missing assistant stream record')
+  if (
+    typeof records.at(-1)?.uuid !== 'string' ||
+    records.at(-1)?.stop_reason !== null
+  ) {
+    throw new Error(
+      `Invalid result envelope: ${JSON.stringify(records.at(-1))}`,
+    )
+  }
   console.log('Stream JSON compatibility checks passed.')
 } finally {
   await new Promise((resolve) => server.close(resolve)).catch(() => undefined)

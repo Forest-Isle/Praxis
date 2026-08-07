@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  createErrorResult,
   parseCliInvocation,
   readStreamJsonMessages,
   readStreamUserMessages,
@@ -19,6 +20,7 @@ const runtimeInfo: CliRuntimeInfo = {
   slashCommands: ['review'],
   agents: ['reviewer'],
   skills: ['review'],
+  plugins: [{ name: 'fixture-plugin', path: '/plugins/fixture' }],
   claudeCodeVersion: '2.1.208',
 }
 
@@ -34,6 +36,28 @@ async function collectInput(chunks: readonly (string | Uint8Array)[]) {
 }
 
 describe('CLI protocol', () => {
+  it('classifies terminal result errors into SDK subtypes', () => {
+    expect(
+      createErrorResult(
+        'Maximum budget of $1.000000 exceeded',
+        sessionId,
+        Date.now(),
+        2,
+      ),
+    ).toMatchObject({
+      subtype: 'error_max_budget_usd',
+      errors: ['Maximum budget of $1.000000 exceeded'],
+    })
+    expect(
+      createErrorResult(
+        'StructuredOutput must be called exactly once',
+        sessionId,
+        Date.now(),
+        2,
+      ),
+    ).toMatchObject({ subtype: 'error_max_structured_output_retries' })
+  })
+
   it('normalizes Claude-style print, resume, format, agent, and session options', () => {
     expect(
       parseCliInvocation([
@@ -560,6 +584,13 @@ describe('CLI protocol', () => {
         .filter((record) => (record as { type: string }).type === 'system')
         .map((record) => (record as { subtype: string }).subtype),
     ).toEqual(['init', 'session_state_changed', 'session_state_changed'])
+    expect(records[0]).toMatchObject({
+      subtype: 'init',
+      output_style: 'default',
+      plugins: [{ name: 'fixture-plugin', path: '/plugins/fixture' }],
+      fast_mode_state: 'off',
+      uuid: expect.any(String),
+    })
     expect(
       records.find(
         (record) => (record as { type: string }).type === 'assistant',
@@ -599,6 +630,9 @@ describe('CLI protocol', () => {
       modelUsage: {
         'test-model': { costUSD: null },
       },
+      stop_reason: null,
+      fast_mode_state: 'off',
+      uuid: expect.any(String),
     })
   })
 
@@ -856,11 +890,15 @@ describe('CLI protocol', () => {
       type: 'result',
       subtype: 'error_during_execution',
       is_error: true,
-      result: 'provider failed',
+      errors: ['provider failed'],
       session_id: sessionId,
       num_turns: 1,
       duration_api_ms: null,
       total_cost_usd: null,
+      modelUsage: {},
+      stop_reason: null,
+      fast_mode_state: 'off',
+      uuid: expect.any(String),
     })
   })
 })
