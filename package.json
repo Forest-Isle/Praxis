@@ -40,6 +40,7 @@
     "test:prompt-suggestions": "npm run build && node scripts/verify-prompt-suggestions.mjs",
     "test:plugin-compat": "npm run build && node scripts/verify-plugin-compatibility.mjs",
     "test:mcp-management": "npm run build && node scripts/verify-mcp-management.mjs",
+    "test:mcp-oauth-serve": "npm run build && node scripts/verify-mcp-oauth-serve.mjs",
     "test:package": "npm run build && node scripts/verify-release-package.mjs",
     "test:runtime-compat": "npm run build && node scripts/verify-runtime-compatibility.mjs",
     "test:recovery-compat": "npm run build && node scripts/verify-crash-recovery.mjs",

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { mkdir, open, rm } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -23,6 +24,10 @@ import {
   sanitizeChildEnvironment,
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
+import {
+  loadMcpOAuthProvider,
+  mcpOAuthServerIdentity,
+} from './claude-mcp-oauth.js'
 
 type McpServerConfig =
   | {
@@ -79,6 +84,7 @@ export interface ClaudeMcpToolRegistryOptions {
   base: ToolRegistry
   resources: readonly ClaudeJsonResource[]
   cwd: string
+  configRoot?: string
   onWarning?: (message: string) => void
   signal?: AbortSignal
 }
@@ -280,7 +286,12 @@ export function validateClaudeMcpConfiguration(
   return { servers, warnings }
 }
 
-function transport(config: McpServerConfig, cwd: string) {
+async function transport(
+  serverName: string,
+  config: McpServerConfig,
+  cwd: string,
+  configRoot: string,
+) {
   if (config.type === 'stdio') {
     return new StdioClientTransport({
       command: config.command,
@@ -291,9 +302,17 @@ function transport(config: McpServerConfig, cwd: string) {
     })
   }
   const requestInit = { headers: config.headers }
+  const identity = mcpOAuthServerIdentity(serverName, config)
+  const authProvider = await loadMcpOAuthProvider(configRoot, identity)
   return config.type === 'sse'
-    ? new SSEClientTransport(new URL(config.url), { requestInit })
-    : new StreamableHTTPClientTransport(new URL(config.url), { requestInit })
+    ? new SSEClientTransport(new URL(config.url), {
+        requestInit,
+        ...(authProvider ? { authProvider } : {}),
+      })
+    : new StreamableHTTPClientTransport(new URL(config.url), {
+        requestInit,
+        ...(authProvider ? { authProvider } : {}),
+      })
 }
 
 function toolContent(
@@ -679,10 +698,22 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
       DISCOVERY_TIMEOUT_MS,
     )
     try {
-      await client.connect(transport(config, this.options.cwd) as Transport, {
-        timeout: DISCOVERY_TIMEOUT_MS,
-        signal: discoverySignal,
-      })
+      const configRoot =
+        this.options.configRoot ??
+        process.env.CLAUDE_CONFIG_DIR ??
+        join(homedir(), '.claude')
+      await client.connect(
+        (await transport(
+          serverName,
+          config,
+          this.options.cwd,
+          configRoot,
+        )) as Transport,
+        {
+          timeout: DISCOVERY_TIMEOUT_MS,
+          signal: discoverySignal,
+        },
+      )
       const capabilities = client.getServerCapabilities()
       const tools = capabilities?.tools
         ? await this.discoverTools(client, serverName, sensitiveValues)

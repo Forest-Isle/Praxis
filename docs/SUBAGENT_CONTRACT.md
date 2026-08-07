@@ -13,9 +13,14 @@ Claude and Praxis can reopen the resulting main session without conversion.
 - `subagent_type`: optional; defaults to `general-purpose`, or names a shared
   user/project agent;
 - `model`: optional provider model alias override;
+- `name`: optional addressable agent name persisted in sidechain metadata;
+- `team_name`: accepted as Claude-compatible deprecated metadata; single-user
+  Praxis keeps one implicit local team;
+- `mode`: optional child permission mode (`acceptEdits`, `auto`,
+  `bypassPermissions`, `default`, `dontAsk`, or `plan`);
 - `run_in_background`: optional; defaults to `true`;
-- `isolation`: schema-compatible but fails explicitly until worktree isolation
-  lands; remote execution stays outside the local product boundary.
+- `isolation`: optional `worktree`, which runs child tools in a temporary Git
+  checkout; remote execution stays outside the local product boundary.
 
 Unknown fields, unknown agent types, empty input, and unsupported isolation fail
 as an ordinary error tool result. `Agent` itself follows the active permission
@@ -27,8 +32,10 @@ use the same precedence as other Claude-compatible tool permissions.
 
 1. Main runtime persists the assistant `Agent` tool call.
 2. Agent tool creates a unique 16-hex agent ID and exclusive native sidechain.
-3. Sidechain root contains the requested prompt and the main prompt ID.
-4. Subagent runs with shared base context plus its selected agent definition.
+3. Sidechain root contains requested prompt, main prompt ID, and worktree cwd
+   when isolation is enabled.
+4. Subagent runs with shared base context plus its selected agent definition and
+   mode-specific permission resolver.
 5. Local, MCP, Skill, hook, permission, cancellation, and redaction behavior is
    reused from the main runtime. Nested Agent calls use the same
    path with incremented spawn depth.
@@ -64,7 +71,7 @@ Agent IDs use `a` followed by 16 lowercase hex digits. Every sidechain message
 has `isSidechain: true`, `agentId`, main `sessionId`,
 and an independent UUID/parent chain. Assistant entries also include
 `attributionAgent`. Meta contains `agentType`, `description`, main `toolUseId`,
-and `spawnDepth`.
+`spawnDepth`, and optional `name`, `permissionMode`, and `isolation`.
 
 Foreground `toolUseResult` records status, prompt, agent ID/type, returned
 content, resolved model, duration, usage, and tool-call count. Background launch
@@ -75,7 +82,6 @@ prevents overwriting native or Praxis output.
 
 ## Deferred
 
-- worktree Agent isolation;
 - top-level `--background` sessions and `praxis agents` management;
 - background Bash and durable structured task graphs;
 - concurrent work stealing and process-independent live Agent ownership.

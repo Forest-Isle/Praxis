@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolRegistry } from '../core/runtime.js'
+import { ClaudeMcpOAuthStore } from './claude-mcp-oauth.js'
 import { ClaudeMcpToolRegistry } from './claude-mcp-tools.js'
 
 const roots: string[] = []
@@ -19,12 +20,119 @@ const base: ToolRegistry = {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true })),
   )
 })
 
 describe('ClaudeMcpToolRegistry', () => {
+  it('loads shared OAuth credentials for HTTP transports', async () => {
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-oauth-transport-')),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const authorizationHeaders: (string | undefined)[] = []
+    const http = createServer(async (request, response) => {
+      authorizationHeaders.push(request.headers.authorization)
+      if (request.headers.authorization !== 'Bearer stored-access') {
+        response
+          .writeHead(401, {
+            'www-authenticate': 'Bearer error="invalid_token"',
+          })
+          .end()
+        return
+      }
+      let body = ''
+      request.setEncoding('utf8')
+      for await (const chunk of request) body += chunk
+      if (!body) {
+        response.writeHead(405).end()
+        return
+      }
+      const message = JSON.parse(body)
+      if (message.id === undefined) {
+        response.writeHead(202).end()
+        return
+      }
+      const result =
+        message.method === 'initialize'
+          ? {
+              protocolVersion: message.params.protocolVersion,
+              capabilities: { tools: {} },
+              serverInfo: { name: 'oauth-fixture', version: '1' },
+            }
+          : message.method === 'tools/list'
+            ? {
+                tools: [
+                  {
+                    name: 'secured',
+                    description: 'secured tool',
+                    inputSchema: { type: 'object' },
+                  },
+                ],
+              }
+            : { content: [{ type: 'text', text: 'authenticated' }] }
+      response
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      http.once('error', reject)
+      http.listen(0, '127.0.0.1', resolve)
+    })
+    const address = http.address()
+    if (!address || typeof address === 'string') throw new Error('no address')
+    const url = `http://127.0.0.1:${address.port}/mcp`
+    const identity = { name: 'secured', type: 'http' as const, url }
+    await new ClaudeMcpOAuthStore({
+      configRoot,
+      useKeychain: false,
+    }).mutate(identity, () => ({
+      serverName: identity.name,
+      serverUrl: identity.url,
+      accessToken: 'stored-access',
+    }))
+    const warning = vi.fn()
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      configRoot,
+      cwd: root,
+      onWarning: warning,
+      resources: [
+        {
+          path: '/oauth.json',
+          scope: 'user',
+          value: {
+            mcpServers: { secured: { type: 'http', url } },
+          },
+        },
+      ],
+    })
+
+    try {
+      expect(warning).not.toHaveBeenCalled()
+      expect(registry.definitions().map((tool) => tool.name)).toContain(
+        'mcp__secured__secured',
+      )
+      await expect(
+        registry.execute(
+          { id: 'secured', name: 'mcp__secured__secured', input: {} },
+          { cwd: root },
+        ),
+      ).resolves.toMatchObject({ content: 'authenticated', isError: false })
+      expect(authorizationHeaders.length).toBeGreaterThan(0)
+      expect(authorizationHeaders).toEqual(
+        expect.arrayContaining(['Bearer stored-access']),
+      )
+    } finally {
+      await registry.close()
+      await new Promise<void>((resolve) => http.close(() => resolve()))
+    }
+  })
+
   it('discovers and calls layered stdio and HTTP tools', async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), 'praxis-mcp-tools-')),

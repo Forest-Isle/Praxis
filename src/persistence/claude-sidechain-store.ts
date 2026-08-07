@@ -106,7 +106,19 @@ export class ClaudeSidechainStore {
       typeof record.agentType !== 'string' ||
       typeof record.description !== 'string' ||
       typeof record.toolUseId !== 'string' ||
-      typeof record.spawnDepth !== 'number'
+      typeof record.spawnDepth !== 'number' ||
+      (record.name !== undefined && typeof record.name !== 'string') ||
+      (record.permissionMode !== undefined &&
+        (typeof record.permissionMode !== 'string' ||
+          ![
+            'acceptEdits',
+            'auto',
+            'bypassPermissions',
+            'default',
+            'dontAsk',
+            'plan',
+          ].includes(record.permissionMode))) ||
+      (record.isolation !== undefined && record.isolation !== 'worktree')
     ) {
       throw new Error('Claude sidechain metadata is invalid')
     }
@@ -115,6 +127,21 @@ export class ClaudeSidechainStore {
       description: record.description,
       toolUseId: record.toolUseId,
       spawnDepth: record.spawnDepth,
+      ...(record.name === undefined ? {} : { name: record.name }),
+      ...(record.permissionMode === undefined
+        ? {}
+        : {
+            permissionMode: record.permissionMode as
+              | 'acceptEdits'
+              | 'auto'
+              | 'bypassPermissions'
+              | 'default'
+              | 'dontAsk'
+              | 'plan',
+          }),
+      ...(record.isolation === undefined
+        ? {}
+        : { isolation: record.isolation }),
     }
   }
 }

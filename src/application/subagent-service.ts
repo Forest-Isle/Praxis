@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
+import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { Ajv2020 } from 'ajv/dist/2020.js'
@@ -11,6 +12,7 @@ import {
   createClaudeSidechainRoot,
   resolveClaudeSidechainPaths,
   toClaudeSidechainEntry,
+  type ClaudeSidechainPermissionMode,
   type ClaudeSidechainPaths,
 } from '../compatibility/claude/sidechain.js'
 import { projectClaudeModelMessages } from '../compatibility/claude/projection.js'
@@ -51,8 +53,13 @@ import type {
 import {
   BackgroundAgentManager,
   type BackgroundAgentRunResult,
+  type BackgroundAgentTaskSpec,
 } from './background-agent-manager.js'
 import { isBackgroundBashTaskId } from './background-task-id.js'
+import {
+  createManagedWorktree,
+  type ManagedWorktree,
+} from './managed-worktree.js'
 import { createWorkflowWorktree } from './workflow-worktree.js'
 
 const DEFAULT_MAX_DEPTH = 4
@@ -97,8 +104,14 @@ interface AgentInput {
   prompt: string
   subagentType: string
   model?: string
+  name?: string
+  teamName?: string
+  permissionMode?: AgentPermissionMode
+  isolation?: 'worktree'
   runInBackground: boolean
 }
+
+export type AgentPermissionMode = ClaudeSidechainPermissionMode
 
 export class StructuredOutputRegistry implements ToolRegistry {
   private readonly validate
@@ -178,6 +191,7 @@ export interface ClaudeSubagentExecutorOptions {
   provider: ModelProvider
   baseTools: ToolRegistry
   permissions: PermissionResolver
+  permissionResolverForMode?: (mode: AgentPermissionMode) => PermissionResolver
   extensions?: ClaudeExtensionCatalog
   hooks?: ClaudeHookRunner
   contextAssembler?: ContextAssembler
@@ -199,6 +213,9 @@ function parseAgentInput(call: ModelToolCall): AgentInput {
     'subagent_type',
     'model',
     'run_in_background',
+    'name',
+    'team_name',
+    'mode',
     'isolation',
   ])
   for (const key of Object.keys(call.input)) {
@@ -208,6 +225,9 @@ function parseAgentInput(call: ModelToolCall): AgentInput {
   const prompt = call.input.prompt
   const subagentType = call.input.subagent_type ?? 'general-purpose'
   const model = call.input.model
+  const name = call.input.name
+  const teamName = call.input.team_name
+  const permissionMode = call.input.mode
   const isolation = call.input.isolation
   if (typeof description !== 'string' || description.trim().length === 0) {
     throw new Error('description must be a non-empty string')
@@ -222,22 +242,52 @@ function parseAgentInput(call: ModelToolCall): AgentInput {
     throw new Error('model must be a string')
   }
   if (
+    name !== undefined &&
+    (typeof name !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(name))
+  ) {
+    throw new Error('name must be a valid agent name')
+  }
+  if (teamName !== undefined && typeof teamName !== 'string') {
+    throw new Error('team_name must be a string')
+  }
+  if (
+    permissionMode !== undefined &&
+    (typeof permissionMode !== 'string' ||
+      ![
+        'acceptEdits',
+        'auto',
+        'bypassPermissions',
+        'default',
+        'dontAsk',
+        'plan',
+      ].includes(permissionMode))
+  ) {
+    throw new Error('mode is not a supported permission mode')
+  }
+  if (
     call.input.run_in_background !== undefined &&
     typeof call.input.run_in_background !== 'boolean'
   ) {
     throw new Error('run_in_background must be a boolean')
   }
-  if (isolation !== undefined) {
-    if (isolation !== 'worktree' && isolation !== 'remote') {
+  if (isolation !== undefined && isolation !== 'worktree') {
+    if (isolation !== 'remote') {
       throw new Error('isolation must be worktree or remote')
     }
-    throw new Error(`Praxis does not support Agent isolation ${isolation} yet`)
+    throw new Error('Praxis does not support Agent isolation remote')
   }
   return {
     description,
     prompt,
     subagentType,
     ...(model === undefined ? {} : { model }),
+    ...(name === undefined ? {} : { name }),
+    ...(teamName === undefined ? {} : { teamName }),
+    ...(permissionMode === undefined
+      ? {}
+      : { permissionMode: permissionMode as AgentPermissionMode }),
+    ...(isolation === undefined ? {} : { isolation }),
     runInBackground: call.input.run_in_background !== false,
   }
 }
@@ -300,7 +350,7 @@ export class ClaudeSubagentExecutor {
           },
           model: {
             description:
-              'Optional model override for this agent. Takes precedence over the agent definition\'s model frontmatter. If omitted, uses the agent definition\'s model, or inherits from the parent. Ignored for subagent_type: "fork" - forks always inherit the parent model.',
+              'Optional model override for this agent. Takes precedence over the agent definition\'s model frontmatter. If omitted, uses the agent definition\'s model, or inherits from the parent. Ignored for subagent_type: "fork" — forks always inherit the parent model.',
             type: 'string',
             enum: ['sonnet', 'opus', 'haiku', 'fable'],
           },
@@ -308,6 +358,30 @@ export class ClaudeSubagentExecutor {
             description:
               'Agents run in the background by default; you will be notified when one completes. Set to false to run this agent synchronously when you need its result before continuing.',
             type: 'boolean',
+          },
+          name: {
+            description:
+              'Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running.',
+            type: 'string',
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$',
+          },
+          team_name: {
+            description:
+              'Deprecated; ignored. The session has a single implicit team.',
+            type: 'string',
+          },
+          mode: {
+            description:
+              'Permission mode for spawned teammate (e.g., "plan" to require plan approval).',
+            type: 'string',
+            enum: [
+              'acceptEdits',
+              'auto',
+              'bypassPermissions',
+              'default',
+              'dontAsk',
+              'plan',
+            ],
           },
           isolation: {
             description:
@@ -420,6 +494,9 @@ export class ClaudeSubagentExecutor {
     if (input.model && !this.options.providerForModel) {
       throw new Error('Agent model overrides are unavailable for this provider')
     }
+    if (input.permissionMode && !this.options.permissionResolverForMode) {
+      throw new Error('Agent permission mode overrides are unavailable')
+    }
     return {
       ...call,
       input: {
@@ -427,6 +504,10 @@ export class ClaudeSubagentExecutor {
         prompt: input.prompt,
         subagent_type: input.subagentType,
         ...(input.model ? { model: input.model } : {}),
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.teamName ? { team_name: input.teamName } : {}),
+        ...(input.permissionMode ? { mode: input.permissionMode } : {}),
+        ...(input.isolation ? { isolation: input.isolation } : {}),
         run_in_background: input.runInBackground,
       },
     }
@@ -452,6 +533,10 @@ export class ClaudeSubagentExecutor {
       cwd: this.cwd(),
       sessionId,
     })
+    const initialIsolation = input.isolation
+      ? await this.createAgentWorktree(paths.praxisRoot, sessionId, agentId)
+      : undefined
+    const agentCwd = initialIsolation?.cwd ?? this.cwd()
     const sidechainPaths = resolveClaudeSidechainPaths(
       paths.projectRoot,
       sessionId,
@@ -463,52 +548,63 @@ export class ClaudeSubagentExecutor {
       promptId,
       prompt: input.prompt,
       agentId,
-      cwd: this.cwd(),
+      cwd: agentCwd,
       claudeVersion: this.options.claudeVersion,
       gitBranch: null,
       uuid: randomUUID(),
       timestamp: new Date().toISOString(),
     })
-    await sidechain.create(root, {
-      agentType: input.subagentType,
-      description: input.description,
-      toolUseId: call.id,
-      spawnDepth,
-    })
+    try {
+      await sidechain.create(root, {
+        agentType: input.subagentType,
+        description: input.description,
+        toolUseId: call.id,
+        spawnDepth,
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.permissionMode
+          ? { permissionMode: input.permissionMode }
+          : {}),
+        ...(input.isolation ? { isolation: input.isolation } : {}),
+      })
+    } catch (error) {
+      await initialIsolation?.cleanup()
+      throw error
+    }
     const provider = input.model
       ? (this.options.providerForModel?.(input.model) ?? this.options.provider)
       : this.options.provider
-    const run = async (
-      message: string,
-      signal: AbortSignal,
-      continuation: boolean,
-    ): Promise<BackgroundAgentRunResult> => {
-      const startedAt = Date.now()
-      const result = await sidechain.withLease(async (lease) =>
-        this.runSidechain({
-          lease,
-          root,
-          input,
-          provider,
-          agentId,
-          spawnDepth,
-          promptId,
-          transcriptPath: sidechainPaths.transcriptFile,
-          toolResultDirectory: join(
-            paths.projectRoot,
-            sessionId,
-            'tool-results',
-          ),
-          ...(continuation ? { continuationMessage: message } : {}),
-          signal,
-        }),
-      )
-      return { ...result, durationMs: Date.now() - startedAt }
-    }
+    const run = this.createBackgroundAgentRun({
+      input,
+      ...(initialIsolation ? { initialIsolation } : {}),
+      createIsolation: () =>
+        this.createAgentWorktree(paths.praxisRoot, sessionId, agentId),
+      execute: (cwd, message, signal, continuation) =>
+        sidechain.withLease(async (lease) =>
+          this.runSidechain({
+            lease,
+            root,
+            input,
+            provider,
+            agentId,
+            spawnDepth,
+            promptId,
+            transcriptPath: sidechainPaths.transcriptFile,
+            toolResultDirectory: join(
+              paths.projectRoot,
+              sessionId,
+              'tool-results',
+            ),
+            ...(continuation ? { continuationMessage: message } : {}),
+            signal,
+            cwd,
+          }),
+        ),
+    })
     if (input.runInBackground) {
       const resolvedModel = provider.model ?? 'praxis/provider'
       this.background.launch({
         agentId,
+        ...(input.name ? { name: input.name } : {}),
         agentType: input.subagentType,
         description: input.description,
         prompt: input.prompt,
@@ -522,15 +618,19 @@ export class ClaudeSubagentExecutor {
           agentId,
           description: input.description,
           outputFile: sidechainPaths.transcriptFile,
+          ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
         }),
         isError: false,
-        nativeToolUseResult: createClaudeAsyncAgentToolUseResult({
-          prompt: input.prompt,
-          agentId,
-          description: input.description,
-          resolvedModel,
-          outputFile: sidechainPaths.transcriptFile,
-        }),
+        nativeToolUseResult: {
+          ...createClaudeAsyncAgentToolUseResult({
+            prompt: input.prompt,
+            agentId,
+            description: input.description,
+            resolvedModel,
+            outputFile: sidechainPaths.transcriptFile,
+          }),
+          ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
+        },
       }
     }
 
@@ -549,19 +649,42 @@ export class ClaudeSubagentExecutor {
       throw new Error(`Agent result exceeded ${maxOutputBytes} bytes`)
     }
     return {
-      content: `${result.text}\n\nagentId: ${agentId}`,
+      content: [
+        result.text,
+        `agentId: ${agentId}`,
+        ...(result.isolationPath
+          ? [
+              `worktreePath: ${result.isolationPath}`,
+              `worktreeRetained: ${String(result.isolationRetained)}`,
+              ...(result.isolationWarning
+                ? [`worktreeWarning: ${result.isolationWarning}`]
+                : []),
+            ]
+          : []),
+      ].join('\n\n'),
       isError: false,
       usage: result.usage,
-      nativeToolUseResult: createClaudeAgentToolUseResult({
-        prompt: input.prompt,
-        agentId,
-        agentType: input.subagentType,
-        text: result.text,
-        resolvedModel: provider.model ?? 'praxis/provider',
-        durationMs: result.durationMs,
-        usage: result.usage,
-        toolUseCount: result.toolUseCount,
-      }),
+      nativeToolUseResult: {
+        ...createClaudeAgentToolUseResult({
+          prompt: input.prompt,
+          agentId,
+          agentType: input.subagentType,
+          text: result.text,
+          resolvedModel: provider.model ?? 'praxis/provider',
+          durationMs: result.durationMs,
+          usage: result.usage,
+          toolUseCount: result.toolUseCount,
+        }),
+        ...(result.isolationPath
+          ? {
+              worktreePath: result.isolationPath,
+              worktreeRetained: result.isolationRetained,
+              ...(result.isolationWarning
+                ? { worktreeWarning: result.isolationWarning }
+                : {}),
+            }
+          : {}),
+      },
     }
   }
 
@@ -589,6 +712,81 @@ export class ClaudeSubagentExecutor {
       this.ephemeralSidechains.set(key, store)
     }
     return store
+  }
+
+  private createAgentWorktree(
+    praxisRoot: string,
+    sessionId: string,
+    agentId: string,
+  ): Promise<ManagedWorktree> {
+    return createManagedWorktree({
+      cwd: this.cwd(),
+      parentDirectory: join(praxisRoot, 'agent-worktrees'),
+      directoryName: `${sessionId}-${agentId}`,
+      label: 'Agent',
+    })
+  }
+
+  private createBackgroundAgentRun(options: {
+    input: AgentInput
+    initialIsolation?: ManagedWorktree
+    createIsolation: () => Promise<ManagedWorktree>
+    execute: (
+      cwd: string,
+      message: string,
+      signal: AbortSignal,
+      continuation: boolean,
+    ) => Promise<{
+      text: string
+      usage: ModelUsage
+      toolUseCount: number
+    }>
+  }): BackgroundAgentTaskSpec['run'] {
+    let availableIsolation = options.initialIsolation
+    let retainedIsolation: ManagedWorktree | undefined
+    return async (message, signal, continuation) => {
+      const isolation = options.input.isolation
+        ? (retainedIsolation ??
+          availableIsolation ??
+          (await options.createIsolation()))
+        : undefined
+      availableIsolation = undefined
+      const startedAt = Date.now()
+      let result:
+        { text: string; usage: ModelUsage; toolUseCount: number } | undefined
+      let failure: unknown
+      let cleanup: { retained: boolean; reason?: string } | undefined
+      try {
+        result = await options.execute(
+          isolation?.cwd ?? this.cwd(),
+          message,
+          signal,
+          continuation,
+        )
+      } catch (error) {
+        failure = error
+      } finally {
+        cleanup = await isolation?.cleanup()
+        retainedIsolation = cleanup?.retained ? isolation : undefined
+      }
+      if (failure !== undefined) {
+        if (cleanup?.reason) {
+          throw new Error(
+            `${failure instanceof Error ? failure.message : String(failure)}\n${cleanup.reason}`,
+            { cause: failure },
+          )
+        }
+        throw failure
+      }
+      if (!result) throw new Error('Agent completed without a result')
+      return {
+        ...result,
+        durationMs: Date.now() - startedAt,
+        ...(isolation ? { isolationPath: isolation.cwd } : {}),
+        ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
+        ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
+      }
+    }
   }
 
   async runWorkflowAgent(
@@ -805,14 +1003,20 @@ export class ClaudeSubagentExecutor {
 
   private async hydrateCompletedTask(
     sessionId: string,
-    agentId: string,
+    identifier: string,
   ): Promise<void> {
-    if (this.background.has(agentId)) return
+    if (this.background.has(identifier)) return
     const paths = resolveClaudePaths({
       configDir: this.options.configRoot,
       cwd: this.cwd(),
       sessionId,
     })
+    const agentId = await this.resolvePersistedAgentId(
+      paths.projectRoot,
+      sessionId,
+      identifier,
+    )
+    if (!agentId) return
     const sidechainPaths = resolveClaudeSidechainPaths(
       paths.projectRoot,
       sessionId,
@@ -857,39 +1061,44 @@ export class ClaudeSubagentExecutor {
       description: metadata.description,
       prompt,
       subagentType: metadata.agentType,
+      ...(metadata.name ? { name: metadata.name } : {}),
+      ...(metadata.permissionMode
+        ? { permissionMode: metadata.permissionMode }
+        : {}),
+      ...(metadata.isolation ? { isolation: metadata.isolation } : {}),
       runInBackground: true,
     }
     const provider = this.options.provider
-    const run = async (
-      message: string,
-      signal: AbortSignal,
-      continuation: boolean,
-    ): Promise<BackgroundAgentRunResult> => {
-      const startedAt = Date.now()
-      const result = await sidechain.withLease(async (lease) =>
-        this.runSidechain({
-          lease,
-          root,
-          input,
-          provider,
-          agentId,
-          spawnDepth: metadata.spawnDepth,
-          promptId: String(root.promptId ?? randomUUID()),
-          transcriptPath: sidechainPaths.transcriptFile,
-          toolResultDirectory: join(
-            paths.projectRoot,
-            sessionId,
-            'tool-results',
-          ),
-          ...(continuation ? { continuationMessage: message } : {}),
-          signal,
-        }),
-      )
-      return { ...result, durationMs: Date.now() - startedAt }
-    }
+    const run = this.createBackgroundAgentRun({
+      input,
+      createIsolation: () =>
+        this.createAgentWorktree(paths.praxisRoot, sessionId, agentId),
+      execute: (cwd, message, signal, continuation) =>
+        sidechain.withLease(async (lease) =>
+          this.runSidechain({
+            lease,
+            root,
+            input,
+            provider,
+            agentId,
+            spawnDepth: metadata.spawnDepth,
+            promptId: String(root.promptId ?? randomUUID()),
+            transcriptPath: sidechainPaths.transcriptFile,
+            toolResultDirectory: join(
+              paths.projectRoot,
+              sessionId,
+              'tool-results',
+            ),
+            ...(continuation ? { continuationMessage: message } : {}),
+            signal,
+            cwd,
+          }),
+        ),
+    })
     this.background.registerCompleted(
       {
         agentId,
+        ...(metadata.name ? { name: metadata.name } : {}),
         agentType: metadata.agentType,
         description: metadata.description,
         prompt,
@@ -907,10 +1116,66 @@ export class ClaudeSubagentExecutor {
     )
   }
 
+  private async resolvePersistedAgentId(
+    projectRoot: string,
+    sessionId: string,
+    identifier: string,
+  ): Promise<string | null> {
+    if (/^a[0-9a-f]{16}$/u.test(identifier)) return identifier
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(identifier)) return null
+    const directory = join(projectRoot, sessionId, 'subagents')
+    let names: string[]
+    try {
+      names = await readdir(directory)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+    const matches = await Promise.all(
+      names
+        .map((name) => /^agent-(a[0-9a-f]{16})\.meta\.json$/u.exec(name)?.[1])
+        .filter((agentId): agentId is string => agentId !== undefined)
+        .map(async (agentId) => {
+          const sidechainPaths = resolveClaudeSidechainPaths(
+            projectRoot,
+            sessionId,
+            agentId,
+          )
+          const sidechain = new ClaudeSidechainStore(
+            sidechainPaths,
+            join(
+              this.options.configRoot,
+              'praxis',
+              'locks',
+              `${sessionId}-${agentId}.lock`,
+            ),
+            this.schema,
+          )
+          const metadata = await sidechain.metadata()
+          if (metadata.name !== identifier) return null
+          const file = await stat(sidechainPaths.metadataFile)
+          return { agentId, modifiedAt: file.mtimeMs }
+        }),
+    )
+    return (
+      matches
+        .filter(
+          (match): match is { agentId: string; modifiedAt: number } =>
+            match !== null,
+        )
+        .sort(
+          (left, right) =>
+            right.modifiedAt - left.modifiedAt ||
+            right.agentId.localeCompare(left.agentId),
+        )[0]?.agentId ?? null
+    )
+  }
+
   private asyncLaunchResult(options: {
     agentId: string
     description: string
     outputFile: string
+    worktreePath?: string
   }): string {
     return [
       'Async agent launched successfully. (This tool result is internal metadata - never quote or paste any part of it into a user-facing reply.)',
@@ -918,6 +1183,9 @@ export class ClaudeSubagentExecutor {
       'The agent is working in the background. You will be notified automatically when it completes.',
       "Do not duplicate this agent's work - avoid working with the same files or topics it is using.",
       `output_file: ${options.outputFile}`,
+      ...(options.worktreePath
+        ? [`worktree_path: ${options.worktreePath}`]
+        : []),
       'Do NOT Read or tail this file via the shell tool - it is the full subagent JSONL transcript.',
     ].join('\n')
   }
@@ -944,6 +1212,12 @@ export class ClaudeSubagentExecutor {
     toolUseCount: number
   }> {
     const cwd = options.cwd ?? this.cwd()
+    const permissions = options.input.permissionMode
+      ? this.options.permissionResolverForMode?.(options.input.permissionMode)
+      : this.options.permissions
+    if (!permissions) {
+      throw new Error('Agent permission mode overrides are unavailable')
+    }
     let snapshot: TranscriptSnapshot = await options.lease.load()
     if (options.continuationMessage !== undefined) {
       const [entry] = translateProviderEvents(
@@ -1016,7 +1290,7 @@ export class ClaudeSubagentExecutor {
       session_id: String(options.root.sessionId),
       transcript_path: options.transcriptPath,
       cwd,
-      permission_mode: 'default',
+      permission_mode: options.input.permissionMode ?? 'default',
     }
     const nestedTools = this.registry(
       String(options.root.sessionId),
@@ -1033,7 +1307,7 @@ export class ClaudeSubagentExecutor {
     const runtimeTools = this.options.hooks
       ? new ClaudeHookToolCoordinator({
           tools: agentTools,
-          permissions: this.options.permissions,
+          permissions,
           hooks: this.options.hooks,
           session: hookSession,
           recordOutcome: recordHookOutcome,
@@ -1041,7 +1315,7 @@ export class ClaudeSubagentExecutor {
       : agentTools
     const runtimePermissions = this.options.hooks
       ? (runtimeTools as ClaudeHookToolCoordinator)
-      : this.options.permissions
+      : permissions
     const emit = (event: RuntimeEvent) => {
       if (event.type === 'tool-call') toolUseCount += 1
       if (event.type === 'warning') this.options.eventSink?.(event)

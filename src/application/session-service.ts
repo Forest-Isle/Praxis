@@ -64,6 +64,7 @@ import {
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
 import { ModelCompactor } from './model-compactor.js'
 import {
+  type AgentPermissionMode,
   ClaudeSubagentExecutor,
   StructuredOutputRegistry,
 } from './subagent-service.js'
@@ -86,6 +87,7 @@ export interface ClaudeSessionServiceOptions {
   provider?: ModelProvider
   tools?: ToolRegistry
   permissions?: PermissionResolver
+  permissionResolverForMode?: (mode: AgentPermissionMode) => PermissionResolver
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
   contextAssembler?: ContextAssembler
@@ -249,6 +251,165 @@ export class ClaudeSessionService {
   async close(): Promise<void> {
     this.scheduledPrompts?.close()
     await this.workflowManager?.close()
+  }
+
+  createHostedToolRegistry(sessionId: string): ToolRegistry {
+    const baseTools = this.options.tools
+    if (!baseTools) throw new Error('Hosted tool registry requires base tools')
+    const paths = this.paths(sessionId)
+    const taskTools =
+      (this.options.taskToolNames?.length ?? 0) > 0
+        ? new ClaudeTaskToolRegistry({
+            base: baseTools,
+            cwd: this.activeCwd(),
+            cwdProvider: () => this.activeCwd(),
+            praxisRoot: paths.praxisRoot,
+            sessionId,
+            taskRoot: paths.taskRoot,
+            ...(this.options.taskToolNames
+              ? { enabledTools: this.options.taskToolNames }
+              : {}),
+          })
+        : null
+    const scheduledTools =
+      this.scheduledPrompts &&
+      (this.options.scheduledToolNames?.length ?? 0) > 0
+        ? new ClaudeScheduledToolRegistry({
+            base: taskTools ?? baseTools,
+            manager: this.scheduledPrompts,
+            sessionId,
+            ...(this.options.scheduledToolNames
+              ? { enabledTools: this.options.scheduledToolNames }
+              : {}),
+          })
+        : null
+    const wrappedBase = scheduledTools ?? taskTools ?? baseTools
+    const subagentExecutor =
+      (this.options.enableSubagents || this.options.enableWorkflows) &&
+      this.options.permissions
+        ? new ClaudeSubagentExecutor({
+            configRoot: this.options.configRoot,
+            cwd: this.activeCwd(),
+            cwdProvider: () => this.activeCwd(),
+            claudeVersion: this.options.claudeVersion,
+            provider:
+              this.options.provider ??
+              (() => {
+                throw new Error(
+                  'A model provider is required to execute hosted Agent tools',
+                )
+              })(),
+            persistence:
+              this.options.sessionPersistence === false ? 'memory' : 'disk',
+            ...(this.options.providerForModel
+              ? { providerForModel: this.options.providerForModel }
+              : {}),
+            baseTools: wrappedBase,
+            permissions: this.options.permissions,
+            ...(this.options.permissionResolverForMode
+              ? {
+                  permissionResolverForMode:
+                    this.options.permissionResolverForMode,
+                }
+              : {}),
+            ...(this.options.subagentToolNames
+              ? { toolNames: this.options.subagentToolNames }
+              : {}),
+            ...(this.options.extensions
+              ? { extensions: this.options.extensions }
+              : {}),
+            ...(this.options.hooks ? { hooks: this.options.hooks } : {}),
+            ...(this.options.contextAssembler
+              ? { contextAssembler: this.options.contextAssembler }
+              : {}),
+            ...(this.options.approveTool
+              ? { approveTool: this.options.approveTool }
+              : {}),
+            ...(this.options.eventSink
+              ? { eventSink: this.options.eventSink }
+              : {}),
+            ...(taskTools
+              ? {
+                  backgroundTaskNotifications: (waitForRunning: boolean) =>
+                    taskTools.notifications(waitForRunning),
+                }
+              : {}),
+          })
+        : null
+    const agentTools = subagentExecutor
+      ? subagentExecutor.registry(sessionId, 0, (callId) => callId)
+      : wrappedBase
+    const workflowTools =
+      this.workflowManager && subagentExecutor
+        ? new ClaudeWorkflowToolRegistry({
+            base: agentTools,
+            manager: this.workflowManager,
+            executor: subagentExecutor,
+            cwd: this.activeCwd(),
+            cwdProvider: () => this.activeCwd(),
+            configRoot: this.options.configRoot,
+            sessionId,
+            promptIdForCall: (callId) => callId,
+            defaultModel: this.options.provider?.model ?? 'praxis/provider',
+            tokenBudget: null,
+            enabled: true,
+          })
+        : agentTools
+    if (this.worktreeManager) this.worktreeManager.bindSession(sessionId)
+    const registry =
+      this.worktreeManager && this.options.workspace
+        ? new ClaudeWorktreeToolRegistry({
+            base: workflowTools,
+            manager: this.worktreeManager,
+            workspace: this.options.workspace,
+            ...(this.options.worktreeToolNames
+              ? { enabledTools: this.options.worktreeToolNames }
+              : {}),
+          })
+        : workflowTools
+    const preferredOrder = [
+      'Agent',
+      'TaskOutput',
+      'Bash',
+      'Read',
+      'Edit',
+      'Write',
+      'NotebookEdit',
+      'WebFetch',
+      'ReportFindings',
+      'WebSearch',
+      'TaskStop',
+      'Skill',
+      'DesignSync',
+      'TaskCreate',
+      'TaskGet',
+      'TaskUpdate',
+      'EnterWorktree',
+      'ExitWorktree',
+      'SendMessage',
+      'Workflow',
+      'CronCreate',
+      'CronDelete',
+      'CronList',
+      'ScheduleWakeup',
+      'Monitor',
+      'PushNotification',
+    ]
+    return {
+      definitions: () => {
+        const definitions = registry.definitions()
+        return [...definitions].sort((left, right) => {
+          const leftIndex = preferredOrder.indexOf(left.name)
+          const rightIndex = preferredOrder.indexOf(right.name)
+          return (
+            (leftIndex < 0 ? preferredOrder.length : leftIndex) -
+            (rightIndex < 0 ? preferredOrder.length : rightIndex)
+          )
+        })
+      },
+      prepare: (call, context) => registry.prepare(call, context),
+      execute: (call, context) => registry.execute(call, context),
+    }
   }
 
   async run(
@@ -663,6 +824,12 @@ export class ClaudeSessionService {
                 : {}),
               baseTools,
               permissions: this.options.permissions,
+              ...(this.options.permissionResolverForMode
+                ? {
+                    permissionResolverForMode:
+                      this.options.permissionResolverForMode,
+                  }
+                : {}),
               ...(this.options.subagentToolNames
                 ? { toolNames: this.options.subagentToolNames }
                 : {}),

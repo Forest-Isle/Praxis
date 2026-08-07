@@ -39,6 +39,75 @@ export interface LocalToolRegistryOptions {
   maxOutputBytes?: number
   maxFileBytes?: number
   maxShellTimeoutMs?: number
+  enableReportFindings?: boolean
+}
+
+const REPORT_FINDINGS_DEFINITION: ModelToolDefinition = {
+  name: 'ReportFindings',
+  description:
+    "Report code-review findings as a typed list so the host UI can render them. Use this only when the active code-review instructions tell you to report findings with this tool; otherwise follow whatever output format those instructions specify. When reporting a review's results, call it once with the verified findings ranked most-severe first (empty array if nothing survived verification) and do not also print the findings as text. When re-reporting after applying fixes (only if the apply instructions ask for it), set outcome on each finding to what actually happened.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      level: {
+        description: 'Effort level the review ran at',
+        type: 'string',
+        enum: ['low', 'medium', 'high', 'xhigh', 'max'],
+      },
+      findings: {
+        description:
+          'Verified findings, most-severe first; empty if none survived',
+        maxItems: 32,
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            file: {
+              description: 'Repo-relative path of the file the finding is in',
+              type: 'string',
+            },
+            line: {
+              description: '1-indexed line the finding anchors to',
+              type: 'integer',
+              minimum: Number.MIN_SAFE_INTEGER,
+              maximum: Number.MAX_SAFE_INTEGER,
+            },
+            summary: {
+              description: 'One-sentence statement of the defect',
+              type: 'string',
+            },
+            failure_scenario: {
+              description: 'Concrete inputs/state → wrong output/crash',
+              type: 'string',
+            },
+            category: {
+              description:
+                'Short kebab-case slug of the finding type, e.g. "correctness", "simplification", "efficiency", "test-coverage"',
+              type: 'string',
+              maxLength: 40,
+            },
+            verdict: {
+              description:
+                'Set when a verify pass ran; absent on inline-only reviews',
+              type: 'string',
+              enum: ['CONFIRMED', 'PLAUSIBLE'],
+            },
+            outcome: {
+              description:
+                'Set ONLY when re-reporting after applying fixes: what happened to this finding',
+              type: 'string',
+              enum: ['fixed', 'skipped', 'no_change_needed'],
+            },
+          },
+          required: ['file', 'summary', 'failure_scenario'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['findings'],
+    additionalProperties: false,
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+  },
 }
 
 const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
@@ -191,6 +260,100 @@ function optionalPositiveInteger(
   return value
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+const REPORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+const REPORT_VERDICTS = ['CONFIRMED', 'PLAUSIBLE'] as const
+const REPORT_OUTCOMES = ['fixed', 'skipped', 'no_change_needed'] as const
+
+function reportFindingsInput(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  for (const key of Object.keys(input)) {
+    if (key !== 'level' && key !== 'findings') {
+      throw new Error(`Unknown ReportFindings input field ${key}`)
+    }
+  }
+  const level = input.level
+  if (
+    level !== undefined &&
+    (typeof level !== 'string' || !REPORT_LEVELS.includes(level as never))
+  ) {
+    throw new Error('level must be one of low, medium, high, xhigh, max')
+  }
+  const findings = input.findings
+  if (!Array.isArray(findings)) {
+    throw new Error('findings must be an array')
+  }
+  if (findings.length > 32)
+    throw new Error('findings must contain at most 32 items')
+  const normalized = findings.map((finding, index) => {
+    if (!isRecord(finding))
+      throw new Error(`finding ${index} must be an object`)
+    const allowed = new Set([
+      'file',
+      'line',
+      'summary',
+      'failure_scenario',
+      'category',
+      'verdict',
+      'outcome',
+    ])
+    for (const key of Object.keys(finding)) {
+      if (!allowed.has(key)) {
+        throw new Error(`Unknown ReportFindings finding field ${key}`)
+      }
+    }
+    for (const key of ['file', 'summary', 'failure_scenario'] as const) {
+      if (typeof finding[key] !== 'string') {
+        throw new Error(`finding ${index}.${key} must be a string`)
+      }
+    }
+    if (
+      finding.line !== undefined &&
+      (!Number.isSafeInteger(finding.line) || typeof finding.line !== 'number')
+    ) {
+      throw new Error(`finding ${index}.line must be an integer`)
+    }
+    if (
+      finding.category !== undefined &&
+      (typeof finding.category !== 'string' ||
+        [...finding.category].length > 40)
+    ) {
+      throw new Error(`finding ${index}.category must be at most 40 characters`)
+    }
+    if (
+      finding.verdict !== undefined &&
+      (typeof finding.verdict !== 'string' ||
+        !REPORT_VERDICTS.includes(finding.verdict as never))
+    ) {
+      throw new Error(`finding ${index}.verdict is invalid`)
+    }
+    if (
+      finding.outcome !== undefined &&
+      (typeof finding.outcome !== 'string' ||
+        !REPORT_OUTCOMES.includes(finding.outcome as never))
+    ) {
+      throw new Error(`finding ${index}.outcome is invalid`)
+    }
+    return {
+      file: finding.file,
+      ...(finding.line === undefined ? {} : { line: finding.line }),
+      summary: finding.summary,
+      failure_scenario: finding.failure_scenario,
+      ...(finding.category === undefined ? {} : { category: finding.category }),
+      ...(finding.verdict === undefined ? {} : { verdict: finding.verdict }),
+      ...(finding.outcome === undefined ? {} : { outcome: finding.outcome }),
+    }
+  })
+  return {
+    ...(level === undefined ? {} : { level }),
+    findings: normalized,
+  }
+}
+
 function isWithin(root: string, target: string): boolean {
   const pathFromRoot = relative(root, target)
   return (
@@ -268,6 +431,7 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly maxFileBytes: number
   private readonly maxShellTimeoutMs: number
   private readonly processRunner: BoundedProcessRunner
+  private readonly enableReportFindings: boolean
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
@@ -284,25 +448,29 @@ export class LocalToolRegistry implements ToolRegistry {
     this.maxOutputBytes = options.maxOutputBytes ?? 128 * 1024
     this.maxFileBytes = options.maxFileBytes ?? 10 * 1024 * 1024
     this.maxShellTimeoutMs = options.maxShellTimeoutMs ?? 120_000
+    this.enableReportFindings = options.enableReportFindings ?? false
     this.processRunner = new BoundedProcessRunner({
       cwd: this.cwd,
       maxOutputBytes: this.maxOutputBytes,
     })
   }
 
-  private currentCwd(): string {
-    return resolve(this.cwdProvider?.() ?? this.cwd)
+  private currentCwd(context?: ToolExecutionContext): string {
+    return resolve(context?.cwd || this.cwdProvider?.() || this.cwd)
   }
 
   definitions(): readonly ModelToolDefinition[] {
+    const definitions = this.enableReportFindings
+      ? [...TOOL_DEFINITIONS, REPORT_FINDINGS_DEFINITION]
+      : TOOL_DEFINITIONS
     if (
       !this.sharedMemoryDirectory &&
       this.additionalDirectories.length === 0 &&
       this.additionalReadDirectories.length === 0
     ) {
-      return TOOL_DEFINITIONS
+      return definitions
     }
-    return TOOL_DEFINITIONS.map((definition) =>
+    return definitions.map((definition) =>
       ['Read', 'Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep'].includes(
         definition.name,
       )
@@ -343,6 +511,7 @@ export class LocalToolRegistry implements ToolRegistry {
               stringInput(call.input, 'file_path'),
               false,
               true,
+              context,
             ),
             ...(optionalPositiveInteger(call.input, 'offset') === undefined
               ? {}
@@ -359,6 +528,8 @@ export class LocalToolRegistry implements ToolRegistry {
             file_path: await this.filePath(
               stringInput(call.input, 'file_path'),
               true,
+              false,
+              context,
             ),
             content: stringInput(call.input, 'content', true),
           },
@@ -374,6 +545,8 @@ export class LocalToolRegistry implements ToolRegistry {
             file_path: await this.filePath(
               stringInput(call.input, 'file_path'),
               false,
+              false,
+              context,
             ),
             old_string: stringInput(call.input, 'old_string'),
             new_string: stringInput(call.input, 'new_string', true),
@@ -386,12 +559,21 @@ export class LocalToolRegistry implements ToolRegistry {
         if (!isAbsolute(requestedPath)) {
           throw new Error('notebook_path must be an absolute path')
         }
-        const filePath = await this.filePath(requestedPath, false)
+        const filePath = await this.filePath(
+          requestedPath,
+          false,
+          false,
+          context,
+        )
         if (extname(filePath).toLowerCase() !== '.ipynb') {
           throw new Error('notebook_path must reference an .ipynb file')
         }
         if (
-          !(await this.wasSuccessfullyRead(filePath, context.messages ?? []))
+          !(await this.wasSuccessfullyRead(
+            filePath,
+            context.messages ?? [],
+            context,
+          ))
         ) {
           throw new Error(
             '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>',
@@ -431,7 +613,7 @@ export class LocalToolRegistry implements ToolRegistry {
         const pathInput = call.input.path
         const requestedPath =
           pathInput === undefined ? '.' : stringInput(call.input, 'path')
-        await this.globRoot(requestedPath)
+        await this.globRoot(requestedPath, context)
         return {
           ...call,
           input: {
@@ -449,6 +631,7 @@ export class LocalToolRegistry implements ToolRegistry {
             path: await this.workspacePath(
               optionalString(call.input, 'path') ?? '.',
               false,
+              context,
             ),
             ...(glob === undefined ? {} : { glob }),
           },
@@ -467,6 +650,8 @@ export class LocalToolRegistry implements ToolRegistry {
           },
         }
       }
+      case 'ReportFindings':
+        return { ...call, input: reportFindingsInput(call.input) }
       default:
         throw new Error(`Unknown tool ${call.name}`)
     }
@@ -491,11 +676,22 @@ export class LocalToolRegistry implements ToolRegistry {
       case 'NotebookEdit':
         return this.notebookEdit(prepared)
       case 'Glob':
-        return this.glob(prepared, context.signal)
+        return this.glob(prepared, context)
       case 'Grep':
-        return this.grep(prepared, context.signal)
+        return this.grep(prepared, context)
       case 'Bash':
-        return this.bash(prepared, context.signal)
+        return this.bash(prepared, context)
+      case 'ReportFindings':
+        return {
+          content: JSON.stringify({
+            count: (prepared.input.findings as readonly unknown[]).length,
+            ...(prepared.input.level === undefined
+              ? {}
+              : { level: prepared.input.level }),
+            findings: prepared.input.findings,
+          }),
+          isError: false,
+        }
       default:
         throw new Error(`Unknown tool ${prepared.name}`)
     }
@@ -504,16 +700,24 @@ export class LocalToolRegistry implements ToolRegistry {
   private async workspacePath(
     requestedPath: string,
     allowMissing: boolean,
+    context?: ToolExecutionContext,
   ): Promise<string> {
-    return this.resolvePath(requestedPath, allowMissing, false)
+    return this.resolvePath(requestedPath, allowMissing, false, false, context)
   }
 
   private async filePath(
     requestedPath: string,
     allowMissing: boolean,
     includeReadOnly = false,
+    context?: ToolExecutionContext,
   ): Promise<string> {
-    return this.resolvePath(requestedPath, allowMissing, true, includeReadOnly)
+    return this.resolvePath(
+      requestedPath,
+      allowMissing,
+      true,
+      includeReadOnly,
+      context,
+    )
   }
 
   private async resolvePath(
@@ -521,8 +725,9 @@ export class LocalToolRegistry implements ToolRegistry {
     allowMissing: boolean,
     includeSharedMemory: boolean,
     includeReadOnly = false,
+    context?: ToolExecutionContext,
   ): Promise<string> {
-    const workspaceRoot = await realpath(this.currentCwd())
+    const workspaceRoot = await realpath(this.currentCwd(context))
     const workspaceRoots = [
       workspaceRoot,
       ...(await Promise.all(
@@ -580,17 +785,20 @@ export class LocalToolRegistry implements ToolRegistry {
     }
   }
 
-  private async globRoot(requestedPath: string): Promise<string> {
+  private async globRoot(
+    requestedPath: string,
+    context?: ToolExecutionContext,
+  ): Promise<string> {
     const displayedPath = isAbsolute(requestedPath)
       ? resolve(requestedPath)
-      : resolve(this.currentCwd(), requestedPath)
+      : resolve(this.currentCwd(context), requestedPath)
     let root: string
     try {
-      root = await this.workspacePath(requestedPath, false)
+      root = await this.workspacePath(requestedPath, false, context)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       throw new Error(
-        `<tool_use_error>Directory does not exist: ${displayedPath}. Note: your current working directory is ${await realpath(this.currentCwd())}.</tool_use_error>`,
+        `<tool_use_error>Directory does not exist: ${displayedPath}. Note: your current working directory is ${await realpath(this.currentCwd(context))}.</tool_use_error>`,
       )
     }
     if (!(await stat(root)).isDirectory()) {
@@ -604,6 +812,7 @@ export class LocalToolRegistry implements ToolRegistry {
   private async wasSuccessfullyRead(
     filePath: string,
     messages: readonly ModelMessage[],
+    context?: ToolExecutionContext,
   ): Promise<boolean> {
     const successfulCalls = new Set(
       messages.flatMap((message) =>
@@ -617,7 +826,10 @@ export class LocalToolRegistry implements ToolRegistry {
         const requestedPath = call.input.file_path
         if (typeof requestedPath !== 'string') continue
         try {
-          if ((await this.filePath(requestedPath, false, true)) === filePath) {
+          if (
+            (await this.filePath(requestedPath, false, true, context)) ===
+            filePath
+          ) {
             return true
           }
         } catch {
@@ -791,14 +1003,14 @@ export class LocalToolRegistry implements ToolRegistry {
 
   private async glob(
     call: ModelToolCall,
-    signal?: AbortSignal,
+    context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
     const requestedPath =
       call.input.path === undefined ? '.' : stringInput(call.input, 'path')
-    const root = await this.globRoot(requestedPath)
+    const root = await this.globRoot(requestedPath, context)
     const timeoutSignal = AbortSignal.timeout(this.maxShellTimeoutMs)
-    const searchSignal = signal
-      ? AbortSignal.any([signal, timeoutSignal])
+    const searchSignal = context.signal
+      ? AbortSignal.any([context.signal, timeoutSignal])
       : timeoutSignal
     try {
       const content = await globFiles({
@@ -806,7 +1018,7 @@ export class LocalToolRegistry implements ToolRegistry {
         displayRoot: call.input.path === undefined ? '.' : requestedPath,
         absoluteRoot: isAbsolute(requestedPath)
           ? resolve(requestedPath)
-          : resolve(this.currentCwd(), requestedPath),
+          : resolve(this.currentCwd(context), requestedPath),
         pattern: stringInput(call.input, 'pattern', true),
         signal: searchSignal,
       })
@@ -815,7 +1027,7 @@ export class LocalToolRegistry implements ToolRegistry {
         isError: false,
       }
     } catch (error) {
-      if (signal?.aborted) throw abortError()
+      if (context.signal?.aborted) throw abortError()
       if (timeoutSignal.aborted) {
         return {
           content: `Search timed out after ${this.maxShellTimeoutMs}ms`,
@@ -828,9 +1040,9 @@ export class LocalToolRegistry implements ToolRegistry {
 
   private async grep(
     call: ModelToolCall,
-    signal?: AbortSignal,
+    context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
-    const workspaceRoot = await realpath(this.currentCwd())
+    const workspaceRoot = await realpath(this.currentCwd(context))
     const searchPath = stringInput(call.input, 'path')
     const relativeSearchPath = relative(workspaceRoot, searchPath) || '.'
     const args = [
@@ -847,8 +1059,8 @@ export class LocalToolRegistry implements ToolRegistry {
       command: 'rg',
       args,
       timeoutMs: this.maxShellTimeoutMs,
-      cwd: this.currentCwd(),
-      ...(signal ? { signal } : {}),
+      cwd: this.currentCwd(context),
+      ...(context.signal ? { signal: context.signal } : {}),
     })
     if (result.timedOut) {
       return {
@@ -868,7 +1080,7 @@ export class LocalToolRegistry implements ToolRegistry {
 
   private async bash(
     call: ModelToolCall,
-    signal?: AbortSignal,
+    context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
     const timeout = optionalPositiveInteger(call.input, 'timeout')
     if (timeout === undefined)
@@ -877,8 +1089,8 @@ export class LocalToolRegistry implements ToolRegistry {
       command: commandShell(),
       args: commandShellArguments(stringInput(call.input, 'command')),
       timeoutMs: timeout,
-      cwd: this.currentCwd(),
-      ...(signal ? { signal } : {}),
+      cwd: this.currentCwd(context),
+      ...(context.signal ? { signal: context.signal } : {}),
     })
     if (result.timedOut) {
       return {

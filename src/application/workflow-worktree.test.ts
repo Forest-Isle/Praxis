@@ -71,4 +71,35 @@ describe('createWorkflowWorktree', () => {
       'changed\n',
     )
   })
+
+  it('retains a clean checkout whose detached HEAD contains commits', async () => {
+    const root = await repository()
+    const worktree = await createWorkflowWorktree({
+      cwd: root,
+      praxisRoot: join(root, '.praxis-data'),
+      runId: 'wf_12345678-commit',
+      agentId: 'a000000000000003',
+    })
+    await writeFile(join(worktree.cwd, 'tracked.txt'), 'committed\n')
+    await execFileAsync('git', ['-C', worktree.cwd, 'add', 'tracked.txt'])
+    await execFileAsync('git', [
+      '-C',
+      worktree.cwd,
+      '-c',
+      'user.name=Praxis Test',
+      '-c',
+      'user.email=praxis@example.invalid',
+      'commit',
+      '-m',
+      'agent change',
+    ])
+
+    const cleanup = await worktree.cleanup()
+
+    expect(cleanup).toMatchObject({ retained: true })
+    expect(cleanup.reason).toContain('has commits')
+    expect(await readFile(join(worktree.cwd, 'tracked.txt'), 'utf8')).toBe(
+      'committed\n',
+    )
+  })
 })

@@ -19,7 +19,13 @@ export interface ClaudeSidechainMetadata {
   description: string
   toolUseId: string
   spawnDepth: number
+  name?: string
+  permissionMode?: ClaudeSidechainPermissionMode
+  isolation?: 'worktree'
 }
+
+export type ClaudeSidechainPermissionMode =
+  'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan'
 
 export function resolveClaudeSidechainPaths(
   projectRoot: string,

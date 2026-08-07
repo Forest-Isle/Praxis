@@ -197,6 +197,26 @@ describe('CLI protocol', () => {
     ).toThrow('--scope must be one of')
   })
 
+  it('parses MCP OAuth and stdio server controls', () => {
+    expect(
+      parseCliInvocation(['mcp', 'login', 'fixture', '--no-browser']),
+    ).toMatchObject({
+      command: 'mcp',
+      args: ['mcp', 'login', 'fixture'],
+      mcpNoBrowser: true,
+      mcpDebug: false,
+    })
+    expect(
+      parseCliInvocation(['mcp', 'serve', '-d', '--verbose']),
+    ).toMatchObject({
+      command: 'mcp',
+      args: ['mcp', 'serve'],
+      mcpNoBrowser: false,
+      mcpDebug: true,
+      verbose: true,
+    })
+  })
+
   it('parses repeatable local plugin directories', () => {
     expect(
       parseCliInvocation([

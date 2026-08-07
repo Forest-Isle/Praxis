@@ -74,6 +74,8 @@ export interface CliInvocation extends CliControls {
   verbose: boolean
   legacyJson: boolean
   mcpScope?: CliMcpScope
+  mcpNoBrowser: boolean
+  mcpDebug: boolean
 }
 
 export interface StreamUserMessage {
@@ -401,6 +403,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let maxBudgetUsd: number | undefined
   let promptSuggestions = false
   let mcpScope: CliMcpScope | undefined
+  let mcpNoBrowser = false
+  let mcpDebug = false
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
@@ -723,6 +727,14 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       verbose = true
       continue
     }
+    if (value === '--no-browser') {
+      mcpNoBrowser = true
+      continue
+    }
+    if (value === '-d' || value === '--debug') {
+      mcpDebug = true
+      continue
+    }
     if (value === '--json') {
       legacyJson = true
       continue
@@ -895,6 +907,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(maxBudgetUsd === undefined ? {} : { maxBudgetUsd }),
     promptSuggestions,
     ...(mcpScope === undefined ? {} : { mcpScope }),
+    mcpNoBrowser,
+    mcpDebug,
   }
 }
 

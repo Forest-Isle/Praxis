@@ -42,20 +42,20 @@ Evidence levels:
 
 ## Shared Claude data plane
 
-| Capability                                 | Status                              | Evidence / remaining work                                                                                                 |
-| ------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Session discovery and bidirectional resume | Complete                            | Live Claude -> Praxis -> Claude and Praxis -> Claude gates for 2.1.208                                                    |
-| Native message/tool JSONL                  | Complete                            | Versioned schema, strict links, optimistic tail checks, leases                                                            |
-| Native fork fidelity                       | Complete                            | Full main-chain copy and live Claude reopen                                                                               |
-| Read-only recovery/export                  | Complete                            | Unsupported/corrupt session inspect and byte-exact export                                                                 |
-| CLAUDE.md and rules                        | Complete                            | Hierarchy, conditional attachment, live fixtures                                                                          |
-| Auto memory                                | Complete                            | Canonical main-worktree memory path, standard tool access                                                                 |
-| Skills and commands                        | Complete at runtime                 | Shared discovery, slash expansion, model-invocable Skill                                                                  |
-| Agents                                     | Complete for local runtime          | Shared definitions, foreground/background Agent sidechains, and persistent top-level dispatch with bidirectional resume   |
-| Hooks                                      | Complete for current runtime events | Shared settings, bounded child execution, native attachments                                                              |
-| MCP                                        | Partial                             | Shared config, tool/resource calls, configured-server status, and local lifecycle management complete; OAuth/serve remain |
-| Plugins                                    | Partial                             | Local plugin discovery, validation, lifecycle, and session loading complete; marketplace/distributed install remain       |
-| Version gate                               | Complete for 2.1.208                | Exact read-write allowlist; all other versions read-only                                                                  |
+| Capability                                 | Status                              | Evidence / remaining work                                                                                                                           |
+| ------------------------------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session discovery and bidirectional resume | Complete                            | Live Claude -> Praxis -> Claude and Praxis -> Claude gates for 2.1.208                                                                              |
+| Native message/tool JSONL                  | Complete                            | Versioned schema, strict links, optimistic tail checks, leases                                                                                      |
+| Native fork fidelity                       | Complete                            | Full main-chain copy and live Claude reopen                                                                                                         |
+| Read-only recovery/export                  | Complete                            | Unsupported/corrupt session inspect and byte-exact export                                                                                           |
+| CLAUDE.md and rules                        | Complete                            | Hierarchy, conditional attachment, live fixtures                                                                                                    |
+| Auto memory                                | Complete                            | Canonical main-worktree memory path, standard tool access                                                                                           |
+| Skills and commands                        | Complete at runtime                 | Shared discovery, slash expansion, model-invocable Skill                                                                                            |
+| Agents                                     | Complete for local runtime          | Shared definitions, foreground/background Agent sidechains, and persistent top-level dispatch with bidirectional resume                             |
+| Hooks                                      | Complete for current runtime events | Shared settings, bounded child execution, native attachments                                                                                        |
+| MCP                                        | Complete                            | Shared config, tool/resource calls, OAuth login/logout, configured-server status, local lifecycle management, and stdio hosting; live/package gates |
+| Plugins                                    | Complete                            | Claude-native plugin discovery, validation, lifecycle, marketplace records, sources, install/enable/disable/update, and session loading             |
+| Version gate                               | Complete for 2.1.208                | Exact read-write allowlist; all other versions read-only                                                                                            |
 
 ## Runtime and controls
 
@@ -92,20 +92,23 @@ Evidence levels:
 | CronCreate/List/Delete and `/loop` | Complete | Session/durable jobs, shared native file, idle delivery, expiry, and live bidirectional gate                                    |
 | ScheduleWakeup                     | Partial  | Praxis interactive one-shot/stop lifecycle complete; Claude inactive gate live; active Claude gate/result still unobservable    |
 | Monitor                            | N/A      | Claude Code 2.1.208 exposes no standalone Monitor tool                                                                          |
+| ReportFindings                     | Complete | Local MCP-only typed finding validation and Claude-shaped count/level/findings result; installed schema and call gate           |
+| DesignSync                         | Excluded | Claude 2.1.208 exposes hosted design-system synchronization surface; outside local single-user CLI scope                        |
+| PushNotification                   | N/A      | Claude Code 2.1.208 exposes no standalone PushNotification tool in isolated `mcp serve`                                         |
 | Workflow                           | Partial  | Runtime, sandbox, task lifecycle, native files, options and same-run replay complete; exact Praxis -> Claude replay key unknown |
 | MCP resource tools                 | Complete | Conditional schemas, paginated list, text/blob read, directory stub, status, persistence, live resume                           |
 
 ## Management commands
 
-| Capability           | Status   | Evidence / remaining work                                                                        |
-| -------------------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                  |
-| `mcp`                | Partial  | add/add-json/get/list/remove/reset-project-choices; OAuth login/logout and serve remain          |
-| `plugin`             | Partial  | Local install/enable/disable/update/list/init/validate; marketplace/distributed install remain   |
-| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics |
-| `install` / `update` | Missing  | Distribution channel and self-update behavior                                                    |
-| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                        |
-| `auto-mode`          | Complete | `config` and `defaults` configuration surface plus permission classifier                         |
+| Capability           | Status   | Evidence / remaining work                                                                                                |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                          |
+| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; shared OAuth credentials and stdio protocol gates |
+| `plugin`             | Complete | Local and Claude-native marketplace install/enable/disable/update/list/init/validate with bounded sources and recovery   |
+| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                         |
+| `install` / `update` | Missing  | Distribution channel and self-update behavior                                                                            |
+| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                |
+| `auto-mode`          | Complete | `config` and `defaults` configuration surface plus permission classifier                                                 |
 
 ## Remaining implementation order
 
@@ -113,9 +116,7 @@ Evidence levels:
    service available.
 2. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
    key if observable from future black-box evidence.
-3. Complete plugin marketplace/distributed install behavior.
-4. Complete MCP OAuth/login/logout and server hosting.
-5. Complete unknown-model pricing policy, diagnostics, and update
-   commands.
-6. Final live black-box matrix, package/performance regression, and macOS/Linux
+3. Complete `install` / `update` distribution and self-update behavior.
+4. Complete unknown-model pricing policy and diagnostics.
+5. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.

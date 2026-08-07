@@ -214,7 +214,7 @@ describe('BackgroundAgentManager', () => {
       manager.launch(spec(async () => completed('done'))),
     ).not.toThrow()
     await expect(
-      manager.output('invalid', { block: false, timeout: 0 }),
+      manager.output('invalid name!', { block: false, timeout: 0 }),
     ).rejects.toThrow('Invalid background agent ID')
     await expect(
       manager.output('a0123456789abcdef', {
@@ -222,5 +222,25 @@ describe('BackgroundAgentManager', () => {
         timeout: 600_001,
       }),
     ).rejects.toThrow('timeout must be between 0 and 600000')
+  })
+
+  it('resolves named agents for output, stop, and continuation', async () => {
+    const manager = new BackgroundAgentManager()
+    const namedSpec = {
+      ...spec(async (_message, _signal, continuation) =>
+        completed(continuation ? 'NAMED_SECOND' : 'NAMED_FIRST'),
+      ),
+      name: 'reviewer',
+    }
+    manager.launch(namedSpec)
+    await expect(
+      manager.output('reviewer', { block: true, timeout: 30_000 }),
+    ).resolves.toContain('NAMED_FIRST')
+    expect(
+      manager.send('reviewer', 'continue', undefined, 'call_named_message'),
+    ).toContain('"success":true')
+    await expect(
+      manager.output('reviewer', { block: true, timeout: 30_000 }),
+    ).resolves.toContain('NAMED_SECOND')
   })
 })

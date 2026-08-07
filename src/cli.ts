@@ -30,6 +30,7 @@ import {
   type ModelImage,
   type ModelProvider,
   type ModelToolCall,
+  type ToolRegistry,
   type RuntimeEventSink,
 } from './core/runtime.js'
 import {
@@ -37,7 +38,10 @@ import {
   type InteractiveServiceFactory,
 } from './cli/interactive.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
-import { ClaudePermissionResolver } from './permissions/claude-permission-resolver.js'
+import {
+  ClaudePermissionResolver,
+  type ClaudePermissionMode,
+} from './permissions/claude-permission-resolver.js'
 import {
   createClaudeModelAutoClassifier,
   defaultClaudeAutoModeConfig,
@@ -55,6 +59,12 @@ import {
   mcpScope,
   type McpServerRecord,
 } from './mcp/claude-mcp-management.js'
+import {
+  authenticateMcpServer,
+  ClaudeMcpOAuthStore,
+  mcpOAuthServerIdentity,
+} from './mcp/claude-mcp-oauth.js'
+import { servePraxisMcpStdio } from './mcp/praxis-mcp-server.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import {
   redactSensitiveText,
@@ -144,7 +154,7 @@ Usage:
   praxis attach <agent-id>
   praxis logs <agent-id>
   praxis stop <agent-id>
-  praxis mcp <list|get|add|add-json|remove|reset-project-choices> ...
+  praxis mcp <list|get|add|add-json|remove|reset-project-choices|login|logout|serve> ...
   praxis auto-mode <config|defaults>
   praxis plugin <list|install|uninstall|enable|disable|update|init|validate> ...
   praxis doctor [--json]
@@ -165,6 +175,8 @@ Options:
   --max-budget-usd <amount>           Maximum print-mode API spend
   --prompt-suggestions                Emit a suggested next prompt (stream-json print mode)
   --scope <scope>                     MCP scope: local, project, or user
+  --no-browser                       Print MCP OAuth URL without opening a browser
+  -d, --debug                        Enable MCP server debug logging
   --no-session-persistence            Keep print-mode session in memory only
   --agent <name>                      Select a shared agent definition
   --settings <file-or-json>           Load additional settings
@@ -234,6 +246,7 @@ export interface CliIO {
 }
 
 interface SessionCommands {
+  toolRegistry?: ToolRegistry
   run(
     prompt: string,
     signal?: AbortSignal,
@@ -293,6 +306,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     interactive?: boolean
     sessionKind?: 'bg'
     signal?: AbortSignal
+    exposeToolRegistry?: boolean
   }): Promise<SessionCommands>
   runInteractive?(options: {
     agent?: string
@@ -301,6 +315,8 @@ export interface CliDependencies extends InteractiveServiceFactory {
   }): Promise<number>
   topLevelAgents?: TopLevelAgentCommands
   launchTmux?: typeof launchTmuxWorktree
+  mcpAuthenticate?: typeof authenticateMcpServer
+  mcpServe?: typeof servePraxisMcpStdio
 }
 
 const consoleIO: CliIO = {
@@ -320,6 +336,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   interactive = false,
   sessionKind,
   signal,
+  exposeToolRegistry = false,
 }) => {
   const claudeVersion = await detectInstalledClaudeVersion()
   const cwd = process.cwd()
@@ -333,14 +350,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
   let provider: ModelProvider | undefined
   let providerForModel: ((model: string) => ModelProvider) | undefined
   const context = parseContextEnvironment(process.env)
-  if (requireProvider) {
-    const apiKey = process.env.PRAXIS_API_KEY
-    const model = cli.model ?? process.env.PRAXIS_MODEL
-    if (!apiKey || !model) {
-      throw new Error(
-        'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
-      )
-    }
+  const apiKey = process.env.PRAXIS_API_KEY
+  const model = cli.model ?? process.env.PRAXIS_MODEL
+  if (requireProvider && (!apiKey || !model)) {
+    throw new Error(
+      'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
+    )
+  }
+  if (apiKey && model) {
     const providerEnvironment = parseProviderEnvironment(process.env)
     providerForModel = (selectedModel: string) => {
       const providerOptions = {
@@ -403,7 +420,37 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       : {}),
   }
-  if (!provider) return new ClaudeSessionService(options)
+  if (!provider && !exposeToolRegistry) return new ClaudeSessionService(options)
+  const toolProvider: ModelProvider = provider ?? {
+    model: 'praxis/provider',
+    capabilities: {
+      streaming: true,
+      usage: true,
+      tools: true,
+      images: true,
+      documents: true,
+      webSearch: true,
+    },
+    complete: () => ({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          throw new Error(
+            'A model provider is required to execute model-backed tools',
+          )
+        },
+      }),
+    }),
+  }
+  const hostedToolProvider: ModelProvider =
+    exposeToolRegistry && !toolProvider.capabilities.webSearch
+      ? {
+          ...(toolProvider.model === undefined
+            ? {}
+            : { model: toolProvider.model }),
+          capabilities: { ...toolProvider.capabilities, webSearch: true },
+          complete: (request) => toolProvider.complete(request),
+        }
+      : toolProvider
 
   const automaticSettingSources =
     cli.safeMode || cli.bare ? [] : cli.settingSources
@@ -471,24 +518,30 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ? {}
         : { settingSources: automaticSettingSources }),
     })
-  const permissions = new ClaudeExtensionPermissionResolver(
-    new ClaudePermissionResolver({
-      cwd,
-      cwdProvider: () => workspace.cwd(),
-      settings,
-      allowedTools: cli.allowedTools,
-      disallowedTools: cli.disallowedTools,
-      permissionMode: cli.dangerouslySkipPermissions
-        ? 'bypassPermissions'
-        : cli.permissionMode,
-      ...(cli.permissionMode === 'auto'
-        ? { autoClassifier: createClaudeModelAutoClassifier(provider) }
-        : {}),
-    }),
+  const permissionResolverForMode = (permissionMode: ClaudePermissionMode) =>
+    new ClaudeExtensionPermissionResolver(
+      new ClaudePermissionResolver({
+        cwd,
+        cwdProvider: () => workspace.cwd(),
+        settings,
+        allowedTools: cli.allowedTools,
+        disallowedTools: cli.disallowedTools,
+        permissionMode,
+        ...(permissionMode === 'auto'
+          ? {
+              autoClassifier:
+                createClaudeModelAutoClassifier(hostedToolProvider),
+            }
+          : {}),
+      }),
+    )
+  const permissions = permissionResolverForMode(
+    cli.dangerouslySkipPermissions ? 'bypassPermissions' : cli.permissionMode,
   )
   const localTools = new LocalToolRegistry({
     cwd,
     cwdProvider: () => workspace.cwd(),
+    enableReportFindings: exposeToolRegistry,
     ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
     additionalDirectories: cli.additionalDirectories,
     additionalReadDirectories: [claudeBackgroundTaskParent(cwd)],
@@ -496,9 +549,13 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const mcpTools = await ClaudeMcpToolRegistry.connect({
     base: cli.bare
       ? localTools
-      : new WebToolRegistry({ base: localTools, provider }),
+      : new WebToolRegistry({
+          base: localTools,
+          provider: hostedToolProvider,
+        }),
     resources: resources.mcp,
     cwd,
+    configRoot,
     onWarning: (message) => eventSink({ type: 'warning', message }),
     ...(signal ? { signal } : {}),
   })
@@ -605,10 +662,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const enableSubagents = !cli.bare && selectedAgentTools.length > 0
     const service = new ClaudeSessionService({
       ...options,
-      provider,
+      provider: hostedToolProvider,
       ...(providerForModel ? { providerForModel } : {}),
       tools: filteredTools,
       permissions,
+      permissionResolverForMode,
       extensions,
       enableSubagents,
       subagentToolNames: routedSubagentTools,
@@ -651,7 +709,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ]
     const runtimeInfo: CliRuntimeInfo = {
       cwd: workspace.cwd(),
-      model: provider.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
+      model: provider?.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
       tools: toolNames,
       mcpServers: mcpTools.serverStatuses(),
       permissionMode: cli.dangerouslySkipPermissions
@@ -666,7 +724,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
         .map((definition) => definition.name),
       claudeCodeVersion: claudeVersion,
     }
+    const toolRegistry = exposeToolRegistry
+      ? service.createHostedToolRegistry(randomUUID())
+      : filteredTools
     return {
+      toolRegistry,
       run: (prompt, signal, sessionId, name, images, documents) =>
         service.run(
           prompt,
@@ -698,7 +760,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       runtimeInfo: () => ({
         ...runtimeInfo,
         cwd: workspace.cwd(),
-        model: provider.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
+        model: provider?.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
       }),
       promptSuggestion: (sessionId, suggestionSignal) =>
         service.promptSuggestion(sessionId, suggestionSignal),
@@ -1260,16 +1322,102 @@ async function executeMcpCommand(
   args: readonly string[],
   invocation: CliInvocation,
   io: CliIO,
+  dependencies: CliDependencies,
+  signal?: AbortSignal,
 ): Promise<number> {
   const action = args[1]
   if (!action || action === 'help') {
     io.stdout(
-      'Usage: praxis mcp <list|get|add|add-json|remove|reset-project-choices>\n',
+      'Usage: praxis mcp <list|get|add|add-json|remove|reset-project-choices|login|logout|serve>\n',
     )
     return 0
   }
-  const management = new ClaudeMcpManagement({ cwd: process.cwd() })
+  const configRoot = resolve(
+    process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
+  )
+  const management = new ClaudeMcpManagement({
+    configRoot,
+    cwd: process.cwd(),
+  })
   const scope = invocation.mcpScope ? mcpScope(invocation.mcpScope) : undefined
+  if (action === 'login') {
+    if (args.length !== 3) throw new Error('mcp login requires a server name')
+    const record = await management.get(args[2] as string, scope)
+    const server = mcpOAuthServerIdentity(record.name, record.config)
+    await (dependencies.mcpAuthenticate ?? authenticateMcpServer)({
+      configRoot,
+      server,
+      noBrowser: invocation.mcpNoBrowser,
+      write: (message) => io.stdout(message),
+    })
+    io.stdout(
+      `Authenticated with "${record.name}". Its tools are now available in Praxis.\n`,
+    )
+    return 0
+  }
+  if (action === 'logout') {
+    if (args.length !== 3) throw new Error('mcp logout requires a server name')
+    const record = await management.get(args[2] as string, scope)
+    const server = mcpOAuthServerIdentity(record.name, record.config)
+    await new ClaudeMcpOAuthStore({ configRoot }).clear(server)
+    io.stdout(
+      `Signed out of "${record.name}". Run \`praxis mcp login ${record.name}\` to authenticate again.\n`,
+    )
+    return 0
+  }
+  if (action === 'serve') {
+    if (args.length !== 2) throw new Error('mcp serve takes no operands')
+    if (scope) throw new Error('--scope is not valid with mcp serve')
+    await (dependencies.mcpServe ?? servePraxisMcpStdio)({
+      cwd: process.cwd(),
+      debug: invocation.mcpDebug,
+      verbose: invocation.verbose,
+      ...(signal ? { signal } : {}),
+      writeError: (message) => io.stderr(message),
+      createToolRegistry: async () => {
+        const service = await dependencies.createService({
+          eventSink: () => undefined,
+          requireProvider: false,
+          exposeToolRegistry: true,
+          approveTool: async () => true,
+          controls: invocation,
+          ...(signal ? { signal } : {}),
+        })
+        const registry = service.toolRegistry
+        if (!registry) {
+          await service.close?.()
+          throw new Error('MCP tool registry is unavailable')
+        }
+        return {
+          definitions: registry.definitions.bind(registry),
+          prepare: registry.prepare.bind(registry),
+          execute: registry.execute.bind(registry),
+          close: async () => service.close?.(),
+        }
+      },
+      createAgentService: ({
+        agent,
+        model,
+        permissionMode,
+        worktree,
+        eventSink: agentEventSink,
+      }) =>
+        dependencies.createService({
+          eventSink: agentEventSink,
+          requireProvider: true,
+          approveTool: async () => true,
+          ...(agent ? { agent } : {}),
+          controls: {
+            ...invocation,
+            ...(model ? { model } : {}),
+            ...(permissionMode ? { permissionMode } : {}),
+            ...(worktree ? { worktreeRequested: true } : {}),
+          },
+          ...(signal ? { signal } : {}),
+        }),
+    })
+    return 0
+  }
   if (action === 'list') {
     if (args.length !== 2) throw new Error('mcp list takes no operands')
     const servers = await management.list(scope)
@@ -1558,8 +1706,15 @@ async function execute(
       throw new Error('--scope is only valid with mcp or plugin commands')
     }
   }
+  const mcpAction = command === 'mcp' ? args[1] : undefined
+  if (invocation.mcpNoBrowser && mcpAction !== 'login') {
+    throw new Error('--no-browser is only valid with mcp login')
+  }
+  if (invocation.mcpDebug && mcpAction !== 'serve') {
+    throw new Error('--debug is only valid with mcp serve')
+  }
   if (command === 'mcp') {
-    return executeMcpCommand(args, invocation, io)
+    return executeMcpCommand(args, invocation, io, dependencies, signal)
   }
   if (command === 'auto-mode') {
     return executeAutoModeCommand(args, invocation, io)

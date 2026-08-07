@@ -28,6 +28,7 @@ import {
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
+import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
 
 const roots: string[] = []
@@ -72,6 +73,81 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('builds a hosted registry with durable task and schedule tools', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-registry-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['hosted response']),
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      taskToolNames: [
+        'TaskCreate',
+        'TaskGet',
+        'TaskList',
+        'TaskOutput',
+        'TaskStop',
+        'TaskUpdate',
+      ],
+      scheduledToolNames: [
+        'CronCreate',
+        'CronDelete',
+        'CronList',
+        'ScheduleWakeup',
+      ],
+      enableSubagents: true,
+      subagentToolNames: ['Agent', 'SendMessage'],
+      enableWorkflows: true,
+      sessionPersistence: true,
+    })
+
+    try {
+      const registry = service.createHostedToolRegistry(sessionId)
+      expect(registry.definitions().map(({ name }) => name)).toEqual(
+        expect.arrayContaining([
+          'Agent',
+          'SendMessage',
+          'TaskCreate',
+          'TaskGet',
+          'TaskList',
+          'TaskOutput',
+          'TaskStop',
+          'TaskUpdate',
+          'CronCreate',
+          'CronDelete',
+          'CronList',
+          'ScheduleWakeup',
+          'Workflow',
+        ]),
+      )
+      const create = await registry.prepare(
+        {
+          id: 'create',
+          name: 'TaskCreate',
+          input: { subject: 'Build', description: 'Build it' },
+        },
+        { cwd },
+      )
+      const created = await registry.execute(create, { cwd })
+      expect(created.content).toContain('Task #1 created successfully')
+      const list = await registry.prepare(
+        { id: 'list', name: 'TaskList', input: {} },
+        { cwd },
+      )
+      await expect(registry.execute(list, { cwd })).resolves.toMatchObject({
+        content: expect.stringContaining('#1 [pending] Build'),
+        isError: false,
+      })
+    } finally {
+      await service.close()
+    }
+  })
+
   it('persists and projects user image and document attachments', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-attachment-'))
     roots.push(root)

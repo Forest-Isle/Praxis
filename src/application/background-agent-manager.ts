@@ -8,10 +8,14 @@ export interface BackgroundAgentRunResult {
   usage: ModelUsage
   toolUseCount: number
   durationMs: number
+  isolationPath?: string
+  isolationRetained?: boolean
+  isolationWarning?: string
 }
 
 export interface BackgroundAgentTaskSpec {
   agentId: string
+  name?: string
   agentType: string
   description: string
   prompt: string
@@ -60,6 +64,15 @@ function assertAgentId(agentId: string): void {
   }
 }
 
+function escapeXml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+}
+
 function waitBounded(
   operation: Promise<void>,
   milliseconds: number,
@@ -82,12 +95,20 @@ function waitBounded(
 
 export class BackgroundAgentManager {
   private readonly tasks = new Map<string, BackgroundAgentTask>()
+  private readonly names = new Map<string, string>()
 
   launch(spec: BackgroundAgentTaskSpec): BackgroundAgentSnapshot {
     assertAgentId(spec.agentId)
+    if (
+      spec.name !== undefined &&
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(spec.name)
+    ) {
+      throw new Error(`Invalid background agent name: ${spec.name}`)
+    }
     if (this.tasks.has(spec.agentId)) {
       throw new Error(`Background agent ${spec.agentId} already exists`)
     }
+    if (spec.name !== undefined) this.names.set(spec.name, spec.agentId)
     const task: BackgroundAgentTask = {
       spec,
       status: 'running',
@@ -109,8 +130,15 @@ export class BackgroundAgentManager {
     result: BackgroundAgentRunResult,
   ): BackgroundAgentSnapshot {
     assertAgentId(spec.agentId)
+    if (
+      spec.name !== undefined &&
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(spec.name)
+    ) {
+      throw new Error(`Invalid background agent name: ${spec.name}`)
+    }
     const existing = this.tasks.get(spec.agentId)
     if (existing) return this.snapshot(existing)
+    if (spec.name !== undefined) this.names.set(spec.name, spec.agentId)
     const task: BackgroundAgentTask = {
       spec,
       status: 'completed',
@@ -127,7 +155,7 @@ export class BackgroundAgentManager {
   }
 
   has(agentId: string): boolean {
-    return this.tasks.has(agentId)
+    return this.tasks.has(this.resolveOptional(agentId) ?? agentId)
   }
 
   snapshotById(agentId: string): BackgroundAgentSnapshot | null {
@@ -139,7 +167,7 @@ export class BackgroundAgentManager {
     agentId: string,
     options: { block: boolean; timeout: number },
   ): Promise<string> {
-    assertAgentId(agentId)
+    agentId = this.resolveRequired(agentId)
     if (
       !Number.isFinite(options.timeout) ||
       options.timeout < 0 ||
@@ -160,7 +188,7 @@ export class BackgroundAgentManager {
   }
 
   stop(agentId: string): string {
-    assertAgentId(agentId)
+    agentId = this.resolveRequired(agentId)
     const task = this.tasks.get(agentId)
     if (!task) throw new Error(`No task found with ID: ${agentId}`)
     if (task.status !== 'running' || !task.controller) {
@@ -185,13 +213,13 @@ export class BackgroundAgentManager {
     summary: string | undefined,
     toolUseId: string,
   ): string {
-    assertAgentId(agentId)
     if (message.trim().length === 0)
       throw new Error('message must not be empty')
     if (summary !== undefined && summary.length > 200) {
       throw new Error('summary must not exceed 200 characters')
     }
-    const task = this.tasks.get(agentId)
+    const resolvedAgentId = this.resolveOptional(agentId)
+    const task = resolvedAgentId ? this.tasks.get(resolvedAgentId) : undefined
     if (!task) {
       return JSON.stringify({
         success: false,
@@ -207,7 +235,7 @@ export class BackgroundAgentManager {
     return JSON.stringify({
       success: true,
       message: `Agent "${agentId}" was ${priorStatus}; resumed it in the background with your message. You'll be notified when it finishes. Output: ${task.spec.outputFile}`,
-      resumedAgentId: agentId,
+      resumedAgentId: task.spec.agentId,
     })
   }
 
@@ -291,6 +319,23 @@ export class BackgroundAgentManager {
       })
   }
 
+  private resolveOptional(identifier: string): string | undefined {
+    if (AGENT_ID_PATTERN.test(identifier)) return identifier
+    return this.names.get(identifier)
+  }
+
+  private resolveRequired(identifier: string): string {
+    const resolved = this.resolveOptional(identifier)
+    if (
+      !AGENT_ID_PATTERN.test(identifier) &&
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(identifier)
+    ) {
+      assertAgentId(identifier)
+    }
+    if (!resolved) throw new Error(`No task found with ID: ${identifier}`)
+    return resolved
+  }
+
   private snapshot(task: BackgroundAgentTask): BackgroundAgentSnapshot {
     return {
       agentId: task.spec.agentId,
@@ -309,7 +354,18 @@ export class BackgroundAgentManager {
       `<task_id>${task.spec.agentId}</task_id>`,
       '<task_type>local_agent</task_type>',
       `<status>${task.status}</status>`,
-      `<output>\n${output}\n</output>`,
+      ...(task.result?.isolationPath
+        ? [
+            `<worktree_path>${escapeXml(task.result.isolationPath)}</worktree_path>`,
+            `<worktree_retained>${String(task.result.isolationRetained)}</worktree_retained>`,
+            ...(task.result.isolationWarning
+              ? [
+                  `<worktree_warning>${escapeXml(task.result.isolationWarning)}</worktree_warning>`,
+                ]
+              : []),
+          ]
+        : []),
+      `<output>\n${escapeXml(output)}\n</output>`,
     ].join('\n\n')
   }
 
@@ -325,11 +381,22 @@ export class BackgroundAgentManager {
       '<task-notification>',
       `<task-id>${task.spec.agentId}</task-id>`,
       `<tool-use-id>${notification.toolUseId}</tool-use-id>`,
-      `<output-file>${task.spec.outputFile}</output-file>`,
+      `<output-file>${escapeXml(task.spec.outputFile)}</output-file>`,
       `<status>${notification.status}</status>`,
-      `<summary>Agent "${task.spec.description}" finished</summary>`,
+      `<summary>Agent &quot;${escapeXml(task.spec.description)}&quot; finished</summary>`,
       '<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>',
-      `<result>${result}</result>`,
+      ...(notification.result?.isolationPath
+        ? [
+            `<worktree-path>${escapeXml(notification.result.isolationPath)}</worktree-path>`,
+            `<worktree-retained>${String(notification.result.isolationRetained)}</worktree-retained>`,
+            ...(notification.result.isolationWarning
+              ? [
+                  `<worktree-warning>${escapeXml(notification.result.isolationWarning)}</worktree-warning>`,
+                ]
+              : []),
+          ]
+        : []),
+      `<result>${escapeXml(result)}</result>`,
       usage,
       '</task-notification>',
     ]

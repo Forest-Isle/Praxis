@@ -32,6 +32,96 @@ afterEach(async () => {
 })
 
 describe('LocalToolRegistry', () => {
+  it('reports validated code-review findings with the Claude schema', async () => {
+    const { cwd } = await workspace()
+    const registry = new LocalToolRegistry({ cwd, enableReportFindings: true })
+    const definition = registry
+      .definitions()
+      .find((tool) => tool.name === 'ReportFindings')
+    expect(definition).toMatchObject({
+      name: 'ReportFindings',
+      inputSchema: {
+        required: ['findings'],
+        additionalProperties: false,
+        properties: {
+          level: {
+            enum: ['low', 'medium', 'high', 'xhigh', 'max'],
+          },
+          findings: { maxItems: 32 },
+        },
+      },
+    })
+    const call = await registry.prepare(
+      {
+        id: 'report-findings',
+        name: 'ReportFindings',
+        input: {
+          level: 'high',
+          findings: [
+            {
+              file: 'src/index.ts',
+              line: 7,
+              summary: 'Incorrect result',
+              failure_scenario: 'Input 0 returns 1',
+              category: 'correctness',
+              verdict: 'CONFIRMED',
+            },
+          ],
+        },
+      },
+      { cwd },
+    )
+    await expect(registry.execute(call, { cwd })).resolves.toEqual({
+      content:
+        '{"count":1,"level":"high","findings":[{"file":"src/index.ts","line":7,"summary":"Incorrect result","failure_scenario":"Input 0 returns 1","category":"correctness","verdict":"CONFIRMED"}]}',
+      isError: false,
+    })
+    await expect(
+      registry.prepare(
+        {
+          id: 'invalid-findings',
+          name: 'ReportFindings',
+          input: { findings: [], extra: true },
+        },
+        { cwd },
+      ),
+    ).rejects.toThrow('Unknown ReportFindings input field extra')
+  })
+
+  it('binds filesystem and shell tools to the execution cwd', async () => {
+    const { root, cwd } = await workspace()
+    const isolated = join(root, 'isolated')
+    await mkdir(isolated)
+    const registry = new LocalToolRegistry({ cwd })
+    const context = { cwd: isolated }
+
+    const write = await registry.prepare(
+      {
+        id: 'isolated-write',
+        name: 'Write',
+        input: { file_path: 'marker.txt', content: 'isolated' },
+      },
+      context,
+    )
+    await registry.execute(write, context)
+
+    await expect(readFile(join(isolated, 'marker.txt'), 'utf8')).resolves.toBe(
+      'isolated',
+    )
+    await expect(
+      readFile(join(cwd, 'marker.txt'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+
+    const bash = await registry.prepare(
+      { id: 'isolated-bash', name: 'Bash', input: { command: 'pwd' } },
+      context,
+    )
+    await expect(registry.execute(bash, context)).resolves.toMatchObject({
+      content: `${await realpath(isolated)}\n`,
+      isError: false,
+    })
+  })
+
   it('reads supported images as bounded native multimodal results', async () => {
     const { cwd } = await workspace()
     const base64 =

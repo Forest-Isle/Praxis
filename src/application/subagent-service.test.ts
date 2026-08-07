@@ -1,6 +1,15 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -13,6 +22,9 @@ import type {
 } from '../core/runtime.js'
 import { AgentRunCancelledError } from '../core/runtime.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
+import type { ClaudeHookRunner } from '../hooks/claude-hooks.js'
+import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
+import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
 import {
   ClaudeSubagentExecutor,
@@ -20,6 +32,7 @@ import {
 } from './subagent-service.js'
 
 const roots: string[] = []
+const execFileAsync = promisify(execFile)
 
 const emptyTools: ToolRegistry = {
   definitions: () => [],
@@ -80,6 +93,27 @@ afterEach(async () => {
     roots.splice(0).map((root) => rm(root, { recursive: true })),
   )
 })
+
+async function gitRepository(prefix: string) {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), prefix))
+  roots.push(fixtureRoot)
+  const cwd = join(fixtureRoot, 'repo')
+  await execFileAsync('git', ['init', cwd])
+  await writeFile(join(cwd, 'tracked.txt'), 'base\n')
+  await execFileAsync('git', ['-C', cwd, 'add', 'tracked.txt'])
+  await execFileAsync('git', [
+    '-C',
+    cwd,
+    '-c',
+    'user.name=Praxis Test',
+    '-c',
+    'user.email=praxis@example.invalid',
+    'commit',
+    '-m',
+    'fixture',
+  ])
+  return { fixtureRoot, cwd, configRoot: join(fixtureRoot, 'config') }
+}
 
 function entries(source: string): Record<string, unknown>[] {
   return source
@@ -621,10 +655,9 @@ describe('foreground Claude Agent execution', () => {
   })
 
   it('polls and resumes a completed background sidechain from a new executor', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-background-resume-test-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-background-resume-test-',
+    )
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const provider = (text: string): ModelProvider => ({
       model: 'fixture-model',
@@ -660,6 +693,8 @@ describe('foreground Claude Agent execution', () => {
           input: {
             description: 'Resume test',
             prompt: 'Initial work',
+            name: 'reviewer',
+            isolation: 'worktree',
             run_in_background: true,
           },
         },
@@ -680,6 +715,14 @@ describe('foreground Claude Agent execution', () => {
       { cwd },
     )
     expect(firstOutput.content).toContain('FIRST_RESULT')
+    const worktreePath = String(launched.nativeToolUseResult?.worktreePath)
+    expect(firstOutput.content).toContain(
+      `<worktree_path>${worktreePath}</worktree_path>`,
+    )
+    expect(firstOutput.content).toContain(
+      '<worktree_retained>false</worktree_retained>',
+    )
+    await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
 
     const resumed = new ClaudeSubagentExecutor({
       ...options,
@@ -692,7 +735,7 @@ describe('foreground Claude Agent execution', () => {
           id: 'call_message',
           name: 'SendMessage',
           input: {
-            to: agentId,
+            to: 'reviewer',
             summary: 'resume completed agent',
             message: 'Continue the work',
           },
@@ -714,6 +757,7 @@ describe('foreground Claude Agent execution', () => {
       { cwd },
     )
     expect(secondOutput.content).toContain('SECOND_RESULT')
+    await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
 
     const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
     const source = await readFile(
@@ -722,9 +766,27 @@ describe('foreground Claude Agent execution', () => {
     )
     expect(source).toContain('The coordinator sent a message')
     expect(source).toContain('SECOND_RESULT')
+    expect(
+      entries(source)
+        .map((entry) => entry.cwd)
+        .filter((value) => typeof value === 'string'),
+    ).toEqual(expect.arrayContaining([worktreePath, worktreePath]))
+    expect(
+      JSON.parse(
+        await readFile(
+          join(
+            paths.projectRoot,
+            sessionId,
+            'subagents',
+            `agent-${agentId}.meta.json`,
+          ),
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({ name: 'reviewer', isolation: 'worktree' })
   })
 
-  it('defaults to background and accepts model overrides while rejecting unsupported isolation', async () => {
+  it('publishes and preserves hosted Agent identity and permission controls', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-agent-model-test-'))
     roots.push(root)
     const cwd = join(root, 'project')
@@ -747,12 +809,36 @@ describe('foreground Claude Agent execution', () => {
       },
       baseTools: emptyTools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      permissionResolverForMode: () => ({
+        resolve: () => ({ behavior: 'allow' }),
+      }),
     })
     const registry = executor.registry(
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       0,
       () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     )
+
+    expect(executor.definitions().inputSchema).toMatchObject({
+      properties: {
+        name: {
+          type: 'string',
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$',
+        },
+        team_name: { type: 'string' },
+        mode: {
+          type: 'string',
+          enum: [
+            'acceptEdits',
+            'auto',
+            'bypassPermissions',
+            'default',
+            'dontAsk',
+            'plan',
+          ],
+        },
+      },
+    })
 
     const prepared = await registry.prepare(
       {
@@ -762,11 +848,19 @@ describe('foreground Claude Agent execution', () => {
           description: 'Override model',
           prompt: 'Use selected model',
           model: 'haiku',
+          name: 'reviewer',
+          team_name: 'deprecated-team',
+          mode: 'plan',
         },
       },
       { cwd },
     )
     expect(prepared.input.run_in_background).toBe(true)
+    expect(prepared.input).toMatchObject({
+      name: 'reviewer',
+      team_name: 'deprecated-team',
+      mode: 'plan',
+    })
     const launched = await registry.execute(prepared, { cwd })
     expect(launched.nativeToolUseResult).toMatchObject({
       status: 'async_launched',
@@ -785,12 +879,264 @@ describe('foreground Claude Agent execution', () => {
           input: {
             description: 'Isolated work',
             prompt: 'Use a worktree',
-            isolation: 'worktree',
+            isolation: 'remote',
           },
         },
         { cwd },
       ),
-    ).rejects.toThrow('Praxis does not support Agent isolation worktree yet')
+    ).rejects.toThrow('Praxis does not support Agent isolation remote')
+  })
+
+  it('enforces Agent mode inside the child runtime and hook context', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-mode-test-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let writeExecutions = 0
+    const hookInputs: Record<string, unknown>[] = []
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Write',
+          description: 'Write a file',
+          inputSchema: {
+            type: 'object',
+            properties: { file_path: { type: 'string' } },
+            required: ['file_path'],
+          },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async () => {
+        writeExecutions += 1
+        return { content: 'WRITTEN', isError: false }
+      },
+    }
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        if (request.messages.some((message) => message.role === 'tool')) {
+          yield { type: 'text-delta', delta: 'PLAN_MODE_DONE' }
+          return
+        }
+        yield {
+          type: 'tool-call',
+          call: {
+            id: 'call_write',
+            name: 'Write',
+            input: { file_path: join(cwd, 'blocked.txt') },
+          },
+        }
+      },
+    }
+    const hooks = {
+      async run(input: Record<string, unknown>) {
+        hookInputs.push(input)
+        return { executions: [], additionalContext: [] }
+      },
+    } as unknown as ClaudeHookRunner
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      permissionResolverForMode: (mode) =>
+        new ClaudePermissionResolver({
+          cwd,
+          settings: [],
+          permissionMode: mode,
+        }),
+      hooks,
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_plan_agent',
+        name: 'Agent',
+        input: {
+          description: 'Plan only',
+          prompt: 'Try to write',
+          mode: 'plan',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+
+    const result = await registry.execute(call, { cwd })
+
+    expect(result.content).toContain('PLAN_MODE_DONE')
+    expect(writeExecutions).toBe(0)
+    expect(JSON.stringify(requests)).toContain(
+      'Cannot use Write while in plan mode',
+    )
+    expect(hookInputs.length).toBeGreaterThan(0)
+    expect(hookInputs.every((input) => input.permission_mode === 'plan')).toBe(
+      true,
+    )
+  })
+
+  it('runs an isolated Agent in a clean worktree and removes it', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-worktree-clean-',
+    )
+    const toolCwds: string[] = []
+    let turn = 0
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'InspectCwd',
+          description: 'Inspect current working directory',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async (_call, context) => {
+        toolCwds.push(context.cwd)
+        return { content: context.cwd, isError: false }
+      },
+    }
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_cwd', name: 'InspectCwd', input: {} },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'ISOLATED_DONE' }
+      },
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_clean_worktree',
+        name: 'Agent',
+        input: {
+          description: 'Clean isolation',
+          prompt: 'Inspect only',
+          isolation: 'worktree',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+
+    const result = await registry.execute(call, { cwd })
+
+    const worktreePath = String(result.nativeToolUseResult?.worktreePath)
+    expect(toolCwds).toEqual([worktreePath])
+    expect(result.nativeToolUseResult).toMatchObject({
+      worktreePath,
+      worktreeRetained: false,
+    })
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const agentId = String(result.nativeToolUseResult?.agentId)
+    const [rootEntry] = entries(
+      await readFile(
+        join(
+          paths.projectRoot,
+          sessionId,
+          'subagents',
+          `agent-${agentId}.jsonl`,
+        ),
+        'utf8',
+      ),
+    )
+    expect(rootEntry?.cwd).toBe(worktreePath)
+    await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('retains an isolated Agent worktree containing changes', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-worktree-dirty-',
+    )
+    let turn = 0
+    const tools = new LocalToolRegistry({ cwd })
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_dirty',
+              name: 'Write',
+              input: {
+                file_path: 'agent-change.txt',
+                content: 'changed\n',
+              },
+            },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'DIRTY_DONE' }
+      },
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_dirty_worktree',
+        name: 'Agent',
+        input: {
+          description: 'Dirty isolation',
+          prompt: 'Make a change',
+          isolation: 'worktree',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+
+    const result = await registry.execute(call, { cwd })
+
+    const worktreePath = String(result.nativeToolUseResult?.worktreePath)
+    expect(result.nativeToolUseResult).toMatchObject({
+      worktreePath,
+      worktreeRetained: true,
+      worktreeWarning: expect.stringContaining(worktreePath),
+    })
+    expect(result.content).toContain(worktreePath)
+    expect(await readFile(join(worktreePath, 'agent-change.txt'), 'utf8')).toBe(
+      'changed\n',
+    )
+    await expect(
+      readFile(join(cwd, 'agent-change.txt'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('enforces the session Agent call budget before creating another sidechain', async () => {
