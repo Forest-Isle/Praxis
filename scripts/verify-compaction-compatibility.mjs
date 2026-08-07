@@ -69,7 +69,7 @@ try {
   if (!address || typeof address === 'string') throw new Error('no address')
 
   const cli = join(process.cwd(), 'dist', 'cli.js')
-  const prompt = `Keep the current task. ${droppedMarker} ${'old-context '.repeat(700)}`
+  const prompt = `Keep the current task. ${droppedMarker} ${'old-context '.repeat(2000)}`
   const { stdout: originStdout } = await execFileAsync(
     process.execPath,
     [cli, 'run', '--json', prompt],
@@ -106,8 +106,8 @@ try {
         PRAXIS_API_KEY: 'fixture-key',
         PRAXIS_MODEL: 'fixture-model',
         PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
-        PRAXIS_CONTEXT_WINDOW_TOKENS: '4000',
-        PRAXIS_CONTEXT_RESERVE_TOKENS: '2000',
+        PRAXIS_CONTEXT_WINDOW_TOKENS: '12000',
+        PRAXIS_CONTEXT_RESERVE_TOKENS: '4000',
       },
       maxBuffer: 8 * 1024 * 1024,
       timeout: 120_000,

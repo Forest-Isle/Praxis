@@ -313,28 +313,13 @@ separately. Claude-backed probes make real model requests; the context-runtime
 probe uses a local provider fixture:
 
 ```sh
-npm run test:compat
-npm run test:background-agent-compat
-npm run test:task-compat
-npm run test:scheduled-compat
-npm run test:top-level-agent-compat
-npm run test:cli-controls-compat
-npm run test:compaction-compat
-npm run test:conditional-compat
-npm run test:context-compat
-npm run test:extension-compat
-npm run test:glob-compat
-npm run test:hook-compat
-npm run test:image-compat
-npm run test:mcp-compat
-npm run test:mcp-resource-compat
-npm run test:notebook-compat
-npm run test:permission-compat
-npm run test:runtime-compat
-npm run test:recovery-compat
-npm run test:shared-compat
-npm run test:web-compat
+npm run test:compat:all
 ```
+
+The aggregate command discovers every `test:*` compatibility gate except the
+provider-free package and performance gates, validates each command shape, and
+runs 34 isolated gates in sequence. Run an individual `test:*` command when
+iterating on one surface.
 
 `npm run test:performance` is a local, provider-free release gate covering CLI
 process startup, 500-session discovery, and large transcript load, heap, and

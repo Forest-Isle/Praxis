@@ -22,6 +22,7 @@
     "prepack": "npm run build",
     "test": "vitest run",
     "test:compat": "npm run build && node scripts/verify-claude-compatibility.mjs && node scripts/verify-claude-advanced-fixtures.mjs",
+    "test:compat:all": "npm run build && node scripts/verify-compatibility-matrix.mjs",
     "test:cli-controls-compat": "npm run build && node scripts/verify-cli-controls.mjs",
     "test:conditional-compat": "npm run build && node scripts/verify-conditional-rules.mjs",
     "test:compaction-compat": "npm run build && node scripts/verify-compaction-compatibility.mjs",

@@ -121,5 +121,8 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 
 ## Remaining implementation order
 
-1. Final live black-box matrix, package/performance regression, and macOS/Linux
-   Node 24/25 clean-room release gates.
+No required single-user CLI parity gaps remain for the supported Claude Code
+2.1.208 profile. The 34-gate live/fixture compatibility matrix and
+package/performance release matrix passed on macOS and Linux with Node 24 and
+Node 25. Unsupported Claude versions remain deliberately read-only, and listed
+enterprise/desktop/remote surfaces remain excluded by scope.

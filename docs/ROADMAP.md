@@ -464,8 +464,8 @@ gates.
 
 ## Stage 45 - local stream-json control records
 
-Status: implemented for locally observable Claude 2.1.208 records; remaining
-records require a Praxis producer before they can be marked complete.
+Status: complete for the supported local single-user CLI profile; remote-only
+records are excluded by Stage 49.
 
 - [x] provider retry events preserve actual attempt, delay, status, and error
       kind without duplicating fallback requests
@@ -520,3 +520,15 @@ Status: complete for the single-user local CLI boundary.
       excluded with the enterprise product surface
 - [x] provider-neutral unknown price and failed-request timing remain explicit
       `null` instead of fabricated values
+
+## Stage 53 - final compatibility and release matrix
+
+Status: complete for Claude Code 2.1.208 and the supported Node/OS matrix.
+
+- [x] aggregate discovery and isolated execution of all 34 compatibility gates
+- [x] deterministic conditional-rule resume fixture validates provider request
+      context and native attachments instead of relying on free-form model echo
+- [x] compaction fixture keeps irreducible context within the configured window
+      while retaining a genuinely over-budget history
+- [x] macOS Node 24/25 and Linux ARM64 Node 24/25 clean-tarball package and
+      performance gates

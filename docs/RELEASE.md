@@ -59,6 +59,13 @@ JSONL.
 | Claude Code 2.1.207, 2.1.209, 3.0.0 | unverified profiles                      | read-only parse; append and fork fail closed  |
 | Any other Claude version            | unverified profile                       | read-only until promoted below                |
 
+Stage 53 clean-room evidence: `test:package` and `test:performance` passed in
+all four combinations macOS/Node 24, macOS/Node 25, Linux ARM64/Node 24, and
+Linux ARM64/Node 25. `test:compat:all` passed 34 isolated Claude/Praxis gates on
+macOS/Node 25. The aggregate gate is intentionally separate from package and
+performance runs because Claude Code is a local installation dependency while
+the release matrix must stay provider-fixture based.
+
 Promoting a new Claude version to read-write requires new black-box fixtures,
 an explicit versioned adapter, all unit and compatibility probes, tarball gate,
 and Standards/Spec review. Version proximity is never treated as schema

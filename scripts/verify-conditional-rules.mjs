@@ -20,6 +20,68 @@ const claudeEditMarker = 'CONDITIONAL_EDIT_RULE_ACTIVE_8064'
 const praxisMarker = 'PRAXIS_CONDITIONAL_RULE_ACTIVE_5824'
 const praxisRootMarker = 'PRAXIS_CONDITIONAL_ROOT_ACTIVE_7137'
 const praxisUserMarker = 'PRAXIS_CONDITIONAL_USER_ACTIVE_8248'
+let claudeResumeRequest
+
+const claudeResumeServer = createServer(async (request, response) => {
+  let body = ''
+  request.setEncoding('utf8')
+  for await (const chunk of request) body += chunk
+  if (!request.url?.startsWith('/v1/messages')) {
+    response.writeHead(404).end()
+    return
+  }
+  claudeResumeRequest = JSON.parse(body)
+  const serialized = JSON.stringify(claudeResumeRequest)
+  const expectedMarkers = serialized.includes(praxisMarker)
+    ? [praxisMarker, praxisRootMarker, praxisUserMarker]
+    : [claudeMarker, claudeRootMarker, claudeUserMarker]
+  const complete = expectedMarkers.every((marker) =>
+    serialized.includes(marker),
+  )
+  const text = complete
+    ? 'CLAUDE_CONDITIONAL_CONTEXT_COMPLETE'
+    : 'CLAUDE_CONDITIONAL_CONTEXT_INCOMPLETE'
+  const events = [
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_conditional_resume',
+        type: 'message',
+        role: 'assistant',
+        model: 'fixture-model',
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    },
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' },
+    },
+    {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text },
+    },
+    { type: 'content_block_stop', index: 0 },
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { output_tokens: 1 },
+    },
+    { type: 'message_stop' },
+  ]
+  response.writeHead(200, { 'content-type': 'text/event-stream' })
+  response.end(
+    events
+      .map(
+        (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+      )
+      .join(''),
+  )
+})
 
 function sse(response, payloads) {
   response.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -130,6 +192,19 @@ function closeServer() {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()))
   })
+}
+
+function listenClaudeResumeServer() {
+  return new Promise((resolve, reject) => {
+    claudeResumeServer.once('error', reject)
+    claudeResumeServer.listen(0, '127.0.0.1', resolve)
+  })
+}
+
+function closeClaudeResumeServer() {
+  return new Promise((resolve, reject) =>
+    claudeResumeServer.close((error) => (error ? reject(error) : resolve())),
+  )
 }
 
 async function findSessionFile(directory, sessionId) {
@@ -419,6 +494,11 @@ try {
     if (attached) throw new Error(`${label} activated a path rule attachment`)
   }
 
+  await listenClaudeResumeServer()
+  const claudeResumeAddress = claudeResumeServer.address()
+  if (!claudeResumeAddress || typeof claudeResumeAddress === 'string') {
+    throw new Error('Conditional Claude resume fixture has no TCP address')
+  }
   const claudeResumed = await runClaudeJson(
     [
       '-p',
@@ -436,11 +516,29 @@ try {
     ],
     cwd,
     configRoot,
+    {
+      ANTHROPIC_API_KEY: 'fixture-key',
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${claudeResumeAddress.port}`,
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    },
   )
-  for (const marker of [claudeMarker, claudeRootMarker, claudeUserMarker]) {
-    assertMarker(claudeResumed, true, marker, 'Claude resume')
+  if (
+    claudeResumed.result !== 'CLAUDE_CONDITIONAL_CONTEXT_COMPLETE' ||
+    !claudeResumeRequest
+  ) {
+    throw new Error(
+      `Claude resume did not receive conditional context: ${JSON.stringify(claudeResumed)}`,
+    )
   }
-  assertMarker(claudeResumed, false, claudeEditMarker, 'Claude resume')
+  const claudeResumeSerialized = JSON.stringify(claudeResumeRequest)
+  for (const marker of [claudeMarker, claudeRootMarker, claudeUserMarker]) {
+    if (!claudeResumeSerialized.includes(marker)) {
+      throw new Error(`Claude resume request omitted ${marker}`)
+    }
+  }
+  if (claudeResumeSerialized.includes(claudeEditMarker)) {
+    throw new Error('Claude resume request included inactive edit rule')
+  }
   assertNativeAttachment(
     await readEntries(configRoot, matchingRead.session_id),
     claudeMarker,
@@ -554,6 +652,7 @@ try {
     }
   }
 
+  claudeResumeRequest = undefined
   const claudeOpenedPraxis = await runClaudeJson(
     [
       '-p',
@@ -571,14 +670,25 @@ try {
     ],
     cwd,
     configRoot,
+    {
+      ANTHROPIC_API_KEY: 'fixture-key',
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${claudeResumeAddress.port}`,
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    },
   )
-  for (const marker of [praxisMarker, praxisRootMarker, praxisUserMarker]) {
-    assertMarker(
-      claudeOpenedPraxis,
-      true,
-      marker,
-      'Claude resume of Praxis attachment',
+  if (
+    claudeOpenedPraxis.result !== 'CLAUDE_CONDITIONAL_CONTEXT_COMPLETE' ||
+    !claudeResumeRequest
+  ) {
+    throw new Error(
+      `Claude resume of Praxis attachment did not receive conditional context: ${JSON.stringify(claudeOpenedPraxis)}`,
     )
+  }
+  const claudePraxisSerialized = JSON.stringify(claudeResumeRequest)
+  for (const marker of [praxisMarker, praxisRootMarker, praxisUserMarker]) {
+    if (!claudePraxisSerialized.includes(marker)) {
+      throw new Error(`Claude resume of Praxis attachment omitted ${marker}`)
+    }
   }
 
   console.log(
@@ -586,5 +696,6 @@ try {
   )
 } finally {
   if (server.listening) await closeServer()
+  if (claudeResumeServer.listening) await closeClaudeResumeServer()
   await rm(probeRoot, { recursive: true })
 }

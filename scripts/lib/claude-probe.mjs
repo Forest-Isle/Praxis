@@ -16,10 +16,14 @@ export async function detectClaudeVersion(probeName) {
   return version
 }
 
-export async function runClaudeJson(args, cwd, configRoot) {
+export async function runClaudeJson(args, cwd, configRoot, extraEnv = {}) {
   const { stdout } = await execFileAsync('claude', args, {
     cwd,
-    env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+    env: {
+      ...process.env,
+      ...extraEnv,
+      CLAUDE_CONFIG_DIR: configRoot,
+    },
     maxBuffer: 4 * 1024 * 1024,
     timeout: 120_000,
   })
