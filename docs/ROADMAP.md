@@ -411,10 +411,12 @@ Status: implemented with one documented cross-runtime replay limitation.
       APIs with model/effort/agentType/schema/worktree options
 - [x] background task output/stop/notifications, abort propagation, run uniqueness,
       native scripts/runs/journals/progress/sidechains, and interactive status
-- [x] same-runtime replay plus conservative unique-prompt fallback for Claude-created
-      journal entries without semantic options
+- [x] exact semantic descriptor sidecar replay independent of journal key, plus
+      conservative unique-prompt fallback for Claude-created journal entries
+      when the current call has no semantic options
 - [x] live schema, permissions, lifecycle, structured output, effort, artifacts, and
-      shared-main-session Claude resume gate
+      shared-main-session Claude resume gate; live resume rewrites the journal key to
+      prove descriptor fallback without repeated provider calls
 - [ ] exact Praxis-created journal cache reuse in Claude; observed `v2` keys do not
       reveal Claude's private semantic key derivation
 

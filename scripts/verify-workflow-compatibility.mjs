@@ -1,8 +1,16 @@
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { detectClaudeVersion } from './lib/claude-probe.mjs'
@@ -133,6 +141,25 @@ function workflowResume(body) {
   return { scriptPath, resumeFromRunId: runId }
 }
 
+async function replaceReplayKey({ scriptPath, resumeFromRunId }) {
+  const sessionDirectory = dirname(dirname(dirname(scriptPath)))
+  const journalFile = join(
+    sessionDirectory,
+    'subagents',
+    'workflows',
+    resumeFromRunId,
+    'journal.jsonl',
+  )
+  const journal = (await readFile(journalFile, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => ({ ...JSON.parse(line), key: 'v2:foreign-key' }))
+  await writeFile(
+    journalFile,
+    `${journal.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+  )
+}
+
 function isChild(body) {
   return (
     JSON.stringify(body.messages ?? []).includes('WORKFLOW_CHILD_MARKER') &&
@@ -197,7 +224,9 @@ const provider = createServer(async (request, response) => {
       JSON.stringify(body.messages ?? []).includes('<task-notification>'),
       'Praxis did not inject workflow completion notification',
     )
-    events = toolEvents('workflow_resume', 'Workflow', workflowResume(body))
+    const resume = workflowResume(body)
+    await replaceReplayKey(resume)
+    events = toolEvents('workflow_resume', 'Workflow', resume)
     outerTurn += 1
   } else if (outerTurn === 3) {
     events = textEvents('PRAXIS_WORKFLOW_RESUME_WAITING')
@@ -376,8 +405,14 @@ try {
       'u',
     ).test(path),
   )
+  const replayMetadataFile = allFiles.find((path) =>
+    new RegExp(
+      `/${sessionId}/subagents/workflows/wf_[^/]+/\\.praxis-replay-metadata\\.jsonl$`,
+      'u',
+    ).test(path),
+  )
   assert(
-    runFile && journalFile && metadataFile,
+    runFile && journalFile && metadataFile && replayMetadataFile,
     'Workflow artifacts are incomplete',
   )
   const run = JSON.parse(await readFile(runFile, 'utf8'))
@@ -401,6 +436,17 @@ try {
   assert(
     journal.length === 2 && journal[1]?.result?.value,
     'Workflow journal is invalid',
+  )
+  const replayMetadata = (await readFile(replayMetadataFile, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+  assert(
+    replayMetadata.length === 1 &&
+      replayMetadata[0]?.prompt === 'WORKFLOW_CHILD_MARKER' &&
+      replayMetadata[0]?.options?.effort === 'low' &&
+      replayMetadata[0]?.options?.schema?.type === 'object',
+    'Workflow semantic replay metadata is invalid',
   )
   assert(
     JSON.stringify(JSON.parse(await readFile(metadataFile, 'utf8'))) ===

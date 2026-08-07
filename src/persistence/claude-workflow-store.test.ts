@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { ClaudeWorkflowPaths } from '../compatibility/claude/workflow.js'
+import { workflowReplayDescriptor } from '../compatibility/claude/workflow-replay.js'
 import { ClaudeWorkflowStore } from './claude-workflow-store.js'
 
 const roots: string[] = []
@@ -52,6 +53,11 @@ describe('ClaudeWorkflowStore', () => {
       agentId: 'a0000000000000001',
       result: { ok: true },
     })
+    await value.appendMetadata({
+      agentId: 'a0000000000000001',
+      prompt: 'prompt-a',
+      options: { effort: 'low' },
+    })
     await value.append({
       type: 'started',
       key: 'v2:b',
@@ -74,6 +80,25 @@ describe('ClaudeWorkflowStore', () => {
       new Map([
         ['prompt-a', { agentId: 'a0000000000000001', result: { ok: true } }],
       ]),
+    )
+    expect(await value.replayByDescriptor()).toEqual(
+      new Map([
+        [
+          workflowReplayDescriptor('prompt-a', { effort: 'low' }),
+          { agentId: 'a0000000000000001', result: { ok: true } },
+        ],
+      ]),
+    )
+    await writeFile(
+      join(value.paths.transcriptDirectory, '.praxis-replay-metadata.jsonl'),
+      `${JSON.stringify({
+        agentId: 'a0000000000000001',
+        prompt: 'prompt-a',
+        options: { model: 7 },
+      })}\n`,
+    )
+    await expect(value.replayByDescriptor()).rejects.toThrow(
+      'Invalid workflow replay metadata at line 1',
     )
   })
 })

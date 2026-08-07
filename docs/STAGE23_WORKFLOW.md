@@ -93,8 +93,8 @@ Stop / process exit  -> abort task -> abort every active agent -> persist killed
 - Integration: tool permission/no-artifact denial, launch, TaskOutput/TaskStop,
   notification consumption, failure/resume, named/built-in workflows, persisted shape.
 - Live gate: capture Claude schema; run and same-runtime-resume Praxis workflows with no
-  repeated provider call; verify native artifacts/metadata and Claude resume of the shared
-  main transcript.
+  repeated provider call after replacing the journal key; verify private semantic replay
+  metadata, native artifacts/metadata, and Claude resume of the shared main transcript.
 - Black-box probe: retain captured Claude run/journal/progress/request evidence used to
   define runtime behavior without reading Claude implementation source.
 - Release gates: full Vitest, typecheck/lint/format/build, package, performance, existing
@@ -103,10 +103,14 @@ Stop / process exit  -> abort task -> abort every active agent -> persist killed
 ## Known compatibility boundary
 
 Claude 2.1.208 journal keys use a private `v2:<sha256>` derivation not recoverable from
-the observed inputs and artifacts. Praxis computes a stable semantic key for its own runs
-and can replay Claude-created agents without semantic options by matching a unique prompt
-from the native sidechain transcript. Claude can read Praxis workflow files and main
+the observed inputs and artifacts. Black-box probes prove that prompt, model, effort,
+agentType, and schema affect the key while label, an empty options object, and option
+property order do not. Praxis writes full semantic descriptors to the private
+`.praxis-replay-metadata.jsonl` sidecar, so its own completed agents replay even if a
+foreign runtime rewrites the journal key. For Claude-created journals, Praxis can match a
+unique prompt only when the current call has no semantic options. Native run metadata
+cannot prove the absence of model/effort/agentType/schema/isolation options, so semantic
+foreign-key calls remain fail-closed. Claude can read Praxis workflow files and main
 session history, but does not cache-hit Praxis-created journal entries because its exact
-key derivation is unknown. Model/effort/agentType/schema/isolation entries cannot use the
-prompt fallback because doing so could replay a semantically different call. This remains
-an explicit partial interoperability item, not a claimed exact match.
+key derivation is unknown. This remains an explicit partial interoperability item, not a
+claimed exact match.

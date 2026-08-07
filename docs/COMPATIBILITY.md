@@ -426,11 +426,15 @@ time, pending-wakeup replacement, stop cancellation, and native result fields.
 default permission denial is artifact-free, drives background launch/notification/
 resume with zero repeated child requests, checks structured output and effort
 forwarding, validates native run/journal/sidechain metadata, and requires Claude to
-resume the Praxis-written main transcript. Praxis also prompt-fallback replays a
-unique Claude-created no-options journal entry. Exact Praxis-created journal cache
+resume the Praxis-written main transcript. Before Praxis resumes the workflow, the
+gate replaces its journal key with a foreign key; the private
+`.praxis-replay-metadata.jsonl` descriptor must still produce a zero-request cache
+hit. Praxis also replays Claude-created entries only when a unique prompt is paired
+with a current call that has no semantic options. Exact Praxis-created journal cache
 reuse in Claude remains unclaimed because Claude's private replay-key derivation is
-not observable; calls with semantic model/effort/agentType/schema/isolation options
-never use prompt fallback.
+not observable.
+All model/effort/agentType/schema/isolation calls remain fail-closed without Praxis
+descriptor metadata; they never use prompt-only fallback.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork

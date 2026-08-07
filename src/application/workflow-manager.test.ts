@@ -128,6 +128,7 @@ describe('WorkflowManager', () => {
         join(first.transcriptDirectory, `agent-${journal[0]?.agentId}.jsonl`),
         `${JSON.stringify({ message: { role: 'user', content: 'hello' } })}\n`,
       ),
+      rm(join(first.transcriptDirectory, '.praxis-replay-metadata.jsonl')),
     ])
 
     const resumed = await manager.launch({
@@ -148,6 +149,68 @@ describe('WorkflowManager', () => {
     expect(manager.list().at(-1)).toMatchObject({
       status: 'completed',
       progress: [{ cached: true, totalTokens: 0, toolCalls: 0 }],
+    })
+    await manager.close()
+  })
+
+  it('replays foreign journal keys by exact persisted semantic options', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-manager-'))
+    roots.push(root)
+    const manager = new WorkflowManager(
+      join(root, 'config'),
+      join(root, 'work'),
+    )
+    const script = `export const meta = {
+  name: 'semantic-replay',
+  description: 'Replay one semantic agent',
+}
+return agent('semantic prompt', {
+  model: 'alternate-model',
+  effort: 'low',
+  agentType: 'general-purpose',
+  schema: { type: 'object', properties: { value: { type: 'string' } } },
+})`
+    const parsed = parseWorkflowScript(script)
+    const runAgent = vi.fn(async () => ({
+      result: { value: 'cached' },
+      usage: { inputTokens: 3, outputTokens: 2 },
+      toolUseCount: 1,
+      durationMs: 4,
+      resolvedModel: 'alternate-model',
+    }))
+    const launch = (resumeFromRunId?: string) =>
+      manager.launch({
+        sessionId,
+        promptId: resumeFromRunId ? 'prompt-resume' : 'prompt-first',
+        script,
+        parsed,
+        args: null,
+        ...(resumeFromRunId ? { resumeFromRunId } : {}),
+        defaultModel: 'default-model',
+        runAgent,
+        resolveNested: async () => {
+          throw new Error('not used')
+        },
+      })
+
+    const first = await launch()
+    await manager.output(first.taskId, { block: true, timeout: 5_000 })
+    const journal = (
+      await readFile(join(first.transcriptDirectory, 'journal.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map((line) => ({ ...JSON.parse(line), key: 'v2:foreign' }))
+    await writeFile(
+      join(first.transcriptDirectory, 'journal.jsonl'),
+      `${journal.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+    )
+
+    const resumed = await launch(first.runId)
+    await manager.output(resumed.taskId, { block: true, timeout: 5_000 })
+    expect(runAgent).toHaveBeenCalledTimes(1)
+    expect(manager.list().at(-1)).toMatchObject({
+      progress: [{ cached: true, result: { value: 'cached' } }],
     })
     await manager.close()
   })

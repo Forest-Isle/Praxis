@@ -1,0 +1,46 @@
+import { createHash } from 'node:crypto'
+
+export interface WorkflowReplayOptions {
+  model?: string
+  effort?: string
+  agentType?: string
+  schema?: Record<string, unknown>
+  isolation?: 'worktree'
+}
+
+function stable(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
+  return `{${Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`)
+    .join(',')}}`
+}
+
+export function workflowReplayDescriptor(
+  prompt: string,
+  options: WorkflowReplayOptions = {},
+): string {
+  return stable({
+    prompt,
+    ...(options.model === undefined ? {} : { model: options.model }),
+    ...(options.effort === undefined ? {} : { effort: options.effort }),
+    ...(options.agentType === undefined
+      ? {}
+      : { agentType: options.agentType }),
+    ...(options.schema === undefined ? {} : { schema: options.schema }),
+    ...(options.isolation === undefined
+      ? {}
+      : { isolation: options.isolation }),
+  })
+}
+
+export function workflowReplayKey(
+  prompt: string,
+  options: WorkflowReplayOptions = {},
+): string {
+  return `v2:${createHash('sha256')
+    .update(workflowReplayDescriptor(prompt, options))
+    .digest('hex')}`
+}

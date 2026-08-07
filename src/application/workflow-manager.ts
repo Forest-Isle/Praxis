@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { cpus } from 'node:os'
 
 import {
@@ -11,6 +10,10 @@ import {
   resolveClaudeWorkflowPaths,
 } from '../compatibility/claude/workflow.js'
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import {
+  workflowReplayDescriptor,
+  workflowReplayKey,
+} from '../compatibility/claude/workflow-replay.js'
 import { ClaudeWorkflowStore } from '../persistence/claude-workflow-store.js'
 import type {
   WorkflowAgentRunOptions,
@@ -137,35 +140,6 @@ class Semaphore {
       this.waiters.shift()?.()
     }
   }
-}
-
-function stable(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
-  return `{${Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`)
-    .join(',')}}`
-}
-
-function workflowReplayKey(
-  prompt: string,
-  options: WorkflowAgentOptions,
-): string {
-  const semantic = {
-    prompt,
-    ...(options.model === undefined ? {} : { model: options.model }),
-    ...(options.effort === undefined ? {} : { effort: options.effort }),
-    ...(options.agentType === undefined
-      ? {}
-      : { agentType: options.agentType }),
-    ...(options.schema === undefined ? {} : { schema: options.schema }),
-    ...(options.isolation === undefined
-      ? {}
-      : { isolation: options.isolation }),
-  }
-  return `v2:${createHash('sha256').update(stable(semantic)).digest('hex')}`
 }
 
 function combineSignals(
@@ -395,6 +369,7 @@ export class WorkflowManager {
   ): Promise<void> {
     const semaphore = new Semaphore(MAX_CONCURRENCY)
     const replay = await task.store.replayIndex()
+    const replayByDescriptor = await task.store.replayByDescriptor()
     const promptReplay = await task.store.replayByPrompt()
     let currentPhase: string | undefined
     const host = (depth: number) => ({
@@ -434,8 +409,10 @@ export class WorkflowManager {
           agentOptions.agentType !== undefined ||
           agentOptions.schema !== undefined ||
           agentOptions.isolation !== undefined
+        const descriptor = workflowReplayDescriptor(prompt, agentOptions)
         const cached =
           replay.get(key) ||
+          replayByDescriptor.get(descriptor) ||
           (!hasSemanticOptions ? promptReplay.get(prompt) : undefined)
         const label = agentOptions.label ?? prompt.slice(0, 80)
         const phaseTitle = agentOptions.phase ?? currentPhase
@@ -482,6 +459,21 @@ export class WorkflowManager {
         }
         task.progress.push(progress)
         await task.store.append({ type: 'started', key, agentId })
+        await task.store.appendMetadata({
+          agentId,
+          prompt,
+          options: {
+            ...(agentOptions.model ? { model: agentOptions.model } : {}),
+            ...(agentOptions.effort ? { effort: agentOptions.effort } : {}),
+            ...(agentOptions.agentType
+              ? { agentType: agentOptions.agentType }
+              : {}),
+            ...(agentOptions.schema ? { schema: agentOptions.schema } : {}),
+            ...(agentOptions.isolation
+              ? { isolation: agentOptions.isolation }
+              : {}),
+          },
+        })
         try {
           const result = await semaphore.use(() => {
             progress.startedAt = Date.now()

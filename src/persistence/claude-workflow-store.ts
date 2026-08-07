@@ -3,6 +3,10 @@ import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import type { ClaudeWorkflowPaths } from '../compatibility/claude/workflow.js'
+import {
+  workflowReplayDescriptor,
+  type WorkflowReplayOptions,
+} from '../compatibility/claude/workflow-replay.js'
 
 export interface WorkflowJournalStarted {
   type: 'started'
@@ -23,6 +27,40 @@ export type WorkflowJournalEntry =
 export interface WorkflowReplayEntry {
   agentId: string
   result: unknown
+}
+
+export interface WorkflowReplayMetadata {
+  agentId: string
+  prompt: string
+  options: WorkflowReplayOptions
+}
+
+function isReplayOptions(value: unknown): value is WorkflowReplayOptions {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  if (
+    Object.keys(record).some(
+      (key) =>
+        !['model', 'effort', 'agentType', 'schema', 'isolation'].includes(key),
+    )
+  ) {
+    return false
+  }
+  for (const field of ['model', 'effort', 'agentType'] as const) {
+    const item = record[field]
+    if (item !== undefined && (typeof item !== 'string' || item.length === 0)) {
+      return false
+    }
+  }
+  if (
+    record.schema !== undefined &&
+    (!record.schema ||
+      typeof record.schema !== 'object' ||
+      Array.isArray(record.schema))
+  ) {
+    return false
+  }
+  return record.isolation === undefined || record.isolation === 'worktree'
 }
 
 async function atomicWrite(path: string, source: string): Promise<void> {
@@ -55,6 +93,25 @@ export class ClaudeWorkflowStore {
       const handle = await open(this.paths.journalFile, 'a', 0o600)
       try {
         await handle.writeFile(`${JSON.stringify(entry)}\n`, 'utf8')
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
+    })
+    this.appendTail = operation.catch(() => undefined)
+    return operation
+  }
+
+  appendMetadata(metadata: WorkflowReplayMetadata): Promise<void> {
+    const operation = this.appendTail.then(async () => {
+      await mkdir(this.paths.transcriptDirectory, { recursive: true })
+      const handle = await open(
+        join(this.paths.transcriptDirectory, '.praxis-replay-metadata.jsonl'),
+        'a',
+        0o600,
+      )
+      try {
+        await handle.writeFile(`${JSON.stringify(metadata)}\n`, 'utf8')
         await handle.sync()
       } finally {
         await handle.close()
@@ -150,5 +207,64 @@ export class ClaudeWorkflowStore {
     )
     for (const prompt of duplicates) results.delete(prompt)
     return results
+  }
+
+  async replayByDescriptor(): Promise<Map<string, WorkflowReplayEntry>> {
+    const replay = await this.replayIndex()
+    const candidates = new Map<string, WorkflowReplayEntry>()
+    const duplicates = new Set<string>()
+    const metadata = await this.replayMetadata()
+
+    for (const entry of replay.values()) {
+      const recorded = metadata.get(entry.agentId)
+      if (!recorded) continue
+      const descriptor = workflowReplayDescriptor(
+        recorded.prompt,
+        recorded.options,
+      )
+      if (candidates.has(descriptor)) duplicates.add(descriptor)
+      else candidates.set(descriptor, entry)
+    }
+    for (const descriptor of duplicates) candidates.delete(descriptor)
+    return candidates
+  }
+
+  private async replayMetadata(): Promise<Map<string, WorkflowReplayMetadata>> {
+    const path = join(
+      this.paths.transcriptDirectory,
+      '.praxis-replay-metadata.jsonl',
+    )
+    let source: string
+    try {
+      source = await readFile(path, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Map()
+      throw error
+    }
+    const result = new Map<string, WorkflowReplayMetadata>()
+    for (const [index, line] of source.split('\n').entries()) {
+      if (line.length === 0) continue
+      let value: unknown
+      try {
+        value = JSON.parse(line)
+      } catch {
+        throw new Error(
+          `Invalid workflow replay metadata JSON at ${path}:${index + 1}`,
+        )
+      }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(`Invalid workflow replay metadata at line ${index + 1}`)
+      }
+      const record = value as Record<string, unknown>
+      if (
+        typeof record.agentId !== 'string' ||
+        typeof record.prompt !== 'string' ||
+        !isReplayOptions(record.options)
+      ) {
+        throw new Error(`Invalid workflow replay metadata at line ${index + 1}`)
+      }
+      result.set(record.agentId, record as unknown as WorkflowReplayMetadata)
+    }
+    return result
   }
 }
