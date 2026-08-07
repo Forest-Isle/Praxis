@@ -271,6 +271,9 @@ export class ClaudeSessionService {
             praxisRoot: paths.praxisRoot,
             sessionId,
             taskRoot: paths.taskRoot,
+            ...(this.options.eventSink
+              ? { eventSink: this.options.eventSink }
+              : {}),
             ...(this.options.taskToolNames
               ? { enabledTools: this.options.taskToolNames }
               : {}),
@@ -794,6 +797,9 @@ export class ClaudeSessionService {
               praxisRoot: sessionPaths.praxisRoot,
               sessionId,
               taskRoot: sessionPaths.taskRoot,
+              ...(this.options.eventSink
+                ? { eventSink: this.options.eventSink }
+                : {}),
               ...(this.options.taskToolNames
                 ? { enabledTools: this.options.taskToolNames }
                 : {}),
@@ -1284,16 +1290,17 @@ export class ClaudeSessionService {
           const boundaryUuid = randomUUID()
           const summaryUuid = randomUUID()
           const timestamp = new Date().toISOString()
+          const preTokens = budget.evaluate(
+            [...contextMessages, ...historyMessages],
+            definitions,
+          ).estimatedTokens
           const compactEntries = (postTokens: number) => {
             const uuids = [boundaryUuid, summaryUuid]
             return createClaudeCompactEntries({
               sessionId,
               logicalParentUuid,
               summary: compacted.summary,
-              preTokens: budget.evaluate(
-                [...contextMessages, ...historyMessages],
-                definitions,
-              ).estimatedTokens,
+              preTokens,
               postTokens,
               previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
                 snapshot.entries,
@@ -1358,6 +1365,12 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, ...entries],
             tail: appendResult.tail,
           }
+          this.options.eventSink?.({
+            type: 'compact-boundary',
+            trigger: 'auto',
+            preTokens,
+            uuid: boundaryUuid,
+          })
           compactionAnchorUuid = compactSummaryUuid
           compactionUsage = {
             inputTokens:

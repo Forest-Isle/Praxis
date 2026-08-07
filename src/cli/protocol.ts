@@ -1248,6 +1248,8 @@ export class StreamJsonOutput {
   private assistantFlushed = true
   private contentStarted = false
   private modelTurns = 0
+  private compacting = false
+  private sessionState: 'idle' | 'running' | 'requires_action' | undefined
 
   constructor(
     private readonly write: (value: unknown) => void,
@@ -1316,14 +1318,44 @@ export class StreamJsonOutput {
 
   private onEvent(event: RuntimeEvent): void {
     if (event.type === 'state') {
-      if (event.state === 'awaiting-model') this.startTurn()
-      else if (
+      if (this.compacting && event.state !== 'compacting') {
+        this.compacting = false
+        this.write({
+          type: 'system',
+          subtype: 'status',
+          status: null,
+          permissionMode: this.info.permissionMode,
+          uuid: randomUUID(),
+          session_id: this.sessionId,
+        })
+      }
+      if (event.state === 'awaiting-model') {
+        this.startTurn()
+        this.writeSessionState('running')
+      }
+      if (event.state === 'compacting') {
+        this.compacting = true
+        this.write({
+          type: 'system',
+          subtype: 'status',
+          status: 'compacting',
+          permissionMode: this.info.permissionMode,
+          uuid: randomUUID(),
+          session_id: this.sessionId,
+        })
+      } else if (
         event.state === 'awaiting-permission' ||
         event.state === 'executing-tools' ||
         event.state === 'persisting-results' ||
-        event.state === 'completed'
+        event.state === 'completed' ||
+        event.state === 'cancelled'
       ) {
         this.flushAssistant()
+        if (event.state === 'awaiting-permission')
+          this.writeSessionState('requires_action')
+        else if (event.state === 'completed' || event.state === 'cancelled') {
+          this.writeSessionState('idle')
+        }
       }
       return
     }
@@ -1375,6 +1407,123 @@ export class StreamJsonOutput {
       })
       return
     }
+    if (event.type === 'compact-boundary') {
+      this.write({
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: {
+          trigger: event.trigger,
+          pre_tokens: event.preTokens,
+        },
+        uuid: event.uuid,
+        session_id: this.sessionId,
+      })
+      return
+    }
+    if (event.type === 'tool-progress') {
+      this.write({
+        type: 'tool_progress',
+        tool_use_id: event.toolUseId,
+        tool_name: event.toolName,
+        parent_tool_use_id: null,
+        elapsed_time_seconds: event.elapsedTimeSeconds,
+        ...(event.taskId === undefined ? {} : { task_id: event.taskId }),
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
+      return
+    }
+    if (event.type === 'task-started') {
+      this.write({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: event.taskId,
+        ...(event.toolUseId === undefined
+          ? {}
+          : { tool_use_id: event.toolUseId }),
+        description: event.description,
+        ...(event.taskType === undefined ? {} : { task_type: event.taskType }),
+        ...(event.workflowName === undefined
+          ? {}
+          : { workflow_name: event.workflowName }),
+        ...(event.prompt === undefined ? {} : { prompt: event.prompt }),
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
+      return
+    }
+    if (event.type === 'task-progress') {
+      this.write({
+        type: 'system',
+        subtype: 'task_progress',
+        task_id: event.taskId,
+        ...(event.toolUseId === undefined
+          ? {}
+          : { tool_use_id: event.toolUseId }),
+        description: event.description,
+        usage: {
+          total_tokens: event.usage.totalTokens,
+          tool_uses: event.usage.toolUses,
+          duration_ms: event.usage.durationMs,
+        },
+        ...(event.lastToolName === undefined
+          ? {}
+          : { last_tool_name: event.lastToolName }),
+        ...(event.summary === undefined ? {} : { summary: event.summary }),
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
+      return
+    }
+    if (event.type === 'task-notification') {
+      this.write({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: event.taskId,
+        ...(event.toolUseId === undefined
+          ? {}
+          : { tool_use_id: event.toolUseId }),
+        status: event.status,
+        output_file: event.outputFile,
+        summary: event.summary,
+        ...(event.usage === undefined
+          ? {}
+          : {
+              usage: {
+                total_tokens: event.usage.totalTokens,
+                tool_uses: event.usage.toolUses,
+                duration_ms: event.usage.durationMs,
+              },
+            }),
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
+      return
+    }
+    if (event.type === 'session-state-changed') {
+      this.write({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: event.state,
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
+      return
+    }
+    if (event.type === 'api-retry') {
+      this.write({
+        type: 'system',
+        subtype: 'api_retry',
+        attempt: event.attempt,
+        max_retries: event.maxRetries,
+        retry_delay_ms: event.retryDelayMs,
+        error_status: event.errorStatus,
+        error: event.error,
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
+      return
+    }
     if (event.type === 'hook') {
       if (!this.includeHookEvents) return
       const hook = event.event
@@ -1401,7 +1550,20 @@ export class StreamJsonOutput {
         this.partialText(event.message)
       }
       this.flushAssistant()
+      this.writeSessionState('idle')
     }
+  }
+
+  private writeSessionState(state: 'idle' | 'running' | 'requires_action') {
+    if (this.sessionState === state) return
+    this.sessionState = state
+    this.write({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state,
+      uuid: randomUUID(),
+      session_id: this.sessionId,
+    })
   }
 
   private ensureTurn(): void {

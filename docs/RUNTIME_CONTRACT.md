@@ -159,11 +159,17 @@ Deferred:
 
 - exact Workflow replay-key interoperability where private derivation remains
   unobservable;
+
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
 - transcript migration across unsupported Claude versions;
 - user image attachments and MCP-specific image-result writers until their
   native Claude profiles are validated.
+
+Stream JSON event contract: runtime/provider events are the sole source for
+machine records. Compaction, tool timing, retry, and task lifecycle records
+must not be synthesized by scanning transcripts. Subscription auth/rate-limit
+events remain outside single-user provider-neutral scope.
 
 ## Acceptance gate
 

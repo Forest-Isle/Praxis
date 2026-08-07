@@ -18,6 +18,7 @@ import type {
   ModelProvider,
   ModelRequest,
   PermissionResolver,
+  RuntimeEvent,
   ToolRegistry,
 } from '../core/runtime.js'
 import { AgentRunCancelledError } from '../core/runtime.js'
@@ -188,6 +189,7 @@ describe('foreground Claude Agent execution', () => {
         }
       },
     }
+    const runtimeEvents: RuntimeEvent[] = []
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
@@ -195,6 +197,7 @@ describe('foreground Claude Agent execution', () => {
       provider,
       tools: emptyTools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      eventSink: (event) => runtimeEvents.push(event),
       enableSubagents: true,
       sessionPersistence: false,
     })
@@ -205,6 +208,19 @@ describe('foreground Claude Agent execution', () => {
     expect(result.usage.inputTokens).toBeGreaterThan(0)
     expect(result.usage.outputTokens).toBeGreaterThan(0)
     expect(requests.length).toBeGreaterThanOrEqual(4)
+    expect(runtimeEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'task-started',
+        description: 'Foreground child',
+      }),
+    )
+    expect(runtimeEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'task-notification',
+        status: 'completed',
+        summary: 'FOREGROUND_CHILD_RESULT',
+      }),
+    )
     const paths = resolveClaudePaths({
       configDir: configRoot,
       cwd,

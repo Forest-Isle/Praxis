@@ -570,6 +570,7 @@ export class ClaudeSubagentExecutor {
             agentId,
             spawnDepth,
             promptId,
+            toolUseId: call.id,
             transcriptPath: sidechainPaths.transcriptFile,
             toolResultDirectory: join(
               paths.projectRoot,
@@ -1083,6 +1084,7 @@ export class ClaudeSubagentExecutor {
             agentId,
             spawnDepth: metadata.spawnDepth,
             promptId: String(root.promptId ?? randomUUID()),
+            toolUseId: metadata.toolUseId,
             transcriptPath: sidechainPaths.transcriptFile,
             toolResultDirectory: join(
               paths.projectRoot,
@@ -1198,6 +1200,7 @@ export class ClaudeSubagentExecutor {
     agentId: string
     spawnDepth: number
     promptId: string
+    toolUseId?: string
     transcriptPath: string
     toolResultDirectory: string
     continuationMessage?: string
@@ -1257,6 +1260,9 @@ export class ClaudeSubagentExecutor {
       }
     }
     let toolUseCount = 0
+    let taskTokenTotal = 0
+    let lastToolName: string | undefined
+    const taskStartedAt = Date.now()
     const append = async (entry: ClaudeTranscriptEntry) => {
       const result = await options.lease.append(snapshot.tail, entry)
       if (result.status === 'conflict') {
@@ -1317,7 +1323,37 @@ export class ClaudeSubagentExecutor {
       ? (runtimeTools as ClaudeHookToolCoordinator)
       : permissions
     const emit = (event: RuntimeEvent) => {
-      if (event.type === 'tool-call') toolUseCount += 1
+      if (event.type === 'usage') {
+        taskTokenTotal += event.usage.inputTokens + event.usage.outputTokens
+        this.options.eventSink?.({
+          type: 'task-progress',
+          taskId: options.agentId,
+          ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
+          description: options.input.description,
+          usage: {
+            totalTokens: taskTokenTotal,
+            toolUses: toolUseCount,
+            durationMs: Date.now() - taskStartedAt,
+          },
+          ...(lastToolName ? { lastToolName } : {}),
+        })
+      }
+      if (event.type === 'tool-call') {
+        toolUseCount += 1
+        lastToolName = event.call.name
+        this.options.eventSink?.({
+          type: 'task-progress',
+          taskId: options.agentId,
+          ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
+          description: options.input.description,
+          usage: {
+            totalTokens: taskTokenTotal,
+            toolUses: toolUseCount,
+            durationMs: Date.now() - taskStartedAt,
+          },
+          lastToolName,
+        })
+      }
       if (event.type === 'warning') this.options.eventSink?.(event)
       if (event.type === 'failed') {
         this.options.eventSink?.({
@@ -1417,6 +1453,15 @@ export class ClaudeSubagentExecutor {
       },
     }
 
+    this.options.eventSink?.({
+      type: 'task-started',
+      taskId: options.agentId,
+      ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
+      description: options.input.description,
+      taskType: options.input.subagentType,
+      prompt: options.input.prompt,
+    })
+
     try {
       if (this.options.hooks) {
         const start = await this.options.hooks.run(
@@ -1462,59 +1507,101 @@ export class ClaudeSubagentExecutor {
         ? `${baseSystem}\n\nYou MUST call StructuredOutput exactly once at the end with a value matching its schema.`
         : baseSystem
       let stopHookActive = false
-      return {
-        ...(await runtime.run({
-          messages: [
-            ...((await this.options.contextAssembler?.assemble()) ?? []),
-            { role: 'system', content: system },
-            ...projectClaudeModelMessages(snapshot.entries),
-          ],
-          cwd,
-          ...(options.effort ? { effort: options.effort } : {}),
-          toolResultDirectory: options.toolResultDirectory,
-          observer,
-          ...(this.options.approveTool
-            ? { approveTool: this.options.approveTool }
-            : {}),
-          ...(this.options.hooks || this.options.backgroundTaskNotifications
-            ? {
-                onStop: async (text: string) => {
-                  const messages: string[] = []
-                  const outcome = await this.options.hooks?.run(
-                    {
-                      ...hookSession,
-                      hook_event_name: 'Stop',
-                      stop_hook_active: stopHookActive,
-                      last_assistant_message: text,
-                    },
-                    undefined,
-                    options.signal,
-                  )
-                  if (outcome) {
-                    await recordHookOutcome(outcome)
-                    if (outcome.blockedReason) {
-                      stopHookActive = true
-                      messages.push(`Stop hook error: ${outcome.blockedReason}`)
-                    }
+      const result = await runtime.run({
+        messages: [
+          ...((await this.options.contextAssembler?.assemble()) ?? []),
+          { role: 'system', content: system },
+          ...projectClaudeModelMessages(snapshot.entries),
+        ],
+        cwd,
+        ...(options.effort ? { effort: options.effort } : {}),
+        toolResultDirectory: options.toolResultDirectory,
+        observer,
+        ...(this.options.approveTool
+          ? { approveTool: this.options.approveTool }
+          : {}),
+        ...(this.options.hooks || this.options.backgroundTaskNotifications
+          ? {
+              onStop: async (text: string) => {
+                const messages: string[] = []
+                const outcome = await this.options.hooks?.run(
+                  {
+                    ...hookSession,
+                    hook_event_name: 'Stop',
+                    stop_hook_active: stopHookActive,
+                    last_assistant_message: text,
+                  },
+                  undefined,
+                  options.signal,
+                )
+                if (outcome) {
+                  await recordHookOutcome(outcome)
+                  if (outcome.blockedReason) {
+                    stopHookActive = true
+                    messages.push(`Stop hook error: ${outcome.blockedReason}`)
                   }
-                  const background = await this.background.notifications({
-                    waitForRunning: false,
-                    excludeAgentId: options.agentId,
-                  })
-                  messages.push(...background.messages)
-                  messages.push(
-                    ...((await this.options.backgroundTaskNotifications?.(
-                      true,
-                    )) ?? []),
-                  )
-                  return { messages, usage: background.usage }
-                },
-              }
-            : {}),
-          ...(options.signal ? { signal: options.signal } : {}),
-        })),
+                }
+                const background = await this.background.notifications({
+                  waitForRunning: false,
+                  excludeAgentId: options.agentId,
+                })
+                messages.push(...background.messages)
+                messages.push(
+                  ...((await this.options.backgroundTaskNotifications?.(
+                    true,
+                  )) ?? []),
+                )
+                return { messages, usage: background.usage }
+              },
+            }
+          : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+      })
+      this.options.eventSink?.({
+        type: 'task-progress',
+        taskId: options.agentId,
+        ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
+        description: options.input.description,
+        usage: {
+          totalTokens: result.usage.inputTokens + result.usage.outputTokens,
+          toolUses: toolUseCount,
+          durationMs: Date.now() - taskStartedAt,
+        },
+        ...(lastToolName ? { lastToolName } : {}),
+        summary: result.text,
+      })
+      this.options.eventSink?.({
+        type: 'task-notification',
+        taskId: options.agentId,
+        ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
+        status: 'completed',
+        outputFile: options.transcriptPath,
+        summary: result.text,
+        usage: {
+          totalTokens: result.usage.inputTokens + result.usage.outputTokens,
+          toolUses: toolUseCount,
+          durationMs: Date.now() - taskStartedAt,
+        },
+      })
+      return {
+        ...result,
         toolUseCount,
       }
+    } catch (error) {
+      this.options.eventSink?.({
+        type: 'task-notification',
+        taskId: options.agentId,
+        ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
+        status: options.signal?.aborted ? 'stopped' : 'failed',
+        outputFile: options.transcriptPath,
+        summary: error instanceof Error ? error.message : String(error),
+        usage: {
+          totalTokens: 0,
+          toolUses: toolUseCount,
+          durationMs: Date.now() - taskStartedAt,
+        },
+      })
+      throw error
     } finally {
       try {
         const outcome = await this.options.hooks?.run(

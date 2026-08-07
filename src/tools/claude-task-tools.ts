@@ -6,6 +6,7 @@ import type {
   ToolExecutionContext,
   ToolExecutionResult,
   ToolRegistry,
+  RuntimeEventSink,
 } from '../core/runtime.js'
 import {
   BackgroundBashManager,
@@ -190,6 +191,7 @@ export interface ClaudeTaskToolRegistryOptions {
   taskRoot: string
   enabledTools?: readonly string[]
   maxOutputBytes?: number
+  eventSink?: RuntimeEventSink
 }
 
 function stringField(
@@ -287,6 +289,7 @@ export class ClaudeTaskToolRegistry implements ToolRegistry {
       ...(options.cwdProvider ? { cwdProvider: options.cwdProvider } : {}),
       sessionId: options.sessionId,
       stateRoot: resolve(options.praxisRoot, 'background-tasks'),
+      ...(options.eventSink ? { eventSink: options.eventSink } : {}),
       ...(options.maxOutputBytes === undefined
         ? {}
         : { maxOutputBytes: options.maxOutputBytes }),

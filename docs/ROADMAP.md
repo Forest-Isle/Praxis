@@ -457,3 +457,19 @@ gates.
 - [x] live schema capture, Enter/Bash/Exit lifecycle, native layout, and
       Claude/Praxis bidirectional resume gates
 - [x] focused lifecycle, protocol, tool, tmux, and permission tests
+
+## Stage 45 - local stream-json control records
+
+Status: implemented for locally observable Claude 2.1.208 records; remaining
+records require a Praxis producer before they can be marked complete.
+
+- [x] provider retry events preserve actual attempt, delay, status, and error
+      kind without duplicating fallback requests
+- [x] compaction status and native compact-boundary records
+- [x] session state transitions, tool elapsed-time progress, and cancellation
+      terminal state
+- [x] foreground/background Agent and background Bash task lifecycle records
+- [x] protocol field mapping and focused runtime/CLI compatibility tests
+- [x] built-package `test:stream-json-compat` gate against a local Anthropic SSE provider
+- [ ] local command output, tool-use summaries, file persistence events, and
+      elicitation events with real single-user producers

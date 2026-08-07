@@ -42,7 +42,25 @@ describe('FallbackModelProvider', () => {
     const events = []
     for await (const event of routed.complete({ messages: [] }))
       events.push(event)
-    expect(events).toEqual([text('ok')])
+    expect(events).toEqual([
+      {
+        type: 'api-retry',
+        attempt: 1,
+        maxRetries: 2,
+        retryDelayMs: 0,
+        errorStatus: 529,
+        error: 'server_error',
+      },
+      {
+        type: 'api-retry',
+        attempt: 2,
+        maxRetries: 2,
+        retryDelayMs: 0,
+        errorStatus: 529,
+        error: 'server_error',
+      },
+      text('ok'),
+    ])
     expect(primary).toHaveBeenCalledTimes(3)
     expect(fallback).toHaveBeenCalledTimes(1)
     expect(routed.model).toBe('fallback')

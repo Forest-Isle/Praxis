@@ -1048,6 +1048,14 @@ describe('ClaudeSessionService', () => {
     )
     expect(JSON.stringify(requests[1]?.messages)).not.toContain('old-context')
     expect(events).toContainEqual({ type: 'state', state: 'compacting' })
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'compact-boundary',
+        trigger: 'auto',
+        preTokens: expect.any(Number),
+        uuid: expect.any(String),
+      }),
+    )
 
     const { resolveClaudePaths } =
       await import('../compatibility/claude/paths.js')

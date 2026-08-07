@@ -550,14 +550,21 @@ describe('CLI protocol', () => {
       Date.now(),
     )
 
-    expect(records.map((record) => (record as { type: string }).type)).toEqual([
-      'system',
-      'assistant',
-      'user',
-      'assistant',
-      'result',
-    ])
-    expect(records[1]).toMatchObject({
+    expect(
+      records
+        .filter((record) => (record as { type: string }).type !== 'system')
+        .map((record) => (record as { type: string }).type),
+    ).toEqual(['assistant', 'user', 'assistant', 'result'])
+    expect(
+      records
+        .filter((record) => (record as { type: string }).type === 'system')
+        .map((record) => (record as { subtype: string }).subtype),
+    ).toEqual(['init', 'session_state_changed', 'session_state_changed'])
+    expect(
+      records.find(
+        (record) => (record as { type: string }).type === 'assistant',
+      ),
+    ).toMatchObject({
       type: 'assistant',
       message: {
         content: [
@@ -571,7 +578,9 @@ describe('CLI protocol', () => {
         ],
       },
     })
-    expect(records[2]).toMatchObject({
+    expect(
+      records.find((record) => (record as { type: string }).type === 'user'),
+    ).toMatchObject({
       type: 'user',
       message: {
         content: [
@@ -738,6 +747,81 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('maps local SDK control events to exact stream-json records', () => {
+    const records: Record<string, unknown>[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      false,
+    )
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({ type: 'state', state: 'compacting' })
+    output.sink({
+      type: 'compact-boundary',
+      trigger: 'auto',
+      preTokens: 123,
+      uuid: '22222222-2222-4222-8222-222222222222',
+    })
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({
+      type: 'tool-progress',
+      toolUseId: 't1',
+      toolName: 'Bash',
+      elapsedTimeSeconds: 1.25,
+      taskId: 'a1',
+    })
+    output.sink({
+      type: 'task-started',
+      taskId: 'a1',
+      description: 'Inspect repo',
+      prompt: 'inspect',
+    })
+    output.sink({
+      type: 'task-progress',
+      taskId: 'a1',
+      description: 'Inspect repo',
+      usage: { totalTokens: 4, toolUses: 1, durationMs: 20 },
+      lastToolName: 'Bash',
+    })
+    output.sink({
+      type: 'task-notification',
+      taskId: 'a1',
+      status: 'completed',
+      outputFile: '/tmp/a1',
+      summary: 'done',
+    })
+    output.sink({
+      type: 'api-retry',
+      attempt: 1,
+      maxRetries: 2,
+      retryDelayMs: 10,
+      errorStatus: 503,
+      error: 'server_error',
+    })
+    expect(
+      records.filter((r) => r.type === 'system').map((r) => r.subtype),
+    ).toEqual([
+      'session_state_changed',
+      'status',
+      'compact_boundary',
+      'status',
+      'task_started',
+      'task_progress',
+      'task_notification',
+      'api_retry',
+    ])
+    expect(records.find((r) => r.type === 'tool_progress')).toMatchObject({
+      tool_use_id: 't1',
+      tool_name: 'Bash',
+      elapsed_time_seconds: 1.25,
+      task_id: 'a1',
+    })
+    expect(records.find((r) => r.subtype === 'task_progress')).toMatchObject({
+      usage: { total_tokens: 4, tool_uses: 1, duration_ms: 20 },
+    })
+  })
+
   it('emits a terminal error result without resetting session identity', () => {
     const records: unknown[] = []
     const output = new StreamJsonOutput(
@@ -753,11 +837,16 @@ describe('CLI protocol', () => {
       retryable: false,
     })
     output.error('provider failed', Date.now())
-    expect(records.map((record) => (record as { type: string }).type)).toEqual([
-      'assistant',
-      'result',
-    ])
-    expect(records[0]).toMatchObject({
+    expect(
+      records
+        .filter((record) => (record as { type: string }).type !== 'system')
+        .map((record) => (record as { type: string }).type),
+    ).toEqual(['assistant', 'result'])
+    expect(
+      records.find(
+        (record) => (record as { type: string }).type === 'assistant',
+      ),
+    ).toMatchObject({
       type: 'assistant',
       message: {
         content: [{ type: 'text', text: 'provider failed' }],

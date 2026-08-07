@@ -1,4 +1,5 @@
 import {
+  modelProviderErrorKind,
   ModelProviderError,
   type ModelProvider,
   type ModelStreamEvent,
@@ -57,6 +58,16 @@ export class FallbackModelProvider implements ModelProvider {
           if (attempt + 1 < MAX_ATTEMPTS_PER_MODEL) {
             const retryMultiplier = RETRY_DELAYS_MS[attempt] ?? 500
             const delay = this.retryDelayMs * (retryMultiplier / 500)
+            if (error instanceof ModelProviderError) {
+              yield {
+                type: 'api-retry',
+                attempt: attempt + 1,
+                maxRetries: MAX_ATTEMPTS_PER_MODEL - 1,
+                retryDelayMs: delay,
+                errorStatus: error.status ?? null,
+                error: modelProviderErrorKind(error),
+              }
+            }
             if (delay > 0)
               await new Promise((resolve) => setTimeout(resolve, delay))
           }

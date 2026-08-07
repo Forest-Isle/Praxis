@@ -80,6 +80,14 @@ export type ModelStreamEvent =
   | { type: 'text-delta'; delta: string }
   | { type: 'tool-call'; call: ModelToolCall }
   | { type: 'usage'; usage: ModelUsage }
+  | {
+      type: 'api-retry'
+      attempt: number
+      maxRetries: number
+      retryDelayMs: number
+      errorStatus: number | null
+      error: ProviderErrorKind
+    }
 
 export interface ModelRequest {
   messages: readonly ModelMessage[]
@@ -122,6 +130,58 @@ export type RuntimeEvent =
       isError: boolean
     }
   | { type: 'warning'; message: string }
+  | {
+      type: 'compact-boundary'
+      trigger: 'manual' | 'auto'
+      preTokens: number
+      uuid: string
+    }
+  | {
+      type: 'tool-progress'
+      toolUseId: string
+      toolName: string
+      elapsedTimeSeconds: number
+      taskId?: string
+    }
+  | {
+      type: 'task-started'
+      taskId: string
+      toolUseId?: string
+      description: string
+      taskType?: string
+      workflowName?: string
+      prompt?: string
+    }
+  | {
+      type: 'task-progress'
+      taskId: string
+      toolUseId?: string
+      description: string
+      usage: { totalTokens: number; toolUses: number; durationMs: number }
+      lastToolName?: string
+      summary?: string
+    }
+  | {
+      type: 'task-notification'
+      taskId: string
+      toolUseId?: string
+      status: 'completed' | 'failed' | 'stopped'
+      outputFile: string
+      summary: string
+      usage?: { totalTokens: number; toolUses: number; durationMs: number }
+    }
+  | {
+      type: 'session-state-changed'
+      state: 'idle' | 'running' | 'requires_action'
+    }
+  | {
+      type: 'api-retry'
+      attempt: number
+      maxRetries: number
+      retryDelayMs: number
+      errorStatus: number | null
+      error: string
+    }
   | {
       type: 'hook'
       event: {
@@ -245,10 +305,16 @@ export class ModelProviderError extends Error {
   override readonly name = 'ModelProviderError'
   readonly retryable: boolean
   readonly status?: number
+  readonly retryDelayMs?: number
 
   constructor(
     message: string,
-    options: { retryable: boolean; status?: number; cause?: unknown },
+    options: {
+      retryable: boolean
+      status?: number
+      retryDelayMs?: number
+      cause?: unknown
+    },
   ) {
     super(
       message,
@@ -256,6 +322,8 @@ export class ModelProviderError extends Error {
     )
     this.retryable = options.retryable
     if (options.status !== undefined) this.status = options.status
+    if (options.retryDelayMs !== undefined)
+      this.retryDelayMs = options.retryDelayMs
   }
 }
 
@@ -270,6 +338,29 @@ export class AgentRunCancelledError extends Error {
 export type RuntimeEventSink = (event: RuntimeEvent) => void
 
 const emptyUsage = (): ModelUsage => ({ inputTokens: 0, outputTokens: 0 })
+export type ProviderErrorKind =
+  | 'authentication_failed'
+  | 'billing_error'
+  | 'rate_limit'
+  | 'invalid_request'
+  | 'server_error'
+  | 'unknown'
+  | 'max_output_tokens'
+
+export function modelProviderErrorKind(
+  error: ModelProviderError,
+): ProviderErrorKind {
+  if (error.status === 401 || error.status === 403)
+    return 'authentication_failed'
+  if (error.status === 402) return 'billing_error'
+  if (error.status === 429) return 'rate_limit'
+  if (error.status !== undefined && error.status >= 400 && error.status < 500)
+    return 'invalid_request'
+  if (error.status !== undefined && error.status >= 500) return 'server_error'
+  if (/max(?:imum)? output tokens/iu.test(error.message))
+    return 'max_output_tokens'
+  return 'unknown'
+}
 const unsupportedImageResult = 'Provider does not support image tool results'
 const unsupportedDocumentResult =
   'Provider does not support document tool results'
@@ -400,6 +491,10 @@ export class AgentRuntime {
         try {
           for await (const event of this.provider.complete(providerRequest)) {
             if (request.signal?.aborted) return this.cancel()
+            if (event.type === 'api-retry') {
+              this.emit(event)
+              continue
+            }
             if (!streaming) {
               streaming = true
               this.emit({ type: 'state', state: 'streaming' })
@@ -578,34 +673,52 @@ export class AgentRuntime {
     request: AgentToolRecoveryRequest,
     messages: readonly ModelMessage[] = request.messages ?? [],
   ): Promise<ToolExecutionResult> {
-    const executed = await this.executeTool(call, request, messages)
-    const unsupportedImages =
-      executed.images?.length && this.provider.capabilities.images !== true
-    const unsupportedDocuments =
-      executed.documents?.length &&
-      this.provider.capabilities.documents !== true
-    const result =
-      unsupportedImages || unsupportedDocuments
-        ? {
-            content: unsupportedImages
-              ? unsupportedImageResult
-              : unsupportedDocumentResult,
-            ...(this.provider.capabilities.images === true && executed.images
-              ? { images: executed.images }
-              : {}),
-            isError: true,
-            ...(executed.usage ? { usage: executed.usage } : {}),
-          }
-        : executed
-    this.emit({ type: 'state', state: 'persisting-results' })
-    await request.observer?.toolCompleted(call, result)
-    this.emit({
-      type: 'tool-result',
-      callId: call.id,
-      content: result.content,
-      isError: result.isError,
-    })
-    return result
+    const startedAt = performance.now()
+    const emitProgress = () =>
+      this.emit({
+        type: 'tool-progress',
+        toolUseId: call.id,
+        toolName: call.name,
+        elapsedTimeSeconds: Math.max(
+          0,
+          Math.round(((performance.now() - startedAt) / 1000) * 1000) / 1000,
+        ),
+      })
+    const progressTimer = setInterval(emitProgress, 1000)
+    progressTimer.unref()
+    try {
+      const executed = await this.executeTool(call, request, messages)
+      const unsupportedImages =
+        executed.images?.length && this.provider.capabilities.images !== true
+      const unsupportedDocuments =
+        executed.documents?.length &&
+        this.provider.capabilities.documents !== true
+      const result =
+        unsupportedImages || unsupportedDocuments
+          ? {
+              content: unsupportedImages
+                ? unsupportedImageResult
+                : unsupportedDocumentResult,
+              ...(this.provider.capabilities.images === true && executed.images
+                ? { images: executed.images }
+                : {}),
+              isError: true,
+              ...(executed.usage ? { usage: executed.usage } : {}),
+            }
+          : executed
+      this.emit({ type: 'state', state: 'persisting-results' })
+      await request.observer?.toolCompleted(call, result)
+      emitProgress()
+      this.emit({
+        type: 'tool-result',
+        callId: call.id,
+        content: result.content,
+        isError: result.isError,
+      })
+      return result
+    } finally {
+      clearInterval(progressTimer)
+    }
   }
 
   private async executeTool(

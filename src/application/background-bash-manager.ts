@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
+import type { RuntimeEventSink } from '../core/runtime.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import {
   BoundedProcessRunner,
@@ -31,6 +32,7 @@ interface BackgroundBashTask {
   notified: boolean
   controller: AbortController
   completion: Promise<void>
+  startedAt: number
   parentSignal?: AbortSignal
   parentAbort?: () => void
 }
@@ -54,6 +56,7 @@ export interface BackgroundBashManagerOptions {
   sessionId: string
   stateRoot: string
   maxOutputBytes?: number
+  eventSink?: RuntimeEventSink
 }
 
 export interface BackgroundBashLaunchInput {
@@ -172,6 +175,7 @@ export class BackgroundBashManager {
       notified: false,
       controller,
       completion: Promise.resolve(),
+      startedAt: Date.now(),
       ...(input.signal
         ? {
             parentSignal: input.signal,
@@ -188,6 +192,14 @@ export class BackgroundBashManager {
       }
     }
     this.tasks.set(id, task)
+    this.options.eventSink?.({
+      type: 'task-started',
+      taskId: id,
+      toolUseId: input.toolUseId,
+      description: input.description,
+      taskType: 'local_bash',
+      prompt: input.command,
+    })
     task.completion = this.run(task, input.timeout)
     return {
       taskId: id,
@@ -314,10 +326,34 @@ export class BackgroundBashManager {
         }`
       })
     } finally {
+      this.emitNotification(task)
       if (task.parentSignal && task.parentAbort) {
         task.parentSignal.removeEventListener('abort', task.parentAbort)
       }
     }
+  }
+
+  private emitNotification(task: BackgroundBashTask): void {
+    if (task.status === 'running') return
+    const summary =
+      task.status === 'completed'
+        ? `Background command "${task.description}" completed (exit code ${task.exitCode})`
+        : task.status === 'stopped'
+          ? `Background command "${task.description}" was stopped`
+          : `Background command "${task.description}" failed with exit code ${task.exitCode}`
+    this.options.eventSink?.({
+      type: 'task-notification',
+      taskId: task.taskId,
+      toolUseId: task.toolUseId,
+      status: task.status,
+      outputFile: task.outputFile,
+      summary,
+      usage: {
+        totalTokens: 0,
+        toolUses: 0,
+        durationMs: Date.now() - task.startedAt,
+      },
+    })
   }
 
   private complete(task: BackgroundBashTask, result: ProcessResult): void {
@@ -385,6 +421,7 @@ export class BackgroundBashManager {
         ...state,
         controller: new AbortController(),
         completion: Promise.resolve(),
+        startedAt: Date.now(),
       }
       this.tasks.set(taskId, task)
       return task

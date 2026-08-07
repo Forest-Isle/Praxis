@@ -11,6 +11,8 @@ import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { RuntimeEvent } from '../core/runtime.js'
+
 import {
   BackgroundBashManager,
   claudeBackgroundTaskParent,
@@ -32,18 +34,20 @@ async function createManager(options: { maxOutputBytes?: number } = {}) {
   roots.push(claudeBackgroundTaskParent(cwd))
   const stateRoot = join(root, 'config', 'praxis', 'background-tasks')
   const sessionId = '20202020-2020-4020-8020-202020202020'
+  const events: RuntimeEvent[] = []
   const manager = new BackgroundBashManager({
     cwd,
     sessionId,
     stateRoot,
+    eventSink: (event) => events.push(event),
     ...options,
   })
-  return { root, cwd, manager, sessionId, stateRoot }
+  return { root, cwd, events, manager, sessionId, stateRoot }
 }
 
 describe('BackgroundBashManager', () => {
   it('returns live output, completes with native metadata, and notifies once', async () => {
-    const { manager } = await createManager()
+    const { events, manager } = await createManager()
     const launch = await manager.launch({
       command: "printf 'BG_START\\n'; sleep 0.05; printf 'BG_END\\n'",
       description: 'Emit markers',
@@ -72,6 +76,22 @@ describe('BackgroundBashManager', () => {
     })
     await expect(manager.notifications(true)).resolves.toEqual([])
     await expect(manager.notifications(false)).resolves.toEqual([])
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'task-started',
+        taskId: launch.taskId,
+        taskType: 'local_bash',
+        toolUseId: 'call_bash',
+      }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'task-notification',
+        taskId: launch.taskId,
+        status: 'completed',
+        outputFile: launch.outputFile,
+      }),
+    )
   })
 
   it('uses active cwd when worktree changes before launch', async () => {

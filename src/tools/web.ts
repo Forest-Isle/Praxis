@@ -771,7 +771,7 @@ export class WebToolRegistry implements ToolRegistry {
         throw new Error('Web processing model must not call client tools')
       }
       if (event.type === 'usage') usage = addUsage(usage, event.usage)
-      else {
+      else if (event.type === 'text-delta') {
         if (
           Buffer.byteLength(text) + Buffer.byteLength(event.delta) >
           this.maxOutputBytes

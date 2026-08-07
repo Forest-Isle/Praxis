@@ -148,6 +148,36 @@ describe('AgentRuntime', () => {
     })
   })
 
+  it('forwards provider retry lifecycle without starting an assistant stream', async () => {
+    const events: RuntimeEvent[] = []
+    const provider = providerFrom(async function* () {
+      yield {
+        type: 'api-retry',
+        attempt: 1,
+        maxRetries: 2,
+        retryDelayMs: 0,
+        errorStatus: 503,
+        error: 'server_error',
+      }
+      yield { type: 'text-delta', delta: 'ok' }
+      yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+    })
+    const result = await new AgentRuntime(provider, (event) =>
+      events.push(event),
+    ).run({
+      messages: [{ role: 'user', content: 'retry' }],
+    })
+    expect(result.text).toBe('ok')
+    expect(events).toContainEqual({
+      type: 'api-retry',
+      attempt: 1,
+      maxRetries: 2,
+      retryDelayMs: 0,
+      errorStatus: 503,
+      error: 'server_error',
+    })
+  })
+
   it('propagates cancellation before provider execution', async () => {
     let called = false
     const provider = providerFrom(async function* () {

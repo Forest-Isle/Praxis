@@ -78,7 +78,7 @@ export class ModelCompactor implements Compactor {
         throw new Error('Compaction model must not call tools')
       }
       if (event.type === 'text-delta') summary += event.delta
-      else usage = event.usage
+      else if (event.type === 'usage') usage = event.usage
     }
 
     summary = summary.trim()
