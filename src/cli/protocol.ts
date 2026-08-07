@@ -1588,6 +1588,16 @@ export class StreamJsonOutput {
       })
       return
     }
+    if (event.type === 'tool-use-summary') {
+      this.write({
+        type: 'tool_use_summary',
+        summary: event.summary,
+        preceding_tool_use_ids: event.precedingToolUseIds,
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
+      return
+    }
     if (event.type === 'hook') {
       if (!this.includeHookEvents) return
       const hook = event.event

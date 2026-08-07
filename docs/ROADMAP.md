@@ -471,8 +471,19 @@ records require a Praxis producer before they can be marked complete.
 - [x] foreground/background Agent and background Bash task lifecycle records
 - [x] protocol field mapping and focused runtime/CLI compatibility tests
 - [x] built-package `test:stream-json-compat` gate against a local Anthropic SSE provider
-- [ ] local command output, tool-use summaries, and file persistence events with
-      real single-user producers
+- [ ] local command output and file persistence events with real single-user
+      producers
+
+## Stage 46 - machine result envelope contract
+
+Status: implemented for observable SDK fields; provider-neutral unknown pricing
+and failed-request API duration remain explicit `null` rather than fabricated.
+
+- [x] init UUID, output style, fast-mode state, and loaded plugin name/path list
+- [x] success UUID, stop reason, fast-mode state, and optional structured output
+- [x] error subtype classification, `errors`, complete zero usage, empty
+      `modelUsage`, stop reason, fast-mode state, and UUID
+- [x] exact protocol and CLI redaction tests
 
 ## Stage 47 - MCP elicitation stream control
 
@@ -485,13 +496,12 @@ stream-json control protocol.
       validation and decline fallback
 - [x] native `elicitation_complete` system record and end-to-end fixture gate
 
-## Stage 46 - machine result envelope contract
+## Stage 48 - provider-backed tool-use summaries
 
-Status: implemented for observable SDK fields; provider-neutral unknown pricing
-and failed-request API duration remain explicit `null` rather than fabricated.
+Status: implemented for stream-json consumers with a provider-neutral auxiliary
+summary request; summary failures never fail the primary turn.
 
-- [x] init UUID, output style, fast-mode state, and loaded plugin name/path list
-- [x] success UUID, stop reason, fast-mode state, and optional structured output
-- [x] error subtype classification, `errors`, complete zero usage, empty
-      `modelUsage`, stop reason, fast-mode state, and UUID
-- [x] exact protocol and CLI redaction tests
+- [x] real completed-tool batch collection with preceding tool-use IDs
+- [x] asynchronous provider-backed summary producer using Claude's prompt
+      contract and bounded tool input/output context
+- [x] native `tool_use_summary` stream record and runtime/protocol tests

@@ -46,34 +46,38 @@ Rules:
     `decline`, or `cancel` responses are returned to the server. Out-of-band
     completion notifications emit a typed runtime event and native
     `elicitation_complete` system record.
-11. Budgeting includes ephemeral system context, active transcript messages,
+11. Completed main-agent tool batches may produce a non-critical
+    provider-backed `tool_use_summary` event before the next model turn. The
+    event references every preceding tool-use ID; summary cancellation or
+    generation failure never changes tool results or primary turn outcome.
+12. Budgeting includes ephemeral system context, active transcript messages,
     current prompt, and tool definitions before every provider call. Automatic
     compaction summarizes completed history before appending a new prompt; after
     completed tool results it may compact between model turns. Unresolved tool
     calls are never compacted. Between-turn compaction replays current user
     messages verbatim after the summary, and the compactor's own provider call
     must fit the configured full context window.
-12. Resume never silently replays an interrupted tool call. Recovery prepares
+13. Resume never silently replays an interrupted tool call. Recovery prepares
     the call through the current hook/tool pipeline, asks once against the
     actual prepared input, then applies the current deny/ask/allow policy.
     Decline leaves the append-only transcript unchanged.
-13. Child processes do not inherit credential-named ambient variables or shell
+14. Child processes do not inherit credential-named ambient variables or shell
     startup injection. Explicit MCP env/header values are per-server grants;
     matching definitions, results, warnings, and errors are redacted before
     they enter model, CLI, or transcript paths. Hook JSON is interpreted before
     redaction so executable input/permission semantics remain unchanged. Plain,
     structured, and interactive CLI diagnostics redact ambient credentials, and
     Bash/hook output limits are enforced after redaction.
-14. Image tool results cross core as typed base64 payloads only when the active
+15. Image tool results cross core as typed base64 payloads only when the active
     provider advertises image input. Unsupported providers receive an explicit
     error result; Praxis never persists an image the next model turn cannot
     consume. Native image writes require exact message/metadata pairing.
-15. Session-only scheduled prompts live for one interactive service. Durable
+16. Session-only scheduled prompts live for one interactive service. Durable
     prompts preserve Claude's project-local document, avoid a live foreign
     process owner, and enter the ordinary prompt/runtime path only once while
     the UI is idle. Closing the service cancels waiters and clears in-memory
     jobs; it does not delete durable jobs.
-16. Dynamic wakeups are independent process-local one-shots. They clamp delay,
+17. Dynamic wakeups are independent process-local one-shots. They clamp delay,
     enter the same idle queue, and are removed before delivery. Stop and close
     cancel pending or queued dynamic work without modifying fixed Cron jobs.
 

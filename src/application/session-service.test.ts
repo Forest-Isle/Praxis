@@ -148,6 +148,71 @@ describe('ClaudeSessionService', () => {
     }
   })
 
+  it('wires provider-backed tool-use summaries through the session event sink', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-summary-session-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const events: RuntimeEvent[] = []
+    let mainCalls = 0
+    let summaryCalls = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        if (
+          request.messages.some(
+            (message) =>
+              message.role === 'user' &&
+              message.content.includes('Tools completed:'),
+          )
+        ) {
+          summaryCalls += 1
+          yield { type: 'text-delta', delta: 'Read fixture' }
+          return
+        }
+        if (mainCalls++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'summary-call',
+              name: 'Read',
+              input: { file_path: 'a' },
+            },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'done' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      eventSink: (event) => events.push(event),
+      emitToolUseSummaries: true,
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return { content: 'fixture contents', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await service.run('inspect')
+    expect(summaryCalls).toBe(1)
+    expect(events).toContainEqual({
+      type: 'tool-use-summary',
+      summary: 'Read fixture',
+      precedingToolUseIds: ['summary-call'],
+    })
+    await service.close()
+  })
+
   it('closes background hosted Agents when the session service closes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-close-'))
     roots.push(root)

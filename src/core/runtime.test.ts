@@ -317,6 +317,55 @@ describe('AgentRuntime', () => {
     })
   })
 
+  it('emits a provider-backed tool-use summary for completed tool batches', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_summary', name: 'Read', input: { file_path: 'a' } },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const summaries: unknown[] = []
+    const runtime = new AgentRuntime(
+      provider,
+      (event) => summaries.push(event),
+      {
+        tools: {
+          definitions: () => [],
+          async prepare(call) {
+            return call
+          },
+          async execute() {
+            return { content: 'file contents', isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+        generateToolUseSummary: async ({ tools, lastAssistantText }) => {
+          expect(tools).toEqual([
+            {
+              name: 'Read',
+              input: { file_path: 'a' },
+              output: 'file contents',
+            },
+          ])
+          expect(lastAssistantText).toBeUndefined()
+          return 'Read a'
+        },
+      },
+    )
+
+    await runtime.run({ messages: [{ role: 'user', content: 'inspect' }] })
+    expect(summaries).toContainEqual({
+      type: 'tool-use-summary',
+      summary: 'Read a',
+      precedingToolUseIds: ['call_summary'],
+    })
+  })
+
   it('passes completed tool history to later tools and recovery', async () => {
     let turn = 0
     const provider = providerFrom(async function* () {

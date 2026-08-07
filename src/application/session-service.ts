@@ -79,6 +79,7 @@ import type {
   WorkspaceContext,
 } from './session-worktree.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
+import { generateToolUseSummary } from './tool-use-summary.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -110,6 +111,7 @@ export interface ClaudeSessionServiceOptions {
   structuredOutputSchema?: Record<string, unknown>
   pricing?: ModelPricingRegistry
   maxBudgetUsd?: number
+  emitToolUseSummaries?: boolean
   collectMetrics?: boolean
   sessionPersistence?: boolean
   sessionKind?: 'bg'
@@ -930,6 +932,17 @@ export class ClaudeSessionService {
           : null
       const runtime = new AgentRuntime(provider, this.options.eventSink, {
         emitInitialContextState: false,
+        ...(this.options.emitToolUseSummaries
+          ? {
+              generateToolUseSummary: ({ tools, lastAssistantText, signal }) =>
+                generateToolUseSummary(
+                  provider,
+                  tools,
+                  signal,
+                  lastAssistantText,
+                ),
+            }
+          : {}),
         ...(this.options.pricing
           ? {
               costUsd: (usage) => {

@@ -336,6 +336,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     sessionKind?: 'bg'
     signal?: AbortSignal
     exposeToolRegistry?: boolean
+    emitToolUseSummaries?: boolean
     onElicitation?: (
       request: CliElicitationRequest,
     ) => Promise<CliElicitationResult>
@@ -375,6 +376,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   signal,
   exposeToolRegistry = false,
   onElicitation,
+  emitToolUseSummaries = false,
 }) => {
   const claudeVersion = await detectInstalledClaudeVersion()
   const cwd = process.cwd()
@@ -714,6 +716,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       scheduledToolNames: selectedScheduledTools,
       enableDynamicWakeups: interactive,
       enableWorkflows: selectedWorkflowTools.length > 0,
+      emitToolUseSummaries,
       enableWorktrees:
         cli.worktreeRequested || selectedWorktreeTools.length > 0,
       worktreeToolNames: selectedWorktreeTools,
@@ -2128,6 +2131,7 @@ async function execute(
     ...(retryInterruptedTools ? { approveRecovery: () => true } : {}),
     ...(streamIterator ? { approveTool: approveStreamTool } : {}),
     ...(streamIterator ? { onElicitation: respondStreamElicitation } : {}),
+    ...(streamIterator ? { emitToolUseSummaries: true } : {}),
     ...(signal ? { signal } : {}),
     ...(agent ? { agent } : {}),
     controls: invocation,

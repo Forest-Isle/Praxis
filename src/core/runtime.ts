@@ -188,6 +188,11 @@ export type RuntimeEvent =
       elicitationId: string
     }
   | {
+      type: 'tool-use-summary'
+      summary: string
+      precedingToolUseIds: readonly string[]
+    }
+  | {
       type: 'hook'
       event: {
         type: 'started' | 'progress' | 'response'
@@ -273,6 +278,15 @@ export interface AgentRuntimeOptions {
   emitInitialContextState?: boolean
   costUsd?: (usage: ModelUsage) => number | undefined
   maxBudgetUsd?: number
+  generateToolUseSummary?: (request: {
+    tools: readonly {
+      name: string
+      input: Record<string, unknown>
+      output: string
+    }[]
+    lastAssistantText?: string
+    signal: AbortSignal
+  }) => Promise<string | null>
 }
 
 export interface AgentRunRequest {
@@ -452,9 +466,31 @@ export class AgentRuntime {
     const maxModelOutputBytes = this.options.maxModelOutputBytes ?? 1024 * 1024
     const maxToolCallsPerTurn = this.options.maxToolCallsPerTurn ?? 32
     const maxToolInputBytes = this.options.maxToolInputBytes ?? 1024 * 1024
+    let pendingToolUseSummary:
+      | {
+          promise: Promise<string | null>
+          precedingToolUseIds: readonly string[]
+        }
+      | undefined
 
     try {
       for (let turn = 0; turn < maxModelTurns; turn += 1) {
+        if (pendingToolUseSummary) {
+          const summaryRequest = pendingToolUseSummary
+          pendingToolUseSummary = undefined
+          try {
+            const summary = await summaryRequest.promise
+            if (summary) {
+              this.emit({
+                type: 'tool-use-summary',
+                summary,
+                precedingToolUseIds: summaryRequest.precedingToolUseIds,
+              })
+            }
+          } catch {
+            // Summaries are auxiliary SDK output and never fail the turn.
+          }
+        }
         const spent = this.options.costUsd?.(modelUsage)
         if (
           this.options.maxBudgetUsd !== undefined &&
@@ -594,8 +630,18 @@ export class AgentRuntime {
         }
 
         const followUpUserMessages: string[] = []
+        const completedTools: {
+          name: string
+          input: Record<string, unknown>
+          output: string
+        }[] = []
         for (const call of toolCalls) {
           const result = await this.completeToolCall(call, request, messages)
+          completedTools.push({
+            name: call.name,
+            input: call.input,
+            output: result.content,
+          })
           if (result.usage) usage = addUsage(usage, result.usage)
           durationApiMs += result.durationApiMs ?? 0
           messages.push({
@@ -607,6 +653,17 @@ export class AgentRuntime {
             isError: result.isError,
           })
           followUpUserMessages.push(...(result.followUpUserMessages ?? []))
+        }
+        if (this.options.generateToolUseSummary) {
+          const summarySignal = request.signal ?? new AbortController().signal
+          pendingToolUseSummary = {
+            promise: this.options.generateToolUseSummary({
+              tools: completedTools,
+              ...(text ? { lastAssistantText: text } : {}),
+              signal: summarySignal,
+            }),
+            precedingToolUseIds: toolCalls.map((call) => call.id),
+          }
         }
         if (followUpUserMessages.length > 0) {
           await request.observer?.followUpUserMessagesCompleted?.(

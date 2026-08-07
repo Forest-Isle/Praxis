@@ -838,6 +838,11 @@ describe('CLI protocol', () => {
       mcpServerName: 'fixture',
       elicitationId: 'elicit-1',
     })
+    output.sink({
+      type: 'tool-use-summary',
+      summary: 'Read config.json',
+      precedingToolUseIds: ['t1'],
+    })
     expect(
       records.filter((r) => r.type === 'system').map((r) => r.subtype),
     ).toEqual([
@@ -851,6 +856,11 @@ describe('CLI protocol', () => {
       'api_retry',
       'elicitation_complete',
     ])
+    expect(records.find((r) => r.type === 'tool_use_summary')).toMatchObject({
+      summary: 'Read config.json',
+      preceding_tool_use_ids: ['t1'],
+      uuid: expect.any(String),
+    })
     expect(records.find((r) => r.type === 'tool_progress')).toMatchObject({
       tool_use_id: 't1',
       tool_name: 'Bash',
