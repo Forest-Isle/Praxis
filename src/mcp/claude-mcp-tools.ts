@@ -8,6 +8,14 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import {
+  ElicitRequestSchema,
+  ElicitationCompleteNotificationSchema,
+} from '@modelcontextprotocol/sdk/types.js'
+import type {
+  ElicitRequest,
+  ElicitResult,
+} from '@modelcontextprotocol/sdk/types.js'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import type {
@@ -16,6 +24,7 @@ import type {
   ToolExecutionContext,
   ToolExecutionResult,
   ToolRegistry,
+  RuntimeEventSink,
 } from '../core/runtime.js'
 import {
   redactSensitiveError,
@@ -87,6 +96,18 @@ export interface ClaudeMcpToolRegistryOptions {
   configRoot?: string
   onWarning?: (message: string) => void
   signal?: AbortSignal
+  eventSink?: RuntimeEventSink
+  onElicitation?: (request: {
+    serverName: string
+    message: ElicitRequest['params']['message']
+    mode?: 'form' | 'url'
+    url?: string
+    elicitationId?: string
+    requestedSchema?: Record<string, unknown>
+  }) => Promise<{
+    action: 'accept' | 'decline' | 'cancel'
+    content?: Record<string, string | number | boolean | string[]>
+  }>
 }
 
 const MAX_TOOL_PAGES = 100
@@ -691,7 +712,42 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
     serverName: string,
     config: McpServerConfig,
   ): Promise<void> {
-    const client = new Client({ name: 'praxis', version: '0.1.0' })
+    const client = new Client(
+      { name: 'praxis', version: '0.1.0' },
+      {
+        capabilities: {
+          elicitation: {
+            form: { applyDefaults: true },
+            url: {},
+          },
+        },
+      },
+    )
+    client.setRequestHandler(ElicitRequestSchema, async (request) => {
+      if (!this.options.onElicitation) return { action: 'decline' }
+      return (await this.options.onElicitation({
+        serverName,
+        message: request.params.message,
+        ...(request.params.mode ? { mode: request.params.mode } : {}),
+        ...('url' in request.params ? { url: request.params.url } : {}),
+        ...('elicitationId' in request.params
+          ? { elicitationId: request.params.elicitationId }
+          : {}),
+        ...('requestedSchema' in request.params
+          ? { requestedSchema: request.params.requestedSchema }
+          : {}),
+      })) as ElicitResult
+    })
+    client.setNotificationHandler(
+      ElicitationCompleteNotificationSchema,
+      async (notification) => {
+        this.options.eventSink?.({
+          type: 'elicitation-complete',
+          mcpServerName: serverName,
+          elicitationId: notification.params.elicitationId,
+        })
+      },
+    )
     const sensitiveValues = configSensitiveValues(config)
     const discoverySignal = requestSignal(
       this.options.signal,

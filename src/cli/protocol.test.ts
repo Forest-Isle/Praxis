@@ -833,6 +833,11 @@ describe('CLI protocol', () => {
       errorStatus: 503,
       error: 'server_error',
     })
+    output.sink({
+      type: 'elicitation-complete',
+      mcpServerName: 'fixture',
+      elicitationId: 'elicit-1',
+    })
     expect(
       records.filter((r) => r.type === 'system').map((r) => r.subtype),
     ).toEqual([
@@ -844,12 +849,20 @@ describe('CLI protocol', () => {
       'task_progress',
       'task_notification',
       'api_retry',
+      'elicitation_complete',
     ])
     expect(records.find((r) => r.type === 'tool_progress')).toMatchObject({
       tool_use_id: 't1',
       tool_name: 'Bash',
       elapsed_time_seconds: 1.25,
       task_id: 'a1',
+    })
+    expect(
+      records.find((r) => r.subtype === 'elicitation_complete'),
+    ).toMatchObject({
+      mcp_server_name: 'fixture',
+      elicitation_id: 'elicit-1',
+      uuid: expect.any(String),
     })
     expect(records.find((r) => r.subtype === 'task_progress')).toMatchObject({
       usage: { total_tokens: 4, tool_uses: 1, duration_ms: 20 },

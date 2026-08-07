@@ -131,6 +131,30 @@ export interface StreamControlRequest {
   request: { subtype: 'interrupt' }
 }
 
+export interface StreamElicitationRequest {
+  subtype: 'elicitation'
+  mcp_server_name: string
+  message: string
+  mode?: 'form' | 'url'
+  url?: string
+  elicitation_id?: string
+  requested_schema?: Record<string, unknown>
+}
+
+export interface CliElicitationRequest {
+  serverName: string
+  message: string
+  mode?: 'form' | 'url'
+  url?: string
+  elicitationId?: string
+  requestedSchema?: Record<string, unknown>
+}
+
+export interface CliElicitationResult {
+  action: 'accept' | 'decline' | 'cancel'
+  content?: Record<string, string | number | boolean | string[]>
+}
+
 export type StreamJsonMessage =
   | StreamUserMessage
   | StreamControlResponse
@@ -1548,6 +1572,17 @@ export class StreamJsonOutput {
         retry_delay_ms: event.retryDelayMs,
         error_status: event.errorStatus,
         error: event.error,
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
+      return
+    }
+    if (event.type === 'elicitation-complete') {
+      this.write({
+        type: 'system',
+        subtype: 'elicitation_complete',
+        mcp_server_name: event.mcpServerName,
+        elicitation_id: event.elicitationId,
         uuid: randomUUID(),
         session_id: this.sessionId,
       })

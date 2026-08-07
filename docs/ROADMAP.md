@@ -471,8 +471,19 @@ records require a Praxis producer before they can be marked complete.
 - [x] foreground/background Agent and background Bash task lifecycle records
 - [x] protocol field mapping and focused runtime/CLI compatibility tests
 - [x] built-package `test:stream-json-compat` gate against a local Anthropic SSE provider
-- [ ] local command output, tool-use summaries, file persistence events, and
-      elicitation events with real single-user producers
+- [ ] local command output, tool-use summaries, and file persistence events with
+      real single-user producers
+
+## Stage 47 - MCP elicitation stream control
+
+Status: complete for form and URL elicitation requests over the local
+stream-json control protocol.
+
+- [x] MCP client elicitation capabilities and request/complete notification
+      handlers
+- [x] stream-json `control_request`/`control_response` round trip with action
+      validation and decline fallback
+- [x] native `elicitation_complete` system record and end-to-end fixture gate
 
 ## Stage 46 - machine result envelope contract
 

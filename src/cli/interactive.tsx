@@ -12,6 +12,7 @@ import type {
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
+import type { CliElicitationRequest, CliElicitationResult } from './protocol.js'
 import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
@@ -40,6 +41,9 @@ export interface InteractiveServiceFactory {
     requireProvider: boolean
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
     approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
+    onElicitation?: (
+      request: CliElicitationRequest,
+    ) => Promise<CliElicitationResult>
     agent?: string
     signal?: AbortSignal
   }): Promise<InteractiveSessionCommands>
@@ -62,6 +66,11 @@ type PendingPermission = {
   kind: 'tool' | 'recovery'
   call: ModelToolCall
   resolve: (approved: boolean) => void
+}
+
+type PendingElicitation = {
+  request: CliElicitationRequest
+  resolve: (result: CliElicitationResult) => void
 }
 
 function describeTool(
@@ -106,6 +115,10 @@ export function InteractiveApp({
   const [history, setHistory] = useState<HistoryLine[]>([])
   const [permission, setPermission] = useState<PendingPermission | null>(null)
   const permissionRef = useRef<PendingPermission | null>(null)
+  const [elicitation, setElicitation] = useState<PendingElicitation | null>(
+    null,
+  )
+  const elicitationRef = useRef<PendingElicitation | null>(null)
   const serviceRef = useRef<InteractiveSessionCommands | null>(null)
   const serviceCreationRef = useRef<
     Promise<InteractiveSessionCommands> | undefined
@@ -116,6 +129,7 @@ export function InteractiveApp({
     if (!signal) return
     const cancel = () => {
       permissionRef.current?.resolve(false)
+      elicitationRef.current?.resolve({ action: 'cancel' })
       exit()
     }
     if (signal.aborted) cancel()
@@ -126,6 +140,7 @@ export function InteractiveApp({
   useEffect(
     () => () => {
       permissionRef.current?.resolve(false)
+      elicitationRef.current?.resolve({ action: 'cancel' })
       scheduledWaitRef.current?.abort()
       void serviceRef.current?.close?.().catch(() => undefined)
     },
@@ -179,6 +194,23 @@ export function InteractiveApp({
       setPermission(pending)
     })
   const approveTool = (call: ModelToolCall) => requestApproval(call, 'tool')
+
+  const requestElicitation = (request: CliElicitationRequest) =>
+    new Promise<CliElicitationResult>((resolveResult) => {
+      let settled = false
+      const pending: PendingElicitation = {
+        request,
+        resolve: (result) => {
+          if (settled) return
+          settled = true
+          if (elicitationRef.current === pending) elicitationRef.current = null
+          setElicitation((current) => (current === pending ? null : current))
+          resolveResult(result)
+        },
+      }
+      elicitationRef.current = pending
+      setElicitation(pending)
+    })
   const approveRecovery = (call: ModelToolCall) =>
     requestApproval(call, 'recovery')
 
@@ -191,6 +223,7 @@ export function InteractiveApp({
         requireProvider: true,
         approveRecovery,
         approveTool,
+        onElicitation: requestElicitation,
         ...(signal ? { signal } : {}),
       })
     serviceCreationRef.current = pending
@@ -285,6 +318,7 @@ export function InteractiveApp({
   useInput((value, key) => {
     if (key.ctrl && value.toLowerCase() === 'c') {
       permissionRef.current?.resolve(false)
+      elicitationRef.current?.resolve({ action: 'cancel' })
       onCancel?.()
       exit()
       return
@@ -294,6 +328,53 @@ export function InteractiveApp({
         permission.resolve(true)
       } else if (value.toLowerCase() === 'n' || key.return || key.escape) {
         permission.resolve(false)
+      }
+      return
+    }
+
+    if (elicitation) {
+      if (key.escape) {
+        elicitation.resolve({ action: 'cancel' })
+      } else if (key.return) {
+        const answer = inputRef.current.trim()
+        inputRef.current = ''
+        setInput('')
+        if (!answer || answer.toLowerCase() === 'decline') {
+          elicitation.resolve({ action: 'decline' })
+        } else if (answer.toLowerCase() === 'cancel') {
+          elicitation.resolve({ action: 'cancel' })
+        } else if (answer.toLowerCase() === 'accept') {
+          elicitation.resolve({ action: 'accept' })
+        } else {
+          try {
+            const content: unknown = JSON.parse(answer)
+            if (
+              !content ||
+              typeof content !== 'object' ||
+              Array.isArray(content)
+            )
+              throw new Error('elicitation content must be a JSON object')
+            const elicitationContent = content as Record<
+              string,
+              string | number | boolean | string[]
+            >
+            elicitation.resolve({
+              action: 'accept',
+              content: elicitationContent,
+            })
+          } catch {
+            append({
+              kind: 'warning',
+              text: 'Elicitation response must be accept, decline, cancel, or a JSON object.',
+            })
+          }
+        }
+      } else if (key.backspace || key.delete) {
+        inputRef.current = inputRef.current.slice(0, -1)
+        setInput(inputRef.current)
+      } else if (!key.ctrl && !key.meta && value) {
+        inputRef.current += value
+        setInput(inputRef.current)
       }
       return
     }
@@ -417,6 +498,23 @@ export function InteractiveApp({
               {permission.kind === 'recovery' ? 'Retry interrupted ' : 'Allow '}
               {describeTool(permission.call, sensitiveValues)}? (y/N)
             </Text>
+          ) : elicitation ? (
+            <Box flexDirection="column">
+              <Text color="yellow">
+                MCP elicitation ({elicitation.request.serverName}):{' '}
+                {elicitation.request.message}
+              </Text>
+              {elicitation.request.url ? (
+                <Text>{elicitation.request.url}</Text>
+              ) : null}
+              {elicitation.request.requestedSchema ? (
+                <Text dimColor>
+                  {JSON.stringify(elicitation.request.requestedSchema)}
+                </Text>
+              ) : null}
+              <Text>› {input}</Text>
+              <Text dimColor>Enter JSON object to accept · Esc to cancel</Text>
+            </Box>
           ) : busy ? (
             <Text dimColor>{status}…</Text>
           ) : (

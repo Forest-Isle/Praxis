@@ -99,6 +99,8 @@ import {
   type CliControls,
   type CliInvocation,
   type CliRuntimeInfo,
+  type CliElicitationRequest,
+  type CliElicitationResult,
   type StreamUserMessage,
   type StreamJsonMessage,
   type StreamControlResponse,
@@ -334,6 +336,9 @@ export interface CliDependencies extends InteractiveServiceFactory {
     sessionKind?: 'bg'
     signal?: AbortSignal
     exposeToolRegistry?: boolean
+    onElicitation?: (
+      request: CliElicitationRequest,
+    ) => Promise<CliElicitationResult>
   }): Promise<SessionCommands>
   runInteractive?(options: {
     agent?: string
@@ -369,6 +374,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   sessionKind,
   signal,
   exposeToolRegistry = false,
+  onElicitation,
 }) => {
   const claudeVersion = await detectInstalledClaudeVersion()
   const cwd = process.cwd()
@@ -589,6 +595,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
     cwd,
     configRoot,
     onWarning: (message) => eventSink({ type: 'warning', message }),
+    ...(onElicitation ? { onElicitation } : {}),
+    eventSink,
     ...(signal ? { signal } : {}),
   })
   try {
@@ -2048,6 +2056,48 @@ async function execute(
     }
     return true
   }
+  const respondStreamElicitation = async (
+    request: CliElicitationRequest,
+  ): Promise<CliElicitationResult> => {
+    if (!streamOutput || !streamIterator) return { action: 'decline' }
+    const requestId = randomUUID()
+    streamOutput.controlRequest({
+      request_id: requestId,
+      request: {
+        subtype: 'elicitation',
+        mcp_server_name: request.serverName,
+        message: request.message,
+        ...(request.mode === undefined ? {} : { mode: request.mode }),
+        ...(request.url === undefined ? {} : { url: request.url }),
+        ...(request.elicitationId === undefined
+          ? {}
+          : { elicitation_id: request.elicitationId }),
+        ...(request.requestedSchema === undefined
+          ? {}
+          : { requested_schema: request.requestedSchema }),
+      },
+    })
+    const response = await awaitControlResponse(requestId)
+    if (!response || response.response.subtype === 'error')
+      return { action: 'decline' }
+    const result = response.response.response
+    if (
+      !result ||
+      !['accept', 'decline', 'cancel'].includes(String(result.action))
+    )
+      return { action: 'decline' }
+    return {
+      action: result.action as CliElicitationResult['action'],
+      ...(result.content && typeof result.content === 'object'
+        ? {
+            content: result.content as Record<
+              string,
+              string | number | boolean | string[]
+            >,
+          }
+        : {}),
+    }
+  }
   const service = await dependencies.createService({
     eventSink:
       outputFormat === 'stream-json' && !invocation.legacyJson
@@ -2077,6 +2127,7 @@ async function execute(
     ),
     ...(retryInterruptedTools ? { approveRecovery: () => true } : {}),
     ...(streamIterator ? { approveTool: approveStreamTool } : {}),
+    ...(streamIterator ? { onElicitation: respondStreamElicitation } : {}),
     ...(signal ? { signal } : {}),
     ...(agent ? { agent } : {}),
     controls: invocation,

@@ -371,6 +371,58 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('done')
   })
 
+  it('round-trips interactive MCP elicitation form data', async () => {
+    let result: unknown
+    const factory: InteractiveServiceFactory = {
+      async createService({ onElicitation }) {
+        return {
+          async run() {
+            result = await onElicitation?.({
+              serverName: 'fixture',
+              message: 'Provide a value',
+              mode: 'form',
+              requestedSchema: {
+                type: 'object',
+                properties: { code: { type: 'string' } },
+              },
+            })
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    await flush()
+    app.stdin.write('run')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('MCP elicitation (fixture)')
+    app.stdin.write('{"code":"ok"}')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(result).toEqual({ action: 'accept', content: { code: 'ok' } })
+    expect(app.lastFrame()).toContain('done')
+  })
+
   it('asks before retrying an interrupted tool during resume', async () => {
     let recoveryApproval: boolean | undefined
     const call: ModelToolCall = {

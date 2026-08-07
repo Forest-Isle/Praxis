@@ -968,6 +968,115 @@ describe('Praxis CLI', () => {
     )
   })
 
+  it('round-trips MCP elicitation control records over stream-json', async () => {
+    let response: unknown
+    const cliDependencies: CliDependencies = {
+      async createService({ eventSink, onElicitation }) {
+        return {
+          async run(prompt, _signal, sessionId) {
+            response = await onElicitation?.({
+              serverName: 'fixture',
+              message: 'Provide code',
+              mode: 'form',
+              requestedSchema: {
+                type: 'object',
+                properties: { code: { type: 'string' } },
+              },
+            })
+            eventSink({
+              type: 'elicitation-complete',
+              mcpServerName: 'fixture',
+              elicitationId: 'elicit-1',
+            })
+            return {
+              sessionId: sessionId ?? '11111111-1111-4111-8111-111111111111',
+              text: `answer:${prompt}`,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async inspect() {
+            throw new Error('unused')
+          },
+          async export() {
+            return Buffer.from('')
+          },
+        }
+      },
+    }
+    const capture = captureIO()
+    capture.io.readStdinLines = () =>
+      (async function* () {
+        yield `${JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: 'elicit' },
+        })}\n`
+        while (
+          !capture.stdout.some((line) =>
+            line.includes('"subtype":"elicitation"'),
+          )
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        }
+        const controlRequest = capture.stdout
+          .map((line) => JSON.parse(line) as Record<string, unknown>)
+          .find((record) => record.type === 'control_request')
+        const requestId = controlRequest?.request_id
+        if (typeof requestId !== 'string') {
+          throw new Error('elicitation control request missing request_id')
+        }
+        yield `${JSON.stringify({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: requestId,
+            response: { action: 'accept', content: { code: 'ok' } },
+          },
+        })}\n`
+      })()
+    await expect(
+      run(
+        [
+          '-p',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+        ],
+        capture.io,
+        cliDependencies,
+      ),
+    ).resolves.toBe(0)
+    expect(response).toEqual({ action: 'accept', content: { code: 'ok' } })
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        type: 'control_request',
+        request: expect.objectContaining({
+          subtype: 'elicitation',
+          mcp_server_name: 'fixture',
+          requested_schema: expect.any(Object),
+        }),
+      }),
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        type: 'system',
+        subtype: 'elicitation_complete',
+        elicitation_id: 'elicit-1',
+      }),
+    )
+  })
+
   it('returns redacted terminal result envelopes for structured execution failures', async () => {
     const variable = 'PRAXIS_PROTOCOL_TEST_API_KEY'
     const secret = 'protocol-failure-secret'

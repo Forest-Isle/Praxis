@@ -183,6 +183,11 @@ export type RuntimeEvent =
       error: string
     }
   | {
+      type: 'elicitation-complete'
+      mcpServerName: string
+      elicitationId: string
+    }
+  | {
       type: 'hook'
       event: {
         type: 'started' | 'progress' | 'response'

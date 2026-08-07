@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ToolRegistry } from '../core/runtime.js'
+import type { RuntimeEvent, ToolRegistry } from '../core/runtime.js'
 import { ClaudeMcpOAuthStore } from './claude-mcp-oauth.js'
 import { ClaudeMcpToolRegistry } from './claude-mcp-tools.js'
 
@@ -27,6 +27,91 @@ afterEach(async () => {
 })
 
 describe('ClaudeMcpToolRegistry', () => {
+  it('routes MCP elicitation requests and completion notifications', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-elicitation-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'elicitation-server.mjs')
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+let sent = false
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, elicitation: { form: {}, url: {} } }, serverInfo: { name: 'elicitation-fixture', version: '1' } }
+      : request.method === 'tools/list'
+        ? { tools: [] }
+        : { content: [{ type: 'text', text: 'unused' }] }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+    if (request.method === 'initialize' && !sent) {
+      sent = true
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 91, method: 'elicitation/create', params: { mode: 'form', message: 'Provide fixture value', requestedSchema: { type: 'object', properties: { code: { type: 'string' } } } } }) + '\\n')
+    }
+    if (request.id === 91) {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/elicitation/complete', params: { elicitationId: 'fixture-elicit' } }) + '\\n')
+    }
+  }
+})
+`,
+    )
+    const events: RuntimeEvent[] = []
+    const elicitation = vi.fn(
+      async (request: {
+        serverName: string
+        message: string
+        requestedSchema?: Record<string, unknown>
+      }) => {
+        expect(request).toMatchObject({
+          serverName: 'fixture',
+          message: 'Provide fixture value',
+        })
+        return { action: 'accept' as const, content: { code: 'ok' } }
+      },
+    )
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/fixture.json',
+          scope: 'user',
+          value: {
+            mcpServers: {
+              fixture: {
+                command: process.execPath,
+                args: [serverScript],
+              },
+            },
+          },
+        },
+      ],
+      eventSink: (event) => events.push(event),
+      onElicitation: elicitation,
+    })
+    try {
+      expect(elicitation).toHaveBeenCalledOnce()
+      await vi.waitFor(() =>
+        expect(events).toContainEqual({
+          type: 'elicitation-complete',
+          mcpServerName: 'fixture',
+          elicitationId: 'fixture-elicit',
+        }),
+      )
+    } finally {
+      await registry.close()
+    }
+  })
+
   it('loads shared OAuth credentials for HTTP transports', async () => {
     vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
     const root = await realpath(
