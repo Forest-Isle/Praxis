@@ -208,6 +208,22 @@ try {
   ])
   assertEqual(markers(userOnly.request), [userMarker], 'user source')
 
+  const debugFile = join(probeRoot, 'debug', 'runtime.jsonl')
+  await runPraxis([
+    '--no-session-persistence',
+    '--debug=state',
+    '--debug-file',
+    debugFile,
+    'debug file',
+  ])
+  const debugContent = await readFile(debugFile, 'utf8')
+  if (!debugContent.includes('"type":"state"')) {
+    throw new Error('Debug file did not contain filtered runtime state events')
+  }
+  if (debugContent.includes('"type":"text-delta"')) {
+    throw new Error('Debug filter did not exclude text delta events')
+  }
+
   await runPraxis([
     '--no-session-persistence',
     '--betas',
@@ -447,7 +463,7 @@ try {
   )
 
   console.log(
-    `Claude ${version} CLI controls passed: prompts, sources, modes, inline agents, disabled slash commands, beta headers, tools, explicit fork identity, ephemeral storage, and named resume`,
+    `Claude ${version} CLI controls passed: prompts, sources, modes, inline agents, disabled slash commands, beta headers, debug file, tools, explicit fork identity, ephemeral storage, and named resume`,
   )
 } finally {
   if (server.listening) await closeServer()

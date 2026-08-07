@@ -262,7 +262,24 @@ describe('CLI protocol', () => {
       args: ['mcp', 'serve'],
       mcpNoBrowser: false,
       mcpDebug: true,
+      debug: true,
       verbose: true,
+    })
+    expect(parseCliInvocation(['-d', 'hello'])).toMatchObject({
+      debug: true,
+      args: ['hello'],
+      mcpDebug: false,
+    })
+    expect(
+      parseCliInvocation([
+        '--debug=hooks',
+        '--debug-file',
+        'debug.log',
+        'hello',
+      ]),
+    ).toMatchObject({ debug: 'hooks', debugFile: 'debug.log' })
+    expect(parseCliInvocation(['mcp', 'serve', '--mcp-debug'])).toMatchObject({
+      mcpDebug: true,
     })
   })
 

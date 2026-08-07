@@ -38,6 +38,8 @@ export interface CliControls {
   pluginUrls: readonly string[]
   maxTurns?: number
   betas: readonly string[]
+  debug?: string | true
+  debugFile?: string
   agentDefinitions?: string
   mcpConfigs: readonly string[]
   strictMcpConfig: boolean
@@ -442,6 +444,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let settings: string | undefined
   let maxTurns: number | undefined
   const betas: string[] = []
+  let debug: string | true | undefined
+  let debugFile: string | undefined
   let agentDefinitions: string | undefined
   const mcpConfigs: string[] = []
   let strictMcpConfig = false
@@ -607,6 +611,28 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     if (selectedBetas) {
       betas.push(...splitList(selectedBetas.values))
       index += selectedBetas.consumed
+      continue
+    }
+    if (value === '--debug') {
+      debug = true
+      continue
+    }
+    if (value.startsWith('--debug=')) {
+      const filter = value.slice('--debug='.length)
+      if (!filter) throw new Error('--debug filter must not be empty')
+      debug = filter
+      continue
+    }
+    const selectedDebugFile = optionValue(argv, index, '--debug-file')
+    if (selectedDebugFile) {
+      if (debugFile !== undefined)
+        throw new Error('--debug-file may only be specified once')
+      debugFile = selectedDebugFile.value
+      index += selectedDebugFile.consumed
+      continue
+    }
+    if (value === '--mcp-debug') {
+      mcpDebug = true
       continue
     }
     const selectedAgents = optionValue(argv, index, '--agents')
@@ -840,8 +866,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       mcpNoBrowser = true
       continue
     }
-    if (value === '-d' || value === '--debug') {
-      mcpDebug = true
+    if (value === '-d') {
+      debug = true
       continue
     }
     if (value === '--json') {
@@ -886,6 +912,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       throw new Error('--json cannot be combined with --output-format')
     }
     outputFormat = 'stream-json'
+  }
+  if (debug !== undefined && args[0] === 'mcp' && args[1] === 'serve') {
+    mcpDebug = true
   }
   if (background && print) {
     throw new Error(
@@ -1018,6 +1047,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     pluginUrls,
     ...(maxTurns === undefined ? {} : { maxTurns }),
     betas,
+    ...(debug === undefined ? {} : { debug }),
+    ...(debugFile === undefined ? {} : { debugFile }),
     tools,
     allowedTools,
     disallowedTools,

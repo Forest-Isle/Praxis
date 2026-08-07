@@ -133,4 +133,23 @@ describe('CLI controls', () => {
       ),
     ).rejects.toThrow('requires a non-empty prompt')
   })
+
+  it('preserves runtime debug controls through async resolution', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-cli-controls-'))
+    roots.push(cwd)
+
+    await expect(
+      resolveCliControls(
+        {
+          ...DEFAULT_CLI_CONTROLS,
+          debug: 'hooks',
+          debugFile: 'debug/runtime.log',
+        },
+        cwd,
+      ),
+    ).resolves.toMatchObject({
+      debug: 'hooks',
+      debugFile: 'debug/runtime.log',
+    })
+  })
 })

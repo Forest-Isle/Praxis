@@ -38,6 +38,7 @@ import {
   type InteractiveServiceFactory,
 } from './cli/interactive.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
+import { createCliDebugSink } from './cli/debug.js'
 import {
   ClaudePermissionResolver,
   type ClaudePermissionMode,
@@ -189,6 +190,8 @@ Options:
   --agent <name>                      Select a shared agent definition
   --max-turns <turns>                  Limit print-mode model round trips
   --betas <betas...>                   Include Anthropic beta headers
+  --debug[=<filter>]                   Enable runtime diagnostics
+  --debug-file <path>                  Write runtime diagnostics to a file
   --agents <json>                      Define inline agents for this session
   --mcp-config <configs...>            Load MCP server JSON files or objects
   --strict-mcp-config                  Ignore configured MCP servers
@@ -393,6 +396,18 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ? join(configRoot, '.claude.json')
     : resolve(homedir(), '.claude.json')
   const cli = await resolveCliControls(controls, cwd)
+  const debug =
+    cli.debug !== undefined || cli.debugFile !== undefined
+      ? createCliDebugSink(eventSink, {
+          cwd,
+          ...(cli.debug === undefined ? {} : { filter: cli.debug }),
+          ...(cli.debugFile === undefined ? {} : { file: cli.debugFile }),
+          ...(cli.debugFile === undefined
+            ? { stderr: (message: string) => process.stderr.write(message) }
+            : {}),
+        })
+      : undefined
+  const runtimeEventSink = debug?.eventSink ?? eventSink
   let provider: ModelProvider | undefined
   let providerForModel: ((model: string) => ModelProvider) | undefined
   const context = parseContextEnvironment(process.env)
@@ -444,7 +459,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     configRoot,
     cwd,
     claudeVersion,
-    eventSink,
+    eventSink: runtimeEventSink,
     sessionPersistence: cli.sessionPersistence,
     effort: cli.effort ?? 'high',
     ...(cli.maxTurns === undefined ? {} : { maxModelTurns: cli.maxTurns }),
@@ -533,7 +548,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   })
   for (const plugin of pluginResources.plugins) {
     for (const error of plugin.errors) {
-      eventSink({
+      runtimeEventSink({
         type: 'warning',
         message: `Plugin ${plugin.name} could not be loaded: ${error}`,
       })
@@ -612,9 +627,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
     resources: resources.mcp,
     cwd,
     configRoot,
-    onWarning: (message) => eventSink({ type: 'warning', message }),
+    onWarning: (message) => runtimeEventSink({ type: 'warning', message }),
     ...(onElicitation ? { onElicitation } : {}),
-    eventSink,
+    eventSink: runtimeEventSink,
     ...(signal ? { signal } : {}),
   })
   try {
@@ -742,7 +757,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
             hooks: new ClaudeHookRunner({
               settings,
               cwd,
-              onEvent: (event) => eventSink({ type: 'hook', event }),
+              onEvent: (event) => runtimeEventSink({ type: 'hook', event }),
             }),
           }),
       ...(agent ? { agent } : {}),
@@ -822,8 +837,19 @@ const createDefaultService: CliDependencies['createService'] = async ({
       export: (sessionId) => service.export(sessionId),
       nextScheduledPrompt: (signal) => service.nextScheduledPrompt(signal),
       close: async () => {
-        await service.close()
-        await mcpTools.close()
+        let failure: unknown
+        try {
+          await service.close()
+        } catch (error) {
+          failure = error
+        }
+        try {
+          await mcpTools.close()
+        } catch (error) {
+          failure ??= error
+        }
+        await debug?.close()
+        if (failure !== undefined) throw failure
       },
       runtimeInfo: () => ({
         ...runtimeInfo,
@@ -838,6 +864,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
       await mcpTools.close()
     } catch {
       // Preserve the service-construction failure as the primary error.
+    } finally {
+      await debug?.close()
     }
     throw error
   }

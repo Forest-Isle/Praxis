@@ -226,6 +226,10 @@ export async function resolveCliControls(
     pluginDirectories: controls.pluginDirectories,
     pluginUrls: controls.pluginUrls,
     betas: controls.betas,
+    ...(controls.debug === undefined ? {} : { debug: controls.debug }),
+    ...(controls.debugFile === undefined
+      ? {}
+      : { debugFile: controls.debugFile }),
     ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
     inlineAgents: resolveInlineAgents(controls.agentDefinitions),
     mcpResources,

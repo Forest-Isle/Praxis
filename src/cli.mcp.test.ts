@@ -235,7 +235,7 @@ describe('Praxis MCP CLI commands', () => {
   it('rejects MCP-only flags on unrelated commands', async () => {
     for (const argv of [
       ['run', '--no-browser', 'prompt'],
-      ['mcp', 'login', 'fixture', '--debug'],
+      ['mcp', 'login', 'fixture', '--mcp-debug'],
       ['mcp', 'serve', '--no-browser'],
     ]) {
       const capture = captureIO()

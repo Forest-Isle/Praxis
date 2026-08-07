@@ -128,8 +128,8 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 ## Remaining implementation order
 
 Remaining audit items are limited to the still-unimplemented single-user CLI
-controls discovered from the installed 2.1.208 surface (`--debug-file`,
-`--brief`, `--file`, `--from-pr`, accessibility output, dynamic
+controls discovered from the installed 2.1.208 surface (`--brief`, `--file`,
+`--from-pr`, accessibility output, dynamic
 system-prompt exclusion, and hidden resume/rewind controls). They are tracked
 as the next implementation stages; they are not enterprise or desktop
 exclusions. Unsupported Claude versions remain deliberately read-only, and
