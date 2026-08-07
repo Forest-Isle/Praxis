@@ -100,6 +100,10 @@ function selectedDefinitions(body) {
   return body.tools?.filter(({ name }) => toolNames.includes(name)) ?? []
 }
 
+function definition(definitions, name) {
+  return definitions?.find((candidate) => candidate.name === name)
+}
+
 function lastToolResult(body) {
   const content = body.messages?.at(-1)?.content
   if (!Array.isArray(content)) return null
@@ -223,6 +227,73 @@ async function runPraxis(args, port) {
   )
 }
 
+async function verifyActivePraxisWakeup() {
+  const [{ ScheduledPromptManager }, { ClaudeScheduledToolRegistry }] =
+    await Promise.all([
+      import('../dist/application/scheduled-prompt-manager.js'),
+      import('../dist/tools/claude-scheduled-tools.js'),
+    ])
+  const now = () => Date.UTC(2026, 7, 5, 14, 0, 0)
+  const manager = new ScheduledPromptManager({
+    filePath: join(cwd, '.claude', 'scheduled_tasks.json'),
+    lockFile: join(configRoot, 'praxis', 'locks', 'active-wakeup.lock'),
+    dynamicWakeupsEnabled: true,
+    now,
+  })
+  const base = {
+    definitions: () => [],
+    prepare: async (call) => call,
+    execute: async () => ({ content: '', isError: false }),
+  }
+  const registry = new ClaudeScheduledToolRegistry({
+    base,
+    manager,
+    sessionId,
+    now,
+  })
+  const context = { cwd }
+  const execute = async (id, input) => {
+    const call = await registry.prepare(
+      { id, name: 'ScheduleWakeup', input },
+      context,
+    )
+    return registry.execute(call, context)
+  }
+  const first = await execute('active-one', {
+    delaySeconds: 1,
+    reason: 'probe active contract',
+    prompt: 'continue active probe',
+  })
+  const scheduledFor = Date.UTC(2026, 7, 5, 14, 1, 0)
+  const scheduledTime = new Date(scheduledFor).toTimeString().slice(0, 8)
+  assert(
+    first.content ===
+      `Next wakeup scheduled for ${scheduledTime} (in 60s) (clamped to 60s from your requested value). Nothing more to do this turn — the harness re-invokes you when the wakeup fires or a task-notification arrives.`,
+    `Praxis active wakeup result changed: ${first.content}`,
+  )
+  assert(
+    JSON.stringify(first.nativeToolUseResult) ===
+      JSON.stringify({
+        scheduledFor,
+        clampedDelaySeconds: 60,
+        wasClamped: true,
+      }),
+    'Praxis active wakeup native result changed',
+  )
+  await execute('active-replacement', {
+    delaySeconds: 120,
+    reason: 'replace active wakeup',
+    prompt: 'continue active probe',
+  })
+  const stopped = await execute('active-stop', { stop: true })
+  assert(
+    stopped.nativeToolUseResult?.cancelledWakeups === 1,
+    'Praxis did not supersede the previous active wakeup',
+  )
+  manager.close()
+  return true
+}
+
 try {
   const version = await detectClaudeVersion('Scheduled tools probe')
   assert(version === '2.1.208', `Unsupported Claude version ${version}`)
@@ -277,6 +348,17 @@ try {
     JSON.stringify(normalizeSchema(praxisDefinitions)) ===
       JSON.stringify(normalizeSchema(claudeDefinitions)),
     'Praxis scheduled schemas differ from Claude',
+  )
+  const claudeWakeup = definition(claudeDefinitions, 'ScheduleWakeup')
+  const praxisWakeup = definition(praxisDefinitions, 'ScheduleWakeup')
+  assert(
+    praxisWakeup?.description === claudeWakeup?.description,
+    'Praxis ScheduleWakeup description differs from Claude',
+  )
+  assert(
+    JSON.stringify(praxisWakeup?.input_schema) ===
+      JSON.stringify(claudeWakeup?.input_schema),
+    'Praxis ScheduleWakeup input schema descriptions differ from Claude',
   )
   const nativeFile = JSON.parse(
     await readFile(join(cwd, '.claude', 'scheduled_tasks.json'), 'utf8'),
@@ -348,6 +430,7 @@ try {
     await readFile(join(cwd, '.claude', 'scheduled_tasks.json'), 'utf8'),
   )
   assert(finalFile.tasks.length === 0, 'Scheduled job cleanup failed')
+  const activeWakeupContract = await verifyActivePraxisWakeup()
 
   console.log(
     JSON.stringify(
@@ -361,6 +444,7 @@ try {
         inactiveWakeupGate: results.praxis.some(({ content }) =>
           String(content).includes('Wakeup not scheduled'),
         ),
+        activeWakeupContract,
       },
       null,
       2,

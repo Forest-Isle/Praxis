@@ -11,6 +11,10 @@ import {
 
 const execFileAsync = promisify(execFile)
 const RECURRING_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000
+const MIN_DYNAMIC_WAKEUP_SECONDS = 60
+const MAX_DYNAMIC_WAKEUP_SECONDS = 3_600
+const DYNAMIC_CACHE_TTL_MS = 300_000
+const DEFAULT_DYNAMIC_CACHE_LEAD_MS = 15_000
 const MAX_TIMER_MS = 2_147_000_000
 const DURABLE_REFRESH_MS = 5_000
 
@@ -18,6 +22,8 @@ export interface ScheduledPromptManagerOptions {
   filePath: string
   lockFile: string
   dynamicWakeupsEnabled?: boolean
+  dynamicLoopMaxAgeMs?: number
+  dynamicCacheLeadMs?: number
   now?: () => number
   processStart?: (pid: number) => Promise<string | null>
 }
@@ -43,6 +49,11 @@ export interface DynamicWakeupResult {
   scheduledFor: number
   clampedDelaySeconds: number
   wasClamped: boolean
+}
+
+interface DynamicLoopState {
+  startedAt: number
+  lastScheduledFor: number
 }
 
 function nextOccurrence(cron: string, after: number): number {
@@ -76,6 +87,24 @@ function scheduledTime(task: ClaudeScheduledTask, after: number): number {
   const period = following - base
   const jitter = Math.floor(Math.min(period * 0.1, 15 * 60 * 1_000) * fraction)
   return Math.min(base + jitter, task.createdAt + RECURRING_LIFETIME_MS)
+}
+
+function dynamicWakeupTime(
+  now: number,
+  delaySeconds: number,
+  cacheLeadMs: number,
+): number {
+  let scheduledFor = Math.ceil((now + delaySeconds * 1_000) / 60_000) * 60_000
+  if (cacheLeadMs > 0 && delaySeconds * 1_000 <= DYNAMIC_CACHE_TTL_MS) {
+    const threshold = DYNAMIC_CACHE_TTL_MS - cacheLeadMs
+    while (
+      scheduledFor - now > threshold &&
+      scheduledFor - 60_000 >= now + 60_000
+    ) {
+      scheduledFor -= 60_000
+    }
+  }
+  return scheduledFor
 }
 
 export function assertCronExpression(cron: string): void {
@@ -116,10 +145,13 @@ export class ScheduledPromptManager {
   private readonly dueAt = new Map<string, number>()
   private readonly dueQueue: ScheduledPrompt[] = []
   private readonly dynamicWakeups = new Map<string, ScheduledPrompt>()
+  private readonly dynamicLoopStates = new Map<string, DynamicLoopState>()
   private readonly durableIds = new Set<string>()
   private readonly changeWaiters = new Set<() => void>()
   private readonly now: () => number
   private readonly dynamicWakeupsEnabled: boolean
+  private readonly dynamicLoopMaxAgeMs: number
+  private readonly dynamicCacheLeadMs: number
   private readonly readProcessStart: (pid: number) => Promise<string | null>
   private readonly ownProcessStart: Promise<string>
   private initialization: Promise<void> | undefined
@@ -132,6 +164,10 @@ export class ScheduledPromptManager {
     })
     this.now = options.now ?? Date.now
     this.dynamicWakeupsEnabled = options.dynamicWakeupsEnabled === true
+    this.dynamicLoopMaxAgeMs =
+      options.dynamicLoopMaxAgeMs ?? RECURRING_LIFETIME_MS
+    this.dynamicCacheLeadMs =
+      options.dynamicCacheLeadMs ?? DEFAULT_DYNAMIC_CACHE_LEAD_MS
     this.readProcessStart = options.processStart ?? processStart
     this.ownProcessStart = this.readProcessStart(process.pid).then(
       (value) => value ?? new Date(this.now()).toString(),
@@ -200,19 +236,48 @@ export class ScheduledPromptManager {
     prompt: string
   }): DynamicWakeupResult | null {
     if (!this.dynamicWakeupsEnabled || this.closed) return null
+    const now = this.now()
+    const previous = this.dynamicLoopStates.get(input.prompt)
+    const resumedAfterGap =
+      previous !== undefined &&
+      now > previous.lastScheduledFor + MAX_DYNAMIC_WAKEUP_SECONDS * 1_000
+    const startedAt =
+      previous === undefined || resumedAfterGap ? now : previous.startedAt
+    if (
+      this.dynamicLoopMaxAgeMs > 0 &&
+      now - startedAt >= this.dynamicLoopMaxAgeMs
+    ) {
+      this.dynamicLoopStates.set(input.prompt, {
+        startedAt,
+        lastScheduledFor:
+          now -
+          (MAX_DYNAMIC_WAKEUP_SECONDS - MIN_DYNAMIC_WAKEUP_SECONDS) * 1_000,
+      })
+      return null
+    }
+    const roundedDelaySeconds = Math.round(input.delaySeconds)
     const clampedDelaySeconds = Math.min(
-      3_600,
-      Math.max(60, input.delaySeconds),
+      MAX_DYNAMIC_WAKEUP_SECONDS,
+      Math.max(MIN_DYNAMIC_WAKEUP_SECONDS, roundedDelaySeconds),
     )
+    this.cancelPendingDynamicWakeups()
     const id = `wakeup-${randomBytes(8).toString('hex')}`
-    const scheduledFor = this.now() + clampedDelaySeconds * 1_000
+    const scheduledFor = dynamicWakeupTime(
+      now,
+      clampedDelaySeconds,
+      this.dynamicCacheLeadMs,
+    )
     this.dynamicWakeups.set(id, { id, prompt: input.prompt })
     this.dueAt.set(id, scheduledFor)
+    this.dynamicLoopStates.set(input.prompt, {
+      startedAt,
+      lastScheduledFor: scheduledFor,
+    })
     this.notifyChange()
     return {
       scheduledFor,
       clampedDelaySeconds,
-      wasClamped: clampedDelaySeconds !== input.delaySeconds,
+      wasClamped: clampedDelaySeconds !== roundedDelaySeconds,
     }
   }
 
@@ -227,6 +292,7 @@ export class ScheduledPromptManager {
       this.dueQueue.splice(index, 1)
       cancelled += 1
     }
+    this.dynamicLoopStates.clear()
     if (cancelled > 0) this.notifyChange()
     return cancelled
   }
@@ -268,6 +334,7 @@ export class ScheduledPromptManager {
   close(): void {
     this.closed = true
     this.dynamicWakeups.clear()
+    this.dynamicLoopStates.clear()
     this.sessionTasks.clear()
     this.dueAt.clear()
     this.durableIds.clear()
@@ -350,6 +417,12 @@ export class ScheduledPromptManager {
     const removedDurable = removedSession ? false : await this.store.delete(id)
     if (removedDurable) this.durableIds.delete(id)
     return removedSession || removedDurable
+  }
+
+  private cancelPendingDynamicWakeups(): void {
+    const ids = [...this.dynamicWakeups.keys()]
+    for (const id of ids) this.dueAt.delete(id)
+    this.dynamicWakeups.clear()
   }
 
   private async hasLiveOwner(task: ClaudeScheduledTask): Promise<boolean> {

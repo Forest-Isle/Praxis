@@ -23,10 +23,11 @@ async function fixture(dynamicWakeupsEnabled = false) {
   const root = await mkdtemp(join(tmpdir(), 'praxis-cron-tools-'))
   roots.push(root)
   const cwd = join(root, 'work')
+  const now = () => new Date('2026-08-05T14:00:00Z').getTime()
   const manager = new ScheduledPromptManager({
     filePath: join(cwd, '.claude', 'scheduled_tasks.json'),
     lockFile: join(root, 'config', 'praxis', 'locks', 'cron.lock'),
-    now: () => new Date('2026-08-05T14:00:00Z').getTime(),
+    now,
     processStart: async () => 'Wed Aug  5 14:16:36 2026',
     dynamicWakeupsEnabled,
   })
@@ -37,6 +38,7 @@ async function fixture(dynamicWakeupsEnabled = false) {
       base: new LocalToolRegistry({ cwd }),
       manager,
       sessionId: '20202020-2020-4020-8020-202020202020',
+      now,
     }),
   }
 }
@@ -75,6 +77,27 @@ describe('ClaudeScheduledToolRegistry', () => {
       },
       required: ['cron', 'prompt'],
       additionalProperties: false,
+    })
+    const wakeup = definitions.find(({ name }) => name === 'ScheduleWakeup')
+    expect(wakeup?.description).toContain(
+      'the user invoked /loop without an interval, asking you to self-pace iterations',
+    )
+    expect(wakeup?.inputSchema.properties).toMatchObject({
+      delaySeconds: {
+        description:
+          'Seconds from now to wake up. Clamped to [60, 3600] by the runtime. Required unless `stop` is true.',
+      },
+      reason: {
+        description:
+          'One short sentence explaining the chosen delay. Goes to telemetry and is shown to the user. Be specific. Required unless `stop` is true.',
+      },
+      prompt: {
+        description: expect.stringContaining('<<autonomous-loop-dynamic>>'),
+      },
+      stop: {
+        description:
+          'Set to true to end the dynamic loop immediately instead of scheduling another wakeup. When true, all other fields are ignored and no further wakeups fire.',
+      },
     })
   })
 
@@ -162,6 +185,8 @@ describe('ClaudeScheduledToolRegistry', () => {
 
   it('schedules and stops wakeups when the interactive gate is active', async () => {
     const { registry, cwd } = await fixture(true)
+    const scheduledFor = new Date('2026-08-05T14:01:00Z').getTime()
+    const scheduledTime = new Date(scheduledFor).toTimeString().slice(0, 8)
     await expect(
       execute(registry, cwd, 'ScheduleWakeup', {
         delaySeconds: 1,
@@ -169,16 +194,26 @@ describe('ClaudeScheduledToolRegistry', () => {
         prompt: 'continue probe',
       }),
     ).resolves.toMatchObject({
-      content: 'Wakeup scheduled in 60 seconds: keep the loop warm',
+      content: `Next wakeup scheduled for ${scheduledTime} (in 60s) (clamped to 60s from your requested value). Nothing more to do this turn — the harness re-invokes you when the wakeup fires or a task-notification arrives.`,
       nativeToolUseResult: {
+        scheduledFor,
         clampedDelaySeconds: 60,
         wasClamped: true,
       },
     })
     await expect(
       execute(registry, cwd, 'ScheduleWakeup', { stop: true }),
-    ).resolves.toMatchObject({
-      nativeToolUseResult: { stopped: true, cancelledWakeups: 1 },
+    ).resolves.toEqual({
+      content:
+        'Loop stopped — cancelled 1 pending wakeup(s); no further dynamic-loop wakeups scheduled. If you armed a Monitor for this loop, TaskStop it now; otherwise nothing more to do this turn.',
+      isError: false,
+      nativeToolUseResult: {
+        scheduledFor: 0,
+        clampedDelaySeconds: 0,
+        wasClamped: false,
+        stopped: true,
+        cancelledWakeups: 1,
+      },
     })
   })
 

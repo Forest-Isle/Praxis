@@ -17,7 +17,12 @@ afterEach(async () => {
   )
 })
 
-async function fixture(now: () => number, dynamicWakeupsEnabled = false) {
+async function fixture(
+  now: () => number,
+  dynamicWakeupsEnabled = false,
+  dynamicLoopMaxAgeMs?: number,
+  dynamicCacheLeadMs?: number,
+) {
   const root = await mkdtemp(join(tmpdir(), 'praxis-cron-manager-'))
   roots.push(root)
   const filePath = join(root, 'work', '.claude', 'scheduled_tasks.json')
@@ -28,6 +33,8 @@ async function fixture(now: () => number, dynamicWakeupsEnabled = false) {
       lockFile: join(root, 'config', 'praxis', 'locks', 'cron.lock'),
       now,
       dynamicWakeupsEnabled,
+      ...(dynamicLoopMaxAgeMs === undefined ? {} : { dynamicLoopMaxAgeMs }),
+      ...(dynamicCacheLeadMs === undefined ? {} : { dynamicCacheLeadMs }),
       processStart: async () => 'Wed Aug  5 14:16:36 2026',
     }),
   }
@@ -224,6 +231,70 @@ describe('ScheduledPromptManager', () => {
     expect(manager.stopWakeups()).toBe(0)
   })
 
+  it('rounds delays and aligns active wakeups to the next minute', async () => {
+    const now = new Date(2026, 0, 1, 0, 0, 10).getTime()
+    const { manager } = await fixture(() => now, true)
+
+    expect(
+      manager.scheduleWakeup({
+        delaySeconds: 60.4,
+        prompt: 'minute aligned loop',
+      }),
+    ).toEqual({
+      scheduledFor: new Date(2026, 0, 1, 0, 2).getTime(),
+      clampedDelaySeconds: 60,
+      wasClamped: false,
+    })
+  })
+
+  it('keeps short wakeups inside Claude cache window when minute alignment overshoots', async () => {
+    const now = new Date(2026, 0, 1, 0, 0, 10).getTime()
+    const { manager } = await fixture(() => now, true)
+
+    expect(
+      manager.scheduleWakeup({ delaySeconds: 270, prompt: 'cache warm loop' }),
+    ).toMatchObject({
+      scheduledFor: new Date(2026, 0, 1, 0, 4).getTime(),
+      clampedDelaySeconds: 270,
+      wasClamped: false,
+    })
+  })
+
+  it('does not apply cache lead at or beyond the five-minute TTL', async () => {
+    const now = new Date(2026, 0, 1, 0, 0, 10).getTime()
+    const { manager } = await fixture(() => now, true)
+
+    expect(
+      manager.scheduleWakeup({ delaySeconds: 301, prompt: 'long fallback' }),
+    ).toMatchObject({
+      scheduledFor: new Date(2026, 0, 1, 0, 6).getTime(),
+      clampedDelaySeconds: 301,
+    })
+  })
+
+  it('supports disabling cache lead and never schedules before the sixty-second floor', async () => {
+    const now = new Date(2026, 0, 1, 0, 0, 10).getTime()
+    const { manager: noLead } = await fixture(() => now, true, undefined, 0)
+    expect(
+      noLead.scheduleWakeup({ delaySeconds: 270, prompt: 'no cache lead' }),
+    ).toMatchObject({
+      scheduledFor: new Date(2026, 0, 1, 0, 5).getTime(),
+    })
+
+    const { manager: largeLead } = await fixture(
+      () => now,
+      true,
+      undefined,
+      300_000,
+    )
+    const wakeup = largeLead.scheduleWakeup({
+      delaySeconds: 60,
+      prompt: 'floor loop',
+    })
+    if (!wakeup) throw new Error('expected active wakeup')
+    expect(wakeup.scheduledFor).toBeGreaterThanOrEqual(now + 60_000)
+  })
+
   it('keeps dynamic wakeups inactive outside the interactive runtime', async () => {
     const now = () => new Date(2026, 0, 1, 0, 0).getTime()
     const { manager } = await fixture(now)
@@ -232,7 +303,7 @@ describe('ScheduledPromptManager', () => {
     ).toBeNull()
   })
 
-  it('delivers multiple dynamic wakeups exactly once and clears them on close', async () => {
+  it('supersedes an existing dynamic wakeup and clears state on close', async () => {
     let now = new Date(2026, 0, 1, 0, 0).getTime()
     const { manager } = await fixture(() => now, true)
     manager.scheduleWakeup({ delaySeconds: 60, prompt: 'first wakeup' })
@@ -242,10 +313,7 @@ describe('ScheduledPromptManager', () => {
     const delivered = (
       await Promise.all([manager.drainDue(), manager.drainDue()])
     ).flat()
-    expect(delivered.map(({ prompt }) => prompt).sort()).toEqual([
-      'first wakeup',
-      'second wakeup',
-    ])
+    expect(delivered.map(({ prompt }) => prompt)).toEqual(['second wakeup'])
     await expect(manager.drainDue()).resolves.toEqual([])
 
     manager.scheduleWakeup({ delaySeconds: 60, prompt: 'closed wakeup' })
@@ -253,6 +321,33 @@ describe('ScheduledPromptManager', () => {
     now += 60_000
     await expect(manager.drainDue()).resolves.toEqual([])
     expect(manager.stopWakeups()).toBe(0)
+  })
+
+  it('ends a continuously rearmed dynamic loop at its maximum age', async () => {
+    let now = new Date(2026, 0, 1, 0, 0).getTime()
+    const { manager } = await fixture(() => now, true, 120_000)
+    const prompt = 'bounded loop'
+
+    expect(manager.scheduleWakeup({ delaySeconds: 60, prompt })).not.toBeNull()
+    now += 60_000
+    await manager.drainDue()
+    expect(manager.scheduleWakeup({ delaySeconds: 60, prompt })).not.toBeNull()
+    now += 60_000
+    await manager.drainDue()
+    expect(manager.scheduleWakeup({ delaySeconds: 60, prompt })).toBeNull()
+  })
+
+  it('clears loop age when stop follows a consumed wakeup', async () => {
+    let now = new Date(2026, 0, 1, 0, 0).getTime()
+    const { manager } = await fixture(() => now, true, 120_000)
+    const prompt = 'stopped loop'
+
+    manager.scheduleWakeup({ delaySeconds: 60, prompt })
+    now += 60_000
+    await manager.drainDue()
+    expect(manager.stopWakeups()).toBe(0)
+    now += 60_000
+    expect(manager.scheduleWakeup({ delaySeconds: 60, prompt })).not.toBeNull()
   })
 
   it('does not repopulate timers when closed during initialization', async () => {

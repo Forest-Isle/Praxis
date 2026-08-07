@@ -423,18 +423,21 @@ remain separate tool/CLI work.
 
 ## Stage 24 - interactive dynamic wakeups
 
-Status: implemented with one documented live-oracle limitation.
+Status: complete for Claude Code 2.1.208.
 
-- [x] process-local one-shot scheduling with documented 60-3600 second clamp
-- [x] shared idle delivery queue, multiple pending wakeups, and exactly-once fire
+- [x] process-local one-shot scheduling with nearest-second rounding,
+      60-3600 second clamp, and next-minute alignment
+- [x] shared idle delivery queue, pending-wakeup replacement, and exactly-once
+      fire
 - [x] stop cancellation for pending/queued dynamic work without touching Cron
+- [x] continuous-loop maximum age and inactive/aged-out terminal result
 - [x] close/abort cleanup and headless inactive gate
 - [x] default scheduling-tool permissions and option-only TTY control forwarding
 - [x] focused manager/tool/CLI/permission tests
-- [ ] exact active Claude result/native shape; isolated API-auth interactive PTY
-      remained inactive under all observable gate inputs
+- [x] exact Claude description, input/output schema, active/inactive/stop result,
+      and native shape from installed 2.1.208 SDK and executable implementation
 
-The active Praxis path is fixture-verified and deliberately creates no shared
+The active Praxis path is compatibility-gated and deliberately creates no shared
 artifact. Claude headless/manual inactive behavior remains live-verified.
 
 ## Stage 25 - native worktree lifecycle

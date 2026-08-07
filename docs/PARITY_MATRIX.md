@@ -94,7 +94,7 @@ started/optional-progress/response ordering.
 | Worktree enter/exit                | Complete | Native Git lifecycle, state entries, dynamic cwd, CLI `--worktree`, and classic tmux launcher; live bidirectional gate          |
 | TaskCreate/Get/List/Update         | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate                |
 | CronCreate/List/Delete and `/loop` | Complete | Session/durable jobs, shared native file, idle delivery, expiry, and live bidirectional gate                                    |
-| ScheduleWakeup                     | Partial  | Praxis interactive one-shot/stop lifecycle complete; Claude inactive gate live; active Claude gate/result still unobservable    |
+| ScheduleWakeup                     | Complete | Exact SDK schema/executable result; minute-aligned replacement lifecycle, max age, stop, inactive gate, and native result       |
 | Monitor                            | N/A      | Claude Code 2.1.208 exposes no standalone Monitor tool                                                                          |
 | ReportFindings                     | Complete | Local MCP-only typed finding validation and Claude-shaped count/level/findings result; installed schema and call gate           |
 | DesignSync                         | Excluded | Claude 2.1.208 exposes hosted design-system synchronization surface; outside local single-user CLI scope                        |
@@ -116,7 +116,7 @@ started/optional-progress/response ordering.
 
 ## Remaining implementation order
 
-1. Exact active Claude `ScheduleWakeup` result and cross-runtime Workflow replay
-   key if observable from future black-box evidence.
+1. Exact cross-runtime Workflow replay key if observable from future black-box
+   evidence.
 2. Final live black-box matrix, package/performance regression, and macOS/Linux
    Node 24/25 clean-room release gates.

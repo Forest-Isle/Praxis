@@ -152,13 +152,13 @@ Included:
 - text and structured JSON output;
 - top-level persistent background sessions, durable task graphs, and
   foreground/background Bash lifecycle;
-- session-only and shared durable Cron prompts plus fixed-interval `/loop`.
+- session-only and shared durable Cron prompts plus fixed-interval `/loop`;
 - interactive process-local dynamic `ScheduleWakeup` one-shots.
 
 Deferred:
 
-- exact Claude active `ScheduleWakeup` result shape and Workflow replay-key
-  interoperability where private derivations remain unobservable;
+- exact Workflow replay-key interoperability where private derivation remains
+  unobservable;
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
 - transcript migration across unsupported Claude versions;
