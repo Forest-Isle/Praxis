@@ -134,7 +134,7 @@ routing.
 | Capability           | Status   | Evidence / remaining work                                                                                                               |
 | -------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                         |
-| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; shared OAuth credentials and stdio protocol gates                |
+| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier             |
 | `plugin`             | Complete | Local and Claude-native marketplace install/enable/disable/update/list/init/validate with bounded sources and recovery                  |
 | `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                        |
 | `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate |

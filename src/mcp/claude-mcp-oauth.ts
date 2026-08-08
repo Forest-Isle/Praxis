@@ -31,6 +31,8 @@ export interface McpOAuthServerIdentity {
   type: 'http' | 'sse'
   url: string
   headers?: Record<string, string>
+  clientId?: string
+  callbackPort?: number
 }
 
 export interface ClaudeMcpOAuthRecord {
@@ -51,6 +53,7 @@ export interface ClaudeMcpOAuthRecord {
 
 interface CredentialEnvelope {
   mcpOAuth?: Record<string, ClaudeMcpOAuthRecord>
+  mcpOAuthClientConfig?: Record<string, { clientSecret?: string }>
   [key: string]: unknown
 }
 
@@ -62,10 +65,18 @@ export interface McpOAuthStoreOptions {
 export interface McpOAuthLoginOptions {
   configRoot: string
   server: McpOAuthServerIdentity
+  clientId?: string
+  clientSecret?: string
+  callbackPort?: number
   noBrowser?: boolean
   write: (message: string) => void
   readRedirectUrl?: () => Promise<string>
   openBrowser?: (url: URL) => Promise<void>
+}
+
+interface ConfiguredMcpOAuthClient {
+  clientId: string
+  clientSecret?: string
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -292,6 +303,35 @@ export class ClaudeMcpOAuthStore {
     await this.mutate(server, () => undefined)
   }
 
+  async readClientSecret(
+    server: McpOAuthServerIdentity,
+  ): Promise<string | undefined> {
+    const envelope = await this.readEnvelope()
+    return stringValue(
+      envelope.mcpOAuthClientConfig?.[mcpOAuthRecordKey(server)]?.clientSecret,
+    )
+  }
+
+  async saveClientSecret(
+    server: McpOAuthServerIdentity,
+    clientSecret: string,
+  ): Promise<void> {
+    await this.withLock(async () => {
+      const envelope = await this.readEnvelope()
+      const existing = isRecord(envelope.mcpOAuthClientConfig)
+        ? { ...envelope.mcpOAuthClientConfig }
+        : {}
+      const key = mcpOAuthRecordKey(server)
+      const current = isRecord(existing[key]) ? existing[key] : {}
+      existing[key] = { ...current, clientSecret }
+      envelope.mcpOAuthClientConfig = existing as Record<
+        string,
+        { clientSecret?: string }
+      >
+      await this.writeEnvelope(envelope)
+    })
+  }
+
   private async readEnvelope(): Promise<CredentialEnvelope> {
     if (this.useKeychain) {
       const keychain = await readKeychainEnvelope(this.service)
@@ -348,6 +388,39 @@ function clientMetadata(
   }
 }
 
+export async function readMcpClientSecret(): Promise<string> {
+  const envSecret = process.env.MCP_CLIENT_SECRET
+  if (envSecret) return envSecret
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      'No TTY available to prompt for client secret. Set MCP_CLIENT_SECRET env var instead.',
+    )
+  }
+  return new Promise((resolvePromise, rejectPromise) => {
+    process.stderr.write('Enter OAuth client secret: ')
+    process.stdin.setRawMode?.(true)
+    let secret = ''
+    const onData = (chunk: Buffer) => {
+      const value = chunk.toString()
+      if (value === '\n' || value === '\r') {
+        process.stdin.setRawMode?.(false)
+        process.stdin.removeListener('data', onData)
+        process.stderr.write('\n')
+        resolvePromise(secret)
+      } else if (value === '\u0003') {
+        process.stdin.setRawMode?.(false)
+        process.stdin.removeListener('data', onData)
+        rejectPromise(new Error('Cancelled'))
+      } else if (value === '\u007f' || value === '\b') {
+        secret = secret.slice(0, -1)
+      } else {
+        secret += value
+      }
+    }
+    process.stdin.on('data', onData)
+  })
+}
+
 export class ClaudeMcpOAuthProvider implements OAuthClientProvider {
   private codeVerifierValue: string | undefined
   private stateValue: string | undefined
@@ -359,6 +432,7 @@ export class ClaudeMcpOAuthProvider implements OAuthClientProvider {
     private readonly redirectUri: string,
     private readonly onAuthorization: (url: URL) => Promise<void>,
     record?: ClaudeMcpOAuthRecord,
+    private readonly configuredClient?: ConfiguredMcpOAuthClient,
   ) {
     this.recordValue = record
   }
@@ -384,17 +458,25 @@ export class ClaudeMcpOAuthProvider implements OAuthClientProvider {
 
   clientInformation(): OAuthClientInformationMixed | undefined {
     if (
-      !this.recordValue?.clientId ||
-      this.recordValue.redirectUri !== this.redirectUri
+      this.recordValue?.clientId &&
+      this.recordValue.redirectUri === this.redirectUri
     ) {
-      return undefined
+      return {
+        client_id: this.recordValue.clientId,
+        ...(this.recordValue.clientSecret
+          ? { client_secret: this.recordValue.clientSecret }
+          : {}),
+        redirect_uris: [this.recordValue.redirectUri ?? this.redirectUri],
+        token_endpoint_auth_method: 'none',
+      }
     }
+    if (!this.configuredClient) return undefined
     return {
-      client_id: this.recordValue.clientId,
-      ...(this.recordValue.clientSecret
-        ? { client_secret: this.recordValue.clientSecret }
+      client_id: this.configuredClient.clientId,
+      ...(this.configuredClient.clientSecret
+        ? { client_secret: this.configuredClient.clientSecret }
         : {}),
-      redirect_uris: [this.recordValue.redirectUri ?? this.redirectUri],
+      redirect_uris: [this.redirectUri],
       token_endpoint_auth_method: 'none',
     }
   }
@@ -567,7 +649,21 @@ export function mcpOAuthServerIdentity(
     )
   }
   const headers = isStringRecord(config.headers) ? config.headers : undefined
-  return { name, type, url: config.url, ...(headers ? { headers } : {}) }
+  const oauth = isRecord(config.oauth) ? config.oauth : undefined
+  const clientId = stringValue(oauth?.clientId)
+  const callbackPort =
+    typeof oauth?.callbackPort === 'number' &&
+    Number.isFinite(oauth.callbackPort)
+      ? oauth.callbackPort
+      : undefined
+  return {
+    name,
+    type,
+    url: config.url,
+    ...(headers ? { headers } : {}),
+    ...(clientId ? { clientId } : {}),
+    ...(callbackPort === undefined ? {} : { callbackPort }),
+  }
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
@@ -577,7 +673,7 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   )
 }
 
-async function listenCallbackServer(): Promise<{
+async function listenCallbackServer(port = 0): Promise<{
   server: Server
   redirectUri: string
   wait: () => Promise<string>
@@ -607,7 +703,7 @@ async function listenCallbackServer(): Promise<{
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.once('listening', () => resolvePromise())
     server.once('error', rejectPromise)
-    server.listen(0, '127.0.0.1')
+    server.listen(port, '127.0.0.1')
   })
   const address = server.address()
   if (!address || typeof address === 'string') {
@@ -691,9 +787,15 @@ function validateAuthorizationCallback(
 export async function authenticateMcpServer(
   options: McpOAuthLoginOptions,
 ): Promise<'AUTHORIZED'> {
-  const callback = await listenCallbackServer()
+  const callback = await listenCallbackServer(
+    options.callbackPort ?? options.server.callbackPort,
+  )
   const store = new ClaudeMcpOAuthStore({ configRoot: options.configRoot })
   const existing = await store.read(options.server)
+  const clientId = options.clientId ?? options.server.clientId
+  const clientSecret =
+    options.clientSecret ??
+    (clientId ? await store.readClientSecret(options.server) : undefined)
   const provider = new ClaudeMcpOAuthProvider(
     store,
     options.server,
@@ -705,6 +807,12 @@ export async function authenticateMcpServer(
       }
     },
     existing,
+    clientId
+      ? {
+          clientId,
+          ...(clientSecret ? { clientSecret } : {}),
+        }
+      : undefined,
   )
   try {
     const result = await auth(provider, { serverUrl: options.server.url })
@@ -763,6 +871,9 @@ export async function loadMcpOAuthProvider(
   const record = await store.read(server)
   if (!record || (!record.accessToken && !record.refreshToken)) return undefined
   const redirectUri = record.redirectUri ?? 'http://localhost:0/callback'
+  const clientSecret = server.clientId
+    ? await store.readClientSecret(server)
+    : undefined
   return new ClaudeMcpOAuthProvider(
     store,
     server,
@@ -773,5 +884,11 @@ export async function loadMcpOAuthProvider(
       )
     },
     record,
+    server.clientId
+      ? {
+          clientId: server.clientId,
+          ...(clientSecret ? { clientSecret } : {}),
+        }
+      : undefined,
   )
 }

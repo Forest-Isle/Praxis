@@ -24,6 +24,7 @@ export type CliPermissionMode =
   | 'default'
 
 export type CliMcpScope = 'local' | 'project' | 'user'
+export type CliMcpTransport = 'stdio' | 'sse' | 'http'
 export type CliThinkingMode = 'enabled' | 'adaptive' | 'disabled'
 
 export interface CliControls {
@@ -100,6 +101,12 @@ export interface CliInvocation extends CliControls {
   verbose: boolean
   legacyJson: boolean
   mcpScope?: CliMcpScope
+  mcpTransport?: CliMcpTransport
+  mcpEnv: readonly string[]
+  mcpHeaders: readonly string[]
+  mcpCallbackPort?: string
+  mcpClientId?: string
+  mcpClientSecret: boolean
   mcpNoBrowser: boolean
   mcpDebug: boolean
 }
@@ -319,6 +326,7 @@ const PERMISSION_MODES = [
 ] as const
 const SETTING_SOURCES = ['user', 'project', 'local'] as const
 const MCP_SCOPES = ['local', 'project', 'user'] as const
+const MCP_TRANSPORTS = ['stdio', 'sse', 'http'] as const
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const THINKING_MODES = ['enabled', 'adaptive', 'disabled'] as const
 const MAX_INPUT_LINE_BYTES = 1024 * 1024
@@ -441,6 +449,16 @@ function positiveInteger(value: string, label: string): number {
   return parsed
 }
 
+function parseMcpTransport(value: string): CliMcpTransport {
+  if (value === 'streamable-http') return 'http'
+  if (MCP_TRANSPORTS.includes(value as CliMcpTransport)) {
+    return value as CliMcpTransport
+  }
+  throw new Error(
+    `Invalid transport type: ${value}. Must be one of: stdio, sse, http (or streamable-http)`,
+  )
+}
+
 export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   const args: string[] = []
   let agent: string | undefined
@@ -512,6 +530,12 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let prefill: string | undefined
   let promptSuggestions = false
   let mcpScope: CliMcpScope | undefined
+  let mcpTransport: CliMcpTransport | undefined
+  const mcpEnv: string[] = []
+  const mcpHeaders: string[] = []
+  let mcpCallbackPort: string | undefined
+  let mcpClientId: string | undefined
+  let mcpClientSecret = false
   let mcpNoBrowser = false
   let mcpDebug = false
 
@@ -635,12 +659,64 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       prefill = value.slice('--prefill='.length)
       continue
     }
-    const selectedMcpScope = optionValue(argv, index, '--scope')
+    const selectedMcpScope =
+      value === '-s'
+        ? { value: requiredValue(argv, index, '--scope'), consumed: 1 }
+        : optionValue(argv, index, '--scope')
     if (selectedMcpScope) {
       if (mcpScope !== undefined)
         throw new Error('--scope may only be specified once')
       mcpScope = choice(selectedMcpScope.value, '--scope', MCP_SCOPES)
       index += selectedMcpScope.consumed
+      continue
+    }
+    const selectedMcpTransport =
+      value === '-t'
+        ? { value: requiredValue(argv, index, '--transport'), consumed: 1 }
+        : optionValue(argv, index, '--transport')
+    if (selectedMcpTransport) {
+      if (mcpTransport !== undefined) {
+        throw new Error('--transport may only be specified once')
+      }
+      mcpTransport = parseMcpTransport(selectedMcpTransport.value)
+      index += selectedMcpTransport.consumed
+      continue
+    }
+    const selectedMcpEnv = listOptionValue(argv, index, ['-e', '--env'])
+    if (selectedMcpEnv) {
+      mcpEnv.push(...selectedMcpEnv.values)
+      index += selectedMcpEnv.consumed
+      continue
+    }
+    const selectedMcpHeaders = listOptionValue(argv, index, ['-H', '--header'])
+    if (selectedMcpHeaders) {
+      mcpHeaders.push(...selectedMcpHeaders.values)
+      index += selectedMcpHeaders.consumed
+      continue
+    }
+    const selectedMcpCallbackPort =
+      value === '--callback-port' && /^-\d+$/u.test(argv[index + 1] ?? '')
+        ? { value: argv[index + 1] as string, consumed: 1 }
+        : optionValue(argv, index, '--callback-port')
+    if (selectedMcpCallbackPort) {
+      if (mcpCallbackPort !== undefined) {
+        throw new Error('--callback-port may only be specified once')
+      }
+      mcpCallbackPort = selectedMcpCallbackPort.value
+      index += selectedMcpCallbackPort.consumed
+      continue
+    }
+    const selectedMcpClientId = optionValue(argv, index, '--client-id')
+    if (selectedMcpClientId) {
+      if (mcpClientId !== undefined) {
+        throw new Error('--client-id may only be specified once')
+      }
+      mcpClientId = selectedMcpClientId.value
+      index += selectedMcpClientId.consumed
+      continue
+    }
+    if (value === '--client-secret') {
+      mcpClientSecret = true
       continue
     }
     const selectedCwd = optionValue(argv, index, '--cwd')
@@ -1290,6 +1366,12 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     prefill,
     promptSuggestions,
     ...(mcpScope === undefined ? {} : { mcpScope }),
+    ...(mcpTransport === undefined ? {} : { mcpTransport }),
+    mcpEnv,
+    mcpHeaders,
+    ...(mcpCallbackPort === undefined ? {} : { mcpCallbackPort }),
+    ...(mcpClientId === undefined ? {} : { mcpClientId }),
+    mcpClientSecret,
     mcpNoBrowser,
     mcpDebug,
   }

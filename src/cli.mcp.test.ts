@@ -1,16 +1,20 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { run, type CliDependencies, type CliIO } from './cli.js'
-import { ClaudeMcpOAuthStore } from './mcp/claude-mcp-oauth.js'
+import {
+  ClaudeMcpOAuthStore,
+  mcpOAuthRecordKey,
+} from './mcp/claude-mcp-oauth.js'
 
 const roots: string[] = []
 
 afterEach(async () => {
   vi.unstubAllEnvs()
+  vi.restoreAllMocks()
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true })),
   )
@@ -67,7 +71,316 @@ function baseDependencies(): CliDependencies {
   }
 }
 
+async function temporaryConfigRoot(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-cli-mcp-add-'))
+  roots.push(root)
+  const configRoot = join(root, 'config')
+  vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
+  vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+  return configRoot
+}
+
 describe('Praxis MCP CLI commands', () => {
+  it('adds a stdio server with repeatable environment variables and subprocess arguments', async () => {
+    const configRoot = await temporaryConfigRoot()
+    const capture = captureIO()
+
+    await expect(
+      run(
+        [
+          'mcp',
+          'add',
+          'stdio-fixture',
+          '-e',
+          'ONE=1',
+          '-e',
+          'TWO=two',
+          '--',
+          'node',
+          'server.mjs',
+          '--flag',
+        ],
+        capture.io,
+        baseDependencies(),
+      ),
+    ).resolves.toBe(0)
+
+    const state = JSON.parse(
+      await readFile(join(configRoot, '.claude.json'), 'utf8'),
+    ) as {
+      projects: Record<string, { mcpServers: Record<string, unknown> }>
+    }
+    const project = Object.values(state.projects)[0]
+    expect(project?.mcpServers['stdio-fixture']).toEqual({
+      type: 'stdio',
+      command: 'node',
+      args: ['server.mjs', '--flag'],
+      env: { ONE: '1', TWO: 'two' },
+    })
+    expect(capture.stdout.join('')).toContain(
+      'Added stdio MCP server stdio-fixture with command: node server.mjs --flag to local config',
+    )
+  })
+
+  it('adds HTTP and SSE servers with OAuth metadata, headers, and an external client secret', async () => {
+    const configRoot = await temporaryConfigRoot()
+    vi.stubEnv('MCP_CLIENT_SECRET', 'fixture-client-secret')
+    const capture = captureIO()
+
+    await expect(
+      run(
+        [
+          'mcp',
+          'add',
+          '--scope',
+          'user',
+          '--transport',
+          'http',
+          'web-fixture',
+          'https://example.test/mcp',
+          '-H',
+          'Authorization: Bearer fixture-header',
+          '-H',
+          'X-Test: yes',
+          '--callback-port',
+          '4321',
+          '--client-id',
+          'fixture-client',
+          '--client-secret',
+        ],
+        capture.io,
+        baseDependencies(),
+      ),
+    ).resolves.toBe(0)
+    await expect(
+      run(
+        [
+          'mcp',
+          'add',
+          '-s',
+          'user',
+          '-t',
+          'sse',
+          'sse-fixture',
+          'https://example.test/sse',
+        ],
+        capture.io,
+        baseDependencies(),
+      ),
+    ).resolves.toBe(0)
+
+    const userState = JSON.parse(
+      await readFile(join(configRoot, '.claude.json'), 'utf8'),
+    ) as { mcpServers: Record<string, unknown> }
+    expect(userState.mcpServers['web-fixture']).toEqual({
+      type: 'http',
+      url: 'https://example.test/mcp',
+      headers: {
+        Authorization: 'Bearer fixture-header',
+        'X-Test': 'yes',
+      },
+      oauth: { clientId: 'fixture-client', callbackPort: 4321 },
+    })
+    expect(userState.mcpServers['sse-fixture']).toEqual({
+      type: 'sse',
+      url: 'https://example.test/sse',
+    })
+    const web = {
+      name: 'web-fixture',
+      type: 'http' as const,
+      url: 'https://example.test/mcp',
+      headers: {
+        Authorization: 'Bearer fixture-header',
+        'X-Test': 'yes',
+      },
+    }
+    const credentials = JSON.parse(
+      await readFile(join(configRoot, '.credentials.json'), 'utf8'),
+    ) as { mcpOAuthClientConfig: Record<string, { clientSecret?: string }> }
+    expect(credentials.mcpOAuthClientConfig[mcpOAuthRecordKey(web)]).toEqual({
+      clientSecret: 'fixture-client-secret',
+    })
+    expect(JSON.stringify(userState)).not.toContain('fixture-client-secret')
+    expect(capture.stdout.join('')).toContain(
+      'Added HTTP MCP server web-fixture with URL: https://example.test/mcp to user config',
+    )
+    expect(capture.stdout.join('')).toContain('"Authorization": "[REDACTED]"')
+  })
+
+  it('matches Claude transport-specific add flags and callback-port coercion', async () => {
+    const configRoot = await temporaryConfigRoot()
+    const capture = captureIO()
+    const add = (name: string, port: string) =>
+      run(
+        [
+          'mcp',
+          'add',
+          '-t',
+          'http',
+          name,
+          'https://example.test/mcp',
+          '--callback-port',
+          port,
+        ],
+        capture.io,
+        baseDependencies(),
+      )
+
+    await expect(add('callback-alpha', 'abc')).resolves.toBe(0)
+    await expect(add('callback-prefix', '12junk')).resolves.toBe(0)
+    await expect(add('callback-zero', '0')).resolves.toBe(0)
+    await expect(add('callback-wide', '65536')).resolves.toBe(0)
+    await expect(add('callback-negative', '-1')).resolves.toBe(1)
+    await expect(
+      run(
+        [
+          'mcp',
+          'add',
+          '-t',
+          'http',
+          'http-extra',
+          'https://example.test/mcp',
+          'ignored',
+          '-e',
+          'ONE=1',
+        ],
+        capture.io,
+        baseDependencies(),
+      ),
+    ).resolves.toBe(0)
+    await expect(
+      run(
+        ['mcp', 'add', 'stdio-header', 'node', '-H', 'X-Test: yes'],
+        capture.io,
+        baseDependencies(),
+      ),
+    ).resolves.toBe(0)
+
+    const state = JSON.parse(
+      await readFile(join(configRoot, '.claude.json'), 'utf8'),
+    ) as {
+      projects: Record<string, { mcpServers: Record<string, unknown> }>
+    }
+    const servers = Object.values(state.projects)[0]?.mcpServers ?? {}
+    expect(servers['callback-alpha']).toEqual({
+      type: 'http',
+      url: 'https://example.test/mcp',
+    })
+    expect(servers['callback-prefix']).toEqual({
+      type: 'http',
+      url: 'https://example.test/mcp',
+      oauth: { callbackPort: 12 },
+    })
+    expect(servers['callback-zero']).toEqual({
+      type: 'http',
+      url: 'https://example.test/mcp',
+    })
+    expect(servers['callback-wide']).toEqual({
+      type: 'http',
+      url: 'https://example.test/mcp',
+      oauth: { callbackPort: 65536 },
+    })
+    expect(servers['callback-negative']).toBeUndefined()
+    expect(servers['http-extra']).toEqual({
+      type: 'http',
+      url: 'https://example.test/mcp',
+    })
+    expect(servers['stdio-header']).toEqual({
+      type: 'stdio',
+      command: 'node',
+      args: [],
+      env: {},
+    })
+    expect(capture.stderr.join('')).toContain(
+      'Invalid configuration: : Invalid input',
+    )
+  })
+
+  it('rolls back an added config if client-secret persistence fails', async () => {
+    const configRoot = await temporaryConfigRoot()
+    vi.stubEnv('MCP_CLIENT_SECRET', 'fixture-client-secret')
+    const persist = vi
+      .spyOn(ClaudeMcpOAuthStore.prototype, 'saveClientSecret')
+      .mockRejectedValueOnce(new Error('credential write failed'))
+    const capture = captureIO()
+
+    await expect(
+      run(
+        [
+          'mcp',
+          'add',
+          '-t',
+          'http',
+          'rollback-fixture',
+          'https://example.test/mcp',
+          '--client-id',
+          'fixture-client',
+          '--client-secret',
+        ],
+        capture.io,
+        baseDependencies(),
+      ),
+    ).resolves.toBe(1)
+    persist.mockRestore()
+
+    const state = JSON.parse(
+      await readFile(join(configRoot, '.claude.json'), 'utf8'),
+    ) as {
+      projects: Record<string, { mcpServers: Record<string, unknown> }>
+    }
+    expect(
+      Object.values(state.projects)[0]?.mcpServers['rollback-fixture'],
+    ).toBeUndefined()
+    expect(capture.stderr.join('')).toContain('credential write failed')
+  })
+
+  it('prints MCP add help and rejects malformed add inputs', async () => {
+    const configRoot = await temporaryConfigRoot()
+    const help = captureIO()
+    await expect(
+      run(['mcp', 'add', '--help'], help.io, baseDependencies()),
+    ).resolves.toBe(0)
+    expect(help.stdout.join('')).toContain(
+      'Usage: praxis mcp add [options] <name> <commandOrUrl> [args...]',
+    )
+    expect(help.stdout.join('')).toContain('--callback-port <port>')
+
+    for (const [argv, pattern] of [
+      [
+        ['mcp', 'add', '--transport', 'websocket', 'fixture', 'node'],
+        'Invalid transport type: websocket',
+      ],
+      [
+        ['mcp', 'add', 'fixture', '-e', 'BROKEN', '--', 'node'],
+        'Invalid environment variable format: BROKEN',
+      ],
+      [
+        [
+          'mcp',
+          'add',
+          '--transport',
+          'http',
+          'fixture',
+          'https://example.test/mcp',
+          '-H',
+          'broken',
+        ],
+        'Invalid header format: "broken"',
+      ],
+      [['mcp', 'add'], "missing required argument 'name'"],
+      [['mcp', 'list', '--transport', 'http'], 'only valid with mcp add'],
+    ] as const) {
+      const capture = captureIO()
+      await expect(run(argv, capture.io, baseDependencies())).resolves.toBe(1)
+      expect(capture.stderr.join('')).toContain(pattern)
+    }
+    await expect(
+      readFile(join(configRoot, '.claude.json'), 'utf8'),
+    ).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
   it('authenticates a configured HTTP server through the CLI boundary', async () => {
     const fixture = await configFixture()
     const capture = captureIO()
@@ -100,6 +413,50 @@ describe('Praxis MCP CLI commands', () => {
     )
     expect(capture.stdout.join('')).toContain(
       'Authenticated with "fixture". Its tools are now available in Praxis.',
+    )
+  })
+
+  it('passes configured OAuth client credentials and callback port into login', async () => {
+    const fixture = await configFixture()
+    const state = JSON.parse(
+      await readFile(join(fixture.configRoot, '.claude.json'), 'utf8'),
+    ) as { mcpServers: Record<string, Record<string, unknown>> }
+    state.mcpServers[fixture.server.name] = {
+      ...state.mcpServers[fixture.server.name],
+      oauth: { clientId: 'fixture-client', callbackPort: 4321 },
+    }
+    await writeFile(
+      join(fixture.configRoot, '.claude.json'),
+      JSON.stringify(state),
+    )
+    await new ClaudeMcpOAuthStore({
+      configRoot: fixture.configRoot,
+      useKeychain: false,
+    }).saveClientSecret(
+      { ...fixture.server, clientId: 'fixture-client', callbackPort: 4321 },
+      'fixture-client-secret',
+    )
+    const capture = captureIO()
+    const authenticate = vi.fn(async () => 'AUTHORIZED' as const)
+
+    await expect(
+      run(
+        ['mcp', 'login', fixture.server.name, '--scope', 'user'],
+        capture.io,
+        { ...baseDependencies(), mcpAuthenticate: authenticate },
+      ),
+    ).resolves.toBe(0)
+    expect(authenticate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientId: 'fixture-client',
+        clientSecret: 'fixture-client-secret',
+        callbackPort: 4321,
+        server: expect.objectContaining({
+          ...fixture.server,
+          clientId: 'fixture-client',
+          callbackPort: 4321,
+        }),
+      }),
     )
   })
 
