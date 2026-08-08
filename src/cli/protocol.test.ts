@@ -84,6 +84,39 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('parses PR-linked resume selectors and rejects conflicting resume modes', () => {
+    expect(parseCliInvocation(['--from-pr'])).toMatchObject({ fromPr: true })
+    expect(
+      parseCliInvocation(['--from-pr=owner/repo#42', '--', 'continue']),
+    ).toMatchObject({
+      fromPr: 'owner/repo#42',
+      args: ['continue'],
+    })
+    expect(() =>
+      parseCliInvocation(['--from-pr=42', '--resume', sessionId]),
+    ).toThrow('cannot be combined')
+    expect(() => parseCliInvocation(['--from-pr=42', '--continue'])).toThrow(
+      'cannot be combined',
+    )
+    expect(() => parseCliInvocation(['--from-pr='])).toThrow(
+      'must not be empty',
+    )
+    expect(() =>
+      parseCliInvocation(['--from-pr=42', '--session-id', sessionId]),
+    ).toThrow('if --fork-session is also specified')
+    expect(() =>
+      parseCliInvocation(['--bg', '--from-pr=42', '--session-id', sessionId]),
+    ).toThrow('if --fork-session is also specified')
+    expect(
+      parseCliInvocation([
+        '--from-pr=42',
+        '--fork-session',
+        '--session-id',
+        sessionId,
+      ]),
+    ).toMatchObject({ fromPr: '42', forkSession: true, sessionId })
+  })
+
   it('parses variadic startup file resources', () => {
     expect(
       parseCliInvocation([

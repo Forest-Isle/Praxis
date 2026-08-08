@@ -19,6 +19,10 @@ import {
   ClaudeContextAssembler,
 } from './compatibility/claude/context.js'
 import {
+  createClaudePrSessionFilter,
+  filterClaudePrLinkedSessions,
+} from './compatibility/claude/pr-links.js'
+import {
   loadClaudeContextResources,
   loadClaudeSettings,
   loadClaudeSharedResources,
@@ -35,6 +39,7 @@ import {
 } from './core/runtime.js'
 import {
   runInteractive as renderInteractive,
+  type InteractiveResumeOptions,
   type InteractiveServiceFactory,
 } from './cli/interactive.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
@@ -210,6 +215,7 @@ Options:
   -p, --print                         Print response and exit
   --bg, --background                  Run as a persistent background agent
   -r, --resume <session-id>           Resume a session
+  --from-pr [number-or-url]           Resume a session linked to a GitHub PR
   -c, --continue                      Continue latest session in this directory
   --fork-session                      Fork when resuming or continuing
   --session-id <uuid>                 Use an explicit ID for a new session
@@ -393,6 +399,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
   runInteractive?(options: {
     agent?: string
     controls?: CliControls
+    resume?: InteractiveResumeOptions & { fromPr?: string | true }
     signal?: AbortSignal
   }): Promise<number>
   topLevelAgents?: TopLevelAgentCommands
@@ -953,7 +960,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
 
 const defaultDependencies: CliDependencies = {
   createService: createDefaultService,
-  runInteractive: ({ agent, controls, signal }) =>
+  runInteractive: ({ agent, controls, resume, signal }) =>
     renderInteractive({
       factory: {
         createService: (options) =>
@@ -967,6 +974,15 @@ const defaultDependencies: CliDependencies = {
       },
       ...(signal ? { signal } : {}),
       ...(controls?.axScreenReader ? { axScreenReader: true } : {}),
+      ...(resume === undefined ? {} : { resume }),
+      ...(resume?.fromPr === undefined
+        ? {}
+        : {
+            sessionFilter: createClaudePrSessionFilter<SessionSummary>(
+              resume.fromPr,
+            ),
+            requireSession: true,
+          }),
     }),
   topLevelAgents: new TopLevelAgentManager({
     configRoot: resolve(
@@ -980,6 +996,24 @@ const defaultDependencies: CliDependencies = {
   selfUpdate: runSelfUpdate,
 }
 
+export async function createBackgroundWorkerRuntime(
+  workerSink: RuntimeEventSink,
+  dispatch: { argv: string[] },
+  createService: CliDependencies['createService'] = createDefaultService,
+): Promise<Awaited<ReturnType<CliDependencies['createService']>>> {
+  const invocation = parseCliInvocation(dispatch.argv)
+  return createService({
+    eventSink: workerSink,
+    requireProvider: true,
+    ...(invocation.retryInterruptedTools
+      ? { approveRecovery: () => true }
+      : {}),
+    ...(invocation.agent ? { agent: invocation.agent } : {}),
+    controls: invocation,
+    sessionKind: 'bg',
+  })
+}
+
 async function runBackgroundWorker(id: string): Promise<void> {
   const configRoot = resolve(
     process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
@@ -987,16 +1021,8 @@ async function runBackgroundWorker(id: string): Promise<void> {
   await runTopLevelAgentWorker({
     configRoot,
     id,
-    async createRuntime(workerSink, dispatch) {
-      const invocation = parseCliInvocation(dispatch.argv)
-      return createDefaultService({
-        eventSink: workerSink,
-        requireProvider: true,
-        ...(invocation.agent ? { agent: invocation.agent } : {}),
-        controls: invocation,
-        sessionKind: 'bg',
-      })
-    },
+    createRuntime: (workerSink, dispatch) =>
+      createBackgroundWorkerRuntime(workerSink, dispatch),
   })
 }
 
@@ -1008,6 +1034,35 @@ function formatSessionIssue(issue: SessionSummary['issue']): string {
   return issue
     ? `line ${issue.lineNumber}, byte ${issue.byteOffset}: ${issue.message}`
     : ''
+}
+
+function selectPrLinkedSession(
+  sessions: readonly SessionSummary[],
+  selector: string | true,
+): SessionSummary {
+  const matches = filterClaudePrLinkedSessions(sessions, selector)
+  const label = selector === true ? 'a pull request' : `PR ${selector}`
+  if (matches.length === 0) {
+    throw new Error(`No conversation linked to ${label} in this project`)
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `Multiple conversations are linked to ${label}; use --resume with one of: ${matches
+        .map((session) => session.sessionId)
+        .join(', ')}`,
+    )
+  }
+  return matches[0] as SessionSummary
+}
+
+function selectImplicitResumeSession(
+  sessions: readonly SessionSummary[],
+  fromPr: string | true | undefined,
+): SessionSummary {
+  if (fromPr !== undefined) return selectPrLinkedSession(sessions, fromPr)
+  const latest = sessions[0]
+  if (!latest) throw new Error('No conversation found to continue')
+  return latest
 }
 
 function mcpOutput(io: CliIO, invocation: CliInvocation, value: unknown): void {
@@ -1890,6 +1945,18 @@ async function execute(
     return dependencies.runInteractive({
       ...(agent === undefined ? {} : { agent }),
       controls: invocation,
+      resume: {
+        ...(invocation.fromPr === undefined
+          ? {}
+          : { fromPr: invocation.fromPr }),
+        ...(invocation.forkSession ? { forkSession: true } : {}),
+        ...(invocation.sessionId === undefined
+          ? {}
+          : { forkSessionId: invocation.sessionId }),
+        ...(invocation.retryInterruptedTools
+          ? { retryInterruptedTools: true }
+          : {}),
+      },
       ...(signal ? { signal } : {}),
     })
   }
@@ -1912,8 +1979,14 @@ async function execute(
     'plugin',
     'doctor',
   ].includes(command ?? '')
-  if (retryInterruptedTools && command !== 'resume') {
-    throw new Error('--retry-interrupted-tools is only valid with resume')
+  if (
+    retryInterruptedTools &&
+    command !== 'resume' &&
+    invocation.fromPr === undefined
+  ) {
+    throw new Error(
+      '--retry-interrupted-tools is only valid with resume or --from-pr',
+    )
   }
   if (agent && knownCommand && !['run', 'resume'].includes(command ?? 'run')) {
     throw new Error('--agent is only valid with run or resume')
@@ -2028,8 +2101,10 @@ async function execute(
     )
     let resumeSessionId =
       command === 'resume' ? requireValue(args[1], 'Session ID') : undefined
+    let usedExplicitSessionId = false
     if (
       invocation.continueSession ||
+      invocation.fromPr !== undefined ||
       (resumeSessionId && invocation.forkSession)
     ) {
       const sessionService = await dependencies.createService({
@@ -2039,19 +2114,23 @@ async function execute(
       })
       try {
         if (!resumeSessionId) {
-          const latest = (await sessionService.sessions())[0]
-          if (!latest) throw new Error('No conversation found to continue')
-          resumeSessionId = latest.sessionId
+          const sessions = await sessionService.sessions()
+          resumeSessionId = selectImplicitResumeSession(
+            sessions,
+            invocation.fromPr,
+          ).sessionId
         }
         if (invocation.forkSession) {
-          resumeSessionId = (await sessionService.fork(resumeSessionId))
-            .sessionId
+          resumeSessionId = (
+            await sessionService.fork(resumeSessionId, invocation.sessionId)
+          ).sessionId
+          usedExplicitSessionId = invocation.sessionId !== undefined
         }
       } finally {
         await sessionService.close?.()
       }
     }
-    if (invocation.sessionId) {
+    if (invocation.sessionId && !usedExplicitSessionId) {
       io.stderr(
         'warning: --bg manages the session id; ignoring --session-id (use --resume <id> to continue an existing session)\n',
       )
@@ -2333,10 +2412,15 @@ async function execute(
     }
     let existingSessionId =
       command === 'resume' ? requireValue(args[1], 'Session ID') : undefined
-    if (!existingSessionId && invocation.continueSession) {
-      const latest = (await service.sessions())[0]
-      if (!latest) throw new Error('No conversation found to continue')
-      existingSessionId = latest.sessionId
+    if (
+      !existingSessionId &&
+      (invocation.continueSession || invocation.fromPr !== undefined)
+    ) {
+      const sessions = await service.sessions()
+      existingSessionId = selectImplicitResumeSession(
+        sessions,
+        invocation.fromPr,
+      ).sessionId
     }
     if (existingSessionId && invocation.forkSession) {
       existingSessionId = (

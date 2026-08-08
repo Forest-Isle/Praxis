@@ -22,7 +22,8 @@ providers.
 Headless runs support Claude-style settings/source isolation, safe and bare
 modes, direct/file system prompts, additional canonical directory roots,
 explicit tool sets, CLI permission rules and modes, current-directory
-continue/fork, native session names, and in-memory no-persistence execution.
+continue/fork, PR-linked resume/fork, native session names, and in-memory
+no-persistence execution.
 Classifier-backed `auto` permissions remain fail-closed until their dedicated
 runtime lands; no-persistence runs disable Agent because native
 sidechains are disk-backed.
@@ -250,6 +251,7 @@ node dist/cli.js run --agent reviewer "Inspect this project"
 node dist/cli.js -p --setting-sources project --tools Read,Grep "Inspect this project"
 node dist/cli.js -p --system-prompt-file prompt.txt --add-dir ../shared -- "Inspect both roots"
 node dist/cli.js -p --continue --fork-session --name experiment "Try another approach"
+node dist/cli.js -p --from-pr=owner/repo#42 --fork-session -- "Continue PR work"
 node dist/cli.js -p --model claude-sonnet-4-20250514 --effort high "Try another approach"
 node dist/cli.js -p --max-budget-usd 0.50 --output-format json "Bound this run"
 node dist/cli.js -p --output-format stream-json --verbose --prompt-suggestions "Suggest the next step"
@@ -286,6 +288,10 @@ when no pricing is available.
 `--prompt-suggestions` is available only with print-mode stream JSON; it emits
 one auxiliary `prompt_suggestion` record after each successful result without
 mutating the session transcript.
+`--from-pr [number-or-url]` filters native Claude `pr-link` metadata. Interactive
+mode opens a filtered resume picker; headless mode resumes only a unique match
+and reports zero or ambiguous matches instead of selecting silently. Forks
+preserve the PR link with the new session ID, so Claude Code can resume them.
 `--file <file_id:relative_path...>` downloads resources before the first model
 turn into `<cwd>/<session-id>/uploads`. Paths cannot escape that directory.
 `PRAXIS_FILES_BASE_URL` selects a separate Files API endpoint;
@@ -329,7 +335,7 @@ npm run test:compat:all
 
 The aggregate command discovers every `test:*` compatibility gate except the
 provider-free package and performance gates, validates each command shape, and
-runs 34 isolated gates in sequence. Run an individual `test:*` command when
+runs 36 isolated gates in sequence. Run an individual `test:*` command when
 iterating on one surface.
 
 `npm run test:performance` is a local, provider-free release gate covering CLI

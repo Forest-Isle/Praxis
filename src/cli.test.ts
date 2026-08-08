@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ModelToolCall } from './core/runtime.js'
 import {
+  createBackgroundWorkerRuntime,
   parseContextEnvironment,
   parseProviderEnvironment,
   run,
@@ -97,6 +98,36 @@ function dependencies(
 }
 
 describe('Praxis CLI', () => {
+  it('auto-approves interrupted recovery only for opted-in background workers', async () => {
+    const approvals: Array<boolean | undefined> = []
+    const base = dependencies()
+    const createService: CliDependencies['createService'] = async (options) => {
+      approvals.push(
+        await options.approveRecovery?.({
+          id: 'interrupted',
+          name: 'Bash',
+          input: { command: 'npm test' },
+        }),
+      )
+      return base.createService(options)
+    }
+
+    await createBackgroundWorkerRuntime(
+      () => undefined,
+      {
+        argv: ['--from-pr=42', '--retry-interrupted-tools', '--', 'continue'],
+      },
+      createService,
+    )
+    await createBackgroundWorkerRuntime(
+      () => undefined,
+      { argv: ['--from-pr=42', '--', 'continue'] },
+      createService,
+    )
+
+    expect(approvals).toEqual([true, undefined])
+  })
+
   it('routes install, update, and upgrade without constructing a session', async () => {
     const requested: unknown[] = []
     const cliDependencies = dependencies()
@@ -269,6 +300,29 @@ describe('Praxis CLI', () => {
     expect(controls).toMatchObject({
       agent: 'reviewer',
       controls: { permissionMode: 'manual' },
+    })
+
+    await expect(
+      run(
+        [
+          '--from-pr',
+          '--fork-session',
+          '--session-id',
+          '33333333-3333-4333-8333-333333333333',
+          '--retry-interrupted-tools',
+        ],
+        capture.io,
+        interactive,
+      ),
+    ).resolves.toBe(0)
+    expect(controls).toMatchObject({
+      resume: {
+        fromPr: true,
+        forkSession: true,
+        forkSessionId: '33333333-3333-4333-8333-333333333333',
+        retryInterruptedTools: true,
+      },
+      controls: { fromPr: true },
     })
   })
 
@@ -463,6 +517,154 @@ describe('Praxis CLI', () => {
       forkSession: true,
       permissionMode: 'dontAsk',
       tools: ['Read'],
+    })
+  })
+
+  it('resumes a uniquely PR-linked session and rejects ambiguous matches', async () => {
+    const calls: string[] = []
+    const base = dependencies()
+    const linked: CliDependencies = {
+      async createService(options) {
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async sessions() {
+            return [
+              {
+                sessionId: '11111111-1111-4111-8111-111111111111',
+                lastPrompt: 'first',
+                updatedAt: '2026-08-08T01:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+                prNumber: 42,
+                prUrl: 'https://github.com/owner/repo/pull/42',
+                prRepository: 'owner/repo',
+              },
+              {
+                sessionId: '22222222-2222-4222-8222-222222222222',
+                lastPrompt: 'second',
+                updatedAt: '2026-08-08T00:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+                prNumber: 42,
+                prUrl: 'https://github.com/other/repo/pull/42',
+                prRepository: 'other/repo',
+              },
+            ]
+          },
+          async resume(sessionId, prompt, signal) {
+            calls.push(`${sessionId}:${prompt}`)
+            return service.resume(sessionId, prompt, signal)
+          },
+        }
+      },
+    }
+
+    const selected = captureIO()
+    await expect(
+      run(
+        ['-p', '--from-pr=owner/repo#42', '--', 'continue'],
+        selected.io,
+        linked,
+      ),
+    ).resolves.toBe(0)
+    expect(calls).toEqual(['11111111-1111-4111-8111-111111111111:continue'])
+
+    const ambiguous = captureIO()
+    await expect(
+      run(['-p', '--from-pr=42', '--', 'continue'], ambiguous.io, linked),
+    ).resolves.toBe(1)
+    expect(ambiguous.stderr.join('')).toContain(
+      'Multiple conversations are linked to PR 42',
+    )
+
+    const missing = captureIO()
+    await expect(
+      run(
+        ['-p', '--from-pr=missing/repo#42', '--', 'continue'],
+        missing.io,
+        linked,
+      ),
+    ).resolves.toBe(1)
+    expect(missing.stderr.join('')).toContain(
+      'No conversation linked to PR missing/repo#42',
+    )
+  })
+
+  it('selects and forks a PR-linked background session before launch', async () => {
+    const sourceId = '11111111-1111-4111-8111-111111111111'
+    const forkId = '33333333-3333-4333-8333-333333333333'
+    const calls: string[] = []
+    let launched:
+      | Parameters<NonNullable<CliDependencies['topLevelAgents']>['launch']>[0]
+      | undefined
+    const base = dependencies()
+    const managed: CliDependencies = {
+      async createService(options) {
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async sessions() {
+            return [
+              {
+                sessionId: sourceId,
+                lastPrompt: 'linked',
+                updatedAt: '2026-08-08T00:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+                prNumber: 42,
+                prUrl: 'https://github.com/owner/repo/pull/42',
+                prRepository: 'owner/repo',
+              },
+            ]
+          },
+          async fork(sessionId, targetSessionId) {
+            calls.push(`fork:${sessionId}:${targetSessionId ?? ''}`)
+            return {
+              parentSessionId: sessionId,
+              sessionId: targetSessionId ?? 'generated-fork',
+            }
+          },
+        }
+      },
+      topLevelAgents: {
+        async launch(options) {
+          launched = options
+          return { id: 'abcd1234', sessionId: options.resumeSessionId ?? '' }
+        },
+        async list() {
+          return []
+        },
+        async logs() {
+          return ''
+        },
+        async stop() {},
+        async attach() {},
+      },
+    }
+    const capture = captureIO()
+
+    await expect(
+      run(
+        [
+          '--bg',
+          '--from-pr=owner/repo#42',
+          '--fork-session',
+          '--session-id',
+          forkId,
+          '--',
+          'continue',
+        ],
+        capture.io,
+        managed,
+      ),
+    ).resolves.toBe(0)
+
+    expect(calls).toEqual([`fork:${sourceId}:${forkId}`])
+    expect(launched).toMatchObject({
+      prompt: 'continue',
+      resumeSessionId: forkId,
+      argv: ['--from-pr=owner/repo#42', '--fork-session', '--', 'continue'],
     })
   })
 
@@ -1264,6 +1466,45 @@ describe('Praxis CLI', () => {
     ).resolves.toBe(0)
     expect(
       await approveRecovery?.({ id: 'interrupted', name: 'Bash', input: {} }),
+    ).toBe(true)
+
+    const prCapture = captureIO()
+    const prRecovering: CliDependencies = {
+      async createService(options) {
+        approveRecovery = options.approveRecovery
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async sessions() {
+            return [
+              {
+                sessionId: '11111111-1111-4111-8111-111111111111',
+                lastPrompt: 'linked',
+                updatedAt: '2026-08-08T00:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+                prNumber: 42,
+                prUrl: 'https://github.com/owner/repo/pull/42',
+                prRepository: 'owner/repo',
+              },
+            ]
+          },
+        }
+      },
+    }
+    await expect(
+      run(
+        ['--from-pr=42', '--retry-interrupted-tools', '--', 'continue'],
+        prCapture.io,
+        prRecovering,
+      ),
+    ).resolves.toBe(0)
+    expect(
+      await approveRecovery?.({
+        id: 'interrupted-pr',
+        name: 'Bash',
+        input: {},
+      }),
     ).toBe(true)
   })
 

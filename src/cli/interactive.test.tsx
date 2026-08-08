@@ -59,6 +59,34 @@ describe('InteractiveApp', () => {
     await flush()
   })
 
+  it('omits the new-session choice for a required filtered resume', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[
+          {
+            sessionId: 'linked-session',
+            lastPrompt: 'linked prompt',
+            updatedAt: '2026-08-08T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+            prNumber: 42,
+            prUrl: 'https://github.com/owner/repo/pull/42',
+            prRepository: 'owner/repo',
+          },
+        ]}
+        allowNewSession={false}
+      />,
+    )
+    await flush()
+    expect(app.lastFrame()).toContain('linked prompt · linked-session')
+    expect(app.lastFrame()).not.toContain('New session')
+  })
+
   it('lists live workflows without sending a model prompt', async () => {
     const factory: InteractiveServiceFactory = {
       async createService() {
@@ -485,6 +513,78 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('recovered')
   })
 
+  it('forks a required session and auto-retries recovery when requested', async () => {
+    const calls: string[] = []
+    let recoveryApproval: boolean | undefined
+    const factory: InteractiveServiceFactory = {
+      async createService({ approveRecovery }) {
+        recoveryApproval = await approveRecovery?.({
+          id: 'call-interrupted',
+          name: 'Bash',
+          input: { command: 'npm test' },
+        })
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume(sessionId, prompt) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            return {
+              sessionId,
+              text: 'forked answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork(sessionId, targetSessionId) {
+            calls.push(`fork:${sessionId}:${targetSessionId ?? ''}`)
+            return {
+              parentSessionId: sessionId,
+              sessionId: targetSessionId ?? 'generated-fork',
+            }
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[
+          {
+            sessionId: 'linked-session',
+            lastPrompt: 'linked task',
+            updatedAt: '2026-08-08T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        allowNewSession={false}
+        resume={{
+          forkSession: true,
+          forkSessionId: 'explicit-fork',
+          retryInterruptedTools: true,
+        }}
+      />,
+    )
+
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('continue')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(recoveryApproval).toBe(true)
+    expect(calls).toEqual([
+      'fork:linked-session:explicit-fork',
+      'resume:explicit-fork:continue',
+    ])
+    expect(app.lastFrame()).toContain('forked answer')
+    expect(app.lastFrame()).not.toContain('Retry interrupted Bash')
+  })
+
   it('settles a newly-created permission prompt when cancellation races render', async () => {
     const controller = new AbortController()
     let approval: boolean | undefined
@@ -723,6 +823,36 @@ describe('runInteractive', () => {
     }
 
     await expect(runInteractive({ factory })).rejects.toThrow('listing failed')
+    expect(closed).toBe(1)
+  })
+
+  it('closes the listing service when a required filter has no matches', async () => {
+    let closed = 0
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async close() {
+            closed += 1
+          },
+        }
+      },
+    }
+
+    await expect(
+      runInteractive({ factory, requireSession: true }),
+    ).rejects.toThrow('No conversation linked')
     expect(closed).toBe(1)
   })
 })

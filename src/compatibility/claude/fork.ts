@@ -171,6 +171,7 @@ export function createClaudeNativeFork({
   const titles: ClaudeTranscriptEntry[] = []
   const modes: ClaudeTranscriptEntry[] = []
   const permissionModes: ClaudeTranscriptEntry[] = []
+  const prLinks: ClaudeTranscriptEntry[] = []
   const history: ClaudeTranscriptEntry[] = []
   const nativeHistory: ClaudeTranscriptEntry[] = []
   let lastPrompt: ClaudeTranscriptEntry | undefined
@@ -215,6 +216,7 @@ export function createClaudeNativeFork({
     if (entry.type === 'ai-title') titles.push(copied)
     else if (entry.type === 'mode') modes.push(copied)
     else if (entry.type === 'permission-mode') permissionModes.push(copied)
+    else if (entry.type === 'pr-link') prLinks.push(copied)
     else if (entry.type === 'last-prompt') {
       lastPrompt = copied
       nativeLastPrompt = entry
@@ -240,6 +242,7 @@ export function createClaudeNativeFork({
     ...titles.slice(-1),
     ...modes.slice(-1),
     ...permissionModes.slice(-1),
+    ...prLinks.slice(-1),
     ...history,
     ...(lastPrompt ? [lastPrompt] : []),
   ]

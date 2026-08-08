@@ -291,6 +291,29 @@ describe('ClaudeTranscriptStore', () => {
     ).toBe(true)
   })
 
+  it('appends native PR link metadata without advancing the logical tail', async () => {
+    const { sessionFile, store } = await createStore()
+    const snapshot = await store.load()
+    const entry = {
+      type: 'pr-link',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      prNumber: 42,
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prRepository: 'owner/repo',
+      timestamp: '2026-08-08T00:00:00.000Z',
+    }
+
+    const result = await store.append(snapshot.tail, entry)
+
+    expect(result).toMatchObject({
+      status: 'appended',
+      tail: { lastUuid: snapshot.tail.lastUuid },
+    })
+    expect(await readFile(sessionFile, 'utf8')).toContain(
+      `${JSON.stringify(entry)}\n`,
+    )
+  })
+
   it('refuses last-prompt metadata for a non-tail leaf', async () => {
     const { store } = await createStore()
     const snapshot = await store.load()

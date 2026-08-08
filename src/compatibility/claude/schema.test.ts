@@ -192,6 +192,19 @@ describe('ClaudeSchemaAdapter', () => {
         sessionId: 'session',
       }),
     ).toThrow('invalid metadata')
+    const prLink = {
+      type: 'pr-link',
+      sessionId: 'session',
+      prNumber: 42,
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prRepository: 'owner/repo',
+      timestamp: '2026-08-08T00:00:00.000Z',
+    }
+    expect(adapter.serializeForAppend(prLink)).toBe(JSON.stringify(prLink))
+    expect(adapter.serializeForFork(prLink)).toBe(JSON.stringify(prLink))
+    expect(() =>
+      adapter.serializeForAppend({ ...prLink, prNumber: 0 }),
+    ).toThrow('invalid metadata')
   })
 
   it('accepts only validated Claude 2.1.208 nested-memory attachments', () => {

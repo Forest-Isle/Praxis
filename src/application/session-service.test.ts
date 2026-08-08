@@ -1,4 +1,5 @@
 import {
+  appendFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -1840,6 +1841,54 @@ describe('ClaudeSessionService', () => {
       Buffer.from(source),
     )
     expect(await readFile(sessionFile, 'utf8')).toBe(source)
+  })
+
+  it('projects native PR links into summaries and preserves them across forks', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const first = await service.run('linked session')
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: first.sessionId,
+    })
+    const prLink = {
+      type: 'pr-link',
+      sessionId: first.sessionId,
+      prNumber: 42,
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prRepository: 'owner/repo',
+      timestamp: '2026-08-08T00:00:00.000Z',
+    }
+    await appendFile(paths.sessionFile, `${JSON.stringify(prLink)}\n`)
+
+    await expect(service.sessions()).resolves.toEqual([
+      expect.objectContaining({
+        sessionId: first.sessionId,
+        prNumber: 42,
+        prUrl: prLink.prUrl,
+        prRepository: 'owner/repo',
+      }),
+    ])
+    await expect(service.inspect(first.sessionId)).resolves.toMatchObject({
+      prNumber: 42,
+      prUrl: prLink.prUrl,
+      prRepository: 'owner/repo',
+    })
+
+    const fork = await service.fork(first.sessionId)
+    const forkSource = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: fork.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(forkSource).toContain(
+      JSON.stringify({ ...prLink, sessionId: fork.sessionId }),
+    )
   })
 
   it('lists corrupt sessions without hiding healthy sessions', async () => {

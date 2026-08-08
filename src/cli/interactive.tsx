@@ -25,7 +25,7 @@ interface InteractiveSessionCommands {
     prompt: string,
     signal?: AbortSignal,
   ): Promise<SessionRunResult>
-  fork(sessionId: string): Promise<ForkResult>
+  fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
   workflows?(): readonly Record<string, unknown>[]
   nextScheduledPrompt?(
@@ -49,6 +49,12 @@ export interface InteractiveServiceFactory {
   }): Promise<InteractiveSessionCommands>
 }
 
+export interface InteractiveResumeOptions {
+  forkSession?: boolean
+  forkSessionId?: string
+  retryInterruptedTools?: boolean
+}
+
 interface InteractiveAppProps {
   factory: InteractiveServiceFactory
   initialSessions: readonly SessionSummary[]
@@ -56,6 +62,8 @@ interface InteractiveAppProps {
   onCancel?: () => void
   onTurnChange?: (turn: Promise<void> | null) => void
   axScreenReader?: boolean
+  allowNewSession?: boolean
+  resume?: InteractiveResumeOptions
 }
 
 type HistoryLine = {
@@ -93,6 +101,8 @@ export function InteractiveApp({
   onCancel,
   onTurnChange,
   axScreenReader = false,
+  allowNewSession = true,
+  resume,
 }: InteractiveAppProps) {
   const { exit } = useApp()
   const sensitiveValues = useMemo(
@@ -100,8 +110,9 @@ export function InteractiveApp({
     [],
   )
   const choices = useMemo(
-    () => [null, ...initialSessions] as const,
-    [initialSessions],
+    () =>
+      allowNewSession ? ([null, ...initialSessions] as const) : initialSessions,
+    [allowNewSession, initialSessions],
   )
   const [selectingSession, setSelectingSession] = useState(
     initialSessions.length > 0,
@@ -109,6 +120,7 @@ export function InteractiveApp({
   const [selectedIndex, setSelectedIndex] = useState(0)
   const selectedIndexRef = useRef(0)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [pendingFork, setPendingFork] = useState(resume?.forkSession === true)
   const [input, setInput] = useState('')
   const inputRef = useRef('')
   const [busy, setBusy] = useState(false)
@@ -216,7 +228,7 @@ export function InteractiveApp({
       setElicitation(pending)
     })
   const approveRecovery = (call: ModelToolCall) =>
-    requestApproval(call, 'recovery')
+    resume?.retryInterruptedTools ? true : requestApproval(call, 'recovery')
 
   const service = async () => {
     if (serviceRef.current) return serviceRef.current
@@ -249,8 +261,15 @@ export function InteractiveApp({
     let commands: InteractiveSessionCommands | undefined
     try {
       commands = await service()
-      const result = sessionId
-        ? await commands.resume(sessionId, prompt, signal)
+      let activeSessionId = sessionId
+      if (activeSessionId && pendingFork) {
+        const fork = await commands.fork(activeSessionId, resume?.forkSessionId)
+        activeSessionId = fork.sessionId
+        setSessionId(activeSessionId)
+        setPendingFork(false)
+      }
+      const result = activeSessionId
+        ? await commands.resume(activeSessionId, prompt, signal)
         : await commands.run(prompt, signal)
       setSessionId(result.sessionId)
       append({ kind: 'assistant', text: result.text })
@@ -394,7 +413,9 @@ export function InteractiveApp({
         )
         setSelectedIndex(selectedIndexRef.current)
       } else if (key.return) {
-        setSessionId(choices[selectedIndexRef.current]?.sessionId ?? null)
+        const selected = choices[selectedIndexRef.current]
+        setSessionId(selected?.sessionId ?? null)
+        if (!selected) setPendingFork(false)
         setSelectingSession(false)
       }
       return
@@ -410,6 +431,7 @@ export function InteractiveApp({
         exit()
       } else if (prompt === '/new') {
         setSessionId(null)
+        setPendingFork(false)
         append({ kind: 'notice', text: 'Started a new session.' })
       } else if (prompt === '/sessions') {
         selectedIndexRef.current = 0
@@ -543,6 +565,9 @@ export async function runInteractive(options: {
   factory: InteractiveServiceFactory
   signal?: AbortSignal
   axScreenReader?: boolean
+  sessionFilter?: (session: SessionSummary) => boolean
+  requireSession?: boolean
+  resume?: InteractiveResumeOptions
 }): Promise<number> {
   const controller = new AbortController()
   const signal = options.signal
@@ -555,7 +580,15 @@ export async function runInteractive(options: {
   })
   let initialSessions: SessionSummary[]
   try {
-    initialSessions = await listing.sessions()
+    const sessions = await listing.sessions()
+    initialSessions = options.sessionFilter
+      ? sessions.filter(options.sessionFilter)
+      : sessions
+    if (options.requireSession && initialSessions.length === 0) {
+      throw new Error(
+        'No conversation linked to a pull request in this project',
+      )
+    }
   } catch (error) {
     try {
       await listing.close?.()
@@ -575,6 +608,8 @@ export async function runInteractive(options: {
       onTurnChange={(turn) => {
         activeTurn = turn
       }}
+      allowNewSession={!options.requireSession}
+      {...(options.resume === undefined ? {} : { resume: options.resume })}
       {...(options.axScreenReader ? { axScreenReader: true } : {})}
     />,
     { exitOnCtrlC: false, incrementalRendering: !options.axScreenReader },

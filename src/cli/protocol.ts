@@ -83,6 +83,7 @@ export interface CliInvocation extends CliControls {
   replayUserMessages: boolean
   retryInterruptedTools: boolean
   sessionId: string | undefined
+  fromPr: string | true | undefined
   verbose: boolean
   legacyJson: boolean
   mcpScope?: CliMcpScope
@@ -441,6 +442,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let retryInterruptedTools = false
   let sessionId: string | undefined
   let resumeId: string | undefined
+  let fromPr: string | true | undefined
   let verbose = false
   let legacyJson = false
   let optionsEnded = false
@@ -830,6 +832,30 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       index += 1
       continue
     }
+    if (value === '--from-pr') {
+      if (fromPr !== undefined)
+        throw new Error('--from-pr may only be specified once')
+      const candidate = argv[index + 1]
+      if (
+        candidate !== undefined &&
+        candidate !== '--' &&
+        !candidate.startsWith('-')
+      ) {
+        fromPr = candidate
+        index += 1
+      } else {
+        fromPr = true
+      }
+      continue
+    }
+    if (value.startsWith('--from-pr=')) {
+      if (fromPr !== undefined)
+        throw new Error('--from-pr may only be specified once')
+      const candidate = value.slice('--from-pr='.length)
+      if (!candidate) throw new Error('--from-pr value must not be empty')
+      fromPr = candidate
+      continue
+    }
     if (value === '-p' || value === '--print') {
       print = true
       continue
@@ -1004,18 +1030,20 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       throw new Error('resume command cannot be combined with --resume')
     args.unshift('resume', resumeId)
   }
+  if (
+    fromPr !== undefined &&
+    (args[0] === 'resume' || resumeId !== undefined || continueSession)
+  ) {
+    throw new Error('--from-pr cannot be combined with --resume or --continue')
+  }
   if (sessionId !== undefined && !UUID_PATTERN.test(sessionId)) {
     throw new Error('--session-id must be a valid UUID')
   }
-  const resumesSession = args[0] === 'resume' || continueSession
-  if (
-    sessionId !== undefined &&
-    resumesSession &&
-    !forkSession &&
-    !background
-  ) {
+  const resumesSession =
+    args[0] === 'resume' || continueSession || fromPr !== undefined
+  if (sessionId !== undefined && resumesSession && !forkSession) {
     throw new Error(
-      '--session-id can only be used with --continue or --resume if --fork-session is also specified',
+      '--session-id can only be used with --continue, --resume, or --from-pr if --fork-session is also specified',
     )
   }
   if (
@@ -1048,6 +1076,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     replayUserMessages,
     retryInterruptedTools,
     sessionId,
+    fromPr,
     verbose,
     legacyJson,
     settings,

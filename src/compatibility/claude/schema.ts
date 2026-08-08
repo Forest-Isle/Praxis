@@ -20,6 +20,7 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'attachment',
   'custom-title',
   'last-prompt',
+  'pr-link',
   'system',
   'user',
   'worktree-state',
@@ -34,6 +35,7 @@ const FORKABLE_ENTRY_TYPES = new Set([
   'last-prompt',
   'mode',
   'permission-mode',
+  'pr-link',
   'system',
   'user',
 ])
@@ -712,6 +714,20 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
     }
     return
   }
+  if (entry.type === 'pr-link') {
+    if (
+      !isNonEmptyString(entry.sessionId) ||
+      typeof entry.prNumber !== 'number' ||
+      !Number.isSafeInteger(entry.prNumber) ||
+      entry.prNumber < 1 ||
+      !isNonEmptyString(entry.prUrl) ||
+      !isNonEmptyString(entry.prRepository) ||
+      !isNonEmptyString(entry.timestamp)
+    ) {
+      throw new Error('Claude pr-link entry has invalid metadata')
+    }
+    return
+  }
 
   for (const field of ['uuid', 'sessionId', 'timestamp', 'cwd', 'version']) {
     if (typeof entry[field] !== 'string' || entry[field].length === 0) {
@@ -869,6 +885,10 @@ function validateForkableEntry(entry: ClaudeTranscriptEntry): void {
     ) {
       throw new Error('Claude permission-mode entry has invalid metadata')
     }
+    return
+  }
+  if (entry.type === 'pr-link') {
+    validateAppendableEntry(entry)
     return
   }
 

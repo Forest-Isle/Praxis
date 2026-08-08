@@ -91,6 +91,7 @@ const NON_TAIL_ENTRY_TYPES = new Set([
   'agent-name',
   'agent-setting',
   'custom-title',
+  'pr-link',
   'worktree-state',
 ])
 

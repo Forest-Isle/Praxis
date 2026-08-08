@@ -19,6 +19,7 @@ import {
   type ClaudeFileResourceConfig,
 } from '../compatibility/claude/file-resources.js'
 import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
+import { getClaudePrLink } from '../compatibility/claude/pr-links.js'
 import {
   getClaudeAgentSetting,
   getClaudeLastPrompt,
@@ -154,6 +155,9 @@ export interface SessionSummary {
   updatedAt: string
   status: SessionStatus
   issue: TranscriptParseIssue | null
+  prNumber?: number
+  prUrl?: string
+  prRepository?: string
 }
 
 export type SessionStatus = 'ready' | 'read-only' | 'corrupt'
@@ -564,6 +568,7 @@ export class ClaudeSessionService {
             const recovery = await this.store(sessionId).loadReadOnly()
             if (!(await lstat(sessionFile)).isFile()) return null
             const name = this.sessionName(recovery.entries)
+            const prLink = getClaudePrLink(recovery.entries, sessionId)
             return {
               sessionId,
               ...(name === null ? {} : { name }),
@@ -574,6 +579,13 @@ export class ClaudeSessionService {
                 recovery.entries.length,
               ),
               issue: recovery.issue,
+              ...(prLink
+                ? {
+                    prNumber: prLink.prNumber,
+                    prUrl: prLink.prUrl,
+                    prRepository: prLink.prRepository,
+                  }
+                : {}),
             }
           } catch (error) {
             if (typeof (error as NodeJS.ErrnoException).code === 'string') {
@@ -601,6 +613,7 @@ export class ClaudeSessionService {
       throw error
     }
     const recovery = await this.store(sessionId).loadReadOnly()
+    const prLink = getClaudePrLink(recovery.entries, sessionId)
     return {
       sessionId,
       lastPrompt: getClaudeLastPrompt(recovery.entries),
@@ -612,6 +625,13 @@ export class ClaudeSessionService {
       entryCount: recovery.entries.length,
       byteLength: recovery.tail.byteLength,
       newlineTerminated: recovery.tail.newlineTerminated,
+      ...(prLink
+        ? {
+            prNumber: prLink.prNumber,
+            prUrl: prLink.prUrl,
+            prRepository: prLink.prRepository,
+          }
+        : {}),
     }
   }
 
