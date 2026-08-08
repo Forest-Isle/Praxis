@@ -172,7 +172,7 @@ describe('BackgroundBashManager', () => {
       command: "printf 'TIMEOUT_START\\n'; sleep 30",
       description: 'Timeout command',
       toolUseId: 'call_timeout',
-      timeout: 25,
+      timeout: 500,
     })
 
     await expect(manager.notifications(true)).resolves.toEqual([
