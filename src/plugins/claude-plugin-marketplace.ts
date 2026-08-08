@@ -66,6 +66,7 @@ export interface ClaudeInstalledPlugin {
   installedAt: string
   lastUpdated: string
   enabled: boolean
+  auto?: boolean
 }
 
 export interface ClaudeSkillsDirectoryPlugin {
@@ -228,6 +229,13 @@ function validateInstalledEntry(
     version: nonEmptyString(value.version, 'Plugin version'),
     installedAt: nonEmptyString(value.installedAt, 'Plugin installedAt'),
     lastUpdated: nonEmptyString(value.lastUpdated, 'Plugin lastUpdated'),
+    ...(value.auto === undefined
+      ? {}
+      : typeof value.auto === 'boolean'
+        ? { auto: value.auto }
+        : (() => {
+            throw new Error(`Plugin auto must be a boolean: ${id}`)
+          })()),
   }
   return entry
 }
@@ -333,6 +341,7 @@ export async function writeClaudeInstalledPlugin(
     version: plugin.version,
     installedAt: plugin.installedAt,
     lastUpdated: plugin.lastUpdated,
+    ...(plugin.auto === undefined ? {} : { auto: plugin.auto }),
   }
   const index = entries.findIndex(
     (entry) =>

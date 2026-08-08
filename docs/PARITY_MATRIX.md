@@ -135,7 +135,7 @@ routing.
 | -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                                                         |
 | `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier                                             |
-| `plugin`             | Partial  | Core marketplace/install/list/details/init/validate, aliases, config persistence, skills-dir loading, and bounded source recovery complete; maintenance and eval remain |
+| `plugin`             | Partial  | Marketplace/install/list/details/init/validate/prune/tag, aliases, config persistence, skills-dir loading, and bounded source recovery complete; eval remains           |
 | `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                                                        |
 | `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate                                 |
 | `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                                                               |

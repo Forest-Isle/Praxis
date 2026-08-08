@@ -146,6 +146,7 @@ import {
   validateClaudeMarketplace,
   type ClaudePluginScope,
 } from './plugins/claude-plugin-marketplace.js'
+import { executeClaudePluginMaintenanceCommand } from './plugins/claude-plugin-maintenance.js'
 import { formatDoctorReport, runDoctor } from './maintenance/doctor.js'
 import {
   runSelfUpdate,
@@ -3251,6 +3252,14 @@ async function execute(
     io.stdout(MCP_ADD_HELP)
     return 0
   }
+  const pluginMaintenance = await executeClaudePluginMaintenanceCommand(argv, {
+    configRoot: resolve(
+      process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
+    ),
+    cwd: process.cwd(),
+    io,
+  })
+  if (pluginMaintenance !== null) return pluginMaintenance
   if (argv[0] === 'project' && argv[1] === 'purge') {
     return executeProjectPurgeCommand(argv, io)
   }
