@@ -469,8 +469,16 @@ describe('Praxis CLI', () => {
     expect(controls).toMatchObject({
       resume: {
         sessionId: '11111111-1111-4111-8111-111111111111',
+        sessionSelector: '11111111-1111-4111-8111-111111111111',
+        requireSession: true,
       },
       controls: { resumeSessionAt: 'user-message-uuid' },
+    })
+
+    await expect(run(['--resume'], capture.io, interactive)).resolves.toBe(0)
+    expect(controls).toMatchObject({
+      resume: { requireSession: true },
+      controls: { resumeSelector: true },
     })
   })
 
@@ -691,6 +699,167 @@ describe('Praxis CLI', () => {
       permissionMode: 'dontAsk',
       tools: ['Read'],
     })
+  })
+
+  it('resolves print resume selectors by ID or case-insensitive exact title', async () => {
+    const firstId = '11111111-1111-4111-8111-111111111111'
+    const secondId = '22222222-2222-4222-8222-222222222222'
+    const calls: string[] = []
+    const base = dependencies()
+    const titled: CliDependencies = {
+      async createService(options) {
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async sessions() {
+            return [
+              {
+                sessionId: firstId,
+                name: 'Release Review',
+                lastPrompt: 'first prompt',
+                updatedAt: '2026-08-08T02:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+              {
+                sessionId: secondId,
+                name: firstId,
+                lastPrompt: 'second prompt',
+                updatedAt: '2026-08-08T01:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+            ]
+          },
+          async resume(sessionId, prompt, signal) {
+            calls.push(`${sessionId}:${prompt}`)
+            return service.resume(sessionId, prompt, signal)
+          },
+        }
+      },
+    }
+
+    for (const argv of [
+      ['-p', '--resume=RELEASE REVIEW', '--', 'by title'],
+      ['-p', `-r${firstId.toUpperCase()}`, '--', 'by id'],
+    ]) {
+      const capture = captureIO()
+      await expect(run(argv, capture.io, titled)).resolves.toBe(0)
+    }
+    expect(calls).toEqual([`${firstId}:by title`, `${firstId}:by id`])
+
+    const missing = captureIO()
+    await expect(
+      run(['-p', '--resume=release', '--', 'no substring'], missing.io, titled),
+    ).resolves.toBe(1)
+    expect(missing.stderr.join('')).toContain(
+      'Provided value "release" is not a UUID and does not match any session title',
+    )
+  })
+
+  it('rejects ambiguous titles and missing non-interactive selectors', async () => {
+    const base = dependencies()
+    const duplicateTitles: CliDependencies = {
+      async createService(options) {
+        return {
+          ...(await base.createService(options)),
+          async sessions() {
+            return [
+              {
+                sessionId: '11111111-1111-4111-8111-111111111111',
+                name: 'Duplicate',
+                lastPrompt: 'newer',
+                updatedAt: '2026-08-08T02:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+              {
+                sessionId: '22222222-2222-4222-8222-222222222222',
+                name: 'duplicate',
+                lastPrompt: 'older',
+                updatedAt: '2026-08-08T01:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+            ]
+          },
+        }
+      },
+    }
+    const ambiguous = captureIO()
+    await expect(
+      run(
+        ['-p', '--resume=duplicate', '--', 'continue'],
+        ambiguous.io,
+        duplicateTitles,
+      ),
+    ).resolves.toBe(1)
+    expect(ambiguous.stderr.join('')).toContain(
+      '--resume "duplicate" matches 2 sessions',
+    )
+    expect(ambiguous.stderr.join('')).toMatch(/11111111[\s\S]*22222222/)
+
+    for (const argv of [
+      ['-p', '--resume'],
+      ['--resume'],
+      ['--background', '--resume'],
+    ]) {
+      const capture = captureIO()
+      await expect(run(argv, capture.io, dependencies())).resolves.toBe(1)
+      expect(capture.stderr.join('')).toContain(
+        '--resume requires a valid session ID or session title',
+      )
+    }
+  })
+
+  it('resolves a background title selector to its session ID', async () => {
+    const sourceId = '11111111-1111-4111-8111-111111111111'
+    let launched:
+      | Parameters<NonNullable<CliDependencies['topLevelAgents']>['launch']>[0]
+      | undefined
+    const base = dependencies()
+    const managed: CliDependencies = {
+      async createService(options) {
+        return {
+          ...(await base.createService(options)),
+          async sessions() {
+            return [
+              {
+                sessionId: sourceId,
+                name: 'Release Review',
+                lastPrompt: 'inspect release',
+                updatedAt: '2026-08-08T00:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+            ]
+          },
+        }
+      },
+      topLevelAgents: {
+        async launch(options) {
+          launched = options
+          return { id: 'abcd1234', sessionId: options.resumeSessionId ?? '' }
+        },
+        async list() {
+          return []
+        },
+        async logs() {
+          return ''
+        },
+        async stop() {},
+        async attach() {},
+      },
+    }
+
+    await expect(
+      run(
+        ['--background', '--resume=release review', '--', 'continue'],
+        captureIO().io,
+        managed,
+      ),
+    ).resolves.toBe(0)
+    expect(launched?.resumeSessionId).toBe(sourceId)
   })
 
   it('resumes a uniquely PR-linked session and rejects ambiguous matches', async () => {

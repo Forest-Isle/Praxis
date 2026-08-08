@@ -114,7 +114,34 @@ describe('CLI protocol', () => {
     expect(parseCliInvocation(['-r', sessionId, 'continue'])).toMatchObject({
       command: 'resume',
       args: ['resume', sessionId, 'continue'],
+      resumeSelector: sessionId,
     })
+  })
+
+  it('parses optional long and attached resume selectors', () => {
+    expect(parseCliInvocation(['--resume'])).toMatchObject({
+      args: ['resume'],
+      resumeSelector: true,
+    })
+    expect(parseCliInvocation(['--resume='])).toMatchObject({
+      args: ['resume'],
+      resumeSelector: true,
+    })
+    for (const argv of [
+      ['--resume=Named Session', 'continue'],
+      ['-rNamed Session', 'continue'],
+    ]) {
+      expect(parseCliInvocation(argv)).toMatchObject({
+        args: ['resume', 'Named Session', 'continue'],
+        resumeSelector: 'Named Session',
+      })
+    }
+    expect(() => parseCliInvocation(['--resume', '--resume=id'])).toThrow(
+      '--resume may only be specified once',
+    )
+    expect(() => parseCliInvocation(['--resume=id', '--continue'])).toThrow(
+      '--resume cannot be combined with --continue',
+    )
   })
 
   it('parses resume-at only with an explicit --resume selector', () => {
@@ -157,9 +184,16 @@ describe('CLI protocol', () => {
       ],
     ]) {
       expect(() => parseCliInvocation(argv)).toThrow(
-        '--resume-session-at requires --resume',
+        '--resume-session-at requires an explicit --resume selector',
       )
     }
+    expect(() =>
+      parseCliInvocation([
+        '--resume',
+        '--resume-session-at',
+        'user-message-uuid',
+      ]),
+    ).toThrow('--resume-session-at requires an explicit --resume selector')
     expect(() =>
       parseCliInvocation([
         '--resume',

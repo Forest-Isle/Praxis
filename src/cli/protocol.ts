@@ -95,6 +95,7 @@ export interface CliInvocation extends CliControls {
   replayUserMessages: boolean
   retryInterruptedTools: boolean
   sessionId: string | undefined
+  resumeSelector: string | true | undefined
   fromPr: string | true | undefined
   verbose: boolean
   legacyJson: boolean
@@ -454,7 +455,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let replayUserMessages = false
   let retryInterruptedTools = false
   let sessionId: string | undefined
-  let resumeId: string | undefined
+  let resumeSelector: string | true | undefined
   let resumeSessionAt: string | undefined
   let fromPr: string | true | undefined
   let verbose = false
@@ -918,10 +919,31 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     }
     if (value.startsWith('--tmux=')) throw new Error('--tmux must be classic')
     if (value === '-r' || value === '--resume') {
-      if (resumeId !== undefined)
+      if (resumeSelector !== undefined)
         throw new Error('--resume may only be specified once')
-      resumeId = requiredValue(argv, index, '--resume')
-      index += 1
+      const candidate = argv[index + 1]
+      if (
+        candidate !== undefined &&
+        candidate !== '--' &&
+        !candidate.startsWith('-')
+      ) {
+        resumeSelector = candidate
+        index += 1
+      } else {
+        resumeSelector = true
+      }
+      continue
+    }
+    if (value.startsWith('--resume=')) {
+      if (resumeSelector !== undefined)
+        throw new Error('--resume may only be specified once')
+      resumeSelector = value.slice('--resume='.length) || true
+      continue
+    }
+    if (value.startsWith('-r') && value.length > 2) {
+      if (resumeSelector !== undefined)
+        throw new Error('--resume may only be specified once')
+      resumeSelector = value.slice(2)
       continue
     }
     const selectedRewindFiles = optionValue(argv, index, '--rewind-files')
@@ -1141,18 +1163,23 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   if (tmux !== undefined && !worktreeRequested) {
     throw new Error('--tmux requires --worktree')
   }
-  if (resumeSessionAt !== undefined && resumeId === undefined) {
-    throw new Error('--resume-session-at requires --resume')
+  if (resumeSessionAt !== undefined && typeof resumeSelector !== 'string') {
+    throw new Error(
+      '--resume-session-at requires an explicit --resume selector',
+    )
   }
 
-  if (resumeId !== undefined) {
+  if (resumeSelector !== undefined) {
     if (args[0] === 'resume')
       throw new Error('resume command cannot be combined with --resume')
-    args.unshift('resume', resumeId)
+    args.unshift(
+      'resume',
+      ...(typeof resumeSelector === 'string' ? [resumeSelector] : []),
+    )
   }
   if (
     fromPr !== undefined &&
-    (args[0] === 'resume' || resumeId !== undefined || continueSession)
+    (args[0] === 'resume' || resumeSelector !== undefined || continueSession)
   ) {
     throw new Error('--from-pr cannot be combined with --resume or --continue')
   }
@@ -1161,8 +1188,16 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   }
   const resumesSession =
     args[0] === 'resume' || continueSession || fromPr !== undefined
-  if (rewindFiles !== undefined && args[0] !== 'resume') {
-    throw new Error('--rewind-files requires --resume')
+  if (resumeSelector !== undefined && continueSession) {
+    throw new Error('--resume cannot be combined with --continue')
+  }
+  if (
+    rewindFiles !== undefined &&
+    (args[0] !== 'resume' || args[1] === undefined)
+  ) {
+    throw new Error(
+      '--rewind-files requires --resume with an explicit selector',
+    )
   }
   if (sessionId !== undefined && resumesSession && !forkSession) {
     throw new Error(
@@ -1199,6 +1234,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     replayUserMessages,
     retryInterruptedTools,
     sessionId,
+    resumeSelector,
     fromPr,
     verbose,
     legacyJson,

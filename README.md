@@ -25,6 +25,9 @@ dynamic cwd/environment/memory/git context with optional first-user relocation,
 explicit tool sets, CLI permission rules and modes, current-directory
 continue/fork, PR-linked resume/fork, native session names, and in-memory
 no-persistence execution.
+`--resume` accepts an optional selector: UUID resumes directly, print/background
+mode resolves an exact case-insensitive session title, and TTY text filters the
+required session picker. Bare TTY `--resume` opens that picker.
 The hidden-compatible `--permission-prompt-tool` control routes ask decisions
 through a reserved MCP tool, supports approved input replacement, and keeps the
 permission tool out of the model-visible tool surface. Denials can either return
@@ -283,6 +286,7 @@ node dist/cli.js sessions --json
 node dist/cli.js inspect --json <session-id>
 node dist/cli.js export <session-id> > session.jsonl
 node dist/cli.js resume <session-id> "Continue"
+node dist/cli.js -p --resume="Named session" "Continue"
 node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
 node dist/cli.js -p --resume <session-id> --resume-session-at <message-id> "Try another branch"
 CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true node dist/cli.js -p "Edit with checkpoints"

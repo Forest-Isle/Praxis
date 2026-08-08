@@ -431,6 +431,9 @@ generate a sidechain. `npm run test:shared-compat` proves Claude and Praxis
 observe the same worktree/non-git hierarchy, canonical shared memory including
 a linked detail, skill, hook, layered project MCP, command, agent, and ordered
 settings sources without copying or synchronization.
+`npm run test:resume-selector-compat` proves installed UUID/title selector
+resolution, canonical UUID routing, missing/ambiguous failures, and Claude
+resuming a Praxis-named session.
 `npm run test:background-agent-compat` captures Claude's current Agent,
 SendMessage, TaskOutput, and TaskStop schemas, then proves async launch, output
 polling, same-ID continuation, completion notification, sidechain persistence,
