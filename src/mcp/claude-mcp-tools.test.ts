@@ -55,9 +55,12 @@ process.stdin.on('data', chunk => {
     process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
     if (request.method === 'initialize' && !sent) {
       sent = true
-      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 91, method: 'elicitation/create', params: { mode: 'form', message: 'Provide fixture value', requestedSchema: { type: 'object', properties: { code: { type: 'string' } } } } }) + '\\n')
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 91, method: 'elicitation/create', params: { mode: 'form', message: 'Provide ' + process.env.MCP_API_KEY, requestedSchema: { type: 'object', properties: { code: { type: 'string', description: process.env.MCP_API_KEY } } } } }) + '\\n')
     }
     if (request.id === 91) {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 92, method: 'elicitation/create', params: { mode: 'url', message: 'Open ' + process.env.MCP_API_KEY, url: 'https://example.com/' + process.env.MCP_API_KEY, elicitationId: 'fixture-url-elicit' } }) + '\\n')
+    }
+    if (request.id === 92) {
       process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/elicitation/complete', params: { elicitationId: 'fixture-elicit' } }) + '\\n')
     }
   }
@@ -69,12 +72,24 @@ process.stdin.on('data', chunk => {
       async (request: {
         serverName: string
         message: string
+        mode?: 'form' | 'url'
+        url?: string
         requestedSchema?: Record<string, unknown>
       }) => {
-        expect(request).toMatchObject({
-          serverName: 'fixture',
-          message: 'Provide fixture value',
-        })
+        expect(request.serverName).toBe('fixture')
+        expect(JSON.stringify(request)).not.toContain('elicitation-secret')
+        if (request.mode === 'form') {
+          expect(request.message).toBe('Provide [REDACTED]')
+          expect(request.requestedSchema).toEqual({
+            type: 'object',
+            properties: {
+              code: { type: 'string', description: '[REDACTED]' },
+            },
+          })
+        } else {
+          expect(request.message).toBe('Open [REDACTED]')
+          expect(request.url).toBe('https://example.com/[REDACTED]')
+        }
         return { action: 'accept' as const, content: { code: 'ok' } }
       },
     )
@@ -90,6 +105,7 @@ process.stdin.on('data', chunk => {
               fixture: {
                 command: process.execPath,
                 args: [serverScript],
+                env: { MCP_API_KEY: 'elicitation-secret' },
               },
             },
           },
@@ -99,7 +115,7 @@ process.stdin.on('data', chunk => {
       onElicitation: elicitation,
     })
     try {
-      expect(elicitation).toHaveBeenCalledOnce()
+      await vi.waitFor(() => expect(elicitation).toHaveBeenCalledTimes(2))
       await vi.waitFor(() =>
         expect(events).toContainEqual({
           type: 'elicitation-complete',

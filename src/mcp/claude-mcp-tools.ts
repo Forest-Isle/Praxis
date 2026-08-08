@@ -788,6 +788,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
     serverName: string,
     config: McpServerConfig,
   ): Promise<void> {
+    const sensitiveValues = configSensitiveValues(config)
     const client = new Client(
       { name: 'praxis', version: '0.1.0' },
       {
@@ -803,14 +804,21 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
       if (!this.options.onElicitation) return { action: 'decline' }
       return (await this.options.onElicitation({
         serverName,
-        message: request.params.message,
+        message: redactSensitiveText(request.params.message, sensitiveValues),
         ...(request.params.mode ? { mode: request.params.mode } : {}),
-        ...('url' in request.params ? { url: request.params.url } : {}),
+        ...('url' in request.params
+          ? { url: redactSensitiveText(request.params.url, sensitiveValues) }
+          : {}),
         ...('elicitationId' in request.params
           ? { elicitationId: request.params.elicitationId }
           : {}),
         ...('requestedSchema' in request.params
-          ? { requestedSchema: request.params.requestedSchema }
+          ? {
+              requestedSchema: redactSensitiveValue(
+                request.params.requestedSchema,
+                sensitiveValues,
+              ),
+            }
           : {}),
       })) as ElicitResult
     })
@@ -824,7 +832,6 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
         })
       },
     )
-    const sensitiveValues = configSensitiveValues(config)
     const discoverySignal = requestSignal(
       this.options.signal,
       DISCOVERY_TIMEOUT_MS,
