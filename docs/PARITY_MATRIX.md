@@ -50,6 +50,7 @@ Evidence levels:
 | Runtime debug diagnostics            | Complete                            | `--debug`, `--debug=<filter>`, `--debug-file`, and `--mcp-debug`; filtered runtime events, nested file creation, flush-on-close, and installed CLI gate                                                                                                                                                                                                                                                                     |
 | `--brief` / `SendUserMessage`        | Complete                            | Provider-neutral native tool, status/attachment metadata, visible text/interactive/stream-json event routing, model guidance, and installed request gate                                                                                                                                                                                                                                                                    |
 | `--ax-screen-reader`                 | Complete                            | Interactive mode disables incremental rendering and decorative header/help text while preserving sessions, prompts, and approvals                                                                                                                                                                                                                                                                                           |
+| Dynamic system-prompt sections       | Complete                            | `--exclude-dynamic-system-prompt-sections` moves cwd/environment/memory/Git context to first provider-visible user message; live default/resume/fork/stream-json/no-persistence gates plus compaction, isolated-subagent cwd/budget, TTY/background forwarding, custom/append, and transcript-isolation tests                                                                                                               |
 
 Stage 42 additionally verifies opt-in `hook_started`, `hook_progress`, and
 `hook_response` stream records, including Claude 2.1.208 string fields and
@@ -79,24 +80,24 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 
 ## Runtime and controls
 
-| Capability                    | Status                      | Evidence / remaining work                                                                                                                                   |
-| ----------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Provider-neutral agent loop   | Complete                    | OpenAI-compatible and Anthropic streaming/tool loops                                                                                                        |
-| Context budget and compaction | Complete                    | Provider capability budget, native compact records, live reopen                                                                                             |
-| Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                                                                 |
-| Background agents and tasks   | Complete for local runtime  | Agent/Bash task lifecycle plus top-level persistent dispatch, live logs, attach, stop, stale-worker repair, and shared transcripts                          |
-| Agent messaging               | Complete for local Agent    | Ordered SendMessage to running/completed IDs, later-turn sidechain hydration, completion notification                                                       |
-| Permissions                   | Complete                    | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass, and context-aware `auto` classifier complete                                                        |
-| Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                                                              |
-| Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                                         |
-| System prompt controls        | Complete                    | replace/append direct and hidden file variants with shared context retained                                                                                 |
-| Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                                                     |
-| Model selection               | Complete                    | Environment and `--model` invocation selection, fallback model resolution                                                                                   |
-| Effort and fallback           | Complete                    | `--effort`, retryable three-attempt fallback chain, print-only validation                                                                                   |
-| Structured output             | Complete                    | `--json-schema` AJV validation, hidden tool capture, exact-once enforcement, `structured_output` result                                                     |
-| Cost and budget               | Complete                    | Built-in/environment pricing, explicit unknown-model diagnosis, measured API duration, null cost fail-closed, and `--max-budget-usd` pre-provider rejection |
-| Prompt suggestions            | Complete                    | `--prompt-suggestions` validates print/stream-json mode, performs an unpersisted auxiliary request, and emits post-result `prompt_suggestion`               |
-| Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                                            |
+| Capability                    | Status                      | Evidence / remaining work                                                                                                                                       |
+| ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider-neutral agent loop   | Complete                    | OpenAI-compatible and Anthropic streaming/tool loops                                                                                                            |
+| Context budget and compaction | Complete                    | Provider capability budget, native compact records, live reopen                                                                                                 |
+| Foreground subagents          | Complete                    | Bounded recursion, sidechains, tools/hooks/MCP, live reopen                                                                                                     |
+| Background agents and tasks   | Complete for local runtime  | Agent/Bash task lifecycle plus top-level persistent dispatch, live logs, attach, stop, stale-worker repair, and shared transcripts                              |
+| Agent messaging               | Complete for local Agent    | Ordered SendMessage to running/completed IDs, later-turn sidechain hydration, completion notification                                                           |
+| Permissions                   | Complete                    | CLI allow/deny, acceptEdits/manual/dontAsk/plan/bypass, and context-aware `auto` classifier complete                                                            |
+| Tool selection                | Complete                    | `--tools`, empty/default sets, aliases, exact deny removal, and execution-boundary enforcement                                                                  |
+| Settings sources              | Complete                    | Inline/file `--settings`, source filtering across all customization categories, safe/bare isolation                                                             |
+| System prompt controls        | Complete                    | Replace/append direct and hidden file variants with shared context retained; dynamic machine sections support default-system placement or first-user relocation |
+| Additional directories        | Complete                    | Canonical Read/Write/Edit/Grep roots, provider visibility, and symlink-escape rejection                                                                         |
+| Model selection               | Complete                    | Environment and `--model` invocation selection, fallback model resolution                                                                                       |
+| Effort and fallback           | Complete                    | `--effort`, retryable three-attempt fallback chain, print-only validation                                                                                       |
+| Structured output             | Complete                    | `--json-schema` AJV validation, hidden tool capture, exact-once enforcement, `structured_output` result                                                         |
+| Cost and budget               | Complete                    | Built-in/environment pricing, explicit unknown-model diagnosis, measured API duration, null cost fail-closed, and `--max-budget-usd` pre-provider rejection     |
+| Prompt suggestions            | Complete                    | `--prompt-suggestions` validates print/stream-json mode, performs an unpersisted auxiliary request, and emits post-result `prompt_suggestion`                   |
+| Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                                                |
 
 ## Tool surface
 
@@ -132,9 +133,10 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 
 ## Remaining implementation order
 
-Remaining audit items are limited to the still-unimplemented single-user CLI
-controls discovered from the installed 2.1.208 surface (dynamic system-prompt
-exclusion and hidden resume/rewind controls). They are tracked
-as the next implementation stages; they are not enterprise or desktop
+Remaining audit items are limited to still-unimplemented single-user CLI
+controls discovered from the installed 2.1.208 surface: message-targeted
+resume, file rewind, thinking controls, permission-prompt MCP delegation,
+prefill contract, and init/init-only/maintenance lifecycle hooks. They are
+tracked as the next implementation stages; they are not enterprise or desktop
 exclusions. Unsupported Claude versions remain deliberately read-only, and
 listed enterprise/desktop/remote surfaces remain excluded by scope.

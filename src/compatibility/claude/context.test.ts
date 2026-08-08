@@ -30,10 +30,11 @@ describe('ClaudeContextAssembler', () => {
       }),
     })
 
-    await expect(assembler.assemble()).resolves.toEqual([
-      {
-        role: 'system',
-        content: `# Shared Claude context
+    await expect(assembler.assemble()).resolves.toEqual({
+      systemMessages: [
+        {
+          role: 'system',
+          content: `# Shared Claude context
 
 Instructions are ordered from broadest to most specific. Auto-memory is background context and does not override instructions.
 
@@ -49,8 +50,9 @@ PROJECT_INSTRUCTION
 
 ### project: /config/projects/workspace/memory/MEMORY.md
 MEMORY_CONTEXT`,
-      },
-    ])
+        },
+      ],
+    })
   })
 
   it('does not inject a system message when shared context is empty', async () => {
@@ -62,7 +64,7 @@ MEMORY_CONTEXT`,
       }),
     })
 
-    await expect(assembler.assemble()).resolves.toEqual([])
+    await expect(assembler.assemble()).resolves.toEqual({ systemMessages: [] })
   })
 
   it('places custom and appended system prompts around shared context', async () => {
@@ -82,12 +84,85 @@ MEMORY_CONTEXT`,
       }),
     })
 
-    const messages = await assembler.assemble()
+    const { systemMessages: messages } = await assembler.assemble()
     expect(messages.map((message) => message.content)).toEqual([
       'CUSTOM_SYSTEM',
       expect.stringContaining('PROJECT_CONTEXT'),
       'APPENDED_SYSTEM',
     ])
+  })
+
+  it('moves dynamic sections into first-user context when requested', async () => {
+    const assembler = new ClaudeContextAssembler({
+      excludeDynamicSystemPromptSections: true,
+      loadDynamicContext: async () => ({
+        environment: '# Environment\nENVIRONMENT_MARKER',
+        memory: '# Memory\nMEMORY_PATH_MARKER',
+        gitStatus: '# gitStatus\nGIT_STATUS_MARKER',
+      }),
+      loadResources: async () => ({
+        instructions: [
+          {
+            path: '/workspace/CLAUDE.md',
+            scope: 'project',
+            content: 'PROJECT_CONTEXT',
+          },
+        ],
+        conditionalRules: [],
+        memoryIndex: null,
+      }),
+    })
+
+    const assembled = await assembler.assemble()
+    expect(assembled.systemMessages).toHaveLength(1)
+    expect(assembled.systemMessages[0]?.content).toContain('PROJECT_CONTEXT')
+    expect(JSON.stringify(assembled.systemMessages)).not.toContain(
+      'ENVIRONMENT_MARKER',
+    )
+    expect(assembled.firstUserMessageContext).toMatch(
+      /GIT_STATUS_MARKER[\s\S]*ENVIRONMENT_MARKER[\s\S]*MEMORY_PATH_MARKER/,
+    )
+  })
+
+  it('keeps dynamic sections in the default system prompt', async () => {
+    const assembler = new ClaudeContextAssembler({
+      loadDynamicContext: async () => ({
+        environment: '# Environment\nENVIRONMENT_MARKER',
+      }),
+      loadResources: async () => ({
+        instructions: [],
+        conditionalRules: [],
+        memoryIndex: null,
+      }),
+    })
+
+    const assembled = await assembler.assemble()
+    expect(assembled.firstUserMessageContext).toBeUndefined()
+    expect(assembled.systemMessages).toEqual([
+      { role: 'system', content: '# Environment\nENVIRONMENT_MARKER' },
+    ])
+  })
+
+  it('ignores dynamic relocation with a custom system prompt', async () => {
+    let loads = 0
+    const assembler = new ClaudeContextAssembler({
+      systemPrompt: 'CUSTOM_SYSTEM',
+      excludeDynamicSystemPromptSections: true,
+      loadDynamicContext: async () => {
+        loads += 1
+        return { environment: 'SHOULD_NOT_LOAD' }
+      },
+      loadResources: async () => ({
+        instructions: [],
+        conditionalRules: [],
+        memoryIndex: null,
+      }),
+    })
+
+    await expect(assembler.assemble()).resolves.toEqual({
+      systemMessages: [{ role: 'system', content: 'CUSTOM_SYSTEM' }],
+    })
+    expect(loads).toBe(0)
   })
 
   it('limits the auto-memory index to the first 200 lines', async () => {
@@ -107,7 +182,8 @@ MEMORY_CONTEXT`,
       }),
     })
 
-    const [message] = await assembler.assemble()
+    const { systemMessages } = await assembler.assemble()
+    const [message] = systemMessages
 
     expect(message?.content).toContain('MEMORY_LINE_200')
     expect(message?.content).not.toContain('MEMORY_LINE_201')
@@ -125,13 +201,36 @@ MEMORY_CONTEXT`,
       }),
     })
 
-    const [first] = await assembler.assemble()
+    const { systemMessages: firstMessages } = await assembler.assemble()
+    const [first] = firstMessages
     content = 'UPDATED_CONTEXT'
-    const [updated] = await assembler.assemble()
+    const { systemMessages: updatedMessages } = await assembler.assemble()
+    const [updated] = updatedMessages
 
     expect(first?.content).toContain('FIRST_CONTEXT')
     expect(updated?.content).toContain('UPDATED_CONTEXT')
     expect(updated?.content).not.toContain('FIRST_CONTEXT')
+  })
+
+  it('loads shared and dynamic context for the requested runtime cwd', async () => {
+    const resourceCwds: Array<string | undefined> = []
+    const dynamicCwds: Array<string | undefined> = []
+    const assembler = new ClaudeContextAssembler({
+      loadResources: async (cwd) => {
+        resourceCwds.push(cwd)
+        return { instructions: [], conditionalRules: [], memoryIndex: null }
+      },
+      loadDynamicContext: async (cwd) => {
+        dynamicCwds.push(cwd)
+        return { environment: `# Environment\n${cwd ?? ''}` }
+      },
+    })
+
+    const assembled = await assembler.assemble({ cwd: '/isolated/worktree' })
+
+    expect(resourceCwds).toEqual(['/isolated/worktree'])
+    expect(dynamicCwds).toEqual(['/isolated/worktree'])
+    expect(assembled.systemMessages[0]?.content).toContain('/isolated/worktree')
   })
 })
 

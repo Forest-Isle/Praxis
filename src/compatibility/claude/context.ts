@@ -1,9 +1,15 @@
 import { isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path'
 
 import type {
+  AssembledContext,
   ContextAssembler,
   SystemContextMessage,
 } from '../../core/context.js'
+import {
+  renderClaudeDynamicSystemContext,
+  renderClaudeDynamicUserContext,
+  type ClaudeDynamicContextSections,
+} from './dynamic-context.js'
 import type {
   ClaudeContextResources,
   ClaudeConditionalRule,
@@ -33,7 +39,9 @@ function limitMemoryIndex(resource: ClaudeTextResource): ClaudeTextResource {
 }
 
 export interface ClaudeContextAssemblerOptions {
-  loadResources(): Promise<ClaudeContextResources>
+  loadResources(cwd?: string): Promise<ClaudeContextResources>
+  loadDynamicContext?(cwd?: string): Promise<ClaudeDynamicContextSections>
+  excludeDynamicSystemPromptSections?: boolean
   systemPrompt?: string
   appendSystemPrompt?: string
 }
@@ -72,8 +80,8 @@ export class ClaudeConditionalRuleResolver {
 export class ClaudeContextAssembler implements ContextAssembler {
   constructor(private readonly options: ClaudeContextAssemblerOptions) {}
 
-  async assemble(): Promise<readonly SystemContextMessage[]> {
-    const resources = await this.options.loadResources()
+  async assemble(options: { cwd?: string } = {}): Promise<AssembledContext> {
+    const resources = await this.options.loadResources(options.cwd)
     const sections = [
       renderResources('Instructions', resources.instructions),
       renderResources(
@@ -95,12 +103,30 @@ Instructions are ordered from broadest to most specific. Auto-memory is backgrou
 ${sections.join('\n\n')}`,
       })
     }
+    let firstUserMessageContext: string | undefined
+    if (
+      this.options.systemPrompt === undefined &&
+      this.options.loadDynamicContext !== undefined
+    ) {
+      const dynamic = await this.options.loadDynamicContext(options.cwd)
+      if (this.options.excludeDynamicSystemPromptSections) {
+        firstUserMessageContext = renderClaudeDynamicUserContext(dynamic)
+      } else {
+        messages.push({
+          role: 'system',
+          content: renderClaudeDynamicSystemContext(dynamic),
+        })
+      }
+    }
     if (this.options.appendSystemPrompt !== undefined) {
       messages.push({
         role: 'system',
         content: this.options.appendSystemPrompt,
       })
     }
-    return messages
+    return {
+      systemMessages: messages,
+      ...(firstUserMessageContext ? { firstUserMessageContext } : {}),
+    }
   }
 }

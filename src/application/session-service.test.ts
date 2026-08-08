@@ -26,6 +26,7 @@ import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
 } from '../compatibility/claude/context.js'
+import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
@@ -1717,6 +1718,14 @@ describe('ClaudeSessionService', () => {
       provider,
       hooks,
       contextReserveTokens: 1_500,
+      contextAssembler: {
+        async assemble() {
+          return {
+            systemMessages: [],
+            firstUserMessageContext: 'DYNAMIC_COMPACTION_CONTEXT',
+          }
+        },
+      },
     })
 
     const result = await service.run('Improve the draft.')
@@ -1729,6 +1738,18 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(requests[2]?.messages)).toContain(
       'Improve the draft.',
     )
+    expect(JSON.stringify(requests[2]?.messages)).toContain(
+      'DYNAMIC_COMPACTION_CONTEXT',
+    )
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: result.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('DYNAMIC_COMPACTION_CONTEXT')
   })
 
   it('checks cancellation again before committing compact records', async () => {
@@ -1946,6 +1967,7 @@ describe('ClaudeSessionService', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const requests: ModelRequest[] = []
+    const contextCwds: string[] = []
     let contextVersion = 0
     const service = new ClaudeSessionService({
       configRoot,
@@ -1959,20 +1981,26 @@ describe('ClaudeSessionService', () => {
         },
       },
       contextAssembler: {
-        async assemble() {
+        async assemble(options) {
+          contextCwds.push(options?.cwd ?? '')
           contextVersion += 1
-          return [
-            {
-              role: 'system',
-              content: `SYSTEM_CONTEXT_${contextVersion}`,
-            },
-          ]
+          return {
+            systemMessages: [
+              {
+                role: 'system' as const,
+                content: `SYSTEM_CONTEXT_${contextVersion}`,
+              },
+            ],
+            firstUserMessageContext: `DYNAMIC_CONTEXT_${contextVersion}`,
+          }
         },
       },
     })
 
     const first = await service.run('first prompt')
     await service.resume(first.sessionId, 'second prompt')
+
+    expect(contextCwds).toEqual([cwd, cwd])
 
     expect(requests[0]?.messages[0]).toEqual({
       role: 'system',
@@ -1981,6 +2009,18 @@ describe('ClaudeSessionService', () => {
     expect(requests[1]?.messages[0]).toEqual({
       role: 'system',
       content: 'SYSTEM_CONTEXT_2',
+    })
+    expect(requests[0]?.messages[1]).toEqual({
+      role: 'user',
+      content: 'DYNAMIC_CONTEXT_1\n\nfirst prompt',
+    })
+    expect(requests[1]?.messages[1]).toEqual({
+      role: 'user',
+      content: 'DYNAMIC_CONTEXT_2\n\nfirst prompt',
+    })
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'user',
+      content: 'second prompt',
     })
     const { resolveClaudePaths } =
       await import('../compatibility/claude/paths.js')
@@ -1991,6 +2031,44 @@ describe('ClaudeSessionService', () => {
     })
     const transcript = await readFile(paths.sessionFile, 'utf8')
     expect(transcript).not.toContain('SYSTEM_CONTEXT')
+    expect(transcript).not.toContain('DYNAMIC_CONTEXT')
+  })
+
+  it('counts relocated first-user context against the context budget', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-context-budget-'))
+    roots.push(root)
+    let providerCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 100,
+        },
+        async *complete() {
+          providerCalls += 1
+          yield { type: 'text-delta', delta: 'unexpected' }
+        },
+      },
+      contextReserveTokens: 20,
+      contextAssembler: {
+        async assemble() {
+          return {
+            systemMessages: [],
+            firstUserMessageContext: 'DYNAMIC_CONTEXT '.repeat(500),
+          }
+        },
+      },
+    })
+
+    await expect(service.run('prompt')).rejects.toThrow(
+      /estimated=.*window=100.*reserve=20.*available=80/,
+    )
+    expect(providerCalls).toBe(0)
   })
 
   it('persists slash expansion and resumes the selected Claude agent', async () => {

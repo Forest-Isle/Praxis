@@ -33,6 +33,7 @@ export interface CliControls {
   systemPromptFile: string | undefined
   appendSystemPrompt: string | undefined
   appendSystemPromptFile: string | undefined
+  excludeDynamicSystemPromptSections: boolean
   addDirectories: readonly string[]
   pluginDirectories: readonly string[]
   pluginUrls: readonly string[]
@@ -465,6 +466,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let systemPromptFile: string | undefined
   let appendSystemPrompt: string | undefined
   let appendSystemPromptFile: string | undefined
+  let excludeDynamicSystemPromptSections = false
   const addDirectories: string[] = []
   const pluginDirectories: string[] = []
   const pluginUrls: string[] = []
@@ -696,6 +698,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--system-prompt may only be specified once')
       systemPrompt = selectedSystemPrompt.value
       index += selectedSystemPrompt.consumed
+      continue
+    }
+    if (value === '--exclude-dynamic-system-prompt-sections') {
+      excludeDynamicSystemPromptSections = true
       continue
     }
     const selectedSystemPromptFile = optionValue(
@@ -1091,6 +1097,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     systemPromptFile,
     appendSystemPrompt,
     appendSystemPromptFile,
+    excludeDynamicSystemPromptSections,
     addDirectories,
     pluginDirectories,
     pluginUrls,

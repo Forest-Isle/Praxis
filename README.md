@@ -21,6 +21,7 @@ credential boundaries, shared memory, and native Anthropic/OpenAI-compatible
 providers.
 Headless runs support Claude-style settings/source isolation, safe and bare
 modes, direct/file system prompts, additional canonical directory roots,
+dynamic cwd/environment/memory/git context with optional first-user relocation,
 explicit tool sets, CLI permission rules and modes, current-directory
 continue/fork, PR-linked resume/fork, native session names, and in-memory
 no-persistence execution.

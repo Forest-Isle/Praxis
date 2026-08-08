@@ -18,6 +18,7 @@ import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
 } from './compatibility/claude/context.js'
+import { loadClaudeDynamicContext } from './compatibility/claude/dynamic-context.js'
 import {
   createClaudePrSessionFilter,
   filterClaudePrLinkedSessions,
@@ -248,6 +249,9 @@ Options:
   --bare                              Use only explicitly supplied context
   --system-prompt <prompt>            Set system prompt
   --append-system-prompt <prompt>     Append system prompt
+  --exclude-dynamic-system-prompt-sections
+                                      Move cwd, environment, memory path, and git status into first user message
+                                      (default system prompt only; ignored with --system-prompt)
   --add-dir <directories...>          Allow access to additional directories
   --plugin-dir <path>                Load a local plugin directory or .zip for this session (repeatable)
   --plugin-url <url>                 Load a plugin .zip URL for this session (repeatable)
@@ -665,10 +669,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ? undefined
       : await resolveClaudeProjectMemoryDirectory({ configRoot, cwd })
   if (memoryDirectory) await mkdir(memoryDirectory, { recursive: true })
-  const loadContextResources = () =>
+  const loadContextResources = (runtimeCwd = workspace.cwd()) =>
     loadClaudeContextResources({
       configRoot,
-      cwd: workspace.cwd(),
+      cwd: runtimeCwd,
       ...(automaticSettingSources === undefined
         ? {}
         : { settingSources: automaticSettingSources }),
@@ -847,6 +851,13 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(agent ? { agent } : {}),
       contextAssembler: new ClaudeContextAssembler({
         loadResources: loadContextResources,
+        loadDynamicContext: (runtimeCwd = workspace.cwd()) =>
+          loadClaudeDynamicContext({
+            cwd: runtimeCwd,
+            ...(memoryDirectory ? { memoryDirectory } : {}),
+          }),
+        excludeDynamicSystemPromptSections:
+          cli.excludeDynamicSystemPromptSections,
         ...(cli.systemPrompt === undefined
           ? {}
           : { systemPrompt: cli.systemPrompt }),

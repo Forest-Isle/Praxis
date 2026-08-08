@@ -42,6 +42,7 @@ import {
   AgentRuntime,
   type ModelDocument,
   type ModelImage,
+  type ModelMessage,
   type ModelToolCall,
   type ModelProvider,
   type ModelUsage,
@@ -53,7 +54,10 @@ import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
 import type { Compactor } from '../core/compaction.js'
 import { ContextBudget } from '../core/context-budget.js'
-import type { ContextAssembler } from '../core/context.js'
+import {
+  injectFirstUserMessageContext,
+  type ContextAssembler,
+} from '../core/context.js'
 import type { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookToolCoordinator } from '../hooks/claude-hook-tools.js'
 import type {
@@ -352,6 +356,14 @@ export class ClaudeSessionService {
             ...(this.options.contextAssembler
               ? { contextAssembler: this.options.contextAssembler }
               : {}),
+            ...((this.options.contextBudget?.reserveTokens ??
+              this.options.contextReserveTokens) === undefined
+              ? {}
+              : {
+                  contextReserveTokens:
+                    this.options.contextBudget?.reserveTokens ??
+                    this.options.contextReserveTokens,
+                }),
             ...(this.options.approveTool
               ? { approveTool: this.options.approveTool }
               : {}),
@@ -514,8 +526,11 @@ export class ClaudeSessionService {
     const agentName =
       this.options.agent ?? getClaudeAgentSetting(entries.entries)
     const agent = agentName ? this.options.extensions?.agent(agentName) : null
+    const assembledContext = await this.options.contextAssembler?.assemble({
+      cwd: this.activeCwd(),
+    })
     const contextMessages = [
-      ...((await this.options.contextAssembler?.assemble()) ?? []),
+      ...(assembledContext?.systemMessages ?? []),
       ...(agent
         ? [
             {
@@ -527,8 +542,13 @@ export class ClaudeSessionService {
     ]
     const messages = [
       ...contextMessages,
-      ...projectClaudeModelMessages(entries.entries),
-      { role: 'user' as const, content: PROMPT_SUGGESTION_INSTRUCTION },
+      ...injectFirstUserMessageContext(
+        [
+          ...projectClaudeModelMessages(entries.entries),
+          { role: 'user' as const, content: PROMPT_SUGGESTION_INSTRUCTION },
+        ],
+        assembledContext?.firstUserMessageContext,
+      ),
     ]
     let suggestion = ''
     for await (const event of provider.complete({
@@ -905,6 +925,14 @@ export class ClaudeSessionService {
               ...(this.options.contextAssembler
                 ? { contextAssembler: this.options.contextAssembler }
                 : {}),
+              ...((this.options.contextBudget?.reserveTokens ??
+                this.options.contextReserveTokens) === undefined
+                ? {}
+                : {
+                    contextReserveTokens:
+                      this.options.contextBudget?.reserveTokens ??
+                      this.options.contextReserveTokens,
+                  }),
               ...(this.options.approveTool
                 ? { approveTool: this.options.approveTool }
                 : {}),
@@ -1248,8 +1276,11 @@ export class ClaudeSessionService {
           }
         }
 
+        const assembledContext = await this.options.contextAssembler?.assemble({
+          cwd: this.activeCwd(),
+        })
         const contextMessages = [
-          ...((await this.options.contextAssembler?.assemble()) ?? []),
+          ...(assembledContext?.systemMessages ?? []),
           ...(this.options.brief
             ? [
                 {
@@ -1301,6 +1332,13 @@ export class ClaudeSessionService {
             ...(index === 0 && documents.length > 0 ? { documents } : {}),
           }),
         )
+        const injectDynamicContext = (
+          messages: readonly ModelMessage[],
+        ): ModelMessage[] =>
+          injectFirstUserMessageContext(
+            messages,
+            assembledContext?.firstUserMessageContext,
+          )
         let compactionAnchorUuid = this.lastMessageUuid(snapshot.entries)
         const compactIfNeeded = async (
           pendingMessages: readonly {
@@ -1312,17 +1350,22 @@ export class ClaudeSessionService {
           if (!budget) return
           const historyMessages = projectClaudeModelMessages(snapshot.entries)
           const predicted = budget.evaluate(
-            [...contextMessages, ...historyMessages, ...pendingMessages],
+            [
+              ...contextMessages,
+              ...injectDynamicContext([...historyMessages, ...pendingMessages]),
+            ],
             definitions,
           )
           if (!predicted.shouldCompact) return
           const irreducibleMessages = [
             ...contextMessages,
-            ...pendingMessages,
-            ...preservedUserMessages.map((content) => ({
-              role: 'user' as const,
-              content,
-            })),
+            ...injectDynamicContext([
+              ...pendingMessages,
+              ...preservedUserMessages.map((content) => ({
+                role: 'user' as const,
+                content,
+              })),
+            ]),
           ]
           const irreducible = budget.evaluate(irreducibleMessages, definitions)
           budget.assertFits(irreducible)
@@ -1378,7 +1421,7 @@ export class ClaudeSessionService {
           const summaryUuid = randomUUID()
           const timestamp = new Date().toISOString()
           const preTokens = budget.evaluate(
-            [...contextMessages, ...historyMessages],
+            [...contextMessages, ...injectDynamicContext(historyMessages)],
             definitions,
           ).estimatedTokens
           const compactEntries = (postTokens: number) => {
@@ -1429,11 +1472,17 @@ export class ClaudeSessionService {
             ...replayEntries,
           ])
           const afterHistory = budget.evaluate(
-            [...contextMessages, ...compactedHistory],
+            [...contextMessages, ...injectDynamicContext(compactedHistory)],
             definitions,
           )
           const afterPending = budget.evaluate(
-            [...contextMessages, ...compactedHistory, ...pendingMessages],
+            [
+              ...contextMessages,
+              ...injectDynamicContext([
+                ...compactedHistory,
+                ...pendingMessages,
+              ]),
+            ],
             definitions,
           )
           budget.assertFits(afterPending)
@@ -1515,7 +1564,9 @@ export class ClaudeSessionService {
             budget.evaluate(
               [
                 ...contextMessages,
-                ...projectClaudeModelMessages(snapshot.entries),
+                ...injectDynamicContext(
+                  projectClaudeModelMessages(snapshot.entries),
+                ),
               ],
               definitions,
             ),
@@ -1526,7 +1577,9 @@ export class ClaudeSessionService {
         const runtimeRequest = {
           messages: [
             ...contextMessages,
-            ...projectClaudeModelMessages(snapshot.entries),
+            ...injectDynamicContext(
+              projectClaudeModelMessages(snapshot.entries),
+            ),
           ],
           cwd: this.activeCwd(),
           toolResultDirectory,
@@ -1541,7 +1594,9 @@ export class ClaudeSessionService {
             await compactIfNeeded([], currentTurnUserMessages ?? [])
             return [
               ...contextMessages,
-              ...projectClaudeModelMessages(snapshot.entries),
+              ...injectDynamicContext(
+                projectClaudeModelMessages(snapshot.entries),
+              ),
             ]
           },
           ...(this.options.hooks ||

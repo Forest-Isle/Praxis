@@ -182,6 +182,20 @@ allowing symlink escape. CLI deny rules still win in bypass mode. The
 classifier-backed `auto` permission mode fails closed until Praxis implements
 the classifier contract.
 
+With the default system prompt, Praxis assembles machine-specific cwd,
+platform/shell/OS, canonical memory path, and bounded Git branch/status/recent
+commit context at the start of every session turn. By default those sections remain
+system context. `--exclude-dynamic-system-prompt-sections` moves them into a
+`<system-reminder>` prefix on the first provider-visible user message, including
+the first historical user message after resume. The prefix is rebuilt on each
+turn, participates in main-session context budgeting and compaction, reaches
+prompt-suggestion requests, and is never written to shared JSONL. Subagents
+assemble it from their actual runtime cwd on every model round and include it
+in their provider budget; an oversized subagent request fails before transport
+instead of performing an implicit sidechain compaction. A custom
+`--system-prompt` disables default dynamic sections, so the relocation flag is
+ignored; `--append-system-prompt` remains active in either placement mode.
+
 `--no-session-persistence` uses an in-memory transcript. A new ephemeral
 session never creates its would-be JSONL path. Resuming an existing disk
 session imports its validated history into memory, continues there, and leaves

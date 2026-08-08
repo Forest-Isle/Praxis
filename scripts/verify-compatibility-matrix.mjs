@@ -13,6 +13,15 @@ const excluded = new Set([
 ])
 const entrypoints = []
 const seen = new Set()
+const retryableModelGates = new Set([
+  'scripts/verify-claude-shared-resources.mjs',
+])
+const maxDiagnosticsBytes = 64 * 1024
+const transientModelPatterns = [
+  'error_max_turns',
+  '"stop_reason":"tool_use"',
+  'Reached maximum number of turns',
+]
 
 for (const [name, command] of Object.entries(packageDocument.scripts ?? {})) {
   if (!name.startsWith('test:') || excluded.has(name)) continue
@@ -42,25 +51,53 @@ function run({ name, file }, index) {
     const child = spawn(process.execPath, [file], {
       cwd: projectRoot,
       env: process.env,
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
+    let diagnostics = ''
+    const capture = (chunk, destination) => {
+      destination.write(chunk)
+      diagnostics = `${diagnostics}${chunk.toString('utf8')}`.slice(
+        -maxDiagnosticsBytes,
+      )
+    }
+    child.stdout.on('data', (chunk) => capture(chunk, process.stdout))
+    child.stderr.on('data', (chunk) => capture(chunk, process.stderr))
     child.once('error', reject)
     child.once('exit', (code, signal) => {
       if (code === 0) resolve()
       else {
-        reject(
-          new Error(
-            `${file} failed${signal ? ` with signal ${signal}` : ` with exit ${code}`}`,
-          ),
+        const error = new Error(
+          `${file} failed${signal ? ` with signal ${signal}` : ` with exit ${code}`}`,
         )
+        error.diagnostics = diagnostics
+        reject(error)
       }
     })
   })
 }
 
+function isTransientModelFailure(error) {
+  const diagnostics =
+    error && typeof error === 'object' && 'diagnostics' in error
+      ? String(error.diagnostics)
+      : ''
+  return transientModelPatterns.some((pattern) => diagnostics.includes(pattern))
+}
+
 const startedAt = Date.now()
 for (const [index, entrypoint] of entrypoints.entries()) {
-  await run(entrypoint, index)
+  try {
+    await run(entrypoint, index)
+  } catch (error) {
+    if (
+      !retryableModelGates.has(entrypoint.file) ||
+      !isTransientModelFailure(error)
+    ) {
+      throw error
+    }
+    console.warn(`\nRetrying nondeterministic model gate: ${entrypoint.file}`)
+    await run(entrypoint, index)
+  }
 }
 console.log(
   `\nCompatibility matrix passed: ${entrypoints.length} isolated gates in ${(

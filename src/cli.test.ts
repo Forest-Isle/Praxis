@@ -291,7 +291,13 @@ describe('Praxis CLI', () => {
 
     await expect(
       run(
-        ['--permission-mode', 'manual', '--agent', 'reviewer'],
+        [
+          '--permission-mode',
+          'manual',
+          '--agent',
+          'reviewer',
+          '--exclude-dynamic-system-prompt-sections',
+        ],
         capture.io,
         interactive,
       ),
@@ -299,7 +305,10 @@ describe('Praxis CLI', () => {
 
     expect(controls).toMatchObject({
       agent: 'reviewer',
-      controls: { permissionMode: 'manual' },
+      controls: {
+        permissionMode: 'manual',
+        excludeDynamicSystemPromptSections: true,
+      },
     })
 
     await expect(
@@ -411,6 +420,7 @@ describe('Praxis CLI', () => {
         [
           '--bg',
           '--bare',
+          '--exclude-dynamic-system-prompt-sections',
           '--session-id',
           '11111111-1111-4111-8111-111111111111',
           'finish task',
@@ -423,7 +433,9 @@ describe('Praxis CLI', () => {
     expect(launched.stderr).toEqual([
       'warning: --bg manages the session id; ignoring --session-id (use --resume <id> to continue an existing session)\n',
     ])
-    expect(calls[0]).toBe('launch:finish task:--bare|finish task')
+    expect(calls[0]).toBe(
+      'launch:finish task:--bare|--exclude-dynamic-system-prompt-sections|finish task',
+    )
 
     const listed = captureIO()
     await expect(

@@ -22,6 +22,7 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
   systemPromptFile: undefined,
   appendSystemPrompt: undefined,
   appendSystemPromptFile: undefined,
+  excludeDynamicSystemPromptSections: false,
   addDirectories: [],
   pluginDirectories: [],
   pluginUrls: [],
@@ -206,6 +207,8 @@ export async function resolveCliControls(
     bare: controls.bare,
     systemPrompt,
     appendSystemPrompt,
+    excludeDynamicSystemPromptSections:
+      controls.excludeDynamicSystemPromptSections,
     tools: controls.tools,
     allowedTools: controls.allowedTools,
     disallowedTools: controls.disallowedTools,

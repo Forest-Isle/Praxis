@@ -337,9 +337,10 @@ process.stdin.on('data', chunk => {
     configRoot,
     cwd,
   })
-  const [systemContext] = await new ClaudeContextAssembler({
+  const { systemMessages } = await new ClaudeContextAssembler({
     loadResources: async () => contextResources,
   }).assemble()
+  const [systemContext] = systemMessages
   if (systemContext?.role !== 'system') {
     throw new Error('Praxis did not assemble shared system context')
   }

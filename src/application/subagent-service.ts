@@ -24,7 +24,11 @@ import {
   createClaudeHookAttachmentEntries,
   translateProviderEvents,
 } from '../compatibility/claude/translation.js'
-import type { ContextAssembler } from '../core/context.js'
+import {
+  injectFirstUserMessageContext,
+  type ContextAssembler,
+} from '../core/context.js'
+import { ContextBudget } from '../core/context-budget.js'
 import {
   AgentRuntime,
   type ModelProvider,
@@ -196,6 +200,7 @@ export interface ClaudeSubagentExecutorOptions {
   extensions?: ClaudeExtensionCatalog
   hooks?: ClaudeHookRunner
   contextAssembler?: ContextAssembler
+  contextReserveTokens?: number
   approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
   eventSink?: RuntimeEventSink
   maxDepth?: number
@@ -1507,12 +1512,40 @@ export class ClaudeSubagentExecutor {
         ? `${baseSystem}\n\nYou MUST call StructuredOutput exactly once at the end with a value matching its schema.`
         : baseSystem
       let stopHookActive = false
+      const contextBudget = options.provider.capabilities.contextWindowTokens
+        ? new ContextBudget({
+            contextWindowTokens:
+              options.provider.capabilities.contextWindowTokens,
+            ...(this.options.contextReserveTokens === undefined
+              ? {}
+              : { reserveTokens: this.options.contextReserveTokens }),
+          })
+        : null
+      const definitions = options.provider.capabilities.tools
+        ? runtimeTools.definitions()
+        : []
+      const assembleMessages = async () => {
+        const assembledContext = await this.options.contextAssembler?.assemble({
+          cwd,
+        })
+        const messages = [
+          ...(assembledContext?.systemMessages ?? []),
+          { role: 'system' as const, content: system },
+          ...injectFirstUserMessageContext(
+            projectClaudeModelMessages(snapshot.entries),
+            assembledContext?.firstUserMessageContext,
+          ),
+        ]
+        if (contextBudget) {
+          contextBudget.assertFits(
+            contextBudget.evaluate(messages, definitions),
+          )
+        }
+        return messages
+      }
       const result = await runtime.run({
-        messages: [
-          ...((await this.options.contextAssembler?.assemble()) ?? []),
-          { role: 'system', content: system },
-          ...projectClaudeModelMessages(snapshot.entries),
-        ],
+        messages: await assembleMessages(),
+        reloadMessages: assembleMessages,
         cwd,
         ...(options.effort ? { effort: options.effort } : {}),
         toolResultDirectory: options.toolResultDirectory,

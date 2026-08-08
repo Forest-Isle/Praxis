@@ -993,6 +993,8 @@ describe('foreground Claude Agent execution', () => {
       'praxis-agent-worktree-clean-',
     )
     const toolCwds: string[] = []
+    const contextCwds: string[] = []
+    const requestMessages: ModelRequest['messages'][] = []
     let turn = 0
     const tools: ToolRegistry = {
       definitions: () => [
@@ -1010,7 +1012,8 @@ describe('foreground Claude Agent execution', () => {
     }
     const provider: ModelProvider = {
       capabilities: { streaming: true, usage: true, tools: true },
-      async *complete() {
+      async *complete(request) {
+        requestMessages.push(request.messages)
         if (turn++ === 0) {
           yield {
             type: 'tool-call',
@@ -1028,6 +1031,17 @@ describe('foreground Claude Agent execution', () => {
       provider,
       baseTools: tools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextAssembler: {
+        async assemble(options) {
+          const contextCwd = options?.cwd ?? ''
+          contextCwds.push(contextCwd)
+          return {
+            systemMessages: [
+              { role: 'system', content: `CONTEXT_CWD:${contextCwd}` },
+            ],
+          }
+        },
+      },
     })
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const registry = executor.registry(
@@ -1053,6 +1067,13 @@ describe('foreground Claude Agent execution', () => {
 
     const worktreePath = String(result.nativeToolUseResult?.worktreePath)
     expect(toolCwds).toEqual([worktreePath])
+    expect(contextCwds).toEqual([worktreePath, worktreePath])
+    expect(requestMessages).toHaveLength(2)
+    expect(
+      requestMessages.every((messages) =>
+        JSON.stringify(messages).includes(`CONTEXT_CWD:${worktreePath}`),
+      ),
+    ).toBe(true)
     expect(result.nativeToolUseResult).toMatchObject({
       worktreePath,
       worktreeRetained: false,
@@ -1072,6 +1093,64 @@ describe('foreground Claude Agent execution', () => {
     )
     expect(rootEntry?.cwd).toBe(worktreePath)
     await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects an oversized subagent context before provider transport', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-budget-test-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    let providerCalls = 0
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: true,
+          contextWindowTokens: 100,
+        },
+        async *complete() {
+          providerCalls += 1
+          yield { type: 'text-delta', delta: 'unexpected' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextReserveTokens: 20,
+      contextAssembler: {
+        async assemble() {
+          return {
+            systemMessages: [
+              { role: 'system', content: 'OVERSIZED_CONTEXT '.repeat(500) },
+            ],
+          }
+        },
+      },
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_oversized_context',
+        name: 'Agent',
+        input: {
+          description: 'Budget probe',
+          prompt: 'Inspect context budget',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+
+    await expect(registry.execute(call, { cwd })).rejects.toThrow(
+      /window=100.*reserve=20.*available=80/,
+    )
+    expect(providerCalls).toBe(0)
   })
 
   it('retains an isolated Agent worktree containing changes', async () => {
