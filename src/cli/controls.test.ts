@@ -153,6 +153,18 @@ describe('CLI controls', () => {
     })
   })
 
+  it('preserves the Claude 2.1.208 prefill compatibility value', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-cli-controls-'))
+    roots.push(cwd)
+
+    await expect(
+      resolveCliControls(
+        { ...DEFAULT_CLI_CONTROLS, prefill: 'ignored-prefix' },
+        cwd,
+      ),
+    ).resolves.toMatchObject({ prefill: 'ignored-prefix' })
+  })
+
   it('validates and normalizes startup file resources', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'praxis-cli-controls-'))
     roots.push(cwd)

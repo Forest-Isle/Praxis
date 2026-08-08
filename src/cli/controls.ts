@@ -44,6 +44,7 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
   resumeSessionAt: undefined,
   name: undefined,
   sessionPersistence: true,
+  prefill: undefined,
   promptSuggestions: false,
 }
 
@@ -235,6 +236,7 @@ export async function resolveCliControls(
     ...(controls.maxBudgetUsd === undefined
       ? {}
       : { maxBudgetUsd: controls.maxBudgetUsd }),
+    prefill: controls.prefill,
     promptSuggestions: controls.promptSuggestions ?? false,
     ...(controls.worktreeName === undefined
       ? {}

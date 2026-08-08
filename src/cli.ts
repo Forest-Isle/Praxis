@@ -227,6 +227,7 @@ Options:
   --fallback-model <models>           Comma-separated print-mode fallbacks
   --json-schema <schema>              Print-mode JSON Schema for structured output
   --max-budget-usd <amount>           Maximum print-mode API spend
+  --prefill <text>                    Accepted as a Claude 2.1.208-compatible no-op
   --prompt-suggestions                Emit a suggested next prompt (stream-json print mode)
   --scope <scope>                     MCP scope: local, project, or user
   --no-browser                       Print MCP OAuth URL without opening a browser

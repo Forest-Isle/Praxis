@@ -295,6 +295,7 @@ describe('Praxis CLI', () => {
     await expect(run([], capture.io, unavailable)).resolves.toBe(0)
     await expect(run(['--version'], capture.io, unavailable)).resolves.toBe(0)
     expect(capture.stdout.join('')).toContain('Praxis')
+    expect(capture.stdout.join('')).toContain('--prefill <text>')
     expect(capture.stdout).toContain('0.1.0\n')
     expect(capture.stderr).toEqual([])
   })
@@ -431,6 +432,24 @@ describe('Praxis CLI', () => {
     expect(capture.stdout.join('')).toBe('answer:hello world\n')
   })
 
+  it('accepts prefill without changing prompt or runtime output', async () => {
+    const capture = captureIO()
+    const base = dependencies()
+    let prefill: string | undefined
+    const compatible: CliDependencies = {
+      async createService(options) {
+        prefill = options.controls?.prefill
+        return base.createService(options)
+      },
+    }
+
+    await expect(
+      run(['--prefill', 'ignored-prefix', 'hello'], capture.io, compatible),
+    ).resolves.toBe(0)
+    expect(prefill).toBe('ignored-prefix')
+    expect(capture.stdout.join('')).toBe('answer:hello\n')
+  })
+
   it('launches and controls top-level background agents without creating a provider', async () => {
     const calls: string[] = []
     const managed: CliDependencies = {
@@ -481,6 +500,8 @@ describe('Praxis CLI', () => {
           '--bg',
           '--bare',
           '--exclude-dynamic-system-prompt-sections',
+          '--prefill',
+          'ignored-prefix',
           '--session-id',
           '11111111-1111-4111-8111-111111111111',
           'finish task',
@@ -494,7 +515,7 @@ describe('Praxis CLI', () => {
       'warning: --bg manages the session id; ignoring --session-id (use --resume <id> to continue an existing session)\n',
     ])
     expect(calls[0]).toBe(
-      'launch:finish task:--bare|--exclude-dynamic-system-prompt-sections|finish task',
+      'launch:finish task:--bare|--exclude-dynamic-system-prompt-sections|--prefill|ignored-prefix|finish task',
     )
 
     const listed = captureIO()

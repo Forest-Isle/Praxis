@@ -65,6 +65,7 @@ export interface CliControls {
   fallbackModels?: readonly string[]
   jsonSchema?: Record<string, unknown>
   maxBudgetUsd?: number
+  prefill: string | undefined
   promptSuggestions?: boolean
   worktreeName?: string
   worktreeRequested?: boolean
@@ -492,6 +493,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let fallbackModels: string[] | undefined
   let jsonSchema: Record<string, unknown> | undefined
   let maxBudgetUsd: number | undefined
+  let prefill: string | undefined
   let promptSuggestions = false
   let mcpScope: CliMcpScope | undefined
   let mcpNoBrowser = false
@@ -578,6 +580,19 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--max-budget-usd may only be specified once')
       maxBudgetUsd = positiveDecimal(selectedBudget.value, '--max-budget-usd')
       index += selectedBudget.consumed
+      continue
+    }
+    if (value === '--prefill') {
+      const candidate = argv[index + 1]
+      if (candidate === undefined || candidate.startsWith('-')) {
+        throw new Error('--prefill is required')
+      }
+      prefill = candidate
+      index += 1
+      continue
+    }
+    if (value.startsWith('--prefill=')) {
+      prefill = value.slice('--prefill='.length)
       continue
     }
     const selectedMcpScope = optionValue(argv, index, '--scope')
@@ -1155,6 +1170,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(jsonSchema === undefined ? {} : { jsonSchema }),
     ...(maxBudgetUsd === undefined ? {} : { maxBudgetUsd }),
+    prefill,
     promptSuggestions,
     ...(mcpScope === undefined ? {} : { mcpScope }),
     mcpNoBrowser,

@@ -271,6 +271,7 @@ node dist/cli.js -p --from-pr=owner/repo#42 --fork-session -- "Continue PR work"
 node dist/cli.js -p --model claude-sonnet-4-20250514 --effort high "Try another approach"
 node dist/cli.js -p --max-budget-usd 0.50 --output-format json "Bound this run"
 node dist/cli.js -p --output-format stream-json --verbose --prompt-suggestions "Suggest the next step"
+node dist/cli.js -p --prefill "ignored by Claude 2.1.208" "Inspect this project"
 node dist/cli.js -p --no-session-persistence "Inspect without saving"
 node dist/cli.js -p --file file_abc:input.txt -- "Inspect the downloaded file"
 node dist/cli.js sessions --json
@@ -307,6 +308,11 @@ when no pricing is available.
 `--prompt-suggestions` is available only with print-mode stream JSON; it emits
 one auxiliary `prompt_suggestion` record after each successful result without
 mutating the session transcript.
+Claude Code 2.1.208 accepts hidden `--prefill <text>` syntax but does not put
+the value in provider requests, output, or persisted transcripts. Praxis
+preserves that baseline no-op in text, JSON, stream JSON, resume, fork, and
+non-persistent runs; repeated flags are accepted and the final parsed value is
+retained only as an invocation control.
 `--from-pr [number-or-url]` filters native Claude `pr-link` metadata. Interactive
 mode opens a filtered resume picker; headless mode resumes only a unique match
 and reports zero or ambiguous matches instead of selecting silently. Forks

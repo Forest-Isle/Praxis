@@ -101,6 +101,12 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 | Prompt suggestions            | Complete                    | `--prompt-suggestions` validates print/stream-json mode, performs an unpersisted auxiliary request, and emits post-result `prompt_suggestion`                   |
 | Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                                                |
 
+Hidden `--prefill` is complete for the 2.1.208 baseline. Claude accepts
+missing-value-checked and repeatable syntax but leaves provider requests,
+output, and transcripts unchanged. Praxis matches that verified no-op across
+text, JSON, stream JSON, persistence, resume, fork, and OpenAI-compatible
+routing.
+
 ## Tool surface
 
 | Capability                         | Status   | Evidence / remaining work                                                                                                                                               |

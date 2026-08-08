@@ -298,6 +298,28 @@ describe('CLI protocol', () => {
     )
   })
 
+  it('accepts Claude 2.1.208 prefill syntax as a baseline no-op', () => {
+    expect(
+      parseCliInvocation([
+        '-p',
+        '--prefill',
+        'first',
+        '--prefill=last',
+        'prompt',
+      ]),
+    ).toMatchObject({ prefill: 'last', args: ['prompt'] })
+    expect(parseCliInvocation(['--prefill=', 'prompt'])).toMatchObject({
+      prefill: '',
+      args: ['prompt'],
+    })
+    expect(() => parseCliInvocation(['--prefill'])).toThrow(
+      '--prefill is required',
+    )
+    expect(() => parseCliInvocation(['--prefill', '--print'])).toThrow(
+      '--prefill is required',
+    )
+  })
+
   it('parses print-only turn and beta controls', () => {
     expect(
       parseCliInvocation([
