@@ -40,6 +40,22 @@ async function temporaryConfigRoot(): Promise<string> {
   return root
 }
 
+async function availablePort(): Promise<number> {
+  const server = createServer()
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.once('error', rejectPromise)
+    server.listen(0, '127.0.0.1', resolvePromise)
+  })
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('callback fixture did not expose a port')
+  }
+  await new Promise<void>((resolvePromise) =>
+    server.close(() => resolvePromise()),
+  )
+  return address.port
+}
+
 interface OAuthFixture {
   issuer: string
   server: McpOAuthServerIdentity
@@ -362,6 +378,58 @@ describe('Claude MCP OAuth compatibility', () => {
     ).resolves.toMatchObject({
       accessToken: 'fixture-refreshed',
       refreshToken: 'fixture-refresh',
+    })
+  })
+
+  it('uses configured OAuth credentials and callback port without inventing a token', async () => {
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+    const configRoot = await temporaryConfigRoot()
+    const fixture = await startOAuthFixture()
+    const callbackPort = await availablePort()
+    const server = {
+      ...fixture.server,
+      clientId: 'configured-client',
+      callbackPort,
+    }
+    const store = new ClaudeMcpOAuthStore({ configRoot, useKeychain: false })
+    await store.saveClientSecret(server, 'configured-secret')
+    let authorizationUrl: URL | undefined
+
+    await expect(
+      authenticateMcpServer({
+        configRoot,
+        server,
+        write: () => undefined,
+        openBrowser: async (url) => {
+          authorizationUrl = url
+          const redirect = new URL(url.searchParams.get('redirect_uri') ?? '')
+          redirect.searchParams.set('code', 'configured-code')
+          redirect.searchParams.set(
+            'state',
+            url.searchParams.get('state') ?? '',
+          )
+          const response = await fetch(redirect)
+          expect(response.ok).toBe(true)
+        },
+      }),
+    ).resolves.toBe('AUTHORIZED')
+
+    expect(authorizationUrl?.searchParams.get('redirect_uri')).toBe(
+      `http://localhost:${callbackPort}/callback`,
+    )
+    expect(fixture.registrations).toEqual([])
+    expect(fixture.tokenRequests[0]?.get('code')).toBe('configured-code')
+    await expect(store.read(server)).resolves.toMatchObject({
+      accessToken: 'fixture-access',
+      refreshToken: 'fixture-refresh',
+    })
+    const loaded = await loadMcpOAuthProvider(configRoot, server)
+    expect(loaded?.clientInformation()).toMatchObject({
+      client_id: 'configured-client',
+      client_secret: 'configured-secret',
+      redirect_uris: [
+        expect.stringMatching(/^http:\/\/localhost:\d+\/callback$/u),
+      ],
     })
   })
 

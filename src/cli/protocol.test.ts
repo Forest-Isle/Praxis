@@ -502,6 +502,50 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('parses complete MCP add controls and preserves subprocess arguments', () => {
+    expect(
+      parseCliInvocation([
+        'mcp',
+        'add',
+        'fixture',
+        '-e',
+        'ONE=1',
+        '-e',
+        'TWO=two',
+        '-H',
+        'Authorization: Bearer fixture',
+        '-H',
+        'X-Test: yes',
+        '-s',
+        'user',
+        '-t',
+        'streamable-http',
+        '--callback-port',
+        '4321',
+        '--client-id',
+        'fixture-client',
+        '--client-secret',
+        '--',
+        'node',
+        'server.mjs',
+        '--flag',
+      ]),
+    ).toMatchObject({
+      command: 'mcp',
+      args: ['mcp', 'add', 'fixture', 'node', 'server.mjs', '--flag'],
+      mcpScope: 'user',
+      mcpTransport: 'http',
+      mcpEnv: ['ONE=1', 'TWO=two'],
+      mcpHeaders: ['Authorization: Bearer fixture', 'X-Test: yes'],
+      mcpCallbackPort: '4321',
+      mcpClientId: 'fixture-client',
+      mcpClientSecret: true,
+    })
+    expect(() =>
+      parseCliInvocation(['mcp', 'add', '-t', 'websocket', 'fixture', 'node']),
+    ).toThrow('Invalid transport type: websocket')
+  })
+
   it('parses repeatable local plugin directories', () => {
     expect(
       parseCliInvocation([

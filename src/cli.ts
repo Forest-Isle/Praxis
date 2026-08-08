@@ -72,6 +72,7 @@ import {
   authenticateMcpServer,
   ClaudeMcpOAuthStore,
   mcpOAuthServerIdentity,
+  readMcpClientSecret,
 } from './mcp/claude-mcp-oauth.js'
 import { servePraxisMcpStdio } from './mcp/praxis-mcp-server.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
@@ -295,6 +296,34 @@ Check Praxis installation and local single-user configuration health.
 Options:
   --json      Output a machine-readable report
   -h, --help  Show help
+`
+
+const MCP_ADD_HELP = `Usage: praxis mcp add [options] <name> <commandOrUrl> [args...]
+
+Add an MCP server to Praxis.
+
+Examples:
+  # Add HTTP server:
+  praxis mcp add --transport http sentry https://mcp.sentry.dev/mcp
+
+  # Add HTTP server with headers:
+  praxis mcp add --transport http corridor https://app.corridor.dev/api/mcp --header "Authorization: Bearer ..."
+
+  # Add stdio server with environment variables:
+  praxis mcp add my-server -e API_KEY=xxx -- npx my-mcp-server
+
+  # Add stdio server with subprocess flags:
+  praxis mcp add my-server -- my-command --some-flag arg1
+
+Options:
+  --callback-port <port>       Fixed port for OAuth callback (for servers requiring pre-registered redirect URIs)
+  --client-id <clientId>       OAuth client ID for HTTP/SSE servers
+  --client-secret              Prompt for OAuth client secret (or set MCP_CLIENT_SECRET env var)
+  -e, --env <env...>           Set environment variables (e.g. -e KEY=value)
+  -H, --header <header...>     Set WebSocket headers (e.g. -H "X-Api-Key: abc123" -H "X-Custom: value")
+  -h, --help                   Display help for command
+  -s, --scope <scope>          Configuration scope (local, user, or project) (default: "local")
+  -t, --transport <transport>  Transport type (stdio, sse, http). Defaults to stdio if not specified.
 `
 
 const PROJECT_PURGE_HELP = `Usage: praxis project purge [options] [path]
@@ -1183,6 +1212,148 @@ function mcpOutput(io: CliIO, invocation: CliInvocation, value: unknown): void {
   }
 }
 
+function mcpEnvironment(values: readonly string[]): Record<string, string> {
+  const environment: Record<string, string> = {}
+  for (const value of values) {
+    const [name, ...parts] = value.split('=')
+    if (!name || parts.length === 0) {
+      throw new Error(
+        `Invalid environment variable format: ${value}, environment variables should be added as: -e KEY1=value1 -e KEY2=value2`,
+      )
+    }
+    environment[name] = parts.join('=')
+  }
+  return environment
+}
+
+function mcpHeaders(
+  values: readonly string[],
+): Record<string, string> | undefined {
+  if (values.length === 0) return undefined
+  const headers: Record<string, string> = {}
+  for (const value of values) {
+    const separator = value.indexOf(':')
+    if (separator < 0) {
+      throw new Error(
+        `Invalid header format: "${value}". Expected format: "Header-Name: value"`,
+      )
+    }
+    const name = value.slice(0, separator).trim()
+    if (!name) {
+      throw new Error(
+        `Invalid header: "${value}". Header name cannot be empty.`,
+      )
+    }
+    headers[name] = value.slice(separator + 1).trim()
+  }
+  return headers
+}
+
+function mcpCallbackPort(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const port = Number.parseInt(value, 10)
+  if (!port) return undefined
+  if (port < 0) throw new Error('Invalid configuration: : Invalid input')
+  return port
+}
+
+function mcpOauthOptions(config: Record<string, unknown>): {
+  clientId?: string
+  callbackPort?: number
+} {
+  const oauth = config.oauth
+  if (!oauth || typeof oauth !== 'object' || Array.isArray(oauth)) return {}
+  const values = oauth as Record<string, unknown>
+  return {
+    ...(typeof values.clientId === 'string'
+      ? { clientId: values.clientId }
+      : {}),
+    ...(typeof values.callbackPort === 'number'
+      ? { callbackPort: values.callbackPort }
+      : {}),
+  }
+}
+
+function mcpConfigPath(record: McpServerRecord): string {
+  return record.scope === 'local'
+    ? `${record.path} [project: ${process.cwd()}]`
+    : record.path
+}
+
+function redactMcpHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [
+      name,
+      /authorization|api[-_]?key|token|secret|cookie/iu.test(name)
+        ? '[REDACTED]'
+        : value,
+    ]),
+  )
+}
+
+function isLikelyMcpUrl(value: string): boolean {
+  return (
+    value.startsWith('http://') ||
+    value.startsWith('https://') ||
+    value.startsWith('localhost') ||
+    value.endsWith('/sse') ||
+    value.endsWith('/mcp')
+  )
+}
+
+function mcpAddedOutput(
+  io: CliIO,
+  invocation: CliInvocation,
+  record: McpServerRecord,
+  transport: 'stdio' | 'http' | 'sse',
+  commandOrUrl: string,
+  args: readonly string[],
+  headers: Record<string, string> | undefined,
+): void {
+  if (invocation.legacyJson || invocation.outputFormat !== 'text') {
+    mcpOutput(io, invocation, {
+      type: 'mcp-added',
+      server: mcpRecordJson(record),
+    })
+    return
+  }
+  if (transport === 'stdio') {
+    io.stdout(
+      `Added stdio MCP server ${record.name} with command: ${commandOrUrl} ${args.join(' ')} to ${record.scope} config\n`,
+    )
+  } else {
+    io.stdout(
+      `Added ${transport.toUpperCase()} MCP server ${record.name} with URL: ${commandOrUrl} to ${record.scope} config\n`,
+    )
+    if (headers) {
+      io.stdout(
+        `Headers: ${JSON.stringify(redactMcpHeaders(headers), null, 2)}\n`,
+      )
+    }
+  }
+  io.stdout(`File modified: ${mcpConfigPath(record)}\n`)
+}
+
+async function existingMcpServer(
+  management: ClaudeMcpManagement,
+  name: string,
+  scope: McpServerRecord['scope'],
+): Promise<McpServerRecord | undefined> {
+  try {
+    return await management.get(name, scope)
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === `MCP server not found: ${name}`
+    ) {
+      return undefined
+    }
+    throw error
+  }
+}
+
 function mcpRecordJson(record: McpServerRecord): Record<string, unknown> {
   return {
     name: record.name,
@@ -1726,9 +1897,15 @@ async function executeMcpCommand(
     if (args.length !== 3) throw new Error('mcp login requires a server name')
     const record = await management.get(args[2] as string, scope)
     const server = mcpOAuthServerIdentity(record.name, record.config)
+    const oauth = mcpOauthOptions(record.config)
+    const clientSecret = oauth.clientId
+      ? await new ClaudeMcpOAuthStore({ configRoot }).readClientSecret(server)
+      : undefined
     await (dependencies.mcpAuthenticate ?? authenticateMcpServer)({
       configRoot,
       server,
+      ...oauth,
+      ...(clientSecret ? { clientSecret } : {}),
       noBrowser: invocation.mcpNoBrowser,
       write: (message) => io.stdout(message),
     })
@@ -1850,18 +2027,112 @@ async function executeMcpCommand(
     return 0
   }
   if (action === 'add') {
+    if (args.length < 3) throw new Error("missing required argument 'name'")
     if (args.length < 4)
-      throw new Error('mcp add requires name and command or URL')
+      throw new Error("missing required argument 'commandOrUrl'")
     const name = args[2] as string
     const commandOrUrl = args[3] as string
-    const config = /^https?:\/\//u.test(commandOrUrl)
-      ? { type: 'http', url: commandOrUrl }
-      : { type: 'stdio', command: commandOrUrl, args: args.slice(4) }
-    const server = await management.add(name, config, scope ?? 'local')
-    mcpOutput(io, invocation, {
-      type: 'mcp-added',
-      server: mcpRecordJson(server),
-    })
+    const transport = invocation.mcpTransport ?? 'stdio'
+    const commandArgs = args.slice(4)
+    if (transport === 'stdio') {
+      if (
+        invocation.mcpClientId ||
+        invocation.mcpClientSecret ||
+        invocation.mcpCallbackPort
+      ) {
+        io.stderr(
+          'Warning: --client-id, --client-secret, and --callback-port are only supported for HTTP/SSE transports and will be ignored for stdio.\n',
+        )
+      }
+      if (!invocation.mcpTransport && isLikelyMcpUrl(commandOrUrl)) {
+        io.stderr(
+          `\nWarning: The command "${commandOrUrl}" looks like a URL, but is being interpreted as a stdio server as --transport was not specified.\n`,
+        )
+        io.stderr(
+          `If this is an HTTP server, use: praxis mcp add --transport http ${name} ${commandOrUrl}\n`,
+        )
+        io.stderr(
+          `If this is an SSE server, use: praxis mcp add --transport sse ${name} ${commandOrUrl}\n`,
+        )
+      }
+      const server = await management.add(
+        name,
+        {
+          type: 'stdio',
+          command: commandOrUrl,
+          args: commandArgs,
+          env: mcpEnvironment(invocation.mcpEnv),
+        },
+        scope ?? 'local',
+      )
+      mcpAddedOutput(
+        io,
+        invocation,
+        server,
+        transport,
+        commandOrUrl,
+        commandArgs,
+        undefined,
+      )
+      return 0
+    }
+    const headers = mcpHeaders(invocation.mcpHeaders)
+    const callbackPort = mcpCallbackPort(invocation.mcpCallbackPort)
+    const oauth =
+      invocation.mcpClientId || callbackPort
+        ? {
+            ...(invocation.mcpClientId
+              ? { clientId: invocation.mcpClientId }
+              : {}),
+            ...(callbackPort ? { callbackPort } : {}),
+          }
+        : undefined
+    const clientSecret =
+      invocation.mcpClientSecret && invocation.mcpClientId
+        ? await readMcpClientSecret()
+        : undefined
+    const config = {
+      type: transport,
+      url: commandOrUrl,
+      ...(headers ? { headers } : {}),
+      ...(oauth ? { oauth } : {}),
+    }
+    const targetScope = scope ?? 'local'
+    const previous = clientSecret
+      ? await existingMcpServer(management, name, targetScope)
+      : undefined
+    const server = await management.add(name, config, targetScope)
+    if (clientSecret) {
+      try {
+        await new ClaudeMcpOAuthStore({ configRoot }).saveClientSecret(
+          mcpOAuthServerIdentity(name, config),
+          clientSecret,
+        )
+      } catch (error) {
+        try {
+          if (previous) {
+            await management.add(name, previous.config, targetScope)
+          } else {
+            await management.remove(name, targetScope)
+          }
+        } catch {
+          throw new Error(
+            'MCP client secret could not be stored and configuration rollback failed',
+            { cause: error },
+          )
+        }
+        throw error
+      }
+    }
+    mcpAddedOutput(
+      io,
+      invocation,
+      server,
+      transport,
+      commandOrUrl,
+      commandArgs,
+      headers,
+    )
     return 0
   }
   if (action === 'remove') {
@@ -1984,6 +2255,14 @@ async function execute(
     (argv.includes('--help') || argv.includes('-h'))
   ) {
     io.stdout(DOCTOR_HELP)
+    return 0
+  }
+  if (
+    argv[0] === 'mcp' &&
+    argv.includes('add') &&
+    (argv.includes('--help') || argv.includes('-h'))
+  ) {
+    io.stdout(MCP_ADD_HELP)
     return 0
   }
   if (argv[0] === 'project' && argv[1] === 'purge') {
@@ -2144,6 +2423,19 @@ async function execute(
     }
   }
   const mcpAction = command === 'mcp' ? args[1] : undefined
+  if (
+    (invocation.mcpTransport !== undefined ||
+      invocation.mcpEnv.length > 0 ||
+      invocation.mcpHeaders.length > 0 ||
+      invocation.mcpCallbackPort !== undefined ||
+      invocation.mcpClientId !== undefined ||
+      invocation.mcpClientSecret) &&
+    mcpAction !== 'add'
+  ) {
+    throw new Error(
+      '--transport, --env, --header, --callback-port, --client-id, and --client-secret are only valid with mcp add',
+    )
+  }
   if (invocation.mcpNoBrowser && mcpAction !== 'login') {
     throw new Error('--no-browser is only valid with mcp login')
   }
