@@ -374,6 +374,8 @@ describe('Praxis CLI', () => {
     expect(capture.stdout.join('')).toContain('--prefill <text>')
     expect(capture.stdout.join('')).toContain('--thinking <mode>')
     expect(capture.stdout.join('')).toContain('--max-thinking-tokens <tokens>')
+    expect(capture.stdout.join('')).toContain('-d, --debug [filter]')
+    expect(capture.stdout.join('')).toContain('--prompt-suggestions [value]')
     expect(capture.stdout).toContain('0.1.0\n')
     expect(capture.stderr).toEqual([])
   })
@@ -1214,6 +1216,7 @@ describe('Praxis CLI', () => {
           '--output-format=stream-json',
           '--verbose',
           '--prompt-suggestions',
+          '--',
           'hello',
         ],
         capture.io,

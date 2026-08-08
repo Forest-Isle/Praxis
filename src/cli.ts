@@ -236,17 +236,20 @@ Options:
   --json-schema <schema>              Print-mode JSON Schema for structured output
   --max-budget-usd <amount>           Maximum print-mode API spend
   --prefill <text>                    Accepted as a Claude 2.1.208-compatible no-op
-  --prompt-suggestions                Emit a suggested next prompt (stream-json print mode)
+  --prompt-suggestions [value]        Enable prompt suggestions. In print/SDK mode, emits a
+                                      prompt_suggestion message after each turn with a predicted
+                                      next user prompt (choices: "true", "false", "1", "0", "yes",
+                                      "no", "on", "off", preset: "true")
   --scope <scope>                     MCP scope: local, project, or user
   --no-browser                       Print MCP OAuth URL without opening a browser
-  -d, --debug                        Enable MCP server debug logging
   --no-session-persistence            Keep print-mode session in memory only
   --agent <name>                      Select a shared agent definition
   --max-turns <turns>                  Limit print-mode model round trips
   --betas <betas...>                   Include Anthropic beta headers
   --brief                              Enable SendUserMessage communication
   --ax-screen-reader                   Render flat screen-reader output
-  --debug[=<filter>]                   Enable runtime diagnostics
+  -d, --debug [filter]                 Enable debug mode with optional category filtering
+                                      (e.g., "api,hooks" or "!1p,!file")
   --debug-file <path>                  Write runtime diagnostics to a file
   --file <specs...>                    Download file resources at startup (file_id:relative_path)
   --agents <json>                      Define inline agents for this session

@@ -211,7 +211,8 @@ try {
   const debugFile = join(probeRoot, 'debug', 'runtime.jsonl')
   await runPraxis([
     '--no-session-persistence',
-    '--debug=state',
+    '--debug',
+    'state',
     '--debug-file',
     debugFile,
     'debug file',
@@ -387,6 +388,18 @@ try {
   )
 
   const version = await detectClaudeVersion('CLI controls probe')
+  const [{ stdout: claudeHelp }, { stdout: praxisHelp }] = await Promise.all([
+    execFileAsync('claude', ['--help']),
+    execFileAsync(process.execPath, [cliPath, '--help'], { cwd }),
+  ])
+  for (const help of [claudeHelp, praxisHelp]) {
+    if (!help.includes('-d, --debug [filter]')) {
+      throw new Error('Root help omitted optional debug filter')
+    }
+    if (!help.includes('optional category')) {
+      throw new Error('Root help omitted debug filter description')
+    }
+  }
   const claudeExecution = await execFileAsync(
     'claude',
     [
