@@ -199,8 +199,9 @@ export class TopLevelAgentManager {
     prompt: string
     argv: string[]
     resumeSessionId?: string
+    cwd?: string
   }): Promise<{ id: string; sessionId: string }> {
-    const cwd = await canonicalDirectory(this.options.cwd)
+    const cwd = await canonicalDirectory(options.cwd ?? this.options.cwd)
     let identity: { id: string; sessionId: string } | undefined
     let state: ClaudeJobState | undefined
     for (let attempt = 0; attempt < JOB_CREATE_ATTEMPTS; attempt += 1) {

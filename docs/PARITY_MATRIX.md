@@ -74,7 +74,7 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 | CLAUDE.md and rules                        | Complete                            | Hierarchy, conditional attachment, live fixtures                                                                                                                                            |
 | Auto memory                                | Complete                            | Canonical main-worktree memory path, standard tool access                                                                                                                                   |
 | Skills and commands                        | Complete at runtime                 | Shared discovery, slash expansion, model-invocable Skill                                                                                                                                    |
-| Agents                                     | Complete for local runtime          | Shared definitions, foreground/background Agent sidechains, and persistent top-level dispatch with bidirectional resume                                                                     |
+| Agents                                     | Complete for local runtime          | Shared definitions, foreground/background Agent sidechains, persistent dispatch/resume, and live `agents` Ink dashboard                                                                     |
 | Hooks                                      | Complete for current runtime events | Shared settings, bounded child execution, native attachments                                                                                                                                |
 | MCP                                        | Complete                            | Shared config, tool/resource calls, OAuth login/logout, configured-server status, redacted elicitation/error diagnostics, local lifecycle management, and stdio hosting; live/package gates |
 | Plugins                                    | Complete                            | Claude-native plugin discovery, validation, lifecycle, marketplace records, sources, install/enable/disable/update, and session loading                                                     |
@@ -133,7 +133,7 @@ routing.
 
 | Capability           | Status   | Evidence / remaining work                                                                                                               |
 | -------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                         |
+| `agents`             | Complete | TTY Ink dashboard, live refresh, attach/stop, JSON active/`--all`, cwd/default dispatch                                                 |
 | `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier             |
 | `plugin`             | Complete | Local and Claude-native marketplace install/enable/disable/update/list/init/validate with bounded sources and recovery                  |
 | `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                        |
