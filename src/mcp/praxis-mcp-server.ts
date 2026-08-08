@@ -456,6 +456,16 @@ class PraxisMcpRuntime {
     )
   }
 
+  private safeText(text: string): string {
+    return redactSensitiveText(text, this.sensitiveValues)
+  }
+
+  private safeError(error: unknown): Error {
+    return new Error(
+      this.safeText(error instanceof Error ? error.message : String(error)),
+    )
+  }
+
   private async executeAgent(
     value: Record<string, unknown>,
     signal?: AbortSignal,
@@ -486,7 +496,7 @@ class PraxisMcpRuntime {
         return result
       },
       (error: unknown) => {
-        task.error = error instanceof Error ? error : new Error(String(error))
+        task.error = this.safeError(error)
         throw task.error
       },
     )
@@ -517,12 +527,13 @@ class PraxisMcpRuntime {
       },
     })
     try {
-      return await service.run(
+      const result = await service.run(
         input.prompt,
         signal,
         undefined,
         input.name ?? input.description,
       )
+      return { ...result, text: this.safeText(result.text) }
     } finally {
       await service.close?.()
     }
@@ -549,13 +560,13 @@ class PraxisMcpRuntime {
     }
     if (task.error) {
       return {
-        content: `Task ${task.id} failed: ${task.error.message}`,
+        content: `Task ${task.id} failed: ${this.safeText(task.error.message)}`,
         isError: true,
       }
     }
     if (task.result) {
       return {
-        content: `${task.result.text}\n\nsessionId: ${task.result.sessionId}`,
+        content: `${this.safeText(task.result.text)}\n\nsessionId: ${task.result.sessionId}`,
         isError: false,
         nativeToolUseResult: { task_id: task.id, status: 'completed' },
       }

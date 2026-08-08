@@ -12,6 +12,7 @@ import { createPraxisMcpServer } from './praxis-mcp-server.js'
 const roots: string[] = []
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true })),
   )
@@ -197,6 +198,69 @@ describe('Praxis MCP stdio server', () => {
       })
       expect(textContent(result)).toContain('[REDACTED]')
       expect(textContent(result)).not.toContain(secret)
+    } finally {
+      await client.close()
+      await hosted.close()
+    }
+  })
+
+  it('redacts provider secrets from foreground and background Agent output', async () => {
+    const root = await fixtureRoot()
+    const secret = 'mcp-agent-secret-canary'
+    vi.stubEnv('PRAXIS_TEST_API_KEY', secret)
+    const hosted = createPraxisMcpServer({
+      cwd: root,
+      createAgentService: async () => ({
+        run: async (prompt) => {
+          if (prompt === 'failure') {
+            throw new Error(`provider failure: ${secret}`)
+          }
+          return {
+            sessionId: `session-${prompt}`,
+            text: `${prompt}: ${secret}`,
+          }
+        },
+        close: async () => undefined,
+      }),
+    })
+    const client = new Client({ name: 'fixture-client', version: '1' })
+    const [serverTransport, clientTransport] =
+      InMemoryTransport.createLinkedPair()
+    await hosted.server.connect(serverTransport)
+    await client.connect(clientTransport)
+
+    const taskOutput = async (prompt: string) => {
+      const launch = await client.callTool({
+        name: 'Agent',
+        arguments: { description: prompt, prompt },
+      })
+      const taskId = textContent(launch).match(
+        /task_id: (agent-[a-f0-9]+)/u,
+      )?.[1]
+      expect(taskId).toBeDefined()
+      return client.callTool({
+        name: 'TaskOutput',
+        arguments: { task_id: taskId, block: true, timeout: 1000 },
+      })
+    }
+
+    try {
+      const foreground = await client.callTool({
+        name: 'Agent',
+        arguments: {
+          description: 'foreground',
+          prompt: 'foreground',
+          run_in_background: false,
+        },
+      })
+      const completed = await taskOutput('background')
+      const failed = await taskOutput('failure')
+
+      for (const result of [foreground, completed, failed]) {
+        expect(textContent(result)).toContain('[REDACTED]')
+        expect(textContent(result)).not.toContain(secret)
+      }
+      expect(failed).toMatchObject({ isError: true })
     } finally {
       await client.close()
       await hosted.close()
