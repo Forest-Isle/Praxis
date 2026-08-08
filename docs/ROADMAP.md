@@ -532,3 +532,14 @@ Status: complete for Claude Code 2.1.208 and the supported Node/OS matrix.
       while retaining a genuinely over-budget history
 - [x] macOS Node 24/25 and Linux ARM64 Node 24/25 clean-tarball package and
       performance gates
+
+## Stage 62 - native file checkpoint rewind
+
+Status: complete for Claude Code 2.1.208 SDK-gated checkpoints.
+
+- [x] hidden `--rewind-files <user-message-uuid>` standalone resume contract
+- [x] native `file-history-snapshot` and `file-history-delta` transcript records
+- [x] bounded versioned backups in Claude's shared file-history directory
+- [x] existing-file restore, new-file removal, symlink/path/size fail-closed checks
+- [x] provider-free operation with unchanged conversation history
+- [x] live Claude-to-Praxis and Praxis-to-Claude rewind gate

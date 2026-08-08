@@ -110,6 +110,14 @@ Latest mode and permission state is retained. Queue and file-history records
 are transient and excluded, while unknown entry types, mismatched session IDs,
 and malformed cross-entry links fail closed. Subagent sidechains and orphaned
 `last-prompt` hints are excluded from the main-session fork.
+When `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true`, successful `Write`,
+`Edit`, and `NotebookEdit` calls append native file-history snapshot/delta
+records and bounded backups under `<config>/file-history/<session-id>`.
+`--resume <session-id> --rewind-files <user-message-uuid>` is a provider-free
+standalone operation that restores or removes tracked files at that checkpoint.
+Claude Code can rewind Praxis checkpoints, and Praxis can rewind Claude
+checkpoints; restore paths remain confined to the active workspace, explicit
+additional directories, and shared memory root.
 
 Session leases now carry PID/token ownership and safely reclaim locks left by a
 dead Praxis process while preserving live or unrecognized locks. Session
@@ -271,6 +279,8 @@ node dist/cli.js export <session-id> > session.jsonl
 node dist/cli.js resume <session-id> "Continue"
 node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
 node dist/cli.js -p --resume <session-id> --resume-session-at <message-id> "Try another branch"
+CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true node dist/cli.js -p "Edit with checkpoints"
+node dist/cli.js -p --resume <session-id> --rewind-files <user-message-uuid>
 node dist/cli.js fork <session-id>
 node dist/cli.js --bg "Inspect this project"
 node dist/cli.js agents --json --all --cwd "$PWD"

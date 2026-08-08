@@ -36,6 +36,20 @@ async function collectInput(chunks: readonly (string | Uint8Array)[]) {
 }
 
 describe('CLI protocol', () => {
+  it('parses standalone file rewind controls', () => {
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const messageId = '22222222-2222-4222-8222-222222222222'
+    expect(
+      parseCliInvocation(['--resume', sessionId, '--rewind-files', messageId]),
+    ).toMatchObject({
+      command: 'resume',
+      args: ['resume', sessionId],
+      rewindFiles: messageId,
+    })
+    expect(() => parseCliInvocation(['--rewind-files', messageId])).toThrow(
+      '--rewind-files requires --resume',
+    )
+  })
   it('classifies terminal result errors into SDK subtypes', () => {
     expect(
       createErrorResult(

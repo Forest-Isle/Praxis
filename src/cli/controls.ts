@@ -219,6 +219,9 @@ export async function resolveCliControls(
     continueSession: controls.continueSession,
     forkSession: controls.forkSession,
     resumeSessionAt: controls.resumeSessionAt,
+    ...(controls.rewindFiles === undefined
+      ? {}
+      : { rewindFiles: controls.rewindFiles }),
     name: controls.name,
     sessionPersistence: controls.sessionPersistence,
     ...(controls.model === undefined ? {} : { model: controls.model }),

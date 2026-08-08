@@ -3,6 +3,7 @@ export type ClaudeDataResource =
   | 'auto-memory'
   | 'commands'
   | 'durable-task-graph'
+  | 'file-history'
   | 'hooks'
   | 'instructions'
   | 'mcp'
@@ -48,6 +49,13 @@ export const CLAUDE_DATA_OWNERSHIP = [
     plane: 'shared',
     praxisAccess: 'read-write',
     location: '.claude/scheduled_tasks.json',
+  },
+  {
+    resource: 'file-history',
+    plane: 'shared',
+    praxisAccess: 'read-write',
+    location:
+      'file-history/<session-id>/ and transcript snapshot/delta records',
   },
   {
     resource: 'instructions',

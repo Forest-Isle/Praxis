@@ -361,6 +361,20 @@ Compaction, foreground/background sidechains, and `Read` image results have pass
 native writer/reopen gates. Tool-denial and other unimplemented entry writers
 remain explicitly rejected by the append adapter.
 
+SDK file checkpointing is opt-in through
+`CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true`. Praxis then writes Claude
+2.1.208-native `file-history-snapshot` records at user-message boundaries and
+`file-history-delta` records before the first successful `Write`, `Edit`, or
+`NotebookEdit` mutation of a newly tracked path. Bounded content backups use
+Claude's `<config>/file-history/<session-id>/<path-hash>@v<version>` layout.
+`--resume <session-id> --rewind-files <user-message-uuid>` reads either
+runtime's records, validates every backup before mutation, restores files by
+atomic replacement, removes paths that did not exist at the checkpoint, and
+does not call a model or modify conversation history. Rewind targets are
+confined to the active workspace, explicit additional roots, and shared memory;
+symlink escapes and malformed/unbounded backups fail closed. Fork continues to
+exclude file history because backups remain owned by the source session.
+
 ## Resource ownership and current access
 
 | Resource                               | Plane          | Praxis access                             |
@@ -374,6 +388,7 @@ remain explicitly rejected by the append adapter.
 | Background transcript                  | Shared         | Append/resume                             |
 | Background job control                 | Owner-scoped   | Praxis jobs only                          |
 | Scheduled prompts                      | Shared         | Read/write                                |
+| File history/checkpoint backups        | Shared         | Read/write                                |
 | Provider payloads, indexes, locks      | Praxis sidecar | Read/write                                |
 
 This matrix is also encoded in `src/compatibility/claude/ownership.ts`; runtime

@@ -98,6 +98,47 @@ function dependencies(
 }
 
 describe('Praxis CLI', () => {
+  it('rewinds files as a provider-free standalone resume operation', async () => {
+    const capture = captureIO()
+    const calls: string[] = []
+    const base = dependencies()
+    const rewindDependencies: CliDependencies = {
+      async createService(options) {
+        expect(options.requireProvider).toBe(false)
+        return {
+          ...(await base.createService(options)),
+          async rewindFiles(sessionId, messageId) {
+            calls.push(`${sessionId}:${messageId}`)
+          },
+        }
+      },
+    }
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const messageId = '22222222-2222-4222-8222-222222222222'
+
+    await expect(
+      run(
+        ['-p', '--resume', sessionId, '--rewind-files', messageId],
+        capture.io,
+        rewindDependencies,
+      ),
+    ).resolves.toBe(0)
+    expect(calls).toEqual([`${sessionId}:${messageId}`])
+    expect(capture.stdout).toEqual([
+      `Files rewound to state at message ${messageId}\n`,
+    ])
+
+    const invalid = captureIO()
+    await expect(
+      run(
+        ['-p', '--resume', sessionId, '--rewind-files', messageId, 'prompt'],
+        invalid.io,
+        rewindDependencies,
+      ),
+    ).resolves.toBe(1)
+    expect(invalid.stderr.join('')).toContain('standalone operation')
+  })
+
   it('auto-approves interrupted recovery only for opted-in background workers', async () => {
     const approvals: Array<boolean | undefined> = []
     const base = dependencies()

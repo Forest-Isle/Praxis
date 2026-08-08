@@ -131,6 +131,14 @@ UUID leaf is absent from copied history or no longer current are excluded from
 the main-session fork. Native Claude may use a user, system, or attachment UUID;
 Praxis-generated append metadata remains restricted to assistant leaves.
 
+Opt-in SDK file checkpointing writes non-tail snapshot/delta records plus
+bounded backups in Claude's shared file-history directory. File rewind is a
+standalone, provider-free resume operation: validate the target user UUID,
+backup metadata, allowed roots, and all backup bytes before atomically restoring
+or deleting any tracked path. It never rewrites the append-only conversation;
+forks omit file-history records because their backups remain source-session
+state.
+
 ## Error contract
 
 - Unsupported Claude schema: read-only inspect/export, no shared writes.

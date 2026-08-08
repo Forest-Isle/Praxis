@@ -75,6 +75,73 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('persists native file checkpoints and rewinds without a provider call', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-rewind-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd)
+    const filePath = join(cwd, 'created.txt')
+    let providerTurn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        providerTurn += 1
+        if (providerTurn === 1) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'write-checkpoint',
+              name: 'Write',
+              input: { file_path: filePath, content: 'created' },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'done' }
+        }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      fileCheckpointing: true,
+    })
+
+    const result = await service.run('create it')
+    await expect(readFile(filePath, 'utf8')).resolves.toBe('created')
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const source = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: result.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    const entries = source
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const user = entries.find(
+      (entry) =>
+        entry.type === 'user' && typeof entry.message?.content === 'string',
+    )
+    expect(entries.map((entry) => entry.type)).toEqual(
+      expect.arrayContaining(['file-history-snapshot', 'file-history-delta']),
+    )
+    await service.rewindFiles(result.sessionId, user.uuid)
+    await expect(readFile(filePath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    expect(providerTurn).toBe(2)
+  })
+
   it('downloads startup files before the first provider turn once per session', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-files-'))
     roots.push(root)

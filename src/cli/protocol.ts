@@ -57,6 +57,7 @@ export interface CliControls {
   continueSession: boolean
   forkSession: boolean
   resumeSessionAt: string | undefined
+  rewindFiles?: string
   name: string | undefined
   sessionPersistence: boolean
   model?: string
@@ -480,6 +481,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let allowDangerouslySkipPermissions = false
   let continueSession = false
   let forkSession = false
+  let rewindFiles: string | undefined
   let name: string | undefined
   let sessionPersistence = true
   let worktreeName: string | undefined
@@ -849,6 +851,14 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       index += 1
       continue
     }
+    const selectedRewindFiles = optionValue(argv, index, '--rewind-files')
+    if (selectedRewindFiles) {
+      if (rewindFiles !== undefined)
+        throw new Error('--rewind-files may only be specified once')
+      rewindFiles = selectedRewindFiles.value
+      index += selectedRewindFiles.consumed
+      continue
+    }
     if (value === '--from-pr') {
       if (fromPr !== undefined)
         throw new Error('--from-pr may only be specified once')
@@ -1061,6 +1071,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   }
   const resumesSession =
     args[0] === 'resume' || continueSession || fromPr !== undefined
+  if (rewindFiles !== undefined && args[0] !== 'resume') {
+    throw new Error('--rewind-files requires --resume')
+  }
   if (sessionId !== undefined && resumesSession && !forkSession) {
     throw new Error(
       '--session-id can only be used with --continue, --resume, or --from-pr if --fork-session is also specified',
@@ -1131,6 +1144,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     continueSession,
     forkSession,
     resumeSessionAt,
+    ...(rewindFiles === undefined ? {} : { rewindFiles }),
     name,
     sessionPersistence,
     ...(worktreeName === undefined ? {} : { worktreeName }),

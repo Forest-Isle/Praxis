@@ -353,6 +353,7 @@ interface SessionCommands {
     documents?: readonly ModelDocument[],
   ): Promise<SessionRunResult>
   fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
+  rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
   sessions(): Promise<SessionSummary[]>
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
@@ -874,6 +875,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : {}),
       ...(approveTool ? { approveTool } : {}),
       ...(approveRecovery ? { approveRecovery } : {}),
+      fileCheckpointing:
+        process.env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING === 'true',
+      fileRewindRoots: [
+        ...cli.additionalDirectories,
+        ...(memoryDirectory ? [memoryDirectory] : []),
+      ],
     })
     const toolNames = [
       ...filteredTools.definitions().map((definition) => definition.name),
@@ -939,6 +946,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
         pendingResumeSessionAt = undefined
         return service.fork(sessionId, targetSessionId, resumeSessionAt)
       },
+      rewindFiles: (sessionId, userMessageId) =>
+        service.rewindFiles(sessionId, userMessageId),
       sessions: () => service.sessions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
@@ -1997,6 +2006,11 @@ async function execute(
   const { retryInterruptedTools } = invocation
   const command = args[0]
   if (command === 'resume') requireValue(args[1], 'Session ID')
+  if (invocation.rewindFiles !== undefined && args.length > 2) {
+    throw new Error(
+      '--rewind-files is a standalone operation and cannot be used with a prompt',
+    )
+  }
   const knownCommand = [
     'run',
     'resume',
@@ -2372,9 +2386,9 @@ async function execute(
               }
             }
           : eventSink(io, outputFormat, invocation.legacyJson),
-    requireProvider: !['fork', 'sessions', 'inspect', 'export'].includes(
-      command ?? 'run',
-    ),
+    requireProvider:
+      invocation.rewindFiles === undefined &&
+      !['fork', 'sessions', 'inspect', 'export'].includes(command ?? 'run'),
     ...(retryInterruptedTools ? { approveRecovery: () => true } : {}),
     ...(streamIterator ? { approveTool: approveStreamTool } : {}),
     ...(streamIterator ? { onElicitation: respondStreamElicitation } : {}),
@@ -2384,6 +2398,13 @@ async function execute(
     controls: invocation,
   })
   try {
+    if (invocation.rewindFiles !== undefined) {
+      const sessionId = requireValue(args[1], 'Session ID')
+      if (!service.rewindFiles) throw new Error('File rewinding is unavailable')
+      await service.rewindFiles(sessionId, invocation.rewindFiles)
+      io.stdout(`Files rewound to state at message ${invocation.rewindFiles}\n`)
+      return 0
+    }
     if (command === 'sessions') {
       const sessions = await service.sessions()
       if (outputFormat === 'json' || invocation.legacyJson) {

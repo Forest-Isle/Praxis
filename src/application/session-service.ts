@@ -20,6 +20,7 @@ import {
 } from '../compatibility/claude/file-resources.js'
 import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
 import { selectClaudeTranscriptAtMessage } from '../compatibility/claude/history.js'
+import { ClaudeFileHistory } from '../compatibility/claude/file-history.js'
 import { getClaudePrLink } from '../compatibility/claude/pr-links.js'
 import {
   getClaudeAgentSetting,
@@ -141,6 +142,8 @@ export interface ClaudeSessionServiceOptions {
   worktreeToolNames?: readonly ('EnterWorktree' | 'ExitWorktree')[]
   fileResources?: readonly ClaudeFileResource[]
   fileResourceConfig?: Omit<ClaudeFileResourceConfig, 'sessionId' | 'signal'>
+  fileCheckpointing?: boolean
+  fileRewindRoots?: readonly string[]
 }
 
 export interface SessionRunResult {
@@ -703,6 +706,23 @@ export class ClaudeSessionService {
     return { sessionId, parentSessionId }
   }
 
+  async rewindFiles(sessionId: string, userMessageId: string): Promise<void> {
+    const result = await this.store(sessionId).withLease(async (lease) => {
+      const snapshot = await lease.load()
+      if (snapshot.entries.length === 0) {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      this.restoreWorktree(snapshot.entries)
+      await new ClaudeFileHistory(this.options.configRoot, sessionId, [
+        this.activeCwd(),
+        ...(this.options.fileRewindRoots ?? []),
+      ]).rewind(snapshot.entries, userMessageId)
+    })
+    if (result.status === 'conflict') {
+      throw new Error(`Claude file rewind conflict: ${result.reason}`)
+    }
+  }
+
   private async executeTurn(
     sessionId: string,
     prompt: string,
@@ -813,6 +833,15 @@ export class ClaudeSessionService {
         )
       }
       let currentPromptId: string | null = null
+      let lastAssistantUuid: string | null = null
+      const fileHistory =
+        this.options.fileCheckpointing &&
+        this.options.sessionPersistence !== false
+          ? new ClaudeFileHistory(this.options.configRoot, sessionId, [
+              this.activeCwd(),
+              ...(this.options.fileRewindRoots ?? []),
+            ])
+          : null
       const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
         snapshot.entries,
       )
@@ -1016,17 +1045,68 @@ export class ClaudeSessionService {
                 }),
             )
           : workspaceTools
+      const fileHistoryTools: ToolRegistry | undefined =
+        fileHistory && messageTools
+          ? {
+              definitions: () => messageTools.definitions(),
+              prepare: (call, context) => messageTools.prepare(call, context),
+              execute: async (call, context) => {
+                const path =
+                  call.name === 'Write' || call.name === 'Edit'
+                    ? call.input.file_path
+                    : call.name === 'NotebookEdit'
+                      ? call.input.notebook_path
+                      : undefined
+                if (typeof path !== 'string') {
+                  return messageTools.execute(call, context)
+                }
+                const snapshotMessageId =
+                  currentPromptId ??
+                  this.promptIdForToolCall(snapshot.entries, call.id)
+                const assistantMessageId =
+                  lastAssistantUuid ??
+                  this.assistantIdForToolCall(snapshot.entries, call.id)
+                if (!snapshotMessageId || !assistantMessageId) {
+                  throw new Error(
+                    'Claude file history could not link tool call',
+                  )
+                }
+                const prepared = await fileHistory.prepareMutation(
+                  snapshot.entries,
+                  snapshotMessageId,
+                  path,
+                )
+                let result
+                try {
+                  result = await messageTools.execute(call, context)
+                } catch (error) {
+                  await prepared.rollback()
+                  throw error
+                }
+                if (result.isError) {
+                  await prepared.rollback()
+                  return result
+                }
+                const entry = prepared.commit(assistantMessageId)
+                if (entry) {
+                  const tail = await this.append(lease, snapshot.tail, entry)
+                  snapshot = { entries: [...snapshot.entries, entry], tail }
+                }
+                return result
+              },
+            }
+          : messageTools
       const structuredCapture = this.options.structuredOutputSchema
         ? { calls: 0, value: undefined as unknown }
         : undefined
       const structuredTools =
         this.options.structuredOutputSchema && structuredCapture
           ? new StructuredOutputRegistry(
-              messageTools ?? this.options.tools ?? emptyToolRegistry,
+              fileHistoryTools ?? this.options.tools ?? emptyToolRegistry,
               this.options.structuredOutputSchema,
               structuredCapture,
             )
-          : messageTools
+          : fileHistoryTools
       const hookTools =
         this.options.hooks && structuredTools && this.options.permissions
           ? new ClaudeHookToolCoordinator({
@@ -1074,7 +1154,6 @@ export class ClaudeSessionService {
                 : {}),
             }),
       })
-      let lastAssistantUuid: string | null = null
       let currentTurnUserMessages: string[] | null = null
       const observer = {
         assistantCompleted: async (message: {
@@ -1555,6 +1634,22 @@ export class ClaudeSessionService {
           }
         }
 
+        if (fileHistory && currentPromptId) {
+          const historySnapshot = await fileHistory.snapshot(
+            snapshot.entries,
+            currentPromptId,
+          )
+          const historyTail = await this.append(
+            lease,
+            snapshot.tail,
+            historySnapshot,
+          )
+          snapshot = {
+            entries: [...snapshot.entries, historySnapshot],
+            tail: historyTail,
+          }
+        }
+
         if (this.options.hooks) {
           const outcome = await this.options.hooks.run(
             {
@@ -1950,6 +2045,36 @@ export class ClaudeSessionService {
         typeof candidate.parentUuid === 'string'
           ? byUuid.get(candidate.parentUuid)
           : undefined
+    }
+    return null
+  }
+
+  private assistantIdForToolCall(
+    entries: readonly ClaudeTranscriptEntry[],
+    callId: string,
+  ): string | null {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index]
+      if (
+        entry?.type !== 'assistant' ||
+        typeof entry.uuid !== 'string' ||
+        typeof entry.message !== 'object' ||
+        entry.message === null ||
+        !Array.isArray((entry.message as Record<string, unknown>).content)
+      ) {
+        continue
+      }
+      if (
+        ((entry.message as Record<string, unknown>).content as unknown[]).some(
+          (block) =>
+            typeof block === 'object' &&
+            block !== null &&
+            (block as Record<string, unknown>).type === 'tool_use' &&
+            (block as Record<string, unknown>).id === callId,
+        )
+      ) {
+        return entry.uuid
+      }
     }
     return null
   }

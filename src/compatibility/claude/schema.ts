@@ -19,6 +19,8 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'assistant',
   'attachment',
   'custom-title',
+  'file-history-delta',
+  'file-history-snapshot',
   'last-prompt',
   'pr-link',
   'system',
@@ -647,6 +649,31 @@ function validateCompactSummary(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'file-history-snapshot') {
+    if (
+      !isNonEmptyString(entry.messageId) ||
+      entry.isSnapshotUpdate !== false ||
+      !isRecord(entry.snapshot) ||
+      entry.snapshot.messageId !== entry.messageId ||
+      !isNonEmptyString(entry.snapshot.timestamp) ||
+      !isRecord(entry.snapshot.trackedFileBackups)
+    ) {
+      throw new Error('Claude file-history snapshot is invalid')
+    }
+    return
+  }
+  if (entry.type === 'file-history-delta') {
+    if (
+      !isNonEmptyString(entry.messageId) ||
+      !isNonEmptyString(entry.snapshotMessageId) ||
+      !isNonEmptyString(entry.trackingPath) ||
+      !isRecord(entry.backup) ||
+      !isNonEmptyString(entry.timestamp)
+    ) {
+      throw new Error('Claude file-history delta is invalid')
+    }
+    return
+  }
   if (entry.type === 'worktree-state') {
     if (!isNonEmptyString(entry.sessionId)) {
       throw new Error('Claude worktree-state entry has invalid sessionId')

@@ -22,6 +22,10 @@ describe('Claude shared-data ownership', () => {
       praxisAccess: 'read-write',
       location: '.claude/scheduled_tasks.json',
     })
+    expect(getDataOwnership('file-history')).toMatchObject({
+      plane: 'shared',
+      praxisAccess: 'read-write',
+    })
   })
 
   it('starts settings, hooks, and MCP in compatibility-safe read-only mode', () => {
