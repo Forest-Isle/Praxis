@@ -14,6 +14,7 @@ import {
   type ClaudeJobDispatch,
 } from '../persistence/claude-job-store.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
+import { sanitizeChildEnvironment } from '../platform/sensitive-data.js'
 import type { SessionRunResult } from './session-service.js'
 
 export interface TopLevelAgentSummary {
@@ -68,6 +69,41 @@ const MAX_JOB_OUTPUT_BYTES = 1024 * 1024
 const MAX_ATTACH_PROMPT_BYTES = 1024 * 1024
 const MAX_WIRE_LINE_BYTES = 8 * 1024 * 1024
 const MAX_SOCKET_BUFFER_BYTES = 10 * 1024 * 1024
+
+// Background workers are trusted Praxis runtimes, but still must not inherit
+// unrelated credentials or shell startup injection from the launching shell.
+// Provider/file credentials are restored explicitly because worker creates its
+// own provider from the same CLI/environment contract.
+const WORKER_RUNTIME_ENVIRONMENT = [
+  'PRAXIS_API_KEY',
+  'PRAXIS_MODEL',
+  'PRAXIS_PROVIDER',
+  'PRAXIS_BASE_URL',
+  'PRAXIS_MAX_OUTPUT_TOKENS',
+  'PRAXIS_ANTHROPIC_VERSION',
+  'PRAXIS_ANTHROPIC_WEB_SEARCH',
+  'PRAXIS_CONTEXT_WINDOW_TOKENS',
+  'PRAXIS_CONTEXT_RESERVE_TOKENS',
+  'PRAXIS_PRICING_JSON',
+  'PRAXIS_FILES_BASE_URL',
+  'PRAXIS_FILES_BEARER_TOKEN',
+  'PRAXIS_FILES_API_KEY',
+  'PRAXIS_MCP_OAUTH_STORE',
+  'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING',
+] as const
+
+function workerEnvironment(
+  source: NodeJS.ProcessEnv,
+  configRoot: string,
+): Record<string, string> {
+  const environment = sanitizeChildEnvironment({}, source)
+  for (const name of WORKER_RUNTIME_ENVIRONMENT) {
+    const value = source[name]
+    if (value !== undefined) environment[name] = value
+  }
+  environment.CLAUDE_CONFIG_DIR = configRoot
+  return environment
+}
 
 function socketPath(configRoot: string, id: string): string {
   const owner = typeof process.getuid === 'function' ? process.getuid() : 0
@@ -212,10 +248,10 @@ export class TopLevelAgentManager {
         [this.options.cliPath, '__background-worker', identity.id],
         {
           cwd,
-          env: {
-            ...(this.options.environment ?? process.env),
-            CLAUDE_CONFIG_DIR: this.options.configRoot,
-          },
+          env: workerEnvironment(
+            this.options.environment ?? process.env,
+            this.options.configRoot,
+          ),
           detached: true,
           stdio: 'ignore',
         },

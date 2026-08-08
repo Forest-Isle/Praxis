@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -284,6 +284,57 @@ describe('TopLevelAgentManager', () => {
     expect(failed).not.toHaveProperty('pid')
     expect(failed).not.toHaveProperty('socketPath')
     expect(failed).not.toHaveProperty('controlToken')
+  })
+
+  it('passes only the worker runtime environment contract to detached workers', async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), 'praxis-top-agent-env-'))
+    roots.push(configRoot)
+    const cwd = join(configRoot, 'work')
+    await mkdir(cwd)
+    const outputPath = join(configRoot, 'environment.json')
+    const scriptPath = join(configRoot, 'worker.mjs')
+    await writeFile(
+      scriptPath,
+      `import { writeFile } from 'node:fs/promises'
+await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
+`,
+    )
+    const manager = new TopLevelAgentManager({
+      configRoot,
+      cwd,
+      cliPath: scriptPath,
+      executablePath: process.execPath,
+      environment: {
+        PATH: process.env.PATH ?? '',
+        PRAXIS_API_KEY: 'worker-provider-secret',
+        PRAXIS_MODEL: 'worker-model',
+        AWS_SECRET_ACCESS_KEY: 'ambient-secret',
+        BASH_ENV: '/tmp/untrusted-startup',
+        PRAXIS_TEST_SECRET: 'unrelated-secret',
+      },
+      version: '0.1.0',
+    })
+
+    await manager.launch({ prompt: 'capture environment', argv: [] })
+    await waitFor(async () => {
+      try {
+        await readFile(outputPath, 'utf8')
+        return true
+      } catch {
+        return false
+      }
+    })
+    const environment = JSON.parse(await readFile(outputPath, 'utf8')) as Record<
+      string,
+      string | undefined
+    >
+    expect(environment.PRAXIS_API_KEY).toBe('worker-provider-secret')
+    expect(environment.PRAXIS_MODEL).toBe('worker-model')
+    expect(environment.PATH).toBe(process.env.PATH ?? '')
+    expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined()
+    expect(environment.BASH_ENV).toBeUndefined()
+    expect(environment.PRAXIS_TEST_SECRET).toBeUndefined()
+    expect(environment.CLAUDE_CONFIG_DIR).toBe(configRoot)
   })
 
   it('records runtime initialization failures immediately', async () => {
