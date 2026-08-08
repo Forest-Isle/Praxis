@@ -393,6 +393,30 @@ function optionValue(
   return null
 }
 
+function optionalValue(
+  argv: readonly string[],
+  index: number,
+  option: string,
+): { value: string | true; consumed: number } | null {
+  const current = argv[index]
+  if (current === option) {
+    const candidate = argv[index + 1]
+    if (
+      candidate !== undefined &&
+      candidate !== '--' &&
+      !candidate.startsWith('-')
+    ) {
+      return { value: candidate, consumed: 1 }
+    }
+    return { value: true, consumed: 0 }
+  }
+  const prefix = `${option}=`
+  if (current?.startsWith(prefix)) {
+    return { value: current.slice(prefix.length), consumed: 0 }
+  }
+  return null
+}
+
 function listOptionValue(
   argv: readonly string[],
   index: number,
@@ -691,14 +715,40 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       index += selectedBetas.consumed
       continue
     }
-    if (value === '--debug') {
+    const mcpServe = args[0] === 'mcp' && args[1] === 'serve'
+    if (mcpServe && (value === '-d' || value === '--debug')) {
       debug = true
+      mcpDebug = true
       continue
     }
-    if (value.startsWith('--debug=')) {
-      const filter = value.slice('--debug='.length)
-      if (!filter) throw new Error('--debug filter must not be empty')
-      debug = filter
+    if (
+      args[0] === 'mcp' &&
+      (value.startsWith('-d') || value.startsWith('--debug'))
+    ) {
+      throw new Error(`Unknown option: ${value}`)
+    }
+    const selectedDebug = optionalValue(argv, index, '--debug')
+    if (selectedDebug) {
+      debug = selectedDebug.value || true
+      index += selectedDebug.consumed
+      continue
+    }
+    if (value === '-d' || value.startsWith('-d')) {
+      if (value.length > 2) {
+        debug = value.slice(2)
+      } else {
+        const candidate = argv[index + 1]
+        if (
+          candidate !== undefined &&
+          candidate !== '--' &&
+          !candidate.startsWith('-')
+        ) {
+          debug = candidate
+          index += 1
+        } else {
+          debug = true
+        }
+      }
       continue
     }
     const selectedDebugFile = optionValue(argv, index, '--debug-file')
@@ -1046,10 +1096,6 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       mcpNoBrowser = true
       continue
     }
-    if (value === '-d') {
-      debug = true
-      continue
-    }
     if (value === '--json') {
       legacyJson = true
       continue
@@ -1070,18 +1116,29 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       retryInterruptedTools = true
       continue
     }
-    if (value === '--prompt-suggestions') {
-      promptSuggestions = true
-      continue
+    if (args[0] === 'mcp' && value.startsWith('--prompt-suggestions')) {
+      throw new Error(`Unknown option: ${value}`)
     }
-    if (value.startsWith('--prompt-suggestions=')) {
-      const raw = value.slice('--prompt-suggestions='.length).toLowerCase()
+    const selectedPromptSuggestions = optionalValue(
+      argv,
+      index,
+      '--prompt-suggestions',
+    )
+    if (selectedPromptSuggestions) {
+      if (selectedPromptSuggestions.value === true) {
+        promptSuggestions = true
+        continue
+      }
+      const raw = selectedPromptSuggestions.value.trim().toLowerCase()
       if (
         !['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'].includes(raw)
       ) {
-        throw new Error('--prompt-suggestions must be a boolean')
+        throw new Error(
+          `option '--prompt-suggestions [value]' argument '${selectedPromptSuggestions.value}' is invalid. Allowed choices are true, false, 1, 0, yes, no, on, off.`,
+        )
       }
       promptSuggestions = ['true', '1', 'yes', 'on'].includes(raw)
+      index += selectedPromptSuggestions.consumed
       continue
     }
     throw new Error(`Unknown option: ${value}`)
@@ -1133,7 +1190,25 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   if (includeHookEvents && legacyJson) {
     throw new Error('--include-hook-events cannot be combined with --json')
   }
-  if (promptSuggestions && (!print || outputFormat !== 'stream-json')) {
+  const managementCommand = [
+    'fork',
+    'sessions',
+    'inspect',
+    'export',
+    'agents',
+    'attach',
+    'logs',
+    'stop',
+    'mcp',
+    'auto-mode',
+    'plugin',
+    'doctor',
+  ].includes(args[0] ?? '')
+  if (
+    promptSuggestions &&
+    !managementCommand &&
+    (!print || outputFormat !== 'stream-json')
+  ) {
     throw new Error(
       '--prompt-suggestions requires --print and --output-format=stream-json',
     )

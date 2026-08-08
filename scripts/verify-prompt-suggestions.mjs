@@ -1,11 +1,10 @@
-import { execFile } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { promisify } from 'node:util'
 
-const execFileAsync = promisify(execFile)
+import { detectClaudeVersion, execFileAsync } from './lib/claude-probe.mjs'
+
 const root = await mkdtemp(join(tmpdir(), 'praxis-prompt-suggestions-'))
 const requests = []
 let requestCount = 0
@@ -65,6 +64,7 @@ await new Promise((resolve, reject) => {
 })
 
 try {
+  await detectClaudeVersion('prompt-suggestions compatibility gate')
   const address = server.address()
   if (!address || typeof address === 'string')
     throw new Error('no server address')
@@ -74,6 +74,70 @@ try {
     PRAXIS_PROVIDER: 'anthropic',
     PRAXIS_API_KEY: 'fixture-key',
     PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}`,
+  }
+  const invalidMessage =
+    "option '--prompt-suggestions [value]' argument 'maybe' is invalid. Allowed choices are true, false, 1, 0, yes, no, on, off."
+  const [{ stdout: claudeHelp }, { stdout: praxisHelp }] = await Promise.all([
+    execFileAsync('claude', ['--help']),
+    execFileAsync(process.execPath, ['dist/cli.js', '--help'], {
+      cwd: new URL('..', import.meta.url),
+    }),
+  ])
+  for (const help of [claudeHelp, praxisHelp]) {
+    const normalizedHelp = help.replace(/\s+/g, ' ')
+    if (!help.includes('--prompt-suggestions [value]')) {
+      throw new Error('Root help omitted optional prompt-suggestions value')
+    }
+    if (!normalizedHelp.includes('choices: "true", "false", "1", "0"')) {
+      throw new Error('Root help omitted prompt-suggestions choices')
+    }
+  }
+  for (const [command, args] of [
+    ['claude', ['--prompt-suggestions', 'maybe', '--version']],
+    [
+      process.execPath,
+      [
+        'dist/cli.js',
+        '-p',
+        '--output-format=stream-json',
+        '--verbose',
+        '--prompt-suggestions',
+        'maybe',
+      ],
+    ],
+  ]) {
+    try {
+      await execFileAsync(command, args, {
+        cwd: new URL('..', import.meta.url),
+        env,
+      })
+      throw new Error(`${command} accepted invalid prompt suggestions`)
+    } catch (error) {
+      if (!String(error.stderr).includes(invalidMessage)) throw error
+    }
+  }
+  for (const [command, args] of [
+    ['claude', ['--prompt-suggestions=true', 'mcp', 'get', 'missing']],
+    [
+      process.execPath,
+      ['dist/cli.js', '--prompt-suggestions=true', 'mcp', 'get', 'missing'],
+    ],
+  ]) {
+    try {
+      await execFileAsync(command, args, {
+        cwd: new URL('..', import.meta.url),
+        env,
+      })
+      throw new Error(`${command} unexpectedly found missing MCP server`)
+    } catch (error) {
+      const stderr = String(error.stderr)
+      if (
+        !stderr.includes('missing') ||
+        stderr.includes('--prompt-suggestions requires')
+      ) {
+        throw error
+      }
+    }
   }
   const result = await execFileAsync(
     process.execPath,
@@ -86,6 +150,8 @@ try {
       'stream-json',
       '--verbose',
       '--prompt-suggestions',
+      'true',
+      '--',
       'suggest next',
     ],
     { cwd: new URL('..', import.meta.url), env, timeout: 30_000 },
@@ -112,8 +178,28 @@ try {
   if (records.at(-1)?.suggestion !== 'continue the implementation') {
     throw new Error('Suggestion text did not survive stream-json output')
   }
-  if (requests.length !== 2)
-    throw new Error(`Expected two provider requests, got ${requests.length}`)
+  const disabled = await execFileAsync(
+    process.execPath,
+    [
+      'dist/cli.js',
+      '-p',
+      '--model',
+      'fixture-model',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--prompt-suggestions',
+      'false',
+      '--',
+      'no suggestion',
+    ],
+    { cwd: new URL('..', import.meta.url), env, timeout: 30_000 },
+  )
+  if (disabled.stdout.includes('"type":"prompt_suggestion"')) {
+    throw new Error('False space value emitted a prompt suggestion')
+  }
+  if (requests.length !== 3)
+    throw new Error(`Expected three provider requests, got ${requests.length}`)
   console.log('Prompt suggestion compatibility checks passed.')
 } finally {
   await new Promise((resolve) => server.close(resolve)).catch(() => undefined)

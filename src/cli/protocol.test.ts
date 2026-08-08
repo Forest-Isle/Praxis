@@ -459,9 +459,11 @@ describe('CLI protocol', () => {
         '--output-format=stream-json',
         '--verbose',
         '--prompt-suggestions',
+        'true',
+        '--',
         'hello',
       ]),
-    ).toMatchObject({ promptSuggestions: true })
+    ).toMatchObject({ promptSuggestions: true, args: ['hello'] })
     expect(
       parseCliInvocation([
         '-p',
@@ -470,6 +472,22 @@ describe('CLI protocol', () => {
         '--prompt-suggestions=false',
       ]),
     ).toMatchObject({ promptSuggestions: false })
+    for (const value of ['false', '0', 'no', 'off', ' FALSE ']) {
+      expect(
+        parseCliInvocation(['--prompt-suggestions', value, 'prompt']),
+      ).toMatchObject({ promptSuggestions: false, args: ['prompt'] })
+    }
+    for (const value of ['true', '1', 'yes', 'on', ' TRUE ']) {
+      expect(
+        parseCliInvocation([
+          '-p',
+          '--output-format=stream-json',
+          '--verbose',
+          '--prompt-suggestions',
+          value,
+        ]),
+      ).toMatchObject({ promptSuggestions: true })
+    }
     expect(() => parseCliInvocation(['--prompt-suggestions'])).toThrow(
       '--prompt-suggestions requires --print and --output-format=stream-json',
     )
@@ -480,7 +498,10 @@ describe('CLI protocol', () => {
         '--verbose',
         '--prompt-suggestions=maybe',
       ]),
-    ).toThrow('must be a boolean')
+    ).toThrow("argument 'maybe' is invalid. Allowed choices are")
+    expect(() =>
+      parseCliInvocation(['--prompt-suggestions=', '--version']),
+    ).toThrow("argument '' is invalid")
   })
 
   it('parses MCP management scope', () => {
@@ -515,10 +536,18 @@ describe('CLI protocol', () => {
       debug: true,
       verbose: true,
     })
-    expect(parseCliInvocation(['-d', 'hello'])).toMatchObject({
-      debug: true,
+    expect(parseCliInvocation(['-d', 'hooks', '--', 'hello'])).toMatchObject({
+      debug: 'hooks',
       args: ['hello'],
       mcpDebug: false,
+    })
+    expect(parseCliInvocation(['-dhooks', 'hello'])).toMatchObject({
+      debug: 'hooks',
+      args: ['hello'],
+    })
+    expect(parseCliInvocation(['--debug=', 'hello'])).toMatchObject({
+      debug: true,
+      args: ['hello'],
     })
     expect(
       parseCliInvocation([
@@ -533,6 +562,30 @@ describe('CLI protocol', () => {
     ).toMatchObject({ brief: true, axScreenReader: true })
     expect(parseCliInvocation(['mcp', 'serve', '--mcp-debug'])).toMatchObject({
       mcpDebug: true,
+    })
+    expect(parseCliInvocation(['mcp', 'serve', '-d'])).toMatchObject({
+      debug: true,
+      mcpDebug: true,
+    })
+    expect(() => parseCliInvocation(['mcp', 'list', '--debug', 'api'])).toThrow(
+      'Unknown option: --debug',
+    )
+    expect(() => parseCliInvocation(['mcp', 'serve', '-dapi'])).toThrow(
+      'Unknown option: -dapi',
+    )
+    expect(() => parseCliInvocation(['mcp', 'list', '-dapi'])).toThrow(
+      'Unknown option: -dapi',
+    )
+    expect(() =>
+      parseCliInvocation(['mcp', 'list', '--prompt-suggestions', 'false']),
+    ).toThrow('Unknown option: --prompt-suggestions')
+    expect(
+      parseCliInvocation(['--prompt-suggestions=true', 'mcp', 'list']),
+    ).toMatchObject({ promptSuggestions: true, args: ['mcp', 'list'] })
+    expect(parseCliInvocation(['mcp', 'serve', '-d', 'api'])).toMatchObject({
+      debug: true,
+      mcpDebug: true,
+      args: ['mcp', 'serve', 'api'],
     })
   })
 
