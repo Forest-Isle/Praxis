@@ -339,6 +339,41 @@ describe('CLI protocol', () => {
     )
   })
 
+  it('parses and validates thinking controls', () => {
+    expect(
+      parseCliInvocation([
+        '--thinking',
+        'adaptive',
+        '--max-thinking-tokens=4096',
+        'prompt',
+      ]),
+    ).toMatchObject({
+      thinking: 'adaptive',
+      maxThinkingTokens: 4096,
+      args: ['prompt'],
+    })
+    expect(parseCliInvocation(['--thinking=disabled', 'prompt'])).toMatchObject(
+      { thinking: 'disabled' },
+    )
+    expect(() => parseCliInvocation(['--thinking', 'automatic'])).toThrow(
+      '--thinking must be one of enabled, adaptive, disabled',
+    )
+    expect(() => parseCliInvocation(['--max-thinking-tokens', '0'])).toThrow(
+      '--max-thinking-tokens must be a positive integer',
+    )
+    expect(() =>
+      parseCliInvocation([
+        '--thinking',
+        'disabled',
+        '--max-thinking-tokens',
+        '1024',
+      ]),
+    ).toThrow('cannot be combined with --thinking=disabled')
+    expect(() =>
+      parseCliInvocation(['--thinking', 'enabled', '--thinking', 'adaptive']),
+    ).toThrow('--thinking may only be specified once')
+  })
+
   it('parses print-only turn and beta controls', () => {
     expect(
       parseCliInvocation([
@@ -1018,6 +1053,63 @@ describe('CLI protocol', () => {
             type: 'input_json_delta',
             partial_json: '{"file_path":"a.txt"}',
           },
+        }),
+      }),
+    )
+  })
+
+  it('keeps thinking out of result text while preserving partial and final blocks', () => {
+    const records: Record<string, unknown>[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      true,
+    )
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({
+      type: 'thinking-start',
+      block: { type: 'thinking', thinking: '' },
+    })
+    output.sink({ type: 'thinking-delta', delta: 'private' })
+    output.sink({ type: 'thinking-signature-delta', delta: 'signed' })
+    output.sink({
+      type: 'thinking-stop',
+      block: { type: 'thinking', thinking: 'private', signature: 'signed' },
+    })
+    output.sink({ type: 'text-delta', delta: 'public' })
+    output.sink({ type: 'state', state: 'completed' })
+
+    const streamEvents = records
+      .filter((record) => record.type === 'stream_event')
+      .map((record) => record.event as Record<string, unknown>)
+    expect(streamEvents).toContainEqual({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'thinking_delta', thinking: 'private' },
+    })
+    expect(streamEvents).toContainEqual({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'signature_delta', signature: 'signed' },
+    })
+    expect(streamEvents).toContainEqual({
+      type: 'content_block_delta',
+      index: 1,
+      delta: { type: 'text_delta', text: 'public' },
+    })
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        type: 'assistant',
+        message: expect.objectContaining({
+          content: [
+            {
+              type: 'thinking',
+              thinking: 'private',
+              signature: 'signed',
+            },
+            { type: 'text', text: 'public' },
+          ],
         }),
       }),
     )

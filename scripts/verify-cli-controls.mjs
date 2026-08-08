@@ -232,7 +232,10 @@ try {
     '--',
     'beta headers',
   ])
-  if (betaHeaders.at(-1) !== 'fixture-beta-a,fixture-beta-b') {
+  if (
+    betaHeaders.at(-1) !==
+    'fixture-beta-a,fixture-beta-b,interleaved-thinking-2025-05-14'
+  ) {
     throw new Error(`Anthropic beta header mismatch: ${betaHeaders.at(-1)}`)
   }
 

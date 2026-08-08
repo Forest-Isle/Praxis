@@ -273,6 +273,7 @@ node dist/cli.js -p --system-prompt-file prompt.txt --add-dir ../shared -- "Insp
 node dist/cli.js -p --continue --fork-session --name experiment "Try another approach"
 node dist/cli.js -p --from-pr=owner/repo#42 --fork-session -- "Continue PR work"
 node dist/cli.js -p --model claude-sonnet-4-20250514 --effort high "Try another approach"
+node dist/cli.js -p --thinking adaptive --max-thinking-tokens 8192 "Reason within a cap"
 node dist/cli.js -p --max-budget-usd 0.50 --output-format json "Bound this run"
 node dist/cli.js -p --output-format stream-json --verbose --prompt-suggestions "Suggest the next step"
 node dist/cli.js -p --prefill "ignored by Claude 2.1.208" "Inspect this project"
@@ -309,6 +310,15 @@ Set `PRAXIS_PRICING_JSON` to a JSON object keyed by model, with
 `inputPerMillionUsd`, `outputPerMillionUsd`, and optional cache rates, to price
 a private or relay model. `--max-budget-usd` requires print mode and fails closed
 when no pricing is available.
+Anthropic sessions enable extended thinking by default, matching the isolated
+Claude Code 2.1.208 CLI contract. `--thinking enabled|adaptive|disabled`
+overrides that mode, and `--max-thinking-tokens` applies a positive token
+budget for enabled/adaptive thinking. Signed and redacted thinking blocks stay
+hidden from text/JSON results, remain available in partial stream records, and
+are preserved through tool continuations and shared Claude JSONL resume.
+OpenAI-compatible adapters accept explicit `disabled`; enabled/adaptive or
+token-budgeted thinking fail before a provider request because chat-completions
+has no lossless mapping.
 `--prompt-suggestions` is available only with print-mode stream JSON; it emits
 one auxiliary `prompt_suggestion` record after each successful result without
 mutating the session transcript.

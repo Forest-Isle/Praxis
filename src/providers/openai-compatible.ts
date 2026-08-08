@@ -4,6 +4,7 @@ import {
   type ModelProvider,
   type ModelRequest,
   type ModelStreamEvent,
+  type ModelThinkingConfig,
   type ModelToolCall,
 } from '../core/runtime.js'
 
@@ -12,6 +13,7 @@ export interface OpenAICompatibleProviderOptions {
   apiKey: string
   model: string
   contextWindowTokens?: number
+  thinking?: ModelThinkingConfig
   maxStreamBufferBytes?: number
   maxToolArgumentsBytes?: number
   maxToolCallsPerResponse?: number
@@ -280,6 +282,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly maxToolCallsPerResponse: number
   private readonly maxToolMetadataBytes: number
   private readonly maxErrorBodyBytes: number
+  private readonly thinking: ModelThinkingConfig | undefined
 
   constructor(private readonly options: OpenAICompatibleProviderOptions) {
     if (
@@ -294,6 +297,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       usage: true,
       tools: true,
       images: true,
+      thinking: { modes: ['disabled'], maxTokens: false },
       ...(options.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: options.contextWindowTokens }),
@@ -306,9 +310,28 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.maxToolCallsPerResponse = options.maxToolCallsPerResponse ?? 32
     this.maxToolMetadataBytes = options.maxToolMetadataBytes ?? 1024 * 1024
     this.maxErrorBodyBytes = options.maxErrorBodyBytes ?? 64 * 1024
+    if (
+      options.thinking &&
+      (options.thinking.mode !== 'disabled' ||
+        options.thinking.maxTokens !== undefined)
+    ) {
+      throw new Error(
+        'OpenAI-compatible provider does not support enabled, adaptive, or token-budgeted thinking',
+      )
+    }
+    this.thinking = options.thinking
   }
 
   async *complete(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    const thinking = request.thinking ?? this.thinking
+    if (
+      thinking &&
+      (thinking.mode !== 'disabled' || thinking.maxTokens !== undefined)
+    ) {
+      throw new Error(
+        'OpenAI-compatible provider does not support enabled, adaptive, or token-budgeted thinking',
+      )
+    }
     const requestInit: RequestInit = {
       method: 'POST',
       headers: {
@@ -319,7 +342,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
         model: this.options.model,
         messages: serializeMessages(request.messages),
         stream: true,
-        ...(request.effort ? { reasoning_effort: request.effort } : {}),
+        ...(request.effort && thinking?.mode !== 'disabled'
+          ? { reasoning_effort: request.effort }
+          : {}),
         stream_options: { include_usage: true },
         ...(request.tools?.length
           ? {

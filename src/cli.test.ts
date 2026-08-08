@@ -296,6 +296,8 @@ describe('Praxis CLI', () => {
     await expect(run(['--version'], capture.io, unavailable)).resolves.toBe(0)
     expect(capture.stdout.join('')).toContain('Praxis')
     expect(capture.stdout.join('')).toContain('--prefill <text>')
+    expect(capture.stdout.join('')).toContain('--thinking <mode>')
+    expect(capture.stdout.join('')).toContain('--max-thinking-tokens <tokens>')
     expect(capture.stdout).toContain('0.1.0\n')
     expect(capture.stderr).toEqual([])
   })

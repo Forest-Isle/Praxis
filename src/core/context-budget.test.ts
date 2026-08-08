@@ -7,6 +7,28 @@ import {
 } from './context-budget.js'
 
 describe('ContextBudget', () => {
+  it('counts signed and redacted thinking retained for provider resume', () => {
+    const withoutThinking = estimateModelRequestTokens([
+      { role: 'assistant', content: '' },
+    ])
+    const withThinking = estimateModelRequestTokens([
+      {
+        role: 'assistant',
+        content: '',
+        thinkingBlocks: [
+          {
+            type: 'thinking',
+            thinking: 'a'.repeat(40),
+            signature: 'b'.repeat(40),
+          },
+          { type: 'redacted_thinking', data: 'c'.repeat(40) },
+        ],
+      },
+    ])
+
+    expect(withThinking).toBeGreaterThan(withoutThinking + 20)
+  })
+
   it('budgets messages and tool definitions with multilingual text', () => {
     const plain = estimateModelRequestTokens([
       { role: 'user', content: 'a'.repeat(400) },

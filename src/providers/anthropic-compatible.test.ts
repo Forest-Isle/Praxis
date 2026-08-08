@@ -20,6 +20,10 @@ describe('AnthropicCompatibleProvider', () => {
       images: true,
       documents: true,
       webSearch: true,
+      thinking: {
+        modes: ['enabled', 'adaptive', 'disabled'],
+        maxTokens: true,
+      },
       contextWindowTokens: 200_000,
     })
     expect(
@@ -31,6 +35,202 @@ describe('AnthropicCompatibleProvider', () => {
           maxOutputTokens: 0,
         }),
     ).toThrow('positive integer')
+  })
+
+  it('maps thinking controls and preserves signed blocks across tool turns', async () => {
+    let body: Record<string, unknown> | undefined
+    let headers: Headers | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      maxOutputTokens: 1024,
+      thinking: { mode: 'adaptive', maxTokens: 2048 },
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        headers = new Headers(init?.headers)
+        return new Response(
+          [
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}\n\n',
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reason"}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed"}}\n\n',
+            'data: {"type":"content_block_stop","index":0}\n\n',
+            'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
+            'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"done"}}\n\n',
+            'data: {"type":"content_block_stop","index":1}\n\n',
+            'data: {"type":"message_delta","usage":{"output_tokens":3}}\n\n',
+            'data: {"type":"message_stop"}\n\n',
+          ].join(''),
+        )
+      },
+    })
+
+    const events = []
+    for await (const event of provider.complete({
+      messages: [
+        {
+          role: 'assistant',
+          content: '',
+          thinkingBlocks: [
+            { type: 'thinking', thinking: 'prior', signature: 'prior-sig' },
+          ],
+          toolCalls: [{ id: 'call_1', name: 'Read', input: { path: 'a' } }],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'call_1',
+          content: 'contents',
+          isError: false,
+        },
+      ],
+    })) {
+      events.push(event)
+    }
+
+    expect(body?.max_tokens).toBe(2049)
+    expect(body?.thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 2048,
+    })
+    expect(headers?.get('anthropic-beta')).toBe(
+      'interleaved-thinking-2025-05-14',
+    )
+    expect((body?.messages as unknown[])[0]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'prior', signature: 'prior-sig' },
+        {
+          type: 'tool_use',
+          id: 'call_1',
+          name: 'Read',
+          input: { path: 'a' },
+        },
+      ],
+    })
+    expect(events).toEqual([
+      { type: 'thinking-start', block: { type: 'thinking', thinking: '' } },
+      { type: 'thinking-delta', delta: 'reason' },
+      { type: 'thinking-signature-delta', delta: 'signed' },
+      {
+        type: 'thinking-stop',
+        block: { type: 'thinking', thinking: 'reason', signature: 'signed' },
+      },
+      { type: 'text-delta', delta: 'done' },
+      { type: 'usage', usage: { inputTokens: 4, outputTokens: 3 } },
+    ])
+  })
+
+  it('maps disabled thinking and rejects a disabled token budget', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      thinking: { mode: 'disabled' },
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+        )
+      },
+    })
+    for await (const event of provider.complete({
+      messages: [{ role: 'user', content: 'hello' }],
+    })) {
+      void event
+    }
+    expect(body?.thinking).toEqual({ type: 'disabled' })
+    expect(
+      () =>
+        new AnthropicCompatibleProvider({
+          baseUrl: 'https://api.anthropic.example/v1',
+          apiKey: 'secret',
+          model: 'fixture-model',
+          thinking: { mode: 'disabled', maxTokens: 1024 },
+        }),
+    ).toThrow('cannot be used when thinking is disabled')
+  })
+
+  it('streams redacted thinking as an opaque preserved block', async () => {
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () =>
+        new Response(
+          [
+            'data: {"type":"message_start","message":{}}\n\n',
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque"}}\n\n',
+            'data: {"type":"content_block_stop","index":0}\n\n',
+            'data: {"type":"message_delta","usage":{}}\n\n',
+            'data: {"type":"message_stop"}\n\n',
+          ].join(''),
+        ),
+    })
+    const events = []
+    for await (const event of provider.complete({ messages: [] })) {
+      events.push(event)
+    }
+    expect(events).toEqual([
+      {
+        type: 'thinking-start',
+        block: { type: 'redacted_thinking', data: 'opaque' },
+      },
+      {
+        type: 'thinking-stop',
+        block: { type: 'redacted_thinking', data: 'opaque' },
+      },
+    ])
+  })
+
+  it('rejects incomplete thinking blocks before persistence or replay', async () => {
+    const incompleteResponse = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () =>
+        new Response(
+          [
+            'data: {"type":"message_start","message":{}}\n\n',
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"reason"}}\n\n',
+            'data: {"type":"content_block_stop","index":0}\n\n',
+          ].join(''),
+        ),
+    })
+    const responseStream = incompleteResponse.complete({ messages: [] })
+    const responseEvents = responseStream[Symbol.asyncIterator]()
+    await responseEvents.next()
+    await expect(responseEvents.next()).rejects.toThrow(
+      'incomplete thinking block',
+    )
+
+    let transported = false
+    const invalidReplay = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () => {
+        transported = true
+        return new Response()
+      },
+    })
+    const replayStream = invalidReplay.complete({
+      messages: [
+        {
+          role: 'assistant',
+          content: '',
+          thinkingBlocks: [
+            { type: 'thinking', thinking: 'reason', signature: '' },
+          ],
+        },
+      ],
+    })
+    const replayEvents = replayStream[Symbol.asyncIterator]()
+    await expect(replayEvents.next()).rejects.toThrow(
+      'Cannot replay incomplete thinking block',
+    )
+    expect(transported).toBe(false)
   })
 
   it('requires native web search to be explicitly enabled', async () => {

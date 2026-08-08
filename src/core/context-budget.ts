@@ -63,8 +63,16 @@ function estimateMessageTokens(message: ModelMessage): number {
       tokens += 8 + estimateTextTokens(document.mediaType) + 2000
     }
   }
-  if (message.role !== 'assistant' || !message.toolCalls) return tokens
-  for (const call of message.toolCalls) {
+  if (message.role !== 'assistant') return tokens
+  for (const block of message.thinkingBlocks ?? []) {
+    tokens +=
+      4 +
+      (block.type === 'thinking'
+        ? estimateTextTokens(block.thinking) +
+          estimateTextTokens(block.signature)
+        : estimateTextTokens(block.data))
+  }
+  for (const call of message.toolCalls ?? []) {
     tokens +=
       6 +
       estimateTextTokens(call.id) +

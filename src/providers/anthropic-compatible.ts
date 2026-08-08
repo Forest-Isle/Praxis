@@ -4,6 +4,8 @@ import {
   type ModelProvider,
   type ModelRequest,
   type ModelStreamEvent,
+  type ModelThinkingBlock,
+  type ModelThinkingConfig,
   type ModelToolCall,
 } from '../core/runtime.js'
 
@@ -15,6 +17,7 @@ export interface AnthropicCompatibleProviderOptions {
   anthropicVersion?: string
   webSearch?: boolean
   contextWindowTokens?: number
+  thinking?: ModelThinkingConfig
   maxStreamBufferBytes?: number
   maxToolArgumentsBytes?: number
   maxToolCallsPerResponse?: number
@@ -31,7 +34,11 @@ interface PendingToolCall {
 }
 
 interface StreamState {
-  blocks: Map<number, 'ignored' | 'text' | 'tool_use'>
+  blocks: Map<
+    number,
+    'ignored' | 'text' | 'thinking' | 'redacted_thinking' | 'tool_use'
+  >
+  thinking: Map<number, ModelThinkingBlock>
   tools: Map<number, PendingToolCall>
   toolCallsSeen: number
   metadataBytes: number
@@ -66,6 +73,24 @@ function positiveInteger(value: number, label: string): number {
     throw new Error(`${label} must be a positive integer`)
   }
   return value
+}
+
+function validateThinking(
+  thinking: ModelThinkingConfig | undefined,
+): ModelThinkingConfig | undefined {
+  if (!thinking) return undefined
+  if (!['enabled', 'adaptive', 'disabled'].includes(thinking.mode)) {
+    throw new Error(`Unsupported thinking mode: ${thinking.mode}`)
+  }
+  if (thinking.maxTokens !== undefined) {
+    positiveInteger(thinking.maxTokens, 'Max thinking tokens')
+    if (thinking.mode === 'disabled') {
+      throw new Error(
+        'Max thinking tokens cannot be used when thinking is disabled',
+      )
+    }
+  }
+  return thinking
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -223,6 +248,42 @@ function parseSseEvent(
       )
     }
     const block = value.content_block
+    if (block.type === 'thinking') {
+      if (typeof block.thinking !== 'string') {
+        throw new ModelProviderError(
+          'Provider returned an invalid thinking block',
+          { retryable: false },
+        )
+      }
+      const pending: ModelThinkingBlock = {
+        type: 'thinking',
+        thinking: block.thinking,
+        signature: typeof block.signature === 'string' ? block.signature : '',
+      }
+      state.blocks.set(value.index, 'thinking')
+      state.thinking.set(value.index, pending)
+      return [
+        {
+          type: 'thinking-start',
+          block: { type: 'thinking', thinking: block.thinking },
+        },
+      ]
+    }
+    if (block.type === 'redacted_thinking') {
+      if (typeof block.data !== 'string') {
+        throw new ModelProviderError(
+          'Provider returned an invalid redacted thinking block',
+          { retryable: false },
+        )
+      }
+      const pending: ModelThinkingBlock = {
+        type: 'redacted_thinking',
+        data: block.data,
+      }
+      state.blocks.set(value.index, 'redacted_thinking')
+      state.thinking.set(value.index, pending)
+      return [{ type: 'thinking-start', block: pending }]
+    }
     if (block.type === 'text') {
       state.blocks.set(value.index, 'text')
       return typeof block.text === 'string' && block.text.length > 0
@@ -298,6 +359,38 @@ function parseSseEvent(
       )
     }
     if (blockType === 'ignored') return []
+    if (value.delta.type === 'thinking_delta') {
+      const pending = state.thinking.get(value.index)
+      if (
+        blockType !== 'thinking' ||
+        pending?.type !== 'thinking' ||
+        typeof value.delta.thinking !== 'string'
+      ) {
+        throw new ModelProviderError(
+          `Provider sent thinking for non-thinking content block ${value.index}`,
+          { retryable: false },
+        )
+      }
+      pending.thinking += value.delta.thinking
+      return [{ type: 'thinking-delta', delta: value.delta.thinking }]
+    }
+    if (value.delta.type === 'signature_delta') {
+      const pending = state.thinking.get(value.index)
+      if (
+        blockType !== 'thinking' ||
+        pending?.type !== 'thinking' ||
+        typeof value.delta.signature !== 'string'
+      ) {
+        throw new ModelProviderError(
+          `Provider sent a signature for non-thinking content block ${value.index}`,
+          { retryable: false },
+        )
+      }
+      pending.signature += value.delta.signature
+      return [
+        { type: 'thinking-signature-delta', delta: value.delta.signature },
+      ]
+    }
     if (value.delta.type === 'text_delta') {
       if (blockType !== 'text') {
         throw new ModelProviderError(
@@ -336,7 +429,9 @@ function parseSseEvent(
     if (
       value.delta.type !== 'text_delta' &&
       value.delta.type !== 'input_json_delta' &&
-      value.delta.type !== 'citations_delta'
+      value.delta.type !== 'citations_delta' &&
+      value.delta.type !== 'thinking_delta' &&
+      value.delta.type !== 'signature_delta'
     ) {
       throw new ModelProviderError(
         `Provider returned an unsupported delta for content block ${value.index}`,
@@ -367,6 +462,26 @@ function parseSseEvent(
       )
     }
     state.blocks.delete(value.index)
+    if (blockType === 'thinking' || blockType === 'redacted_thinking') {
+      const block = state.thinking.get(value.index)
+      state.thinking.delete(value.index)
+      if (!block) {
+        throw new ModelProviderError(
+          `Provider stopped missing thinking block ${value.index}`,
+          { retryable: false },
+        )
+      }
+      if (
+        (block.type === 'thinking' && block.signature.length === 0) ||
+        (block.type === 'redacted_thinking' && block.data.length === 0)
+      ) {
+        throw new ModelProviderError(
+          `Provider returned incomplete ${block.type} block ${value.index}`,
+          { retryable: false },
+        )
+      }
+      return [{ type: 'thinking-stop', block }]
+    }
     const event =
       blockType === 'tool_use' ? completedToolCall(state, value.index) : null
     return event ? [event] : []
@@ -376,6 +491,7 @@ function parseSseEvent(
     if (
       state.blocks.size > 0 ||
       state.tools.size > 0 ||
+      state.thinking.size > 0 ||
       !isRecord(value.usage)
     ) {
       throw new ModelProviderError(
@@ -392,7 +508,11 @@ function parseSseEvent(
   }
 
   if (value.type === 'message_stop') {
-    if (state.blocks.size > 0 || state.tools.size > 0) {
+    if (
+      state.blocks.size > 0 ||
+      state.tools.size > 0 ||
+      state.thinking.size > 0
+    ) {
       throw new ModelProviderError(
         'Provider stopped with unfinished content blocks',
         { retryable: false },
@@ -510,6 +630,18 @@ function serializeMessages(messages: readonly ModelMessage[]): {
     }
     if (message.role !== 'assistant') continue
     const content: Record<string, unknown>[] = []
+    for (const block of message.thinkingBlocks ?? []) {
+      if (
+        (block.type === 'thinking' && block.signature.length === 0) ||
+        (block.type === 'redacted_thinking' && block.data.length === 0)
+      ) {
+        throw new ModelProviderError(
+          `Cannot replay incomplete ${block.type} block`,
+          { retryable: false },
+        )
+      }
+      content.push(block)
+    }
     if (message.content.length > 0) {
       content.push({ type: 'text', text: message.content })
     }
@@ -539,6 +671,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
   private readonly maxToolCallsPerResponse: number
   private readonly maxToolMetadataBytes: number
   private readonly maxErrorBodyBytes: number
+  private readonly thinking: ModelThinkingConfig | undefined
 
   constructor(private readonly options: AnthropicCompatibleProviderOptions) {
     if (options.contextWindowTokens !== undefined) {
@@ -551,6 +684,10 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       images: true,
       documents: true,
       webSearch: options.webSearch === true,
+      thinking: {
+        modes: ['enabled', 'adaptive', 'disabled'],
+        maxTokens: true,
+      },
       ...(options.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: options.contextWindowTokens }),
@@ -559,9 +696,15 @@ export class AnthropicCompatibleProvider implements ModelProvider {
     this.model = options.model
     this.fetchImplementation = options.fetchImplementation ?? fetch
     this.maxOutputTokens = positiveInteger(
-      options.maxOutputTokens ?? 8192,
+      options.maxOutputTokens ??
+        (options.model.includes('claude-opus-4-6')
+          ? 64_000
+          : options.model.startsWith('claude-')
+            ? 32_000
+            : 8192),
       'Max output tokens',
     )
+    this.thinking = validateThinking(options.thinking)
     this.anthropicVersion = options.anthropicVersion ?? '2023-06-01'
     this.maxStreamBufferBytes = options.maxStreamBufferBytes ?? 1024 * 1024
     this.maxToolArgumentsBytes = options.maxToolArgumentsBytes ?? 1024 * 1024
@@ -577,6 +720,26 @@ export class AnthropicCompatibleProvider implements ModelProvider {
     if (request.webSearch && request.tools?.length) {
       throw new Error('Web search cannot be combined with model tools')
     }
+    const thinking = validateThinking(request.thinking ?? this.thinking)
+    const maxTokens = Math.max(
+      this.maxOutputTokens,
+      thinking?.maxTokens === undefined ? 0 : thinking.maxTokens + 1,
+    )
+    const thinkingPayload =
+      thinking === undefined
+        ? undefined
+        : thinking.mode === 'disabled'
+          ? { type: 'disabled' }
+          : {
+              type: 'enabled',
+              budget_tokens: thinking.maxTokens ?? maxTokens - 1,
+            }
+    const betas = [
+      ...(request.betas ?? []),
+      ...(thinking && thinking.mode !== 'disabled'
+        ? ['interleaved-thinking-2025-05-14']
+        : []),
+    ].filter((beta, index, all) => all.indexOf(beta) === index)
     const serialized = serializeMessages(request.messages)
     const requestInit: RequestInit = {
       method: 'POST',
@@ -584,15 +747,14 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         'anthropic-version': this.anthropicVersion,
         'content-type': 'application/json',
         'x-api-key': this.options.apiKey,
-        ...(request.betas?.length
-          ? { 'anthropic-beta': request.betas.join(',') }
-          : {}),
+        ...(betas.length ? { 'anthropic-beta': betas.join(',') } : {}),
       },
       body: JSON.stringify({
         model: this.options.model,
-        max_tokens: this.maxOutputTokens,
+        max_tokens: maxTokens,
         messages: serialized.messages,
         stream: true,
+        ...(thinkingPayload ? { thinking: thinkingPayload } : {}),
         ...(request.effort
           ? { output_config: { effort: request.effort } }
           : {}),
@@ -702,6 +864,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
     let buffer = ''
     const state: StreamState = {
       blocks: new Map(),
+      thinking: new Map(),
       tools: new Map(),
       toolCallsSeen: 0,
       metadataBytes: 0,

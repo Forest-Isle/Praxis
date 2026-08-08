@@ -5,6 +5,7 @@ import type {
   ModelDocumentMediaType,
   ModelImage,
   ModelImageMediaType,
+  ModelThinkingBlock,
   ModelToolCall,
   ModelUsage,
   RuntimeEvent,
@@ -23,6 +24,7 @@ export type CliPermissionMode =
   | 'default'
 
 export type CliMcpScope = 'local' | 'project' | 'user'
+export type CliThinkingMode = 'enabled' | 'adaptive' | 'disabled'
 
 export interface CliControls {
   settings: string | undefined
@@ -63,6 +65,8 @@ export interface CliControls {
   sessionPersistence: boolean
   model?: string
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  thinking?: CliThinkingMode
+  maxThinkingTokens?: number
   fallbackModels?: readonly string[]
   jsonSchema?: Record<string, unknown>
   maxBudgetUsd?: number
@@ -312,6 +316,7 @@ const PERMISSION_MODES = [
 const SETTING_SOURCES = ['user', 'project', 'local'] as const
 const MCP_SCOPES = ['local', 'project', 'user'] as const
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+const THINKING_MODES = ['enabled', 'adaptive', 'disabled'] as const
 const MAX_INPUT_LINE_BYTES = 1024 * 1024
 const IMAGE_MEDIA_TYPES = new Set<ModelImageMediaType>([
   'image/png',
@@ -492,6 +497,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let tmux: 'classic' | undefined
   let model: string | undefined
   let effort: (typeof EFFORT_LEVELS)[number] | undefined
+  let thinking: (typeof THINKING_MODES)[number] | undefined
+  let maxThinkingTokens: number | undefined
   let fallbackModels: string[] | undefined
   let jsonSchema: Record<string, unknown> | undefined
   let maxBudgetUsd: number | undefined
@@ -547,6 +554,30 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--effort may only be specified once')
       effort = choice(selectedEffort.value, '--effort', EFFORT_LEVELS)
       index += selectedEffort.consumed
+      continue
+    }
+    const selectedThinking = optionValue(argv, index, '--thinking')
+    if (selectedThinking) {
+      if (thinking !== undefined)
+        throw new Error('--thinking may only be specified once')
+      thinking = choice(selectedThinking.value, '--thinking', THINKING_MODES)
+      index += selectedThinking.consumed
+      continue
+    }
+    const selectedThinkingTokens = optionValue(
+      argv,
+      index,
+      '--max-thinking-tokens',
+    )
+    if (selectedThinkingTokens) {
+      if (maxThinkingTokens !== undefined) {
+        throw new Error('--max-thinking-tokens may only be specified once')
+      }
+      maxThinkingTokens = positiveInteger(
+        selectedThinkingTokens.value,
+        '--max-thinking-tokens',
+      )
+      index += selectedThinkingTokens.consumed
       continue
     }
     const selectedFallback = optionValue(argv, index, '--fallback-model')
@@ -1022,6 +1053,11 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     }
     outputFormat = 'stream-json'
   }
+  if (thinking === 'disabled' && maxThinkingTokens !== undefined) {
+    throw new Error(
+      '--max-thinking-tokens cannot be combined with --thinking=disabled',
+    )
+  }
   if (debug !== undefined && args[0] === 'mcp' && args[1] === 'serve') {
     mcpDebug = true
   }
@@ -1189,6 +1225,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(tmux === undefined ? {} : { tmux }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(thinking === undefined ? {} : { thinking }),
+    ...(maxThinkingTokens === undefined ? {} : { maxThinkingTokens }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(jsonSchema === undefined ? {} : { jsonSchema }),
     ...(maxBudgetUsd === undefined ? {} : { maxBudgetUsd }),
@@ -1515,11 +1553,15 @@ const emptyUsage = (): ModelUsage => ({ inputTokens: 0, outputTokens: 0 })
 export class StreamJsonOutput {
   private turnId = randomUUID()
   private turnText = ''
+  private turnThinking: ModelThinkingBlock[] = []
   private turnCalls: ModelToolCall[] = []
   private turnUsage = emptyUsage()
   private turnActive = false
   private assistantFlushed = true
   private contentStarted = false
+  private textContentIndex: number | undefined
+  private activeThinkingIndex: number | undefined
+  private nextContentIndex = 0
   private modelTurns = 0
   private compacting = false
   private sessionState: 'idle' | 'running' | 'requires_action' | undefined
@@ -1640,6 +1682,72 @@ export class StreamJsonOutput {
       this.ensureTurn()
       this.turnText += event.delta
       this.partialText(event.delta)
+      return
+    }
+    if (event.type === 'thinking-start') {
+      this.ensureTurn()
+      if (this.includePartialMessages) {
+        if (this.activeThinkingIndex !== undefined) {
+          throw new Error('Thinking content blocks cannot overlap')
+        }
+        this.activeThinkingIndex = this.nextContentIndex
+        this.nextContentIndex += 1
+        this.write({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_start',
+            index: this.activeThinkingIndex,
+            content_block: event.block,
+          },
+          parent_tool_use_id: null,
+          session_id: this.sessionId,
+        })
+      }
+      return
+    }
+    if (
+      event.type === 'thinking-delta' ||
+      event.type === 'thinking-signature-delta'
+    ) {
+      this.ensureTurn()
+      if (this.includePartialMessages) {
+        if (this.activeThinkingIndex === undefined) {
+          throw new Error('Thinking delta arrived without an active block')
+        }
+        this.write({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: this.activeThinkingIndex,
+            delta:
+              event.type === 'thinking-delta'
+                ? { type: 'thinking_delta', thinking: event.delta }
+                : { type: 'signature_delta', signature: event.delta },
+          },
+          parent_tool_use_id: null,
+          session_id: this.sessionId,
+        })
+      }
+      return
+    }
+    if (event.type === 'thinking-stop') {
+      this.ensureTurn()
+      this.turnThinking.push(event.block)
+      if (this.includePartialMessages) {
+        if (this.activeThinkingIndex === undefined) {
+          throw new Error('Thinking block stopped without an active block')
+        }
+        this.write({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_stop',
+            index: this.activeThinkingIndex,
+          },
+          parent_tool_use_id: null,
+          session_id: this.sessionId,
+        })
+        this.activeThinkingIndex = undefined
+      }
       return
     }
     if (event.type === 'user-message') {
@@ -1856,7 +1964,11 @@ export class StreamJsonOutput {
     }
     if (event.type === 'failed') {
       this.ensureTurn()
-      if (this.turnText.length === 0 && this.turnCalls.length === 0) {
+      if (
+        this.turnText.length === 0 &&
+        this.turnThinking.length === 0 &&
+        this.turnCalls.length === 0
+      ) {
         this.turnText = event.message
         this.partialText(event.message)
       }
@@ -1885,11 +1997,15 @@ export class StreamJsonOutput {
     if (this.turnActive) this.finishTurn()
     this.turnId = randomUUID()
     this.turnText = ''
+    this.turnThinking = []
     this.turnCalls = []
     this.turnUsage = emptyUsage()
     this.turnActive = true
     this.assistantFlushed = false
     this.contentStarted = false
+    this.textContentIndex = undefined
+    this.activeThinkingIndex = undefined
+    this.nextContentIndex = 0
     this.modelTurns += 1
     if (this.includePartialMessages) {
       this.write({
@@ -1917,11 +2033,13 @@ export class StreamJsonOutput {
     if (!this.includePartialMessages) return
     if (!this.contentStarted) {
       this.contentStarted = true
+      this.textContentIndex = this.nextContentIndex
+      this.nextContentIndex += 1
       this.write({
         type: 'stream_event',
         event: {
           type: 'content_block_start',
-          index: 0,
+          index: this.textContentIndex,
           content_block: { type: 'text', text: '' },
         },
         parent_tool_use_id: null,
@@ -1932,7 +2050,7 @@ export class StreamJsonOutput {
       type: 'stream_event',
       event: {
         type: 'content_block_delta',
-        index: 0,
+        index: this.textContentIndex,
         delta: { type: 'text_delta', text: delta },
       },
       parent_tool_use_id: null,
@@ -1945,14 +2063,16 @@ export class StreamJsonOutput {
     if (this.contentStarted) {
       this.write({
         type: 'stream_event',
-        event: { type: 'content_block_stop', index: 0 },
+        event: {
+          type: 'content_block_stop',
+          index: this.textContentIndex,
+        },
         parent_tool_use_id: null,
         session_id: this.sessionId,
       })
     }
-    const toolOffset = this.contentStarted ? 1 : 0
     for (const [toolIndex, call] of this.turnCalls.entries()) {
-      const index = toolOffset + toolIndex
+      const index = this.nextContentIndex + toolIndex
       this.write({
         type: 'stream_event',
         event: {
@@ -2014,6 +2134,7 @@ export class StreamJsonOutput {
     this.assistantFlushed = true
     this.finishPartial()
     const content: Record<string, unknown>[] = []
+    content.push(...this.turnThinking)
     if (this.turnText.length > 0)
       content.push({ type: 'text', text: this.turnText })
     content.push(

@@ -143,6 +143,39 @@ describe('Claude transcript projection', () => {
     ])
   })
 
+  it('projects signed and redacted thinking blocks for provider resume', () => {
+    expect(
+      projectClaudeModelMessages([
+        {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'reason', signature: 'signed' },
+              { type: 'redacted_thinking', data: 'opaque' },
+              {
+                type: 'tool_use',
+                id: 'call_1',
+                name: 'Read',
+                input: {},
+              },
+            ],
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        role: 'assistant',
+        content: '',
+        thinkingBlocks: [
+          { type: 'thinking', thinking: 'reason', signature: 'signed' },
+          { type: 'redacted_thinking', data: 'opaque' },
+        ],
+        toolCalls: [{ id: 'call_1', name: 'Read', input: {} }],
+      },
+    ])
+  })
+
   it('projects native Claude user images for resume', () => {
     expect(
       projectClaudeModelMessages([

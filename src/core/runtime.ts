@@ -22,6 +22,7 @@ export type ModelMessage =
   | {
       role: 'assistant'
       content: string
+      thinkingBlocks?: readonly ModelThinkingBlock[]
       toolCalls?: readonly ModelToolCall[]
     }
   | {
@@ -57,6 +58,17 @@ export interface ModelToolCall {
   input: Record<string, unknown>
 }
 
+export type ModelThinkingMode = 'enabled' | 'adaptive' | 'disabled'
+
+export type ModelThinkingBlock =
+  | { type: 'thinking'; thinking: string; signature: string }
+  | { type: 'redacted_thinking'; data: string }
+
+export interface ModelThinkingConfig {
+  mode: ModelThinkingMode
+  maxTokens?: number
+}
+
 export interface ModelToolDefinition {
   name: string
   description: string
@@ -78,6 +90,13 @@ export interface ModelWebSearch {
 
 export type ModelStreamEvent =
   | { type: 'text-delta'; delta: string }
+  | {
+      type: 'thinking-start'
+      block: { type: 'thinking'; thinking: string } | ModelThinkingBlock
+    }
+  | { type: 'thinking-delta'; delta: string }
+  | { type: 'thinking-signature-delta'; delta: string }
+  | { type: 'thinking-stop'; block: ModelThinkingBlock }
   | { type: 'tool-call'; call: ModelToolCall }
   | { type: 'usage'; usage: ModelUsage }
   | {
@@ -95,6 +114,7 @@ export interface ModelRequest {
   webSearch?: ModelWebSearch
   signal?: AbortSignal
   effort?: string
+  thinking?: ModelThinkingConfig
   betas?: readonly string[]
 }
 
@@ -105,6 +125,10 @@ export interface ModelProviderCapabilities {
   images?: boolean
   documents?: boolean
   webSearch?: boolean
+  thinking?: {
+    modes: readonly ModelThinkingMode[]
+    maxTokens: boolean
+  }
   contextWindowTokens?: number
 }
 
@@ -117,6 +141,13 @@ export interface ModelProvider {
 export type RuntimeEvent =
   | { type: 'state'; state: Exclude<RuntimeState, 'idle' | 'failed'> }
   | { type: 'text-delta'; delta: string }
+  | {
+      type: 'thinking-start'
+      block: { type: 'thinking'; thinking: string } | ModelThinkingBlock
+    }
+  | { type: 'thinking-delta'; delta: string }
+  | { type: 'thinking-signature-delta'; delta: string }
+  | { type: 'thinking-stop'; block: ModelThinkingBlock }
   | {
       type: 'user-message'
       message: string
@@ -274,6 +305,7 @@ export interface PermissionResolver {
 export interface AgentRunObserver {
   assistantCompleted(message: {
     content: string
+    thinkingBlocks?: readonly ModelThinkingBlock[]
     toolCalls?: readonly ModelToolCall[]
   }): Promise<void>
   toolCompleted(call: ModelToolCall, result: ToolExecutionResult): Promise<void>
@@ -318,6 +350,7 @@ export interface AgentRunRequest {
   >
   signal?: AbortSignal
   effort?: string
+  thinking?: ModelThinkingConfig
   collectMetrics?: boolean
   maxModelTurns?: number
   betas?: readonly string[]
@@ -539,10 +572,12 @@ export class AgentRuntime {
         if (definitions.length > 0) providerRequest.tools = definitions
         if (request.signal) providerRequest.signal = request.signal
         if (request.effort) providerRequest.effort = request.effort
+        if (request.thinking) providerRequest.thinking = request.thinking
         if (request.betas?.length) providerRequest.betas = request.betas
 
         let text = ''
         let textBytes = 0
+        const thinkingBlocks: ModelThinkingBlock[] = []
         let turnUsage = emptyUsage()
         let streaming = false
         const toolCalls: ModelToolCall[] = []
@@ -567,6 +602,34 @@ export class AgentRuntime {
                 )
               }
               text += event.delta
+              this.emit(event)
+            } else if (
+              event.type === 'thinking-delta' ||
+              event.type === 'thinking-signature-delta'
+            ) {
+              textBytes += Buffer.byteLength(event.delta)
+              if (textBytes > maxModelOutputBytes) {
+                throw new Error(
+                  `Model output exceeded ${maxModelOutputBytes} bytes`,
+                )
+              }
+              this.emit(event)
+            } else if (event.type === 'thinking-stop') {
+              thinkingBlocks.push(event.block)
+              this.emit(event)
+            } else if (event.type === 'thinking-start') {
+              const initialThinking =
+                event.block.type === 'redacted_thinking'
+                  ? event.block.data
+                  : event.block.thinking
+              if (initialThinking.length > 0) {
+                textBytes += Buffer.byteLength(initialThinking)
+                if (textBytes > maxModelOutputBytes) {
+                  throw new Error(
+                    `Model output exceeded ${maxModelOutputBytes} bytes`,
+                  )
+                }
+              }
               this.emit(event)
             } else if (event.type === 'tool-call') {
               if (toolCalls.length >= maxToolCallsPerTurn) {
@@ -600,10 +663,15 @@ export class AgentRuntime {
         modelUsage = addUsage(modelUsage, turnUsage)
         const assistantMessage =
           toolCalls.length === 0
-            ? { role: 'assistant' as const, content: text }
+            ? {
+                role: 'assistant' as const,
+                content: text,
+                ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
+              }
             : {
                 role: 'assistant' as const,
                 content: text,
+                ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
                 toolCalls,
               }
         await request.observer?.assistantCompleted(assistantMessage)

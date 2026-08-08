@@ -13,6 +13,10 @@ describe('OpenAICompatibleProvider', () => {
     })
 
     expect(provider.capabilities.contextWindowTokens).toBe(200_000)
+    expect(provider.capabilities.thinking).toEqual({
+      modes: ['disabled'],
+      maxTokens: false,
+    })
     expect(
       () =>
         new OpenAICompatibleProvider({
@@ -22,6 +26,48 @@ describe('OpenAICompatibleProvider', () => {
           contextWindowTokens: 0,
         }),
     ).toThrow('positive integer')
+  })
+
+  it('maps disabled thinking by suppressing reasoning effort', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      thinking: { mode: 'disabled' },
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response('data: [DONE]\n\n')
+      },
+    })
+    for await (const event of provider.complete({
+      effort: 'high',
+      messages: [{ role: 'user', content: 'hello' }],
+    })) {
+      void event
+    }
+    expect(body).not.toHaveProperty('reasoning_effort')
+  })
+
+  it('rejects thinking modes without a lossless provider mapping', () => {
+    expect(
+      () =>
+        new OpenAICompatibleProvider({
+          baseUrl: 'https://provider.example/v1',
+          apiKey: 'secret',
+          model: 'fixture-model',
+          thinking: { mode: 'enabled' },
+        }),
+    ).toThrow('does not support enabled, adaptive, or token-budgeted thinking')
+    expect(
+      () =>
+        new OpenAICompatibleProvider({
+          baseUrl: 'https://provider.example/v1',
+          apiKey: 'secret',
+          model: 'fixture-model',
+          thinking: { mode: 'disabled', maxTokens: 1024 },
+        }),
+    ).toThrow('does not support enabled, adaptive, or token-budgeted thinking')
   })
 
   it('streams text and usage from chat completions SSE', async () => {

@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto'
 import type { ClaudeTranscriptEntry } from './schema.js'
 import type { ClaudeConditionalRule } from './shared-resources.js'
 import { indexClaudeToolLinks } from './tool-links.js'
-import type { ModelDocument, ModelImage } from '../../core/runtime.js'
+import type {
+  ModelDocument,
+  ModelImage,
+  ModelThinkingBlock,
+} from '../../core/runtime.js'
 import type {
   ClaudeHookExecution,
   ClaudeHookOutcome,
@@ -21,6 +25,7 @@ export type ProviderPersistenceEvent =
   | {
       type: 'assistant-message'
       text: string
+      thinkingBlocks?: readonly ModelThinkingBlock[]
       toolCalls: readonly {
         id: string
         name: string
@@ -354,6 +359,7 @@ export function translateProviderEvents(
 
       case 'assistant-message': {
         const content: Record<string, unknown>[] = []
+        content.push(...(event.thinkingBlocks ?? []))
         if (event.text.length > 0) {
           content.push({ type: 'text', text: event.text })
         }
@@ -367,7 +373,9 @@ export function translateProviderEvents(
           })
         }
         if (content.length === 0) {
-          throw new Error('Assistant message has no text or tool calls')
+          throw new Error(
+            'Assistant message has no thinking, text, or tool calls',
+          )
         }
         entry = {
           ...common,

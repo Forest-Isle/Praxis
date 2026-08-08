@@ -4,6 +4,7 @@ import type {
   ModelImage,
   ModelImageMediaType,
   ModelMessage,
+  ModelThinkingBlock,
   ModelToolCall,
 } from '../../core/runtime.js'
 import type { ClaudeTranscriptEntry } from './schema.js'
@@ -295,7 +296,29 @@ export function projectClaudeModelMessages(
       .filter((value): value is string => typeof value === 'string')
       .join('')
     const toolCalls: ModelToolCall[] = []
+    const thinkingBlocks: ModelThinkingBlock[] = []
     for (const block of content) {
+      if (
+        isRecord(block) &&
+        block.type === 'thinking' &&
+        typeof block.thinking === 'string' &&
+        typeof block.signature === 'string'
+      ) {
+        thinkingBlocks.push({
+          type: 'thinking',
+          thinking: block.thinking,
+          signature: block.signature,
+        })
+        continue
+      }
+      if (
+        isRecord(block) &&
+        block.type === 'redacted_thinking' &&
+        typeof block.data === 'string'
+      ) {
+        thinkingBlocks.push({ type: 'redacted_thinking', data: block.data })
+        continue
+      }
       if (
         !isRecord(block) ||
         block.type !== 'tool_use' ||
@@ -311,11 +334,25 @@ export function projectClaudeModelMessages(
         input: block.input,
       })
     }
-    if (text.length === 0 && toolCalls.length === 0) continue
+    if (
+      text.length === 0 &&
+      toolCalls.length === 0 &&
+      thinkingBlocks.length === 0
+    )
+      continue
     messages.push(
       toolCalls.length === 0
-        ? { role: 'assistant', content: text }
-        : { role: 'assistant', content: text, toolCalls },
+        ? {
+            role: 'assistant',
+            content: text,
+            ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
+          }
+        : {
+            role: 'assistant',
+            content: text,
+            ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
+            toolCalls,
+          },
     )
   }
   return messages

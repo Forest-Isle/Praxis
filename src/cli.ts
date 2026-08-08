@@ -225,6 +225,8 @@ Options:
   -n, --name <name>                   Set session display name
   --model <model>                     Select model for this session
   --effort <level>                    low, medium, high, xhigh, or max
+  --thinking <mode>                   enabled, adaptive, or disabled
+  --max-thinking-tokens <tokens>      Cap extended-thinking tokens
   --fallback-model <models>           Comma-separated print-mode fallbacks
   --json-schema <schema>              Print-mode JSON Schema for structured output
   --max-budget-usd <amount>           Maximum print-mode API spend
@@ -507,6 +509,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
       return providerEnvironment.provider === 'anthropic'
         ? new AnthropicCompatibleProvider({
             ...providerOptions,
+            thinking: {
+              mode: cli.thinking ?? 'enabled',
+              ...(cli.maxThinkingTokens === undefined
+                ? {}
+                : { maxTokens: cli.maxThinkingTokens }),
+            },
             ...('maxOutputTokens' in providerEnvironment
               ? { maxOutputTokens: providerEnvironment.maxOutputTokens }
               : {}),
@@ -517,7 +525,20 @@ const createDefaultService: CliDependencies['createService'] = async ({
               ? { webSearch: providerEnvironment.webSearch }
               : {}),
           })
-        : new OpenAICompatibleProvider(providerOptions)
+        : new OpenAICompatibleProvider({
+            ...providerOptions,
+            ...(cli.thinking === undefined &&
+            cli.maxThinkingTokens === undefined
+              ? {}
+              : {
+                  thinking: {
+                    mode: cli.thinking ?? 'enabled',
+                    ...(cli.maxThinkingTokens === undefined
+                      ? {}
+                      : { maxTokens: cli.maxThinkingTokens }),
+                  },
+                }),
+          })
     }
     const models = [model, ...(cli.fallbackModels ?? [])].filter(
       (candidate, index, all) => all.indexOf(candidate) === index,

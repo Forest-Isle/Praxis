@@ -2782,6 +2782,20 @@ describe('ClaudeSessionService', () => {
         requests.push(request)
         if (turn++ === 0) {
           yield {
+            type: 'thinking-start',
+            block: { type: 'thinking', thinking: '' },
+          }
+          yield { type: 'thinking-delta', delta: 'inspect first' }
+          yield { type: 'thinking-signature-delta', delta: 'signed' }
+          yield {
+            type: 'thinking-stop',
+            block: {
+              type: 'thinking',
+              thinking: 'inspect first',
+              signature: 'signed',
+            },
+          }
+          yield {
             type: 'tool-call',
             call: {
               id: 'call_read',
@@ -2827,6 +2841,24 @@ describe('ClaudeSessionService', () => {
       content: '# Praxis',
       isError: false,
     })
+    expect(requests[1]?.messages.at(-2)).toEqual({
+      role: 'assistant',
+      content: '',
+      thinkingBlocks: [
+        {
+          type: 'thinking',
+          thinking: 'inspect first',
+          signature: 'signed',
+        },
+      ],
+      toolCalls: [
+        {
+          id: 'call_read',
+          name: 'Read',
+          input: { file_path: 'README.md' },
+        },
+      ],
+    })
     const { resolveClaudePaths } =
       await import('../compatibility/claude/paths.js')
     const paths = resolveClaudePaths({
@@ -2846,6 +2878,11 @@ describe('ClaudeSessionService', () => {
       'last-prompt',
     ])
     expect(entries[1]?.message.content).toEqual([
+      {
+        type: 'thinking',
+        thinking: 'inspect first',
+        signature: 'signed',
+      },
       {
         type: 'tool_use',
         id: 'call_read',

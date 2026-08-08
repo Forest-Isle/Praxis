@@ -305,6 +305,9 @@ function validateForkAssistantMessage(message: Record<string, unknown>): void {
     ) {
       continue
     }
+    if (block.type === 'redacted_thinking' && typeof block.data === 'string') {
+      continue
+    }
     if (
       block.type === 'tool_use' &&
       isNonEmptyString(block.id) &&
@@ -370,6 +373,16 @@ function validateAssistantMessage(message: Record<string, unknown>): void {
       throw new Error('Claude transcript has invalid assistant content block')
     }
     if (block.type === 'text' && typeof block.text === 'string') continue
+    if (
+      block.type === 'thinking' &&
+      typeof block.thinking === 'string' &&
+      isNonEmptyString(block.signature)
+    ) {
+      continue
+    }
+    if (block.type === 'redacted_thinking' && isNonEmptyString(block.data)) {
+      continue
+    }
     if (block.type === 'tool_use') {
       if (
         !isNonEmptyString(block.id) ||

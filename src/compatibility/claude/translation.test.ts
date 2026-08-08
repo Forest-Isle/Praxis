@@ -411,6 +411,49 @@ describe('provider to Claude transcript translation', () => {
     })
   })
 
+  it('persists provider thinking only as native signed content blocks', () => {
+    const [entry] = translateProviderEvents(
+      [
+        {
+          type: 'assistant-message',
+          text: '',
+          thinkingBlocks: [
+            { type: 'thinking', thinking: 'reason', signature: 'signed' },
+            { type: 'redacted_thinking', data: 'opaque' },
+          ],
+          toolCalls: [
+            { id: 'call_one', name: 'Read', input: { file_path: 'one.txt' } },
+          ],
+          providerMessageId: 'provider-message',
+          model: 'provider/model',
+        },
+      ],
+      {
+        sessionId: '20000000-0000-4000-8000-000000000001',
+        parentUuid: null,
+        cwd: '/tmp/project',
+        claudeVersion: '2.1.208',
+        gitBranch: null,
+        createUuid: () => '10000000-0000-4000-8000-000000000001',
+        now: () => '2026-08-03T08:00:00.000Z',
+      },
+    )
+
+    expect(entry?.message).toMatchObject({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'reason', signature: 'signed' },
+        { type: 'redacted_thinking', data: 'opaque' },
+        {
+          type: 'tool_use',
+          id: 'call_one',
+          name: 'Read',
+          input: { file_path: 'one.txt' },
+        },
+      ],
+    })
+  })
+
   it('does not persist provider-native payloads or reasoning', () => {
     const [entry] = translateProviderEvents(
       [

@@ -112,6 +112,80 @@ describe('AgentRuntime', () => {
     })
   })
 
+  it('preserves signed thinking for tool follow-ups without mixing it into text', async () => {
+    const requests: ModelRequest[] = []
+    const provider = providerFrom(async function* (request) {
+      requests.push(request)
+      if (requests.length === 1) {
+        yield {
+          type: 'thinking-start',
+          block: { type: 'thinking', thinking: '' },
+        }
+        yield { type: 'thinking-delta', delta: 'private' }
+        yield { type: 'thinking-signature-delta', delta: 'signed' }
+        yield {
+          type: 'thinking-stop',
+          block: {
+            type: 'thinking',
+            thinking: 'private',
+            signature: 'signed',
+          },
+        }
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_1', name: 'Read', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'public answer' }
+    })
+    const persisted: unknown[] = []
+    const events: RuntimeEvent[] = []
+    const runtime = new AgentRuntime(provider, (event) => events.push(event), {
+      tools: {
+        definitions: () => [
+          { name: 'Read', description: 'read', inputSchema: {} },
+        ],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'contents', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'inspect' }],
+      thinking: { mode: 'enabled', maxTokens: 2048 },
+      observer: {
+        assistantCompleted: async (message) => {
+          persisted.push(message)
+        },
+        toolCompleted: async () => undefined,
+      },
+    })
+
+    expect(result.text).toBe('public answer')
+    expect(requests[0]?.thinking).toEqual({
+      mode: 'enabled',
+      maxTokens: 2048,
+    })
+    expect(requests[1]?.messages).toContainEqual({
+      role: 'assistant',
+      content: '',
+      thinkingBlocks: [
+        { type: 'thinking', thinking: 'private', signature: 'signed' },
+      ],
+      toolCalls: [{ id: 'call_1', name: 'Read', input: {} }],
+    })
+    expect(persisted).toContainEqual({
+      role: 'assistant',
+      content: '',
+      thinkingBlocks: [
+        { type: 'thinking', thinking: 'private', signature: 'signed' },
+      ],
+      toolCalls: [{ id: 'call_1', name: 'Read', input: {} }],
+    })
+    expect(events).toContainEqual({ type: 'thinking-delta', delta: 'private' })
+  })
+
   it('continues after a stop hook blocks completion', async () => {
     const requests: ModelRequest[] = []
     let turn = 0

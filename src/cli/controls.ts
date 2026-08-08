@@ -230,6 +230,10 @@ export async function resolveCliControls(
     sessionPersistence: controls.sessionPersistence,
     ...(controls.model === undefined ? {} : { model: controls.model }),
     ...(controls.effort === undefined ? {} : { effort: controls.effort }),
+    ...(controls.thinking === undefined ? {} : { thinking: controls.thinking }),
+    ...(controls.maxThinkingTokens === undefined
+      ? {}
+      : { maxThinkingTokens: controls.maxThinkingTokens }),
     ...(controls.fallbackModels === undefined
       ? {}
       : { fallbackModels: controls.fallbackModels }),

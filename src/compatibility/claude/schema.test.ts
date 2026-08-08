@@ -364,6 +364,41 @@ describe('ClaudeSchemaAdapter', () => {
         },
       }),
     ).toThrow('invalid assistant tool_use block')
+    expect(
+      adapter.serializeForAppend({
+        ...assistant,
+        message: {
+          ...(assistant.message as Record<string, unknown>),
+          content: [
+            { type: 'thinking', thinking: 'reason', signature: 'signed' },
+            { type: 'redacted_thinking', data: 'opaque' },
+          ],
+        },
+      }),
+    ).toContain('redacted_thinking')
+    expect(() =>
+      adapter.serializeForAppend({
+        ...assistant,
+        message: {
+          ...(assistant.message as Record<string, unknown>),
+          content: [{ type: 'thinking', thinking: 'reason' }],
+        },
+      }),
+    ).toThrow('invalid assistant content block')
+    for (const content of [
+      [{ type: 'thinking', thinking: 'reason', signature: '' }],
+      [{ type: 'redacted_thinking', data: '' }],
+    ]) {
+      expect(() =>
+        adapter.serializeForAppend({
+          ...assistant,
+          message: {
+            ...(assistant.message as Record<string, unknown>),
+            content,
+          },
+        }),
+      ).toThrow('invalid assistant content block')
+    }
 
     expect(
       adapter.serializeForAppend({

@@ -165,6 +165,25 @@ describe('CLI controls', () => {
     ).resolves.toMatchObject({ prefill: 'ignored-prefix' })
   })
 
+  it('preserves thinking controls through async resolution', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-cli-controls-'))
+    roots.push(cwd)
+
+    await expect(
+      resolveCliControls(
+        {
+          ...DEFAULT_CLI_CONTROLS,
+          thinking: 'enabled',
+          maxThinkingTokens: 4096,
+        },
+        cwd,
+      ),
+    ).resolves.toMatchObject({
+      thinking: 'enabled',
+      maxThinkingTokens: 4096,
+    })
+  })
+
   it('validates and normalizes startup file resources', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'praxis-cli-controls-'))
     roots.push(cwd)

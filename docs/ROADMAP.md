@@ -543,3 +543,19 @@ Status: complete for Claude Code 2.1.208 SDK-gated checkpoints.
 - [x] existing-file restore, new-file removal, symlink/path/size fail-closed checks
 - [x] provider-free operation with unchanged conversation history
 - [x] live Claude-to-Praxis and Praxis-to-Claude rewind gate
+
+## Stage 63 - thinking controls
+
+Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
+
+- [x] `--thinking enabled|adaptive|disabled` and positive
+      `--max-thinking-tokens` parsing, duplicate/conflict validation, and help
+- [x] capability-aware Anthropic request mapping with default extended thinking,
+      interleaved-tool beta, exact budget, disabled mode, and OpenAI fail-closed
+      handling where no lossless mapping exists
+- [x] signed and redacted thinking stream lifecycle, bounded runtime handling,
+      hidden text/JSON results, and partial stream-json records
+- [x] native Claude JSONL persistence/projection plus signed thinking replay
+      before tool results and across resume/fork
+- [x] focused parser/provider/runtime/projection/schema/session tests and live
+      Claude -> Praxis -> Claude compatibility gate

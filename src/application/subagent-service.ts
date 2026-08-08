@@ -32,6 +32,7 @@ import { ContextBudget } from '../core/context-budget.js'
 import {
   AgentRuntime,
   type ModelProvider,
+  type ModelThinkingBlock,
   type ModelToolCall,
   type ModelToolDefinition,
   type ModelUsage,
@@ -1383,6 +1384,7 @@ export class ClaudeSubagentExecutor {
     const observer = {
       assistantCompleted: async (message: {
         content: string
+        thinkingBlocks?: readonly ModelThinkingBlock[]
         toolCalls?: readonly ModelToolCall[]
       }) => {
         const [entry] = translateProviderEvents(
@@ -1390,6 +1392,9 @@ export class ClaudeSubagentExecutor {
             {
               type: 'assistant-message' as const,
               text: message.content,
+              ...(message.thinkingBlocks
+                ? { thinkingBlocks: message.thinkingBlocks }
+                : {}),
               toolCalls: message.toolCalls ?? [],
               providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
               model: options.provider.model ?? 'praxis/provider',

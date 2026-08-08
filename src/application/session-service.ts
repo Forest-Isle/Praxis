@@ -45,6 +45,7 @@ import {
   type ModelDocument,
   type ModelImage,
   type ModelMessage,
+  type ModelThinkingBlock,
   type ModelToolCall,
   type ModelProvider,
   type ModelUsage,
@@ -1162,6 +1163,7 @@ export class ClaudeSessionService {
       const observer = {
         assistantCompleted: async (message: {
           content: string
+          thinkingBlocks?: readonly ModelThinkingBlock[]
           toolCalls?: readonly ModelToolCall[]
         }) => {
           const [entry] = translateProviderEvents(
@@ -1169,6 +1171,9 @@ export class ClaudeSessionService {
               {
                 type: 'assistant-message',
                 text: message.content,
+                ...(message.thinkingBlocks
+                  ? { thinkingBlocks: message.thinkingBlocks }
+                  : {}),
                 toolCalls: message.toolCalls ?? [],
                 providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
                 model: provider.model ?? 'praxis/provider',

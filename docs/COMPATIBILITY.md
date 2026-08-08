@@ -469,12 +469,17 @@ deterministic script/args pair is available; nested `workflow` and `budget` sour
 closed. A unique prompt is the final fallback only for a current call with no semantic
 options. All semantic-option calls without exact identity, unchanged-script proof, or
 Praxis descriptor metadata remain fail-closed.
+`npm run test:thinking-compat` captures Claude 2.1.208 enabled/disabled request
+behavior, then proves Praxis applies enabled/adaptive/disabled modes and a real
+thinking-token budget. It verifies standard result secrecy, partial thinking
+deltas, signed tool-turn replay, native JSONL persistence, unsupported-provider
+failure before transport, and Claude -> Praxis -> Claude bidirectional resume.
 `npm run test:package` additionally drives installed OpenAI and Anthropic loops
 through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork
 against that same root. It compares source and fork records field-for-field
 after the defined session-ID and transient-record transformation.
-`npm run test:compat:all` is the authoritative aggregate: it discovers 34
+`npm run test:compat:all` is the authoritative aggregate: it discovers all
 compatibility gates from `package.json`, rejects unsupported command shapes or
 duplicate entrypoints, and runs each in an isolated child process. The complete
 matrix passed on Claude Code 2.1.208 after the conditional-rule and compaction
