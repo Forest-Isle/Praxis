@@ -14,6 +14,21 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+function assertTagOutputOrder(output, label) {
+  const positions = [
+    output.indexOf('Plugin:'),
+    output.indexOf('Version:'),
+    output.indexOf('Marketplace entry:'),
+    output.indexOf('Tag:'),
+  ]
+  assert(
+    positions.every((position, index) =>
+      index === 0 ? position >= 0 : position > positions[index - 1],
+    ),
+    `${label} output order: ${JSON.stringify(output)}`,
+  )
+}
+
 async function run(command, args, options = {}) {
   return execFileAsync(command, args, {
     env: environment,
@@ -93,6 +108,39 @@ async function pruneFixture(name) {
   return { configRoot, cwd }
 }
 
+async function invalidatePruneManifests(configRoot) {
+  const registry = JSON.parse(
+    await readFile(
+      join(configRoot, 'plugins', 'installed_plugins.json'),
+      'utf8',
+    ),
+  )
+  for (const id of ['parent@market', 'orphan@market']) {
+    const installPath = registry.plugins[id][0].installPath
+    const invalidManifest = JSON.stringify({
+      name: id.slice(0, id.indexOf('@')),
+    })
+    await Promise.all([
+      writeFile(
+        join(installPath, '.claude-plugin', 'plugin.json'),
+        invalidManifest,
+      ),
+      writeFile(join(installPath, 'plugin.json'), invalidManifest),
+      writeFile(
+        join(
+          configRoot,
+          '..',
+          'marketplace',
+          id.slice(0, id.indexOf('@')),
+          '.claude-plugin',
+          'plugin.json',
+        ),
+        invalidManifest,
+      ),
+    ])
+  }
+}
+
 async function git(repository, args) {
   return run('git', ['-C', repository, ...args])
 }
@@ -100,6 +148,7 @@ async function git(repository, args) {
 async function tagFixture(name) {
   const repository = join(root, name)
   const plugin = join(repository, 'plugins', 'fixture')
+  const marketplacePath = join(plugin, '.claude-plugin', 'marketplace.json')
   await write(
     join(plugin, '.claude-plugin', 'plugin.json'),
     JSON.stringify({
@@ -109,12 +158,25 @@ async function tagFixture(name) {
       author: { name: 'Fixture' },
     }),
   )
+  await write(
+    marketplacePath,
+    JSON.stringify({
+      name: 'market',
+      owner: { name: 'Fixture' },
+      plugins: [{ name: 'fixture', version: '1.2.3', source: '.' }],
+    }),
+  )
   await git(repository, ['init', '-q'])
   await git(repository, ['config', 'user.email', 'fixture@example.test'])
   await git(repository, ['config', 'user.name', 'Fixture'])
   await git(repository, ['add', '.'])
   await git(repository, ['commit', '-qm', 'initial'])
-  return { repository, plugin, configRoot: join(repository, 'config') }
+  return {
+    repository,
+    plugin,
+    marketplacePath,
+    configRoot: join(repository, 'config'),
+  }
 }
 
 try {
@@ -160,6 +222,16 @@ try {
     !claudeDryRun.stdout.includes('dep@market (1.0.0)'),
     'Claude dependency retention',
   )
+
+  const failedPlugins = 'parent@market, orphan@market failed to load'
+  const praxisFailSafe = await pruneFixture('praxis-prune-fail-safe')
+  await invalidatePruneManifests(praxisFailSafe.configRoot)
+  const praxisSkipped = await praxis(
+    ['plugin', 'prune', '--dry-run'],
+    praxisFailSafe.cwd,
+    praxisFailSafe.configRoot,
+  )
+  assert(praxisSkipped.stdout.includes(failedPlugins), 'Praxis prune fail-safe')
 
   const praxisPrune = await pruneFixture('praxis-prune')
   const dryRun = await praxis(
@@ -209,6 +281,12 @@ try {
     claudeTagDryRun.stdout.includes('fixture--v1.2.3'),
     'Claude tag contract',
   )
+  assert(
+    claudeTagDryRun.stdout.includes('Marketplace entry: plugins[0] in ') &&
+      claudeTagDryRun.stdout.includes('(version: 1.2.3)'),
+    `Claude root marketplace evidence: ${JSON.stringify(claudeTagDryRun.stdout)}`,
+  )
+  assertTagOutputOrder(claudeTagDryRun.stdout, 'Claude tag')
 
   const praxisTag = await tagFixture('praxis-tag')
   const tagHelp = await praxis(
@@ -223,6 +301,37 @@ try {
     praxisTag.configRoot,
   )
   assert(tagDryRun.stdout.includes('fixture--v1.2.3'), 'Praxis tag dry-run')
+  assert(
+    tagDryRun.stdout.includes('Marketplace entry: plugins[0] in ') &&
+      tagDryRun.stdout.includes('(version: 1.2.3)'),
+    'Praxis root marketplace evidence',
+  )
+  assertTagOutputOrder(tagDryRun.stdout, 'Praxis tag')
+  await writeFile(
+    praxisTag.marketplacePath,
+    JSON.stringify({
+      name: 'market',
+      owner: { name: 'Fixture' },
+      plugins: [{ name: 'fixture', version: '2.0.0', source: '.' }],
+    }),
+  )
+  await expectFailure(
+    () =>
+      praxis(
+        ['plugin', 'tag', '--force', '--dry-run', praxisTag.plugin],
+        praxisTag.repository,
+        praxisTag.configRoot,
+      ),
+    'Version mismatch: plugin.json says "1.2.3" but .claude-plugin/marketplace.json plugins[0].version says "2.0.0"',
+  )
+  await writeFile(
+    praxisTag.marketplacePath,
+    JSON.stringify({
+      name: 'market',
+      owner: { name: 'Fixture' },
+      plugins: [{ name: 'fixture', version: '1.2.3', source: '.' }],
+    }),
+  )
   assert(
     (await git(praxisTag.repository, ['tag', '--list'])).stdout === '',
     'dry-run tag',

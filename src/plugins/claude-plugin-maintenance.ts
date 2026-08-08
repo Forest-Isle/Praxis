@@ -14,7 +14,7 @@ const execFileAsync = promisify(execFile)
 const PLUGIN_MANIFEST = join('.claude-plugin', 'plugin.json')
 const MARKETPLACE_MANIFEST = join('.claude-plugin', 'marketplace.json')
 const SEMVER =
-  /^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u
+  /^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*)))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u
 
 export const CLAUDE_PLUGIN_PRUNE_HELP = `Usage: praxis plugin prune|autoremove [options]
 
@@ -54,7 +54,7 @@ export interface ClaudePluginPrunePlan {
   scope: ClaudePluginScope
   autoCount: number
   candidates: readonly ClaudeInstalledPlugin[]
-  failedPluginId?: string
+  failedPluginIds?: readonly string[]
 }
 
 export interface ClaudePluginTagOptions {
@@ -73,6 +73,11 @@ export interface ClaudePluginTagResult {
   message: string
   repository: string
   manifestPath: string
+  marketplaceEntry?: {
+    path: string
+    index: number
+    version?: string
+  }
   warnings: readonly string[]
   dryRun: boolean
   pushed: boolean
@@ -172,16 +177,24 @@ export async function planClaudePluginPrune(
     return { scope, autoCount: 0, candidates: [] }
   }
   const manifests = new Map<string, PluginManifest>()
-  for (const plugin of installed) {
+  const failedPluginIds: string[] = []
+  const scanOrder = [
+    ...installed.filter((plugin) => plugin.auto !== true),
+    ...automatic,
+  ]
+  for (const plugin of scanOrder) {
     try {
       manifests.set(plugin.id, await readPluginManifest(plugin.installPath))
     } catch {
-      return {
-        scope,
-        autoCount: automatic.length,
-        candidates: [],
-        failedPluginId: plugin.id,
-      }
+      failedPluginIds.push(plugin.id)
+    }
+  }
+  if (failedPluginIds.length > 0) {
+    return {
+      scope,
+      autoCount: automatic.length,
+      candidates: [],
+      failedPluginIds,
     }
   }
   const installedIds = new Set(installed.map((plugin) => plugin.id))
@@ -286,8 +299,8 @@ async function validateEnclosingMarketplace(
   pluginRoot: string,
   repository: string,
   manifest: PluginManifest,
-): Promise<void> {
-  let directory = dirname(pluginRoot)
+): Promise<ClaudePluginTagResult['marketplaceEntry']> {
+  let directory = pluginRoot
   while (
     directory === repository ||
     directory.startsWith(`${repository}${sep}`)
@@ -296,20 +309,26 @@ async function validateEnclosingMarketplace(
     if (await pathExists(path)) {
       const marketplace = await readJsonObject(path)
       if (!Array.isArray(marketplace.plugins)) return
-      for (const value of marketplace.plugins) {
+      for (const [index, value] of marketplace.plugins.entries()) {
         if (!isRecord(value) || typeof value.source !== 'string') continue
         if (resolve(directory, value.source) !== pluginRoot) continue
         if (value.name !== manifest.name) {
           throw new Error(
-            `Plugin name ${manifest.name} does not match marketplace entry ${String(value.name)}`,
+            `Name mismatch: plugin.json says ${JSON.stringify(manifest.name)} but ${relative(pluginRoot, path) || MARKETPLACE_MANIFEST} plugins[${index}].name says ${JSON.stringify(value.name)}.`,
           )
         }
         if (value.version !== undefined && value.version !== manifest.version) {
           throw new Error(
-            `Plugin version ${manifest.version} does not match marketplace entry ${String(value.version)}`,
+            `Version mismatch: plugin.json says ${JSON.stringify(manifest.version)} but ${relative(pluginRoot, path) || MARKETPLACE_MANIFEST} plugins[${index}].version says ${JSON.stringify(value.version)}. plugin.json wins at install time, so update the marketplace entry to ${JSON.stringify(manifest.version)} (or remove it) before tagging.`,
           )
         }
-        return
+        return {
+          path,
+          index,
+          ...(typeof value.version === 'string'
+            ? { version: value.version }
+            : {}),
+        }
       }
     }
     if (directory === repository) return
@@ -324,7 +343,11 @@ export async function tagClaudePlugin(
   const manifestPath = join(pluginRoot, PLUGIN_MANIFEST)
   const manifest = await readPluginManifest(pluginRoot)
   const repository = await repositoryRoot(pluginRoot)
-  await validateEnclosingMarketplace(pluginRoot, repository, manifest)
+  const marketplaceEntry = await validateEnclosingMarketplace(
+    pluginRoot,
+    repository,
+    manifest,
+  )
   const tag = `${manifest.name}--v${manifest.version}`
   const force = options.force === true
   if (!force) {
@@ -383,6 +406,7 @@ export async function tagClaudePlugin(
     message,
     repository,
     manifestPath: relativeManifest,
+    ...(marketplaceEntry === undefined ? {} : { marketplaceEntry }),
     warnings,
     dryRun: options.dryRun === true,
     pushed: options.push === true && options.dryRun !== true,
@@ -478,9 +502,9 @@ export async function executeClaudePluginMaintenanceCommand(
       options.cwd,
       scope,
     )
-    if (plan.failedPluginId) {
+    if (plan.failedPluginIds) {
       options.io.stdout(
-        `Skipped — cannot determine orphans: ${plan.failedPluginId} failed to load. Fix or uninstall, then retry.\n`,
+        `Skipped — cannot determine orphans: ${plan.failedPluginIds.join(', ')} failed to load. Fix or uninstall, then retry.\n`,
       )
       return 0
     }
@@ -567,7 +591,7 @@ export async function executeClaudePluginMaintenanceCommand(
     })
     for (const warning of result.warnings) options.io.stdout(`⚠ ${warning}\n`)
     options.io.stdout(
-      `Plugin:  ${result.name}\nVersion: ${result.version} (from plugin.json)\nTag:     ${result.tag}\n\n`,
+      `Plugin:  ${result.name}\nVersion: ${result.version} (from plugin.json)\n${result.marketplaceEntry === undefined ? '' : `Marketplace entry: plugins[${result.marketplaceEntry.index}] in ${result.marketplaceEntry.path}${result.marketplaceEntry.version === undefined ? '' : ` (version: ${result.marketplaceEntry.version})`}\n`}Tag:     ${result.tag}\n\n`,
     )
     const forceFlag = result.force ? ' --force' : ''
     if (result.dryRun) {

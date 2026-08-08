@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises'
@@ -131,14 +132,17 @@ describe('Claude plugin prune', () => {
     ])
   })
 
-  it('fails safe when an installed manifest cannot be loaded', async () => {
+  it('fails safe and reports every installed manifest that cannot be loaded', async () => {
     const value = await pluginGraph()
     await rm(join(value.paths.dep as string, '.claude-plugin', 'plugin.json'))
+    await rm(
+      join(value.paths.orphan as string, '.claude-plugin', 'plugin.json'),
+    )
     await expect(
       planClaudePluginPrune(value.configRoot, value.cwd, 'user'),
     ).resolves.toMatchObject({
       candidates: [],
-      failedPluginId: 'dep@market',
+      failedPluginIds: ['dep@market', 'orphan@market'],
     })
   })
 
@@ -319,7 +323,58 @@ describe('Claude plugin tag', () => {
     )
     await expect(
       tagClaudePlugin({ path: value.plugin, force: true, dryRun: true }),
-    ).rejects.toThrow('does not match marketplace entry')
+    ).rejects.toThrow('Version mismatch')
+  })
+
+  it('validates a marketplace entry colocated with the plugin root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-root-market-'))
+    roots.push(root)
+    await mkdir(join(root, '.claude-plugin'), { recursive: true })
+    await writeFile(
+      join(root, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        version: '1.2.3',
+        description: 'fixture',
+        author: { name: 'Fixture' },
+      }),
+    )
+    const marketplacePath = join(root, '.claude-plugin', 'marketplace.json')
+    await writeFile(
+      marketplacePath,
+      JSON.stringify({
+        name: 'market',
+        plugins: [{ name: 'fixture', version: '1.2.3', source: '.' }],
+      }),
+    )
+    await git(root, ['init', '-q'])
+    await git(root, ['config', 'user.email', 'fixture@example.test'])
+    await git(root, ['config', 'user.name', 'Fixture'])
+    await git(root, ['add', '.'])
+    await git(root, ['commit', '-qm', 'initial'])
+
+    await expect(
+      tagClaudePlugin({ path: root, dryRun: true }),
+    ).resolves.toMatchObject({
+      marketplaceEntry: {
+        path: join(await realpath(root), '.claude-plugin', 'marketplace.json'),
+        index: 0,
+        version: '1.2.3',
+      },
+    })
+
+    await writeFile(
+      marketplacePath,
+      JSON.stringify({
+        name: 'market',
+        plugins: [{ name: 'fixture', version: '2.0.0', source: '.' }],
+      }),
+    )
+    await expect(
+      tagClaudePlugin({ path: root, force: true, dryRun: true }),
+    ).rejects.toThrow(
+      'Version mismatch: plugin.json says "1.2.3" but .claude-plugin/marketplace.json plugins[0].version says "2.0.0"',
+    )
   })
 
   it('accepts short equals message syntax', async () => {
@@ -339,5 +394,46 @@ describe('Claude plugin tag', () => {
       ),
     ).resolves.toBe(0)
     expect(stdout.join('')).toContain('-m "Release 1.2.3"')
+  })
+
+  it('rejects leading-zero numeric prereleases and accepts valid prereleases', async () => {
+    const value = await pluginRepository()
+    const manifestPath = join(value.plugin, '.claude-plugin', 'plugin.json')
+    const manifest = (version: string) =>
+      JSON.stringify({
+        name: 'fixture',
+        version,
+        description: 'fixture',
+        author: { name: 'Fixture' },
+      })
+
+    await writeFile(manifestPath, manifest('1.2.3-01'))
+    await expect(tagClaudePlugin({ path: value.plugin })).rejects.toThrow(
+      'not valid semver',
+    )
+    await writeFile(manifestPath, manifest('1.2.3-alpha.01'))
+    await expect(tagClaudePlugin({ path: value.plugin })).rejects.toThrow(
+      'not valid semver',
+    )
+
+    await writeFile(manifestPath, manifest('1.2.3-alpha.1'))
+    await writeFile(
+      join(value.root, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'market',
+        plugins: [
+          {
+            name: 'fixture',
+            version: '1.2.3-alpha.1',
+            source: './plugins/fixture',
+          },
+        ],
+      }),
+    )
+    await git(value.root, ['add', '.'])
+    await git(value.root, ['commit', '-qm', 'valid prerelease'])
+    await expect(
+      tagClaudePlugin({ path: value.plugin, dryRun: true }),
+    ).resolves.toMatchObject({ tag: 'fixture--v1.2.3-alpha.1' })
   })
 })
