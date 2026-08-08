@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   ClaudeJobStore,
@@ -75,6 +75,7 @@ async function waitFor(
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(
     roots.splice(0).map((path) => rm(path, { recursive: true })),
   )
@@ -316,15 +317,18 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
     })
 
     await manager.launch({ prompt: 'capture environment', argv: [] })
+    let capturedEnvironment: Record<string, string | undefined> | undefined
     await waitFor(async () => {
       try {
-        await readFile(outputPath, 'utf8')
+        capturedEnvironment = JSON.parse(
+          await readFile(outputPath, 'utf8'),
+        ) as Record<string, string | undefined>
         return true
       } catch {
         return false
       }
     })
-    const environment = JSON.parse(await readFile(outputPath, 'utf8')) as Record<
+    const environment = capturedEnvironment as Record<
       string,
       string | undefined
     >
@@ -357,5 +361,42 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
     await expect(fixtureState.manager.logs(fixtureState.id)).resolves.toBe(
       'provider setup failed\n',
     )
+  })
+
+  it('redacts provider secrets from background output and failure state', async () => {
+    const fixtureState = await fixture()
+    const secret = 'background-provider-secret-canary'
+    vi.stubEnv('PRAXIS_TEST_API_KEY', secret)
+    const worker = runTopLevelAgentWorker({
+      configRoot: fixtureState.configRoot,
+      id: fixtureState.id,
+      async createRuntime(eventSink) {
+        return {
+          async run(_sessionPrompt, _signal, sessionId) {
+            eventSink({ type: 'text-delta', delta: `delta ${secret}` })
+            return {
+              sessionId,
+              text: `result ${secret}`,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+        }
+      },
+    })
+    await waitFor(
+      async () =>
+        (await fixtureState.store.read(fixtureState.id)).tempo === 'idle',
+    )
+    const logs = await fixtureState.manager.logs(fixtureState.id)
+    expect(logs).toContain('[REDACTED]')
+    expect(logs).not.toContain(secret)
+    expect(
+      (await fixtureState.store.read(fixtureState.id)).detail,
+    ).not.toContain(secret)
+    await fixtureState.manager.stop(fixtureState.id)
+    await worker
   })
 })

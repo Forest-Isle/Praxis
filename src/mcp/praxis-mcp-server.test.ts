@@ -164,6 +164,45 @@ describe('Praxis MCP stdio server', () => {
     }
   })
 
+  it('redacts provider secrets from MCP tool errors', async () => {
+    const root = await fixtureRoot()
+    const secret = 'mcp-server-secret-canary'
+    vi.stubEnv('PRAXIS_TEST_API_KEY', secret)
+    const hosted = createPraxisMcpServer({
+      cwd: root,
+      createToolRegistry: async () => ({
+        definitions: () => [
+          {
+            name: 'SecretTool',
+            description: 'fixture',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async () => {
+          throw new Error(`provider failed: ${secret}`)
+        },
+      }),
+    })
+    const client = new Client({ name: 'fixture-client', version: '1' })
+    const [serverTransport, clientTransport] =
+      InMemoryTransport.createLinkedPair()
+    await hosted.server.connect(serverTransport)
+    await client.connect(clientTransport)
+
+    try {
+      const result = await client.callTool({
+        name: 'SecretTool',
+        arguments: {},
+      })
+      expect(textContent(result)).toContain('[REDACTED]')
+      expect(textContent(result)).not.toContain(secret)
+    } finally {
+      await client.close()
+      await hosted.close()
+    }
+  })
+
   it('exposes, executes, and closes the shared CLI tool registry', async () => {
     const root = await fixtureRoot()
     const close = vi.fn(async () => undefined)

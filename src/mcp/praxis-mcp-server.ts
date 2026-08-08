@@ -642,6 +642,7 @@ export async function servePraxisMcpStdio(
   options: PraxisMcpServerOptions,
 ): Promise<void> {
   const hosted = createPraxisMcpServer(options)
+  const sensitiveValues = sensitiveEnvironmentValues(process.env)
   const transport = new StdioServerTransport()
   let resolveClosed: () => void = () => undefined
   const closed = new Promise<void>((resolve) => {
@@ -649,7 +650,9 @@ export async function servePraxisMcpStdio(
   })
   hosted.server.onclose = resolveClosed
   hosted.server.onerror = (error) => {
-    options.writeError?.(`MCP server error: ${error.message}\n`)
+    options.writeError?.(
+      `MCP server error: ${redactSensitiveText(error.message, sensitiveValues)}\n`,
+    )
   }
   const abort = () => void hosted.close()
   options.signal?.addEventListener('abort', abort, { once: true })

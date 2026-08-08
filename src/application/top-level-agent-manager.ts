@@ -14,7 +14,11 @@ import {
   type ClaudeJobDispatch,
 } from '../persistence/claude-job-store.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
-import { sanitizeChildEnvironment } from '../platform/sensitive-data.js'
+import {
+  redactSensitiveText,
+  sanitizeChildEnvironment,
+  sensitiveEnvironmentValues,
+} from '../platform/sensitive-data.js'
 import type { SessionRunResult } from './session-service.js'
 
 export interface TopLevelAgentSummary {
@@ -270,10 +274,14 @@ export class TopLevelAgentManager {
       })
     } catch (error) {
       const failedAt = new Date().toISOString()
+      const message = redactSensitiveText(
+        error instanceof Error ? error.message : String(error),
+        sensitiveEnvironmentValues(this.options.environment ?? process.env),
+      )
       await this.store.update(identity.id, (current) => ({
         ...clearWorkerFields(current),
         state: 'failed',
-        detail: error instanceof Error ? error.message : String(error),
+        detail: message,
         tempo: 'idle',
         updatedAt: failedAt,
         firstTerminalAt: failedAt,
@@ -569,6 +577,11 @@ export async function runTopLevelAgentWorker(options: {
   const store = new ClaudeJobStore(options.configRoot)
   const initial = await store.read(options.id)
   const dispatch = await store.readDispatch(options.id)
+  const sensitiveValues = sensitiveEnvironmentValues(process.env)
+  const safeText = (text: string): string =>
+    redactSensitiveText(text, sensitiveValues)
+  const safeErrorMessage = (error: unknown): string =>
+    safeText(error instanceof Error ? error.message : String(error))
   if (initial.state !== 'working') return
   if (!initial.socketPath || !initial.controlToken) {
     throw new Error(`Agent ${options.id} has no control endpoint`)
@@ -614,17 +627,18 @@ export async function runTopLevelAgentWorker(options: {
   try {
     runtime = await options.createRuntime((event) => {
       if (event.type === 'text-delta') {
-        liveTurnText += event.delta
+        const delta = safeText(event.delta)
+        liveTurnText += delta
         outputWrites = outputWrites
-          .then(() => store.appendOutput(options.id, event.delta))
+          .then(() => store.appendOutput(options.id, delta))
           .catch((error: unknown) => {
             outputWriteError = error
           })
-        broadcast({ type: 'output', text: event.delta })
+        broadcast({ type: 'output', text: delta })
       }
     }, dispatch)
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = safeErrorMessage(error)
     const failedAt = new Date().toISOString()
     await store.appendOutput(options.id, `${message}\n`)
     await store.appendTimeline(options.id, {
@@ -727,7 +741,7 @@ export async function runTopLevelAgentWorker(options: {
     if (closing) return
     closing = true
     activeController?.abort()
-    const message = error instanceof Error ? error.message : String(error)
+    const message = safeErrorMessage(error)
     const now = new Date().toISOString()
     try {
       await store.appendOutput(options.id, `${message}\n`)
@@ -768,7 +782,7 @@ export async function runTopLevelAgentWorker(options: {
         ? state
         : {
             ...state,
-            detail: prompt,
+            detail: safeText(prompt),
             tempo: 'active',
             inFlight: { tasks: 1, queued: 0, kinds: ['prompt'] },
             updatedAt: now,
@@ -788,24 +802,25 @@ export async function runTopLevelAgentWorker(options: {
       const completedAt = new Date().toISOString()
       await outputWrites
       if (outputWriteError) throw outputWriteError
-      if (liveTurnText.length === 0 && result.text.length > 0) {
-        broadcast({ type: 'output', text: result.text })
-        await store.appendOutput(options.id, result.text)
+      const resultText = safeText(result.text)
+      if (liveTurnText.length === 0 && resultText.length > 0) {
+        broadcast({ type: 'output', text: resultText })
+        await store.appendOutput(options.id, resultText)
       }
       await store.appendOutput(options.id, '\n')
       await store.trimOutput(options.id, MAX_JOB_OUTPUT_BYTES)
       await store.appendTimeline(options.id, {
         at: completedAt,
         state: 'working',
-        detail: result.text,
-        text: result.text,
+        detail: resultText,
+        text: resultText,
       })
       const idled = await store.update(options.id, (state) =>
         state.state !== 'working'
           ? state
           : {
               ...state,
-              detail: result.text,
+              detail: resultText,
               tempo: 'idle',
               inFlight: { tasks: 0, queued: 0, kinds: [] },
               tokens:
@@ -823,7 +838,7 @@ export async function runTopLevelAgentWorker(options: {
       }
     } catch (error) {
       if (closing || activeController.signal.aborted) return
-      const message = error instanceof Error ? error.message : String(error)
+      const message = safeErrorMessage(error)
       const failedAt = new Date().toISOString()
       if (resume) {
         try {
