@@ -236,6 +236,51 @@ describe('TopLevelAgentManager', () => {
     ])
   })
 
+  it('lists Praxis history and native Claude sessions across CWDs unless filtered', async () => {
+    const fixtureState = await fixture()
+    const otherCwd = join(fixtureState.configRoot, 'other')
+    await mkdir(otherCwd)
+    await mkdir(join(fixtureState.configRoot, 'sessions'))
+    await writeFile(
+      join(fixtureState.configRoot, 'sessions', '12345.json'),
+      JSON.stringify({
+        pid: 12345,
+        sessionId: 'native-session',
+        cwd: otherCwd,
+        startedAt: 1,
+        kind: 'interactive',
+        name: 'native Claude session',
+        status: 'idle',
+      }),
+    )
+    await fixtureState.store.update(fixtureState.id, (state) => ({
+      ...state,
+      state: 'stopped',
+      tempo: 'idle',
+      firstTerminalAt: new Date().toISOString(),
+    }))
+
+    await expect(fixtureState.manager.list({ all: false })).resolves.toEqual([
+      expect.objectContaining({
+        cwd: otherCwd,
+        kind: 'interactive',
+        sessionId: 'native-session',
+        status: 'idle',
+      }),
+    ])
+    await expect(fixtureState.manager.list({ all: true })).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: fixtureState.id, state: 'stopped' }),
+        expect.objectContaining({ sessionId: 'native-session' }),
+      ]),
+    )
+    await expect(
+      fixtureState.manager.list({ cwd: fixtureState.cwd, all: true }),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: fixtureState.id, cwd: fixtureState.cwd }),
+    ])
+  })
+
   it('does not resurrect a job stopped while its runtime is initializing', async () => {
     const fixtureState = await fixture()
     let releaseRuntime: ((runtime: TopLevelAgentRuntime) => void) | undefined

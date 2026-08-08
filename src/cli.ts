@@ -2828,6 +2828,50 @@ function requireTopLevelAgentManager(
   return dependencies.topLevelAgents
 }
 
+function assertAgentsOptionAllowlist(argv: readonly string[]): void {
+  const valued = new Set([
+    '--add-dir',
+    '--agent',
+    '--cwd',
+    '--effort',
+    '--mcp-config',
+    '--model',
+    '--permission-mode',
+    '--plugin-dir',
+    '--setting-sources',
+    '--settings',
+  ])
+  const flags = new Set([
+    '--all',
+    '--allow-dangerously-skip-permissions',
+    '--dangerously-skip-permissions',
+    '--json',
+    '--strict-mcp-config',
+  ])
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index]
+    if (value === 'agents') continue
+    if (value === '--') throw new Error('Unexpected operand for agents')
+    const option = value?.split('=', 1)[0]
+    if (option === '-h' || option === '--help') continue
+    if (option && flags.has(option)) {
+      if (value.includes('='))
+        throw new Error(`Option does not take a value: ${option}`)
+      continue
+    }
+    if (option && valued.has(option)) {
+      if (!value.includes('=')) {
+        index += 1
+        if (argv[index] === undefined)
+          throw new Error(`Missing value for ${option}`)
+      }
+      continue
+    }
+    if (value?.startsWith('-'))
+      throw new Error(`${value} is not valid with agents`)
+  }
+}
+
 function isCancellation(error: unknown, signal?: AbortSignal): boolean {
   return (
     error instanceof AgentRunCancelledError ||
@@ -3016,6 +3060,7 @@ async function execute(
   const invocation = parseCliInvocation(argv)
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
+  if (args[0] === 'agents') assertAgentsOptionAllowlist(argv)
   const interactiveResume =
     invocation.resumeSelector !== undefined &&
     args.length === (typeof invocation.resumeSelector === 'string' ? 2 : 1)

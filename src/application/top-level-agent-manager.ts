@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createConnection, createServer, type Socket } from 'node:net'
-import { mkdir, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
@@ -23,14 +23,14 @@ import type { SessionRunResult } from './session-service.js'
 
 export interface TopLevelAgentSummary {
   pid?: number
-  id: string
+  id?: string
   cwd: string
-  kind: 'background'
+  kind: 'background' | 'interactive'
   startedAt: number
   sessionId: string
   name: string
   status?: 'active' | 'idle'
-  state: 'working' | 'stopped' | 'failed'
+  state?: 'working' | 'stopped' | 'failed'
 }
 
 export interface TopLevelAgentRuntime {
@@ -134,6 +134,33 @@ function clearWorkerFields(state: ClaudeJobState): ClaudeJobState {
   delete next.controlToken
   delete next.inFlight
   return next
+}
+
+interface NativeClaudeSession {
+  pid: number
+  cwd: string
+  kind: 'interactive'
+  startedAt: number
+  sessionId: string
+  name: string
+  status: 'active' | 'idle'
+}
+
+function nativeClaudeSession(value: unknown): NativeClaudeSession | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return
+  const record = value as Record<string, unknown>
+  if (
+    !Number.isSafeInteger(record.pid) ||
+    typeof record.cwd !== 'string' ||
+    record.kind !== 'interactive' ||
+    !Number.isSafeInteger(record.startedAt) ||
+    typeof record.sessionId !== 'string' ||
+    typeof record.name !== 'string' ||
+    !['active', 'idle'].includes(String(record.status))
+  )
+    return
+  return record as unknown as NativeClaudeSession
 }
 
 function parseWire(line: string): WireMessage | null {
@@ -314,7 +341,10 @@ export class TopLevelAgentManager {
     cwd?: string
     all: boolean
   }): Promise<TopLevelAgentSummary[]> {
-    const cwd = await canonicalDirectory(options.cwd ?? this.options.cwd)
+    const cwd =
+      options.cwd === undefined
+        ? undefined
+        : await canonicalDirectory(options.cwd)
     const states = await this.store.list()
     const reconciled = await Promise.all(
       states.map(async (state) => {
@@ -337,8 +367,8 @@ export class TopLevelAgentManager {
         })
       }),
     )
-    return reconciled
-      .filter((state) => state.cwd === cwd)
+    const praxis = reconciled
+      .filter((state) => cwd === undefined || state.cwd === cwd)
       .filter((state) => options.all || state.state === 'working')
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .map((state) => ({
@@ -361,6 +391,50 @@ export class TopLevelAgentManager {
           : {}),
         state: state.state,
       }))
+    const native = await this.nativeSessions(
+      cwd,
+      new Set(reconciled.map((state) => state.sessionId)),
+    )
+    return [...praxis, ...native].sort(
+      (left, right) => right.startedAt - left.startedAt,
+    )
+  }
+
+  private async nativeSessions(
+    cwd: string | undefined,
+    knownSessionIds: ReadonlySet<string>,
+  ): Promise<TopLevelAgentSummary[]> {
+    let files: string[]
+    try {
+      files = await readdir(join(this.options.configRoot, 'sessions'))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
+    const sessions = await Promise.all(
+      files
+        .filter((file) => file.endsWith('.json'))
+        .map(async (file) => {
+          try {
+            return nativeClaudeSession(
+              JSON.parse(
+                await readFile(
+                  join(this.options.configRoot, 'sessions', file),
+                  'utf8',
+                ),
+              ),
+            )
+          } catch {
+            return undefined
+          }
+        }),
+    )
+    return sessions
+      .filter(
+        (session): session is NativeClaudeSession => session !== undefined,
+      )
+      .filter((session) => !knownSessionIds.has(session.sessionId))
+      .filter((session) => cwd === undefined || session.cwd === cwd)
   }
 
   async logs(id: string): Promise<string> {

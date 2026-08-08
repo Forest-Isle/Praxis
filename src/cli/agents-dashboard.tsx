@@ -85,8 +85,14 @@ function isActive(agent: TopLevelAgentSummary): boolean {
   return agent.status !== undefined || agent.state === 'working'
 }
 
+function isAttachable(
+  agent: TopLevelAgentSummary,
+): agent is TopLevelAgentSummary & { id: string } {
+  return agent.id !== undefined && agent.state === 'working'
+}
+
 function agentStatus(agent: TopLevelAgentSummary): string {
-  return agent.status ?? agent.state
+  return agent.status ?? agent.state ?? 'unknown'
 }
 
 function trimOutput(output: string): string {
@@ -96,6 +102,48 @@ function trimOutput(output: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function agentKey(agent: TopLevelAgentSummary): string {
+  return agent.id ?? agent.sessionId
+}
+
+function sectionFor(
+  agent: TopLevelAgentSummary,
+): 'Ready for review' | 'Needs input' | 'Working' | 'Completed' {
+  if (!isActive(agent)) return 'Completed'
+  return agent.status === 'idle' ? 'Ready for review' : 'Working'
+}
+
+function AgentSection({
+  title,
+  agents,
+  selected,
+}: {
+  title: string
+  agents: TopLevelAgentSummary[]
+  selected?: TopLevelAgentSummary
+}) {
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text bold>
+        {title} ({agents.length})
+      </Text>
+      {agents.length === 0 ? (
+        <Text dimColor> None</Text>
+      ) : (
+        agents.map((agent) => (
+          <Text
+            key={agentKey(agent)}
+            {...(agent === selected ? { color: 'cyan' } : {})}
+          >
+            {agent === selected ? '› ' : '  '}
+            {agent.name} · {agentStatus(agent)} · {agentKey(agent)}
+          </Text>
+        ))
+      )}
+    </Box>
+  )
 }
 
 export function AgentsDashboardApp({
@@ -116,6 +164,7 @@ export function AgentsDashboardApp({
   const [attachedOutput, setAttachedOutput] = useState('')
   const [notice, setNotice] = useState('Loading agents…')
   const [busy, setBusy] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
   const attachedRef = useRef<AttachedAgent | undefined>(undefined)
 
   const refresh = useCallback(async () => {
@@ -202,8 +251,8 @@ export function AgentsDashboardApp({
       setNotice('No agent selected')
       return
     }
-    if (!isActive(selected)) {
-      setNotice(`${selected.id} is already completed`)
+    if (!isAttachable(selected)) {
+      setNotice(`${agentKey(selected)} cannot be stopped from Praxis`)
       return
     }
     if (busy) return
@@ -227,8 +276,8 @@ export function AgentsDashboardApp({
       setNotice('Type a task, then press Enter to start a background agent')
       return
     }
-    if (!isActive(selected)) {
-      setNotice(`${selected.id} is completed and cannot be attached`)
+    if (!isAttachable(selected)) {
+      setNotice(`${agentKey(selected)} cannot be attached locally`)
       return
     }
     if (attachedRef.current || busy) return
@@ -270,9 +319,22 @@ export function AgentsDashboardApp({
       exit()
       return
     }
+    if (value === '?') {
+      setShowHelp((current) => !current)
+      return
+    }
     if ((key.ctrl && value.toLowerCase() === 'x') || value === '\u0018') {
       void stopSelected()
       return
+    }
+    const editInput = () => {
+      if (key.backspace || key.delete) {
+        inputRef.current = inputRef.current.slice(0, -1)
+        setInput(inputRef.current)
+      } else if (!key.ctrl && !key.meta && value) {
+        inputRef.current += value
+        setInput(inputRef.current)
+      }
     }
     if (mode === 'attach') {
       if (key.escape) {
@@ -283,13 +345,7 @@ export function AgentsDashboardApp({
         attachedRef.current?.queue.push(`${prompt}\n`)
         inputRef.current = ''
         setInput('')
-      } else if (key.backspace || key.delete) {
-        inputRef.current = inputRef.current.slice(0, -1)
-        setInput(inputRef.current)
-      } else if (!key.ctrl && !key.meta && value) {
-        inputRef.current += value
-        setInput(inputRef.current)
-      }
+      } else editInput()
       return
     }
     if ((key.ctrl && value.toLowerCase() === 'r') || value === '\u0012') {
@@ -323,41 +379,30 @@ export function AgentsDashboardApp({
       }
       return
     }
-    if (key.backspace || key.delete) {
-      inputRef.current = inputRef.current.slice(0, -1)
-      setInput(inputRef.current)
-    } else if (!key.ctrl && !key.meta && value) {
-      inputRef.current += value
-      setInput(inputRef.current)
-    }
+    editInput()
   })
 
   const selected = agents[selectedIndex]
-  const active = agents.filter(isActive)
-  const completed = agents.length - active.length
+  const sections = [
+    'Ready for review',
+    'Needs input',
+    'Working',
+    'Completed',
+  ] as const
   return (
     <Box flexDirection="column">
       <Text bold color="cyan">
         Praxis agents
       </Text>
-      <Text dimColor>
-        {active.length} active · {completed} completed · live refresh
-      </Text>
-      {agents.length === 0 ? (
-        <Text dimColor>No background agents in this view.</Text>
-      ) : (
-        <Box flexDirection="column" marginTop={1}>
-          {agents.map((agent, index) => (
-            <Text
-              key={agent.id}
-              {...(index === selectedIndex ? { color: 'cyan' } : {})}
-            >
-              {index === selectedIndex ? '› ' : '  '}
-              {agent.name} · {agentStatus(agent)} · {agent.id}
-            </Text>
-          ))}
-        </Box>
-      )}
+      <Text dimColor>{agents.length} sessions · live refresh</Text>
+      {sections.map((title) => (
+        <AgentSection
+          key={title}
+          title={title}
+          agents={agents.filter((agent) => sectionFor(agent) === title)}
+          {...(selected === undefined ? {} : { selected })}
+        />
+      ))}
       {mode === 'attach' ? (
         <Box flexDirection="column" marginTop={1}>
           <Text>Attached to {attachedId}</Text>
@@ -373,14 +418,25 @@ export function AgentsDashboardApp({
         <Box flexDirection="column" marginTop={1}>
           <Text>› {input || 'describe a task for a new background agent'}</Text>
           <Text dimColor>
-            Enter dispatches · ↑/↓ select · Enter with an empty task attaches ·
-            Ctrl+X stops · Ctrl+R refreshes · Esc exits
+            Enter dispatches · ↑/↓ select · Enter empty attaches · Ctrl+X stops
+            · Ctrl+R refreshes · ? help · Esc exits
           </Text>
-          {selected ? <Text dimColor>Selected {selected.id}</Text> : null}
+          {selected ? (
+            <Text dimColor>Selected {agentKey(selected)}</Text>
+          ) : null}
         </Box>
       )}
       {busy ? <Text dimColor>Working…</Text> : null}
       {notice ? <Text color="yellow">{notice}</Text> : null}
+      {showHelp ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>Shortcuts</Text>
+          <Text>
+            Enter dispatches or attaches · Esc detaches/exits · Ctrl+X stops
+            local background agents · Ctrl+R refreshes · ? closes help
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   )
 }
