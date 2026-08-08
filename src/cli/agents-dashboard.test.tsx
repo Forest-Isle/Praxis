@@ -245,4 +245,44 @@ describe('AgentsDashboardApp', () => {
     ])
     expect(attached).toEqual(['efgh5678'])
   })
+
+  it('reviews active native sessions without treating them as attachable', async () => {
+    const native: TopLevelAgentSummary = {
+      cwd: '/workspace',
+      kind: 'interactive',
+      startedAt: 1,
+      sessionId: 'aaaaaaaa-1111-4111-8111-111111111111',
+      name: 'native live',
+      status: 'idle',
+    }
+    const manager: AgentsDashboardManager = {
+      async launch() {
+        throw new Error('must not launch')
+      },
+      async list() {
+        return [native]
+      },
+      async review() {
+        return 'NATIVE TRANSCRIPT'
+      },
+      async stop() {
+        throw new Error('must not stop')
+      },
+      async attach() {
+        throw new Error('must not attach')
+      },
+    }
+    const app = render(
+      <AgentsDashboardApp
+        manager={manager}
+        defaults={{ argv: [] }}
+        refreshIntervalMs={60_000}
+      />,
+    )
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('NATIVE TRANSCRIPT')
+    expect(app.lastFrame()).toContain('read-only')
+  })
 })

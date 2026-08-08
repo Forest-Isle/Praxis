@@ -253,6 +253,18 @@ describe('TopLevelAgentManager', () => {
         status: 'idle',
       }),
     )
+    await writeFile(
+      join(fixtureState.configRoot, 'sessions', '12346.json'),
+      JSON.stringify({
+        id: 'native000',
+        sessionId: 'aaaaaaaa-1111-4111-8111-111111111111',
+        cwd: otherCwd,
+        startedAt: 2,
+        kind: 'background',
+        name: 'native completed session',
+        state: 'done',
+      }),
+    )
     await fixtureState.store.update(fixtureState.id, (state) => ({
       ...state,
       state: 'stopped',
@@ -272,6 +284,11 @@ describe('TopLevelAgentManager', () => {
       expect.arrayContaining([
         expect.objectContaining({ id: fixtureState.id, state: 'stopped' }),
         expect.objectContaining({ sessionId: 'native-session' }),
+        expect.objectContaining({
+          id: 'native000',
+          sessionId: 'aaaaaaaa-1111-4111-8111-111111111111',
+          state: 'done',
+        }),
       ]),
     )
     await expect(

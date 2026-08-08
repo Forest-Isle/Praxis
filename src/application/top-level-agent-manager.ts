@@ -31,7 +31,7 @@ export interface TopLevelAgentSummary {
   sessionId: string
   name: string
   status?: 'active' | 'idle'
-  state?: 'working' | 'stopped' | 'failed'
+  state?: 'working' | 'stopped' | 'failed' | 'done'
 }
 
 export interface TopLevelAgentRuntime {
@@ -137,28 +137,29 @@ function clearWorkerFields(state: ClaudeJobState): ClaudeJobState {
   return next
 }
 
-interface NativeClaudeSession {
-  pid: number
-  cwd: string
-  kind: 'interactive'
-  startedAt: number
-  sessionId: string
-  name: string
-  status: 'active' | 'idle'
-}
+type NativeClaudeSession = TopLevelAgentSummary
 
 function nativeClaudeSession(value: unknown): NativeClaudeSession | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     return
   const record = value as Record<string, unknown>
+  const interactive =
+    Number.isSafeInteger(record.pid) &&
+    typeof record.cwd === 'string' &&
+    record.kind === 'interactive' &&
+    Number.isSafeInteger(record.startedAt) &&
+    typeof record.sessionId === 'string' &&
+    typeof record.name === 'string' &&
+    ['active', 'idle'].includes(String(record.status))
+  if (interactive) return record as unknown as NativeClaudeSession
   if (
-    !Number.isSafeInteger(record.pid) ||
+    typeof record.id !== 'string' ||
     typeof record.cwd !== 'string' ||
-    record.kind !== 'interactive' ||
+    record.kind !== 'background' ||
     !Number.isSafeInteger(record.startedAt) ||
     typeof record.sessionId !== 'string' ||
     typeof record.name !== 'string' ||
-    !['active', 'idle'].includes(String(record.status))
+    !['done', 'failed'].includes(String(record.state))
   )
     return
   return record as unknown as NativeClaudeSession
@@ -395,6 +396,7 @@ export class TopLevelAgentManager {
     const native = await this.nativeSessions(
       cwd,
       new Set(reconciled.map((state) => state.sessionId)),
+      options.all,
     )
     return [...praxis, ...native].sort(
       (left, right) => right.startedAt - left.startedAt,
@@ -404,6 +406,7 @@ export class TopLevelAgentManager {
   private async nativeSessions(
     cwd: string | undefined,
     knownSessionIds: ReadonlySet<string>,
+    all: boolean,
   ): Promise<TopLevelAgentSummary[]> {
     let files: string[]
     try {
@@ -436,6 +439,7 @@ export class TopLevelAgentManager {
       )
       .filter((session) => !knownSessionIds.has(session.sessionId))
       .filter((session) => cwd === undefined || session.cwd === cwd)
+      .filter((session) => all || session.status !== undefined)
   }
 
   async logs(id: string): Promise<string> {
@@ -446,7 +450,14 @@ export class TopLevelAgentManager {
   async review(
     agent: Pick<TopLevelAgentSummary, 'id' | 'cwd' | 'sessionId'>,
   ): Promise<string> {
-    if (agent.id !== undefined) return this.logs(agent.id)
+    if (agent.id !== undefined) {
+      try {
+        await this.store.read(agent.id)
+        return this.logs(agent.id)
+      } catch (error) {
+        if (!String(error).includes('No agent found')) throw error
+      }
+    }
     try {
       return await readFile(
         resolveClaudePaths({
