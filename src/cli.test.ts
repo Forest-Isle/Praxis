@@ -98,6 +98,82 @@ function dependencies(
 }
 
 describe('Praxis CLI', () => {
+  it('runs init-only lifecycle without constructing a provider turn', async () => {
+    const capture = captureIO()
+    const calls: string[] = []
+    const base = dependencies()
+    const lifecycleDependencies: CliDependencies = {
+      async createService(options) {
+        expect(options.requireProvider).toBe(false)
+        expect(options.exposeToolRegistry).toBe(true)
+        return {
+          ...(await base.createService(options)),
+          async lifecycle(trigger, lifecycleOptions) {
+            calls.push(`${trigger}:${lifecycleOptions?.sessionStart === true}`)
+          },
+        }
+      },
+    }
+
+    await expect(
+      run(['--init-only', 'ignored'], capture.io, lifecycleDependencies),
+    ).resolves.toBe(0)
+    expect(calls).toEqual(['init:true'])
+    expect(capture.stdout).toEqual([])
+  })
+
+  it('keeps init-only provider-free when invoked from a TTY', async () => {
+    const capture = captureIO()
+    capture.io.isTTY = true
+    let interactiveStarted = false
+    const calls: string[] = []
+    const base = dependencies()
+    const lifecycleDependencies: CliDependencies = {
+      async createService(options) {
+        expect(options.requireProvider).toBe(false)
+        return {
+          ...(await base.createService(options)),
+          async lifecycle(trigger, lifecycleOptions) {
+            calls.push(`${trigger}:${lifecycleOptions?.sessionStart === true}`)
+          },
+        }
+      },
+      async runInteractive() {
+        interactiveStarted = true
+        return 1
+      },
+    }
+
+    await expect(
+      run(['--init-only'], capture.io, lifecycleDependencies),
+    ).resolves.toBe(0)
+    expect(interactiveStarted).toBe(false)
+    expect(calls).toEqual(['init:true'])
+  })
+
+  it('runs init or maintenance before continuing with provider execution', async () => {
+    const capture = captureIO()
+    const calls: string[] = []
+    const base = dependencies()
+    const lifecycleDependencies: CliDependencies = {
+      async createService(options) {
+        expect(options.requireProvider).toBe(true)
+        return {
+          ...(await base.createService(options)),
+          async lifecycle(trigger) {
+            calls.push(trigger)
+          },
+        }
+      },
+    }
+
+    await expect(
+      run(['--init', '-p', 'continue'], capture.io, lifecycleDependencies),
+    ).resolves.toBe(0)
+    expect(calls).toEqual(['init'])
+    expect(capture.stdout).toEqual(['answer:continue', '\n'])
+  })
+
   it('rewinds files as a provider-free standalone resume operation', async () => {
     const capture = captureIO()
     const calls: string[] = []

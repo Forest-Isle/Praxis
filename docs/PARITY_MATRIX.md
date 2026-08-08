@@ -101,6 +101,7 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 | Cost and budget               | Complete                    | Built-in/environment pricing, explicit unknown-model diagnosis, measured API duration, null cost fail-closed, and `--max-budget-usd` pre-provider rejection                                                     |
 | Prompt suggestions            | Complete                    | `--prompt-suggestions` validates print/stream-json mode, performs an unpersisted auxiliary request, and emits post-result `prompt_suggestion`                                                                   |
 | Cancellation                  | Complete for process signal | SIGINT, provider/tool/hook propagation, exit 130                                                                                                                                                                |
+| Lifecycle hooks               | Complete                    | Hidden `--init`, `--maintenance`, and `--init-only`; Setup trigger matching, synchronous init-only SessionStart, provider-free exit, and shared transcript write safety                                         |
 
 Hidden `--prefill` is complete for the 2.1.208 baseline. Claude accepts
 missing-value-checked and repeatable syntax but leaves provider requests,
@@ -142,10 +143,8 @@ routing.
 
 ## Remaining implementation order
 
-Remaining audit items are limited to the still-unimplemented single-user CLI
-controls discovered from the installed 2.1.208 surface: file rewind, thinking,
-permission-prompt MCP delegation, prefill, and init/init-only/maintenance
-lifecycle controls. They are tracked as the next implementation stages; they
-are not enterprise or desktop exclusions. Unsupported Claude versions remain
-deliberately read-only, and listed enterprise/desktop/remote surfaces remain
+All identified single-user CLI feature gaps from Claude Code 2.1.208 are now
+implemented. Remaining work is the final integrated CLI-surface and end-to-end
+link audit. Unsupported Claude versions remain deliberately read-only, and
+enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.

@@ -287,6 +287,9 @@ node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
 node dist/cli.js -p --resume <session-id> --resume-session-at <message-id> "Try another branch"
 CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true node dist/cli.js -p "Edit with checkpoints"
 node dist/cli.js -p --resume <session-id> --rewind-files <user-message-uuid>
+node dist/cli.js --init-only
+node dist/cli.js -p --init "Run setup hooks, then continue"
+node dist/cli.js -p --maintenance "Run maintenance hooks, then continue"
 node dist/cli.js fork <session-id>
 node dist/cli.js --bg "Inspect this project"
 node dist/cli.js agents --json --all --cwd "$PWD"
@@ -327,6 +330,12 @@ the value in provider requests, output, or persisted transcripts. Praxis
 preserves that baseline no-op in text, JSON, stream JSON, resume, fork, and
 non-persistent runs; repeated flags are accepted and the final parsed value is
 retained only as an invocation control.
+`--init` runs matching `Setup` hooks with the `init` trigger before normal
+session startup and the provider turn. `--maintenance` uses the
+`maintenance` trigger. `--init-only` runs `Setup(init)` and
+`SessionStart(startup)` synchronously, exits without a provider request, and
+does not write a session transcript. Bare mode skips both lifecycle hook
+families, matching Claude's minimal mode.
 `--from-pr [number-or-url]` filters native Claude `pr-link` metadata. Interactive
 mode opens a filtered resume picker; headless mode resumes only a unique match
 and reports zero or ambiguous matches instead of selecting silently. Forks

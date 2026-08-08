@@ -15,6 +15,20 @@ afterEach(async () => {
 })
 
 describe('CLI controls', () => {
+  it('preserves setup lifecycle controls through async resolution', async () => {
+    await expect(
+      resolveCliControls(
+        {
+          ...DEFAULT_CLI_CONTROLS,
+          init: true,
+          initOnly: true,
+          maintenance: true,
+        },
+        '/workspace',
+      ),
+    ).resolves.toMatchObject({ init: true, initOnly: true, maintenance: true })
+  })
+
   it('resolves prompt files, settings, and canonical additional directories', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'praxis-cli-controls-'))
     roots.push(cwd)

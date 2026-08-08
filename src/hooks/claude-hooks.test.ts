@@ -41,6 +41,55 @@ async function waitForProcessExit(pid: number): Promise<void> {
 }
 
 describe('ClaudeHookRunner', () => {
+  it('matches Setup hooks by init and maintenance trigger', async () => {
+    const executeCommand = vi.fn().mockResolvedValue({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      durationMs: 1,
+    })
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              Setup: [
+                {
+                  matcher: 'init',
+                  hooks: [{ type: 'command', command: 'init' }],
+                },
+                {
+                  matcher: 'maintenance',
+                  hooks: [{ type: 'command', command: 'maintenance' }],
+                },
+              ],
+            },
+          },
+          'project',
+        ),
+      ],
+      cwd: '/workspace',
+      executeCommand,
+    })
+
+    await runner.run(
+      { ...input, hook_event_name: 'Setup', trigger: 'init' },
+      'init',
+    )
+    await runner.run(
+      { ...input, hook_event_name: 'Setup', trigger: 'maintenance' },
+      'maintenance',
+    )
+    expect(executeCommand.mock.calls.map((call) => call[0])).toEqual([
+      'init',
+      'maintenance',
+    ])
+    expect(executeCommand.mock.calls[0]?.[1]).toMatchObject({
+      hook_event_name: 'Setup',
+      trigger: 'init',
+    })
+  })
+
   it('runs layered matching command hooks and merges native JSON output', async () => {
     const resources = [
       settings(

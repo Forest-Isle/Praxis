@@ -559,3 +559,16 @@ Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
       before tool results and across resume/fork
 - [x] focused parser/provider/runtime/projection/schema/session tests and live
       Claude -> Praxis -> Claude compatibility gate
+
+## Stage 66 - setup lifecycle controls
+
+Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
+
+- [x] hidden `--init`, `--maintenance`, and `--init-only` parser/default,
+      resolved-control, and forwarding paths
+- [x] Setup hook matcher semantics for `init` and `maintenance` triggers
+- [x] `--init`/`--maintenance` setup execution before normal SessionStart and
+      provider execution
+- [x] synchronous `--init-only` Setup plus SessionStart execution with no
+      provider request or transcript write
+- [x] bare-mode hook suppression and Claude/Praxis lifecycle compatibility gate

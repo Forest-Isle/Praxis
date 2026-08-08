@@ -36,6 +36,25 @@ async function collectInput(chunks: readonly (string | Uint8Array)[]) {
 }
 
 describe('CLI protocol', () => {
+  it('parses setup lifecycle controls without exposing them as prompt arguments', () => {
+    expect(
+      parseCliInvocation([
+        '--init',
+        '--maintenance',
+        '--init-only',
+        '--session-id',
+        sessionId,
+        'ignored prompt',
+      ]),
+    ).toMatchObject({
+      init: true,
+      maintenance: true,
+      initOnly: true,
+      sessionId,
+      args: ['ignored prompt'],
+    })
+  })
+
   it('parses standalone file rewind controls', () => {
     const sessionId = '11111111-1111-4111-8111-111111111111'
     const messageId = '22222222-2222-4222-8222-222222222222'

@@ -55,6 +55,9 @@ export interface CliControls {
   disallowedTools: readonly string[]
   permissionMode: CliPermissionMode
   permissionPromptTool?: string
+  init: boolean
+  initOnly: boolean
+  maintenance: boolean
   dangerouslySkipPermissions: boolean
   allowDangerouslySkipPermissions: boolean
   continueSession: boolean
@@ -485,6 +488,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   const disallowedTools: string[] = []
   let permissionMode: CliPermissionMode = 'default'
   let permissionPromptTool: string | undefined
+  let init = false
+  let initOnly = false
+  let maintenance = false
   let dangerouslySkipPermissions = false
   let allowDangerouslySkipPermissions = false
   let continueSession = false
@@ -982,6 +988,18 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       bare = true
       continue
     }
+    if (value === '--init') {
+      init = true
+      continue
+    }
+    if (value === '--init-only') {
+      initOnly = true
+      continue
+    }
+    if (value === '--maintenance') {
+      maintenance = true
+      continue
+    }
     if (value === '--strict-mcp-config') {
       strictMcpConfig = true
       continue
@@ -1212,6 +1230,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     disallowedTools,
     permissionMode,
     ...(permissionPromptTool === undefined ? {} : { permissionPromptTool }),
+    init,
+    initOnly,
+    maintenance,
     dangerouslySkipPermissions,
     allowDangerouslySkipPermissions,
     continueSession,

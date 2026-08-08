@@ -23,6 +23,7 @@ import {
   createClaudePrSessionFilter,
   filterClaudePrLinkedSessions,
 } from './compatibility/claude/pr-links.js'
+import { resolveClaudePaths } from './compatibility/claude/paths.js'
 import {
   loadClaudeContextResources,
   loadClaudeSettings,
@@ -358,6 +359,10 @@ interface SessionCommands {
   ): Promise<SessionRunResult>
   fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
+  lifecycle?(
+    trigger: 'init' | 'maintenance',
+    options?: { sessionStart?: boolean; sessionId?: string },
+  ): Promise<void>
   sessions(): Promise<SessionSummary[]>
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
@@ -852,6 +857,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
       disallowedTools: cli.disallowedTools,
     })
     const enableSubagents = !cli.bare && selectedAgentTools.length > 0
+    const hooks =
+      cli.safeMode || cli.bare
+        ? undefined
+        : new ClaudeHookRunner({
+            settings,
+            cwd,
+            onEvent: (event) => runtimeEventSink({ type: 'hook', event }),
+          })
     const service = new ClaudeSessionService({
       ...options,
       provider: hostedToolProvider,
@@ -870,15 +883,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       enableWorktrees:
         cli.worktreeRequested || selectedWorktreeTools.length > 0,
       worktreeToolNames: selectedWorktreeTools,
-      ...(cli.safeMode || cli.bare
-        ? {}
-        : {
-            hooks: new ClaudeHookRunner({
-              settings,
-              cwd,
-              onEvent: (event) => runtimeEventSink({ type: 'hook', event }),
-            }),
-          }),
+      ...(hooks ? { hooks } : {}),
       ...(agent ? { agent } : {}),
       contextAssembler: new ClaudeContextAssembler({
         loadResources: loadContextResources,
@@ -977,6 +982,44 @@ const createDefaultService: CliDependencies['createService'] = async ({
       },
       rewindFiles: (sessionId, userMessageId) =>
         service.rewindFiles(sessionId, userMessageId),
+      lifecycle: async (trigger, lifecycleOptions = {}) => {
+        if (!hooks) return
+        const sessionId = lifecycleOptions.sessionId ?? randomUUID()
+        const runtimeCwd = workspace.cwd()
+        const hookSession = {
+          session_id: sessionId,
+          transcript_path: resolveClaudePaths({
+            cwd: runtimeCwd,
+            sessionId,
+            configDir: configRoot,
+          }).sessionFile,
+          cwd: runtimeCwd,
+          permission_mode: cli.dangerouslySkipPermissions
+            ? 'bypassPermissions'
+            : cli.permissionMode,
+        }
+        const setup = await hooks.run(
+          { ...hookSession, hook_event_name: 'Setup', trigger },
+          trigger,
+          signal,
+        )
+        if (setup.blockedReason) {
+          throw new Error(`Setup hook error: ${setup.blockedReason}`)
+        }
+        if (!lifecycleOptions.sessionStart) return
+        const startup = await hooks.run(
+          {
+            ...hookSession,
+            hook_event_name: 'SessionStart',
+            source: 'startup',
+          },
+          'startup',
+          signal,
+        )
+        if (startup.blockedReason) {
+          throw new Error(`SessionStart hook error: ${startup.blockedReason}`)
+        }
+      },
       sessions: () => service.sessions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
@@ -2009,7 +2052,8 @@ async function execute(
     dependencies.runInteractive &&
     (args.length === 0 || explicitInteractiveResumeAt) &&
     !invocation.print &&
-    !invocation.background
+    !invocation.background &&
+    !invocation.initOnly
   ) {
     return dependencies.runInteractive({
       ...(agent === undefined ? {} : { agent }),
@@ -2031,6 +2075,26 @@ async function execute(
       },
       ...(signal ? { signal } : {}),
     })
+  }
+  if (invocation.initOnly) {
+    const lifecycleService = await dependencies.createService({
+      eventSink: () => undefined,
+      requireProvider: false,
+      exposeToolRegistry: true,
+      ...(signal ? { signal } : {}),
+      controls: invocation,
+    })
+    try {
+      await lifecycleService.lifecycle?.('init', {
+        sessionStart: true,
+        ...(invocation.sessionId === undefined
+          ? {}
+          : { sessionId: invocation.sessionId }),
+      })
+      return 0
+    } finally {
+      await lifecycleService.close?.()
+    }
   }
   const { retryInterruptedTools } = invocation
   const command = args[0]
@@ -2427,6 +2491,18 @@ async function execute(
     controls: invocation,
   })
   try {
+    const lifecycleTrigger = invocation.init
+      ? 'init'
+      : invocation.maintenance
+        ? 'maintenance'
+        : undefined
+    if (lifecycleTrigger !== undefined) {
+      await service.lifecycle?.(lifecycleTrigger, {
+        ...(invocation.sessionId === undefined
+          ? {}
+          : { sessionId: invocation.sessionId }),
+      })
+    }
     if (invocation.rewindFiles !== undefined) {
       const sessionId = requireValue(args[1], 'Session ID')
       if (!service.rewindFiles) throw new Error('File rewinding is unavailable')

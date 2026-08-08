@@ -37,6 +37,9 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
   allowedTools: [],
   disallowedTools: [],
   permissionMode: 'default',
+  init: false,
+  initOnly: false,
+  maintenance: false,
   dangerouslySkipPermissions: false,
   allowDangerouslySkipPermissions: false,
   continueSession: false,
@@ -218,6 +221,9 @@ export async function resolveCliControls(
     ...(controls.permissionPromptTool === undefined
       ? {}
       : { permissionPromptTool: controls.permissionPromptTool }),
+    init: controls.init,
+    initOnly: controls.initOnly,
+    maintenance: controls.maintenance,
     dangerouslySkipPermissions: controls.dangerouslySkipPermissions,
     allowDangerouslySkipPermissions: controls.allowDangerouslySkipPermissions,
     continueSession: controls.continueSession,

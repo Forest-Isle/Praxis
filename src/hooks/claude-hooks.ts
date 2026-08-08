@@ -13,6 +13,7 @@ import {
 } from '../platform/sensitive-data.js'
 
 export type ClaudeHookEventName =
+  | 'Setup'
   | 'SessionStart'
   | 'UserPromptSubmit'
   | 'PreToolUse'
@@ -125,6 +126,7 @@ const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024
 const KILL_GRACE_MS = 250
 
 const HOOK_EVENTS: readonly ClaudeHookEventName[] = [
+  'Setup',
   'SessionStart',
   'UserPromptSubmit',
   'PreToolUse',
