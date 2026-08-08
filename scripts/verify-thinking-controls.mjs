@@ -225,10 +225,13 @@ try {
     'Praxis Anthropic default thinking contract was not applied',
   )
 
+  // Claude's bare mode flushes transcript writes asynchronously; this short
+  // fixture can exit before that fire-and-forget write completes. Use normal
+  // mode for persistence/resume assertions and cover bare request shaping in
+  // the separate probe gate.
   const claudeSession = '63000000-0000-4000-8000-000000000001'
   const beforeClaude = requests.length
   const claudeSeed = await runClaude([
-    '--bare',
     '-p',
     '--thinking',
     'enabled',
@@ -321,7 +324,6 @@ try {
 
   const beforeClaudeResume = requests.length
   const claudeResume = await runClaude([
-    '--bare',
     '-p',
     '--resume',
     praxisSession,
