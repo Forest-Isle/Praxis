@@ -190,6 +190,8 @@ Options:
   --agent <name>                      Select a shared agent definition
   --max-turns <turns>                  Limit print-mode model round trips
   --betas <betas...>                   Include Anthropic beta headers
+  --brief                              Enable SendUserMessage communication
+  --ax-screen-reader                   Render flat screen-reader output
   --debug[=<filter>]                   Enable runtime diagnostics
   --debug-file <path>                  Write runtime diagnostics to a file
   --agents <json>                      Define inline agents for this session
@@ -463,6 +465,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
     sessionPersistence: cli.sessionPersistence,
     effort: cli.effort ?? 'high',
     ...(cli.maxTurns === undefined ? {} : { maxModelTurns: cli.maxTurns }),
+    ...(cli.brief && !cli.disallowedTools.includes('SendUserMessage')
+      ? { brief: true }
+      : {}),
     ...(cli.betas.length ? { betas: cli.betas } : {}),
     ...(cli.jsonSchema ? { structuredOutputSchema: cli.jsonSchema } : {}),
     ...(cli.maxBudgetUsd === undefined
@@ -781,6 +786,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
     })
     const toolNames = [
       ...filteredTools.definitions().map((definition) => definition.name),
+      ...(cli.brief && !cli.disallowedTools.includes('SendUserMessage')
+        ? ['SendUserMessage']
+        : []),
       ...selectedTaskTools,
       ...selectedScheduledTools,
       ...selectedWorkflowTools,
@@ -886,6 +894,7 @@ const defaultDependencies: CliDependencies = {
         scheduledPrompts: true,
       },
       ...(signal ? { signal } : {}),
+      ...(controls?.axScreenReader ? { axScreenReader: true } : {}),
     }),
   topLevelAgents: new TopLevelAgentManager({
     configRoot: resolve(
@@ -1661,6 +1670,7 @@ function eventSink(
   if (outputFormat !== 'text') return () => undefined
   return (event) => {
     if (event.type === 'text-delta') io.stdout(event.delta)
+    if (event.type === 'user-message') io.stdout(`\n${event.message}\n`)
     if (event.type === 'warning') {
       io.stderr(
         `Warning: ${redactSensitiveText(event.message, sensitiveValues)}\n`,

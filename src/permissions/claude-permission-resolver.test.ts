@@ -60,6 +60,18 @@ describe('ClaudePermissionResolver', () => {
     })
   })
 
+  it('allows SendUserMessage without an interactive permission prompt', async () => {
+    await expect(
+      new ClaudePermissionResolver({ cwd: '/workspace', settings: [] }).resolve(
+        {
+          id: 'message',
+          name: 'SendUserMessage',
+          input: { message: 'done', status: 'normal' },
+        },
+      ),
+    ).resolves.toEqual({ behavior: 'allow' })
+  })
+
   it('allows durable task graph tools by default with explicit deny precedence', async () => {
     const resolver = new ClaudePermissionResolver({
       cwd: '/workspace',

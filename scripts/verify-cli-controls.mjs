@@ -251,6 +251,20 @@ try {
     throw new Error('Inline --agents prompt was not included in agent context')
   }
 
+  const briefRun = await runPraxis([
+    '--no-session-persistence',
+    '--brief',
+    'brief tool',
+  ])
+  if (!toolNames(briefRun.request).includes('SendUserMessage')) {
+    throw new Error('--brief did not expose SendUserMessage')
+  }
+  if (
+    !systemText(briefRun.request).includes('primary user-visible reply channel')
+  ) {
+    throw new Error('--brief did not add SendUserMessage guidance')
+  }
+
   const slashDisabled = await runPraxis([
     '--no-session-persistence',
     '--disable-slash-commands',

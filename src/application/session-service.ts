@@ -80,6 +80,11 @@ import type {
 } from './session-worktree.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
 import { generateToolUseSummary } from './tool-use-summary.js'
+import {
+  ClaudeUserMessageToolRegistry,
+  CLAUDE_USER_MESSAGE_PROMPT,
+  type UserMessage,
+} from '../tools/claude-user-message.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -114,6 +119,7 @@ export interface ClaudeSessionServiceOptions {
   pricing?: ModelPricingRegistry
   maxBudgetUsd?: number
   emitToolUseSummaries?: boolean
+  brief?: boolean
   collectMetrics?: boolean
   sessionPersistence?: boolean
   sessionKind?: 'bg'
@@ -380,6 +386,18 @@ export class ClaudeSessionService {
               : {}),
           })
         : workflowTools
+    const messageRegistry = this.options.brief
+      ? new ClaudeUserMessageToolRegistry(registry, (message: UserMessage) =>
+          this.options.eventSink?.({
+            type: 'user-message',
+            message: message.message,
+            status: message.status,
+            ...(message.attachments.length
+              ? { attachments: message.attachments }
+              : {}),
+          }),
+        )
+      : registry
     const preferredOrder = [
       'Agent',
       'TaskOutput',
@@ -400,6 +418,7 @@ export class ClaudeSessionService {
       'EnterWorktree',
       'ExitWorktree',
       'SendMessage',
+      'SendUserMessage',
       'Workflow',
       'CronCreate',
       'CronDelete',
@@ -410,7 +429,7 @@ export class ClaudeSessionService {
     ]
     return {
       definitions: () => {
-        const definitions = registry.definitions()
+        const definitions = messageRegistry.definitions()
         return [...definitions].sort((left, right) => {
           const leftIndex = preferredOrder.indexOf(left.name)
           const rightIndex = preferredOrder.indexOf(right.name)
@@ -420,8 +439,8 @@ export class ClaudeSessionService {
           )
         })
       },
-      prepare: (call, context) => registry.prepare(call, context),
-      execute: (call, context) => registry.execute(call, context),
+      prepare: (call, context) => messageRegistry.prepare(call, context),
+      execute: (call, context) => messageRegistry.execute(call, context),
     }
   }
 
@@ -909,17 +928,32 @@ export class ClaudeSessionService {
               enabledTools: this.options.worktreeToolNames ?? [],
             })
           : turnTools
+      const messageTools =
+        this.options.brief && workspaceTools
+          ? new ClaudeUserMessageToolRegistry(
+              workspaceTools,
+              (message: UserMessage) =>
+                this.options.eventSink?.({
+                  type: 'user-message',
+                  message: message.message,
+                  status: message.status,
+                  ...(message.attachments.length
+                    ? { attachments: message.attachments }
+                    : {}),
+                }),
+            )
+          : workspaceTools
       const structuredCapture = this.options.structuredOutputSchema
         ? { calls: 0, value: undefined as unknown }
         : undefined
       const structuredTools =
         this.options.structuredOutputSchema && structuredCapture
           ? new StructuredOutputRegistry(
-              workspaceTools ?? this.options.tools ?? emptyToolRegistry,
+              messageTools ?? this.options.tools ?? emptyToolRegistry,
               this.options.structuredOutputSchema,
               structuredCapture,
             )
-          : workspaceTools
+          : messageTools
       const hookTools =
         this.options.hooks && structuredTools && this.options.permissions
           ? new ClaudeHookToolCoordinator({
@@ -1186,6 +1220,14 @@ export class ClaudeSessionService {
 
         const contextMessages = [
           ...((await this.options.contextAssembler?.assemble()) ?? []),
+          ...(this.options.brief
+            ? [
+                {
+                  role: 'system' as const,
+                  content: CLAUDE_USER_MESSAGE_PROMPT,
+                },
+              ]
+            : []),
           ...(agent
             ? [
                 {

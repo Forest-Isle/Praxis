@@ -55,6 +55,7 @@ interface InteractiveAppProps {
   signal?: AbortSignal
   onCancel?: () => void
   onTurnChange?: (turn: Promise<void> | null) => void
+  axScreenReader?: boolean
 }
 
 type HistoryLine = {
@@ -91,6 +92,7 @@ export function InteractiveApp({
   signal,
   onCancel,
   onTurnChange,
+  axScreenReader = false,
 }: InteractiveAppProps) {
   const { exit } = useApp()
   const sensitiveValues = useMemo(
@@ -153,6 +155,8 @@ export function InteractiveApp({
   const handleEvent = (event: RuntimeEvent) => {
     if (event.type === 'text-delta') {
       setActiveText((current) => current + event.delta)
+    } else if (event.type === 'user-message') {
+      append({ kind: 'assistant', text: event.message })
     } else if (event.type === 'state') {
       setStatus(event.state)
     } else if (event.type === 'tool-call') {
@@ -461,12 +465,16 @@ export function InteractiveApp({
 
   return (
     <Box flexDirection="column">
-      <Text bold color="cyan">
-        Praxis
-      </Text>
+      {axScreenReader ? null : (
+        <Text bold color="cyan">
+          Praxis
+        </Text>
+      )}
       {selectingSession ? (
         <Box flexDirection="column">
-          <Text dimColor>Select session · ↑/↓ move · Enter confirm</Text>
+          {axScreenReader ? null : (
+            <Text dimColor>Select session · ↑/↓ move · Enter confirm</Text>
+          )}
           {choices.map((session, index) => (
             <Text key={session?.sessionId ?? 'new'}>
               {index === selectedIndex ? '› ' : '  '}
@@ -520,7 +528,9 @@ export function InteractiveApp({
           ) : (
             <>
               <Text>› {input}</Text>
-              <Text dimColor>/new · /sessions · /workflows · /exit</Text>
+              {axScreenReader ? null : (
+                <Text dimColor>/new · /sessions · /workflows · /exit</Text>
+              )}
             </>
           )}
         </>
@@ -532,6 +542,7 @@ export function InteractiveApp({
 export async function runInteractive(options: {
   factory: InteractiveServiceFactory
   signal?: AbortSignal
+  axScreenReader?: boolean
 }): Promise<number> {
   const controller = new AbortController()
   const signal = options.signal
@@ -564,8 +575,9 @@ export async function runInteractive(options: {
       onTurnChange={(turn) => {
         activeTurn = turn
       }}
+      {...(options.axScreenReader ? { axScreenReader: true } : {})}
     />,
-    { exitOnCtrlC: false, incrementalRendering: true },
+    { exitOnCtrlC: false, incrementalRendering: !options.axScreenReader },
   )
   await instance.waitUntilExit()
   if (activeTurn) await activeTurn

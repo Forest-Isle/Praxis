@@ -22,6 +22,8 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
   pluginDirectories: [],
   pluginUrls: [],
   betas: [],
+  brief: false,
+  axScreenReader: false,
   mcpConfigs: [],
   strictMcpConfig: false,
   disableSlashCommands: false,
@@ -230,6 +232,8 @@ export async function resolveCliControls(
     ...(controls.debugFile === undefined
       ? {}
       : { debugFile: controls.debugFile }),
+    ...(controls.brief ? { brief: true } : {}),
+    ...(controls.axScreenReader ? { axScreenReader: true } : {}),
     ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
     inlineAgents: resolveInlineAgents(controls.agentDefinitions),
     mcpResources,

@@ -278,6 +278,9 @@ describe('CLI protocol', () => {
         'hello',
       ]),
     ).toMatchObject({ debug: 'hooks', debugFile: 'debug.log' })
+    expect(
+      parseCliInvocation(['--brief', '--ax-screen-reader', 'prompt']),
+    ).toMatchObject({ brief: true, axScreenReader: true })
     expect(parseCliInvocation(['mcp', 'serve', '--mcp-debug'])).toMatchObject({
       mcpDebug: true,
     })
@@ -709,6 +712,30 @@ describe('CLI protocol', () => {
       stop_reason: null,
       fast_mode_state: 'off',
       uuid: expect.any(String),
+    })
+  })
+
+  it('emits SendUserMessage stream records', () => {
+    const records: unknown[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record),
+      runtimeInfo,
+      sessionId,
+      false,
+    )
+    output.sink({
+      type: 'user-message',
+      message: 'checkpoint',
+      status: 'proactive',
+      attachments: ['notes.md'],
+    })
+    expect(records).toContainEqual({
+      type: 'user_message',
+      message: 'checkpoint',
+      status: 'proactive',
+      attachments: ['notes.md'],
+      uuid: expect.any(String),
+      session_id: sessionId,
     })
   })
 

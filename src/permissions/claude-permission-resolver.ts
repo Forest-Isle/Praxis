@@ -45,6 +45,7 @@ export type ClaudePermissionMode =
 const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   Agent: 'allow',
   SendMessage: 'allow',
+  SendUserMessage: 'allow',
   TaskOutput: 'allow',
   TaskStop: 'allow',
   TaskCreate: 'allow',

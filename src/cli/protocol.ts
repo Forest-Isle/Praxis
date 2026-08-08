@@ -40,6 +40,8 @@ export interface CliControls {
   betas: readonly string[]
   debug?: string | true
   debugFile?: string
+  brief?: boolean
+  axScreenReader?: boolean
   agentDefinitions?: string
   mcpConfigs: readonly string[]
   strictMcpConfig: boolean
@@ -446,6 +448,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   const betas: string[] = []
   let debug: string | true | undefined
   let debugFile: string | undefined
+  let brief = false
+  let axScreenReader = false
   let agentDefinitions: string | undefined
   const mcpConfigs: string[] = []
   let strictMcpConfig = false
@@ -633,6 +637,14 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     }
     if (value === '--mcp-debug') {
       mcpDebug = true
+      continue
+    }
+    if (value === '--brief') {
+      brief = true
+      continue
+    }
+    if (value === '--ax-screen-reader') {
+      axScreenReader = true
       continue
     }
     const selectedAgents = optionValue(argv, index, '--agents')
@@ -1049,6 +1061,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     betas,
     ...(debug === undefined ? {} : { debug }),
     ...(debugFile === undefined ? {} : { debugFile }),
+    ...(brief ? { brief: true } : {}),
+    ...(axScreenReader ? { axScreenReader: true } : {}),
     tools,
     allowedTools,
     disallowedTools,
@@ -1514,6 +1528,19 @@ export class StreamJsonOutput {
       this.ensureTurn()
       this.turnText += event.delta
       this.partialText(event.delta)
+      return
+    }
+    if (event.type === 'user-message') {
+      this.write({
+        type: 'user_message',
+        message: event.message,
+        status: event.status,
+        ...(event.attachments?.length
+          ? { attachments: event.attachments }
+          : {}),
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
       return
     }
     if (event.type === 'tool-call') {

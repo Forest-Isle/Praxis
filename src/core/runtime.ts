@@ -117,6 +117,12 @@ export interface ModelProvider {
 export type RuntimeEvent =
   | { type: 'state'; state: Exclude<RuntimeState, 'idle' | 'failed'> }
   | { type: 'text-delta'; delta: string }
+  | {
+      type: 'user-message'
+      message: string
+      attachments?: readonly string[]
+      status: 'normal' | 'proactive'
+    }
   | { type: 'usage'; usage: ModelUsage }
   | { type: 'tool-call'; call: ModelToolCall }
   | {
