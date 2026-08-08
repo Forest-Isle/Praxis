@@ -143,6 +143,43 @@ import {
 
 const VERSION = '0.1.0'
 
+function fileResourceBaseUrl(
+  environment: NodeJS.ProcessEnv,
+  providerEnvironment: ReturnType<typeof parseProviderEnvironment> | undefined,
+): string {
+  return (
+    environment.PRAXIS_FILES_BASE_URL ??
+    providerEnvironment?.baseUrl ??
+    environment.PRAXIS_BASE_URL ??
+    (environment.PRAXIS_PROVIDER === 'anthropic'
+      ? 'https://api.anthropic.com/v1'
+      : 'https://api.openai.com/v1')
+  )
+}
+
+function fileResourceHeaders(
+  environment: NodeJS.ProcessEnv,
+  providerEnvironment: ReturnType<typeof parseProviderEnvironment> | undefined,
+  credential: string,
+): Record<string, string> {
+  const anthropic = providerEnvironment?.provider === 'anthropic'
+  const bearer = Boolean(environment.PRAXIS_FILES_BEARER_TOKEN)
+  const authentication = bearer
+    ? { Authorization: `Bearer ${credential}` }
+    : anthropic
+      ? { 'x-api-key': credential }
+      : { Authorization: `Bearer ${credential}` }
+  return {
+    ...authentication,
+    ...(anthropic
+      ? {
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': `files-api-2025-04-14${bearer ? ',oauth-2025-04-20' : ''}`,
+        }
+      : {}),
+  }
+}
+
 const HELP = `Praxis — local-first general agent
 
 Usage:
@@ -194,6 +231,7 @@ Options:
   --ax-screen-reader                   Render flat screen-reader output
   --debug[=<filter>]                   Enable runtime diagnostics
   --debug-file <path>                  Write runtime diagnostics to a file
+  --file <specs...>                    Download file resources at startup (file_id:relative_path)
   --agents <json>                      Define inline agents for this session
   --mcp-config <configs...>            Load MCP server JSON files or objects
   --strict-mcp-config                  Ignore configured MCP servers
@@ -415,13 +453,30 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const context = parseContextEnvironment(process.env)
   const apiKey = process.env.PRAXIS_API_KEY
   const model = cli.model ?? process.env.PRAXIS_MODEL
+  const providerEnvironment =
+    apiKey && model
+      ? parseProviderEnvironment(process.env)
+      : cli.fileResources.length > 0
+        ? parseProviderEnvironment(process.env)
+        : undefined
+  const fileCredential =
+    process.env.PRAXIS_FILES_BEARER_TOKEN ??
+    process.env.PRAXIS_FILES_API_KEY ??
+    apiKey
+  if (cli.fileResources.length > 0 && !fileCredential) {
+    throw new Error(
+      '--file requires PRAXIS_FILES_BEARER_TOKEN, PRAXIS_FILES_API_KEY, or PRAXIS_API_KEY',
+    )
+  }
   if (requireProvider && (!apiKey || !model)) {
     throw new Error(
       'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
     )
   }
   if (apiKey && model) {
-    const providerEnvironment = parseProviderEnvironment(process.env)
+    if (!providerEnvironment) {
+      throw new Error('Provider environment is unavailable')
+    }
     providerForModel = (selectedModel: string) => {
       const providerOptions = {
         apiKey,
@@ -485,6 +540,23 @@ const createDefaultService: CliDependencies['createService'] = async ({
           ...(cli.worktreeName === undefined
             ? {}
             : { initialWorktreeName: cli.worktreeName }),
+        }
+      : {}),
+    ...(cli.fileResources.length > 0
+      ? {
+          fileResources: cli.fileResources,
+          fileResourceConfig: {
+            cwd,
+            apiKey: fileCredential ?? '',
+            baseUrl:
+              process.env.PRAXIS_FILES_BASE_URL ??
+              fileResourceBaseUrl(process.env, providerEnvironment),
+            headers: fileResourceHeaders(
+              process.env,
+              providerEnvironment,
+              fileCredential ?? '',
+            ),
+          },
         }
       : {}),
   }
@@ -2176,6 +2248,14 @@ async function execute(
           ? (event) => {
               if (event.type === 'state' && event.state === 'awaiting-model') {
                 jsonModelTurns += 1
+              }
+              if (event.type === 'warning') {
+                io.stderr(
+                  `Warning: ${redactSensitiveText(
+                    event.message,
+                    sensitiveEnvironmentValues(process.env),
+                  )}\n`,
+                )
               }
             }
           : eventSink(io, outputFormat, invocation.legacyJson),

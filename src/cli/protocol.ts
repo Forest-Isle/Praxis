@@ -42,6 +42,7 @@ export interface CliControls {
   debugFile?: string
   brief?: boolean
   axScreenReader?: boolean
+  fileResources: readonly string[]
   agentDefinitions?: string
   mcpConfigs: readonly string[]
   strictMcpConfig: boolean
@@ -450,6 +451,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let debugFile: string | undefined
   let brief = false
   let axScreenReader = false
+  const fileResources: string[] = []
   let agentDefinitions: string | undefined
   const mcpConfigs: string[] = []
   let strictMcpConfig = false
@@ -645,6 +647,12 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     }
     if (value === '--ax-screen-reader') {
       axScreenReader = true
+      continue
+    }
+    const selectedFileResources = listOptionValue(argv, index, ['--file'])
+    if (selectedFileResources) {
+      fileResources.push(...selectedFileResources.values)
+      index += selectedFileResources.consumed
       continue
     }
     const selectedAgents = optionValue(argv, index, '--agents')
@@ -1063,6 +1071,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(debugFile === undefined ? {} : { debugFile }),
     ...(brief ? { brief: true } : {}),
     ...(axScreenReader ? { axScreenReader: true } : {}),
+    fileResources,
     tools,
     allowedTools,
     disallowedTools,

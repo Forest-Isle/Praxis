@@ -152,4 +152,31 @@ describe('CLI controls', () => {
       debugFile: 'debug/runtime.log',
     })
   })
+
+  it('validates and normalizes startup file resources', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-cli-controls-'))
+    roots.push(cwd)
+
+    await expect(
+      resolveCliControls(
+        {
+          ...DEFAULT_CLI_CONTROLS,
+          fileResources: ['file_a:docs/../notes.txt', 'file_b:images/b.png'],
+        },
+        cwd,
+      ),
+    ).resolves.toMatchObject({
+      fileResources: [
+        { fileId: 'file_a', relativePath: 'notes.txt' },
+        { fileId: 'file_b', relativePath: 'images/b.png' },
+      ],
+    })
+
+    await expect(
+      resolveCliControls(
+        { ...DEFAULT_CLI_CONTROLS, fileResources: ['file_a:../escape.txt'] },
+        cwd,
+      ),
+    ).rejects.toThrow('escapes')
+  })
 })

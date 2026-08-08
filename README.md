@@ -232,6 +232,10 @@ export PRAXIS_API_KEY=...
 export PRAXIS_MODEL=...
 export PRAXIS_PROVIDER=openai # or anthropic
 export PRAXIS_BASE_URL=https://api.openai.com/v1
+# Optional startup file API overrides. Bearer token takes precedence.
+export PRAXIS_FILES_BASE_URL=https://api.example.com
+export PRAXIS_FILES_BEARER_TOKEN=...
+# Or use PRAXIS_FILES_API_KEY; PRAXIS_API_KEY is the final fallback.
 export PRAXIS_CONTEXT_WINDOW_TOKENS=200000
 export PRAXIS_CONTEXT_RESERVE_TOKENS=8192
 # Anthropic only: explicitly enable provider-native WebSearch.
@@ -250,6 +254,7 @@ node dist/cli.js -p --model claude-sonnet-4-20250514 --effort high "Try another 
 node dist/cli.js -p --max-budget-usd 0.50 --output-format json "Bound this run"
 node dist/cli.js -p --output-format stream-json --verbose --prompt-suggestions "Suggest the next step"
 node dist/cli.js -p --no-session-persistence "Inspect without saving"
+node dist/cli.js -p --file file_abc:input.txt -- "Inspect the downloaded file"
 node dist/cli.js sessions --json
 node dist/cli.js inspect --json <session-id>
 node dist/cli.js export <session-id> > session.jsonl
@@ -281,6 +286,12 @@ when no pricing is available.
 `--prompt-suggestions` is available only with print-mode stream JSON; it emits
 one auxiliary `prompt_suggestion` record after each successful result without
 mutating the session transcript.
+`--file <file_id:relative_path...>` downloads resources before the first model
+turn into `<cwd>/<session-id>/uploads`. Paths cannot escape that directory.
+`PRAXIS_FILES_BASE_URL` selects a separate Files API endpoint;
+`PRAXIS_FILES_BEARER_TOKEN`, `PRAXIS_FILES_API_KEY`, then `PRAXIS_API_KEY` are
+checked in that order. Anthropic providers receive their required files beta
+and version headers; other providers use a standard Bearer API key.
 MCP management commands write Claude-compatible local (`.claude.json` project
 state), project (`.mcp.json`), or user (`.claude.json` root) scopes atomically;
 `add`, `add-json`, `list`, `get`, `remove`, and `reset-project-choices` are

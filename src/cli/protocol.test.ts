@@ -84,6 +84,25 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('parses variadic startup file resources', () => {
+    expect(
+      parseCliInvocation([
+        '--file',
+        'file_a:docs/a.txt',
+        'file_b:images/b.png',
+        '--file=file_c:notes/c.md',
+        'prompt',
+      ]),
+    ).toMatchObject({
+      fileResources: [
+        'file_a:docs/a.txt',
+        'file_b:images/b.png',
+        'file_c:notes/c.md',
+      ],
+      args: ['prompt'],
+    })
+  })
+
   it('parses top-level background agent controls', () => {
     expect(
       parseCliInvocation([

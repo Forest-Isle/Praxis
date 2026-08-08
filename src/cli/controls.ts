@@ -7,6 +7,10 @@ import type {
   ClaudeJsonResource,
   ClaudeTextResource,
 } from '../compatibility/claude/shared-resources.js'
+import {
+  parseClaudeFileSpecs,
+  type ClaudeFileResource,
+} from '../compatibility/claude/file-resources.js'
 import type { CliControls } from './protocol.js'
 
 export const DEFAULT_CLI_CONTROLS: CliControls = {
@@ -24,6 +28,7 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
   betas: [],
   brief: false,
   axScreenReader: false,
+  fileResources: [],
   mcpConfigs: [],
   strictMcpConfig: false,
   disableSlashCommands: false,
@@ -42,7 +47,11 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
 
 export interface ResolvedCliControls extends Omit<
   CliControls,
-  'settings' | 'systemPromptFile' | 'appendSystemPromptFile' | 'addDirectories'
+  | 'settings'
+  | 'systemPromptFile'
+  | 'appendSystemPromptFile'
+  | 'addDirectories'
+  | 'fileResources'
 > {
   additionalSettings: ClaudeJsonResource | undefined
   inlineAgents: readonly ClaudeTextResource[]
@@ -50,6 +59,7 @@ export interface ResolvedCliControls extends Omit<
   systemPrompt: string | undefined
   appendSystemPrompt: string | undefined
   additionalDirectories: readonly string[]
+  fileResources: readonly ClaudeFileResource[]
 }
 
 function absolutePath(cwd: string, path: string): string {
@@ -234,6 +244,7 @@ export async function resolveCliControls(
       : { debugFile: controls.debugFile }),
     ...(controls.brief ? { brief: true } : {}),
     ...(controls.axScreenReader ? { axScreenReader: true } : {}),
+    fileResources: parseClaudeFileSpecs(controls.fileResources),
     ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
     inlineAgents: resolveInlineAgents(controls.agentDefinitions),
     mcpResources,

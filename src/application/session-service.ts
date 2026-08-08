@@ -13,6 +13,11 @@ import {
   resolveClaudePaths,
   resolveClaudeScheduledTaskFile,
 } from '../compatibility/claude/paths.js'
+import {
+  downloadClaudeFileResources,
+  type ClaudeFileResource,
+  type ClaudeFileResourceConfig,
+} from '../compatibility/claude/file-resources.js'
 import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
 import {
   getClaudeAgentSetting,
@@ -128,6 +133,8 @@ export interface ClaudeSessionServiceOptions {
   initialWorktreeName?: string
   enableWorktrees?: boolean
   worktreeToolNames?: readonly ('EnterWorktree' | 'ExitWorktree')[]
+  fileResources?: readonly ClaudeFileResource[]
+  fileResourceConfig?: Omit<ClaudeFileResourceConfig, 'sessionId' | 'signal'>
 }
 
 export interface SessionRunResult {
@@ -219,6 +226,7 @@ export class ClaudeSessionService {
   private readonly worktreeManager: SessionWorktreeManager | null
   private readonly sessionCwds = new Map<string, string>()
   private readonly hostedSubagents = new Set<ClaudeSubagentExecutor>()
+  private readonly downloadedFileResourceSessions = new Set<string>()
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
@@ -665,6 +673,8 @@ export class ClaudeSessionService {
     if (name !== undefined && name.length === 0) {
       throw new Error('Session name must not be empty')
     }
+
+    await this.ensureFileResources(sessionId, signal)
 
     this.worktreeManager?.bindSession(sessionId)
     if (this.options.initialWorktree) {
@@ -1673,6 +1683,38 @@ export class ClaudeSessionService {
       )
     }
     return leaseResult.value
+  }
+
+  private async ensureFileResources(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const resources = this.options.fileResources ?? []
+    if (
+      resources.length === 0 ||
+      this.downloadedFileResourceSessions.has(sessionId)
+    ) {
+      return
+    }
+    const config = this.options.fileResourceConfig
+    if (!config) {
+      throw new Error(
+        '--file requires PRAXIS_FILES_BEARER_TOKEN, PRAXIS_FILES_API_KEY, or PRAXIS_API_KEY',
+      )
+    }
+    const downloads = await downloadClaudeFileResources(resources, {
+      ...config,
+      sessionId,
+      ...(signal ? { signal } : {}),
+    })
+    this.downloadedFileResourceSessions.add(sessionId)
+    for (const download of downloads) {
+      if (download.success) continue
+      this.options.eventSink?.({
+        type: 'warning',
+        message: `File ${download.fileId} failed to download: ${download.error ?? 'unknown error'}`,
+      })
+    }
   }
 
   private translationContext(sessionId: string, snapshot: TranscriptSnapshot) {

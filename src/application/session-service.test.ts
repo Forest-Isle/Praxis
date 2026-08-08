@@ -73,6 +73,46 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('downloads startup files before the first provider turn once per session', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-files-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    let downloads = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        await expect(
+          readFile(join(cwd, sessionId, 'uploads/input.txt'), 'utf8'),
+        ).resolves.toBe('startup file')
+        yield { type: 'text-delta', delta: 'read' }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      fileResources: [{ fileId: 'file_a', relativePath: 'input.txt' }],
+      fileResourceConfig: {
+        cwd,
+        apiKey: 'secret',
+        baseUrl: 'https://files.example.test/v1',
+        fetchImpl: async () => {
+          downloads += 1
+          return new Response('startup file')
+        },
+      },
+    })
+
+    await service.run('read the file', undefined, sessionId)
+    await service.resume(sessionId, 'read it again')
+
+    expect(downloads).toBe(1)
+  })
+
   it('builds a hosted registry with durable task and schedule tools', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-registry-'))
     roots.push(root)
