@@ -502,6 +502,8 @@ describe('Praxis CLI', () => {
           '--exclude-dynamic-system-prompt-sections',
           '--prefill',
           'ignored-prefix',
+          '--permission-prompt-tool',
+          'mcp__permission__approve',
           '--session-id',
           '11111111-1111-4111-8111-111111111111',
           'finish task',
@@ -515,7 +517,7 @@ describe('Praxis CLI', () => {
       'warning: --bg manages the session id; ignoring --session-id (use --resume <id> to continue an existing session)\n',
     ])
     expect(calls[0]).toBe(
-      'launch:finish task:--bare|--exclude-dynamic-system-prompt-sections|--prefill|ignored-prefix|finish task',
+      'launch:finish task:--bare|--exclude-dynamic-system-prompt-sections|--prefill|ignored-prefix|--permission-prompt-tool|mcp__permission__approve|finish task',
     )
 
     const listed = captureIO()

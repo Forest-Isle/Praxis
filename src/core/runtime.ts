@@ -248,6 +248,11 @@ export interface ToolRegistry {
 
 export type PermissionBehavior = 'allow' | 'ask' | 'deny'
 
+export type PermissionApproval =
+  | boolean
+  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
+  | { behavior: 'deny'; message: string; interrupt?: boolean }
+
 export interface PermissionResolutionContext {
   cwd: string
   messages?: readonly ModelMessage[]
@@ -302,7 +307,10 @@ export interface AgentRunRequest {
   toolResultDirectory?: string
   observer?: AgentRunObserver
   reloadMessages?: () => Promise<readonly ModelMessage[]>
-  approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
+  approveTool?: (
+    call: ModelToolCall,
+    originalCall?: ModelToolCall,
+  ) => PermissionApproval | Promise<PermissionApproval>
   onStop?: (
     text: string,
   ) => Promise<
@@ -834,19 +842,47 @@ export class AgentRuntime {
       behavior: decision.behavior,
     })
     let allowed = decision.behavior === 'allow'
+    let denialReason: string | undefined
+    let interrupt = false
     if (decision.behavior === 'ask') {
       this.emit({ type: 'state', state: 'awaiting-permission' })
-      allowed = request.approveTool
-        ? await request.approveTool(prepared)
+      const approval = request.approveTool
+        ? await request.approveTool(prepared, call)
         : false
+      if (typeof approval === 'boolean') {
+        allowed = approval
+      } else if (approval.behavior === 'allow') {
+        allowed = true
+        if (approval.updatedInput) {
+          try {
+            prepared = await tools.prepare(
+              { ...call, input: approval.updatedInput },
+              context,
+            )
+          } catch (error) {
+            return {
+              content: error instanceof Error ? error.message : String(error),
+              isError: true,
+            }
+          }
+        }
+      } else {
+        allowed = false
+        denialReason = approval.message
+        interrupt = approval.interrupt === true
+      }
     }
     if (!allowed) {
+      if (interrupt) {
+        throw new Error(denialReason ?? 'Permission prompt interrupted')
+      }
       const reason =
-        decision.behavior === 'deny'
+        denialReason ??
+        (decision.behavior === 'deny'
           ? decision.reason
           : decision.behavior === 'ask'
             ? (decision.reason ?? 'Permission approval was not provided')
-            : 'Permission approval was not provided'
+            : 'Permission approval was not provided')
       return { content: reason, isError: true }
     }
     if (request.signal?.aborted) return this.cancel()

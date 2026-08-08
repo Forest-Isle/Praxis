@@ -35,6 +35,7 @@ import {
   type ModelImage,
   type ModelProvider,
   type ModelToolCall,
+  type PermissionApproval,
   type ToolRegistry,
   type RuntimeEventSink,
 } from './core/runtime.js'
@@ -391,7 +392,10 @@ export interface CliDependencies extends InteractiveServiceFactory {
     eventSink: RuntimeEventSink
     requireProvider: boolean
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
-    approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
+    approveTool?: (
+      call: ModelToolCall,
+      originalCall?: ModelToolCall,
+    ) => PermissionApproval | Promise<PermissionApproval>
     agent?: string
     controls?: CliControls
     interactive?: boolean
@@ -724,6 +728,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ...(signal ? { signal } : {}),
   })
   try {
+    const permissionApprover = cli.permissionPromptTool
+      ? mcpTools.permissionPrompt(cli.permissionPromptTool)
+      : approveTool
     const extensionTools = new ClaudeExtensionToolRegistry(mcpTools, extensions)
     const agentToolNames = ['Agent', 'SendMessage'] as const
     const taskToolNames = [
@@ -874,7 +881,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...('contextReserveTokens' in context
         ? { contextReserveTokens: context.contextReserveTokens }
         : {}),
-      ...(approveTool ? { approveTool } : {}),
+      ...(permissionApprover ? { approveTool: permissionApprover } : {}),
       ...(approveRecovery ? { approveRecovery } : {}),
       fileCheckpointing:
         process.env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING === 'true',

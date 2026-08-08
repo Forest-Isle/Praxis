@@ -25,6 +25,10 @@ dynamic cwd/environment/memory/git context with optional first-user relocation,
 explicit tool sets, CLI permission rules and modes, current-directory
 continue/fork, PR-linked resume/fork, native session names, and in-memory
 no-persistence execution.
+The hidden-compatible `--permission-prompt-tool` control routes ask decisions
+through a reserved MCP tool, supports approved input replacement, and keeps the
+permission tool out of the model-visible tool surface. Denials can either return
+a failed tool result or interrupt the run, matching the MCP response contract.
 Classifier-backed `auto` permissions remain fail-closed until their dedicated
 runtime lands; no-persistence runs disable Agent because native
 sidechains are disk-backed.

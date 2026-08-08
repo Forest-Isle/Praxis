@@ -334,6 +334,119 @@ describe('AgentRuntime', () => {
     })
   })
 
+  it('executes permission-approved updated input and preserves the tool call id', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: {
+            id: 'call_permission',
+            name: 'Bash',
+            input: { command: 'original' },
+          },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const executed: ModelToolCall[] = []
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async (call) => {
+          executed.push(call)
+          return { content: 'updated', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+    })
+
+    await runtime.run({
+      messages: [{ role: 'user', content: 'run' }],
+      approveTool: async () => ({
+        behavior: 'allow',
+        updatedInput: { command: 'updated' },
+      }),
+    })
+
+    expect(executed).toEqual([
+      {
+        id: 'call_permission',
+        name: 'Bash',
+        input: { command: 'updated' },
+      },
+    ])
+  })
+
+  it('uses permission prompt denial messages as failed tool results', async () => {
+    let turn = 0
+    const requests: ModelRequest[] = []
+    const provider = providerFrom(async function* (request) {
+      requests.push(request)
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_denied', name: 'Bash', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'denied' }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'unexpected', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+    })
+
+    await runtime.run({
+      messages: [{ role: 'user', content: 'run' }],
+      approveTool: () => ({ behavior: 'deny', message: 'DENIED_BY_MCP' }),
+    })
+
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'call_denied',
+      content: 'DENIED_BY_MCP',
+      isError: true,
+    })
+  })
+
+  it('aborts the run when a permission prompt denial requests interruption', async () => {
+    let modelTurns = 0
+    const provider = providerFrom(async function* () {
+      modelTurns += 1
+      yield {
+        type: 'tool-call',
+        call: { id: 'call_interrupted', name: 'Bash', input: {} },
+      }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'unexpected', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+    })
+
+    await expect(
+      runtime.run({
+        messages: [{ role: 'user', content: 'run' }],
+        approveTool: () => ({
+          behavior: 'deny',
+          message: 'DENIED_BY_MCP',
+          interrupt: true,
+        }),
+      }),
+    ).rejects.toThrow('DENIED_BY_MCP')
+    expect(modelTurns).toBe(1)
+  })
+
   it('emits a provider-backed tool-use summary for completed tool batches', async () => {
     let turn = 0
     const provider = providerFrom(async function* () {

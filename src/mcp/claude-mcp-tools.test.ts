@@ -821,4 +821,112 @@ process.stdin.on('data', chunk => {
       await registry.close()
     }
   })
+
+  it('reserves and invokes a permission prompt tool outside model definitions', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-permission-prompt-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'permission-server.mjs')
+    const callLog = join(root, 'calls.json')
+    await writeFile(
+      serverScript,
+      `import { writeFile } from 'node:fs/promises'
+let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', async chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    let result
+    if (request.method === 'initialize') {
+      result = { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'permission', version: '1' } }
+    } else if (request.method === 'tools/list') {
+      result = { tools: [{ name: 'approve', inputSchema: { type: 'object' } }] }
+    } else {
+      await writeFile(process.argv[2], JSON.stringify(request.params))
+      const command = request.params.arguments.input.command
+      const text = command === 'invalid'
+        ? 'not-json'
+        : JSON.stringify(command === 'deny'
+          ? { behavior: 'deny', message: 'DENIED_BY_MCP', interrupt: true }
+          : { behavior: 'allow', updatedInput: { command: 'updated' } })
+      result = { content: [{ type: 'text', text }] }
+    }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/permission.json',
+          scope: 'local',
+          value: {
+            mcpServers: {
+              permission: {
+                command: process.execPath,
+                args: [serverScript, callLog],
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    try {
+      const prompt = registry.permissionPrompt('mcp__permission__approve')
+      expect(registry.definitions().map((tool) => tool.name)).toEqual(['Read'])
+      await expect(
+        prompt({
+          id: 'toolu_permission',
+          name: 'Bash',
+          input: { command: 'original' },
+        }),
+      ).resolves.toEqual({
+        behavior: 'allow',
+        updatedInput: { command: 'updated' },
+      })
+      expect(JSON.parse(await readFile(callLog, 'utf8'))).toMatchObject({
+        name: 'approve',
+        arguments: {
+          tool_name: 'Bash',
+          input: { command: 'original' },
+          tool_use_id: 'toolu_permission',
+        },
+        _meta: { 'claudecode/toolUseId': 'toolu_permission' },
+      })
+      await expect(
+        prompt({ id: 'toolu_deny', name: 'Bash', input: { command: 'deny' } }),
+      ).resolves.toEqual({
+        behavior: 'deny',
+        message: 'DENIED_BY_MCP',
+        interrupt: true,
+      })
+      await expect(
+        prompt({
+          id: 'toolu_invalid',
+          name: 'Bash',
+          input: { command: 'invalid' },
+        }),
+      ).resolves.toEqual({
+        behavior: 'deny',
+        message:
+          "The permission prompt tool returned an invalid permission result. Expected {behavior: 'allow', updatedInput?: object} or {behavior: 'deny', message: string}.",
+      })
+      expect(() => registry.permissionPrompt('mcp__missing__approve')).toThrow(
+        'Available MCP tools: mcp__permission__approve',
+      )
+    } finally {
+      await registry.close()
+    }
+  })
 })

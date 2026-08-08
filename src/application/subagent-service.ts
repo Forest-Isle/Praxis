@@ -36,6 +36,7 @@ import {
   type ModelToolDefinition,
   type ModelUsage,
   type PermissionResolver,
+  type PermissionApproval,
   type RuntimeEvent,
   type RuntimeEventSink,
   type ToolExecutionContext,
@@ -201,7 +202,10 @@ export interface ClaudeSubagentExecutorOptions {
   hooks?: ClaudeHookRunner
   contextAssembler?: ContextAssembler
   contextReserveTokens?: number
-  approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
+  approveTool?: (
+    call: ModelToolCall,
+    originalCall?: ModelToolCall,
+  ) => PermissionApproval | Promise<PermissionApproval>
   eventSink?: RuntimeEventSink
   maxDepth?: number
   maxCalls?: number

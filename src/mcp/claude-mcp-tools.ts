@@ -21,6 +21,7 @@ import type { ClaudeJsonResource } from '../compatibility/claude/shared-resource
 import type {
   ModelToolCall,
   ModelToolDefinition,
+  PermissionApproval,
   ToolExecutionContext,
   ToolExecutionResult,
   ToolRegistry,
@@ -354,6 +355,33 @@ function toolContent(
   return redactSensitiveText(parts.join('\n'), sensitiveValues)
 }
 
+const INVALID_PERMISSION_RESULT =
+  "The permission prompt tool returned an invalid permission result. Expected {behavior: 'allow', updatedInput?: object} or {behavior: 'deny', message: string}."
+
+function invalidPermissionResult(): PermissionApproval {
+  return { behavior: 'deny', message: INVALID_PERMISSION_RESULT }
+}
+
+function parsePermissionResult(source: string): PermissionApproval {
+  const value: unknown = JSON.parse(source)
+  if (!isRecord(value)) return invalidPermissionResult()
+  if (value.behavior === 'allow') {
+    if (value.updatedInput === undefined) return { behavior: 'allow' }
+    if (!isRecord(value.updatedInput)) return invalidPermissionResult()
+    return { behavior: 'allow', updatedInput: value.updatedInput }
+  }
+  if (value.behavior === 'deny' && typeof value.message === 'string') {
+    return {
+      behavior: 'deny',
+      message: value.message,
+      ...(typeof value.interrupt === 'boolean'
+        ? { interrupt: value.interrupt }
+        : {}),
+    }
+  }
+  return invalidPermissionResult()
+}
+
 function configSensitiveValues(config: McpServerConfig): readonly string[] {
   return sensitiveEnvironmentValues(
     process.env,
@@ -522,6 +550,7 @@ async function resourceContent(
 
 export class ClaudeMcpToolRegistry implements ToolRegistry {
   private readonly tools = new Map<string, ConnectedTool>()
+  private readonly reservedTools = new Set<string>()
   private readonly resourceServers = new Map<string, ConnectedResourceServer>()
   private readonly statuses = new Map<string, ClaudeMcpServerStatus>()
   private readonly clients: Client[] = []
@@ -563,13 +592,60 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
   definitions(): readonly ModelToolDefinition[] {
     return [
       ...this.options.base.definitions(),
-      ...[...this.tools.values()].map((tool) => tool.definition),
+      ...[...this.tools.entries()]
+        .filter(([name]) => !this.reservedTools.has(name))
+        .map(([, tool]) => tool.definition),
       ...(this.resourceServers.size > 0 ? MCP_RESOURCE_TOOL_DEFINITIONS : []),
     ]
   }
 
   serverStatuses(): readonly ClaudeMcpServerStatus[] {
     return [...this.statuses.values()]
+  }
+
+  permissionPrompt(
+    name: string,
+  ): (
+    call: ModelToolCall,
+    originalCall?: ModelToolCall,
+  ) => Promise<PermissionApproval> {
+    if (!this.tools.has(name)) {
+      const available = [...this.tools.keys()].join(', ') || 'none'
+      throw new Error(
+        `MCP tool ${name} (from --permission-prompt-tool) not found. Available MCP tools: ${available}`,
+      )
+    }
+    this.reservedTools.add(name)
+    return async (call, originalCall = call) => {
+      const tool = this.tools.get(name)
+      if (!tool) return invalidPermissionResult()
+      let result
+      try {
+        result = await tool.client.callTool(
+          {
+            name: tool.toolName,
+            arguments: {
+              tool_name: originalCall.name,
+              input: originalCall.input,
+              tool_use_id: originalCall.id,
+            },
+            _meta: { 'claudecode/toolUseId': originalCall.id },
+          },
+          undefined,
+          this.options.signal ? { signal: this.options.signal } : undefined,
+        )
+      } catch {
+        return invalidPermissionResult()
+      }
+      if (!isRecord(result) || result.isError === true) {
+        return invalidPermissionResult()
+      }
+      try {
+        return parsePermissionResult(toolContent(result, tool.sensitiveValues))
+      } catch {
+        return invalidPermissionResult()
+      }
+    }
   }
 
   async prepare(

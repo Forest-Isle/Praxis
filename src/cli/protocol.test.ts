@@ -153,6 +153,25 @@ describe('CLI protocol', () => {
     ).toThrow('--resume-session-at may only be specified once')
   })
 
+  it('parses hidden permission prompt MCP tool controls with last-value precedence', () => {
+    expect(
+      parseCliInvocation([
+        '-p',
+        '--permission-prompt-tool',
+        'mcp__first__approve',
+        '--permission-prompt-tool=mcp__second__approve',
+        '--',
+        'run',
+      ]),
+    ).toMatchObject({
+      permissionPromptTool: 'mcp__second__approve',
+      args: ['run'],
+    })
+    expect(() =>
+      parseCliInvocation(['-p', '--permission-prompt-tool']),
+    ).toThrow("option '--permission-prompt-tool <tool>' argument missing")
+  })
+
   it('parses PR-linked resume selectors and rejects conflicting resume modes', () => {
     expect(parseCliInvocation(['--from-pr'])).toMatchObject({ fromPr: true })
     expect(

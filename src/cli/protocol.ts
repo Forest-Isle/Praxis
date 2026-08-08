@@ -52,6 +52,7 @@ export interface CliControls {
   allowedTools: readonly string[]
   disallowedTools: readonly string[]
   permissionMode: CliPermissionMode
+  permissionPromptTool?: string
   dangerouslySkipPermissions: boolean
   allowDangerouslySkipPermissions: boolean
   continueSession: boolean
@@ -478,6 +479,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   const allowedTools: string[] = []
   const disallowedTools: string[] = []
   let permissionMode: CliPermissionMode = 'default'
+  let permissionPromptTool: string | undefined
   let dangerouslySkipPermissions = false
   let allowDangerouslySkipPermissions = false
   let continueSession = false
@@ -825,6 +827,25 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       index += selectedPermissionMode.consumed
       continue
     }
+    if (
+      (value === '--permission-prompt-tool' &&
+        (argv[index + 1] === undefined || argv[index + 1]?.startsWith('-'))) ||
+      value === '--permission-prompt-tool='
+    ) {
+      throw new Error(
+        "option '--permission-prompt-tool <tool>' argument missing",
+      )
+    }
+    const selectedPermissionPromptTool = optionValue(
+      argv,
+      index,
+      '--permission-prompt-tool',
+    )
+    if (selectedPermissionPromptTool) {
+      permissionPromptTool = selectedPermissionPromptTool.value
+      index += selectedPermissionPromptTool.consumed
+      continue
+    }
     const selectedName = optionValue(argv, index, '--name')
     if (selectedName || value === '-n') {
       if (name !== undefined)
@@ -1154,6 +1175,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     allowedTools,
     disallowedTools,
     permissionMode,
+    ...(permissionPromptTool === undefined ? {} : { permissionPromptTool }),
     dangerouslySkipPermissions,
     allowDangerouslySkipPermissions,
     continueSession,

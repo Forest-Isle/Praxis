@@ -215,6 +215,9 @@ export async function resolveCliControls(
     allowedTools: controls.allowedTools,
     disallowedTools: controls.disallowedTools,
     permissionMode: controls.permissionMode,
+    ...(controls.permissionPromptTool === undefined
+      ? {}
+      : { permissionPromptTool: controls.permissionPromptTool }),
     dangerouslySkipPermissions: controls.dangerouslySkipPermissions,
     allowDangerouslySkipPermissions: controls.allowDangerouslySkipPermissions,
     continueSession: controls.continueSession,
