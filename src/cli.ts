@@ -734,34 +734,6 @@ Options:
   -h, --help  Show help
 `
 
-const MCP_ADD_HELP = `Usage: praxis mcp add [options] <name> <commandOrUrl> [args...]
-
-Add an MCP server to Praxis.
-
-Examples:
-  # Add HTTP server:
-  praxis mcp add --transport http sentry https://mcp.sentry.dev/mcp
-
-  # Add HTTP server with headers:
-  praxis mcp add --transport http corridor https://app.corridor.dev/api/mcp --header "Authorization: Bearer ..."
-
-  # Add stdio server with environment variables:
-  praxis mcp add my-server -e API_KEY=xxx -- npx my-mcp-server
-
-  # Add stdio server with subprocess flags:
-  praxis mcp add my-server -- my-command --some-flag arg1
-
-Options:
-  --callback-port <port>       Fixed port for OAuth callback (for servers requiring pre-registered redirect URIs)
-  --client-id <clientId>       OAuth client ID for HTTP/SSE servers
-  --client-secret              Prompt for OAuth client secret (or set MCP_CLIENT_SECRET env var)
-  -e, --env <env...>           Set environment variables (e.g. -e KEY=value)
-  -H, --header <header...>     Set WebSocket headers (e.g. -H "X-Api-Key: abc123" -H "X-Custom: value")
-  -h, --help                   Display help for command
-  -s, --scope <scope>          Configuration scope (local, user, or project) (default: "local")
-  -t, --transport <transport>  Transport type (stdio, sse, http). Defaults to stdio if not specified.
-`
-
 const PROJECT_PURGE_HELP = `Usage: praxis project purge [options] [path]
 
 Delete all Claude Code state for a project (transcripts, tasks, file history,
