@@ -47,6 +47,22 @@ function textEvents(text) {
   ]
 }
 
+function isAutoModeCritiqueRequest(body) {
+  return (
+    body.system?.includes('Praxis auto-mode critique') ||
+    JSON.stringify(body.messages).includes('Praxis auto-mode critique')
+  )
+}
+
+function isAutoModeClassifierRequest(body) {
+  return (
+    body.system?.includes('Praxis permission auto-mode classifier') ||
+    body.messages?.[0]?.content?.includes(
+      'Praxis permission auto-mode classifier',
+    )
+  )
+}
+
 function toolEvents() {
   const input = {
     description: 'Run a local script',
@@ -96,12 +112,14 @@ const server = createServer(async (request, response) => {
     const body = JSON.parse(source)
     requests.push(body)
     const serialized = JSON.stringify(body.messages)
-    if (
-      body.system?.includes('Praxis permission auto-mode classifier') ||
-      body.messages?.[0]?.content?.includes(
-        'Praxis permission auto-mode classifier',
+    if (isAutoModeCritiqueRequest(body)) {
+      stream(
+        response,
+        textEvents(
+          '## Fixture auto-mode critique\nTighten remote-change approval wording.',
+        ),
       )
-    ) {
+    } else if (isAutoModeClassifierRequest(body)) {
       stream(
         response,
         textEvents('{"behavior":"allow","reason":"local development action"}'),
@@ -133,11 +151,19 @@ try {
   const cwd = join(root, 'workspace')
   await mkdir(configRoot, { recursive: true })
   await mkdir(cwd, { recursive: true })
+  const environment = {
+    ...process.env,
+    CLAUDE_CONFIG_DIR: configRoot,
+    PRAXIS_PROVIDER: 'anthropic',
+    PRAXIS_API_KEY: 'fixture-key',
+    PRAXIS_MODEL: 'fixture-model',
+    PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+  }
   const defaults = JSON.parse(
     (
       await execFileAsync('node', ['dist/cli.js', 'auto-mode', 'defaults'], {
         cwd: process.cwd(),
-        env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+        env: environment,
       })
     ).stdout,
   )
@@ -149,14 +175,44 @@ try {
   await writeFile(
     join(configRoot, 'settings.json'),
     JSON.stringify({
-      autoMode: { allow: ['fixture allow'], classifyAllShell: true },
+      autoMode: {
+        allow: [],
+        soft_deny: [],
+        hard_deny: [],
+        environment: [],
+      },
+    }),
+  )
+  const emptyCritique = await execFileAsync(
+    'node',
+    ['dist/cli.js', 'auto-mode', 'critique'],
+    { cwd: process.cwd(), env: environment },
+  )
+  if (
+    !emptyCritique.stdout.includes('No custom auto mode rules found.') ||
+    requests.length !== 0
+  ) {
+    throw new Error(
+      `Empty auto-mode critique mismatch: ${JSON.stringify({ output: emptyCritique.stdout, requests: requests.length })}`,
+    )
+  }
+  await writeFile(
+    join(configRoot, 'settings.json'),
+    JSON.stringify({
+      autoMode: {
+        allow: ['fixture allow'],
+        soft_deny: ['fixture soft deny'],
+        hard_deny: ['fixture hard deny'],
+        environment: ['fixture environment'],
+        classifyAllShell: true,
+      },
     }),
   )
   const config = JSON.parse(
     (
       await execFileAsync('node', ['dist/cli.js', 'auto-mode', 'config'], {
         cwd: process.cwd(),
-        env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+        env: environment,
       })
     ).stdout,
   )
@@ -168,6 +224,25 @@ try {
       `Auto-mode config command mismatch: ${JSON.stringify(config)}`,
     )
   }
+  const critique = await execFileAsync(
+    'node',
+    ['dist/cli.js', 'auto-mode', 'critique', '--model', 'fixture-critique'],
+    { cwd: process.cwd(), env: environment },
+  )
+  const critiqueRequests = requests.filter(isAutoModeCritiqueRequest)
+  const critiqueRequest = critiqueRequests[0]
+  if (
+    critiqueRequests.length !== 1 ||
+    critiqueRequest?.model !== 'fixture-critique' ||
+    !JSON.stringify(critiqueRequest).includes('fixture environment') ||
+    !critique.stdout.includes('Analyzing your auto mode rules…') ||
+    !critique.stdout.includes('## Fixture auto-mode critique')
+  ) {
+    throw new Error(
+      `Auto-mode critique contract mismatch: ${JSON.stringify({ output: critique.stdout, requests: critiqueRequests })}`,
+    )
+  }
+  const requestsBeforeRuntime = requests.length
   const result = await execFileAsync(
     'node',
     [
@@ -181,14 +256,7 @@ try {
     ],
     {
       cwd: process.cwd(),
-      env: {
-        ...process.env,
-        CLAUDE_CONFIG_DIR: configRoot,
-        PRAXIS_PROVIDER: 'anthropic',
-        PRAXIS_API_KEY: 'fixture-key',
-        PRAXIS_MODEL: 'fixture-model',
-        PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
-      },
+      env: environment,
       maxBuffer: 4 * 1024 * 1024,
     },
   )
@@ -200,21 +268,15 @@ try {
   if (failure) throw failure
   if (
     output.text !== 'AUTO_MAIN_DONE' ||
-    requests.length !== 4 ||
-    !requests.some(
-      (request) =>
-        request.system?.includes('Praxis permission auto-mode classifier') ||
-        request.messages?.[0]?.content?.includes(
-          'Praxis permission auto-mode classifier',
-        ),
-    )
+    requests.length !== requestsBeforeRuntime + 4 ||
+    !requests.some(isAutoModeClassifierRequest)
   ) {
     throw new Error(
       `Auto-mode CLI contract mismatch: ${JSON.stringify({ output, requests: requests.length })}`,
     )
   }
   console.log(
-    'Praxis auto-mode compatibility passed: classifier request, Agent allow, and continuation',
+    'Praxis auto-mode compatibility passed: critique request, classifier request, Agent allow, and continuation',
   )
 } finally {
   await new Promise((resolve) => server.close(() => resolve()))

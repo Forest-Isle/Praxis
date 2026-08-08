@@ -188,6 +188,57 @@ function fileResourceHeaders(
   }
 }
 
+function createProviderForModel(
+  apiKey: string,
+  providerEnvironment: ReturnType<typeof parseProviderEnvironment>,
+  context: ReturnType<typeof parseContextEnvironment>,
+  controls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>,
+): (selectedModel: string) => ModelProvider {
+  return (selectedModel) => {
+    const providerOptions = {
+      apiKey,
+      model: selectedModel,
+      baseUrl: providerEnvironment.baseUrl,
+      ...('contextWindowTokens' in context
+        ? { contextWindowTokens: context.contextWindowTokens }
+        : {}),
+    }
+    return providerEnvironment.provider === 'anthropic'
+      ? new AnthropicCompatibleProvider({
+          ...providerOptions,
+          thinking: {
+            mode: controls.thinking ?? 'enabled',
+            ...(controls.maxThinkingTokens === undefined
+              ? {}
+              : { maxTokens: controls.maxThinkingTokens }),
+          },
+          ...('maxOutputTokens' in providerEnvironment
+            ? { maxOutputTokens: providerEnvironment.maxOutputTokens }
+            : {}),
+          ...('anthropicVersion' in providerEnvironment
+            ? { anthropicVersion: providerEnvironment.anthropicVersion }
+            : {}),
+          ...('webSearch' in providerEnvironment
+            ? { webSearch: providerEnvironment.webSearch }
+            : {}),
+        })
+      : new OpenAICompatibleProvider({
+          ...providerOptions,
+          ...(controls.thinking === undefined &&
+          controls.maxThinkingTokens === undefined
+            ? {}
+            : {
+                thinking: {
+                  mode: controls.thinking ?? 'enabled',
+                  ...(controls.maxThinkingTokens === undefined
+                    ? {}
+                    : { maxTokens: controls.maxThinkingTokens }),
+                },
+              }),
+        })
+  }
+}
+
 const HELP = `Praxis — local-first general agent
 
 Usage:
@@ -207,8 +258,8 @@ Usage:
   praxis logs <agent-id>
   praxis stop <agent-id>
   praxis mcp <list|get|add|add-json|remove|reset-project-choices|login|logout|serve> ...
-  praxis auto-mode <config|defaults>
-  praxis plugin <list|install|uninstall|enable|disable|update|init|validate> ...
+  praxis auto-mode <config|defaults|critique>
+  praxis plugin|plugins <list|install|uninstall|enable|disable|update|init|validate> ...
   praxis doctor [--json]
   praxis install [--force] [stable|latest|version]
   praxis update|upgrade
@@ -288,6 +339,385 @@ Provider environment:
   PRAXIS_CONTEXT_WINDOW_TOKENS, PRAXIS_CONTEXT_RESERVE_TOKENS
 `
 
+const AGENTS_HELP = `Usage: praxis agents [options]
+
+List persistent background agents managed by Praxis.
+
+Options:
+  --all         Include completed agents as well as active agents
+  --cwd <path>  Show agents started under this directory
+  --json        Print agent records as JSON for scripting
+  -h, --help    Display help for command
+`
+
+const MCP_HELP = `Usage: praxis mcp [options] [command]
+
+Configure and manage Model Context Protocol servers.
+
+Options:
+  -h, --help  Display help for command
+
+Commands:
+  list [options]                              List configured MCP servers
+  get [options] <name>                        Get an MCP server configuration
+  add [options] <name> <commandOrUrl> [args...]  Add an MCP server
+  add-json [options] <name> <json>            Add an MCP server from JSON
+  remove [options] <name>                     Remove an MCP server
+  reset-project-choices                       Reset project MCP approvals
+  login [options] <name>                      Authenticate with an MCP server
+  logout [options] <name>                     Clear MCP OAuth credentials
+  serve [options]                             Start Praxis MCP server over stdio
+`
+
+const MCP_LIST_HELP = `Usage: praxis mcp list [options]
+
+List configured MCP servers. With --scope, list only servers in that scope.
+
+Options:
+  --scope <scope>  Configuration scope: local, project, or user
+  --json           Print a machine-readable mcp-list result
+  -h, --help        Display help for command
+`
+
+const MCP_GET_HELP = `Usage: praxis mcp get [options] <name>
+
+Print configuration for one MCP server.
+
+Options:
+  --scope <scope>  Read from local, project, or user scope
+  --json           Print a machine-readable mcp-server result
+  -h, --help        Display help for command
+`
+
+const MCP_ADD_HELP = `Usage: praxis mcp add [options] <name> <commandOrUrl> [args...]
+
+Add an MCP server to Praxis.
+
+Examples:
+  # Add HTTP server:
+  praxis mcp add --transport http sentry https://mcp.sentry.dev/mcp
+
+  # Add HTTP server with headers:
+  praxis mcp add --transport http corridor https://app.corridor.dev/api/mcp --header "Authorization: Bearer ..."
+
+  # Add stdio server with environment variables:
+  praxis mcp add my-server -e API_KEY=xxx -- npx my-mcp-server
+
+  # Add stdio server with subprocess flags:
+  praxis mcp add my-server -- my-command --some-flag arg1
+
+Options:
+  --callback-port <port>       Fixed port for OAuth callback (for servers requiring pre-registered redirect URIs)
+  --client-id <clientId>       OAuth client ID for HTTP/SSE servers
+  --client-secret              Prompt for OAuth client secret (or set MCP_CLIENT_SECRET env var)
+  -e, --env <env...>           Set environment variables (e.g. -e KEY=value)
+  -H, --header <header...>     Set WebSocket headers (e.g. -H "X-Api-Key: abc123" -H "X-Custom: value")
+  -h, --help                   Display help for command
+  -s, --scope <scope>          Configuration scope (local, user, or project) (default: "local")
+  -t, --transport <transport>  Transport type (stdio, sse, http). Defaults to stdio if not specified.
+`
+
+const MCP_ADD_JSON_HELP = `Usage: praxis mcp add-json [options] <name> <json>
+
+Add an MCP server from a JSON configuration object. Supported configurations
+include stdio and HTTP server records accepted by Praxis.
+
+Options:
+  --scope <scope>  Configuration scope: local, project, or user (default: local)
+  --json           Print a machine-readable mcp-added result
+  -h, --help        Display help for command
+`
+
+const MCP_REMOVE_HELP = `Usage: praxis mcp remove [options] <name>
+
+Remove an MCP server. Without --scope, Praxis resolves the configured server
+across available scopes.
+
+Options:
+  --scope <scope>  Remove from local, project, or user scope
+  --json           Print a machine-readable mcp-removed result
+  -h, --help        Display help for command
+`
+
+const MCP_RESET_PROJECT_CHOICES_HELP = `Usage: praxis mcp reset-project-choices [options]
+
+Reset approved and rejected project-scoped MCP server choices.
+
+Options:
+  --json        Print a machine-readable confirmation
+  -h, --help    Display help for command
+`
+
+const MCP_LOGIN_HELP = `Usage: praxis mcp login [options] <name>
+
+Authenticate with an OAuth-enabled MCP server.
+
+Options:
+  --no-browser     Print authorization URL instead of opening a browser
+  --scope <scope>  Read server from local, project, or user scope
+  -h, --help        Display help for command
+`
+
+const MCP_LOGOUT_HELP = `Usage: praxis mcp logout [options] <name>
+
+Clear stored OAuth credentials for an MCP server.
+
+Options:
+  --scope <scope>  Read server from local, project, or user scope
+  -h, --help        Display help for command
+`
+
+const MCP_SERVE_HELP = `Usage: praxis mcp serve [options]
+
+Start the Praxis MCP server over stdio.
+
+Options:
+  -d, --debug  Enable MCP server debug logging
+  --verbose    Enable verbose MCP server output
+  -h, --help   Display help for command
+`
+
+const MCP_ACTION_HELP: Record<string, string> = {
+  list: MCP_LIST_HELP,
+  get: MCP_GET_HELP,
+  add: MCP_ADD_HELP,
+  'add-json': MCP_ADD_JSON_HELP,
+  remove: MCP_REMOVE_HELP,
+  'reset-project-choices': MCP_RESET_PROJECT_CHOICES_HELP,
+  login: MCP_LOGIN_HELP,
+  logout: MCP_LOGOUT_HELP,
+  serve: MCP_SERVE_HELP,
+}
+
+const PLUGIN_HELP = `Usage: praxis plugin|plugins [options] [command]
+
+Manage Praxis-compatible Claude plugins and marketplaces.
+
+Options:
+  --json           Print machine-readable command output when supported
+  --scope <scope>  Plugin configuration scope: local, project, or user
+  -h, --help        Display help for command
+
+Commands:
+  list                         List installed plugins
+  install [options] <source>   Install a local plugin, URL, or plugin@marketplace
+  uninstall [options] <name>   Uninstall a plugin
+  enable [options] <name>      Enable a plugin
+  disable [options] <name>     Disable a plugin
+  update [options] <name>      Update a plugin
+  init <directory> [name]      Initialize a plugin directory
+  validate <directory>         Validate a plugin manifest
+  marketplace [command]        Manage configured marketplaces
+`
+
+const PLUGIN_LIST_HELP = `Usage: praxis plugin list [options]
+
+List installed native and local plugins with enabled and validation status.
+
+Options:
+  --json      Print plugin records as JSON (default output is JSON as well)
+  -h, --help  Display help for command
+`
+
+const PLUGIN_INSTALL_HELP = `Usage: praxis plugin install [options] <path-or-url-or-plugin@marketplace>
+
+Install a plugin from a local directory, URL, or configured marketplace. A
+marketplace plugin identifier uses the form plugin@marketplace.
+
+Options:
+  --scope <scope>  Install native marketplace plugin at local, project, or user scope (default: user)
+  --json           Print a machine-readable plugin-installed result
+  -h, --help        Display help for command
+`
+
+const PLUGIN_UNINSTALL_HELP = `Usage: praxis plugin uninstall [options] <name-or-plugin@marketplace>
+
+Uninstall a local plugin or a native marketplace plugin.
+
+Options:
+  --scope <scope>  Select native plugin scope: local, project, or user
+  --json           Print a machine-readable plugin-uninstalled result
+  -h, --help        Display help for command
+`
+
+const PLUGIN_ENABLE_HELP = `Usage: praxis plugin enable [options] <name-or-plugin@marketplace>
+
+Enable a disabled local plugin or native marketplace plugin.
+
+Options:
+  --scope <scope>  Select native plugin scope: local, project, or user
+  --json           Print a machine-readable plugin-enabled result
+  -h, --help        Display help for command
+`
+
+const PLUGIN_DISABLE_HELP = `Usage: praxis plugin disable [options] <name-or-plugin@marketplace>
+
+Disable an enabled local plugin or native marketplace plugin.
+
+Options:
+  --scope <scope>  Select native plugin scope: local, project, or user
+  --json           Print a machine-readable plugin-disabled result
+  -h, --help        Display help for command
+`
+
+const PLUGIN_UPDATE_HELP = `Usage: praxis plugin update [options] <name-or-plugin@marketplace>
+
+Update a local plugin or native marketplace plugin from its configured source.
+
+Options:
+  --scope <scope>  Select native plugin scope: local, project, or user
+  --json           Print a machine-readable plugin-updated result
+  -h, --help        Display help for command
+`
+
+const PLUGIN_INIT_HELP = `Usage: praxis plugin init <directory> [name]
+
+Initialize a plugin directory. Name is optional and defaults to directory
+metadata when omitted.
+
+Options:
+  -h, --help  Display help for command
+`
+
+const PLUGIN_VALIDATE_HELP = `Usage: praxis plugin validate <directory>
+
+Validate a plugin manifest and report its parsed metadata.
+
+Options:
+  --json      Print a machine-readable plugin-valid result
+  -h, --help  Display help for command
+`
+
+const PLUGIN_ACTION_HELP: Record<string, string> = {
+  list: PLUGIN_LIST_HELP,
+  install: PLUGIN_INSTALL_HELP,
+  uninstall: PLUGIN_UNINSTALL_HELP,
+  enable: PLUGIN_ENABLE_HELP,
+  disable: PLUGIN_DISABLE_HELP,
+  update: PLUGIN_UPDATE_HELP,
+  init: PLUGIN_INIT_HELP,
+  validate: PLUGIN_VALIDATE_HELP,
+}
+
+const PLUGIN_MARKETPLACE_HELP = `Usage: praxis plugin marketplace [options] [command]
+
+Manage configured plugin marketplaces.
+
+Options:
+  --scope <scope>  Scope for marketplace additions: local, project, or user (default: user)
+  --json           Print machine-readable command output when supported
+  -h, --help        Display help for command
+
+Commands:
+  list                 List configured marketplaces
+  add <source>         Add marketplace from a local path or URL
+  remove <name>        Remove a configured marketplace
+  update [name]        Update one marketplace, or all when name is omitted
+`
+
+const PLUGIN_MARKETPLACE_LIST_HELP = `Usage: praxis plugin marketplace list [options]
+
+List configured marketplaces.
+
+Options:
+  --json      Print marketplace records as JSON (default output is JSON as well)
+  -h, --help  Display help for command
+`
+
+const PLUGIN_MARKETPLACE_ADD_HELP = `Usage: praxis plugin marketplace add [options] <source>
+
+Add a marketplace from a local path, URL, or supported repository source.
+
+Options:
+  --scope <scope>  Configuration scope: local, project, or user (default: user)
+  --json           Print a machine-readable plugin-marketplace-added result
+  -h, --help        Display help for command
+`
+
+const PLUGIN_MARKETPLACE_REMOVE_HELP = `Usage: praxis plugin marketplace remove [options] <name>
+
+Remove a configured marketplace.
+
+Options:
+  --scope <scope>  Select marketplace scope: local, project, or user
+  --json           Print a machine-readable plugin-marketplace-removed result
+  -h, --help        Display help for command
+`
+
+const PLUGIN_MARKETPLACE_UPDATE_HELP = `Usage: praxis plugin marketplace update [options] [name]
+
+Update one marketplace, or all configured marketplaces when name is omitted.
+
+Options:
+  --json      Print a machine-readable plugin-marketplace-updated result
+  -h, --help  Display help for command
+`
+
+const PLUGIN_MARKETPLACE_ACTION_HELP: Record<string, string> = {
+  list: PLUGIN_MARKETPLACE_LIST_HELP,
+  add: PLUGIN_MARKETPLACE_ADD_HELP,
+  remove: PLUGIN_MARKETPLACE_REMOVE_HELP,
+  update: PLUGIN_MARKETPLACE_UPDATE_HELP,
+}
+
+const AUTO_MODE_HELP = `Usage: praxis auto-mode [options] [command]
+
+Inspect auto mode classifier configuration and critique custom rules.
+
+Options:
+  -h, --help  Display help for command
+
+Commands:
+  config              Print effective auto mode config as JSON
+  defaults             Print default environment, allow, soft_deny, and hard_deny rules as JSON
+  critique [options]  Get provider-backed feedback on custom auto mode rules
+`
+
+const AUTO_MODE_CONFIG_HELP = `Usage: praxis auto-mode config
+
+Print effective auto mode configuration as JSON. Settings values override
+defaults; omitted rule lists retain their default values.
+
+Options:
+  -h, --help  Display help for command
+`
+
+const AUTO_MODE_DEFAULTS_HELP = `Usage: praxis auto-mode defaults
+
+Print default auto mode environment, allow, soft_deny, and hard_deny rules as
+JSON.
+
+Options:
+  -h, --help  Display help for command
+`
+
+const AUTO_MODE_CRITIQUE_HELP = `Usage: praxis auto-mode critique [options]
+
+Get provider-backed feedback on custom auto mode rules. With no custom rule
+lists configured, Praxis prints guidance without creating a provider request.
+
+Options:
+  --model <model>  Override model used for critique (default: PRAXIS_MODEL)
+  -h, --help       Display help for command
+`
+
+const AUTO_MODE_ACTION_HELP: Record<string, string> = {
+  config: AUTO_MODE_CONFIG_HELP,
+  defaults: AUTO_MODE_DEFAULTS_HELP,
+  critique: AUTO_MODE_CRITIQUE_HELP,
+}
+
+const PROJECT_HELP = `Usage: praxis project [options] [command]
+
+Manage Praxis-compatible Claude project state.
+
+Options:
+  -h, --help  Display help for command
+
+Commands:
+  purge [options] [path]  Delete Claude project state for a path (default: current project)
+`
+
 const DOCTOR_HELP = `Usage: praxis doctor [options]
 
 Check Praxis installation and local single-user configuration health.
@@ -306,8 +736,12 @@ Options:
   --all              Purge state for every project (mutually exclusive with [path])
   --dry-run          List what would be deleted without deleting anything
   -i, --interactive  Prompt for each item before deleting
+  --json             Print purge plan and result as JSON
   -y, --yes          Skip confirmation prompt
   -h, --help         Show help
+
+Default: [path] is current project; Praxis requests confirmation unless --yes
+is supplied.
 `
 
 const INSTALL_HELP = `Usage: praxis install [options] [target]
@@ -414,6 +848,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
       request: CliElicitationRequest,
     ) => Promise<CliElicitationResult>
   }): Promise<SessionCommands>
+  createAutoModeCritic?(options: { model?: string }): Promise<ModelProvider>
   runInteractive?(options: {
     agent?: string
     controls?: CliControls
@@ -502,49 +937,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
     if (!providerEnvironment) {
       throw new Error('Provider environment is unavailable')
     }
-    providerForModel = (selectedModel: string) => {
-      const providerOptions = {
-        apiKey,
-        model: selectedModel,
-        baseUrl: providerEnvironment.baseUrl,
-        ...('contextWindowTokens' in context
-          ? { contextWindowTokens: context.contextWindowTokens }
-          : {}),
-      }
-      return providerEnvironment.provider === 'anthropic'
-        ? new AnthropicCompatibleProvider({
-            ...providerOptions,
-            thinking: {
-              mode: cli.thinking ?? 'enabled',
-              ...(cli.maxThinkingTokens === undefined
-                ? {}
-                : { maxTokens: cli.maxThinkingTokens }),
-            },
-            ...('maxOutputTokens' in providerEnvironment
-              ? { maxOutputTokens: providerEnvironment.maxOutputTokens }
-              : {}),
-            ...('anthropicVersion' in providerEnvironment
-              ? { anthropicVersion: providerEnvironment.anthropicVersion }
-              : {}),
-            ...('webSearch' in providerEnvironment
-              ? { webSearch: providerEnvironment.webSearch }
-              : {}),
-          })
-        : new OpenAICompatibleProvider({
-            ...providerOptions,
-            ...(cli.thinking === undefined &&
-            cli.maxThinkingTokens === undefined
-              ? {}
-              : {
-                  thinking: {
-                    mode: cli.thinking ?? 'enabled',
-                    ...(cli.maxThinkingTokens === undefined
-                      ? {}
-                      : { maxTokens: cli.maxThinkingTokens }),
-                  },
-                }),
-          })
-    }
+    providerForModel = createProviderForModel(
+      apiKey,
+      providerEnvironment,
+      context,
+      cli,
+    )
     const models = [model, ...(cli.fallbackModels ?? [])].filter(
       (candidate, index, all) => all.indexOf(candidate) === index,
     )
@@ -1059,8 +1457,27 @@ const createDefaultService: CliDependencies['createService'] = async ({
   }
 }
 
+const createDefaultAutoModeCritic: NonNullable<
+  CliDependencies['createAutoModeCritic']
+> = async ({ model }) => {
+  const apiKey = process.env.PRAXIS_API_KEY
+  const selectedModel = model ?? process.env.PRAXIS_MODEL
+  if (!apiKey || !selectedModel) {
+    throw new Error(
+      'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
+    )
+  }
+  return createProviderForModel(
+    apiKey,
+    parseProviderEnvironment(process.env),
+    parseContextEnvironment(process.env),
+    {},
+  )(selectedModel)
+}
+
 const defaultDependencies: CliDependencies = {
   createService: createDefaultService,
+  createAutoModeCritic: createDefaultAutoModeCritic,
   runInteractive: ({ agent, controls, resume, signal }) =>
     renderInteractive({
       factory: {
@@ -1202,14 +1619,47 @@ function autoModeJson(config: ReturnType<typeof defaultClaudeAutoModeConfig>) {
   }
 }
 
+function hasCustomAutoModeRules(
+  settings: readonly { value: unknown }[],
+): boolean {
+  return settings.some((setting) => {
+    if (
+      !setting.value ||
+      typeof setting.value !== 'object' ||
+      Array.isArray(setting.value)
+    ) {
+      return false
+    }
+    const autoMode = (setting.value as Record<string, unknown>).autoMode
+    if (!autoMode || typeof autoMode !== 'object' || Array.isArray(autoMode)) {
+      return false
+    }
+    const rules = autoMode as Record<string, unknown>
+    return ['allow', 'soft_deny', 'hard_deny', 'environment'].some(
+      (key) => Array.isArray(rules[key]) && rules[key].length > 0,
+    )
+  })
+}
+
+const AUTO_MODE_CRITIQUE_SYSTEM = `Praxis auto-mode critique. Review custom auto mode rules for ambiguity, coverage gaps, conflicts, risk, and actionable wording. Return concise Markdown only; do not claim to have changed settings.`
+
+const NO_CUSTOM_AUTO_MODE_RULES = `No custom auto mode rules found.
+
+Add rules to your settings file under autoMode.{allow, soft_deny, hard_deny,
+environment}.
+Run \`praxis auto-mode defaults\` to see the default rules for reference.
+`
+
 async function executeAutoModeCommand(
   args: readonly string[],
   invocation: CliInvocation,
   io: CliIO,
+  dependencies: CliDependencies,
+  signal?: AbortSignal,
 ): Promise<number> {
   const action = args[1]
   if (!action || action === 'help') {
-    io.stdout('Usage: praxis auto-mode <config|defaults>\n')
+    io.stdout(AUTO_MODE_HELP)
     return 0
   }
   if (args.length !== 2) {
@@ -1220,6 +1670,48 @@ async function executeAutoModeCommand(
     if (invocation.legacyJson || invocation.outputFormat !== 'text')
       writeJson(io, output)
     else io.stdout(`${JSON.stringify(output)}\n`)
+    return 0
+  }
+  if (action === 'critique') {
+    const configRoot = resolve(
+      process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
+    )
+    const settings = await loadClaudeSettings({
+      configRoot,
+      cwd: process.cwd(),
+    })
+    if (!hasCustomAutoModeRules(settings)) {
+      io.stdout(NO_CUSTOM_AUTO_MODE_RULES)
+      return 0
+    }
+    const config = autoModeJson(loadClaudeAutoModeConfig(settings))
+    io.stdout('Analyzing your auto mode rules…\n\n')
+    const provider = await (
+      dependencies.createAutoModeCritic ?? createDefaultAutoModeCritic
+    )({
+      ...(invocation.model === undefined ? {} : { model: invocation.model }),
+    })
+    let critique = ''
+    for await (const event of provider.complete({
+      messages: [
+        { role: 'system', content: AUTO_MODE_CRITIQUE_SYSTEM },
+        {
+          role: 'user',
+          content: `Review this effective auto mode configuration:\n\n${JSON.stringify(config, null, 2)}`,
+        },
+      ],
+      thinking: { mode: 'disabled' },
+      ...(signal ? { signal } : {}),
+    })) {
+      if (event.type !== 'text-delta') continue
+      critique += event.delta
+      io.stdout(event.delta)
+    }
+    if (!critique.trim()) {
+      io.stdout('No critique was generated. Please try again.\n')
+    } else if (!critique.endsWith('\n')) {
+      io.stdout('\n')
+    }
     return 0
   }
   if (action === 'config') {
@@ -1522,17 +2014,13 @@ async function executePluginCommand(
   const requestedScope = invocation.mcpScope as ClaudePluginScope | undefined
   const installScope = requestedScope ?? 'user'
   if (!action || action === 'help') {
-    io.stdout(
-      'Usage: praxis plugin <list|install|uninstall|enable|disable|update|init|validate|marketplace> ...\n',
-    )
+    io.stdout(PLUGIN_HELP)
     return 0
   }
   if (action === 'marketplace') {
     const marketplaceAction = args[2]
     if (!marketplaceAction || marketplaceAction === 'help') {
-      io.stdout(
-        'Usage: praxis plugin marketplace <list|add|remove|update> ...\n',
-      )
+      io.stdout(PLUGIN_MARKETPLACE_HELP)
       return 0
     }
     if (marketplaceAction === 'list') {
@@ -1709,9 +2197,7 @@ async function executeMcpCommand(
 ): Promise<number> {
   const action = args[1]
   if (!action || action === 'help') {
-    io.stdout(
-      'Usage: praxis mcp <list|get|add|add-json|remove|reset-project-choices|login|logout|serve>\n',
-    )
+    io.stdout(MCP_HELP)
     return 0
   }
   const configRoot = resolve(
@@ -1966,6 +2452,124 @@ function isCancellation(error: unknown, signal?: AbortSignal): boolean {
   )
 }
 
+function helpActionAt(
+  argv: readonly string[],
+  commandIndex: number,
+  actions: readonly string[],
+): { value: string; index: number } | undefined {
+  for (let index = commandIndex + 1; index < argv.length; index += 1) {
+    const value = argv[index]
+    if (value === undefined || value === '--') return undefined
+    if (actions.includes(value)) return { value, index }
+  }
+  return undefined
+}
+
+function pluginActionHelp(
+  action: string | undefined,
+  marketplaceAction?: string,
+): string {
+  if (action === 'marketplace') {
+    return (
+      PLUGIN_MARKETPLACE_ACTION_HELP[marketplaceAction ?? ''] ??
+      PLUGIN_MARKETPLACE_HELP
+    )
+  }
+  return PLUGIN_ACTION_HELP[action ?? ''] ?? PLUGIN_HELP
+}
+
+function printCommandHelp(argv: readonly string[], io: CliIO): boolean {
+  const hasHelpFlag = argv.includes('--help') || argv.includes('-h')
+  const commandIndex = argv.findIndex((value) =>
+    ['agents', 'mcp', 'plugin', 'plugins', 'auto-mode', 'project'].includes(
+      value,
+    ),
+  )
+  if (commandIndex < 0) return false
+  const command = argv[commandIndex]
+  if (command === 'agents') {
+    if (!hasHelpFlag) return false
+    io.stdout(AGENTS_HELP)
+    return true
+  }
+  if (command === 'mcp') {
+    const action = helpActionAt(argv, commandIndex, [
+      'help',
+      ...Object.keys(MCP_ACTION_HELP),
+    ])
+    if (!hasHelpFlag && action?.value !== 'help') return false
+    const target =
+      action?.value === 'help'
+        ? helpActionAt(argv, action.index, Object.keys(MCP_ACTION_HELP))
+        : action
+    io.stdout(MCP_ACTION_HELP[target?.value ?? ''] ?? MCP_HELP)
+    return true
+  }
+  if (command === 'plugin' || command === 'plugins') {
+    const initialAction = helpActionAt(argv, commandIndex, [
+      'help',
+      'marketplace',
+      ...Object.keys(PLUGIN_ACTION_HELP),
+    ])
+    let requestedHelp = hasHelpFlag || initialAction?.value === 'help'
+    if (!requestedHelp && initialAction?.value !== 'marketplace') {
+      return false
+    }
+    const action =
+      initialAction?.value === 'help'
+        ? helpActionAt(argv, initialAction.index, [
+            'marketplace',
+            ...Object.keys(PLUGIN_ACTION_HELP),
+          ])
+        : initialAction
+    if (action?.value === 'marketplace') {
+      const initialMarketplaceAction = helpActionAt(argv, action.index, [
+        'help',
+        ...Object.keys(PLUGIN_MARKETPLACE_ACTION_HELP),
+      ])
+      const marketplaceAction =
+        initialMarketplaceAction?.value === 'help'
+          ? helpActionAt(
+              argv,
+              initialMarketplaceAction.index,
+              Object.keys(PLUGIN_MARKETPLACE_ACTION_HELP),
+            )
+          : initialMarketplaceAction
+      requestedHelp ||= initialMarketplaceAction?.value === 'help'
+      if (!requestedHelp) return false
+      io.stdout(pluginActionHelp(action.value, marketplaceAction?.value))
+      return true
+    }
+    if (!requestedHelp) return false
+    io.stdout(pluginActionHelp(action?.value))
+    return true
+  }
+  if (command === 'auto-mode') {
+    const action = helpActionAt(argv, commandIndex, [
+      'help',
+      ...Object.keys(AUTO_MODE_ACTION_HELP),
+    ])
+    if (!hasHelpFlag && action?.value !== 'help') return false
+    const target =
+      action?.value === 'help'
+        ? helpActionAt(argv, action.index, Object.keys(AUTO_MODE_ACTION_HELP))
+        : action
+    io.stdout(AUTO_MODE_ACTION_HELP[target?.value ?? ''] ?? AUTO_MODE_HELP)
+    return true
+  }
+  if (command === 'project') {
+    const action = helpActionAt(argv, commandIndex, ['help', 'purge'])
+    if (!hasHelpFlag && action?.value !== 'help') return false
+    const target =
+      action?.value === 'help'
+        ? helpActionAt(argv, action.index, ['purge'])
+        : action
+    io.stdout(target?.value === 'purge' ? PROJECT_PURGE_HELP : PROJECT_HELP)
+    return true
+  }
+  return false
+}
+
 async function execute(
   argv: readonly string[],
   io: CliIO,
@@ -1979,6 +2583,7 @@ async function execute(
   if (argv.length === 0 && io.isTTY && dependencies.runInteractive) {
     return dependencies.runInteractive(signal ? { signal } : {})
   }
+  if (printCommandHelp(argv, io)) return 0
   if (
     argv[0] === 'doctor' &&
     (argv.includes('--help') || argv.includes('-h'))
@@ -2118,6 +2723,7 @@ async function execute(
     'mcp',
     'auto-mode',
     'plugin',
+    'plugins',
     'doctor',
   ].includes(command ?? '')
   if (
@@ -2139,7 +2745,7 @@ async function execute(
     throw new Error('--all and --cwd are only valid with agents')
   }
   if (invocation.mcpScope !== undefined && command !== 'mcp') {
-    if (command !== 'plugin') {
+    if (command !== 'plugin' && command !== 'plugins') {
       throw new Error('--scope is only valid with mcp or plugin commands')
     }
   }
@@ -2154,10 +2760,14 @@ async function execute(
     return executeMcpCommand(args, invocation, io, dependencies, signal)
   }
   if (command === 'auto-mode') {
-    return executeAutoModeCommand(args, invocation, io)
+    return executeAutoModeCommand(args, invocation, io, dependencies, signal)
   }
-  if (command === 'plugin') {
-    return executePluginCommand(args, invocation, io)
+  if (command === 'plugin' || command === 'plugins') {
+    return executePluginCommand(
+      command === 'plugins' ? ['plugin', ...args.slice(1)] : args,
+      invocation,
+      io,
+    )
   }
   if (command === 'doctor') {
     return executeDoctorCommand(args, invocation, io)
