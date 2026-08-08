@@ -345,7 +345,10 @@ export class ClaudeHookRunner {
             reportProgress,
           )
         } catch (error) {
-          const message = hookErrorMessage(error)
+          const message = redactSensitiveText(
+            hookErrorMessage(error),
+            sensitiveValues,
+          )
           const cancelled = hookWasCancelled(error, signal)
           this.onEvent?.({
             type: 'response',

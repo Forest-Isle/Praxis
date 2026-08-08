@@ -639,4 +639,50 @@ describe('ClaudeHookRunner', () => {
       else process.env[variable] = previous
     }
   })
+
+  it('redacts thrown executor errors in hook response events', async () => {
+    const secret = 'hook-thrown-error-secret-canary'
+    const variable = 'PRAXIS_TEST_API_KEY'
+    const previous = process.env[variable]
+    process.env[variable] = secret
+    const events: ClaudeHookStreamEvent[] = []
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              PreToolUse: [
+                {
+                  matcher: 'Bash',
+                  hooks: [{ type: 'command', command: 'fail' }],
+                },
+              ],
+            },
+          },
+          'user',
+        ),
+      ],
+      cwd: '/workspace',
+      onEvent: (event) => events.push(event),
+      executeCommand: async () => {
+        throw new Error(`executor failed: ${secret}`)
+      },
+    })
+
+    try {
+      await expect(runner.run(input, 'Bash')).rejects.toThrow(secret)
+      expect(events).toHaveLength(2)
+      expect(events[1]).toMatchObject({
+        type: 'response',
+        output: 'executor failed: [REDACTED]',
+        stderr: 'executor failed: [REDACTED]',
+        outcome: 'error',
+        exitCode: 1,
+      })
+      expect(JSON.stringify(events)).not.toContain(secret)
+    } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+  })
 })
