@@ -50,6 +50,7 @@ export interface InteractiveServiceFactory {
 }
 
 export interface InteractiveResumeOptions {
+  sessionId?: string
   forkSession?: boolean
   forkSessionId?: string
   retryInterruptedTools?: boolean
@@ -567,6 +568,7 @@ export async function runInteractive(options: {
   axScreenReader?: boolean
   sessionFilter?: (session: SessionSummary) => boolean
   requireSession?: boolean
+  missingSessionMessage?: string
   resume?: InteractiveResumeOptions
 }): Promise<number> {
   const controller = new AbortController()
@@ -586,7 +588,8 @@ export async function runInteractive(options: {
       : sessions
     if (options.requireSession && initialSessions.length === 0) {
       throw new Error(
-        'No conversation linked to a pull request in this project',
+        options.missingSessionMessage ??
+          'No conversation linked to a pull request in this project',
       )
     }
   } catch (error) {

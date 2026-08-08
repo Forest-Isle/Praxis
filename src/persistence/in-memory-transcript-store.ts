@@ -88,9 +88,28 @@ export class InMemoryTranscriptStore {
     if (!tailsMatch(this.tail(), expectedTail)) {
       return { status: 'conflict', reason: 'tail-changed' }
     }
+    const branchParentUuid = expectedTail.branchParentUuid
+    const advancedLogicalTail = entries.some(
+      (entry) =>
+        typeof entry.uuid === 'string' &&
+        ![
+          'agent-name',
+          'agent-setting',
+          'custom-title',
+          'pr-link',
+          'worktree-state',
+        ].includes(entry.type),
+    )
     this.entries.push(...entries)
     this.revision += 1
-    return { status: 'appended', tail: this.tail() }
+    const tail = this.tail()
+    return {
+      status: 'appended',
+      tail:
+        branchParentUuid === undefined || advancedLogicalTail
+          ? tail
+          : { ...tail, branchParentUuid },
+    }
   }
 
   private tail(): TranscriptTail {

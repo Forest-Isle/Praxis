@@ -1,4 +1,5 @@
 import type { ClaudeTranscriptEntry } from './schema.js'
+import { selectClaudeActiveTranscript } from './history.js'
 
 export function getClaudeContentBlocks(
   entry: ClaudeTranscriptEntry,
@@ -53,12 +54,13 @@ export function indexClaudeToolLinks(
 export function findUnresolvedClaudeToolCalls(
   entries: readonly ClaudeTranscriptEntry[],
 ): { id: string; name: string; input: Record<string, unknown> }[] {
-  const { completedToolCalls } = indexClaudeToolLinks(entries)
+  const active = selectClaudeActiveTranscript(entries)
+  const { completedToolCalls } = indexClaudeToolLinks(active)
   const unresolved = new Map<
     string,
     { id: string; name: string; input: Record<string, unknown> }
   >()
-  for (const entry of entries) {
+  for (const entry of active) {
     if (entry.type !== 'assistant') continue
     for (const block of getClaudeContentBlocks(entry)) {
       if (

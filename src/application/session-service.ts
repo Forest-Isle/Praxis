@@ -19,6 +19,7 @@ import {
   type ClaudeFileResourceConfig,
 } from '../compatibility/claude/file-resources.js'
 import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
+import { selectClaudeTranscriptAtMessage } from '../compatibility/claude/history.js'
 import { getClaudePrLink } from '../compatibility/claude/pr-links.js'
 import {
   getClaudeAgentSetting,
@@ -495,6 +496,7 @@ export class ClaudeSessionService {
     name?: string,
     images?: readonly ModelImage[],
     documents?: readonly ModelDocument[],
+    resumeSessionAt?: string,
   ): Promise<SessionRunResult> {
     this.worktreeManager?.bindSession(sessionId)
     return this.executeTurn(
@@ -505,6 +507,7 @@ export class ClaudeSessionService {
       name,
       images,
       documents,
+      resumeSessionAt,
     )
   }
 
@@ -670,6 +673,7 @@ export class ClaudeSessionService {
   async fork(
     parentSessionId: string,
     sessionId: string = randomUUID(),
+    resumeSessionAt?: string,
   ): Promise<ForkResult> {
     this.assertSessionPersistence()
     this.assertWritable()
@@ -690,6 +694,7 @@ export class ClaudeSessionService {
         source: source.entries,
         sourceSessionId: parentSessionId,
         sessionId,
+        ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
       }),
     )
     if (result.status === 'conflict') {
@@ -706,6 +711,7 @@ export class ClaudeSessionService {
     name?: string,
     images: readonly ModelImage[] = [],
     documents: readonly ModelDocument[] = [],
+    resumeSessionAt?: string,
   ): Promise<SessionRunResult> {
     this.assertWritable()
     if (prompt.length === 0 && images.length === 0 && documents.length === 0)
@@ -755,6 +761,15 @@ export class ClaudeSessionService {
       }
       if (requireExisting && snapshot.entries.length === 0) {
         throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      if (resumeSessionAt !== undefined) {
+        snapshot = {
+          entries: selectClaudeTranscriptAtMessage(
+            snapshot.entries,
+            resumeSessionAt,
+          ),
+          tail: { ...snapshot.tail, branchParentUuid: resumeSessionAt },
+        }
       }
       const initialTransition =
         this.worktreeManager?.consumeTransition('__initial__')
@@ -836,7 +851,7 @@ export class ClaudeSessionService {
       const flushRecoveryHookOutcomes = async () => {
         const entries: ClaudeTranscriptEntry[] = []
         let history = snapshot.entries
-        let parentUuid = snapshot.tail.lastUuid
+        let parentUuid = this.logicalTailUuid(snapshot.tail)
         for (const outcome of pendingRecoveryHookOutcomes) {
           const outcomeEntries = createClaudeHookAttachmentEntries(outcome, {
             ...this.translationContext(sessionId, snapshot),
@@ -1795,7 +1810,7 @@ export class ClaudeSessionService {
   private translationContext(sessionId: string, snapshot: TranscriptSnapshot) {
     return {
       sessionId,
-      parentUuid: snapshot.tail.lastUuid,
+      parentUuid: this.logicalTailUuid(snapshot.tail),
       cwd: this.activeCwd(),
       claudeVersion: this.options.claudeVersion,
       gitBranch: null,
@@ -2040,5 +2055,9 @@ export class ClaudeSessionService {
       throw new Error(`Claude transcript append conflict: ${result.reason}`)
     }
     return result.tail
+  }
+
+  private logicalTailUuid(tail: TranscriptTail): string | null {
+    return tail.branchParentUuid ?? tail.lastUuid
   }
 }

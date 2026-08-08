@@ -117,6 +117,42 @@ describe('ClaudeTranscriptStore', () => {
     expect(after.slice(before.length)).toBe(`${JSON.stringify(entry)}\n`)
   })
 
+  it('branches from an earlier message while retaining physical tail checks', async () => {
+    const { sessionFile, store } = await createStore()
+    const before = await readFile(sessionFile, 'utf8')
+    const snapshot = await store.load()
+    const targetUuid = snapshot.entries[0]?.uuid
+    if (typeof targetUuid !== 'string')
+      throw new Error('Fixture target missing')
+    const branchTail = { ...snapshot.tail, branchParentUuid: targetUuid }
+
+    const metadata = await store.append(branchTail, {
+      type: 'custom-title',
+      customTitle: 'Rewound branch',
+      sessionId: String(snapshot.entries[0]?.sessionId),
+    })
+    expect(metadata).toMatchObject({
+      status: 'appended',
+      tail: { branchParentUuid: targetUuid },
+    })
+    if (metadata.status !== 'appended') throw new Error(metadata.reason)
+
+    const branch = {
+      ...firstEntry(snapshot),
+      uuid: '56565656-5656-4656-8656-565656565656',
+      parentUuid: targetUuid,
+      timestamp: '2026-08-03T08:00:03.000Z',
+      message: { role: 'user', content: 'branch prompt' },
+    }
+    await expect(store.append(metadata.tail, branch)).resolves.toMatchObject({
+      status: 'appended',
+      tail: { lastUuid: branch.uuid },
+    })
+    const after = await readFile(sessionFile, 'utf8')
+    expect(after.startsWith(before)).toBe(true)
+    expect(after).toContain(`"parentUuid":"${targetUuid}"`)
+  })
+
   it('atomically appends a compact boundary and summary under one tail check', async () => {
     const { sessionFile, store } = await createStore()
     const before = await readFile(sessionFile, 'utf8')

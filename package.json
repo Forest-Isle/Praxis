@@ -44,6 +44,7 @@
     "test:metering-compat": "npm run build && node scripts/verify-metering-budget.mjs",
     "test:prompt-suggestions": "npm run build && node scripts/verify-prompt-suggestions.mjs",
     "test:pr-link-compat": "npm run build && node scripts/verify-pr-link-compatibility.mjs",
+    "test:resume-at-compat": "npm run build && node scripts/verify-resume-session-at-compatibility.mjs",
     "test:stream-json-compat": "npm run build && node scripts/verify-stream-json-compatibility.mjs",
     "test:plugin-compat": "npm run build && node scripts/verify-plugin-compatibility.mjs",
     "test:mcp-management": "npm run build && node scripts/verify-mcp-management.mjs",

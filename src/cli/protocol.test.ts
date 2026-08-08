@@ -84,6 +84,61 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('parses resume-at only with an explicit --resume selector', () => {
+    expect(
+      parseCliInvocation([
+        '-p',
+        '--resume',
+        sessionId,
+        '--resume-session-at',
+        'user-message-uuid',
+        'continue',
+      ]),
+    ).toMatchObject({
+      args: ['resume', sessionId, 'continue'],
+      resumeSessionAt: 'user-message-uuid',
+    })
+    expect(
+      parseCliInvocation([
+        '--background',
+        '--resume',
+        sessionId,
+        '--resume-session-at=user-message-uuid',
+        '--fork-session',
+        'continue',
+      ]),
+    ).toMatchObject({
+      background: true,
+      forkSession: true,
+      resumeSessionAt: 'user-message-uuid',
+    })
+    for (const argv of [
+      ['--resume-session-at', 'user-message-uuid', 'start'],
+      ['--continue', '--resume-session-at', 'user-message-uuid', 'continue'],
+      [
+        'resume',
+        sessionId,
+        '--resume-session-at',
+        'user-message-uuid',
+        'continue',
+      ],
+    ]) {
+      expect(() => parseCliInvocation(argv)).toThrow(
+        '--resume-session-at requires --resume',
+      )
+    }
+    expect(() =>
+      parseCliInvocation([
+        '--resume',
+        sessionId,
+        '--resume-session-at',
+        'one',
+        '--resume-session-at',
+        'two',
+      ]),
+    ).toThrow('--resume-session-at may only be specified once')
+  })
+
   it('parses PR-linked resume selectors and rejects conflicting resume modes', () => {
     expect(parseCliInvocation(['--from-pr'])).toMatchObject({ fromPr: true })
     expect(

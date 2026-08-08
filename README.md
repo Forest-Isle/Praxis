@@ -54,6 +54,13 @@ their distinct native envelopes pass clean-room probes.
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
 Claude transcript, and Claude Code 2.1.208 can resume a Praxis tool session.
+`--resume-session-at <message-id>` with explicit `--resume` starts from any
+active user or assistant message. Praxis preserves abandoned descendants in
+the append-only JSONL, appends a native `parentUuid` branch, projects only the
+new active chain on later resumes, and applies the same boundary before a
+generated or explicit `--fork-session`. Foreground, interactive, background,
+and no-persistence paths share this behavior, and either CLI can resume the
+other runtime's branch.
 The synchronous `Agent` tool runs bounded `general-purpose` or shared custom
 agents through the same provider, local/MCP/Skill tools, permissions, hooks,
 context, and cancellation path. Completed work writes native sidechain JSONL,
@@ -263,6 +270,7 @@ node dist/cli.js inspect --json <session-id>
 node dist/cli.js export <session-id> > session.jsonl
 node dist/cli.js resume <session-id> "Continue"
 node dist/cli.js resume --retry-interrupted-tools <session-id> "Continue"
+node dist/cli.js -p --resume <session-id> --resume-session-at <message-id> "Try another branch"
 node dist/cli.js fork <session-id>
 node dist/cli.js --bg "Inspect this project"
 node dist/cli.js agents --json --all --cwd "$PWD"

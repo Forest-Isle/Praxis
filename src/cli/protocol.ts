@@ -56,6 +56,7 @@ export interface CliControls {
   allowDangerouslySkipPermissions: boolean
   continueSession: boolean
   forkSession: boolean
+  resumeSessionAt: string | undefined
   name: string | undefined
   sessionPersistence: boolean
   model?: string
@@ -443,6 +444,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let retryInterruptedTools = false
   let sessionId: string | undefined
   let resumeId: string | undefined
+  let resumeSessionAt: string | undefined
   let fromPr: string | true | undefined
   let verbose = false
   let legacyJson = false
@@ -599,6 +601,15 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       }
       sessionId = selectedSession.value
       index += selectedSession.consumed
+      continue
+    }
+    const selectedResumeAt = optionValue(argv, index, '--resume-session-at')
+    if (selectedResumeAt) {
+      if (resumeSessionAt !== undefined) {
+        throw new Error('--resume-session-at may only be specified once')
+      }
+      resumeSessionAt = selectedResumeAt.value
+      index += selectedResumeAt.consumed
       continue
     }
     const selectedSettings = optionValue(argv, index, '--settings')
@@ -1030,6 +1041,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   if (tmux !== undefined && !worktreeRequested) {
     throw new Error('--tmux requires --worktree')
   }
+  if (resumeSessionAt !== undefined && resumeId === undefined) {
+    throw new Error('--resume-session-at requires --resume')
+  }
 
   if (resumeId !== undefined) {
     if (args[0] === 'resume')
@@ -1116,6 +1130,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     allowDangerouslySkipPermissions,
     continueSession,
     forkSession,
+    resumeSessionAt,
     name,
     sessionPersistence,
     ...(worktreeName === undefined ? {} : { worktreeName }),

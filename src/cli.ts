@@ -219,6 +219,7 @@ Options:
   --from-pr [number-or-url]           Resume a session linked to a GitHub PR
   -c, --continue                      Continue latest session in this directory
   --fork-session                      Fork when resuming or continuing
+  --resume-session-at <message-id>    Resume at an active conversation message
   --session-id <uuid>                 Use an explicit ID for a new session
   -n, --name <name>                   Set session display name
   --model <model>                     Select model for this session
@@ -908,6 +909,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const toolRegistry = exposeToolRegistry
       ? service.createHostedToolRegistry(randomUUID())
       : filteredTools
+    let pendingResumeSessionAt = cli.resumeSessionAt
     return {
       toolRegistry,
       run: (prompt, signal, sessionId, name, images, documents) =>
@@ -919,17 +921,24 @@ const createDefaultService: CliDependencies['createService'] = async ({
           images,
           documents,
         ),
-      resume: (sessionId, prompt, signal, name, images, documents) =>
-        service.resume(
+      resume: (sessionId, prompt, signal, name, images, documents) => {
+        const resumeSessionAt = pendingResumeSessionAt
+        pendingResumeSessionAt = undefined
+        return service.resume(
           sessionId,
           prompt,
           signal,
           name ?? cli.name,
           images,
           documents,
-        ),
-      fork: (sessionId, targetSessionId) =>
-        service.fork(sessionId, targetSessionId),
+          resumeSessionAt,
+        )
+      },
+      fork: (sessionId, targetSessionId) => {
+        const resumeSessionAt = pendingResumeSessionAt
+        pendingResumeSessionAt = undefined
+        return service.fork(sessionId, targetSessionId, resumeSessionAt)
+      },
       sessions: () => service.sessions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
@@ -986,14 +995,21 @@ const defaultDependencies: CliDependencies = {
       ...(signal ? { signal } : {}),
       ...(controls?.axScreenReader ? { axScreenReader: true } : {}),
       ...(resume === undefined ? {} : { resume }),
-      ...(resume?.fromPr === undefined
-        ? {}
-        : {
+      ...(resume?.fromPr !== undefined
+        ? {
             sessionFilter: createClaudePrSessionFilter<SessionSummary>(
               resume.fromPr,
             ),
             requireSession: true,
-          }),
+          }
+        : resume?.sessionId === undefined
+          ? {}
+          : {
+              sessionFilter: (session: SessionSummary) =>
+                session.sessionId === resume.sessionId,
+              requireSession: true,
+              missingSessionMessage: `No conversation found with session ID: ${resume.sessionId}`,
+            }),
     }),
   topLevelAgents: new TopLevelAgentManager({
     configRoot: resolve(
@@ -1922,6 +1938,10 @@ async function execute(
   const invocation = parseCliInvocation(argv)
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
+  const explicitInteractiveResumeAt =
+    invocation.resumeSessionAt !== undefined &&
+    args[0] === 'resume' &&
+    args.length === 2
   if (
     (invocation.fallbackModels !== undefined ||
       invocation.jsonSchema !== undefined ||
@@ -1949,7 +1969,7 @@ async function execute(
   if (
     io.isTTY &&
     dependencies.runInteractive &&
-    args.length === 0 &&
+    (args.length === 0 || explicitInteractiveResumeAt) &&
     !invocation.print &&
     !invocation.background
   ) {
@@ -1957,6 +1977,9 @@ async function execute(
       ...(agent === undefined ? {} : { agent }),
       controls: invocation,
       resume: {
+        ...(explicitInteractiveResumeAt
+          ? { sessionId: requireValue(args[1], 'Session ID') }
+          : {}),
         ...(invocation.fromPr === undefined
           ? {}
           : { fromPr: invocation.fromPr }),

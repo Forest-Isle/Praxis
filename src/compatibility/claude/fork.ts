@@ -1,4 +1,5 @@
 import { getClaudeContentBlocks } from './tool-links.js'
+import { selectClaudeTranscriptAtMessage } from './history.js'
 import {
   copyClaudeEntryWithSessionId,
   isClaudeForkableEntryType,
@@ -9,6 +10,7 @@ export interface ClaudeNativeForkOptions {
   source: readonly ClaudeTranscriptEntry[]
   sourceSessionId: string
   sessionId: string
+  resumeSessionAt?: string
 }
 
 const TRANSIENT_ENTRY_TYPES = new Set([
@@ -167,6 +169,7 @@ export function createClaudeNativeFork({
   source,
   sourceSessionId,
   sessionId,
+  resumeSessionAt,
 }: ClaudeNativeForkOptions): ClaudeTranscriptEntry[] {
   const titles: ClaudeTranscriptEntry[] = []
   const modes: ClaudeTranscriptEntry[] = []
@@ -177,7 +180,11 @@ export function createClaudeNativeFork({
   let lastPrompt: ClaudeTranscriptEntry | undefined
   let nativeLastPrompt: ClaudeTranscriptEntry | undefined
 
-  for (const entry of source) {
+  const activeSource =
+    resumeSessionAt === undefined
+      ? source
+      : selectClaudeTranscriptAtMessage(source, resumeSessionAt)
+  for (const entry of activeSource) {
     if (TRANSIENT_ENTRY_TYPES.has(entry.type)) {
       if (
         (entry.type === 'queue-operation' &&

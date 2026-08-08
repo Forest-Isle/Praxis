@@ -25,6 +25,7 @@ Evidence levels:
 | Interactive TTY                      | Complete                            | Ink event adapter, permission/recovery prompts, session picker; package and unit gates                                                                                                                                                                                                                                                                                                                                      |
 | Print/headless prompt                | Complete                            | `-p`, `--print`, top-level prompt, and legacy `run`; installed package gate                                                                                                                                                                                                                                                                                                                                                 |
 | Resume syntax                        | Complete                            | `-r`, `--resume`, and legacy `resume`; shared transcript continuation                                                                                                                                                                                                                                                                                                                                                       |
+| `--resume-session-at`                | Complete                            | Explicit `--resume` targeting of any active user/assistant message; append-only native `parentUuid` branching, active-chain projection, fork truncation, interactive/background/no-persistence routing, invalid/inactive target errors, and live Claude ↔ Praxis resume gate                                                                                                                                                |
 | Explicit session ID                  | Complete                            | UUID validation, atomic `wx` reservation, existing/empty-file rejection matching live 2.1.208                                                                                                                                                                                                                                                                                                                               |
 | Text output                          | Complete                            | Realtime terminal deltas and final newline                                                                                                                                                                                                                                                                                                                                                                                  |
 | Single JSON result                   | Complete                            | SDK success/error subtype, UUID, stop reason, error list, fast-mode state, plugin-aware init, measured API duration, and priced usage; unknown model pricing/API failure duration remain correctly `null`                                                                                                                                                                                                                   |
@@ -133,10 +134,10 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 
 ## Remaining implementation order
 
-Remaining audit items are limited to still-unimplemented single-user CLI
-controls discovered from the installed 2.1.208 surface: message-targeted
-resume, file rewind, thinking controls, permission-prompt MCP delegation,
-prefill contract, and init/init-only/maintenance lifecycle hooks. They are
-tracked as the next implementation stages; they are not enterprise or desktop
-exclusions. Unsupported Claude versions remain deliberately read-only, and
-listed enterprise/desktop/remote surfaces remain excluded by scope.
+Remaining audit items are limited to the still-unimplemented single-user CLI
+controls discovered from the installed 2.1.208 surface: file rewind, thinking,
+permission-prompt MCP delegation, prefill, and init/init-only/maintenance
+lifecycle controls. They are tracked as the next implementation stages; they
+are not enterprise or desktop exclusions. Unsupported Claude versions remain
+deliberately read-only, and listed enterprise/desktop/remote surfaces remain
+excluded by scope.

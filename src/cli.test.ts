@@ -333,6 +333,25 @@ describe('Praxis CLI', () => {
       },
       controls: { fromPr: true },
     })
+
+    await expect(
+      run(
+        [
+          '--resume',
+          '11111111-1111-4111-8111-111111111111',
+          '--resume-session-at',
+          'user-message-uuid',
+        ],
+        capture.io,
+        interactive,
+      ),
+    ).resolves.toBe(0)
+    expect(controls).toMatchObject({
+      resume: {
+        sessionId: '11111111-1111-4111-8111-111111111111',
+      },
+      controls: { resumeSessionAt: 'user-message-uuid' },
+    })
   })
 
   it('launches tmux worktree sessions before creating a provider', async () => {

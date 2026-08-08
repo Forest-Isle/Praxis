@@ -1837,6 +1837,203 @@ describe('ClaudeSessionService', () => {
     expect(source).not.toContain(`"sessionId":"${first.sessionId}"`)
   })
 
+  it('resumes and forks at an active user message using native transcript branches', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-resume-at-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let turn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        turn += 1
+        yield { type: 'text-delta', delta: `answer ${turn}` }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+    })
+    const first = await service.run('first prompt')
+    await service.resume(first.sessionId, 'second prompt')
+    await service.resume(first.sessionId, 'abandoned third prompt')
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: first.sessionId,
+    })
+    const before = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const target = before.find(
+      (entry) =>
+        entry.type === 'user' && entry.message?.content === 'second prompt',
+    )
+    const abandoned = before.find(
+      (entry) =>
+        entry.type === 'user' &&
+        entry.message?.content === 'abandoned third prompt',
+    )
+    const targetAnswer = before.find(
+      (entry) =>
+        entry.parentUuid === target?.uuid && entry.type === 'assistant',
+    )
+    if (
+      typeof target?.uuid !== 'string' ||
+      typeof abandoned?.uuid !== 'string' ||
+      typeof targetAnswer?.uuid !== 'string'
+    ) {
+      throw new Error('Could not locate resume-at transcript fixtures')
+    }
+
+    await service.resume(
+      first.sessionId,
+      'branch prompt',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      target.uuid,
+    )
+    const branchRequest = JSON.stringify(requests[3]?.messages)
+    expect(branchRequest).toContain('first prompt')
+    expect(branchRequest).toContain('answer 1')
+    expect(branchRequest).toContain('second prompt')
+    expect(branchRequest).toContain('branch prompt')
+    expect(branchRequest).not.toContain('answer 2')
+    expect(branchRequest).not.toContain('abandoned third prompt')
+    expect(branchRequest).not.toContain('answer 3')
+
+    await service.resume(first.sessionId, 'continue branch')
+    const continuedRequest = JSON.stringify(requests[4]?.messages)
+    expect(continuedRequest).toContain('branch prompt')
+    expect(continuedRequest).toContain('answer 4')
+    expect(continuedRequest).not.toContain('abandoned third prompt')
+
+    await expect(
+      service.resume(
+        first.sessionId,
+        'invalid assistant target',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        targetAnswer.uuid,
+      ),
+    ).rejects.toThrow(
+      `No message found with message.uuid of: ${targetAnswer.uuid}`,
+    )
+    await expect(
+      service.resume(
+        first.sessionId,
+        'invalid abandoned target',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        abandoned.uuid,
+      ),
+    ).rejects.toThrow(
+      `No message found with message.uuid of: ${abandoned.uuid}`,
+    )
+
+    const forkSessionId = '56565656-5656-4656-8656-565656565656'
+    await service.fork(first.sessionId, forkSessionId, target.uuid)
+    const forkSource = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: forkSessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(forkSource).toContain('second prompt')
+    expect(forkSource).not.toContain('answer 2')
+    expect(forkSource).not.toContain('abandoned third prompt')
+    expect(forkSource).not.toContain('branch prompt')
+    await expect(
+      service.fork(first.sessionId, undefined, abandoned.uuid),
+    ).rejects.toThrow(
+      `No message found with message.uuid of: ${abandoned.uuid}`,
+    )
+
+    const after = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const branch = after.find(
+      (entry) =>
+        entry.type === 'user' && entry.message?.content === 'branch prompt',
+    )
+    expect(branch.parentUuid).toBe(target.uuid)
+    expect(after.find((entry) => entry.uuid === abandoned.uuid)).toBeDefined()
+  })
+
+  it('does not recover unresolved tool calls abandoned after the resume target', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const first = await service.run('target prompt')
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: first.sessionId,
+    }).sessionFile
+    const initial = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const target = initial.find((entry) => entry.type === 'user')
+    const answer = initial.find((entry) => entry.type === 'assistant')
+    if (typeof target?.uuid !== 'string' || typeof answer?.uuid !== 'string') {
+      throw new Error('Could not locate unresolved-tool fixture messages')
+    }
+    await appendFile(
+      sessionFile,
+      `${JSON.stringify({
+        ...answer,
+        uuid: '69696969-6969-4969-8969-696969696969',
+        parentUuid: answer.uuid,
+        message: {
+          ...answer.message,
+          id: 'msg_abandoned_tool',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_abandoned',
+              name: 'Read',
+              input: { file_path: 'README.md' },
+            },
+          ],
+          stop_reason: 'tool_use',
+        },
+      })}\n`,
+    )
+
+    await expect(
+      service.resume(first.sessionId, 'normal resume'),
+    ).rejects.toThrow('requires explicit recovery approval')
+    await expect(
+      service.resume(
+        first.sessionId,
+        'branch without recovery',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        target.uuid,
+      ),
+    ).resolves.toMatchObject({ text: 'second answer' })
+  })
+
   it('inspects and exports a session without rewriting its transcript', async () => {
     const { configRoot, cwd, service } = await createService()
     const first = await service.run('inspect me')

@@ -18,6 +18,7 @@ export interface TranscriptTail {
   lastLineHash: string | null
   lastUuid: string | null
   newlineTerminated: boolean
+  branchParentUuid?: string
 }
 
 export interface TranscriptSnapshot {
@@ -138,6 +139,10 @@ function tailsMatch(left: TranscriptTail, right: TranscriptTail): boolean {
     left.lastUuid === right.lastUuid &&
     left.newlineTerminated === right.newlineTerminated
   )
+}
+
+function tailLogicalUuid(tail: TranscriptTail): string | null {
+  return tail.branchParentUuid ?? tail.lastUuid
 }
 
 function getEntryUuid(entry: ClaudeTranscriptEntry): string | null {
@@ -412,7 +417,9 @@ export class ClaudeTranscriptStore {
     }
 
     const history = [...current.entries]
-    let logicalTailUuid = expectedTail.lastUuid
+    let logicalTailUuid = tailLogicalUuid(expectedTail)
+    const branchParentUuid = expectedTail.branchParentUuid
+    let advancedLogicalTail = false
     const lines: string[] = []
     for (const entry of entries) {
       if (this.writeProfile === 'sidechain') {
@@ -463,7 +470,13 @@ export class ClaudeTranscriptStore {
           : this.schema.serializeForAppend(entry),
       )
       history.push(entry)
-      if (typeof entry.uuid === 'string') logicalTailUuid = entry.uuid
+      if (
+        typeof entry.uuid === 'string' &&
+        !NON_TAIL_ENTRY_TYPES.has(entry.type)
+      ) {
+        logicalTailUuid = entry.uuid
+        advancedLogicalTail = true
+      }
     }
 
     const encodedLine = Buffer.from(`${lines.join('\n')}\n`)
@@ -491,7 +504,14 @@ export class ClaudeTranscriptStore {
       return { status: 'conflict', reason: 'interleaved-write' }
     }
 
-    return { status: 'appended', tail: (await this.load()).tail }
+    const tail = (await this.load()).tail
+    return {
+      status: 'appended',
+      tail:
+        branchParentUuid === undefined || advancedLogicalTail
+          ? tail
+          : { ...tail, branchParentUuid },
+    }
   }
 
   private serializeNewSidechain(
