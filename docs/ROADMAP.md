@@ -572,3 +572,17 @@ Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
 - [x] synchronous `--init-only` Setup plus SessionStart execution with no
       provider request or transcript write
 - [x] bare-mode hook suppression and Claude/Praxis lifecycle compatibility gate
+
+## Final integrated parity audit
+
+Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
+
+- [x] full parser/help/default/resolved-control and TTY/background/stream-json
+      forwarding audit across supported CLI routes
+- [x] provider, resume/fork, no-persistence, management-command, import/export,
+      ContextAssembler, and dependency-injection wiring audit
+- [x] TODO/stub/skip and compatibility-script/package-entry link audit
+- [x] `npm run check`: 79 files, 638 tests, format/lint/boundary/typecheck/build
+- [x] `npm run test:compat:all`: 43 isolated Claude/Praxis gates
+- [x] `npm run test:package`: release tarball/install/provider/resume/fork and
+      write-safety matrix

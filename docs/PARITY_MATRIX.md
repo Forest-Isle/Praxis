@@ -141,10 +141,10 @@ routing.
 | `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                               |
 | `auto-mode`          | Complete | `config` and `defaults` configuration surface plus permission classifier                                                                |
 
-## Remaining implementation order
+## Final audit status
 
-All identified single-user CLI feature gaps from Claude Code 2.1.208 are now
-implemented. Remaining work is the final integrated CLI-surface and end-to-end
-link audit. Unsupported Claude versions remain deliberately read-only, and
+All identified single-user CLI feature gaps from Claude Code 2.1.208 are
+implemented and have passed the integrated CLI-surface and end-to-end link
+audit. Unsupported Claude versions remain deliberately read-only, and
 enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.
