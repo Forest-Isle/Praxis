@@ -2,6 +2,10 @@ import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 import type { RuntimeEvent, RuntimeEventSink } from '../core/runtime.js'
+import {
+  redactSensitiveValue,
+  sensitiveEnvironmentValues,
+} from '../platform/sensitive-data.js'
 
 export interface CliDebugOptions {
   filter?: string | true
@@ -25,6 +29,7 @@ export function createCliDebugSink(
   options: CliDebugOptions,
 ): CliDebugSink {
   const file = options.file ? resolve(options.cwd, options.file) : undefined
+  const sensitiveValues = sensitiveEnvironmentValues(process.env)
   let writes = Promise.resolve()
   let directoryReady: Promise<void> | undefined
   const write = (line: string) => {
@@ -43,7 +48,8 @@ export function createCliDebugSink(
   const eventSink: RuntimeEventSink = (event) => {
     base(event)
     if (!matchesFilter(event, options.filter ?? true)) return
-    const line = `${new Date().toISOString()} ${JSON.stringify(event)}\n`
+    const safeEvent = redactSensitiveValue(event, sensitiveValues)
+    const line = `${new Date().toISOString()} ${JSON.stringify(safeEvent)}\n`
     write(line)
     options.stderr?.(`debug: ${line}`)
   }
