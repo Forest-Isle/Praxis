@@ -583,6 +583,17 @@ Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
       ContextAssembler, and dependency-injection wiring audit
 - [x] TODO/stub/skip and compatibility-script/package-entry link audit
 - [x] `npm run check`: 79 files, 638 tests, format/lint/boundary/typecheck/build
-- [x] `npm run test:compat:all`: 43 isolated Claude/Praxis gates
+- [x] `npm run test:compat:all`: 44 isolated Claude/Praxis gates
 - [x] `npm run test:package`: release tarball/install/provider/resume/fork and
       write-safety matrix
+
+## Stage 74 - optional resume selector
+
+Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
+
+- [x] optional space, equals, and attached-short `-r`/`--resume` syntax
+- [x] direct UUID, exact case-insensitive headless title, ambiguity, and missing
+      selector behavior
+- [x] bare and text-filtered required TTY picker without new-session escape
+- [x] print, foreground, and background canonical session-ID routing
+- [x] installed Claude/Praxis resume-selector compatibility gate

@@ -23,7 +23,10 @@ import {
   createClaudePrSessionFilter,
   filterClaudePrLinkedSessions,
 } from './compatibility/claude/pr-links.js'
-import { resolveClaudePaths } from './compatibility/claude/paths.js'
+import {
+  isClaudeSessionId,
+  resolveClaudePaths,
+} from './compatibility/claude/paths.js'
 import {
   loadClaudeContextResources,
   loadClaudeSettings,
@@ -194,7 +197,7 @@ Usage:
   praxis
   praxis [options] [prompt]
   praxis -p [options] [prompt]
-  praxis --resume <session-id> [options] [prompt]
+  praxis --resume [session-id|title|search] [options] [prompt]
   praxis run [options] <prompt>
   praxis resume [options] <session-id> <prompt>
   praxis fork [--json] <session-id>
@@ -217,7 +220,7 @@ Usage:
 Options:
   -p, --print                         Print response and exit
   --bg, --background                  Run as a persistent background agent
-  -r, --resume <session-id>           Resume a session
+  -r, --resume [session]              Resume by ID/title, or select interactively
   --from-pr [number-or-url]           Resume a session linked to a GitHub PR
   -c, --continue                      Continue latest session in this directory
   --fork-session                      Fork when resuming or continuing
@@ -1083,14 +1086,16 @@ const defaultDependencies: CliDependencies = {
             ),
             requireSession: true,
           }
-        : resume?.sessionId === undefined
+        : resume?.sessionSelector === undefined
           ? {}
           : {
-              sessionFilter: (session: SessionSummary) =>
-                session.sessionId === resume.sessionId,
+              sessionFilter: createResumeSessionFilter(resume.sessionSelector),
               requireSession: true,
-              missingSessionMessage: `No conversation found with session ID: ${resume.sessionId}`,
+              missingSessionMessage: isClaudeSessionId(resume.sessionSelector)
+                ? `No conversation found with session ID: ${resume.sessionSelector}`
+                : `No conversation found matching: ${resume.sessionSelector}`,
             }),
+      ...(resume?.requireSession ? { requireSession: true } : {}),
     }),
   topLevelAgents: new TopLevelAgentManager({
     configRoot: resolve(
@@ -1171,6 +1176,61 @@ function selectImplicitResumeSession(
   const latest = sessions[0]
   if (!latest) throw new Error('No conversation found to continue')
   return latest
+}
+
+function missingResumeSelectorMessage(invocation: CliInvocation): string {
+  if (invocation.print) {
+    return '--resume requires a valid session ID or session title when used with --print. Usage: praxis -p --resume <session-id|title>'
+  }
+  if (invocation.background) {
+    return '--resume requires a valid session ID or session title when used with --background'
+  }
+  return '--resume requires a valid session ID or session title outside an interactive terminal'
+}
+
+function selectResumeSession(
+  sessions: readonly SessionSummary[],
+  selector: string,
+  invocation: CliInvocation,
+): SessionSummary {
+  const normalized = selector.toLowerCase()
+  const idMatch = sessions.find(
+    (session) => session.sessionId.toLowerCase() === normalized,
+  )
+  if (idMatch) return idMatch
+  if (isClaudeSessionId(selector)) {
+    throw new Error(`No conversation found with session ID: ${selector}`)
+  }
+  const titleMatches = sessions.filter(
+    (session) => session.name?.toLowerCase() === normalized,
+  )
+  if (titleMatches.length === 1) return titleMatches[0] as SessionSummary
+  if (titleMatches.length > 1) {
+    throw new Error(
+      `--resume "${selector}" matches ${titleMatches.length} sessions. Pass one of these session IDs to disambiguate:\n${titleMatches
+        .map(
+          (session) =>
+            `  ${session.sessionId}  (modified ${session.updatedAt})`,
+        )
+        .join('\n')}`,
+    )
+  }
+  throw new Error(
+    `${missingResumeSelectorMessage(invocation)}. Provided value "${selector}" is not a UUID and does not match any session title.`,
+  )
+}
+
+function createResumeSessionFilter(
+  selector: string,
+): (session: SessionSummary) => boolean {
+  const normalized = selector.toLowerCase()
+  if (isClaudeSessionId(selector)) {
+    return (session) => session.sessionId.toLowerCase() === normalized
+  }
+  return (session) =>
+    [session.name, session.lastPrompt, session.sessionId].some((value) =>
+      value?.toLowerCase().includes(normalized),
+    )
 }
 
 function mcpOutput(io: CliIO, invocation: CliInvocation, value: unknown): void {
@@ -2019,10 +2079,9 @@ async function execute(
   const invocation = parseCliInvocation(argv)
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
-  const explicitInteractiveResumeAt =
-    invocation.resumeSessionAt !== undefined &&
-    args[0] === 'resume' &&
-    args.length === 2
+  const interactiveResume =
+    invocation.resumeSelector !== undefined &&
+    args.length === (typeof invocation.resumeSelector === 'string' ? 2 : 1)
   if (
     (invocation.fallbackModels !== undefined ||
       invocation.jsonSchema !== undefined ||
@@ -2050,7 +2109,7 @@ async function execute(
   if (
     io.isTTY &&
     dependencies.runInteractive &&
-    (args.length === 0 || explicitInteractiveResumeAt) &&
+    (args.length === 0 || interactiveResume) &&
     !invocation.print &&
     !invocation.background &&
     !invocation.initOnly
@@ -2059,9 +2118,17 @@ async function execute(
       ...(agent === undefined ? {} : { agent }),
       controls: invocation,
       resume: {
-        ...(explicitInteractiveResumeAt
-          ? { sessionId: requireValue(args[1], 'Session ID') }
+        ...(typeof invocation.resumeSelector === 'string'
+          ? {
+              sessionSelector: invocation.resumeSelector,
+              ...(isClaudeSessionId(invocation.resumeSelector)
+                ? { sessionId: invocation.resumeSelector }
+                : {}),
+            }
           : {}),
+        ...(invocation.resumeSelector === undefined
+          ? {}
+          : { requireSession: true }),
         ...(invocation.fromPr === undefined
           ? {}
           : { fromPr: invocation.fromPr }),
@@ -2098,7 +2165,12 @@ async function execute(
   }
   const { retryInterruptedTools } = invocation
   const command = args[0]
-  if (command === 'resume') requireValue(args[1], 'Session ID')
+  if (command === 'resume' && args[1] === undefined) {
+    if (invocation.resumeSelector === true) {
+      throw new Error(missingResumeSelectorMessage(invocation))
+    }
+    requireValue(args[1], 'Session ID')
+  }
   if (invocation.rewindFiles !== undefined && args.length > 2) {
     throw new Error(
       '--rewind-files is a standalone operation and cannot be used with a prompt',
@@ -2240,13 +2312,14 @@ async function execute(
           ? args.slice(1)
           : args,
     )
-    let resumeSessionId =
+    const explicitResumeSelector =
       command === 'resume' ? requireValue(args[1], 'Session ID') : undefined
+    let resumeSessionId: string | undefined
     let usedExplicitSessionId = false
     if (
+      explicitResumeSelector !== undefined ||
       invocation.continueSession ||
-      invocation.fromPr !== undefined ||
-      (resumeSessionId && invocation.forkSession)
+      invocation.fromPr !== undefined
     ) {
       const sessionService = await dependencies.createService({
         eventSink: () => undefined,
@@ -2254,8 +2327,14 @@ async function execute(
         controls: invocation,
       })
       try {
-        if (!resumeSessionId) {
-          const sessions = await sessionService.sessions()
+        const sessions = await sessionService.sessions()
+        if (explicitResumeSelector !== undefined) {
+          resumeSessionId = selectResumeSession(
+            sessions,
+            explicitResumeSelector,
+            invocation,
+          ).sessionId
+        } else {
           resumeSessionId = selectImplicitResumeSession(
             sessions,
             invocation.fromPr,
@@ -2570,17 +2649,20 @@ async function execute(
       skills: [],
       claudeCodeVersion: 'unknown',
     }
-    let existingSessionId =
+    const explicitResumeSelector =
       command === 'resume' ? requireValue(args[1], 'Session ID') : undefined
+    let existingSessionId: string | undefined
     if (
-      !existingSessionId &&
-      (invocation.continueSession || invocation.fromPr !== undefined)
+      explicitResumeSelector !== undefined ||
+      invocation.continueSession ||
+      invocation.fromPr !== undefined
     ) {
       const sessions = await service.sessions()
-      existingSessionId = selectImplicitResumeSession(
-        sessions,
-        invocation.fromPr,
-      ).sessionId
+      existingSessionId =
+        explicitResumeSelector === undefined
+          ? selectImplicitResumeSession(sessions, invocation.fromPr).sessionId
+          : selectResumeSession(sessions, explicitResumeSelector, invocation)
+              .sessionId
     }
     if (existingSessionId && invocation.forkSession) {
       existingSessionId = (

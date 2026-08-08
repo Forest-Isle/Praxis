@@ -51,6 +51,8 @@ export interface InteractiveServiceFactory {
 
 export interface InteractiveResumeOptions {
   sessionId?: string
+  sessionSelector?: string
+  requireSession?: boolean
   forkSession?: boolean
   forkSessionId?: string
   retryInterruptedTools?: boolean
@@ -116,11 +118,13 @@ export function InteractiveApp({
     [allowNewSession, initialSessions],
   )
   const [selectingSession, setSelectingSession] = useState(
-    initialSessions.length > 0,
+    initialSessions.length > 0 && resume?.sessionId === undefined,
   )
   const [selectedIndex, setSelectedIndex] = useState(0)
   const selectedIndexRef = useRef(0)
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(
+    resume?.sessionId ?? null,
+  )
   const [pendingFork, setPendingFork] = useState(resume?.forkSession === true)
   const [input, setInput] = useState('')
   const inputRef = useRef('')
@@ -601,6 +605,17 @@ export async function runInteractive(options: {
     throw error
   }
   await listing.close?.()
+  const canonicalResumeSession =
+    options.resume?.sessionId === undefined
+      ? undefined
+      : initialSessions.find(
+          (session) =>
+            session.sessionId.toLowerCase() ===
+            options.resume?.sessionId?.toLowerCase(),
+        )
+  const resume = canonicalResumeSession
+    ? { ...options.resume, sessionId: canonicalResumeSession.sessionId }
+    : options.resume
   let activeTurn: Promise<void> | null = null
   const instance = render(
     <InteractiveApp
@@ -612,7 +627,7 @@ export async function runInteractive(options: {
         activeTurn = turn
       }}
       allowNewSession={!options.requireSession}
-      {...(options.resume === undefined ? {} : { resume: options.resume })}
+      {...(resume === undefined ? {} : { resume })}
       {...(options.axScreenReader ? { axScreenReader: true } : {})}
     />,
     { exitOnCtrlC: false, incrementalRendering: !options.axScreenReader },

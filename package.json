@@ -47,6 +47,7 @@
     "test:prefill-compat": "npm run build && node scripts/verify-prefill-compatibility.mjs",
     "test:pr-link-compat": "npm run build && node scripts/verify-pr-link-compatibility.mjs",
     "test:resume-at-compat": "npm run build && node scripts/verify-resume-session-at-compatibility.mjs",
+    "test:resume-selector-compat": "npm run build && node scripts/verify-resume-selector-compatibility.mjs",
     "test:thinking-compat": "npm run build && node scripts/verify-thinking-controls.mjs",
     "test:init-maintenance-compat": "npm run build && node scripts/verify-init-maintenance-compatibility.mjs",
     "test:stream-json-compat": "npm run build && node scripts/verify-stream-json-compatibility.mjs",

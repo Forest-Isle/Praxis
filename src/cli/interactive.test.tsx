@@ -87,6 +87,46 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).not.toContain('New session')
   })
 
+  it('keeps the picker for a non-ID resume search with one result', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[
+          {
+            sessionId: 'resolved-session',
+            name: 'Release review',
+            lastPrompt: 'inspect release',
+            updatedAt: '2026-08-08T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        allowNewSession={false}
+        resume={{ sessionSelector: 'release', requireSession: true }}
+      />,
+    )
+    await flush()
+    expect(app.lastFrame()).toContain('Release review · resolved-session')
+    expect(app.lastFrame()).not.toContain('New session')
+  })
+
   it('lists live workflows without sending a model prompt', async () => {
     const factory: InteractiveServiceFactory = {
       async createService() {
