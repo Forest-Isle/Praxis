@@ -139,7 +139,7 @@ routing.
 | `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                        |
 | `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate |
 | `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                               |
-| `auto-mode`          | Complete | `config` and `defaults` configuration surface plus permission classifier                                                                |
+| `auto-mode`          | Complete | `config`, `defaults`, and provider-backed `critique [--model]` plus permission classifier                                               |
 
 ## Final audit status
 

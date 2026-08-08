@@ -1,6 +1,10 @@
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
-import type { ModelToolCall } from './core/runtime.js'
+import type { ModelProvider, ModelToolCall } from './core/runtime.js'
 import {
   createBackgroundWorkerRuntime,
   parseContextEnvironment,
@@ -378,6 +382,246 @@ describe('Praxis CLI', () => {
     expect(capture.stdout.join('')).toContain('--prompt-suggestions [value]')
     expect(capture.stdout).toContain('0.1.0\n')
     expect(capture.stderr).toEqual([])
+  })
+
+  it('routes command-specific help without constructing services or providers', async () => {
+    let constructions = 0
+    const unavailable: CliDependencies = {
+      async createService() {
+        constructions += 1
+        throw new Error('service must not be created for help')
+      },
+      async createAutoModeCritic() {
+        constructions += 1
+        throw new Error('provider must not be created for help')
+      },
+    }
+    const routes: Array<[string[], string]> = [
+      [['agents', '--help'], 'Usage: praxis agents'],
+      [['mcp', '--help'], 'Usage: praxis mcp'],
+      [['mcp', 'list', '--help'], 'Usage: praxis mcp list'],
+      [['mcp', 'get', '--help'], 'Usage: praxis mcp get'],
+      [['mcp', '--scope', 'local', 'add', '--help'], 'Usage: praxis mcp add'],
+      [
+        ['mcp', '--transport', 'http', 'add', '--help'],
+        'Usage: praxis mcp add',
+      ],
+      [['mcp', 'help', 'add'], 'Usage: praxis mcp add'],
+      [['mcp', 'add-json', '--help'], 'Usage: praxis mcp add-json'],
+      [['mcp', 'remove', '--help'], 'Usage: praxis mcp remove'],
+      [
+        ['mcp', 'reset-project-choices', '--help'],
+        'Usage: praxis mcp reset-project-choices',
+      ],
+      [['mcp', 'login', '--help'], 'Usage: praxis mcp login'],
+      [['mcp', 'logout', '--help'], 'Usage: praxis mcp logout'],
+      [['mcp', 'serve', '--help'], 'Usage: praxis mcp serve'],
+      [['plugin', '--help'], 'Usage: praxis plugin'],
+      [['plugins', '--help'], 'Usage: praxis plugin|plugins'],
+      [['plugin', 'list', '--help'], 'Usage: praxis plugin list'],
+      [['plugin', 'help', 'install'], 'Usage: praxis plugin install'],
+      [['plugins', 'help', 'list'], 'Usage: praxis plugin list'],
+      [['plugin', 'install', '--help'], 'Usage: praxis plugin install'],
+      [['plugin', 'uninstall', '--help'], 'Usage: praxis plugin uninstall'],
+      [['plugin', 'enable', '--help'], 'Usage: praxis plugin enable'],
+      [['plugin', 'disable', '--help'], 'Usage: praxis plugin disable'],
+      [['plugin', 'update', '--help'], 'Usage: praxis plugin update'],
+      [['plugin', 'init', '--help'], 'Usage: praxis plugin init'],
+      [['plugin', 'validate', '--help'], 'Usage: praxis plugin validate'],
+      [['plugin', 'marketplace', '--help'], 'Usage: praxis plugin marketplace'],
+      [
+        ['plugin', 'marketplace', 'list', '--help'],
+        'Usage: praxis plugin marketplace list',
+      ],
+      [
+        ['plugin', 'marketplace', 'add', '--help'],
+        'Usage: praxis plugin marketplace add',
+      ],
+      [
+        ['plugin', 'marketplace', 'help', 'add'],
+        'Usage: praxis plugin marketplace add',
+      ],
+      [
+        ['plugin', 'marketplace', 'remove', '--help'],
+        'Usage: praxis plugin marketplace remove',
+      ],
+      [
+        ['plugin', 'marketplace', 'update', '--help'],
+        'Usage: praxis plugin marketplace update',
+      ],
+      [['auto-mode', '--help'], 'Usage: praxis auto-mode'],
+      [['auto-mode', 'config', '--help'], 'Usage: praxis auto-mode config'],
+      [['auto-mode', 'defaults', '--help'], 'Usage: praxis auto-mode defaults'],
+      [
+        ['auto-mode', 'critique', '--model', 'fixture', '--help'],
+        'Usage: praxis auto-mode critique',
+      ],
+      [['auto-mode', 'help', 'critique'], 'Usage: praxis auto-mode critique'],
+      [['project', '--help'], 'Usage: praxis project'],
+      [['project', 'purge', '--help'], 'Usage: praxis project purge'],
+      [['project', 'help', 'purge'], 'Usage: praxis project purge'],
+    ]
+
+    for (const [argv, usage] of routes) {
+      const capture = captureIO()
+      await expect(run(argv, capture.io, unavailable)).resolves.toBe(0)
+      expect(capture.stdout.join('')).toContain(usage)
+      expect(capture.stderr).toEqual([])
+    }
+    const detailedRoutes: Array<[string[], string]> = [
+      [['agents', '--help'], '--cwd <path>'],
+      [['mcp', 'help', 'add'], '--transport <transport>'],
+      [['mcp', 'login', '--help'], '--no-browser'],
+      [['plugin', 'help', 'install'], 'plugin@marketplace'],
+      [
+        ['plugin', 'marketplace', 'help', 'add'],
+        'Configuration scope: local, project, or user',
+      ],
+      [['auto-mode', 'help', 'critique'], 'default: PRAXIS_MODEL'],
+      [['project', 'purge', '--help'], '--json'],
+    ]
+    for (const [argv, detail] of detailedRoutes) {
+      const capture = captureIO()
+      await expect(run(argv, capture.io, unavailable)).resolves.toBe(0)
+      expect(capture.stdout.join('')).toContain('Options:')
+      expect(capture.stdout.join('')).toContain(detail)
+    }
+    expect(constructions).toBe(0)
+  })
+
+  it('routes plugins alias through existing plugin commands', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-plugins-alias-'))
+    const configRoot = join(root, 'config')
+    const previousConfigRoot = process.env.CLAUDE_CONFIG_DIR
+    await mkdir(configRoot, { recursive: true })
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({
+        autoMode: {
+          allow: [],
+          soft_deny: [],
+          hard_deny: [],
+          environment: [],
+        },
+      }),
+    )
+    process.env.CLAUDE_CONFIG_DIR = configRoot
+    try {
+      const capture = captureIO()
+      const unavailable: CliDependencies = {
+        async createService() {
+          throw new Error('service must not be created for plugins alias')
+        },
+      }
+      await expect(
+        run(['plugins', 'list'], capture.io, unavailable),
+      ).resolves.toBe(0)
+      expect(JSON.parse(capture.stdout.join(''))).toEqual([])
+      expect(capture.stderr).toEqual([])
+    } finally {
+      if (previousConfigRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigRoot
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('guides critique users without custom rules before constructing a provider', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-mode-cli-'))
+    const configRoot = join(root, 'config')
+    const previousConfigRoot = process.env.CLAUDE_CONFIG_DIR
+    await mkdir(configRoot, { recursive: true })
+    process.env.CLAUDE_CONFIG_DIR = configRoot
+    try {
+      let criticCalls = 0
+      const capture = captureIO()
+      const unavailable: CliDependencies = {
+        async createService() {
+          throw new Error('service must not be created for critique')
+        },
+        async createAutoModeCritic() {
+          criticCalls += 1
+          throw new Error('provider must not be created without custom rules')
+        },
+      }
+
+      await expect(
+        run(['auto-mode', 'critique'], capture.io, unavailable),
+      ).resolves.toBe(0)
+      expect(capture.stdout.join('')).toContain(
+        'No custom auto mode rules found.',
+      )
+      expect(capture.stdout.join('')).toContain('praxis auto-mode defaults')
+      expect(capture.stderr).toEqual([])
+      expect(criticCalls).toBe(0)
+    } finally {
+      if (previousConfigRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigRoot
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('streams provider-backed auto-mode critiques and propagates --model', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-mode-cli-'))
+    const configRoot = join(root, 'config')
+    const previousConfigRoot = process.env.CLAUDE_CONFIG_DIR
+    await mkdir(configRoot, { recursive: true })
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({
+        autoMode: {
+          allow: ['Use npm test for local validation'],
+          soft_deny: ['Push commits to remotes'],
+          hard_deny: ['Read or expose credentials'],
+          environment: ['Fixture repository only'],
+        },
+      }),
+    )
+    process.env.CLAUDE_CONFIG_DIR = configRoot
+    try {
+      const models: Array<string | undefined> = []
+      const requests: Parameters<ModelProvider['complete']>[0][] = []
+      const critic: ModelProvider = {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: '## Fixture critique\n' }
+          yield { type: 'text-delta', delta: 'Clarify remote-push approval.' }
+        },
+      }
+      const capture = captureIO()
+      const dependencies: CliDependencies = {
+        async createService() {
+          throw new Error('service must not be created for critique')
+        },
+        async createAutoModeCritic({ model }) {
+          models.push(model)
+          return critic
+        },
+      }
+
+      await expect(
+        run(
+          ['auto-mode', 'critique', '--model', 'fixture-haiku'],
+          capture.io,
+          dependencies,
+        ),
+      ).resolves.toBe(0)
+      expect(models).toEqual(['fixture-haiku'])
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.thinking).toEqual({ mode: 'disabled' })
+      expect(JSON.stringify(requests[0])).toContain('Praxis auto-mode critique')
+      expect(JSON.stringify(requests[0])).toContain('Fixture repository only')
+      expect(capture.stdout.join('')).toContain(
+        'Analyzing your auto mode rules…',
+      )
+      expect(capture.stdout.join('')).toContain('## Fixture critique')
+      expect(capture.stdout.join('')).toContain('Clarify remote-push approval.')
+      expect(capture.stderr).toEqual([])
+    } finally {
+      if (previousConfigRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigRoot
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('starts the interactive UI only for an empty TTY invocation', async () => {
