@@ -5,6 +5,7 @@ import { mkdir, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
+import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import type { RuntimeEventSink } from '../core/runtime.js'
 import {
   ClaudeJobStore,
@@ -440,6 +441,27 @@ export class TopLevelAgentManager {
   async logs(id: string): Promise<string> {
     await this.store.read(id)
     return this.store.output(id)
+  }
+
+  async review(
+    agent: Pick<TopLevelAgentSummary, 'id' | 'cwd' | 'sessionId'>,
+  ): Promise<string> {
+    if (agent.id !== undefined) return this.logs(agent.id)
+    try {
+      return await readFile(
+        resolveClaudePaths({
+          configDir: this.options.configRoot,
+          cwd: agent.cwd,
+          sessionId: agent.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return 'No local transcript is available for this Claude session.\n'
+      }
+      throw error
+    }
   }
 
   async stop(id: string): Promise<void> {

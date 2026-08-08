@@ -8,9 +8,13 @@ export interface AgentsDashboardManager {
   launch(options: {
     prompt: string
     argv: string[]
+    resumeSessionId?: string
     cwd?: string
   }): Promise<{ id: string; sessionId: string }>
   list(options: { cwd?: string; all: boolean }): Promise<TopLevelAgentSummary[]>
+  review?(
+    agent: Pick<TopLevelAgentSummary, 'id' | 'cwd' | 'sessionId'>,
+  ): Promise<string>
   stop(id: string): Promise<void>
   attach(
     id: string,
@@ -33,7 +37,7 @@ export interface AgentsDashboardAppProps {
   onCancel?: () => void
 }
 
-type DashboardMode = 'list' | 'attach'
+type DashboardMode = 'list' | 'attach' | 'review'
 
 interface PromptQueue {
   input: AsyncIterable<string>
@@ -162,6 +166,7 @@ export function AgentsDashboardApp({
   const [input, setInput] = useState('')
   const inputRef = useRef('')
   const [attachedOutput, setAttachedOutput] = useState('')
+  const [reviewAgent, setReviewAgent] = useState<TopLevelAgentSummary>()
   const [notice, setNotice] = useState('Loading agents…')
   const [busy, setBusy] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
@@ -195,6 +200,12 @@ export function AgentsDashboardApp({
     setAttachedId(undefined)
     setAttachedOutput('')
     setNotice(`Detached from ${attached.id}`)
+  }, [])
+
+  const leaveReview = useCallback(() => {
+    setMode('list')
+    setReviewAgent(undefined)
+    setAttachedOutput('')
   }, [])
 
   useEffect(() => {
@@ -270,47 +281,113 @@ export function AgentsDashboardApp({
     }
   }, [agents, busy, leaveAttached, manager, refresh])
 
+  const attachAgent = useCallback(
+    (selected: TopLevelAgentSummary & { id: string }) => {
+      if (attachedRef.current || busy) return
+      const queue = createPromptQueue()
+      const controller = new AbortController()
+      const attached: AttachedAgent = { id: selected.id, queue, controller }
+      attachedRef.current = attached
+      setMode('attach')
+      setAttachedId(selected.id)
+      setAttachedOutput('')
+      setNotice(`Attached to ${selected.id}`)
+      void manager
+        .attach(
+          selected.id,
+          queue.input,
+          (text) =>
+            setAttachedOutput((current) => trimOutput(`${current}${text}`)),
+          controller.signal,
+        )
+        .catch((error: unknown) => {
+          if (!controller.signal.aborted) {
+            setNotice(`Attach failed: ${errorMessage(error)}`)
+          }
+        })
+        .finally(() => {
+          if (attachedRef.current !== attached) return
+          attachedRef.current = undefined
+          setMode('list')
+          setAttachedId(undefined)
+          setAttachedOutput('')
+          void refresh()
+        })
+    },
+    [busy, manager, refresh],
+  )
+
   const attachSelected = useCallback(() => {
     const selected = agents[selectedIndexRef.current]
     if (!selected) {
       setNotice('Type a task, then press Enter to start a background agent')
-      return
-    }
-    if (!isAttachable(selected)) {
+    } else if (isAttachable(selected)) {
+      attachAgent(selected)
+    } else {
       setNotice(`${agentKey(selected)} cannot be attached locally`)
+    }
+  }, [agents, attachAgent])
+
+  const reviewSelected = useCallback(async () => {
+    const selected = agents[selectedIndexRef.current]
+    if (!selected || busy) return
+    setBusy(true)
+    setMode('review')
+    setReviewAgent(selected)
+    setAttachedOutput('Loading review…')
+    try {
+      if (!manager.review) throw new Error('Agent review unavailable')
+      setAttachedOutput(trimOutput(await manager.review(selected)))
+      setNotice(
+        selected.id === undefined && isActive(selected)
+          ? 'Native Claude session is read-only; attach unavailable'
+          : `Reviewing ${agentKey(selected)}; enter a prompt to resume`,
+      )
+    } catch (error) {
+      setAttachedOutput('')
+      setNotice(`Could not load review: ${errorMessage(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }, [agents, busy, manager])
+
+  const resumeReview = useCallback(async () => {
+    const selected = reviewAgent
+    const prompt = inputRef.current.trim()
+    if (!selected || !prompt || busy) return
+    if (selected.id === undefined && isActive(selected)) {
+      setNotice('Native Claude session is read-only while active')
       return
     }
-    if (attachedRef.current || busy) return
-    const queue = createPromptQueue()
-    const controller = new AbortController()
-    const attached: AttachedAgent = { id: selected.id, queue, controller }
-    attachedRef.current = attached
-    setMode('attach')
-    setAttachedId(selected.id)
-    setAttachedOutput('')
-    setNotice(`Attached to ${selected.id}`)
-    void manager
-      .attach(
-        selected.id,
-        queue.input,
-        (text) =>
-          setAttachedOutput((current) => trimOutput(`${current}${text}`)),
-        controller.signal,
-      )
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          setNotice(`Attach failed: ${errorMessage(error)}`)
-        }
+    setBusy(true)
+    try {
+      const launched = await manager.launch({
+        prompt,
+        argv: [...defaults.argv, '--resume', selected.sessionId, '--', prompt],
+        resumeSessionId: selected.sessionId,
+        cwd: selected.cwd,
       })
-      .finally(() => {
-        if (attachedRef.current !== attached) return
-        attachedRef.current = undefined
-        setMode('list')
-        setAttachedId(undefined)
-        setAttachedOutput('')
-        void refresh()
+      inputRef.current = ''
+      setInput('')
+      setReviewAgent(undefined)
+      setNotice(`Resumed ${launched.id}`)
+      await refresh()
+      attachAgent({
+        id: launched.id,
+        cwd: selected.cwd,
+        kind: 'background',
+        startedAt: Date.now(),
+        sessionId: launched.sessionId,
+        name: selected.name,
+        status: 'active',
+        state: 'working',
       })
-  }, [agents, busy, manager, refresh])
+    } catch (error) {
+      setNotice(`Could not resume agent: ${errorMessage(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }, [attachAgent, busy, defaults.argv, manager, refresh, reviewAgent])
 
   useInput((value, key) => {
     if ((key.ctrl && value.toLowerCase() === 'c') || value === '\u0003') {
@@ -348,6 +425,14 @@ export function AgentsDashboardApp({
       } else editInput()
       return
     }
+    if (mode === 'review') {
+      if (key.escape) {
+        leaveReview()
+      } else if (key.return) {
+        void resumeReview()
+      } else editInput()
+      return
+    }
     if ((key.ctrl && value.toLowerCase() === 'r') || value === '\u0012') {
       void refresh()
       return
@@ -366,7 +451,11 @@ export function AgentsDashboardApp({
     }
     if (key.return) {
       if (inputRef.current.trim()) void launch()
-      else attachSelected()
+      else {
+        const current = agents[selectedIndexRef.current]
+        if (current && isAttachable(current)) attachSelected()
+        else void reviewSelected()
+      }
       return
     }
     if (key.escape) {
@@ -413,6 +502,13 @@ export function AgentsDashboardApp({
           )}
           <Text>› {input}</Text>
           <Text dimColor>Enter sends · Esc detaches · Ctrl+C exits</Text>
+        </Box>
+      ) : mode === 'review' ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text>Reviewing {reviewAgent ? agentKey(reviewAgent) : ''}</Text>
+          <Text>{attachedOutput || 'No review output.'}</Text>
+          <Text>› {input}</Text>
+          <Text dimColor>Enter resumes with prompt · Esc returns to list</Text>
         </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>

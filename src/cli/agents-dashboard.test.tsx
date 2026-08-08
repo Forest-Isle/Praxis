@@ -39,6 +39,9 @@ describe('AgentsDashboardApp', () => {
         requests.push(options)
         return agents
       },
+      async review() {
+        return 'REVIEW'
+      },
       async stop() {
         throw new Error('unused')
       },
@@ -84,6 +87,9 @@ describe('AgentsDashboardApp', () => {
       },
       async list() {
         return [activeAgent]
+      },
+      async review() {
+        return 'REVIEW'
       },
       async stop(id) {
         stopped.push(id)
@@ -153,6 +159,9 @@ describe('AgentsDashboardApp', () => {
       async list() {
         return []
       },
+      async review() {
+        return 'REVIEW'
+      },
       async stop() {
         throw new Error('unused')
       },
@@ -175,5 +184,65 @@ describe('AgentsDashboardApp', () => {
     app.stdin.write('\u0003')
     await flush()
     expect(cancelled).toBe(true)
+  })
+
+  it('reviews completed sessions then resumes and attaches with original session identity', async () => {
+    const completed: TopLevelAgentSummary = {
+      id: 'abcd1234',
+      cwd: activeAgent.cwd,
+      kind: activeAgent.kind,
+      startedAt: activeAgent.startedAt,
+      sessionId: activeAgent.sessionId,
+      name: activeAgent.name,
+      state: 'stopped' as const,
+    }
+    const launches: unknown[] = []
+    const attached: string[] = []
+    const manager: AgentsDashboardManager = {
+      async launch(options) {
+        launches.push(options)
+        return { id: 'efgh5678', sessionId: completed.sessionId }
+      },
+      async list() {
+        return [completed]
+      },
+      async review() {
+        return 'COMPLETED OUTPUT'
+      },
+      async stop() {},
+      async attach(id) {
+        attached.push(id)
+      },
+    }
+    const app = render(
+      <AgentsDashboardApp
+        manager={manager}
+        defaults={{ argv: ['--model', 'fixture'] }}
+        refreshIntervalMs={60_000}
+      />,
+    )
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('COMPLETED OUTPUT')
+    app.stdin.write('continue')
+    app.stdin.write('\r')
+    await flush()
+    expect(launches).toEqual([
+      {
+        prompt: 'continue',
+        argv: [
+          '--model',
+          'fixture',
+          '--resume',
+          completed.sessionId,
+          '--',
+          'continue',
+        ],
+        resumeSessionId: completed.sessionId,
+        cwd: completed.cwd,
+      },
+    ])
+    expect(attached).toEqual(['efgh5678'])
   })
 })
