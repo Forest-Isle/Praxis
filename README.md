@@ -10,7 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Stage 85 interactive question and plan-mode parity is implemented on top of the
+Stage 86 interactive plugin LSP parity is implemented on top of the
+Stage 85 interactive question and plan-mode parity and
 Stage 84 completion audit, interactive dynamic wakeups,
 Workflow, scheduled prompts, and
 top-level background sessions and agent management, durable tasks, background Bash,
@@ -64,6 +65,16 @@ block; OpenAI-compatible providers receive a paired tool confirmation and user
 User image/document attachments and ordered MCP text, image, audio, resource,
 and structured-content results use their validated native envelopes. Binary MCP
 audio/resources are bounded and materialized under the session tool-result path.
+
+Interactive plugin sessions expose Claude's `LSP` tool when an enabled plugin
+provides `.lsp.json` or manifest `lspServers` configuration. Praxis implements
+the nine Claude operations over bounded stdio JSON-RPC, exact result formatting,
+document synchronization, gitignored-result filtering, transient retry,
+crash recovery, and graceful shutdown. Plugin root/data/environment expansion,
+effective user/project/local `${user_config.*}` options, workspace settings,
+initialization options, and case-insensitive extension mapping follow the shared
+plugin contract. Headless, safe, bare, explicitly denied, and `mcp serve`
+surfaces do not expose LSP.
 
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
@@ -395,6 +406,11 @@ bounded opt-in scaffolds, operator grants for gated tools, deterministic and
 three-vote model graders, cost ceilings, scored JSON artifacts, and resumable
 Claude JSONL history context. `plugin eval init` provides TTY authoring or an
 immediately runnable `--bare` template.
+Plugin LSP declarations may be inline objects, JSON paths, or ordered arrays;
+manifest entries override same-named `.lsp.json` defaults. LSP subprocesses
+receive sanitized ambient state plus explicit plugin env, `CLAUDE_PLUGIN_ROOT`,
+and persistent `CLAUDE_PLUGIN_DATA`. Saved LSP options use Claude settings
+precedence: local overrides project, and project overrides user.
 
 `PRAXIS_PROVIDER` defaults to `openai`. `PRAXIS_BASE_URL` defaults to the
 selected provider's official `/v1` endpoint. Native Anthropic requests accept
@@ -411,7 +427,7 @@ variables. Explicit per-server MCP `env` and HTTP headers are treated as
 intentional grants to that server, with matching output redaction.
 
 Permissions load from the shared global and current-project Claude settings.
-`Read`, `Grep`, `Agent`, `SendMessage`, and Task tools default to `allow`;
+`Read`, `Grep`, `LSP`, `Agent`, `SendMessage`, and Task tools default to `allow`;
 `Write`, `Edit`, `Bash`, `WebFetch`, and `WebSearch` default to `ask`.
 Interactive mode prompts before an `ask` tool call. Entering plan mode is
 automatic; leaving it displays the plan and requires user approval. Question and
@@ -429,7 +445,7 @@ npm run test:compat:all
 
 The aggregate command discovers every `test:*` compatibility gate except the
 provider-free package and performance gates, validates each command shape, and
-runs 50 isolated gates in sequence. Run an individual `test:*` command when
+runs 51 isolated gates in sequence. Run an individual `test:*` command when
 iterating on one surface.
 
 `npm run test:performance` is a local, provider-free release gate covering CLI

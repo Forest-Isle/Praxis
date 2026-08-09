@@ -24,6 +24,7 @@ import type {
 import {
   claudePluginDataPath,
   materializeClaudePluginSource,
+  readClaudePluginOptions,
   readClaudeSkillsDirectoryPlugins,
   replaceClaudePluginDirectory,
   readClaudeInstalledPlugins,
@@ -54,7 +55,10 @@ export interface ClaudePluginManifest {
     | string
     | Record<string, unknown>
     | readonly (string | Record<string, unknown>)[]
-  lspServers?: string | Record<string, unknown>
+  lspServers?:
+    | string
+    | Record<string, unknown>
+    | readonly (string | Record<string, unknown>)[]
   userConfig?: Record<string, unknown>
   channels?: readonly Record<string, unknown>[]
 }
@@ -77,6 +81,22 @@ export interface ClaudePluginResources {
   agents: ClaudeTextResource[]
   settings: ClaudeJsonResource[]
   mcp: ClaudeJsonResource[]
+  lsp: ClaudePluginLspServer[]
+}
+
+export interface ClaudePluginLspServer {
+  name: string
+  pluginName: string
+  pluginRoot: string
+  command: string
+  args: readonly string[]
+  env: Readonly<Record<string, string>>
+  extensionToLanguage: Readonly<Record<string, string>>
+  initializationOptions?: unknown
+  settings?: unknown
+  workspaceFolder?: string
+  startupTimeout?: number
+  maxRestarts?: number
 }
 
 export interface ClaudePluginRegistryEntry {
@@ -258,10 +278,17 @@ async function readManifest(
   }
   if (
     value.lspServers !== undefined &&
-    !(typeof value.lspServers === 'string' || isRecord(value.lspServers))
+    !(
+      typeof value.lspServers === 'string' ||
+      isRecord(value.lspServers) ||
+      (Array.isArray(value.lspServers) &&
+        value.lspServers.every(
+          (item) => typeof item === 'string' || isRecord(item),
+        ))
+    )
   ) {
     throw new Error(
-      `Plugin lspServers must be a path or object: ${manifestPath}`,
+      `Plugin lspServers must be a path, object, or array: ${manifestPath}`,
     )
   }
   if (value.userConfig !== undefined) {
@@ -444,6 +471,237 @@ function expandPluginRoot(value: unknown, pluginPath: string): unknown {
   return value
 }
 
+function expandLspString(
+  value: string,
+  pluginRoot: string,
+  pluginData: string,
+  environment: Readonly<Record<string, string | undefined>>,
+  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+): string {
+  let resolved = value
+    .replaceAll('${CLAUDE_PLUGIN_ROOT}', pluginRoot)
+    .replaceAll('${CLAUDE_PLUGIN_DATA}', pluginData)
+  if (userConfig !== undefined) {
+    resolved = resolved.replace(
+      /\$\{user_config\.([^}]+)\}/gu,
+      (_source, key: string) => {
+        const configured = userConfig[key]
+        if (configured === undefined) {
+          throw new Error(`Missing required user configuration value: ${key}`)
+        }
+        return String(configured)
+      },
+    )
+  }
+  return resolved.replace(/\$\{([^}]+)\}/gu, (source, expression: string) => {
+    const [name, fallback] = expression.split(':-', 2)
+    return environment[name ?? ''] ?? fallback ?? source
+  })
+}
+
+function lspServerDefinition(
+  name: string,
+  value: unknown,
+  pluginName: string,
+  pluginRoot: string,
+  pluginSource: string,
+  configRoot: string | undefined,
+  environment: Readonly<Record<string, string | undefined>>,
+  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+): ClaudePluginLspServer {
+  if (!isRecord(value)) throw new Error(`LSP server ${name} must be an object`)
+  const pluginData = claudePluginDataPath(
+    configRoot ?? pluginRoot,
+    pluginSource,
+  )
+  const command = expandLspString(
+    nonEmptyString(value.command, `LSP server ${name} command`),
+    pluginRoot,
+    pluginData,
+    environment,
+    userConfig,
+  )
+  const args = value.args ?? []
+  if (!Array.isArray(args) || !args.every((item) => typeof item === 'string')) {
+    throw new Error(`LSP server ${name} args must be an array of strings`)
+  }
+  const env = value.env ?? {}
+  if (
+    !isRecord(env) ||
+    !Object.values(env).every((item) => typeof item === 'string')
+  ) {
+    throw new Error(`LSP server ${name} env must contain string values`)
+  }
+  const extensionToLanguage = value.extensionToLanguage
+  if (
+    !isRecord(extensionToLanguage) ||
+    Object.keys(extensionToLanguage).length === 0 ||
+    !Object.entries(extensionToLanguage).every(
+      ([extension, language]) =>
+        extension.startsWith('.') &&
+        extension.length > 1 &&
+        typeof language === 'string' &&
+        language.trim().length > 0,
+    )
+  ) {
+    throw new Error(
+      `LSP server ${name} extensionToLanguage must map extensions to language IDs`,
+    )
+  }
+  if (
+    value.transport !== undefined &&
+    value.transport !== 'stdio' &&
+    value.transport !== 'socket'
+  ) {
+    throw new Error(`LSP server ${name} transport must be stdio or socket`)
+  }
+  const workspaceFolder =
+    value.workspaceFolder === undefined
+      ? undefined
+      : nonEmptyString(
+          value.workspaceFolder,
+          `LSP server ${name} workspaceFolder`,
+        )
+  const positiveInteger = (field: 'startupTimeout' | 'shutdownTimeout') => {
+    const candidate = value[field]
+    if (
+      candidate !== undefined &&
+      (!Number.isSafeInteger(candidate) || Number(candidate) <= 0)
+    ) {
+      throw new Error(`LSP server ${name} ${field} must be a positive integer`)
+    }
+    return candidate as number | undefined
+  }
+  const startupTimeout = positiveInteger('startupTimeout')
+  positiveInteger('shutdownTimeout')
+  if (value.shutdownTimeout !== undefined) {
+    throw new Error(
+      `LSP server '${name}': shutdownTimeout is not yet implemented. Remove this field from the configuration.`,
+    )
+  }
+  if (value.restartOnCrash !== undefined) {
+    if (typeof value.restartOnCrash !== 'boolean') {
+      throw new Error(`LSP server ${name} restartOnCrash must be a boolean`)
+    }
+    throw new Error(
+      `LSP server '${name}': restartOnCrash is not yet implemented. Remove this field from the configuration.`,
+    )
+  }
+  if (
+    value.maxRestarts !== undefined &&
+    (!Number.isSafeInteger(value.maxRestarts) || Number(value.maxRestarts) < 0)
+  ) {
+    throw new Error(
+      `LSP server ${name} maxRestarts must be a non-negative integer`,
+    )
+  }
+  return {
+    name,
+    pluginName,
+    pluginRoot,
+    command,
+    args: args.map((arg) =>
+      expandLspString(arg, pluginRoot, pluginData, environment, userConfig),
+    ),
+    env: {
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      CLAUDE_PLUGIN_DATA: pluginData,
+      ...Object.fromEntries(
+        Object.entries(env).map(([key, item]) => [
+          key,
+          expandLspString(
+            item as string,
+            pluginRoot,
+            pluginData,
+            environment,
+            userConfig,
+          ),
+        ]),
+      ),
+    },
+    extensionToLanguage: extensionToLanguage as Record<string, string>,
+    ...(value.initializationOptions === undefined
+      ? {}
+      : { initializationOptions: value.initializationOptions }),
+    ...(value.settings === undefined ? {} : { settings: value.settings }),
+    ...(workspaceFolder === undefined
+      ? {}
+      : {
+          workspaceFolder: expandLspString(
+            workspaceFolder,
+            pluginRoot,
+            pluginData,
+            environment,
+            userConfig,
+          ),
+        }),
+    ...(startupTimeout === undefined ? {} : { startupTimeout }),
+    ...(value.maxRestarts === undefined
+      ? {}
+      : { maxRestarts: Number(value.maxRestarts) }),
+  }
+}
+
+async function loadLspServers(
+  root: string,
+  manifest: ClaudePluginManifest,
+  source: string,
+  configRoot: string | undefined,
+  environment: Readonly<Record<string, string | undefined>>,
+  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+): Promise<ClaudePluginLspServer[]> {
+  const definitions = new Map<string, ClaudePluginLspServer>()
+  const add = async (
+    value: string | Record<string, unknown>,
+    required: boolean,
+  ): Promise<void> => {
+    try {
+      const parsed = expandPluginRoot(
+        typeof value === 'string'
+          ? JSON.parse(await readFile(safePluginPath(root, value), 'utf8'))
+          : value,
+        root,
+      )
+      if (!isRecord(parsed)) throw new Error('LSP config must be an object')
+      const servers = isRecord(parsed.lspServers) ? parsed.lspServers : parsed
+      for (const [name, server] of Object.entries(servers)) {
+        if (configRoot) {
+          await mkdir(claudePluginDataPath(configRoot, source), {
+            recursive: true,
+          })
+        }
+        definitions.set(
+          name,
+          lspServerDefinition(
+            name,
+            server,
+            manifest.name,
+            root,
+            source,
+            configRoot,
+            environment,
+            userConfig,
+          ),
+        )
+      }
+    } catch (error) {
+      if (required || (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`Invalid plugin LSP config in ${root}`, {
+          cause: error,
+        })
+      }
+    }
+  }
+  await add('.lsp.json', false)
+  if (manifest.lspServers !== undefined) {
+    const values = Array.isArray(manifest.lspServers)
+      ? manifest.lspServers
+      : [manifest.lspServers]
+    for (const value of values) await add(value, true)
+  }
+  return [...definitions.values()]
+}
+
 async function loadPlugin(
   pluginPath: string,
   source: string,
@@ -451,6 +709,9 @@ async function loadPlugin(
   cwd: string,
   requireManifest = false,
   resourceScope?: ClaudeResourceScope,
+  configRoot?: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
 ): Promise<{
   record: ClaudePluginRecord
   resources: Omit<ClaudePluginResources, 'plugins'>
@@ -482,12 +743,20 @@ async function loadPlugin(
   const agentsRoots = pathList(manifest.agents, 'agents').map((path) =>
     safePluginPath(canonical, path),
   )
-  const [commandFiles, skillFiles, agentFiles] = await Promise.all([
+  const [commandFiles, skillFiles, agentFiles, lsp] = await Promise.all([
     componentFiles(canonical, commandPaths, 'commands', 'commands'),
     skillsDirectoryLayout
       ? skillsDirectoryFiles(canonical)
       : componentFiles(canonical, manifest.skills, 'skills', 'skills'),
     componentFiles(canonical, manifest.agents, 'agents', 'agents'),
+    loadLspServers(
+      canonical,
+      manifest,
+      source,
+      configRoot,
+      environment,
+      manifest.userConfig === undefined ? undefined : userConfig,
+    ),
   ])
   const [commands, skills, agents] = await Promise.all([
     loadTextResources(
@@ -644,7 +913,7 @@ async function loadPlugin(
         : { description: manifest.description }),
       errors: [],
     },
-    resources: { commands, skills, agents, settings, mcp },
+    resources: { commands, skills, agents, settings, mcp, lsp },
   }
 }
 
@@ -713,6 +982,7 @@ export async function loadClaudePlugins(options: {
   strictPluginDirectories?: boolean
   pluginUrls?: readonly string[]
   loadInstalled?: boolean
+  environment?: Readonly<Record<string, string | undefined>>
 }): Promise<ClaudePluginResources> {
   const registry =
     options.loadInstalled === false
@@ -736,6 +1006,7 @@ export async function loadClaudePlugins(options: {
     source: string
     enabled: boolean
     resourceScope?: ClaudeResourceScope
+    configId?: string
   }> = []
   for (const source of inlineSources) {
     let materialized
@@ -756,6 +1027,7 @@ export async function loadClaudePlugins(options: {
     source: string
     enabled: boolean
     resourceScope?: ClaudeResourceScope
+    configId?: string
   }> = [
     ...nativeRegistry
       .filter((entry) => entry.enabled)
@@ -764,6 +1036,7 @@ export async function loadClaudePlugins(options: {
         source: entry.id,
         enabled: entry.enabled,
         resourceScope: entry.scope as ClaudeResourceScope,
+        configId: entry.id,
       })),
     ...skillsDirectoryRegistry
       .filter((entry) => entry.enabled)
@@ -772,6 +1045,7 @@ export async function loadClaudePlugins(options: {
         source: entry.id,
         enabled: entry.enabled,
         resourceScope: 'user' as ClaudeResourceScope,
+        configId: entry.id,
       })),
     ...registry
       .filter((entry) => entry.enabled)
@@ -779,6 +1053,7 @@ export async function loadClaudePlugins(options: {
         path: entry.path,
         source: entry.source,
         enabled: true,
+        configId: entry.name,
       })),
     ...inlineCandidates,
   ]
@@ -797,6 +1072,15 @@ export async function loadClaudePlugins(options: {
             options.cwd,
             false,
             candidate.resourceScope,
+            options.configRoot,
+            options.environment ?? process.env,
+            candidate.configId === undefined
+              ? undefined
+              : await readClaudePluginOptions(
+                  options.configRoot,
+                  options.cwd,
+                  candidate.configId,
+                ),
           )
         } catch (error) {
           if (
@@ -822,6 +1106,7 @@ export async function loadClaudePlugins(options: {
               agents: [],
               settings: [],
               mcp: [],
+              lsp: [],
             },
           }
         }
@@ -837,6 +1122,7 @@ export async function loadClaudePlugins(options: {
           agents: [...result.agents, ...current.resources.agents],
           settings: [...result.settings, ...current.resources.settings],
           mcp: [...result.mcp, ...current.resources.mcp],
+          lsp: [...result.lsp, ...current.resources.lsp],
         }),
         {
           plugins: [],
@@ -845,6 +1131,7 @@ export async function loadClaudePlugins(options: {
           agents: [],
           settings: [],
           mcp: [],
+          lsp: [],
         },
       )
   } finally {
@@ -1253,7 +1540,10 @@ export async function describeClaudePlugin(
   }
   await addLspServers('.lsp.json', false)
   if (manifest.lspServers !== undefined) {
-    await addLspServers(manifest.lspServers, true)
+    const values = Array.isArray(manifest.lspServers)
+      ? manifest.lspServers
+      : [manifest.lspServers]
+    for (const value of values) await addLspServers(value, true)
   }
   const rootSkillPath = join(
     root,

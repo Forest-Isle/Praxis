@@ -342,6 +342,34 @@ async function readEffectiveEnabledPlugins(
   return result
 }
 
+export async function readClaudePluginOptions(
+  configRoot: string,
+  cwd: string,
+  id: string,
+): Promise<Record<string, ClaudePluginConfigValue>> {
+  const result: Record<string, ClaudePluginConfigValue> = {}
+  for (const scope of ['user', 'project', 'local'] as const) {
+    const settings = await readJson(settingsPath(configRoot, cwd, scope))
+    if (!isRecord(settings.pluginConfigs)) continue
+    const plugin = settings.pluginConfigs[id]
+    if (!isRecord(plugin) || !isRecord(plugin.options)) continue
+    for (const [key, value] of Object.entries(plugin.options)) {
+      if (
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean' ||
+        (Array.isArray(value) &&
+          value.every((item) => typeof item === 'string'))
+      ) {
+        result[key] = value
+      } else {
+        throw new Error(`Plugin config ${id}.${key} has an invalid value`)
+      }
+    }
+  }
+  return result
+}
+
 export async function writeClaudeInstalledPlugin(
   configRoot: string,
   plugin: ClaudeInstalledPlugin,
@@ -994,7 +1022,7 @@ async function readPluginIdentity(
   }
 }
 
-type ClaudePluginConfigValue = string | number | boolean | string[]
+export type ClaudePluginConfigValue = string | number | boolean | string[]
 
 function pluginConfigValue(
   value: string,

@@ -644,3 +644,32 @@ Status: complete for Claude Code 2.1.208 single-user interactive CLI scope.
       transcript-transition compatibility gate; aggregate matrix now 50 gates
 - [x] `npm run check`: 87 files, 732 tests; package, performance, strict unused,
       production audit, and 50-gate compatibility matrix passed
+
+## Stage 86 - interactive plugin LSP parity
+
+Status: complete for Claude Code 2.1.208 single-user interactive CLI scope.
+
+- [x] conditional interactive `LSP` exposure from plugin `.lsp.json` and
+      manifest `lspServers`; headless, safe, bare, deny-filtered, and MCP-hosted
+      surfaces remain excluded
+- [x] all nine Claude operations over bounded stdio JSON-RPC with initialize,
+      document open/change, workspace configuration, cancellation, transient
+      content-modified retry, crash restart limits, and bounded shutdown
+- [x] exact Claude text formatting for locations/links, hover markup, nested and
+      workspace symbols, call hierarchy, empty results, pluralization, URI
+      decoding, SymbolKind, and one-based positions
+- [x] plugin root/data/environment expansion, effective user/project/local
+      `${user_config.*}` substitution, persistent data directory, ordered
+      config arrays/override, workspace folder, startup timeout,
+      case-insensitive extension mapping, sanitized child environment, and
+      explicit-secret redaction
+- [x] canonical root/symlink containment, 10MB input and protocol/result bounds,
+      gitignored location filtering, stale-worktree connection cleanup, and
+      awaited interactive service/LSP shutdown
+- [x] real PTY Claude/Praxis schema, exact nine-result, exposure/filtering,
+      lifecycle, document-sync, and shutdown compatibility gate; aggregate
+      matrix now 51 gates
+- [x] real plugin `mcp serve` tool-list gate proves interactive-only LSP remains
+      excluded from the MCP-hosted surface
+- [x] `npm run check`: 88 files, 752 tests; format, lint, boundaries, typecheck,
+      build, and focused strict-unused checks passed

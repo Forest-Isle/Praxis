@@ -444,6 +444,7 @@ export class ClaudeSessionService {
       'Bash',
       'EnterPlanMode',
       'Read',
+      'LSP',
       'Edit',
       'Write',
       'NotebookEdit',
