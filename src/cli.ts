@@ -48,6 +48,7 @@ import {
   type InteractiveResumeOptions,
   type InteractiveServiceFactory,
 } from './cli/interactive.js'
+import { runAgentsDashboard as renderAgentsDashboard } from './cli/agents-dashboard.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
 import { createCliDebugSink } from './cli/debug.js'
 import {
@@ -362,13 +363,45 @@ Provider environment:
 
 const AGENTS_HELP = `Usage: praxis agents [options]
 
-List persistent background agents managed by Praxis.
+Manage background agents
 
 Options:
-  --all         Include completed agents as well as active agents
-  --cwd <path>  Show agents started under this directory
-  --json        Print agent records as JSON for scripting
-  -h, --help    Display help for command
+  --add-dir <directory>                 Additional directory to allow tool
+                                        access to in dispatched sessions
+                                        (repeatable)
+  --agent <agent>                       Default agent for sessions dispatched
+                                        from agent view. Overrides the 'agent'
+                                        setting.
+  --all                                 With --json: include completed sessions
+                                        (the full agent view list)
+  --allow-dangerously-skip-permissions  Make bypass-permissions mode available
+                                        to dispatched sessions without
+                                        defaulting to it
+  --cwd <path>                          Show only background sessions started
+                                        under <path>
+  --dangerously-skip-permissions        Alias for --permission-mode
+                                        bypassPermissions
+  --effort <level>                      Default effort level for sessions
+                                        dispatched from agent view
+  -h, --help                            Display help for command
+  --json                                Print active sessions as a JSON array
+                                        and exit (for scripting; does not
+                                        require a TTY)
+  --mcp-config <config>                 MCP server configuration to apply to
+                                        dispatched sessions (repeatable)
+  --model <model>                       Default model for sessions dispatched
+                                        from agent view
+  --permission-mode <mode>              Default permission mode for sessions
+                                        dispatched from agent view
+  --plugin-dir <path>                   Load plugins from specified directory
+                                        for the agent view and dispatched
+                                        sessions (repeatable)
+  --setting-sources <sources>           Comma-separated list of setting sources
+                                        to load (user, project, local).
+  --settings <file-or-json>             Settings file or JSON string to apply to
+                                        the agent view and dispatched sessions
+  --strict-mcp-config                   Only use MCP servers from --mcp-config
+                                        in dispatched sessions
 `
 
 const MCP_HELP = `Usage: praxis mcp [options] [command]
@@ -868,6 +901,7 @@ interface TopLevelAgentCommands {
     prompt: string
     argv: string[]
     resumeSessionId?: string
+    cwd?: string
   }): Promise<{ id: string; sessionId: string }>
   list(options: { cwd?: string; all: boolean }): Promise<TopLevelAgentSummary[]>
   logs(id: string): Promise<string>
@@ -905,6 +939,11 @@ export interface CliDependencies extends InteractiveServiceFactory {
     agent?: string
     controls?: CliControls
     resume?: InteractiveResumeOptions & { fromPr?: string | true }
+    signal?: AbortSignal
+  }): Promise<number>
+  runAgentsDashboard?(options: {
+    manager: TopLevelAgentCommands
+    defaults: { argv: readonly string[]; cwd?: string }
     signal?: AbortSignal
   }): Promise<number>
   topLevelAgents?: TopLevelAgentCommands
@@ -1562,6 +1601,12 @@ const defaultDependencies: CliDependencies = {
                 : `No conversation found matching: ${resume.sessionSelector}`,
             }),
       ...(resume?.requireSession ? { requireSession: true } : {}),
+    }),
+  runAgentsDashboard: ({ manager, defaults, signal }) =>
+    renderAgentsDashboard({
+      manager,
+      defaults,
+      ...(signal ? { signal } : {}),
     }),
   topLevelAgents: new TopLevelAgentManager({
     configRoot: resolve(
@@ -3296,6 +3341,39 @@ function backgroundWorkerArgv(argv: readonly string[]): string[] {
   return filtered
 }
 
+function agentDashboardWorkerArgv(invocation: CliInvocation): string[] {
+  const argv: string[] = []
+  if (invocation.model !== undefined) argv.push('--model', invocation.model)
+  if (invocation.effort !== undefined) argv.push('--effort', invocation.effort)
+  if (invocation.permissionMode !== 'default') {
+    argv.push('--permission-mode', invocation.permissionMode)
+  }
+  if (invocation.dangerouslySkipPermissions) {
+    argv.push('--dangerously-skip-permissions')
+  }
+  if (invocation.allowDangerouslySkipPermissions) {
+    argv.push('--allow-dangerously-skip-permissions')
+  }
+  if (invocation.agent !== undefined) argv.push('--agent', invocation.agent)
+  for (const directory of invocation.addDirectories) {
+    argv.push('--add-dir', directory)
+  }
+  for (const config of invocation.mcpConfigs) {
+    argv.push('--mcp-config', config)
+  }
+  if (invocation.strictMcpConfig) argv.push('--strict-mcp-config')
+  if (invocation.settings !== undefined) {
+    argv.push('--settings', invocation.settings)
+  }
+  if (invocation.settingSources !== undefined) {
+    argv.push('--setting-sources', invocation.settingSources.join(','))
+  }
+  for (const directory of invocation.pluginDirectories) {
+    argv.push('--plugin-dir', directory)
+  }
+  return argv
+}
+
 function requireTopLevelAgentManager(
   dependencies: CliDependencies,
 ): TopLevelAgentCommands {
@@ -3303,6 +3381,51 @@ function requireTopLevelAgentManager(
     throw new Error('Top-level agent manager unavailable')
   }
   return dependencies.topLevelAgents
+}
+
+function assertAgentsOptionAllowlist(argv: readonly string[]): void {
+  const valued = new Set([
+    '--add-dir',
+    '--agent',
+    '--cwd',
+    '--effort',
+    '--mcp-config',
+    '--model',
+    '--permission-mode',
+    '--plugin-dir',
+    '--setting-sources',
+    '--settings',
+  ])
+  const flags = new Set([
+    '--all',
+    '--allow-dangerously-skip-permissions',
+    '--dangerously-skip-permissions',
+    '--json',
+    '--strict-mcp-config',
+  ])
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index]
+    if (value === 'agents') continue
+    if (value === '--') throw new Error('Unexpected operand for agents')
+    const option = value?.split('=', 1)[0]
+    if (option === '-h' || option === '--help') continue
+    if (option && flags.has(option)) {
+      if (value.includes('='))
+        throw new Error(`Option does not take a value: ${option}`)
+      continue
+    }
+    if (option && valued.has(option)) {
+      if (!value.includes('=')) {
+        index += 1
+        if (argv[index] === undefined)
+          throw new Error(`Missing value for ${option}`)
+      }
+      continue
+    }
+    if (value?.startsWith('-'))
+      throw new Error(`${value} is not valid with agents`)
+    throw new Error(`Unexpected operand for agents: ${value}`)
+  }
 }
 
 function isCancellation(error: unknown, signal?: AbortSignal): boolean {
@@ -3493,6 +3616,7 @@ async function execute(
   const invocation = parseCliInvocation(argv)
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
+  if (args[0] === 'agents') assertAgentsOptionAllowlist(argv)
   const interactiveResume =
     invocation.resumeSelector !== undefined &&
     args.length === (typeof invocation.resumeSelector === 'string' ? 2 : 1)
@@ -3616,7 +3740,11 @@ async function execute(
       '--retry-interrupted-tools is only valid with resume or --from-pr',
     )
   }
-  if (agent && knownCommand && !['run', 'resume'].includes(command ?? 'run')) {
+  if (
+    agent &&
+    knownCommand &&
+    !['run', 'resume', 'agents'].includes(command ?? 'run')
+  ) {
     throw new Error('--agent is only valid with run or resume')
   }
   if (
@@ -3686,21 +3814,35 @@ async function execute(
     )
   }
   if (command === 'agents') {
-    const agents = await requireTopLevelAgentManager(dependencies).list({
-      ...(invocation.agentsCwd === undefined
-        ? {}
-        : { cwd: invocation.agentsCwd }),
-      all: invocation.agentsAll,
-    })
-    if (invocation.legacyJson) writeJson(io, agents)
-    else {
-      for (const current of agents) {
-        io.stdout(
-          `${current.id}\t${current.status ?? current.state}\t${current.cwd}\t${current.name}\n`,
-        )
-      }
+    if (invocation.legacyJson) {
+      const agents = await requireTopLevelAgentManager(dependencies).list({
+        ...(invocation.agentsCwd === undefined
+          ? {}
+          : { cwd: invocation.agentsCwd }),
+        all: invocation.agentsAll,
+      })
+      writeJson(io, agents)
+      return 0
     }
-    return 0
+    if (!io.isTTY) {
+      throw new Error(
+        "'praxis agents' requires an interactive terminal (stdout is not a TTY) — use 'praxis agents --json' for a machine-readable listing.",
+      )
+    }
+    const manager = requireTopLevelAgentManager(dependencies)
+    if (!dependencies.runAgentsDashboard) {
+      throw new Error('Agents dashboard unavailable')
+    }
+    return dependencies.runAgentsDashboard({
+      manager,
+      defaults: {
+        argv: agentDashboardWorkerArgv(invocation),
+        ...(invocation.agentsCwd === undefined
+          ? {}
+          : { cwd: invocation.agentsCwd }),
+      },
+      ...(signal ? { signal } : {}),
+    })
   }
   if (command === 'logs') {
     io.stdout(

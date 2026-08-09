@@ -83,8 +83,11 @@ task path, and shares `TaskOutput`/`TaskStop` routing with Agent IDs. Resumable
 Bash sidecars use atomic replacement and malformed records are ignored. Only
 `Read` can access the temporary output root.
 Top-level `--bg`/`--background` launches a detached, persistent session whose
-eight-hex job ID owns an idle/active/stopped lifecycle. `praxis agents` supports
-JSON, historical, and cwd-filtered views; `logs`, `attach`, and `stop` use an
+eight-hex job ID owns an idle/active/stopped lifecycle. In a TTY, `praxis agents`
+opens a live grouped dashboard for native Claude and Praxis sessions, including
+history review, background dispatch, completed-session resume, attach,
+continuation, detach, and stop. `agents --json [--all] [--cwd <path>]` retains a
+non-interactive scripting surface; `logs`, `attach`, and `stop` use an
 owner-authenticated local control socket. Job state follows Claude's local
 `jobs/` and `sessions/` layout while Praxis-only dispatch ownership prevents
 cross-runtime process takeover. Background user/assistant entries carry native
@@ -217,7 +220,8 @@ later messages. Activated nested-memory rules remain active across compaction.
 - Shared local agent definitions plus background Agent launch, output, stop,
   same-ID messaging, completion notification, and native sidechains
 - Shared durable task graph plus foreground/background Bash lifecycle
-- Persistent top-level background sessions plus agents/logs/attach/stop controls
+- Persistent top-level background sessions plus native/Praxis agents dashboard,
+  history review/resume, JSON, logs, attach, continuation, and stop controls
 - Session-only dynamic wakeups, shared durable scheduled prompts, and
   fixed-interval `/loop`
 
@@ -296,6 +300,7 @@ node dist/cli.js -p --init "Run setup hooks, then continue"
 node dist/cli.js -p --maintenance "Run maintenance hooks, then continue"
 node dist/cli.js fork <session-id>
 node dist/cli.js --bg "Inspect this project"
+node dist/cli.js agents
 node dist/cli.js agents --json --all --cwd "$PWD"
 node dist/cli.js logs <agent-id>
 node dist/cli.js attach <agent-id>

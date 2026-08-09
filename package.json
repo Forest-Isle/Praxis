@@ -41,6 +41,7 @@
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",
     "test:permission-prompt-compat": "npm run build && node scripts/verify-permission-prompt-tool.mjs",
     "test:auto-mode-compat": "npm run build && node scripts/verify-auto-mode-compatibility.mjs",
+    "test:agents-dashboard-compat": "npm run build && node scripts/verify-agents-dashboard-compatibility.mjs",
     "test:performance": "npm run build && node --expose-gc scripts/verify-performance-budgets.mjs",
     "test:metering-compat": "npm run build && node scripts/verify-metering-budget.mjs",
     "test:prompt-suggestions": "npm run build && node scripts/verify-prompt-suggestions.mjs",

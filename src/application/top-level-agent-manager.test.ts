@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import {
   ClaudeJobStore,
   type ClaudeJobState,
@@ -82,6 +83,44 @@ afterEach(async () => {
 })
 
 describe('TopLevelAgentManager', () => {
+  it('waits for a newly launched worker socket before attaching', async () => {
+    const fixtureState = await fixture()
+    let ran = false
+    const attaching = fixtureState.manager.attach(
+      fixtureState.id,
+      (async function* () {})(),
+      () => undefined,
+    )
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50))
+    const worker = runTopLevelAgentWorker({
+      configRoot: fixtureState.configRoot,
+      id: fixtureState.id,
+      async createRuntime() {
+        return {
+          async run(_prompt, _signal, sessionId) {
+            ran = true
+            return {
+              sessionId,
+              text: 'STARTED_AFTER_ATTACH',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+        }
+      },
+    })
+    await attaching
+    await waitFor(
+      async () =>
+        (await fixtureState.store.read(fixtureState.id)).tempo === 'idle',
+    )
+    expect(ran).toBe(true)
+    await fixtureState.manager.stop(fixtureState.id)
+    await worker
+  })
+
   it('keeps a completed turn idle, accepts attached continuation, logs, and stops', async () => {
     const fixtureState = await fixture()
     const calls: string[] = []
@@ -234,6 +273,82 @@ describe('TopLevelAgentManager', () => {
         state: 'failed',
       }),
     ])
+  })
+
+  it('lists Praxis history and native Claude sessions across CWDs unless filtered', async () => {
+    const fixtureState = await fixture()
+    const otherCwd = join(fixtureState.configRoot, 'other')
+    await mkdir(otherCwd)
+    await mkdir(join(fixtureState.configRoot, 'sessions'))
+    const nativeSessionId = 'aaaaaaaa-1111-4111-8111-111111111111'
+    await writeFile(
+      join(fixtureState.configRoot, 'sessions', '12345.json'),
+      JSON.stringify({
+        pid: 12345,
+        sessionId: nativeSessionId,
+        cwd: otherCwd,
+        startedAt: 1,
+        kind: 'interactive',
+        name: 'native Claude session',
+        status: 'idle',
+      }),
+    )
+    await writeFile(
+      join(fixtureState.configRoot, 'sessions', '12346.json'),
+      JSON.stringify({
+        id: 'native000',
+        sessionId: 'bbbbbbbb-1111-4111-8111-111111111111',
+        cwd: otherCwd,
+        startedAt: 2,
+        kind: 'background',
+        name: 'native completed session',
+        state: 'done',
+      }),
+    )
+    const nativeTranscript = resolveClaudePaths({
+      configDir: fixtureState.configRoot,
+      cwd: otherCwd,
+      sessionId: nativeSessionId,
+    }).sessionFile
+    await mkdir(dirname(nativeTranscript), { recursive: true })
+    await writeFile(nativeTranscript, 'NATIVE_TRANSCRIPT\n')
+    await fixtureState.store.update(fixtureState.id, (state) => ({
+      ...state,
+      state: 'stopped',
+      tempo: 'idle',
+      firstTerminalAt: new Date().toISOString(),
+    }))
+
+    await expect(fixtureState.manager.list({ all: false })).resolves.toEqual([
+      expect.objectContaining({
+        cwd: otherCwd,
+        kind: 'interactive',
+        sessionId: nativeSessionId,
+        status: 'idle',
+      }),
+    ])
+    await expect(fixtureState.manager.list({ all: true })).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: fixtureState.id, state: 'stopped' }),
+        expect.objectContaining({ sessionId: nativeSessionId }),
+        expect.objectContaining({
+          id: 'native000',
+          sessionId: 'bbbbbbbb-1111-4111-8111-111111111111',
+          state: 'done',
+        }),
+      ]),
+    )
+    await expect(
+      fixtureState.manager.list({ cwd: fixtureState.cwd, all: true }),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: fixtureState.id, cwd: fixtureState.cwd }),
+    ])
+    await expect(
+      fixtureState.manager.review({
+        cwd: otherCwd,
+        sessionId: nativeSessionId,
+      }),
+    ).resolves.toBe('NATIVE_TRANSCRIPT\n')
   })
 
   it('does not resurrect a job stopped while its runtime is initializing', async () => {
