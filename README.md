@@ -10,7 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Stage 88 plugin MCP bundle parity is implemented on top of the
+Stage 89 executable CLI surface closure is implemented on top of the
+Stage 88 plugin MCP bundle parity,
 Stage 87 protected plugin option parity,
 Stage 86 interactive plugin LSP parity,
 Stage 85 interactive question and plan-mode parity, and
@@ -483,8 +484,11 @@ npm run test:compat:all
 
 The aggregate command discovers every `test:*` compatibility gate except the
 provider-free package and performance gates, validates each command shape, and
-runs 51 isolated gates in sequence. Run an individual `test:*` command when
-iterating on one surface.
+runs 52 isolated gates in sequence. The CLI surface gate dynamically walks all
+included Claude Code 2.1.208 command routes and aliases, compares route-local
+options, verifies functional `help <command>` dispatch, and keeps product-scope
+exclusions explicit. Run an individual `test:*` command when iterating on one
+surface.
 
 `npm run test:performance` is a local, provider-free release gate covering CLI
 process startup, 500-session discovery, and large transcript load, heap, and
