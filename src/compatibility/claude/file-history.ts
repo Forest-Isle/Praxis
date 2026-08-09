@@ -201,11 +201,7 @@ export class ClaudeFileHistory {
   private readonly backupDirectory: string
   private readonly roots: readonly string[]
 
-  constructor(
-    configRoot: string,
-    private readonly sessionId: string,
-    roots: readonly string[],
-  ) {
+  constructor(configRoot: string, sessionId: string, roots: readonly string[]) {
     this.backupDirectory = join(configRoot, 'file-history', sessionId)
     this.roots = roots.map((root) => resolve(root))
   }

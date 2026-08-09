@@ -23,9 +23,11 @@ export function indexClaudeToolLinks(
   entries: readonly ClaudeTranscriptEntry[],
 ): {
   toolCalls: Map<string, string>
+  toolNames: Map<string, string>
   completedToolCalls: Set<string>
 } {
   const toolCalls = new Map<string, string>()
+  const toolNames = new Map<string, string>()
   const completedToolCalls = new Set<string>()
 
   for (const entry of entries) {
@@ -37,6 +39,7 @@ export function indexClaudeToolLinks(
         typeof entry.uuid === 'string'
       ) {
         toolCalls.set(block.id, entry.uuid)
+        if (typeof block.name === 'string') toolNames.set(block.id, block.name)
       }
       if (
         entry.type === 'user' &&
@@ -48,7 +51,7 @@ export function indexClaudeToolLinks(
     }
   }
 
-  return { toolCalls, completedToolCalls }
+  return { toolCalls, toolNames, completedToolCalls }
 }
 
 export function findUnresolvedClaudeToolCalls(

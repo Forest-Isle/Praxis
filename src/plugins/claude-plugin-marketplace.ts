@@ -848,7 +848,6 @@ export async function addClaudeMarketplace(
 
 export async function updateClaudeMarketplace(
   configRoot: string,
-  cwd: string,
   name?: string,
 ): Promise<ClaudeKnownMarketplace[]> {
   const current = await readClaudeKnownMarketplaces(configRoot)

@@ -20,6 +20,8 @@ import type {
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import type {
   ModelToolCall,
+  ModelContentBlock,
+  ModelImageMediaType,
   ModelToolDefinition,
   PermissionApproval,
   ToolExecutionContext,
@@ -61,6 +63,7 @@ interface ConfiguredServer {
 
 interface ConnectedTool {
   client: Client
+  serverName: string
   toolName: string
   definition: ModelToolDefinition
   sensitiveValues: readonly string[]
@@ -428,6 +431,14 @@ function resourceExtension(mimeType: unknown): string {
       return '.pdf'
     case 'application/json':
       return '.json'
+    case 'audio/wav':
+      return '.wav'
+    case 'audio/mpeg':
+      return '.mp3'
+    case 'audio/ogg':
+      return '.ogg'
+    case 'audio/flac':
+      return '.flac'
     case 'text/plain':
       return '.txt'
     default:
@@ -481,6 +492,273 @@ async function writeResourceBlob(
     }
   }
   throw new Error('Could not reserve MCP resource output path')
+}
+
+const MCP_IMAGE_MEDIA_TYPES = new Set<ModelImageMediaType>([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
+
+async function writeToolBlob(
+  directory: string,
+  serverName: string,
+  bytes: Buffer,
+  extension: string,
+): Promise<string> {
+  await mkdir(directory, { recursive: true })
+  const safeServer = serverName.replaceAll(/[^A-Za-z0-9_-]/gu, '-')
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const filePath = join(
+      directory,
+      `mcp-${safeServer}-blob-${Date.now()}-${randomBytes(3).toString('hex')}${extension}`,
+    )
+    let handle
+    let created = false
+    try {
+      handle = await open(filePath, 'wx', 0o600)
+      created = true
+      await handle.writeFile(bytes)
+      await handle.sync()
+      await handle.close()
+      return filePath
+    } catch (error) {
+      await handle?.close().catch(() => undefined)
+      if (created) await rm(filePath, { force: true }).catch(() => undefined)
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+  }
+  throw new Error('Could not reserve MCP tool blob output path')
+}
+
+function mcpTextBlock(
+  text: string,
+  sensitiveValues: readonly string[],
+): ModelContentBlock {
+  return { type: 'text', text: redactSensitiveText(text, sensitiveValues) }
+}
+
+async function mcpBinaryText(
+  options: {
+    kind: 'Audio' | 'Resource'
+    serverName: string
+    uri?: string
+    mimeType: string
+    bytes: Buffer
+    context: ToolExecutionContext
+  },
+  sensitiveValues: readonly string[],
+  createdFiles: string[],
+): Promise<ModelContentBlock> {
+  if (!options.context.toolResultDirectory) {
+    throw new Error('MCP binary tool result output directory is unavailable')
+  }
+  const filePath = await writeToolBlob(
+    options.context.toolResultDirectory,
+    options.serverName,
+    options.bytes,
+    resourceExtension(options.mimeType),
+  )
+  createdFiles.push(filePath)
+  const origin =
+    options.kind === 'Audio'
+      ? `Audio from ${options.serverName}`
+      : `Resource from ${options.serverName} at ${options.uri}`
+  return mcpTextBlock(
+    `[${origin}] Binary content (${options.mimeType}, ${options.bytes.length} bytes) saved to ${filePath}`,
+    sensitiveValues,
+  )
+}
+
+async function mcpToolResultUnchecked(
+  serverName: string,
+  result: Record<string, unknown>,
+  context: ToolExecutionContext,
+  sensitiveValues: readonly string[],
+  createdFiles: string[],
+): Promise<ToolExecutionResult> {
+  if (!Array.isArray(result.content)) {
+    throw new Error('MCP tool result content must be an array')
+  }
+  const blocks: ModelContentBlock[] = []
+  let resultBytes = 0
+  const consumeBytes = (bytes: number) => {
+    resultBytes += bytes
+    if (resultBytes > MAX_RESOURCE_BYTES) {
+      throw new Error(`MCP tool result exceeded ${MAX_RESOURCE_BYTES} bytes`)
+    }
+  }
+  const structuredContent =
+    result.structuredContent === undefined
+      ? undefined
+      : redactSensitiveValue(result.structuredContent, sensitiveValues)
+  for (const item of result.content) {
+    if (!isRecord(item) || typeof item.type !== 'string') {
+      throw new Error('Invalid MCP tool result content block')
+    }
+    if (item.type === 'text') {
+      if (typeof item.text !== 'string') {
+        throw new Error('MCP text result requires text')
+      }
+      consumeBytes(Buffer.byteLength(item.text))
+      if (structuredContent === undefined) {
+        blocks.push(mcpTextBlock(item.text, sensitiveValues))
+      }
+      continue
+    }
+    if (item.type === 'image') {
+      if (
+        typeof item.mimeType !== 'string' ||
+        !MCP_IMAGE_MEDIA_TYPES.has(item.mimeType as ModelImageMediaType) ||
+        typeof item.data !== 'string'
+      ) {
+        throw new Error('MCP image result is invalid or unsupported')
+      }
+      const bytes = decodeResourceBlob(item.data)
+      consumeBytes(bytes.length)
+      blocks.push({
+        type: 'image',
+        mediaType: item.mimeType as ModelImageMediaType,
+        data: item.data,
+      })
+      continue
+    }
+    if (item.type === 'audio') {
+      if (typeof item.mimeType !== 'string' || typeof item.data !== 'string') {
+        throw new Error('MCP audio result is invalid')
+      }
+      const bytes = decodeResourceBlob(item.data)
+      consumeBytes(bytes.length)
+      blocks.push(
+        await mcpBinaryText(
+          {
+            kind: 'Audio',
+            serverName,
+            mimeType: item.mimeType,
+            bytes,
+            context,
+          },
+          sensitiveValues,
+          createdFiles,
+        ),
+      )
+      continue
+    }
+    if (item.type === 'resource_link') {
+      if (typeof item.name !== 'string' || typeof item.uri !== 'string') {
+        throw new Error('MCP resource link result is invalid')
+      }
+      consumeBytes(Buffer.byteLength(item.name) + Buffer.byteLength(item.uri))
+      blocks.push(
+        mcpTextBlock(
+          `[Resource link: ${item.name}] ${item.uri}`,
+          sensitiveValues,
+        ),
+      )
+      continue
+    }
+    if (item.type === 'resource') {
+      if (!isRecord(item.resource) || typeof item.resource.uri !== 'string') {
+        throw new Error('MCP embedded resource result is invalid')
+      }
+      const resource = item.resource
+      const resourceUri = String(resource.uri)
+      if (typeof resource.text === 'string') {
+        consumeBytes(
+          Buffer.byteLength(resourceUri) + Buffer.byteLength(resource.text),
+        )
+        blocks.push(
+          mcpTextBlock(
+            `[Resource from ${serverName} at ${resourceUri}] ${resource.text}`,
+            sensitiveValues,
+          ),
+        )
+        continue
+      }
+      if (typeof resource.blob === 'string') {
+        const bytes = decodeResourceBlob(resource.blob)
+        consumeBytes(bytes.length)
+        blocks.push(
+          await mcpBinaryText(
+            {
+              kind: 'Resource',
+              serverName,
+              uri: resourceUri,
+              mimeType:
+                typeof resource.mimeType === 'string'
+                  ? resource.mimeType
+                  : 'application/octet-stream',
+              bytes,
+              context,
+            },
+            sensitiveValues,
+            createdFiles,
+          ),
+        )
+        continue
+      }
+      throw new Error('MCP embedded resource requires text or blob')
+    }
+    const serialized = JSON.stringify(
+      redactSensitiveValue(item, sensitiveValues),
+    )
+    consumeBytes(Buffer.byteLength(serialized))
+    blocks.push(mcpTextBlock(serialized, sensitiveValues))
+  }
+  if (structuredContent !== undefined) {
+    const serialized = JSON.stringify(structuredContent)
+    consumeBytes(Buffer.byteLength(serialized))
+    blocks.push(mcpTextBlock(serialized, sensitiveValues))
+  }
+  const content = blocks
+    .filter(
+      (block): block is Extract<ModelContentBlock, { type: 'text' }> =>
+        block.type === 'text',
+    )
+    .map((block) => block.text)
+    .join('\n')
+  if (Buffer.byteLength(content) > MAX_RESOURCE_BYTES) {
+    throw new Error(`MCP tool result exceeded ${MAX_RESOURCE_BYTES} bytes`)
+  }
+  const images = blocks.filter(
+    (block): block is Extract<ModelContentBlock, { type: 'image' }> =>
+      block.type === 'image',
+  )
+  return {
+    content,
+    contentBlocks: blocks,
+    ...(images.length > 0 ? { images } : {}),
+    isError: result.isError === true,
+    ...(structuredContent === undefined
+      ? {}
+      : { nativeMcpMeta: { structuredContent } }),
+  }
+}
+
+async function mcpToolResult(
+  serverName: string,
+  result: Record<string, unknown>,
+  context: ToolExecutionContext,
+  sensitiveValues: readonly string[],
+): Promise<ToolExecutionResult> {
+  const createdFiles: string[] = []
+  try {
+    return await mcpToolResultUnchecked(
+      serverName,
+      result,
+      context,
+      sensitiveValues,
+      createdFiles,
+    )
+  } catch (error) {
+    await Promise.all(
+      createdFiles.map((filePath) =>
+        rm(filePath, { force: true }).catch(() => undefined),
+      ),
+    )
+    throw error
+  }
 }
 
 function isMissingResourceError(error: unknown): boolean {
@@ -691,10 +969,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
       throw redactSensitiveError(error, tool.sensitiveValues)
     }
     if (!isRecord(result)) throw new Error('Invalid MCP tool result')
-    return {
-      content: toolContent(result, tool.sensitiveValues),
-      isError: result.isError === true,
-    }
+    return mcpToolResult(tool.serverName, result, context, tool.sensitiveValues)
   }
 
   async close(): Promise<void> {
@@ -871,6 +1146,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
         }
         connectedTools.set(name, {
           client,
+          serverName,
           toolName: tool.name,
           sensitiveValues,
           definition: {

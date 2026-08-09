@@ -1430,11 +1430,17 @@ export class ClaudeSubagentExecutor {
               type: 'tool-result' as const,
               toolCallId: call.id,
               content: result.content,
+              ...(result.contentBlocks
+                ? { contentBlocks: result.contentBlocks }
+                : {}),
               ...(result.images ? { images: result.images } : {}),
               ...(result.documents ? { documents: result.documents } : {}),
               isError: result.isError,
               ...(result.nativeToolUseResult
                 ? { nativeToolUseResult: result.nativeToolUseResult }
+                : {}),
+              ...(result.nativeMcpMeta
+                ? { nativeMcpMeta: result.nativeMcpMeta }
                 : {}),
             },
           ],

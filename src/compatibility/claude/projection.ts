@@ -1,6 +1,7 @@
 import type {
   ModelDocument,
   ModelDocumentMediaType,
+  ModelContentBlock,
   ModelImage,
   ModelImageMediaType,
   ModelMessage,
@@ -43,14 +44,21 @@ const DOCUMENT_MEDIA_TYPES = new Set<ModelDocumentMediaType>([
 
 function projectToolResultContent(content: unknown): {
   content: string
+  contentBlocks: ModelContentBlock[]
   images: ModelImage[]
   documents: ModelDocument[]
 } | null {
   if (typeof content === 'string') {
-    return { content, images: [], documents: [] }
+    return {
+      content,
+      contentBlocks: [],
+      images: [],
+      documents: [],
+    }
   }
   if (!Array.isArray(content)) return null
   const parts: string[] = []
+  const contentBlocks: ModelContentBlock[] = []
   const images: ModelImage[] = []
   const documents: ModelDocument[] = []
   for (const block of content) {
@@ -60,6 +68,7 @@ function projectToolResultContent(content: unknown): {
     }
     if (block.type === 'text' && typeof block.text === 'string') {
       parts.push(block.text)
+      contentBlocks.push({ type: 'text', text: block.text })
       continue
     }
     if (
@@ -70,11 +79,13 @@ function projectToolResultContent(content: unknown): {
       IMAGE_MEDIA_TYPES.has(block.source.media_type as ModelImageMediaType) &&
       typeof block.source.data === 'string'
     ) {
-      images.push({
+      const image = {
         type: 'image',
         mediaType: block.source.media_type as ModelImageMediaType,
         data: block.source.data,
-      })
+      } as const
+      images.push(image)
+      contentBlocks.push(image)
       continue
     }
     if (
@@ -87,11 +98,13 @@ function projectToolResultContent(content: unknown): {
       ) &&
       typeof block.source.data === 'string'
     ) {
-      documents.push({
+      const document = {
         type: 'document',
         mediaType: block.source.media_type as ModelDocumentMediaType,
         data: block.source.data,
-      })
+      } as const
+      documents.push(document)
+      contentBlocks.push(document)
       continue
     }
     parts.push(`[${String(block.type ?? 'structured')} tool result omitted]`)
@@ -102,6 +115,8 @@ function projectToolResultContent(content: unknown): {
       (images.length > 0 || documents.length > 0
         ? ''
         : '[empty structured tool result]'),
+    contentBlocks:
+      images.length > 0 || documents.length > 0 ? contentBlocks : [],
     images,
     documents,
   }
@@ -274,6 +289,10 @@ export function projectClaudeModelMessages(
           role: 'tool',
           toolCallId: block.tool_use_id,
           content: toolContent.content,
+          ...(Array.isArray(entry.toolUseResult) &&
+          toolContent.contentBlocks.length > 0
+            ? { contentBlocks: toolContent.contentBlocks }
+            : {}),
           ...(toolContent.images.length > 0
             ? { images: toolContent.images }
             : {}),

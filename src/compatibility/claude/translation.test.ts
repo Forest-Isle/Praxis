@@ -590,6 +590,104 @@ describe('provider to Claude transcript translation', () => {
     expect(entry?.sourceToolAssistantUUID).toBe(native.sourceToolAssistantUUID)
   })
 
+  it('writes native MCP content arrays, structured metadata, and attribution', () => {
+    const image = {
+      type: 'image' as const,
+      mediaType: 'image/png' as const,
+      data: 'aGVsbG8=',
+    }
+    const ids = [
+      '10000000-0000-4000-8000-000000000001',
+      '10000000-0000-4000-8000-000000000002',
+      '10000000-0000-4000-8000-000000000003',
+    ]
+    const entries = translateProviderEvents(
+      [
+        {
+          type: 'assistant-tool-call',
+          toolCallId: 'call_media',
+          name: 'mcp__fixture__media',
+          input: {},
+          providerMessageId: 'msg_tool',
+          model: 'fixture-model',
+        },
+        {
+          type: 'tool-result',
+          toolCallId: 'call_media',
+          content: 'IMAGE_MARKER',
+          contentBlocks: [
+            { type: 'text', text: 'IMAGE_MARKER' },
+            image,
+            { type: 'text', text: '{"value":"STRUCTURED"}' },
+          ],
+          images: [image],
+          isError: false,
+          nativeMcpMeta: {
+            structuredContent: { value: 'STRUCTURED' },
+          },
+        },
+        {
+          type: 'assistant-text',
+          text: 'done',
+          providerMessageId: 'msg_done',
+          model: 'fixture-model',
+        },
+      ],
+      {
+        sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        parentUuid: '00000000-0000-4000-8000-000000000001',
+        cwd: '/tmp/praxis-fixture',
+        claudeVersion: '2.1.208',
+        gitBranch: 'HEAD',
+        history: [
+          {
+            type: 'user',
+            uuid: '00000000-0000-4000-8000-000000000001',
+            promptId: '00000000-0000-4000-8000-000000000001',
+            message: { role: 'user', content: 'call media' },
+          },
+        ],
+        createUuid: () => {
+          const id = ids.shift()
+          if (!id) throw new Error('UUID fixture exhausted')
+          return id
+        },
+        now: () => '2026-08-09T00:00:00.000Z',
+      },
+    )
+    const nativeBlocks = [
+      { type: 'text', text: 'IMAGE_MARKER' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: 'aGVsbG8=',
+        },
+      },
+      { type: 'text', text: '{"value":"STRUCTURED"}' },
+    ]
+    expect(entries[1]?.message).toEqual({
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'call_media',
+          content: nativeBlocks,
+        },
+      ],
+    })
+    expect(entries[1]?.toolUseResult).toEqual(nativeBlocks)
+    expect(entries[1]?.promptId).toBe('00000000-0000-4000-8000-000000000001')
+    expect(entries[1]?.mcpMeta).toEqual({
+      structuredContent: { value: 'STRUCTURED' },
+    })
+    expect(entries[2]).toMatchObject({
+      attributionMcpServer: 'fixture',
+      attributionMcpTool: 'media',
+    })
+  })
+
   it('can persist a recovered tool result in a later translation call', () => {
     const [toolResult] = translateProviderEvents(
       [

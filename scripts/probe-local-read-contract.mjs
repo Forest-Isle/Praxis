@@ -336,12 +336,12 @@ try {
   assert(
     JSON.stringify(mediaSignature(praxisRequests[2])) ===
       JSON.stringify(mediaSignature(claudeRequests[2])),
-    'Praxis whole PDF media differs from Claude',
+    `Praxis whole PDF media differs from Claude: ${JSON.stringify({ praxis: mediaSignature(praxisRequests[2]), claude: mediaSignature(claudeRequests[2]) })}`,
   )
   assert(
     JSON.stringify(mediaSignature(praxisRequests[3])) ===
       JSON.stringify(mediaSignature(claudeRequests[3])),
-    'Praxis paged PDF media differs from Claude',
+    `Praxis paged PDF media differs from Claude: ${JSON.stringify({ praxis: mediaSignature(praxisRequests[3]), claude: mediaSignature(claudeRequests[3]) })}`,
   )
   console.log('Claude/Praxis local Read compatibility checks passed.')
 } finally {

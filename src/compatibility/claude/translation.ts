@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto'
 
 import type { ClaudeTranscriptEntry } from './schema.js'
 import type { ClaudeConditionalRule } from './shared-resources.js'
-import { indexClaudeToolLinks } from './tool-links.js'
+import { getClaudeContentBlocks, indexClaudeToolLinks } from './tool-links.js'
 import type {
+  ModelContentBlock,
   ModelDocument,
   ModelImage,
   ModelThinkingBlock,
@@ -52,10 +53,12 @@ export type ProviderPersistenceEvent =
       type: 'tool-result'
       toolCallId: string
       content: string
+      contentBlocks?: readonly ModelContentBlock[]
       images?: readonly ModelImage[]
       documents?: readonly ModelDocument[]
       isError: boolean
       nativeToolUseResult?: Record<string, unknown>
+      nativeMcpMeta?: Record<string, unknown>
     }
 
 export interface TranslationContext {
@@ -266,6 +269,34 @@ function assistantMessage(
   }
 }
 
+function mcpAttribution(toolName: string | undefined) {
+  if (!toolName?.startsWith('mcp__')) return undefined
+  const separator = toolName.indexOf('__', 5)
+  if (separator < 0) return undefined
+  const server = toolName.slice(5, separator)
+  const tool = toolName.slice(separator + 2)
+  return server.length > 0 && tool.length > 0
+    ? { attributionMcpServer: server, attributionMcpTool: tool }
+    : undefined
+}
+
+function nativeContentBlocks(
+  blocks: readonly ModelContentBlock[],
+): Record<string, unknown>[] {
+  return blocks.map((block) =>
+    block.type === 'text'
+      ? { type: 'text', text: block.text }
+      : {
+          type: block.type,
+          source: {
+            type: 'base64',
+            media_type: block.mediaType,
+            data: block.data,
+          },
+        },
+  )
+}
+
 export function translateProviderEvents(
   events: readonly ProviderPersistenceEvent[],
   context: TranslationContext,
@@ -273,7 +304,29 @@ export function translateProviderEvents(
   const createUuid = context.createUuid ?? randomUUID
   const now = context.now ?? (() => new Date().toISOString())
   const entries: ClaudeTranscriptEntry[] = []
-  const toolSources = indexClaudeToolLinks(context.history ?? []).toolCalls
+  const history = context.history ?? []
+  const indexedTools = indexClaudeToolLinks(history)
+  const toolSources = indexedTools.toolCalls
+  const toolNames = indexedTools.toolNames
+  const lastHistoryEntry = history.at(-1)
+  const lastToolResult =
+    lastHistoryEntry?.type === 'user'
+      ? getClaudeContentBlocks(lastHistoryEntry)
+          .filter(
+            (block) =>
+              block.type === 'tool_result' &&
+              typeof block.tool_use_id === 'string',
+          )
+          .at(-1)
+      : undefined
+  let pendingMcpAttribution = mcpAttribution(
+    typeof lastToolResult?.tool_use_id === 'string'
+      ? toolNames.get(lastToolResult.tool_use_id)
+      : undefined,
+  )
+  let currentPromptId = history.findLast(
+    (entry) => entry.type === 'user' && typeof entry.promptId === 'string',
+  )?.promptId as string | undefined
   let parentUuid = context.parentUuid
 
   for (const event of events) {
@@ -297,6 +350,7 @@ export function translateProviderEvents(
 
     switch (event.type) {
       case 'user-text':
+        currentPromptId = uuid
         entry = {
           ...common,
           type: 'user',
@@ -308,6 +362,7 @@ export function translateProviderEvents(
         break
 
       case 'user-text-block':
+        currentPromptId = uuid
         entry = {
           ...common,
           type: 'user',
@@ -322,6 +377,7 @@ export function translateProviderEvents(
         break
 
       case 'user-message': {
+        currentPromptId = uuid
         const content: Record<string, unknown>[] = []
         if (event.text.length > 0)
           content.push({ type: 'text', text: event.text })
@@ -349,7 +405,7 @@ export function translateProviderEvents(
         entry = {
           ...common,
           type: 'user',
-          promptId: uuid,
+          promptId: currentPromptId ?? uuid,
           permissionMode: 'default',
           promptSource: 'interactive',
           message: { role: 'user', content },
@@ -365,6 +421,7 @@ export function translateProviderEvents(
         }
         for (const call of event.toolCalls) {
           toolSources.set(call.id, uuid)
+          toolNames.set(call.id, call.name)
           content.push({
             type: 'tool_use',
             id: call.id,
@@ -380,12 +437,14 @@ export function translateProviderEvents(
         entry = {
           ...common,
           type: 'assistant',
+          ...pendingMcpAttribution,
           message: assistantMessage(
             event,
             content,
             event.toolCalls.length > 0 ? 'tool_use' : 'end_turn',
           ),
         }
+        pendingMcpAttribution = undefined
         break
       }
 
@@ -393,19 +452,23 @@ export function translateProviderEvents(
         entry = {
           ...common,
           type: 'assistant',
+          ...pendingMcpAttribution,
           message: assistantMessage(
             event,
             [{ type: 'text', text: event.text }],
             'end_turn',
           ),
         }
+        pendingMcpAttribution = undefined
         break
 
       case 'assistant-tool-call':
         toolSources.set(event.toolCallId, uuid)
+        toolNames.set(event.toolCallId, event.name)
         entry = {
           ...common,
           type: 'assistant',
+          ...pendingMcpAttribution,
           message: assistantMessage(
             event,
             [
@@ -419,6 +482,7 @@ export function translateProviderEvents(
             'tool_use',
           ),
         }
+        pendingMcpAttribution = undefined
         break
 
       case 'tool-result': {
@@ -449,15 +513,20 @@ export function translateProviderEvents(
         if (media.length > 0 && event.isError) {
           throw new Error('Claude media tool results cannot be errors')
         }
+        const orderedContent = event.contentBlocks
+          ? nativeContentBlocks(event.contentBlocks)
+          : undefined
         const toolResultContent =
-          media.length === 0
+          orderedContent ??
+          (media.length === 0
             ? event.content
             : [
                 ...(event.content.length > 0
                   ? [{ type: 'text', text: event.content }]
                   : []),
                 ...media,
-              ]
+              ])
+        const attribution = mcpAttribution(toolNames.get(event.toolCallId))
         const nativeToolUseResult = event.nativeToolUseResult
         const fallbackToolUseResult =
           media.length === 0
@@ -499,7 +568,7 @@ export function translateProviderEvents(
         entry = {
           ...common,
           type: 'user',
-          promptId: uuid,
+          promptId: currentPromptId ?? uuid,
           sourceToolAssistantUUID,
           message: {
             role: 'user',
@@ -508,12 +577,21 @@ export function translateProviderEvents(
                 type: 'tool_result',
                 tool_use_id: event.toolCallId,
                 content: toolResultContent,
-                ...(media.length === 0 ? { is_error: event.isError } : {}),
+                ...(media.length === 0 && !orderedContent
+                  ? { is_error: event.isError }
+                  : event.isError
+                    ? { is_error: true }
+                    : {}),
               },
             ],
           },
-          toolUseResult: nativeToolUseResult ?? fallbackToolUseResult,
+          toolUseResult:
+            attribution && Array.isArray(toolResultContent)
+              ? toolResultContent
+              : (nativeToolUseResult ?? fallbackToolUseResult),
+          ...(event.nativeMcpMeta ? { mcpMeta: event.nativeMcpMeta } : {}),
         }
+        pendingMcpAttribution = attribution
         break
       }
     }

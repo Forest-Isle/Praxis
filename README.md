@@ -10,8 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Stage 24 interactive dynamic wakeups and Stage 23 Workflow are implemented on
-top of Stage 22 scheduled prompts, Sprint 21
+Stage 84 completion audit is implemented on top of interactive dynamic wakeups,
+Workflow, scheduled prompts, and
 top-level background sessions and agent management, durable tasks, background Bash,
 WebFetch/WebSearch, MCP resource tools,
 native file globbing, notebook editing, CLI customization and session
@@ -55,8 +55,9 @@ provider-neutral image data. Anthropic receives a native image tool-result
 block; OpenAI-compatible providers receive a paired tool confirmation and user
 `image_url`. The image persists in Claude Code 2.1.208's native
 `tool_result`/`toolUseResult` envelope and survives Praxis or Claude resume.
-User image attachments and MCP tool image-result writers remain disabled until
-their distinct native envelopes pass clean-room probes.
+User image/document attachments and ordered MCP text, image, audio, resource,
+and structured-content results use their validated native envelopes. Binary MCP
+audio/resources are bounded and materialized under the session tool-result path.
 
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
@@ -105,16 +106,14 @@ releases timers on exit. Built-in `/loop` expands fixed intervals through
 `CronCreate` and executes the prompt immediately once. In an interactive Praxis
 service, `ScheduleWakeup` clamps session-only one-shot delays, submits the prompt
 through the same idle queue, and supports stop/close cancellation. Headless runs
-retain the observed Claude inactive result. Claude's active gate could not be
-triggered through the isolated API-auth black-box fixture, so active result-shape
-parity remains explicitly partial.
+retain the observed Claude inactive result. Active replacement, max-age,
+stop, and close behavior follows the validated process-local lifecycle.
 The opt-in `Workflow` tool runs sandboxed JavaScript orchestration with agents,
 parallel/pipeline helpers, structured results, token targets, worktree isolation,
 background task control, native run/journal files, and same-run replay. Praxis can
 fallback-replay a unique Claude-created prompt without semantic options. Exact
-Praxis-created journal cache reuse in Claude remains partial because Claude's private
-replay-key derivation is not observable. Claude Code 2.1.208 exposes no standalone
-`Monitor` tool.
+chained `v2` replay keys, semantic sidecars, and ordered fallbacks are validated
+in both directions. Claude Code 2.1.208 exposes no standalone `Monitor` tool.
 Forks preserve the complete supported main-chain native history, including
 tool calls/results, compact boundaries/summaries, attachments, agent settings,
 titles, images, errors, and interrupted-tool denial records. Existing UUIDs,
@@ -422,7 +421,7 @@ npm run test:compat:all
 
 The aggregate command discovers every `test:*` compatibility gate except the
 provider-free package and performance gates, validates each command shape, and
-runs 36 isolated gates in sequence. Run an individual `test:*` command when
+runs 49 isolated gates in sequence. Run an individual `test:*` command when
 iterating on one surface.
 
 `npm run test:performance` is a local, provider-free release gate covering CLI
