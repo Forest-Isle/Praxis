@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-mcp-oauth-serve-'))
 const configRoot = join(root, 'config')
+const lspPlugin = join(root, 'lsp-plugin')
 const cliPath = join(process.cwd(), 'dist', 'cli.js')
 let env
 let providerRequest = 0
@@ -134,9 +135,23 @@ try {
     PRAXIS_BASE_URL: `http://127.0.0.1:${providerAddress.port}/v1`,
   }
   await writeFile(join(root, 'fixture.txt'), 'mcp serve fixture\n')
+  await mkdir(join(lspPlugin, '.claude-plugin'), { recursive: true })
+  await writeFile(
+    join(lspPlugin, '.claude-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'mcp-lsp-fixture', version: '1.0.0' }),
+  )
+  await writeFile(
+    join(lspPlugin, '.lsp.json'),
+    JSON.stringify({
+      fixture: {
+        command: 'must-not-run-in-mcp-serve',
+        extensionToLanguage: { '.fixture': 'fixture' },
+      },
+    }),
+  )
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [cliPath, 'mcp', 'serve', '--debug'],
+    args: [cliPath, '--plugin-dir', lspPlugin, 'mcp', 'serve', '--debug'],
     cwd: root,
     env,
     stderr: 'pipe',
@@ -149,6 +164,10 @@ try {
   await client.connect(transport)
   const listed = await client.listTools()
   const names = listed.tools.map((tool) => tool.name)
+  assert(
+    !names.includes('LSP'),
+    'Praxis mcp serve exposed interactive-only plugin LSP',
+  )
   const expectedPrefix = [
     'Agent',
     'TaskOutput',

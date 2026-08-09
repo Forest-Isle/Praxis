@@ -94,6 +94,7 @@ import {
 } from './providers/environment.js'
 import { ModelPricingRegistry, usageCostUsd } from './core/usage.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
+import { ClaudeLspToolManager } from './tools/claude-lsp-tool.js'
 import {
   ClaudeInteractiveToolManager,
   type ClaudeInteractiveToolCallbacks,
@@ -1190,6 +1191,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     strictPluginDirectories:
       cli.pluginDirectories.length + cli.pluginUrls.length > 0,
     loadInstalled: !cli.safeMode && !cli.bare,
+    environment: runtimeEnvironment,
   })
   for (const plugin of pluginResources.plugins) {
     for (const error of plugin.errors) {
@@ -1292,11 +1294,32 @@ const createDefaultService: CliDependencies['createService'] = async ({
     eventSink: runtimeEventSink,
     ...(signal ? { signal } : {}),
   })
+  let lspTools: ClaudeLspToolManager | undefined
   try {
     const permissionApprover = cli.permissionPromptTool
       ? mcpTools.permissionPrompt(cli.permissionPromptTool)
       : approveTool
     const extensionTools = new ClaudeExtensionToolRegistry(mcpTools, extensions)
+    const lspEnabled =
+      interactive &&
+      !cli.safeMode &&
+      !cli.bare &&
+      pluginResources.lsp.length > 0
+    lspTools = lspEnabled
+      ? new ClaudeLspToolManager({
+          servers: pluginResources.lsp,
+          cwdProvider: () => workspace.cwd(),
+          roots: () => [
+            workspace.cwd(),
+            ...cli.additionalDirectories,
+            ...(memoryDirectory ? [memoryDirectory] : []),
+          ],
+          environment: runtimeEnvironment,
+        })
+      : undefined
+    const extensionAndLspTools = lspTools
+      ? lspTools.registry(extensionTools)
+      : extensionTools
     const agentToolNames = ['Agent', 'SendMessage'] as const
     const taskToolNames = [
       'TaskCreate',
@@ -1403,7 +1426,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ) &&
         (!cli.bare || (name !== 'WebFetch' && name !== 'WebSearch')),
     )
-    const filteredTools = new FilteredToolRegistry(extensionTools, {
+    const filteredTools = new FilteredToolRegistry(extensionAndLspTools, {
       ...(cli.tools === undefined
         ? cli.bare
           ? { tools: ['Bash', 'Edit', 'Read'] }
@@ -1605,6 +1628,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
         } catch (error) {
           failure ??= error
         }
+        try {
+          await lspTools?.close()
+        } catch (error) {
+          failure ??= error
+        }
         await debug?.close()
         if (failure !== undefined) throw failure
       },
@@ -1617,6 +1645,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
         service.promptSuggestion(sessionId, suggestionSignal),
     }
   } catch (error) {
+    try {
+      await lspTools?.close()
+    } catch {
+      // Preserve the service-construction failure as the primary error.
+    }
     try {
       await mcpTools.close()
     } catch {

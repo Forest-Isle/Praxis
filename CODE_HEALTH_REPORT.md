@@ -2,15 +2,16 @@
 
 > Generated: 2026-08-09
 > Project: Praxis
-> Scanned: 182 source files, 59 scripts, 87 test modules
+> Scanned: 185 source files, 60 scripts, 88 test modules
 
 ## Executive Summary
 
 Praxis is buildable and fully wired for current single-user CLI scope. TypeScript
 typechecking, boundary checks, focused regressions, package-script references,
-and direct production dependencies pass. Stage 85 added fully wired interactive
-question and transcript-backed plan-mode tools, including abort handling and
-exact plan-file permissions. No
+and direct production dependencies pass. Stage 86 adds the fully wired
+interactive plugin LSP runtime, exact Claude result contract, bounded protocol
+lifecycle, plugin configuration, and awaited CLI shutdown. All 88 test modules
+and 752 tests pass. No
 unfinished feature stubs, unresolved imports, or missing script targets remain.
 
 ## 🔴 Critical Issues
@@ -45,7 +46,7 @@ direct-dependency inspection, and package-script target checks pass.
 
 | #   | Location          | Opportunity                                                                                                                 | Estimated impact                                    |
 | --- | ----------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| 1   | `src/cli.ts:3524` | Cache `sensitiveEnvironmentValues(process.env)` once per execution instead of recomputing it for each event and error path. | Low CPU/allocation reduction in verbose stream runs |
+| 1   | `src/cli.ts:3611` | Cache `sensitiveEnvironmentValues(process.env)` once per execution instead of recomputing it for each event and error path. | Low CPU/allocation reduction in verbose stream runs |
 
 ## Recommended Action Plan
 
@@ -57,4 +58,4 @@ direct-dependency inspection, and package-script target checks pass.
 
 - Total issues found: 2
 - Critical: 0 | Incomplete: 0 | Broken: 0 | Smells: 1 | Optimizations: 1
-- Files scanned: 182 source files, 59 scripts, 87 test modules
+- Files scanned: 185 source files, 60 scripts, 88 test modules

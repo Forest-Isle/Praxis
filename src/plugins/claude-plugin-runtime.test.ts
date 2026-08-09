@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -52,7 +59,26 @@ async function pluginFixture(): Promise<{ root: string; configRoot: string }> {
         ],
       },
       mcpServers: { inline: { command: 'fixture-mcp' } },
-      lspServers: { inlineLsp: { command: 'fixture-lsp' } },
+      lspServers: [
+        {
+          inlineLsp: {
+            command: 'fixture-lsp',
+            args: [
+              '--stdio',
+              '${CLAUDE_PLUGIN_DATA}',
+              '${RUNTIME_VALUE:-fallback}',
+            ],
+            env: {
+              FIXTURE_ROOT: '${CLAUDE_PLUGIN_ROOT}',
+              RUNTIME_COPY: '${RUNTIME_VALUE:-fallback}',
+            },
+            extensionToLanguage: { '.inline': 'inline' },
+            workspaceFolder: '${CLAUDE_PLUGIN_ROOT}',
+            startupTimeout: 2500,
+            maxRestarts: 2,
+          },
+        },
+      ],
     }),
   )
   await writeFile(join(root, 'plugin', 'commands', 'hello.md'), 'hello')
@@ -67,7 +93,12 @@ async function pluginFixture(): Promise<{ root: string; configRoot: string }> {
   )
   await writeFile(
     join(root, 'plugin', '.lsp.json'),
-    JSON.stringify({ fileLsp: { command: 'file-lsp' } }),
+    JSON.stringify({
+      fileLsp: {
+        command: 'file-lsp',
+        extensionToLanguage: { '.fixture': 'fixture' },
+      },
+    }),
   )
   await writeFile(
     join(root, 'plugin', 'hooks', 'hooks.json'),
@@ -103,6 +134,7 @@ describe('Claude plugin runtime', () => {
       cwd: root,
       pluginDirectories: [join(root, 'plugin')],
       strictPluginDirectories: true,
+      environment: { RUNTIME_VALUE: 'runtime-value' },
     })
 
     expect(resources.plugins[0]).toMatchObject({
@@ -134,6 +166,150 @@ describe('Claude plugin runtime', () => {
         { mcpServers: { inline: { command: 'fixture-mcp' } } },
       ]),
     )
+    const pluginRoot = await realpath(join(root, 'plugin'))
+    expect(resources.lsp).toEqual([
+      expect.objectContaining({
+        name: 'fileLsp',
+        pluginName: 'fixture',
+        command: 'file-lsp',
+        extensionToLanguage: { '.fixture': 'fixture' },
+      }),
+      expect.objectContaining({
+        name: 'inlineLsp',
+        pluginName: 'fixture',
+        command: 'fixture-lsp',
+        args: [
+          '--stdio',
+          join(root, 'empty-config', 'plugins', 'data', 'inline'),
+          'runtime-value',
+        ],
+        env: expect.objectContaining({
+          CLAUDE_PLUGIN_ROOT: pluginRoot,
+          CLAUDE_PLUGIN_DATA: join(
+            root,
+            'empty-config',
+            'plugins',
+            'data',
+            'inline',
+          ),
+          FIXTURE_ROOT: pluginRoot,
+          RUNTIME_COPY: 'runtime-value',
+        }),
+        extensionToLanguage: { '.inline': 'inline' },
+        workspaceFolder: pluginRoot,
+        startupTimeout: 2500,
+        maxRestarts: 2,
+      }),
+    ])
+  })
+
+  it('substitutes effective user, project, and local plugin options into LSP config', async () => {
+    const { root, configRoot } = await pluginFixture()
+    await writeFile(
+      join(root, 'plugin', '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        version: '1.2.3',
+        userConfig: {
+          label: {
+            type: 'string',
+            title: 'Label',
+            description: 'Fixture label',
+          },
+          retries: {
+            type: 'number',
+            title: 'Retries',
+            description: 'Retry count',
+          },
+        },
+      }),
+    )
+    await writeFile(
+      join(root, 'plugin', '.lsp.json'),
+      JSON.stringify({
+        fixture: {
+          command: '${user_config.label}',
+          args: ['--retries', '${user_config.retries}'],
+          env: { FIXTURE_LABEL: '${user_config.label}' },
+          extensionToLanguage: { '.fixture': 'fixture' },
+          workspaceFolder: '${user_config.label}',
+        },
+      }),
+    )
+    await installClaudePlugin(configRoot, join(root, 'plugin'))
+    await mkdir(join(root, '.claude'), { recursive: true })
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          fixture: { options: { label: 'user-label', retries: 1 } },
+        },
+      }),
+    )
+    await writeFile(
+      join(root, '.claude', 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          fixture: { options: { label: 'project-label', retries: 2 } },
+        },
+      }),
+    )
+    await writeFile(
+      join(root, '.claude', 'settings.local.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          fixture: { options: { label: 'local-label', retries: 3 } },
+        },
+      }),
+    )
+
+    const resources = await loadClaudePlugins({ configRoot, cwd: root })
+
+    expect(resources.lsp).toEqual([
+      expect.objectContaining({
+        command: 'local-label',
+        args: ['--retries', '3'],
+        env: expect.objectContaining({ FIXTURE_LABEL: 'local-label' }),
+        workspaceFolder: 'local-label',
+      }),
+    ])
+  })
+
+  it('fails a configured plugin closed when an LSP user option is missing', async () => {
+    const { root, configRoot } = await pluginFixture()
+    await writeFile(
+      join(root, 'plugin', '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        version: '1.2.3',
+        userConfig: {
+          label: {
+            type: 'string',
+            title: 'Label',
+            description: 'Fixture label',
+          },
+        },
+      }),
+    )
+    await writeFile(
+      join(root, 'plugin', '.lsp.json'),
+      JSON.stringify({
+        fixture: {
+          command: '${user_config.label}',
+          extensionToLanguage: { '.fixture': 'fixture' },
+        },
+      }),
+    )
+    await installClaudePlugin(configRoot, join(root, 'plugin'))
+
+    const resources = await loadClaudePlugins({ configRoot, cwd: root })
+
+    expect(resources.lsp).toEqual([])
+    expect(resources.plugins).toEqual([
+      expect.objectContaining({
+        errors: [expect.stringContaining('Invalid plugin LSP config')],
+      }),
+    ])
   })
 
   it('supports manifest command definitions with inline content and source files', async () => {

@@ -149,7 +149,11 @@ async function detailsFixture(root) {
     write(
       join(marketplace, 'plugin', '.lsp.json'),
       JSON.stringify({
-        fixtureLsp: { command: 'fixture-lsp', args: ['--stdio'] },
+        fixtureLsp: {
+          command: 'fixture-lsp',
+          args: ['--stdio'],
+          extensionToLanguage: { '.fixture': 'fixture' },
+        },
       }),
     ),
   ])

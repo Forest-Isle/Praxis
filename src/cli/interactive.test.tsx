@@ -1112,6 +1112,60 @@ describe('InteractiveApp', () => {
     await flush()
     expect(activeTurn).toBeNull()
   })
+
+  it('exposes active service cleanup for awaited CLI shutdown', async () => {
+    let releaseClose: (() => void) | undefined
+    let closed = false
+    let cleanup: Promise<void> | null = null
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async close() {
+            await new Promise<void>((resolve) => {
+              releaseClose = resolve
+            })
+            closed = true
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        onCleanup={(closing) => {
+          cleanup = closing
+        }}
+      />,
+    )
+
+    app.stdin.write('run')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.unmount()
+    expect(cleanup).toBeInstanceOf(Promise)
+    expect(closed).toBe(false)
+    releaseClose?.()
+    if (cleanup) await cleanup
+    expect(closed).toBe(true)
+  })
 })
 
 describe('runInteractive', () => {

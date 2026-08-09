@@ -73,6 +73,7 @@ interface InteractiveAppProps {
   signal?: AbortSignal
   onCancel?: () => void
   onTurnChange?: (turn: Promise<void> | null) => void
+  onCleanup?: (closing: Promise<void>) => void
   axScreenReader?: boolean
   allowNewSession?: boolean
   resume?: InteractiveResumeOptions
@@ -148,6 +149,7 @@ export function InteractiveApp({
   signal,
   onCancel,
   onTurnChange,
+  onCleanup,
   axScreenReader = false,
   allowNewSession = true,
   resume,
@@ -197,6 +199,8 @@ export function InteractiveApp({
   const serviceCreationRef = useRef<
     Promise<InteractiveSessionCommands> | undefined
   >(undefined)
+  const onCleanupRef = useRef(onCleanup)
+  onCleanupRef.current = onCleanup
   const scheduledWaitRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -220,7 +224,9 @@ export function InteractiveApp({
       questionRef.current?.resolve(null)
       planApprovalRef.current?.resolve(false)
       scheduledWaitRef.current?.abort()
-      void serviceRef.current?.close?.().catch(() => undefined)
+      const closing = serviceRef.current?.close?.() ?? Promise.resolve()
+      if (onCleanupRef.current) onCleanupRef.current(closing)
+      else void closing.catch(() => undefined)
     },
     [],
   )
@@ -846,6 +852,7 @@ export async function runInteractive(options: {
     ? { ...options.resume, sessionId: canonicalResumeSession.sessionId }
     : options.resume
   let activeTurn: Promise<void> | null = null
+  let cleanup: Promise<void> | null = null
   const instance = render(
     <InteractiveApp
       factory={options.factory}
@@ -858,6 +865,9 @@ export async function runInteractive(options: {
       onTurnChange={(turn) => {
         activeTurn = turn
       }}
+      onCleanup={(closing) => {
+        cleanup = closing
+      }}
       allowNewSession={!options.requireSession}
       {...(resume === undefined ? {} : { resume })}
       {...(options.axScreenReader ? { axScreenReader: true } : {})}
@@ -866,5 +876,6 @@ export async function runInteractive(options: {
   )
   await instance.waitUntilExit()
   if (activeTurn) await activeTurn
+  if (cleanup) await cleanup
   return signal.aborted ? 130 : 0
 }
