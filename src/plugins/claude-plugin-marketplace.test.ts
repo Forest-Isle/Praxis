@@ -9,9 +9,11 @@ import {
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 import { strToU8, zipSync } from 'fflate'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { loadClaudePlugins } from './claude-plugin-runtime.js'
 import {
@@ -30,8 +32,10 @@ import {
 } from './claude-plugin-marketplace.js'
 
 const roots: string[] = []
+const execFileAsync = promisify(execFile)
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   )
@@ -236,5 +240,80 @@ describe('Claude native plugin marketplace', () => {
     await installClaudeMarketplacePlugin(value.configRoot, value.cwd, id)
     await uninstallNativePlugin(value.configRoot, value.cwd, id)
     await expect(access(data)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('uses and preserves bounded sparse paths for git marketplaces', async () => {
+    const value = await fixture()
+    const repository = join(value.root, 'sparse-repository')
+    await mkdir(join(repository, '.claude-plugin'), { recursive: true })
+    await mkdir(join(repository, 'plugins', 'included'), { recursive: true })
+    await mkdir(join(repository, 'excluded'), { recursive: true })
+    await writeFile(
+      join(repository, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({ name: 'sparse-marketplace', plugins: [] }),
+    )
+    await writeFile(join(repository, 'plugins', 'included', 'keep.txt'), 'keep')
+    await writeFile(join(repository, 'excluded', 'omit.txt'), 'excluded')
+    await execFileAsync('git', ['init', '-q'], { cwd: repository })
+    await execFileAsync('git', ['add', '.'], { cwd: repository })
+    await execFileAsync(
+      'git',
+      [
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.test',
+        'commit',
+        '-qm',
+        'fixture',
+      ],
+      { cwd: repository },
+    )
+    vi.stubEnv('GIT_CONFIG_COUNT', '1')
+    vi.stubEnv('GIT_CONFIG_KEY_0', `url.file://${repository}.insteadOf`)
+    vi.stubEnv('GIT_CONFIG_VALUE_0', 'https://example.test/sparse.git')
+
+    const marketplace = await addClaudeMarketplace(
+      value.configRoot,
+      value.cwd,
+      'https://example.test/sparse.git',
+      'user',
+      ['.claude-plugin', 'plugins/included'],
+    )
+
+    expect(marketplace.source).toEqual({
+      source: 'git',
+      url: 'https://example.test/sparse.git',
+      sparsePaths: ['.claude-plugin', 'plugins/included'],
+    })
+    await expect(
+      access(join(marketplace.installLocation, 'excluded', 'omit.txt')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readClaudeKnownMarketplaces(value.configRoot)).toMatchObject([
+      {
+        source: {
+          sparsePaths: ['.claude-plugin', 'plugins/included'],
+        },
+      },
+    ])
+    await updateClaudeMarketplace(value.configRoot, value.cwd, marketplace.name)
+    await expect(
+      addClaudeMarketplace(
+        value.configRoot,
+        value.cwd,
+        value.marketplace,
+        'user',
+        ['../escape'],
+      ),
+    ).rejects.toThrow('only supported for git marketplace sources')
+    await expect(
+      addClaudeMarketplace(
+        value.configRoot,
+        value.cwd,
+        'https://example.test/invalid.git',
+        'user',
+        ['../escape'],
+      ),
+    ).rejects.toThrow('Invalid sparse checkout path')
   })
 })

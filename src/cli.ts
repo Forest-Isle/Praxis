@@ -341,8 +341,10 @@ Options:
   --plugin-dir <path>                Load a local plugin directory or .zip for this session (repeatable)
   --plugin-url <url>                 Load a plugin .zip URL for this session (repeatable)
   --tools <tools...>                  Select available tools; empty disables all
-  --allowedTools <tools...>           Add permission allow rules
-  --disallowedTools <tools...>        Add permission deny rules
+  --allowedTools, --allowed-tools <tools...>
+                                      Add permission allow rules
+  --disallowedTools, --disallowed-tools <tools...>
+                                      Add permission deny rules
   --permission-mode <mode>            Set permission behavior
   --dangerously-skip-permissions      Bypass checks except explicit deny rules
   --allow-dangerously-skip-permissions
@@ -483,9 +485,10 @@ Add an MCP server from a JSON configuration object. Supported configurations
 include stdio and HTTP server records accepted by Praxis.
 
 Options:
-  --scope <scope>  Configuration scope: local, project, or user (default: local)
-  --json           Print a machine-readable mcp-added result
-  -h, --help        Display help for command
+  --client-secret      Prompt for OAuth client secret (or set MCP_CLIENT_SECRET env var)
+  -s, --scope <scope>  Configuration scope: local, project, or user (default: local)
+  --json               Print a machine-readable mcp-added result
+  -h, --help            Display help for command
 `
 
 const MCP_REMOVE_HELP = `Usage: praxis mcp remove [options] <name>
@@ -494,9 +497,9 @@ Remove an MCP server. Without --scope, Praxis resolves the configured server
 across available scopes.
 
 Options:
-  --scope <scope>  Remove from local, project, or user scope
-  --json           Print a machine-readable mcp-removed result
-  -h, --help        Display help for command
+  -s, --scope <scope>  Remove from local, project, or user scope
+  --json               Print a machine-readable mcp-removed result
+  -h, --help            Display help for command
 `
 
 const MCP_RESET_PROJECT_CHOICES_HELP = `Usage: praxis mcp reset-project-choices [options]
@@ -599,9 +602,9 @@ marketplace plugin identifier uses the form plugin@marketplace.
 
 Options:
   --config <key=value>  Set a declared userConfig option (repeatable)
-  --scope <scope>  Install native marketplace plugin at local, project, or user scope (default: user)
-  --json           Print a machine-readable plugin-installed result
-  -h, --help        Display help for command
+  -s, --scope <scope>  Install native marketplace plugin at local, project, or user scope (default: user)
+  --json               Print a machine-readable plugin-installed result
+  -h, --help            Display help for command
 `
 
 const PLUGIN_UNINSTALL_HELP = `Usage: praxis plugin uninstall [options] <name-or-plugin@marketplace>
@@ -611,7 +614,7 @@ Uninstall a local plugin or a native marketplace plugin.
 Options:
   --keep-data      Preserve the plugin's persistent data directory
   --prune          Also remove unused auto-installed dependencies
-  --scope <scope>  Select native plugin scope: local, project, or user
+  -s, --scope <scope>  Select native plugin scope: local, project, or user
   -y, --yes        Skip the --prune confirmation prompt
   --json           Print a machine-readable plugin-uninstalled result
   -h, --help        Display help for command
@@ -622,20 +625,20 @@ const PLUGIN_ENABLE_HELP = `Usage: praxis plugin enable [options] <name-or-plugi
 Enable a disabled local plugin or native marketplace plugin.
 
 Options:
-  --all            Disable all enabled plugins
-  --scope <scope>  Select native plugin scope: local, project, or user
-  --json           Print a machine-readable plugin-enabled result
-  -h, --help        Display help for command
+  -s, --scope <scope>  Select native plugin scope: local, project, or user
+  --json               Print a machine-readable plugin-enabled result
+  -h, --help            Display help for command
 `
 
-const PLUGIN_DISABLE_HELP = `Usage: praxis plugin disable [options] <name-or-plugin@marketplace>
+const PLUGIN_DISABLE_HELP = `Usage: praxis plugin disable [options] [name-or-plugin@marketplace]
 
 Disable an enabled local plugin or native marketplace plugin.
 
 Options:
-  --scope <scope>  Select native plugin scope: local, project, or user
-  --json           Print a machine-readable plugin-disabled result
-  -h, --help        Display help for command
+  -a, --all            Disable all enabled plugins
+  -s, --scope <scope>  Select native plugin scope: local, project, or user
+  --json               Print a machine-readable plugin-disabled result
+  -h, --help            Display help for command
 `
 
 const PLUGIN_UPDATE_HELP = `Usage: praxis plugin update [options] <name-or-plugin@marketplace>
@@ -643,9 +646,9 @@ const PLUGIN_UPDATE_HELP = `Usage: praxis plugin update [options] <name-or-plugi
 Update a local plugin or native marketplace plugin from its configured source.
 
 Options:
-  --scope <scope>  Select native plugin scope: local, project, or user
-  --json           Print a machine-readable plugin-updated result
-  -h, --help        Display help for command
+  -s, --scope <scope>  Select native plugin scope: local, project, or user
+  --json               Print a machine-readable plugin-updated result
+  -h, --help            Display help for command
 `
 
 const PLUGIN_INIT_HELP = `Usage: praxis plugin init|new [options] <name>
@@ -721,9 +724,10 @@ const PLUGIN_MARKETPLACE_ADD_HELP = `Usage: praxis plugin marketplace add [optio
 Add a marketplace from a local path, URL, or supported repository source.
 
 Options:
-  --scope <scope>  Configuration scope: local, project, or user (default: user)
-  --json           Print a machine-readable plugin-marketplace-added result
-  -h, --help        Display help for command
+  --scope <scope>      Configuration scope: local, project, or user (default: user)
+  --sparse <paths...>  Limit a Git checkout to specific directories
+  --json               Print a machine-readable plugin-marketplace-added result
+  -h, --help            Display help for command
 `
 
 const PLUGIN_MARKETPLACE_REMOVE_HELP = `Usage: praxis plugin marketplace remove [options] <name>
@@ -775,13 +779,14 @@ Options:
   -h, --help  Display help for command
 `
 
-const AUTO_MODE_DEFAULTS_HELP = `Usage: praxis auto-mode defaults
+const AUTO_MODE_DEFAULTS_HELP = `Usage: praxis auto-mode defaults [options]
 
 Print default auto mode environment, allow, soft_deny, and hard_deny rules as
 JSON.
 
 Options:
-  -h, --help  Display help for command
+  --label <prefix>  Show only rules whose label starts with this prefix (case-insensitive)
+  -h, --help        Display help for command
 `
 
 const AUTO_MODE_CRITIQUE_HELP = `Usage: praxis auto-mode critique [options]
@@ -2094,6 +2099,23 @@ function autoModeJson(config: ReturnType<typeof defaultClaudeAutoModeConfig>) {
   }
 }
 
+function filterAutoModeRules(
+  config: ReturnType<typeof autoModeJson>,
+  label: string | undefined,
+): ReturnType<typeof autoModeJson> {
+  if (label === undefined) return config
+  const prefix = label.toLowerCase()
+  const filter = (rules: readonly string[]) =>
+    rules.filter((rule) => rule.toLowerCase().startsWith(prefix))
+  return {
+    ...config,
+    allow: filter(config.allow),
+    soft_deny: filter(config.soft_deny),
+    hard_deny: filter(config.hard_deny),
+    environment: filter(config.environment),
+  }
+}
+
 function hasCustomAutoModeRules(
   settings: readonly { value: unknown }[],
 ): boolean {
@@ -2137,11 +2159,17 @@ async function executeAutoModeCommand(
     io.stdout(AUTO_MODE_HELP)
     return 0
   }
+  if (invocation.autoModeLabel !== undefined && action !== 'defaults') {
+    throw new Error('--label is only valid with auto-mode defaults')
+  }
   if (args.length !== 2) {
     throw new Error(`auto-mode ${action} takes no operands`)
   }
   if (action === 'defaults') {
-    const output = autoModeJson(defaultClaudeAutoModeConfig())
+    const output = filterAutoModeRules(
+      autoModeJson(defaultClaudeAutoModeConfig()),
+      invocation.autoModeLabel,
+    )
     if (invocation.legacyJson || invocation.outputFormat !== 'text')
       writeJson(io, output)
     else io.stdout(`${JSON.stringify(output)}\n`)
@@ -2862,6 +2890,7 @@ async function executePluginCommand(
           cwd,
           args[3] as string,
           installScope,
+          invocation.pluginSparsePaths,
         ),
       })
       return 0
@@ -3315,11 +3344,43 @@ async function executeMcpCommand(
     if (!config || typeof config !== 'object' || Array.isArray(config)) {
       throw new Error('mcp add-json server config must be an object')
     }
-    const server = await management.add(
-      args[2] as string,
-      config as Record<string, unknown>,
-      scope ?? 'local',
-    )
+    const name = args[2] as string
+    const serverConfig = config as Record<string, unknown>
+    const oauth = serverConfig.oauth
+    const hasClientId =
+      oauth !== null &&
+      typeof oauth === 'object' &&
+      !Array.isArray(oauth) &&
+      typeof (oauth as Record<string, unknown>).clientId === 'string' &&
+      (oauth as Record<string, unknown>).clientId !== ''
+    const clientSecret =
+      invocation.mcpClientSecret && hasClientId
+        ? await readMcpClientSecret()
+        : undefined
+    const targetScope = scope ?? 'local'
+    const previous = clientSecret
+      ? await existingMcpServer(management, name, targetScope)
+      : undefined
+    const server = await management.add(name, serverConfig, targetScope)
+    if (clientSecret) {
+      try {
+        await new ClaudeMcpOAuthStore({ configRoot }).saveClientSecret(
+          mcpOAuthServerIdentity(name, serverConfig),
+          clientSecret,
+        )
+      } catch (error) {
+        try {
+          if (previous) await management.add(name, previous.config, targetScope)
+          else await management.remove(name, targetScope)
+        } catch {
+          throw new Error(
+            'MCP client secret could not be stored and configuration rollback failed',
+            { cause: error },
+          )
+        }
+        throw error
+      }
+    }
     mcpOutput(io, invocation, {
       type: 'mcp-added',
       server: mcpRecordJson(server),
@@ -3964,13 +4025,19 @@ async function execute(
       invocation.mcpEnv.length > 0 ||
       invocation.mcpHeaders.length > 0 ||
       invocation.mcpCallbackPort !== undefined ||
-      invocation.mcpClientId !== undefined ||
-      invocation.mcpClientSecret) &&
+      invocation.mcpClientId !== undefined) &&
     mcpAction !== 'add'
   ) {
     throw new Error(
-      '--transport, --env, --header, --callback-port, --client-id, and --client-secret are only valid with mcp add',
+      '--transport, --env, --header, --callback-port, and --client-id are only valid with mcp add',
     )
+  }
+  if (
+    invocation.mcpClientSecret &&
+    mcpAction !== 'add' &&
+    mcpAction !== 'add-json'
+  ) {
+    throw new Error('--client-secret is only valid with mcp add or add-json')
   }
   if (invocation.mcpNoBrowser && mcpAction !== 'login') {
     throw new Error('--no-browser is only valid with mcp login')
@@ -3983,6 +4050,22 @@ async function execute(
   }
   if (command === 'auto-mode') {
     return executeAutoModeCommand(args, invocation, io, dependencies, signal)
+  }
+  if (
+    invocation.autoModeLabel !== undefined &&
+    !(command === 'auto-mode' && args[1] === 'defaults')
+  ) {
+    throw new Error('--label is only valid with auto-mode defaults')
+  }
+  if (
+    invocation.pluginSparsePaths.length > 0 &&
+    !(
+      (command === 'plugin' || command === 'plugins') &&
+      args[1] === 'marketplace' &&
+      args[2] === 'add'
+    )
+  ) {
+    throw new Error('--sparse is only valid with plugin marketplace add')
   }
   if (command === 'plugin' || command === 'plugins') {
     return executePluginCommand(

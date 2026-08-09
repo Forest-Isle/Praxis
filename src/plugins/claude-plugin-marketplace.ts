@@ -32,6 +32,7 @@ export interface ClaudeMarketplaceSource {
   source: 'directory' | 'url' | 'git'
   path?: string
   url?: string
+  sparsePaths?: readonly string[]
 }
 
 export interface ClaudeMarketplacePlugin {
@@ -103,6 +104,24 @@ function safePathSegment(value: string, label: string): string {
     throw new Error(`${label} must be a single safe path segment`)
   }
   return value
+}
+
+function sparsePath(value: string): string {
+  const normalized = value.replaceAll('\\', '/')
+  if (
+    normalized.length === 0 ||
+    normalized.startsWith('/') ||
+    normalized.startsWith('-') ||
+    normalized.includes('\0') ||
+    normalized.split('/').some((segment) => segment === '..')
+  ) {
+    throw new Error(`Invalid sparse checkout path: ${value}`)
+  }
+  const relativePath = normalized.replace(/^\.\//u, '')
+  if (relativePath.length === 0) {
+    throw new Error(`Invalid sparse checkout path: ${value}`)
+  }
+  return relativePath
 }
 
 function settingsPath(
@@ -538,6 +557,15 @@ export async function readClaudeKnownMarketplaces(
         ...(source.url === undefined
           ? {}
           : { url: nonEmptyString(source.url, 'Marketplace source URL') }),
+        ...(source.sparsePaths === undefined
+          ? {}
+          : Array.isArray(source.sparsePaths)
+            ? { sparsePaths: source.sparsePaths.map(sparsePath) }
+            : (() => {
+                throw new Error(
+                  `Marketplace ${name} sparsePaths must be an array`,
+                )
+              })()),
       },
       installLocation,
       ...(value.lastUpdated === undefined
@@ -644,17 +672,29 @@ async function materializeSource(
   source: string,
   destinationRoot: string,
   manifest = PLUGIN_MANIFEST,
+  sparsePaths: readonly string[] = [],
 ): Promise<{ path: string; source: ClaudeMarketplaceSource }> {
+  const normalizedSparsePaths = sparsePaths.map(sparsePath)
   const resolved = resolve(source)
   try {
     const metadata = await stat(resolved)
     if (metadata.isDirectory()) {
+      if (normalizedSparsePaths.length > 0) {
+        throw new Error(
+          '--sparse is only supported for git marketplace sources',
+        )
+      }
       return {
         path: await realpath(resolved),
         source: { source: 'directory', path: await realpath(resolved) },
       }
     }
     if (metadata.isFile() && extname(resolved).toLowerCase() === '.zip') {
+      if (normalizedSparsePaths.length > 0) {
+        throw new Error(
+          '--sparse is only supported for git marketplace sources',
+        )
+      }
       return {
         path: await extractZip(
           new Uint8Array(await readFile(resolved)),
@@ -674,21 +714,49 @@ async function materializeSource(
     throw new Error(
       `Plugin source is not a directory, zip, or HTTPS URL: ${source}`,
     )
-  if (
-    /^https:\/\/github\.com\//u.test(normalizedRemote) &&
-    !/\.(?:zip|json)(?:[?#].*)?$/iu.test(normalizedRemote)
-  ) {
+  const isGitRemote =
+    (/^https:\/\/github\.com\//u.test(normalizedRemote) &&
+      !/\.(?:zip|json)(?:[?#].*)?$/iu.test(normalizedRemote)) ||
+    /\.git(?:[?#].*)?$/iu.test(normalizedRemote)
+  if (isGitRemote) {
     await mkdir(destinationRoot, { recursive: true })
     const checkout = join(destinationRoot, 'checkout')
-    await execFileAsync(
-      'git',
-      ['clone', '--depth', '1', normalizedRemote, checkout],
-      { timeout: 120_000, maxBuffer: 2 * 1024 * 1024 },
-    )
+    const cloneArgs = ['clone', '--depth', '1']
+    if (normalizedSparsePaths.length > 0) {
+      cloneArgs.push('--filter=blob:none', '--sparse')
+    }
+    cloneArgs.push(normalizedRemote, checkout)
+    await execFileAsync('git', cloneArgs, {
+      timeout: 120_000,
+      maxBuffer: 2 * 1024 * 1024,
+    })
+    if (normalizedSparsePaths.length > 0) {
+      await execFileAsync(
+        'git',
+        [
+          '-C',
+          checkout,
+          'sparse-checkout',
+          'set',
+          '--',
+          ...normalizedSparsePaths,
+        ],
+        { timeout: 120_000, maxBuffer: 2 * 1024 * 1024 },
+      )
+    }
     return {
       path: await findManifestRoot(checkout, manifest),
-      source: { source: 'git', url: normalizedRemote },
+      source: {
+        source: 'git',
+        url: normalizedRemote,
+        ...(normalizedSparsePaths.length === 0
+          ? {}
+          : { sparsePaths: normalizedSparsePaths }),
+      },
     }
+  }
+  if (normalizedSparsePaths.length > 0) {
+    throw new Error('--sparse is only supported for git marketplace sources')
   }
   const response = await fetch(normalizedRemote, {
     redirect: 'follow',
@@ -726,6 +794,7 @@ export async function addClaudeMarketplace(
   cwd: string,
   sourceInput: string,
   scope: ClaudePluginScope = 'user',
+  sparsePaths: readonly string[] = [],
 ): Promise<ClaudeKnownMarketplace> {
   const destination = join(
     resolve(configRoot),
@@ -740,6 +809,9 @@ export async function addClaudeMarketplace(
     const metadata = await stat(sourcePath)
     if (!metadata.isDirectory())
       throw new Error('Marketplace source must be a directory')
+    if (sparsePaths.length > 0) {
+      throw new Error('--sparse is only supported for git marketplace sources')
+    }
     installLocation = await realpath(sourcePath)
     source = { source: 'directory', path: installLocation }
   } catch (error) {
@@ -748,6 +820,7 @@ export async function addClaudeMarketplace(
       sourceInput,
       destination,
       MARKETPLACE_MANIFEST,
+      sparsePaths,
     )
     installLocation = materialized.path
     source = materialized.source
@@ -799,6 +872,7 @@ export async function updateClaudeMarketplace(
         `${process.pid}-${Date.now()}`,
       ),
       MARKETPLACE_MANIFEST,
+      marketplace.source.sparsePaths,
     )
     const manifest = await readClaudeMarketplaceManifest(materialized.path)
     updated.push({

@@ -1,5 +1,12 @@
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -244,6 +251,80 @@ try {
     praxisPruneHelp.stdout.includes('prune|autoremove'),
     'Praxis prune alias help',
   )
+  const disableHelp = await praxis(
+    ['plugin', 'disable', '--help'],
+    root,
+    join(root, 'praxis-disable-help'),
+  )
+  assert(disableHelp.stdout.includes('-a, --all'), 'Praxis disable-all help')
+  const sparseHelp = await praxis(
+    ['plugin', 'marketplace', 'add', '--help'],
+    root,
+    join(root, 'praxis-sparse-help'),
+  )
+  assert(
+    sparseHelp.stdout.includes('--sparse <paths...>'),
+    'Praxis sparse marketplace help',
+  )
+
+  const sparseRepository = join(root, 'sparse-repository')
+  const sparseConfig = join(root, 'sparse-config')
+  await write(
+    join(sparseRepository, '.claude-plugin', 'marketplace.json'),
+    JSON.stringify({
+      name: 'sparse-marketplace',
+      owner: { name: 'Fixture' },
+      plugins: [],
+    }),
+  )
+  await write(join(sparseRepository, 'plugins', 'included', 'keep.txt'), 'keep')
+  await write(join(sparseRepository, 'excluded', 'omit.txt'), 'omit')
+  await git(sparseRepository, ['init', '-q'])
+  await git(sparseRepository, ['config', 'user.email', 'fixture@example.test'])
+  await git(sparseRepository, ['config', 'user.name', 'Fixture'])
+  await git(sparseRepository, ['add', '.'])
+  await git(sparseRepository, ['commit', '-qm', 'fixture'])
+  await run(
+    process.execPath,
+    [
+      praxisCli,
+      'plugin',
+      'marketplace',
+      'add',
+      'https://example.test/sparse.git',
+      '--sparse',
+      '.claude-plugin',
+      'plugins/included',
+    ],
+    {
+      cwd: root,
+      env: {
+        ...environment,
+        CLAUDE_CONFIG_DIR: sparseConfig,
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: `url.file://${sparseRepository}.insteadOf`,
+        GIT_CONFIG_VALUE_0: 'https://example.test/sparse.git',
+      },
+    },
+  )
+  const sparseRegistry = JSON.parse(
+    await readFile(
+      join(sparseConfig, 'plugins', 'known_marketplaces.json'),
+      'utf8',
+    ),
+  )
+  const sparseRecord = sparseRegistry['sparse-marketplace']
+  assert(
+    JSON.stringify(sparseRecord?.source?.sparsePaths) ===
+      JSON.stringify(['.claude-plugin', 'plugins/included']),
+    `Praxis sparse paths: ${JSON.stringify(sparseRecord)}`,
+  )
+  try {
+    await access(join(sparseRecord.installLocation, 'excluded', 'omit.txt'))
+    throw new Error('Sparse checkout retained excluded directory')
+  } catch (error) {
+    assert(error.code === 'ENOENT', `Sparse checkout failure: ${String(error)}`)
+  }
 
   const claudePrune = await pruneFixture('claude-prune')
   const claudeDryRun = await claude(

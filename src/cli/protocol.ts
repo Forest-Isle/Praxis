@@ -116,6 +116,8 @@ export interface CliInvocation extends CliControls {
   pluginMessage?: string
   pluginPush: boolean
   pluginRemote?: string
+  pluginSparsePaths: readonly string[]
+  autoModeLabel?: string
   mcpScope?: CliMcpScope
   mcpTransport?: CliMcpTransport
   mcpEnv: readonly string[]
@@ -582,6 +584,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let pluginMessage: string | undefined
   let pluginPush = false
   let pluginRemote: string | undefined
+  const pluginSparsePaths: string[] = []
+  let autoModeLabel: string | undefined
   let optionsEnded = false
   let settings: string | undefined
   let maxTurns: number | undefined
@@ -914,6 +918,22 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--remote may only be specified once')
       pluginRemote = selectedPluginRemote.value
       index += selectedPluginRemote.consumed
+      continue
+    }
+    const selectedPluginSparse = listOptionValue(argv, index, ['--sparse'])
+    if (selectedPluginSparse) {
+      if (pluginSparsePaths.length > 0)
+        throw new Error('--sparse may only be specified once')
+      pluginSparsePaths.push(...selectedPluginSparse.values)
+      index += selectedPluginSparse.consumed
+      continue
+    }
+    const selectedAutoModeLabel = optionValue(argv, index, '--label')
+    if (selectedAutoModeLabel) {
+      if (autoModeLabel !== undefined)
+        throw new Error('--label may only be specified once')
+      autoModeLabel = selectedAutoModeLabel.value
+      index += selectedAutoModeLabel.consumed
       continue
     }
     const selectedMaxTurns = optionValue(argv, index, '--max-turns')
@@ -1560,7 +1580,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       pluginDryRun ||
       pluginMessage !== undefined ||
       pluginPush ||
-      pluginRemote !== undefined) &&
+      pluginRemote !== undefined ||
+      pluginSparsePaths.length > 0) &&
     !['plugin', 'plugins'].includes(args[0] ?? '')
   ) {
     throw new Error('Plugin options are only valid with plugin commands')
@@ -1600,6 +1621,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(pluginMessage === undefined ? {} : { pluginMessage }),
     pluginPush,
     ...(pluginRemote === undefined ? {} : { pluginRemote }),
+    pluginSparsePaths,
+    ...(autoModeLabel === undefined ? {} : { autoModeLabel }),
     settings,
     ...(agentDefinitions === undefined ? {} : { agentDefinitions }),
     mcpConfigs,

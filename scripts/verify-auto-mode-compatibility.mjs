@@ -172,6 +172,28 @@ try {
       `Auto-mode defaults command mismatch: ${JSON.stringify(defaults)}`,
     )
   }
+  const filteredDefaults = JSON.parse(
+    (
+      await execFileAsync(
+        'node',
+        ['dist/cli.js', 'auto-mode', 'defaults', '--label', 'read-ONLY'],
+        { cwd: process.cwd(), env: environment },
+      )
+    ).stdout,
+  )
+  if (
+    filteredDefaults.allow.length !== 1 ||
+    filteredDefaults.allow.some(
+      (rule) => !rule.toLowerCase().startsWith('read-only'),
+    ) ||
+    filteredDefaults.soft_deny.length !== 0 ||
+    filteredDefaults.hard_deny.length !== 0 ||
+    filteredDefaults.environment.length !== 0
+  ) {
+    throw new Error(
+      `Auto-mode label filter mismatch: ${JSON.stringify(filteredDefaults)}`,
+    )
+  }
   await writeFile(
     join(configRoot, 'settings.json'),
     JSON.stringify({

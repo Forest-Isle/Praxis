@@ -207,6 +207,47 @@ describe('Praxis MCP CLI commands', () => {
     expect(capture.stdout.join('')).toContain('"Authorization": "[REDACTED]"')
   })
 
+  it('stores add-json client secrets outside shared MCP configuration', async () => {
+    const configRoot = await temporaryConfigRoot()
+    vi.stubEnv('MCP_CLIENT_SECRET', 'fixture-json-secret')
+    const capture = captureIO()
+
+    await expect(
+      run(
+        [
+          'mcp',
+          'add-json',
+          '--scope',
+          'user',
+          '--client-secret',
+          'json-fixture',
+          JSON.stringify({
+            type: 'http',
+            url: 'https://example.test/json-mcp',
+            oauth: { clientId: 'fixture-client' },
+          }),
+        ],
+        capture.io,
+        baseDependencies(),
+      ),
+    ).resolves.toBe(0)
+
+    const shared = await readFile(join(configRoot, '.claude.json'), 'utf8')
+    expect(shared).not.toContain('fixture-json-secret')
+    const credentials = JSON.parse(
+      await readFile(join(configRoot, '.credentials.json'), 'utf8'),
+    ) as { mcpOAuthClientConfig: Record<string, { clientSecret?: string }> }
+    expect(
+      credentials.mcpOAuthClientConfig[
+        mcpOAuthRecordKey({
+          name: 'json-fixture',
+          type: 'http',
+          url: 'https://example.test/json-mcp',
+        })
+      ],
+    ).toEqual({ clientSecret: 'fixture-json-secret' })
+  })
+
   it('matches Claude transport-specific add flags and callback-port coercion', async () => {
     const configRoot = await temporaryConfigRoot()
     const capture = captureIO()
@@ -331,6 +372,62 @@ describe('Praxis MCP CLI commands', () => {
     expect(
       Object.values(state.projects)[0]?.mcpServers['rollback-fixture'],
     ).toBeUndefined()
+    expect(capture.stderr.join('')).toContain('credential write failed')
+  })
+
+  it('rolls back add-json replacement if client-secret persistence fails', async () => {
+    const configRoot = await temporaryConfigRoot()
+    vi.stubEnv('MCP_CLIENT_SECRET', 'fixture-client-secret')
+    const capture = captureIO()
+    await run(
+      [
+        'mcp',
+        'add-json',
+        '--scope',
+        'user',
+        'rollback-json',
+        JSON.stringify({
+          type: 'http',
+          url: 'https://example.test/original',
+          oauth: { clientId: 'fixture-client' },
+        }),
+      ],
+      capture.io,
+      baseDependencies(),
+    )
+    const persist = vi
+      .spyOn(ClaudeMcpOAuthStore.prototype, 'saveClientSecret')
+      .mockRejectedValueOnce(new Error('credential write failed'))
+
+    await expect(
+      run(
+        [
+          'mcp',
+          'add-json',
+          '--scope',
+          'user',
+          '--client-secret',
+          'rollback-json',
+          JSON.stringify({
+            type: 'http',
+            url: 'https://example.test/replacement',
+            oauth: { clientId: 'fixture-client' },
+          }),
+        ],
+        capture.io,
+        baseDependencies(),
+      ),
+    ).resolves.toBe(1)
+    persist.mockRestore()
+
+    const state = JSON.parse(
+      await readFile(join(configRoot, '.claude.json'), 'utf8'),
+    ) as { mcpServers: Record<string, unknown> }
+    expect(state.mcpServers['rollback-json']).toEqual({
+      type: 'http',
+      url: 'https://example.test/original',
+      oauth: { clientId: 'fixture-client' },
+    })
     expect(capture.stderr.join('')).toContain('credential write failed')
   })
 

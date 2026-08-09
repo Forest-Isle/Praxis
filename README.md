@@ -312,10 +312,14 @@ node dist/cli.js attach <agent-id>
 node dist/cli.js stop <agent-id>
 node dist/cli.js mcp list
 node dist/cli.js mcp add-json fixture '{"type":"stdio","command":"node","args":["server.mjs"]}'
+MCP_CLIENT_SECRET=secret node dist/cli.js mcp add-json oauth-fixture '{"type":"http","url":"https://example.test/mcp","oauth":{"clientId":"client"}}' --client-secret
 node dist/cli.js mcp get fixture
 node dist/cli.js mcp remove fixture --scope local
+node dist/cli.js auto-mode defaults --label Read
 node dist/cli.js --json plugin list --available
 node dist/cli.js plugin init my-plugin --with skills agents
+node dist/cli.js plugin marketplace add owner/repo --sparse .claude-plugin plugins
+node dist/cli.js plugin disable --all
 node dist/cli.js plugin eval --scaffold --allow-tools Bash ./my-plugin
 node dist/cli.js plugin eval init --bare smoke-test
 node dist/cli.js
@@ -367,14 +371,19 @@ and version headers; other providers use a standard Bearer API key.
 MCP management commands write Claude-compatible local (`.claude.json` project
 state), project (`.mcp.json`), or user (`.claude.json` root) scopes atomically;
 `add`, `add-json`, `list`, `get`, `remove`, and `reset-project-choices` are
-implemented. OAuth login/logout, Desktop import, and MCP server hosting remain
-separate management surfaces.
+implemented. `add-json --client-secret` stores OAuth secrets outside shared MCP
+configuration and rolls back config replacement if secret persistence fails.
+OAuth login/logout and MCP server hosting are separate commands; Claude Desktop
+import is intentionally excluded.
 
 Plugin management supports local and marketplace installs, details, strict
 manifest validation, typed `--config key=value` persistence, JSON marketplace
 availability, and native `plugin init <name>` scaffolds under
 `~/.claude/skills/<name>`. Skills-directory plugins load with normal plugin
 resources and can be enabled or disabled through their `<name>@skills-dir` ID.
+Marketplace Git sources support bounded `--sparse <paths...>` checkout with
+paths preserved for later updates; `plugin disable -a|--all` disables every
+enabled native and skills-directory plugin.
 `plugin eval` discovers strict YAML or prose cases under `evals/`, runs each case
 in an isolated non-persistent session, supports with/without-plugin ablation,
 bounded opt-in scaffolds, operator grants for gated tools, deterministic and

@@ -131,21 +131,22 @@ routing.
 
 ## Management commands
 
-| Capability           | Status   | Evidence / remaining work                                                                                                                                   |
-| -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agents`             | Complete | TTY Ink dashboard, live refresh, native/Praxis history review, resume/attach/continuation/stop, JSON active/`--all`, cwd/default dispatch, and packed gate  |
-| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier                                 |
-| `plugin`             | Complete | Marketplace/install/list/details/init/validate/prune/tag/eval, aliases, config persistence, skills-dir loading, isolated ablation/judging, and packed gates |
-| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                                            |
-| `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate                     |
-| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                                                   |
-| `auto-mode`          | Complete | `config`, `defaults`, and provider-backed `critique [--model]` plus permission classifier                                                                   |
+| Capability           | Status   | Evidence / remaining work                                                                                                                                                                     |
+| -------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents`             | Complete | TTY Ink dashboard, live refresh, native/Praxis history review, resume/attach/continuation/stop, JSON active/`--all`, cwd/default dispatch, and packed gate                                    |
+| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; transport/env/header/OAuth controls, external client-secret storage, rollback, and packed verifier                     |
+| `plugin`             | Complete | Marketplace/install/list/details/init/validate/prune/tag/eval, aliases, disable-all, sparse Git checkout, config persistence, skills-dir loading, isolated ablation/judging, and packed gates |
+| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                                                                              |
+| `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate                                                       |
+| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                                                                                     |
+| `auto-mode`          | Complete | `config`, label-filtered `defaults`, provider-backed `critique [--model]`, and permission classifier                                                                                          |
 
 ## Final audit status
 
-All reopened feature stages from the Claude Code 2.1.208 management-command
-surface audit are implemented. Final CLI-surface, clean-tarball, and end-to-end
-link gates must still be rerun before declaring full closure.
-Unsupported Claude versions remain deliberately
-read-only. Enterprise, desktop, remote-control, and subscription-auth surfaces
-remain excluded by scope.
+Supported single-user CLI surface is closed against Claude Code 2.1.208. Final
+audit covers public/hidden/optional-value parsing, command-specific help,
+source and packed artifacts, bidirectional session/data-plane links, TODO/skip
+and dispatcher wiring, performance, release packaging, and production
+dependency audit. Unsupported Claude versions remain deliberately read-only.
+Enterprise, desktop, remote-control, and subscription-auth surfaces remain
+excluded by scope.

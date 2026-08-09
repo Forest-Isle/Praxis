@@ -45,10 +45,20 @@ try {
     'project-server',
     '{"type":"http","url":"https://example.com/mcp"}',
   )
+  await runWithEnv(
+    { MCP_CLIENT_SECRET: 'fixture-json-client-secret' },
+    'mcp',
+    'add-json',
+    '--scope',
+    'user',
+    '--client-secret',
+    'json-secret-server',
+    '{"type":"http","url":"https://example.test/json-mcp","oauth":{"clientId":"fixture-json-client"}}',
+  )
   const listed = JSON.parse((await run('mcp', '--json', 'list')).stdout)
   if (
     listed.type !== 'mcp-list' ||
-    listed.servers.length !== 2 ||
+    listed.servers.length !== 3 ||
     listed.servers.some((server) => !server.config)
   ) {
     throw new Error(`Unexpected MCP list: ${JSON.stringify(listed)}`)
@@ -163,13 +173,21 @@ try {
   )
   if (
     !credentials.includes('fixture-client-secret') ||
-    JSON.stringify(addState).includes('fixture-client-secret')
+    !credentials.includes('fixture-json-client-secret') ||
+    JSON.stringify(addState).includes('fixture-client-secret') ||
+    JSON.stringify(addState).includes('fixture-json-client-secret')
   ) {
     throw new Error('MCP client secret was not isolated from config JSON')
   }
   const help = await run('mcp', 'add', '--help')
   if (!help.stdout.includes('--callback-port <port>')) {
     throw new Error(`MCP add help omitted OAuth controls: ${help.stdout}`)
+  }
+  const addJsonHelp = await run('mcp', 'add-json', '--help')
+  if (!addJsonHelp.stdout.includes('--client-secret')) {
+    throw new Error(
+      `MCP add-json help omitted client-secret: ${addJsonHelp.stdout}`,
+    )
   }
   console.log('MCP management compatibility checks passed.')
 } finally {

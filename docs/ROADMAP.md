@@ -582,8 +582,8 @@ Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
 - [x] provider, resume/fork, no-persistence, management-command, import/export,
       ContextAssembler, and dependency-injection wiring audit
 - [x] TODO/stub/skip and compatibility-script/package-entry link audit
-- [x] `npm run check`: 79 files, 638 tests, format/lint/boundary/typecheck/build
-- [x] `npm run test:compat:all`: 44 isolated Claude/Praxis gates
+- [x] `npm run check`: 86 files, 712 tests, format/lint/boundary/typecheck/build
+- [x] `npm run test:compat:all`: 48 isolated Claude/Praxis gates
 - [x] `npm run test:package`: release tarball/install/provider/resume/fork and
       write-safety matrix
 
@@ -597,3 +597,23 @@ Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
 - [x] bare and text-filtered required TTY picker without new-session escape
 - [x] print, foreground, and background canonical session-ID routing
 - [x] installed Claude/Praxis resume-selector compatibility gate
+
+## Stage 83 - final integrated closure
+
+Status: complete for agreed Claude Code 2.1.208 single-user CLI scope.
+
+- [x] recursive root/subcommand help and option-alias comparison across Claude,
+      Praxis source build, and packed artifact; product exclusions kept explicit
+- [x] missing `auto-mode defaults --label`, MCP `add-json --client-secret`,
+      plugin disable-all help/aliases, and marketplace sparse Git checkout fixed
+- [x] sparse-path validation, external secret storage, replacement rollback,
+      source/update persistence, focused unit tests, and packed lifecycle gates
+- [x] bidirectional resume, native transcript/memory/sidechain, cross-CWD,
+      agents/tasks/schedules/workflows/plugins, and recovery links covered by
+      48 isolated compatibility gates
+- [x] TODO/FIXME/stub/skip, dispatcher/DI, package-entry, environment redaction,
+      stale parity claim, performance, and dependency-vulnerability audit
+- [x] `npm run check`: 86 files, 712 tests; `npm run test:performance` passed;
+      `npm audit --omit=dev`: 0 vulnerabilities
+- [x] clean-tarball install and installed OpenAI/Anthropic provider/tool/resume/
+      native-fork/subagent/two-turn-stream package matrix

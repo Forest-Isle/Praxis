@@ -356,6 +356,24 @@ describe('CLI protocol', () => {
       pluginAll: true,
       agentsAll: false,
     })
+    expect(parseCliInvocation(['plugin', 'disable', '-a'])).toMatchObject({
+      pluginAll: true,
+      agentsAll: false,
+    })
+    expect(
+      parseCliInvocation([
+        'plugin',
+        'marketplace',
+        'add',
+        'owner/repo',
+        '--sparse',
+        '.claude-plugin',
+        'plugins',
+      ]),
+    ).toMatchObject({
+      args: ['plugin', 'marketplace', 'add', 'owner/repo'],
+      pluginSparsePaths: ['.claude-plugin', 'plugins'],
+    })
     expect(
       parseCliInvocation(['plugin', 'autoremove', '-s=user', '--dry-run']),
     ).toMatchObject({
@@ -688,6 +706,32 @@ describe('CLI protocol', () => {
     expect(() =>
       parseCliInvocation(['mcp', 'add', '-t', 'websocket', 'fixture', 'node']),
     ).toThrow('Invalid transport type: websocket')
+    expect(
+      parseCliInvocation([
+        'mcp',
+        'add-json',
+        '--client-secret',
+        'fixture',
+        '{"type":"http","url":"https://example.test/mcp"}',
+      ]),
+    ).toMatchObject({
+      args: [
+        'mcp',
+        'add-json',
+        'fixture',
+        '{"type":"http","url":"https://example.test/mcp"}',
+      ],
+      mcpClientSecret: true,
+    })
+  })
+
+  it('parses auto-mode label filters', () => {
+    expect(
+      parseCliInvocation(['auto-mode', 'defaults', '--label', 'read']),
+    ).toMatchObject({
+      args: ['auto-mode', 'defaults'],
+      autoModeLabel: 'read',
+    })
   })
 
   it('parses repeatable local plugin directories', () => {

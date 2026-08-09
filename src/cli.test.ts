@@ -485,10 +485,10 @@ describe('Praxis CLI', () => {
       [['mcp', 'help', 'add'], '--transport <transport>'],
       [['mcp', 'login', '--help'], '--no-browser'],
       [['plugin', 'help', 'install'], 'plugin@marketplace'],
-      [
-        ['plugin', 'marketplace', 'help', 'add'],
-        'Configuration scope: local, project, or user',
-      ],
+      [['plugin', 'marketplace', 'help', 'add'], '--sparse <paths...>'],
+      [['plugin', 'disable', '--help'], '-a, --all'],
+      [['mcp', 'add-json', '--help'], '--client-secret'],
+      [['auto-mode', 'defaults', '--help'], '--label <prefix>'],
       [['auto-mode', 'help', 'critique'], 'default: PRAXIS_MODEL'],
       [['project', 'purge', '--help'], '--json'],
     ]
@@ -570,6 +570,38 @@ describe('Praxis CLI', () => {
       else process.env.CLAUDE_CONFIG_DIR = previousConfigRoot
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  it('filters default auto-mode rules by case-insensitive label prefix', async () => {
+    const capture = captureIO()
+    const unavailable: CliDependencies = {
+      async createService() {
+        throw new Error('service must not be created for defaults')
+      },
+    }
+
+    await expect(
+      run(
+        ['auto-mode', 'defaults', '--label', 'read-ONLY'],
+        capture.io,
+        unavailable,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(capture.stdout.join(''))).toEqual({
+      allow: ['Read-only project inspection and local development operations'],
+      soft_deny: [],
+      hard_deny: [],
+      environment: [],
+      classifyAllShell: false,
+    })
+
+    const invalid = captureIO()
+    await expect(
+      run(['auto-mode', 'config', '--label', 'read'], invalid.io, unavailable),
+    ).resolves.toBe(1)
+    expect(invalid.stderr.join('')).toContain(
+      '--label is only valid with auto-mode defaults',
+    )
   })
 
   it('streams provider-backed auto-mode critiques and propagates --model', async () => {

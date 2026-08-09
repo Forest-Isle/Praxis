@@ -1,8 +1,8 @@
 # Code Health Report
 
-> Generated: 2026-08-08
+> Generated: 2026-08-09
 > Project: Praxis
-> Scanned: 166 source files, 52 scripts, 79 test modules
+> Scanned: 180 source files, 57 scripts, 86 test modules
 
 ## Executive Summary
 
@@ -33,13 +33,13 @@ No broken module connections detected. `npm run typecheck`, boundary validation,
 
 | #   | Location                                         | Smell                                                                                                                        | Severity (H/M/L) |
 | --- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| 1   | `src/application/top-level-agent-manager.ts:561` | Background worker lifecycle, socket protocol, persistence, and recovery are concentrated in one long orchestration function. | M                |
+| 1   | `src/application/top-level-agent-manager.ts:282` | Background worker lifecycle, socket protocol, persistence, and recovery are concentrated in one long orchestration function. | M                |
 
 ## 🔵 Optimization Opportunities
 
 | #   | Location          | Opportunity                                                                                                                 | Estimated impact                                    |
 | --- | ----------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| 1   | `src/cli.ts:2453` | Cache `sensitiveEnvironmentValues(process.env)` once per execution instead of recomputing it for each event and error path. | Low CPU/allocation reduction in verbose stream runs |
+| 1   | `src/cli.ts:3524` | Cache `sensitiveEnvironmentValues(process.env)` once per execution instead of recomputing it for each event and error path. | Low CPU/allocation reduction in verbose stream runs |
 
 ## Recommended Action Plan
 
@@ -51,4 +51,4 @@ No broken module connections detected. `npm run typecheck`, boundary validation,
 
 - Total issues found: 2
 - Critical: 0 | Incomplete: 0 | Broken: 0 | Smells: 1 | Optimizations: 1
-- Files scanned: 166 source files, 52 scripts, 79 test modules
+- Files scanned: 180 source files, 57 scripts, 86 test modules
