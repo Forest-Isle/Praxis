@@ -118,6 +118,10 @@ export interface ClaudeMcpToolRegistryOptions {
 const MAX_TOOL_PAGES = 100
 const MAX_TOOLS = 10_000
 const MAX_RESOURCE_PAGES = 100
+
+function normalizeMcpName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/gu, '_')
+}
 const MAX_RESOURCES = 10_000
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024
 const DISCOVERY_TIMEOUT_MS = 10_000
@@ -271,7 +275,48 @@ function configuredServers(
       })
     }
   }
-  return [...servers.values()]
+  const configured = [...servers.values()]
+  const manualSignatures = new Set(
+    configured
+      .filter((server) => !server.name.startsWith('plugin:'))
+      .map((server) => mcpServerSignature(server.value))
+      .filter((signature): signature is string => signature !== undefined),
+  )
+  const pluginSignatures = new Set<string>()
+  return configured.filter((server) => {
+    if (!server.name.startsWith('plugin:')) return true
+    const signature = mcpServerSignature(server.value)
+    if (signature === undefined) return true
+    if (manualSignatures.has(signature) || pluginSignatures.has(signature)) {
+      return false
+    }
+    pluginSignatures.add(signature)
+    return true
+  })
+}
+
+function mcpServerSignature(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined
+  if (typeof value.url === 'string') {
+    let url = value.url
+    if (
+      url.includes('/v2/session_ingress/shttp/mcp/') ||
+      url.includes('/v2/ccr-sessions/')
+    ) {
+      try {
+        url = new URL(url).searchParams.get('mcp_url') ?? url
+      } catch {
+        // Invalid URLs are validated later; preserve their literal signature.
+      }
+    }
+    return `url:${url}`
+  }
+  if (typeof value.command !== 'string') return undefined
+  const args = value.args ?? []
+  if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) {
+    return undefined
+  }
+  return `stdio:${JSON.stringify([value.command, ...args])}`
 }
 
 export function validateClaudeMcpConfiguration(
@@ -1159,7 +1204,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
         : []
       const connectedTools = new Map<string, ConnectedTool>()
       for (const tool of tools) {
-        const name = `mcp__${serverName}__${tool.name}`
+        const name = `mcp__${normalizeMcpName(serverName)}__${normalizeMcpName(tool.name)}`
         if (redactSensitiveText(name, sensitiveValues) !== name) {
           throw new Error('MCP tool name contains sensitive data')
         }

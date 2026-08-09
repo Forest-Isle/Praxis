@@ -80,6 +80,7 @@
     "node": ">=24"
   },
   "dependencies": {
+    "@anthropic-ai/mcpb": "2.1.2",
     "@anthropic-ai/tokenizer": "^0.0.4",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "acorn": "^8.18.0",
@@ -99,6 +100,7 @@
     "yaml": "^2.9.0"
   },
   "overrides": {
+    "tmp": "0.2.7",
     "pdf-to-img": {
       "pdfjs-dist": "6.2.108"
     }

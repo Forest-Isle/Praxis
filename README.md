@@ -10,7 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Stage 87 protected plugin option parity is implemented on top of the
+Stage 88 plugin MCP bundle parity is implemented on top of the
+Stage 87 protected plugin option parity,
 Stage 86 interactive plugin LSP parity,
 Stage 85 interactive question and plan-mode parity, and
 Stage 84 completion audit, interactive dynamic wakeups,
@@ -84,6 +85,17 @@ diagnostics. `${user_config.*}` substitution spans LSP/MCP/hook runtime config;
 plugin hooks also receive `CLAUDE_PLUGIN_OPTION_*`. Commands, skills, and agents
 receive non-sensitive values while sensitive references become explicit
 model-safe placeholders.
+Plugin MCP servers use Claude's `plugin:<plugin>:<server>` runtime namespace,
+manual-server-first signature deduplication, and normalized model-visible tool
+names while preserving raw scoped names for status and resource operations.
+Manifest declarations support ordinary JSON plus local or HTTP(S) `.mcpb` and
+`.dxt` bundles. Bundle loading uses the official MCPB schema/config generator,
+sticky remote and change-aware local caches, bounded downloads and ZIP
+extraction, traversal/symlink/bomb rejection, executable-bit restoration, and
+per-bundle failure isolation. MCPB user config shares the protected plugin
+option plane; required values, qualified `server.key=value` assignments,
+defaults, arrays, platform overrides, plugin data/root expansion, and sensitive
+diagnostic redaction are preserved through packed runtime execution.
 
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
@@ -402,7 +414,8 @@ OAuth login/logout and MCP server hosting are separate commands; Claude Desktop
 import is intentionally excluded.
 
 Plugin management supports local and marketplace installs, details, strict
-manifest validation, typed `--config key=value` persistence, JSON marketplace
+manifest validation, typed `--config key=value` persistence (or
+`--config server.key=value` for ambiguous MCPB options), JSON marketplace
 availability, and native `plugin init <name>` scaffolds under
 `~/.claude/skills/<name>`. Skills-directory plugins load with normal plugin
 resources and can be enabled or disabled through their `<name>@skills-dir` ID.

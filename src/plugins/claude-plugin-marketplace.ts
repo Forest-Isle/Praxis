@@ -18,6 +18,11 @@ import { unzipSync } from 'fflate'
 
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import { ClaudeMcpOAuthStore } from '../mcp/claude-mcp-oauth.js'
+import {
+  loadClaudePluginMcpb,
+  type ClaudePluginMcpbManifest,
+  type ClaudePluginMcpbUserValue,
+} from './claude-plugin-mcpb.js'
 import type { ClaudePluginRecord } from './claude-plugin-runtime.js'
 
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -458,6 +463,45 @@ export async function readClaudePluginOptions(
   Object.assign(
     result,
     await new ClaudeMcpOAuthStore({ configRoot }).readPluginSecrets(id),
+  )
+  return result
+}
+
+export async function readClaudePluginMcpServerOptions(
+  configRoot: string,
+  cwd: string,
+  id: string,
+  serverName: string,
+): Promise<Record<string, ClaudePluginConfigValue>> {
+  const result: Record<string, ClaudePluginConfigValue> = {}
+  for (const scope of ['user', 'project', 'local'] as const) {
+    const settings = await readJson(settingsPath(configRoot, cwd, scope))
+    if (!isRecord(settings.pluginConfigs)) continue
+    const plugin = settings.pluginConfigs[id]
+    if (!isRecord(plugin) || !isRecord(plugin.mcpServers)) continue
+    const server = plugin.mcpServers[serverName]
+    if (!isRecord(server)) continue
+    for (const [key, value] of Object.entries(server)) {
+      if (
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean' ||
+        (Array.isArray(value) &&
+          value.every((item) => typeof item === 'string'))
+      ) {
+        result[key] = value
+      } else {
+        throw new Error(
+          `Plugin MCP config ${id}/${serverName}.${key} has an invalid value`,
+        )
+      }
+    }
+  }
+  Object.assign(
+    result,
+    await new ClaudeMcpOAuthStore({ configRoot }).readPluginSecrets(
+      `${id}/${serverName}`,
+    ),
   )
   return result
 }
@@ -1217,6 +1261,95 @@ function pluginDefaultValue(
   throw new Error(`Plugin userConfig ${key} default has the wrong type`)
 }
 
+interface PluginConfigTarget {
+  name?: string
+  definitions: Record<string, Record<string, unknown>>
+  existing: Record<string, ClaudePluginConfigValue>
+  values: Record<string, ClaudePluginConfigValue>
+}
+
+function mcpbDiscoveryValues(
+  manifest: ClaudePluginMcpbManifest,
+): Record<string, ClaudePluginMcpbUserValue> {
+  return Object.fromEntries(
+    Object.entries(manifest.user_config ?? {})
+      .filter(([, definition]) => definition.required === true)
+      .map(([key, definition]) => {
+        if (definition.multiple === true) return [key, ['configured']]
+        if (definition.type === 'boolean') return [key, false]
+        if (definition.type === 'number') {
+          const minimum = definition.min ?? 0
+          const maximum = definition.max ?? minimum
+          return [key, Math.min(maximum, Math.max(minimum, 0))]
+        }
+        return [key, 'configured']
+      }),
+  )
+}
+
+async function mcpbConfigTargets(
+  configRoot: string,
+  cwd: string,
+  id: string,
+  pluginRoot: string,
+  manifest: Record<string, unknown>,
+): Promise<{ targets: PluginConfigTarget[]; warnings: string[] }> {
+  const specs = Array.isArray(manifest.mcpServers)
+    ? manifest.mcpServers
+    : manifest.mcpServers === undefined
+      ? []
+      : [manifest.mcpServers]
+  const targets: PluginConfigTarget[] = []
+  const warnings: string[] = []
+  for (const spec of specs) {
+    if (
+      typeof spec !== 'string' ||
+      (!spec.endsWith('.mcpb') && !spec.endsWith('.dxt'))
+    ) {
+      continue
+    }
+    let discovered: ClaudePluginMcpbManifest | undefined
+    try {
+      await loadClaudePluginMcpb({
+        pluginRoot,
+        pluginData: claudePluginDataPath(configRoot, id),
+        source: spec,
+        resolveUserConfig: async (bundleManifest) => {
+          discovered = bundleManifest
+          return mcpbDiscoveryValues(bundleManifest)
+        },
+      })
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : String(error))
+      continue
+    }
+    if (discovered === undefined || discovered.user_config === undefined)
+      continue
+    const definitions = Object.fromEntries(
+      Object.entries(discovered.user_config).map(([key, definition]) => [
+        key,
+        definition as unknown as Record<string, unknown>,
+      ]),
+    )
+    targets.push({
+      name: discovered.name,
+      definitions,
+      existing: await readClaudePluginMcpServerOptions(
+        configRoot,
+        cwd,
+        id,
+        discovered.name,
+      ),
+      values: {},
+    })
+  }
+  const byName = new Map<string, PluginConfigTarget>()
+  for (const target of targets) {
+    if (target.name !== undefined) byName.set(target.name, target)
+  }
+  return { targets: [...byName.values()], warnings }
+}
+
 export async function saveClaudePluginConfig(
   configRoot: string,
   cwd: string,
@@ -1225,87 +1358,164 @@ export async function saveClaudePluginConfig(
   pluginPath: string,
   assignments: readonly string[],
 ): Promise<{ warnings: readonly string[] }> {
-  const manifestPath = join(await realpath(pluginPath), PLUGIN_MANIFEST)
+  const pluginRoot = await realpath(pluginPath)
+  const manifestPath = join(pluginRoot, PLUGIN_MANIFEST)
   const manifest: unknown = JSON.parse(await readFile(manifestPath, 'utf8'))
-  if (!isRecord(manifest) || !isRecord(manifest.userConfig)) {
-    return {
-      warnings:
-        assignments.length === 0
-          ? []
-          : [`Plugin ${id} does not declare userConfig options`],
-    }
+  if (!isRecord(manifest)) {
+    return { warnings: [`Plugin ${id} has an invalid manifest`] }
   }
-  const definitions = manifest.userConfig
-  const existing = await readClaudePluginOptions(configRoot, cwd, id)
-  const values: Record<string, ClaudePluginConfigValue> = {}
-  const warnings: string[] = []
+  const pluginDefinitions = isRecord(manifest.userConfig)
+    ? Object.fromEntries(
+        Object.entries(manifest.userConfig).filter(
+          (entry): entry is [string, Record<string, unknown>] =>
+            isRecord(entry[1]),
+        ),
+      )
+    : {}
+  const pluginTarget: PluginConfigTarget = {
+    definitions: pluginDefinitions,
+    existing: await readClaudePluginOptions(configRoot, cwd, id),
+    values: {},
+  }
+  const discovered = await mcpbConfigTargets(
+    configRoot,
+    cwd,
+    id,
+    pluginRoot,
+    manifest,
+  )
+  const targets = [pluginTarget, ...discovered.targets]
+  const warnings = [...discovered.warnings]
+  const knownKeys = targets.flatMap((target) =>
+    Object.keys(target.definitions).map((key) =>
+      target.name === undefined ? key : `${target.name}.${key}`,
+    ),
+  )
   for (const assignment of assignments) {
     const separator = assignment.indexOf('=')
     if (separator <= 0) {
       warnings.push('--config must use key=value')
       continue
     }
-    const key = assignment.slice(0, separator)
-    const definition = definitions[key]
-    if (!isRecord(definition)) {
+    const requestedKey = assignment.slice(0, separator)
+    let target: PluginConfigTarget | undefined
+    let key = requestedKey
+    if (pluginTarget.definitions[requestedKey] !== undefined) {
+      target = pluginTarget
+    } else {
+      const qualified = discovered.targets.find((candidate) => {
+        const prefix = `${candidate.name}.`
+        if (!requestedKey.startsWith(prefix)) return false
+        const candidateKey = requestedKey.slice(prefix.length)
+        return candidate.definitions[candidateKey] !== undefined
+      })
+      if (qualified !== undefined) {
+        target = qualified
+        key = requestedKey.slice(`${qualified.name}.`.length)
+      } else {
+        const candidates = discovered.targets.filter(
+          (candidate) => candidate.definitions[requestedKey] !== undefined,
+        )
+        if (candidates.length === 1) target = candidates[0]
+        else if (candidates.length > 1) {
+          warnings.push(
+            `--config key ${JSON.stringify(requestedKey)} is ambiguous; use server.key`,
+          )
+          continue
+        }
+      }
+    }
+    const definition = target?.definitions[key]
+    if (target === undefined || definition === undefined) {
       warnings.push(
-        `--config key ${JSON.stringify(key)} isn't declared in this plugin's userConfig. Known keys: ${Object.keys(definitions).join(', ') || '(none)'}.`,
+        `--config key ${JSON.stringify(requestedKey)} isn't declared in this plugin's userConfig. Known keys: ${knownKeys.join(', ') || '(none)'}.`,
       )
       continue
     }
     try {
-      values[key] = pluginConfigValue(
+      target.values[key] = pluginConfigValue(
         assignment.slice(separator + 1),
         definition,
-        key,
+        requestedKey,
       )
     } catch (error) {
       warnings.push(error instanceof Error ? error.message : String(error))
     }
   }
-  for (const [key, definition] of Object.entries(definitions)) {
-    if (!isRecord(definition) || values[key] !== undefined) continue
-    if (
-      existing[key] !== undefined &&
-      !(definition.required === true && existing[key] === '')
-    )
-      continue
-    try {
-      const defaultValue = pluginDefaultValue(definition, key)
-      if (defaultValue !== undefined) values[key] = defaultValue
-      else if (definition.required === true) {
-        warnings.push(`Plugin userConfig ${key} is required`)
+  for (const target of targets) {
+    for (const [key, definition] of Object.entries(target.definitions)) {
+      if (target.values[key] !== undefined) continue
+      const existing = target.existing[key]
+      if (
+        existing !== undefined &&
+        !(definition.required === true && existing === '')
+      ) {
+        continue
       }
-    } catch (error) {
-      warnings.push(error instanceof Error ? error.message : String(error))
+      if (target.name !== undefined) {
+        if (definition.required === true) {
+          warnings.push(`MCPB ${target.name} user_config ${key} is required`)
+        }
+        continue
+      }
+      try {
+        const defaultValue = pluginDefaultValue(definition, key)
+        if (defaultValue !== undefined) target.values[key] = defaultValue
+        else if (definition.required === true) {
+          warnings.push(`Plugin userConfig ${key} is required`)
+        }
+      } catch (error) {
+        warnings.push(error instanceof Error ? error.message : String(error))
+      }
     }
   }
   if (warnings.length > 0) return { warnings }
-  if (Object.keys(values).length === 0) return { warnings: [] }
-  const sensitive: Record<string, string> = {}
-  const nonSensitive: Record<string, ClaudePluginConfigValue> = {}
-  for (const [key, value] of Object.entries(values)) {
-    const definition = definitions[key]
-    if (isRecord(definition) && definition.sensitive === true) {
-      sensitive[key] = String(value)
-    } else nonSensitive[key] = value
+  if (targets.every((target) => Object.keys(target.values).length === 0)) {
+    return { warnings: [] }
   }
-  await new ClaudeMcpOAuthStore({ configRoot }).updatePluginSecrets(
-    id,
-    sensitive,
-    Object.keys(nonSensitive),
-  )
+
   const path = settingsPath(configRoot, cwd, scope)
   const root = await readJson(path)
   const pluginConfigs = isRecord(root.pluginConfigs)
     ? { ...root.pluginConfigs }
     : {}
   const current = isRecord(pluginConfigs[id]) ? { ...pluginConfigs[id] } : {}
-  const options = isRecord(current.options) ? { ...current.options } : {}
-  for (const key of Object.keys(sensitive)) delete options[key]
-  const nextOptions = { ...options, ...nonSensitive }
-  if (Object.keys(nextOptions).length === 0) delete current.options
-  else current.options = nextOptions
+  const store = new ClaudeMcpOAuthStore({ configRoot })
+  for (const target of targets) {
+    if (Object.keys(target.values).length === 0) continue
+    const sensitive: Record<string, string> = {}
+    const nonSensitive: Record<string, ClaudePluginConfigValue> = {}
+    for (const [key, value] of Object.entries(target.values)) {
+      if (target.definitions[key]?.sensitive === true) {
+        sensitive[key] = String(value)
+      } else nonSensitive[key] = value
+    }
+    const secretId = target.name === undefined ? id : `${id}/${target.name}`
+    await store.updatePluginSecrets(
+      secretId,
+      sensitive,
+      Object.keys(nonSensitive),
+    )
+    if (target.name === undefined) {
+      const options = isRecord(current.options) ? { ...current.options } : {}
+      for (const key of Object.keys(sensitive)) delete options[key]
+      Object.assign(options, nonSensitive)
+      if (Object.keys(options).length === 0) delete current.options
+      else current.options = options
+      continue
+    }
+    const mcpServers = isRecord(current.mcpServers)
+      ? { ...current.mcpServers }
+      : {}
+    const storedServer = mcpServers[target.name]
+    const server = isRecord(storedServer) ? { ...storedServer } : {}
+    for (const key of Object.keys(sensitive)) delete server[key]
+    Object.assign(server, nonSensitive)
+    if (Object.keys(server).length === 0) delete mcpServers[target.name]
+    else mcpServers[target.name] = server
+    if (Object.keys(mcpServers).length === 0) delete current.mcpServers
+    else current.mcpServers = mcpServers
+  }
   if (Object.keys(current).length === 0) delete pluginConfigs[id]
   else pluginConfigs[id] = current
   if (Object.keys(pluginConfigs).length === 0) delete root.pluginConfigs

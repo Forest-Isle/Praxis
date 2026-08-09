@@ -14,7 +14,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RuntimeEvent, ToolRegistry } from '../core/runtime.js'
 import { ClaudeMcpOAuthStore } from './claude-mcp-oauth.js'
-import { ClaudeMcpToolRegistry } from './claude-mcp-tools.js'
+import {
+  ClaudeMcpToolRegistry,
+  validateClaudeMcpConfiguration,
+} from './claude-mcp-tools.js'
 
 const roots: string[] = []
 
@@ -34,6 +37,66 @@ afterEach(async () => {
 })
 
 describe('ClaudeMcpToolRegistry', () => {
+  it('deduplicates plugin servers by command or URL with manual precedence', () => {
+    const report = validateClaudeMcpConfiguration([
+      {
+        path: '/plugins.json',
+        scope: 'user',
+        value: {
+          mcpServers: {
+            'plugin:first:stdio': {
+              command: 'fixture',
+              args: ['--stdio'],
+              env: { TOKEN: 'first' },
+            },
+            'plugin:second:stdio': {
+              command: 'fixture',
+              args: ['--stdio'],
+              cwd: '/ignored',
+            },
+            'plugin:first:url': {
+              type: 'sse',
+              url: 'https://proxy.example/v2/ccr-sessions/?mcp_url=https%3A%2F%2Fupstream.example%2Fmcp',
+            },
+            'plugin:first:unique': {
+              command: 'plugin-only',
+              args: ['--stdio'],
+            },
+            'plugin:second:unique': {
+              command: 'plugin-only',
+              args: ['--stdio'],
+              env: { DIFFERENT: 'ignored' },
+            },
+          },
+        },
+      },
+      {
+        path: '/manual.json',
+        scope: 'local',
+        value: {
+          mcpServers: {
+            manual: {
+              command: 'fixture',
+              args: ['--stdio'],
+              env: { TOKEN: 'manual' },
+            },
+            upstream: {
+              type: 'http',
+              url: 'https://upstream.example/mcp',
+              headers: { Authorization: 'ignored' },
+            },
+          },
+        },
+      },
+    ])
+
+    expect(report.servers.map((server) => server.name)).toEqual([
+      'plugin:first:unique',
+      'manual',
+      'upstream',
+    ])
+  })
+
   it('routes MCP elicitation requests and completion notifications', async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), 'praxis-mcp-elicitation-')),
@@ -612,9 +675,9 @@ process.stdin.on('data', chunk => {
     const result = request.method === 'initialize'
       ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'environment-fixture', version: '1' } }
       : request.method === 'tools/list'
-        ? { tools: [{ name: 'environment', description: process.env.MCP_API_KEY, inputSchema: { type: 'object', description: process.env.MCP_API_KEY } }, { name: 'failure', inputSchema: { type: 'object' } }] }
+        ? { tools: [{ name: 'environment.tool', description: process.env.MCP_API_KEY, inputSchema: { type: 'object', description: process.env.MCP_API_KEY } }, { name: 'failure.tool', inputSchema: { type: 'object' } }] }
         : { content: [{ type: 'text', text: JSON.stringify({ ambient: process.env.PRAXIS_API_KEY ?? 'missing', explicit: process.env.MCP_API_KEY }) }] }
-    const response = request.method === 'tools/call' && request.params.name === 'failure'
+    const response = request.method === 'tools/call' && request.params.name === 'failure.tool'
       ? { jsonrpc: '2.0', id: request.id, error: { code: -32000, message: process.env.MCP_API_KEY } }
       : { jsonrpc: '2.0', id: request.id, result }
     process.stdout.write(JSON.stringify(response) + '\\n')
@@ -638,7 +701,7 @@ process.stdin.on('data', chunk => {
             scope: 'user',
             value: {
               mcpServers: {
-                environment: {
+                'plugin:fixture:environment': {
                   command: process.execPath,
                   args: [serverScript],
                   env: { MCP_API_KEY: explicitSecret },
@@ -651,7 +714,10 @@ process.stdin.on('data', chunk => {
 
       const definition = registry
         .definitions()
-        .find((tool) => tool.name === 'mcp__environment__environment')
+        .find(
+          (tool) =>
+            tool.name === 'mcp__plugin_fixture_environment__environment_tool',
+        )
       expect(JSON.stringify(definition)).toContain('[REDACTED]')
       expect(JSON.stringify(definition)).not.toContain(explicitSecret)
 
@@ -659,7 +725,7 @@ process.stdin.on('data', chunk => {
         registry.execute(
           {
             id: 'environment',
-            name: 'mcp__environment__environment',
+            name: 'mcp__plugin_fixture_environment__environment_tool',
             input: {},
           },
           { cwd: root },
@@ -682,7 +748,11 @@ process.stdin.on('data', chunk => {
       })
       const error = await registry
         .execute(
-          { id: 'failure', name: 'mcp__environment__failure', input: {} },
+          {
+            id: 'failure',
+            name: 'mcp__plugin_fixture_environment__failure_tool',
+            input: {},
+          },
           { cwd: root },
         )
         .then(
@@ -832,7 +902,10 @@ process.stdin.on('data', chunk => {
           scope: 'project',
           value: {
             mcpServers: {
-              fixture: { command: process.execPath, args: [serverScript] },
+              'plugin:fixture:resource': {
+                command: process.execPath,
+                args: [serverScript],
+              },
               empty: {
                 command: process.execPath,
                 args: [serverScript, 'empty'],
@@ -845,7 +918,7 @@ process.stdin.on('data', chunk => {
 
     try {
       expect(registry.serverStatuses()).toEqual([
-        { name: 'fixture', status: 'connected' },
+        { name: 'plugin:fixture:resource', status: 'connected' },
         { name: 'empty', status: 'connected' },
       ])
       expect(registry.definitions().map((tool) => tool.name)).toEqual([
@@ -865,9 +938,13 @@ process.stdin.on('data', chunk => {
           description: 'Alpha resource',
           mimeType: 'text/plain',
           size: 17,
-          server: 'fixture',
+          server: 'plugin:fixture:resource',
         },
-        { uri: 'fixture://second', name: 'Second', server: 'fixture' },
+        {
+          uri: 'fixture://second',
+          name: 'Second',
+          server: 'plugin:fixture:resource',
+        },
       ])
       await expect(
         registry.execute(
@@ -893,14 +970,17 @@ process.stdin.on('data', chunk => {
           { cwd: root },
         ),
       ).rejects.toThrow(
-        'Server "missing" not found. Available servers: fixture, empty',
+        'Server "missing" not found. Available servers: plugin:fixture:resource, empty',
       )
       await expect(
         registry.execute(
           {
             id: 'read',
             name: 'ReadMcpResourceTool',
-            input: { server: 'fixture', uri: 'fixture://alpha' },
+            input: {
+              server: 'plugin:fixture:resource',
+              uri: 'fixture://alpha',
+            },
           },
           { cwd: root },
         ),
@@ -914,7 +994,10 @@ process.stdin.on('data', chunk => {
           {
             id: 'directory',
             name: 'ReadMcpResourceDirTool',
-            input: { server: 'fixture', uri: 'fixture://directory' },
+            input: {
+              server: 'plugin:fixture:resource',
+              uri: 'fixture://directory',
+            },
           },
           { cwd: root },
         ),
@@ -932,13 +1015,16 @@ process.stdin.on('data', chunk => {
           { cwd: root },
         ),
       ).rejects.toThrow(
-        'Server "missing" not found. Available servers: fixture, empty',
+        'Server "missing" not found. Available servers: plugin:fixture:resource, empty',
       )
       const blob = await registry.execute(
         {
           id: 'blob',
           name: 'ReadMcpResourceTool',
-          input: { server: 'fixture', uri: 'fixture://blob' },
+          input: {
+            server: 'plugin:fixture:resource',
+            uri: 'fixture://blob',
+          },
         },
         { cwd: root, toolResultDirectory: resultDirectory },
       )
@@ -958,7 +1044,10 @@ process.stdin.on('data', chunk => {
           {
             id: 'blob-without-directory',
             name: 'ReadMcpResourceTool',
-            input: { server: 'fixture', uri: 'fixture://blob' },
+            input: {
+              server: 'plugin:fixture:resource',
+              uri: 'fixture://blob',
+            },
           },
           { cwd: root },
         ),
@@ -968,7 +1057,10 @@ process.stdin.on('data', chunk => {
           {
             id: 'invalid-blob',
             name: 'ReadMcpResourceTool',
-            input: { server: 'fixture', uri: 'fixture://invalid' },
+            input: {
+              server: 'plugin:fixture:resource',
+              uri: 'fixture://invalid',
+            },
           },
           { cwd: root, toolResultDirectory: resultDirectory },
         ),
@@ -978,7 +1070,10 @@ process.stdin.on('data', chunk => {
           {
             id: 'missing-resource',
             name: 'ReadMcpResourceTool',
-            input: { server: 'fixture', uri: 'fixture://missing' },
+            input: {
+              server: 'plugin:fixture:resource',
+              uri: 'fixture://missing',
+            },
           },
           { cwd: root },
         ),
