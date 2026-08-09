@@ -223,6 +223,109 @@ describe('InteractiveApp', () => {
     expect(closed).toBe(2)
   })
 
+  it('submits an initial prompt once after mounting', async () => {
+    const calls: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt) {
+            calls.push(`run:${prompt}`)
+            return {
+              sessionId: 'initial-session',
+              text: 'initial answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume(sessionId, prompt) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            return {
+              sessionId,
+              text: 'resume answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        initialPrompt="review this change"
+      />,
+    )
+
+    await flush()
+    await flush()
+
+    expect(app.lastFrame()).toContain('initial answer')
+    expect(calls).toEqual(['run:review this change'])
+  })
+
+  it('waits for resume selection before submitting an initial prompt once', async () => {
+    const calls: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt) {
+            calls.push(`run:${prompt}`)
+            return {
+              sessionId: 'new-session',
+              text: 'new answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume(sessionId, prompt) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            return {
+              sessionId,
+              text: 'continued answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[
+          {
+            sessionId: 'resume-session',
+            lastPrompt: 'previous prompt',
+            updatedAt: '2026-08-09T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        initialPrompt="continue review"
+        allowNewSession={false}
+        resume={{ sessionSelector: 'resume', requireSession: true }}
+      />,
+    )
+
+    await flush()
+    expect(calls).toEqual([])
+    app.stdin.write('\r')
+    await flush()
+    await flush()
+
+    expect(app.lastFrame()).toContain('continued answer')
+    expect(calls).toEqual(['resume:resume-session:continue review'])
+  })
+
   it('keeps one service alive and submits scheduled prompts while idle', async () => {
     const calls: string[] = []
     let created = 0
@@ -436,6 +539,212 @@ describe('InteractiveApp', () => {
     app.stdin.write('y')
     await flush()
     expect(approval).toBe(true)
+    expect(app.lastFrame()).toContain('done')
+  })
+
+  it('collects interactive model questions with numbered and custom answers', async () => {
+    let result: unknown
+    const factory: InteractiveServiceFactory = {
+      async createService({ askUser }) {
+        return {
+          async run() {
+            result = await askUser?.([
+              {
+                question: 'Which runtime?',
+                header: 'Runtime',
+                options: [
+                  { label: 'Node', description: 'Use Node.js' },
+                  { label: 'Bun', description: 'Use Bun' },
+                ],
+                multiSelect: false,
+              },
+              {
+                question: 'Which checks?',
+                header: 'Checks',
+                options: [
+                  { label: 'Tests', description: 'Run tests' },
+                  { label: 'Types', description: 'Run typecheck' },
+                ],
+                multiSelect: true,
+              },
+            ])
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    await flush()
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Runtime: Which runtime?')
+    app.stdin.write('Bun, with npm')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Checks: Which checks?')
+    app.stdin.write('1, custom lint')
+    app.stdin.write('\r')
+    await flush()
+    expect(result).toEqual({
+      answers: {
+        'Which runtime?': 'Bun, with npm',
+        'Which checks?': 'Tests, custom lint',
+      },
+    })
+  })
+
+  it('cancels interactive questions when the tool signal aborts', async () => {
+    const controller = new AbortController()
+    let result: unknown = 'pending'
+    const factory: InteractiveServiceFactory = {
+      async createService({ askUser }) {
+        return {
+          async run() {
+            result = await askUser?.(
+              [
+                {
+                  question: 'Continue?',
+                  header: 'Confirm',
+                  options: [
+                    { label: 'Yes', description: 'Continue' },
+                    { label: 'No', description: 'Stop' },
+                  ],
+                  multiSelect: false,
+                },
+              ],
+              controller.signal,
+            )
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    await flush()
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Confirm: Continue?')
+    controller.abort()
+    await flush()
+    expect(result).toBeNull()
+    expect(app.lastFrame()).toContain('done')
+  })
+
+  it('shows plan content and forwards plan approval', async () => {
+    let approval: boolean | undefined
+    const factory: InteractiveServiceFactory = {
+      async createService({ approvePlan }) {
+        return {
+          async run() {
+            approval = await approvePlan?.({
+              action: 'exit',
+              planPath: '/tmp/plan.md',
+              plan: '# Plan\n\n1. Implement.',
+            })
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    await flush()
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Approve this plan')
+    expect(app.lastFrame()).toContain('1. Implement.')
+    app.stdin.write('y')
+    await flush()
+    expect(approval).toBe(true)
+  })
+
+  it('declines plan approval when the tool signal aborts', async () => {
+    const controller = new AbortController()
+    let approval: boolean | undefined
+    const factory: InteractiveServiceFactory = {
+      async createService({ approvePlan }) {
+        return {
+          async run() {
+            approval = await approvePlan?.(
+              { action: 'exit', planPath: '/tmp/plan.md' },
+              controller.signal,
+            )
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    await flush()
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Approve this plan')
+    controller.abort()
+    await flush()
+    expect(approval).toBe(false)
     expect(app.lastFrame()).toContain('done')
   })
 

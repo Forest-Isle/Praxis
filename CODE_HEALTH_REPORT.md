@@ -2,14 +2,15 @@
 
 > Generated: 2026-08-09
 > Project: Praxis
-> Scanned: 180 source files, 58 scripts, 86 test modules
+> Scanned: 182 source files, 59 scripts, 87 test modules
 
 ## Executive Summary
 
 Praxis is buildable and fully wired for current single-user CLI scope. TypeScript
 typechecking, boundary checks, focused regressions, package-script references,
-and direct production dependencies pass. Stage 84 added the previously implicit
-`quickjs-emscripten-core` dependency and closed MCP media persistence wiring. No
+and direct production dependencies pass. Stage 85 added fully wired interactive
+question and transcript-backed plan-mode tools, including abort handling and
+exact plan-file permissions. No
 unfinished feature stubs, unresolved imports, or missing script targets remain.
 
 ## 🔴 Critical Issues
@@ -56,4 +57,4 @@ direct-dependency inspection, and package-script target checks pass.
 
 - Total issues found: 2
 - Critical: 0 | Incomplete: 0 | Broken: 0 | Smells: 1 | Optimizations: 1
-- Files scanned: 180 source files, 58 scripts, 86 test modules
+- Files scanned: 182 source files, 59 scripts, 87 test modules

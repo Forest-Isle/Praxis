@@ -94,6 +94,10 @@ import {
 } from './providers/environment.js'
 import { ModelPricingRegistry, usageCostUsd } from './core/usage.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
+import {
+  ClaudeInteractiveToolManager,
+  type ClaudeInteractiveToolCallbacks,
+} from './tools/claude-interactive-tools.js'
 import { claudeBackgroundTaskParent } from './application/background-bash-manager.js'
 import {
   runTopLevelAgentWorker,
@@ -950,12 +954,15 @@ export interface CliDependencies extends InteractiveServiceFactory {
     onElicitation?: (
       request: CliElicitationRequest,
     ) => Promise<CliElicitationResult>
+    askUser?: ClaudeInteractiveToolCallbacks['askUser']
+    approvePlan?: ClaudeInteractiveToolCallbacks['approvePlan']
   }): Promise<SessionCommands>
   createAutoModeCritic?(options: { model?: string }): Promise<ModelProvider>
   pluginEval?: PluginEvalDependencies
   runInteractive?(options: {
     agent?: string
     controls?: CliControls
+    initialPrompt?: string
     resume?: InteractiveResumeOptions & { fromPr?: string | true }
     signal?: AbortSignal
   }): Promise<number>
@@ -994,6 +1001,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
   signal,
   exposeToolRegistry = false,
   onElicitation,
+  askUser,
+  approvePlan,
   emitToolUseSummaries = false,
   cwd: requestedCwd,
   configRoot: requestedConfigRoot,
@@ -1245,12 +1254,26 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const permissions = permissionResolverForMode(
     cli.dangerouslySkipPermissions ? 'bypassPermissions' : cli.permissionMode,
   )
+  const exposePlanDirectory =
+    interactive &&
+    askUser !== undefined &&
+    approvePlan !== undefined &&
+    ['EnterPlanMode', 'ExitPlanMode'].some(
+      (name) =>
+        (cli.tools === undefined ||
+          cli.tools.includes('default') ||
+          cli.tools.includes(name)) &&
+        !cli.disallowedTools.includes(name),
+    )
   const localTools = new LocalToolRegistry({
     cwd,
     cwdProvider: () => workspace.cwd(),
     enableReportFindings: exposeToolRegistry,
     ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
-    additionalDirectories: cli.additionalDirectories,
+    additionalDirectories: [
+      ...cli.additionalDirectories,
+      ...(exposePlanDirectory ? [resolve(configRoot, 'plans')] : []),
+    ],
     additionalReadDirectories: [claudeBackgroundTaskParent(cwd)],
     ...(environment ? { environment } : {}),
   })
@@ -1291,6 +1314,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ] as const
     const workflowToolNames = ['Workflow'] as const
     const worktreeToolNames = ['EnterWorktree', 'ExitWorktree'] as const
+    const interactiveToolNames = [
+      'AskUserQuestion',
+      'EnterPlanMode',
+      'ExitPlanMode',
+    ] as const
     const selectedAgentTools = agentToolNames.filter(
       (name) =>
         (cli.tools === undefined ||
@@ -1332,6 +1360,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
           cli.tools.includes(name)) &&
         !cli.disallowedTools.includes(name),
     )
+    const selectedInteractiveTools = interactiveToolNames.filter(
+      (name) =>
+        interactive &&
+        (cli.tools === undefined ||
+          cli.tools.includes('default') ||
+          cli.tools.includes(name)) &&
+        !cli.disallowedTools.includes(name),
+    )
     const enableBackgroundBash =
       cli.sessionPersistence &&
       !cli.bare &&
@@ -1362,6 +1398,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
         !worktreeToolNames.includes(
           name as (typeof worktreeToolNames)[number],
         ) &&
+        !interactiveToolNames.includes(
+          name as (typeof interactiveToolNames)[number],
+        ) &&
         (!cli.bare || (name !== 'WebFetch' && name !== 'WebSearch')),
     )
     const filteredTools = new FilteredToolRegistry(extensionTools, {
@@ -1381,6 +1420,18 @@ const createDefaultService: CliDependencies['createService'] = async ({
             cwd,
             onEvent: (event) => runtimeEventSink({ type: 'hook', event }),
           })
+    const interactiveTools =
+      selectedInteractiveTools.length > 0 && askUser && approvePlan
+        ? new ClaudeInteractiveToolManager({
+            configRoot,
+            initialMode: cli.dangerouslySkipPermissions
+              ? 'bypassPermissions'
+              : cli.permissionMode,
+            enabledTools: selectedInteractiveTools,
+            callbacks: { askUser, approvePlan },
+            permissionResolverForMode,
+          })
+        : undefined
     const service = new ClaudeSessionService({
       ...options,
       provider: hostedToolProvider,
@@ -1399,6 +1450,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       enableWorktrees:
         cli.worktreeRequested || selectedWorktreeTools.length > 0,
       worktreeToolNames: selectedWorktreeTools,
+      ...(interactiveTools ? { interactiveTools } : {}),
       ...(hooks ? { hooks } : {}),
       ...(agent ? { agent } : {}),
       contextAssembler: new ClaudeContextAssembler({
@@ -1441,6 +1493,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...selectedScheduledTools,
       ...selectedWorkflowTools,
       ...selectedWorktreeTools,
+      ...selectedInteractiveTools,
       ...(enableSubagents ? selectedAgentTools : []),
     ]
     const runtimeInfo: CliRuntimeInfo = {
@@ -1753,7 +1806,7 @@ const defaultDependencies: CliDependencies = {
     runtimeFactory: defaultPluginEvalRuntimeFactory,
     judge: defaultPluginEvalJudge,
   },
-  runInteractive: ({ agent, controls, resume, signal }) =>
+  runInteractive: ({ agent, controls, initialPrompt, resume, signal }) =>
     renderInteractive({
       factory: {
         createService: (options) =>
@@ -1766,6 +1819,7 @@ const defaultDependencies: CliDependencies = {
         scheduledPrompts: true,
       },
       ...(signal ? { signal } : {}),
+      ...(initialPrompt === undefined ? {} : { initialPrompt }),
       ...(controls?.axScreenReader ? { axScreenReader: true } : {}),
       ...(resume === undefined ? {} : { resume }),
       ...(resume?.fromPr !== undefined
@@ -3871,10 +3925,42 @@ async function execute(
   const invocation = parseCliInvocation(argv)
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
+  const command = args[0]
+  const knownCommand = [
+    'run',
+    'resume',
+    'fork',
+    'sessions',
+    'inspect',
+    'export',
+    'agents',
+    'attach',
+    'logs',
+    'stop',
+    'mcp',
+    'auto-mode',
+    'plugin',
+    'plugins',
+    'doctor',
+    'install',
+    'update',
+    'upgrade',
+    'project',
+  ].includes(command ?? '')
   if (args[0] === 'agents') assertAgentsOptionAllowlist(argv)
   const interactiveResume =
     invocation.resumeSelector !== undefined &&
     args.length === (typeof invocation.resumeSelector === 'string' ? 2 : 1)
+  const interactivePromptArgs =
+    command === 'resume' && invocation.resumeSelector !== undefined
+      ? args.slice(2)
+      : !knownCommand
+        ? args
+        : []
+  const interactivePrompt =
+    interactivePromptArgs.length > 0
+      ? promptFrom(interactivePromptArgs)
+      : undefined
   if (
     (invocation.fallbackModels !== undefined ||
       invocation.jsonSchema !== undefined ||
@@ -3905,17 +3991,29 @@ async function execute(
       )
     return 0
   }
+  if (invocation.rewindFiles !== undefined && args.length > 2) {
+    throw new Error(
+      '--rewind-files is a standalone operation and cannot be used with a prompt',
+    )
+  }
   if (
     io.isTTY &&
     dependencies.runInteractive &&
-    (args.length === 0 || interactiveResume) &&
+    (args.length === 0 ||
+      interactiveResume ||
+      interactivePrompt !== undefined) &&
     !invocation.print &&
     !invocation.background &&
-    !invocation.initOnly
+    !invocation.initOnly &&
+    inputFormat === 'text' &&
+    outputFormat === 'text'
   ) {
     return dependencies.runInteractive({
       ...(agent === undefined ? {} : { agent }),
       controls: invocation,
+      ...(interactivePrompt === undefined
+        ? {}
+        : { initialPrompt: interactivePrompt }),
       resume: {
         ...(typeof invocation.resumeSelector === 'string'
           ? {
@@ -3963,35 +4061,12 @@ async function execute(
     }
   }
   const { retryInterruptedTools } = invocation
-  const command = args[0]
   if (command === 'resume' && args[1] === undefined) {
     if (invocation.resumeSelector === true) {
       throw new Error(missingResumeSelectorMessage(invocation))
     }
     requireValue(args[1], 'Session ID')
   }
-  if (invocation.rewindFiles !== undefined && args.length > 2) {
-    throw new Error(
-      '--rewind-files is a standalone operation and cannot be used with a prompt',
-    )
-  }
-  const knownCommand = [
-    'run',
-    'resume',
-    'fork',
-    'sessions',
-    'inspect',
-    'export',
-    'agents',
-    'attach',
-    'logs',
-    'stop',
-    'mcp',
-    'auto-mode',
-    'plugin',
-    'plugins',
-    'doctor',
-  ].includes(command ?? '')
   if (
     retryInterruptedTools &&
     command !== 'resume' &&

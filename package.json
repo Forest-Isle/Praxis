@@ -31,6 +31,7 @@
     "test:glob-compat": "npm run build && node scripts/verify-glob-compatibility.mjs",
     "test:hook-compat": "npm run build && node scripts/verify-hook-compatibility.mjs",
     "test:image-compat": "npm run build && node scripts/verify-image-compatibility.mjs",
+    "test:interactive-plan-compat": "npm run build && node scripts/verify-interactive-plan-compatibility.mjs",
     "test:local-tool-compat": "npm run build && node scripts/probe-local-read-contract.mjs",
     "test:self-update": "npm run build && node scripts/verify-self-update-contract.mjs",
     "test:mcp-compat": "npm run build && node scripts/verify-mcp-compatibility.mjs",

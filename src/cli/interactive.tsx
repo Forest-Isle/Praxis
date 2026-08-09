@@ -13,6 +13,12 @@ import type {
   RuntimeEventSink,
 } from '../core/runtime.js'
 import type { CliElicitationRequest, CliElicitationResult } from './protocol.js'
+import type {
+  ClaudeInteractiveToolCallbacks,
+  ClaudePlanApprovalRequest,
+  ClaudeQuestion,
+  ClaudeQuestionResult,
+} from '../tools/claude-interactive-tools.js'
 import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
@@ -44,6 +50,8 @@ export interface InteractiveServiceFactory {
     onElicitation?: (
       request: CliElicitationRequest,
     ) => Promise<CliElicitationResult>
+    askUser?: ClaudeInteractiveToolCallbacks['askUser']
+    approvePlan?: ClaudeInteractiveToolCallbacks['approvePlan']
     agent?: string
     signal?: AbortSignal
   }): Promise<InteractiveSessionCommands>
@@ -61,6 +69,7 @@ export interface InteractiveResumeOptions {
 interface InteractiveAppProps {
   factory: InteractiveServiceFactory
   initialSessions: readonly SessionSummary[]
+  initialPrompt?: string
   signal?: AbortSignal
   onCancel?: () => void
   onTurnChange?: (turn: Promise<void> | null) => void
@@ -85,6 +94,41 @@ type PendingElicitation = {
   resolve: (result: CliElicitationResult) => void
 }
 
+type PendingQuestion = {
+  questions: readonly ClaudeQuestion[]
+  index: number
+  answers: Readonly<Record<string, string>>
+  resolve: (result: ClaudeQuestionResult | null) => void
+}
+
+type PendingPlanApproval = {
+  request: ClaudePlanApprovalRequest
+  resolve: (approved: boolean) => void
+}
+
+function questionAnswer(question: ClaudeQuestion, input: string): string {
+  const answer = input.trim()
+  if (!answer) throw new Error('Enter an option number or text.')
+  if (!question.multiSelect) {
+    if (!/^\d+$/u.test(answer)) return answer
+    const option = question.options[Number(answer) - 1]
+    if (!option) throw new Error(`Unknown option ${answer}.`)
+    return option.label
+  }
+  const values = input
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+  return values
+    .map((value) => {
+      if (!/^\d+$/u.test(value)) return value
+      const option = question.options[Number(value) - 1]
+      if (!option) throw new Error(`Unknown option ${value}.`)
+      return option.label
+    })
+    .join(', ')
+}
+
 function describeTool(
   call: ModelToolCall,
   sensitiveValues: readonly string[],
@@ -100,6 +144,7 @@ function describeTool(
 export function InteractiveApp({
   factory,
   initialSessions,
+  initialPrompt,
   signal,
   onCancel,
   onTurnChange,
@@ -129,6 +174,10 @@ export function InteractiveApp({
   const [input, setInput] = useState('')
   const inputRef = useRef('')
   const [busy, setBusy] = useState(false)
+  const initialPromptRef = useRef(initialPrompt?.trim() ?? '')
+  const [initialPromptPending, setInitialPromptPending] = useState(
+    initialPromptRef.current.length > 0,
+  )
   const [status, setStatus] = useState('ready')
   const [activeText, setActiveText] = useState('')
   const [history, setHistory] = useState<HistoryLine[]>([])
@@ -138,6 +187,12 @@ export function InteractiveApp({
     null,
   )
   const elicitationRef = useRef<PendingElicitation | null>(null)
+  const [question, setQuestion] = useState<PendingQuestion | null>(null)
+  const questionRef = useRef<PendingQuestion | null>(null)
+  const [planApproval, setPlanApproval] = useState<PendingPlanApproval | null>(
+    null,
+  )
+  const planApprovalRef = useRef<PendingPlanApproval | null>(null)
   const serviceRef = useRef<InteractiveSessionCommands | null>(null)
   const serviceCreationRef = useRef<
     Promise<InteractiveSessionCommands> | undefined
@@ -149,6 +204,8 @@ export function InteractiveApp({
     const cancel = () => {
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
+      questionRef.current?.resolve(null)
+      planApprovalRef.current?.resolve(false)
       exit()
     }
     if (signal.aborted) cancel()
@@ -160,6 +217,8 @@ export function InteractiveApp({
     () => () => {
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
+      questionRef.current?.resolve(null)
+      planApprovalRef.current?.resolve(false)
       scheduledWaitRef.current?.abort()
       void serviceRef.current?.close?.().catch(() => undefined)
     },
@@ -235,6 +294,65 @@ export function InteractiveApp({
   const approveRecovery = (call: ModelToolCall) =>
     resume?.retryInterruptedTools ? true : requestApproval(call, 'recovery')
 
+  const askUser: ClaudeInteractiveToolCallbacks['askUser'] = (
+    questions,
+    signal,
+  ) =>
+    new Promise<ClaudeQuestionResult | null>((resolveResult) => {
+      let settled = false
+      const abort = () => pending.resolve(null)
+      const pending: PendingQuestion = {
+        questions,
+        index: 0,
+        answers: {},
+        resolve: (result) => {
+          if (settled) return
+          settled = true
+          signal?.removeEventListener('abort', abort)
+          if (questionRef.current === pending) questionRef.current = null
+          setQuestion((current) => (current === pending ? null : current))
+          resolveResult(result)
+        },
+      }
+      if (signal?.aborted) {
+        pending.resolve(null)
+        return
+      }
+      signal?.addEventListener('abort', abort, { once: true })
+      inputRef.current = ''
+      setInput('')
+      questionRef.current = pending
+      setQuestion(pending)
+    })
+
+  const approvePlan: ClaudeInteractiveToolCallbacks['approvePlan'] = (
+    request,
+    signal,
+  ) =>
+    new Promise<boolean>((resolveApproval) => {
+      let settled = false
+      const abort = () => pending.resolve(false)
+      const pending: PendingPlanApproval = {
+        request,
+        resolve: (approved) => {
+          if (settled) return
+          settled = true
+          signal?.removeEventListener('abort', abort)
+          if (planApprovalRef.current === pending)
+            planApprovalRef.current = null
+          setPlanApproval((current) => (current === pending ? null : current))
+          resolveApproval(approved)
+        },
+      }
+      if (signal?.aborted) {
+        pending.resolve(false)
+        return
+      }
+      signal?.addEventListener('abort', abort, { once: true })
+      planApprovalRef.current = pending
+      setPlanApproval(pending)
+    })
+
   const service = async () => {
     if (serviceRef.current) return serviceRef.current
     const pending =
@@ -245,6 +363,8 @@ export function InteractiveApp({
         approveRecovery,
         approveTool,
         onElicitation: requestElicitation,
+        askUser,
+        approvePlan,
         ...(signal ? { signal } : {}),
       })
     serviceCreationRef.current = pending
@@ -310,7 +430,35 @@ export function InteractiveApp({
   }
 
   useEffect(() => {
-    if (!factory.scheduledPrompts || selectingSession || busy || permission) {
+    if (!initialPromptPending || selectingSession || busy) return
+    const prompt = initialPromptRef.current
+    if (!prompt) {
+      setInitialPromptPending(false)
+      return
+    }
+    initialPromptRef.current = ''
+    const turn = submit(prompt)
+    onTurnChange?.(turn)
+    void turn.then(
+      () => {
+        setInitialPromptPending(false)
+        onTurnChange?.(null)
+      },
+      () => {
+        setInitialPromptPending(false)
+        onTurnChange?.(null)
+      },
+    )
+  }, [busy, initialPromptPending, selectingSession])
+
+  useEffect(() => {
+    if (
+      !factory.scheduledPrompts ||
+      initialPromptPending ||
+      selectingSession ||
+      busy ||
+      permission
+    ) {
       return
     }
     const controller = new AbortController()
@@ -341,12 +489,14 @@ export function InteractiveApp({
         })
       })
     return () => controller.abort()
-  }, [busy, permission, selectingSession, sessionId])
+  }, [busy, initialPromptPending, permission, selectingSession, sessionId])
 
   useInput((value, key) => {
     if (key.ctrl && value.toLowerCase() === 'c') {
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
+      questionRef.current?.resolve(null)
+      planApprovalRef.current?.resolve(false)
       onCancel?.()
       exit()
       return
@@ -356,6 +506,49 @@ export function InteractiveApp({
         permission.resolve(true)
       } else if (value.toLowerCase() === 'n' || key.return || key.escape) {
         permission.resolve(false)
+      }
+      return
+    }
+
+    if (planApproval) {
+      if (value.toLowerCase() === 'y') {
+        planApproval.resolve(true)
+      } else if (value.toLowerCase() === 'n' || key.return || key.escape) {
+        planApproval.resolve(false)
+      }
+      return
+    }
+
+    if (question) {
+      if (key.escape) {
+        question.resolve(null)
+      } else if (key.return) {
+        try {
+          const current = question.questions[question.index]
+          if (!current) throw new Error('Question state is invalid.')
+          const answer = questionAnswer(current, inputRef.current.trim())
+          const answers = { ...question.answers, [current.question]: answer }
+          inputRef.current = ''
+          setInput('')
+          if (question.index === question.questions.length - 1) {
+            question.resolve({ answers })
+          } else {
+            const next = { ...question, index: question.index + 1, answers }
+            questionRef.current = next
+            setQuestion(next)
+          }
+        } catch (error) {
+          append({
+            kind: 'warning',
+            text: error instanceof Error ? error.message : String(error),
+          })
+        }
+      } else if (key.backspace || key.delete) {
+        inputRef.current = inputRef.current.slice(0, -1)
+        setInput(inputRef.current)
+      } else if (!key.ctrl && !key.meta && value) {
+        inputRef.current += value
+        setInput(inputRef.current)
       }
       return
     }
@@ -533,6 +726,41 @@ export function InteractiveApp({
               {permission.kind === 'recovery' ? 'Retry interrupted ' : 'Allow '}
               {describeTool(permission.call, sensitiveValues)}? (y/N)
             </Text>
+          ) : planApproval ? (
+            <Box flexDirection="column">
+              <Text color="yellow">
+                Approve this plan and begin implementation? (y/N)
+              </Text>
+              <Text dimColor>{planApproval.request.planPath}</Text>
+              {planApproval.request.plan ? (
+                <Text>{planApproval.request.plan}</Text>
+              ) : null}
+            </Box>
+          ) : question ? (
+            <Box flexDirection="column">
+              <Text color="yellow">
+                {question.questions[question.index]?.header}:{' '}
+                {question.questions[question.index]?.question}
+              </Text>
+              {question.questions[question.index]?.options.map(
+                (option, index) => (
+                  <Box key={`${index}-${option.label}`} flexDirection="column">
+                    <Text>
+                      {index + 1}. {option.label} — {option.description}
+                    </Text>
+                    {option.preview ? (
+                      <Text dimColor>{option.preview}</Text>
+                    ) : null}
+                  </Box>
+                ),
+              )}
+              <Text>› {input}</Text>
+              <Text dimColor>
+                {question.questions[question.index]?.multiSelect
+                  ? 'Enter comma-separated option numbers or custom text · Esc cancels'
+                  : 'Enter one option number or custom text · Esc cancels'}
+              </Text>
+            </Box>
           ) : elicitation ? (
             <Box flexDirection="column">
               <Text color="yellow">
@@ -568,6 +796,7 @@ export function InteractiveApp({
 
 export async function runInteractive(options: {
   factory: InteractiveServiceFactory
+  initialPrompt?: string
   signal?: AbortSignal
   axScreenReader?: boolean
   sessionFilter?: (session: SessionSummary) => boolean
@@ -621,6 +850,9 @@ export async function runInteractive(options: {
     <InteractiveApp
       factory={options.factory}
       initialSessions={initialSessions}
+      {...(options.initialPrompt === undefined
+        ? {}
+        : { initialPrompt: options.initialPrompt })}
       signal={signal}
       onCancel={() => controller.abort()}
       onTurnChange={(turn) => {

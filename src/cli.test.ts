@@ -772,6 +772,95 @@ describe('Praxis CLI', () => {
     })
   })
 
+  it('starts interactive TTY prompts with the positional prompt exactly once', async () => {
+    const capture = captureIO()
+    capture.io.isTTY = true
+    const starts: Parameters<
+      NonNullable<CliDependencies['runInteractive']>
+    >[0][] = []
+    const interactive: CliDependencies = {
+      ...dependencies(),
+      async runInteractive(options) {
+        starts.push(options)
+        return 0
+      },
+    }
+
+    await expect(
+      run(['review', 'this', 'change'], capture.io, interactive),
+    ).resolves.toBe(0)
+    await expect(
+      run(
+        ['--resume=11111111-1111-4111-8111-111111111111', 'continue', 'review'],
+        capture.io,
+        interactive,
+      ),
+    ).resolves.toBe(0)
+
+    expect(starts).toHaveLength(2)
+    expect(starts[0]).toMatchObject({ initialPrompt: 'review this change' })
+    expect(starts[1]).toMatchObject({
+      initialPrompt: 'continue review',
+      resume: {
+        sessionId: '11111111-1111-4111-8111-111111111111',
+      },
+    })
+  })
+
+  it('keeps management commands out of positional TTY prompt routing', async () => {
+    let interactiveStarts = 0
+    const cliDependencies: CliDependencies = {
+      ...dependencies(),
+      async runInteractive() {
+        interactiveStarts += 1
+        return 0
+      },
+      async selfUpdate(options) {
+        return {
+          type: 'self-update',
+          operation: options.operation,
+          package: 'praxis-agent',
+          target: options.target ?? 'latest',
+          force: false,
+          command: ['npm'],
+          output: 'fixture complete',
+        }
+      },
+    }
+    for (const command of ['install', 'update', 'upgrade']) {
+      const capture = captureIO()
+      capture.io.isTTY = true
+      await expect(
+        run([command, '--json'], capture.io, cliDependencies),
+      ).resolves.toBe(0)
+    }
+    const project = captureIO()
+    project.io.isTTY = true
+    await expect(
+      run(['project', 'unknown'], project.io, cliDependencies),
+    ).resolves.toBe(0)
+    expect(interactiveStarts).toBe(0)
+  })
+
+  it('keeps printed TTY prompts headless', async () => {
+    const capture = captureIO()
+    capture.io.isTTY = true
+    let interactiveStarts = 0
+    const headless: CliDependencies = {
+      ...dependencies(),
+      async runInteractive() {
+        interactiveStarts += 1
+        return 0
+      },
+    }
+
+    await expect(
+      run(['--print', 'headless prompt'], capture.io, headless),
+    ).resolves.toBe(0)
+
+    expect(interactiveStarts).toBe(0)
+  })
+
   it('launches tmux worktree sessions before creating a provider', async () => {
     const capture = captureIO()
     let launched:

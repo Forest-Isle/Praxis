@@ -22,6 +22,7 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'file-history-delta',
   'file-history-snapshot',
   'last-prompt',
+  'permission-mode',
   'pr-link',
   'system',
   'user',
@@ -826,6 +827,15 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
       !isNonEmptyString(entry.sessionId)
     ) {
       throw new Error('Claude agent-setting entry has invalid metadata')
+    }
+    return
+  }
+  if (entry.type === 'permission-mode') {
+    if (
+      !isNonEmptyString(entry.permissionMode) ||
+      !isNonEmptyString(entry.sessionId)
+    ) {
+      throw new Error('Claude permission-mode entry has invalid metadata')
     }
     return
   }
