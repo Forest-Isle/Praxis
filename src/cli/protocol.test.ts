@@ -356,6 +356,13 @@ describe('CLI protocol', () => {
       pluginAll: true,
       agentsAll: false,
     })
+    expect(
+      parseCliInvocation(['plugin', 'autoremove', '-s=user', '--dry-run']),
+    ).toMatchObject({
+      args: ['plugin', 'autoremove'],
+      mcpScope: 'user',
+      pluginDryRun: true,
+    })
   })
 
   it('parses worktree and tmux controls', () => {

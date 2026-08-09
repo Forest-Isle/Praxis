@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
-const praxisCli = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
+const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
+let praxisCli = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
 const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-maintenance-'))
 const environment = { ...process.env, DISABLE_AUTOUPDATER: '1' }
 
@@ -180,6 +181,42 @@ async function tagFixture(name) {
 }
 
 try {
+  const installRoot = join(root, 'packed-install')
+  await mkdir(installRoot, { recursive: true })
+  const packed = JSON.parse(
+    (
+      await execFileAsync(
+        'npm',
+        ['pack', '--json', '--pack-destination', root],
+        {
+          cwd: repositoryRoot,
+          timeout: 120_000,
+        },
+      )
+    ).stdout,
+  )
+  const filename = packed[0]?.filename
+  assert(typeof filename === 'string', 'npm pack did not return a filename')
+  await execFileAsync(
+    'npm',
+    [
+      'install',
+      '--prefix',
+      installRoot,
+      '--ignore-scripts',
+      '--no-audit',
+      '--no-fund',
+      join(root, filename),
+    ],
+    { cwd: repositoryRoot, timeout: 120_000 },
+  )
+  praxisCli = join(
+    installRoot,
+    'node_modules',
+    'praxis-agent',
+    'dist',
+    'cli.js',
+  )
   const version = (await run('claude', ['--version'])).stdout.trim()
   assert(
     version.startsWith('2.1.208 '),
@@ -250,6 +287,17 @@ try {
     praxisPrune.configRoot,
   )
   assert(nonTty.stdout.includes('Not a TTY'), 'Praxis non-TTY safety')
+  const structuredNonTty = await praxis(
+    ['--json', 'plugin', 'prune'],
+    praxisPrune.cwd,
+    praxisPrune.configRoot,
+  )
+  const structuredValue = JSON.parse(structuredNonTty.stdout)
+  assert(
+    structuredValue.status === 'confirmation-required' &&
+      structuredValue.candidates.length === 1,
+    `Praxis structured prune confirmation: ${structuredNonTty.stdout}`,
+  )
   const removed = await praxis(
     ['plugin', 'prune', '--yes'],
     praxisPrune.cwd,
@@ -269,6 +317,45 @@ try {
   assert(
     registry.plugins['dep@market'][0].auto === true,
     'Praxis native auto field',
+  )
+
+  const uninstallPrune = await pruneFixture('praxis-uninstall-prune')
+  const uninstallPruned = await praxis(
+    ['--json', 'plugin', 'uninstall', 'parent@market', '--prune', '--yes'],
+    uninstallPrune.cwd,
+    uninstallPrune.configRoot,
+  )
+  const uninstallLines = uninstallPruned.stdout.trim().split('\n')
+  const uninstallResult = JSON.parse(uninstallLines[0])
+  assert(uninstallLines.length === 1, 'Praxis uninstall --prune mixed output')
+  assert(
+    uninstallResult.type === 'plugin-uninstalled-and-pruned' &&
+      uninstallResult.status === 'complete' &&
+      uninstallResult.removed.length === 2,
+    `Praxis uninstall --prune result: ${uninstallPruned.stdout}`,
+  )
+  const uninstallRegistry = JSON.parse(
+    await readFile(
+      join(uninstallPrune.configRoot, 'plugins', 'installed_plugins.json'),
+      'utf8',
+    ),
+  )
+  assert(
+    !uninstallRegistry.plugins['parent@market'] &&
+      !uninstallRegistry.plugins['dep@market'] &&
+      !uninstallRegistry.plugins['orphan@market'],
+    'Praxis uninstall --prune left target or orphan dependencies installed',
+  )
+
+  const claudeUninstallPrune = await pruneFixture('claude-uninstall-prune')
+  const claudeUninstallPruned = await claude(
+    ['plugin', 'uninstall', 'parent@market', '--prune', '--yes'],
+    claudeUninstallPrune.cwd,
+    claudeUninstallPrune.configRoot,
+  )
+  assert(
+    claudeUninstallPruned.stdout.includes('Removed 2 auto-installed plugins'),
+    `Claude uninstall --prune result: ${claudeUninstallPruned.stdout}`,
   )
 
   const claudeTag = await tagFixture('claude-tag')

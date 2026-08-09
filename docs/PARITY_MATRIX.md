@@ -131,21 +131,21 @@ routing.
 
 ## Management commands
 
-| Capability           | Status   | Evidence / remaining work                                                                                                                                               |
-| -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                                                         |
-| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier                                             |
-| `plugin`             | Partial  | Marketplace/install/list/details/init/validate/prune/tag, aliases, config persistence, skills-dir loading, and bounded source recovery complete; eval remains           |
-| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                                                        |
-| `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate                                 |
-| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                                                               |
-| `auto-mode`          | Complete | `config`, `defaults`, and provider-backed `critique [--model]` plus permission classifier                                                                               |
+| Capability           | Status   | Evidence / remaining work                                                                                                                                     |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                                               |
+| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier                                   |
+| `plugin`             | Partial  | Marketplace/install/list/details/init/validate/prune/tag, aliases, config persistence, skills-dir loading, and bounded source recovery complete; eval remains |
+| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                                              |
+| `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate                       |
+| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                                                     |
+| `auto-mode`          | Complete | `config`, `defaults`, and provider-backed `critique [--model]` plus permission classifier                                                                     |
 
 ## Final audit status
 
-All identified single-user CLI feature gaps from Claude Code 2.1.208 are
-implemented and have passed the integrated CLI-surface and end-to-end link
-audit: 643 unit/integration tests, 43 isolated compatibility gates, and the
-clean-tarball package gate pass. Unsupported Claude versions remain deliberately read-only, and
-enterprise, desktop, remote-control, and subscription-auth surfaces remain
-excluded by scope.
+Reopened after the Claude Code 2.1.208 management-command surface audit.
+Plugin eval, agents-dashboard lifecycle, and native iTerm worktree launch remain
+pending; final CLI-surface, clean-tarball, and end-to-end link gates must be
+rerun after those stages. Unsupported Claude versions remain deliberately
+read-only. Enterprise, desktop, remote-control, and subscription-auth surfaces
+remain excluded by scope.

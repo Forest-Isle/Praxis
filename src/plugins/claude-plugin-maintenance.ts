@@ -5,10 +5,12 @@ import { promisify } from 'node:util'
 
 import {
   readClaudeInstalledPlugins,
+  readClaudeMarketplaceManifest,
   removeClaudeInstalledPlugin,
   type ClaudeInstalledPlugin,
   type ClaudePluginScope,
 } from './claude-plugin-marketplace.js'
+import { validateClaudePlugin } from './claude-plugin-runtime.js'
 
 const execFileAsync = promisify(execFile)
 const PLUGIN_MANIFEST = join('.claude-plugin', 'plugin.json')
@@ -83,13 +85,6 @@ export interface ClaudePluginTagResult {
   pushed: boolean
   remote: string
   force: boolean
-}
-
-export interface ClaudePluginMaintenanceIO {
-  isTTY?: boolean
-  stdout(value: string): void
-  stderr(value: string): void
-  readStdinLines?: () => AsyncIterable<string | Uint8Array>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -301,17 +296,44 @@ async function validateEnclosingMarketplace(
   manifest: PluginManifest,
 ): Promise<ClaudePluginTagResult['marketplaceEntry']> {
   let directory = pluginRoot
+  let matchedEntry: ClaudePluginTagResult['marketplaceEntry']
   while (
     directory === repository ||
     directory.startsWith(`${repository}${sep}`)
   ) {
     const path = join(directory, MARKETPLACE_MANIFEST)
     if (await pathExists(path)) {
-      const marketplace = await readJsonObject(path)
-      if (!Array.isArray(marketplace.plugins)) return
+      const marketplace = await readClaudeMarketplaceManifest(directory)
       for (const [index, value] of marketplace.plugins.entries()) {
-        if (!isRecord(value) || typeof value.source !== 'string') continue
-        if (resolve(directory, value.source) !== pluginRoot) continue
+        const source = value.source
+        let sourcePath: string | undefined
+        if (typeof source === 'string') {
+          if (!/^https:\/\//u.test(source))
+            sourcePath = resolve(directory, source)
+        } else if (
+          source.source === 'directory' &&
+          typeof source.path === 'string'
+        ) {
+          sourcePath = resolve(directory, source.path)
+        } else if (
+          (source.source === 'github' && typeof source.repo === 'string') ||
+          ((source.source === 'url' || source.source === 'git') &&
+            typeof source.url === 'string')
+        ) {
+          sourcePath = undefined
+        } else {
+          throw new Error(
+            `Invalid marketplace plugin source at plugins[${index}] in ${path}`,
+          )
+        }
+        if (sourcePath !== undefined) {
+          try {
+            sourcePath = await realpath(sourcePath)
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          }
+        }
+        if (sourcePath !== pluginRoot) continue
         if (value.name !== manifest.name) {
           throw new Error(
             `Name mismatch: plugin.json says ${JSON.stringify(manifest.name)} but ${relative(pluginRoot, path) || MARKETPLACE_MANIFEST} plugins[${index}].name says ${JSON.stringify(value.name)}.`,
@@ -322,7 +344,7 @@ async function validateEnclosingMarketplace(
             `Version mismatch: plugin.json says ${JSON.stringify(manifest.version)} but ${relative(pluginRoot, path) || MARKETPLACE_MANIFEST} plugins[${index}].version says ${JSON.stringify(value.version)}. plugin.json wins at install time, so update the marketplace entry to ${JSON.stringify(manifest.version)} (or remove it) before tagging.`,
           )
         }
-        return {
+        matchedEntry ??= {
           path,
           index,
           ...(typeof value.version === 'string'
@@ -331,9 +353,10 @@ async function validateEnclosingMarketplace(
         }
       }
     }
-    if (directory === repository) return
+    if (directory === repository) break
     directory = dirname(directory)
   }
+  return matchedEntry
 }
 
 export async function tagClaudePlugin(
@@ -341,6 +364,7 @@ export async function tagClaudePlugin(
 ): Promise<ClaudePluginTagResult> {
   const pluginRoot = await resolvePluginRoot(options.path)
   const manifestPath = join(pluginRoot, PLUGIN_MANIFEST)
+  await validateClaudePlugin(pluginRoot)
   const manifest = await readPluginManifest(pluginRoot)
   const repository = await repositoryRoot(pluginRoot)
   const marketplaceEntry = await validateEnclosingMarketplace(
@@ -412,205 +436,5 @@ export async function tagClaudePlugin(
     pushed: options.push === true && options.dryRun !== true,
     remote,
     force,
-  }
-}
-
-function pluginName(id: string): string {
-  return id.includes('@') ? id.slice(0, id.lastIndexOf('@')) : id
-}
-
-async function firstAnswer(
-  input: AsyncIterable<string | Uint8Array> | undefined,
-): Promise<string> {
-  if (!input) return ''
-  const next = await input[Symbol.asyncIterator]().next()
-  return typeof next.value === 'string'
-    ? next.value.trim().toLowerCase()
-    : next.value instanceof Uint8Array
-      ? Buffer.from(next.value).toString('utf8').trim().toLowerCase()
-      : ''
-}
-
-function pruneSummary(plan: ClaudePluginPrunePlan): string {
-  const count = plan.candidates.length
-  return `${count} auto-installed plugin${count === 1 ? '' : 's'} no longer needed at ${plan.scope} scope:\n${plan.candidates.map((plugin) => `  ${plugin.id} (${plugin.version})`).join('\n')}\n`
-}
-
-function optionArgument(
-  argv: readonly string[],
-  index: number,
-  option: string,
-): { value: string; consumed: number } {
-  const current = argv[index] as string
-  const prefix = `${option}=`
-  if (current.startsWith(prefix)) {
-    const value = current.slice(prefix.length)
-    if (!value) throw new Error(`${option} argument missing`)
-    return { value, consumed: 0 }
-  }
-  const value = argv[index + 1]
-  if (!value || value.startsWith('-'))
-    throw new Error(`${option} argument missing`)
-  return { value, consumed: 1 }
-}
-
-export async function executeClaudePluginMaintenanceCommand(
-  argv: readonly string[],
-  options: {
-    configRoot: string
-    cwd: string
-    io: ClaudePluginMaintenanceIO
-  },
-): Promise<number | null> {
-  if (argv[0] !== 'plugin') return null
-  const action = argv[1]
-  if (action === 'prune' || action === 'autoremove') {
-    let scope: ClaudePluginScope = 'user'
-    let dryRun = false
-    let yes = false
-    for (let index = 2; index < argv.length; index += 1) {
-      const value = argv[index] as string
-      if (value === '--help' || value === '-h') {
-        options.io.stdout(CLAUDE_PLUGIN_PRUNE_HELP)
-        return 0
-      }
-      if (value === '--dry-run') dryRun = true
-      else if (value === '--yes' || value === '-y') yes = true
-      else if (
-        value === '--scope' ||
-        value === '-s' ||
-        value.startsWith('--scope=') ||
-        value.startsWith('-s=')
-      ) {
-        const selected = optionArgument(
-          argv,
-          index,
-          value === '-s' || value.startsWith('-s=') ? '-s' : '--scope',
-        )
-        if (!['user', 'project', 'local'].includes(selected.value)) {
-          throw new Error(
-            `Invalid scope: ${selected.value}. Must be one of: user, project, local.`,
-          )
-        }
-        scope = selected.value as ClaudePluginScope
-        index += selected.consumed
-      } else if (value.startsWith('-'))
-        throw new Error(`Unknown option: ${value}`)
-    }
-    const plan = await planClaudePluginPrune(
-      options.configRoot,
-      options.cwd,
-      scope,
-    )
-    if (plan.failedPluginIds) {
-      options.io.stdout(
-        `Skipped — cannot determine orphans: ${plan.failedPluginIds.join(', ')} failed to load. Fix or uninstall, then retry.\n`,
-      )
-      return 0
-    }
-    if (plan.candidates.length === 0) {
-      options.io.stdout(
-        plan.autoCount === 0
-          ? `Nothing to prune (no auto-installed plugins at ${scope} scope).\n`
-          : `Nothing to prune (${plan.autoCount} auto-installed plugin${plan.autoCount === 1 ? '' : 's'} at ${scope} scope, all still needed).\n`,
-      )
-      return 0
-    }
-    options.io.stdout(pruneSummary(plan))
-    if (dryRun) {
-      options.io.stdout('(dry run — nothing removed)\n')
-      return 0
-    }
-    if (!yes && options.io.isTTY !== true) {
-      options.io.stdout('Not a TTY — run `praxis plugin prune -y` to remove.\n')
-      return 0
-    }
-    if (!yes) {
-      options.io.stdout('Remove? [y/N] ')
-      const answer = await firstAnswer(options.io.readStdinLines?.())
-      if (answer !== 'y' && answer !== 'yes') {
-        options.io.stdout('Cancelled.\n')
-        return 0
-      }
-    }
-    const removed = await executeClaudePluginPrune(
-      options.configRoot,
-      options.cwd,
-      plan,
-    )
-    options.io.stdout(
-      `Removed ${removed.length} auto-installed plugin${removed.length === 1 ? '' : 's'}: ${removed.map((plugin) => pluginName(plugin.id)).join(', ')}\n`,
-    )
-    return 0
-  }
-  if (action !== 'tag') return null
-  let path = options.cwd
-  let dryRun = false
-  let force = false
-  let message: string | undefined
-  let push = false
-  let remote: string | undefined
-  for (let index = 2; index < argv.length; index += 1) {
-    const value = argv[index] as string
-    if (value === '--help' || value === '-h') {
-      options.io.stdout(CLAUDE_PLUGIN_TAG_HELP)
-      return 0
-    }
-    if (value === '--dry-run') dryRun = true
-    else if (value === '--force' || value === '-f') force = true
-    else if (value === '--push') push = true
-    else if (
-      value === '--message' ||
-      value === '-m' ||
-      value.startsWith('--message=') ||
-      value.startsWith('-m=')
-    ) {
-      const selected = optionArgument(
-        argv,
-        index,
-        value === '-m' || value.startsWith('-m=') ? '-m' : '--message',
-      )
-      message = selected.value
-      index += selected.consumed
-    } else if (value === '--remote' || value.startsWith('--remote=')) {
-      const selected = optionArgument(argv, index, '--remote')
-      remote = selected.value
-      index += selected.consumed
-    } else if (value.startsWith('-'))
-      throw new Error(`Unknown option: ${value}`)
-    else if (path === options.cwd) path = value
-  }
-  try {
-    const result = await tagClaudePlugin({
-      path,
-      ...(dryRun ? { dryRun: true } : {}),
-      ...(force ? { force: true } : {}),
-      ...(message === undefined ? {} : { message }),
-      ...(push ? { push: true } : {}),
-      ...(remote === undefined ? {} : { remote }),
-    })
-    for (const warning of result.warnings) options.io.stdout(`⚠ ${warning}\n`)
-    options.io.stdout(
-      `Plugin:  ${result.name}\nVersion: ${result.version} (from plugin.json)\n${result.marketplaceEntry === undefined ? '' : `Marketplace entry: plugins[${result.marketplaceEntry.index}] in ${result.marketplaceEntry.path}${result.marketplaceEntry.version === undefined ? '' : ` (version: ${result.marketplaceEntry.version})`}\n`}Tag:     ${result.tag}\n\n`,
-    )
-    const forceFlag = result.force ? ' --force' : ''
-    if (result.dryRun) {
-      options.io.stdout(
-        `✔ Dry run — would create tag ${result.tag} at HEAD in ${result.repository}\n  git -C ${result.repository} tag${forceFlag} -a ${result.tag} -m ${JSON.stringify(result.message)}\n  git -C ${result.repository} push${forceFlag} ${result.remote} refs/tags/${result.tag}\n`,
-      )
-    } else {
-      options.io.stdout(`✔ Created tag ${result.tag}\n`)
-      options.io.stdout(
-        result.pushed
-          ? `✔ Pushed to ${result.remote}\n`
-          : `  Push with: git -C ${result.repository} push${forceFlag} ${result.remote} refs/tags/${result.tag}\n`,
-      )
-    }
-    return 0
-  } catch (error) {
-    options.io.stdout(
-      `✘ ${error instanceof Error ? error.message : String(error)}\n`,
-    )
-    return 1
   }
 }

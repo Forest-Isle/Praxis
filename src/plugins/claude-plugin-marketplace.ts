@@ -965,6 +965,7 @@ function pluginConfigValue(
 export async function saveClaudePluginConfig(
   configRoot: string,
   cwd: string,
+  scope: ClaudePluginScope,
   id: string,
   pluginPath: string,
   assignments: readonly string[],
@@ -1005,7 +1006,7 @@ export async function saveClaudePluginConfig(
     }
   }
   if (warnings.length > 0) return { warnings }
-  const path = settingsPath(configRoot, cwd, 'user')
+  const path = settingsPath(configRoot, cwd, scope)
   const root = await readJson(path)
   const pluginConfigs = isRecord(root.pluginConfigs)
     ? { ...root.pluginConfigs }

@@ -1301,6 +1301,8 @@ export async function describeClaudePlugin(
     alwaysOn: countTokens(alwaysOnText),
     onInvoke: countTokens(onInvokeText),
   }
+  // Claude counts each assembled bucket once, then allocates that total by the
+  // component character share so rounded rows remain additive.
   const alwaysOnChars = rawComponentCosts.reduce(
     (total, component) => total + component.alwaysOnText.length,
     0,

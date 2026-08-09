@@ -107,6 +107,18 @@ describe('CLI plugin management', () => {
 
     output = capture()
     await expect(
+      run(
+        ['plugin', 'install', pluginPath, '--scope', 'project'],
+        output.io,
+        dependencies,
+      ),
+    ).resolves.toBe(1)
+    expect(output.stderr.join('')).toContain(
+      'only supported when installing plugin@marketplace',
+    )
+
+    output = capture()
+    await expect(
       run(['--json', 'plugin', 'install', pluginPath], output.io, dependencies),
     ).resolves.toBe(0)
     expect(JSON.parse(output.stdout[0] as string)).toMatchObject({
@@ -287,6 +299,14 @@ describe('CLI plugin management', () => {
       installed: [
         { name: 'fixture@fixture-marketplace', status: 'enabled', valid: true },
       ],
+      available: [{ pluginId: 'available@fixture-marketplace' }],
+    })
+
+    output = capture()
+    await expect(
+      run(['plugin', 'list', '--available'], output.io, dependencies),
+    ).resolves.toBe(0)
+    expect(JSON.parse(output.stdout[0] as string)).toMatchObject({
       available: [{ pluginId: 'available@fixture-marketplace' }],
     })
 

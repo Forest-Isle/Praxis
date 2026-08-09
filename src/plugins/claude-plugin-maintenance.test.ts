@@ -6,6 +6,7 @@ import {
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -15,7 +16,6 @@ import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
-  executeClaudePluginMaintenanceCommand,
   executeClaudePluginPrune,
   planClaudePluginPrune,
   tagClaudePlugin,
@@ -145,67 +145,6 @@ describe('Claude plugin prune', () => {
       failedPluginIds: ['dep@market', 'orphan@market'],
     })
   })
-
-  it('supports dry-run, non-TTY guidance, aliases, and explicit removal', async () => {
-    const value = await pluginGraph()
-    await removeClaudeInstalledPlugin(
-      value.configRoot,
-      'parent@market',
-      'user',
-      value.cwd,
-    )
-    const stdout: string[] = []
-    const io = {
-      stdout: (text: string) => stdout.push(text),
-      stderr: () => undefined,
-    }
-    await expect(
-      executeClaudePluginMaintenanceCommand(
-        ['plugin', 'autoremove', '--dry-run'],
-        { configRoot: value.configRoot, cwd: value.cwd, io },
-      ),
-    ).resolves.toBe(0)
-    expect(stdout.join('')).toContain('(dry run — nothing removed)')
-    stdout.length = 0
-    await expect(
-      executeClaudePluginMaintenanceCommand(['plugin', 'prune'], {
-        configRoot: value.configRoot,
-        cwd: value.cwd,
-        io,
-      }),
-    ).resolves.toBe(0)
-    expect(stdout.join('')).toContain('Not a TTY')
-    stdout.length = 0
-    await expect(
-      executeClaudePluginMaintenanceCommand(['plugin', 'prune', '--yes'], {
-        configRoot: value.configRoot,
-        cwd: value.cwd,
-        io,
-      }),
-    ).resolves.toBe(0)
-    expect(stdout.join('')).toContain(
-      'Removed 3 auto-installed plugins: dep, leaf, orphan',
-    )
-  })
-
-  it('accepts short equals scope syntax', async () => {
-    const value = await pluginGraph()
-    const stdout: string[] = []
-    await expect(
-      executeClaudePluginMaintenanceCommand(
-        ['plugin', 'prune', '-s=user', '--dry-run'],
-        {
-          configRoot: value.configRoot,
-          cwd: value.cwd,
-          io: {
-            stdout: (text) => stdout.push(text),
-            stderr: () => undefined,
-          },
-        },
-      ),
-    ).resolves.toBe(0)
-    expect(stdout.join('')).toContain('orphan@market (1.0.0)')
-  })
 })
 
 async function git(repository: string, args: readonly string[]) {
@@ -317,13 +256,36 @@ describe('Claude plugin tag', () => {
       JSON.stringify({
         name: 'market',
         plugins: [
-          { name: 'fixture', version: '2.0.0', source: './plugins/fixture' },
+          {
+            name: 'fixture',
+            version: '2.0.0',
+            source: { source: 'directory', path: './plugins/fixture' },
+          },
         ],
       }),
     )
     await expect(
       tagClaudePlugin({ path: value.plugin, force: true, dryRun: true }),
     ).rejects.toThrow('Version mismatch')
+
+    await writeFile(
+      join(value.root, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({ name: 'market', plugins: {} }),
+    )
+    await expect(
+      tagClaudePlugin({ path: value.plugin, force: true, dryRun: true }),
+    ).rejects.toThrow('Marketplace plugins must be an array')
+
+    await writeFile(
+      join(value.root, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'market',
+        plugins: [{ name: 'fixture', source: {} }],
+      }),
+    )
+    await expect(
+      tagClaudePlugin({ path: value.plugin, force: true, dryRun: true }),
+    ).rejects.toThrow('Invalid marketplace plugin source')
   })
 
   it('validates a marketplace entry colocated with the plugin root', async () => {
@@ -377,23 +339,48 @@ describe('Claude plugin tag', () => {
     )
   })
 
-  it('accepts short equals message syntax', async () => {
+  it('validates every matching enclosing entry and canonicalizes symlinks', async () => {
     const value = await pluginRepository()
-    const stdout: string[] = []
+    const outerMarketplace = join(
+      value.root,
+      '.claude-plugin',
+      'marketplace.json',
+    )
+    await writeFile(
+      join(value.plugin, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'inner',
+        plugins: [{ name: 'fixture', version: '1.2.3', source: '.' }],
+      }),
+    )
+    await writeFile(
+      outerMarketplace,
+      JSON.stringify({
+        name: 'outer',
+        plugins: [
+          { name: 'fixture', version: '1.2.3', source: './plugins/fixture' },
+          { name: 'fixture', version: '2.0.0', source: './plugins/fixture' },
+        ],
+      }),
+    )
     await expect(
-      executeClaudePluginMaintenanceCommand(
-        ['plugin', 'tag', '-m=Release %s', '--dry-run', value.plugin],
-        {
-          configRoot: join(value.root, 'config'),
-          cwd: value.root,
-          io: {
-            stdout: (text) => stdout.push(text),
-            stderr: () => undefined,
-          },
-        },
-      ),
-    ).resolves.toBe(0)
-    expect(stdout.join('')).toContain('-m "Release 1.2.3"')
+      tagClaudePlugin({ path: value.plugin, force: true, dryRun: true }),
+    ).rejects.toThrow('Version mismatch')
+
+    const linkedPlugin = join(value.root, 'linked-fixture')
+    await symlink(value.plugin, linkedPlugin)
+    await writeFile(
+      outerMarketplace,
+      JSON.stringify({
+        name: 'outer',
+        plugins: [
+          { name: 'fixture', version: '2.0.0', source: './linked-fixture' },
+        ],
+      }),
+    )
+    await expect(
+      tagClaudePlugin({ path: value.plugin, force: true, dryRun: true }),
+    ).rejects.toThrow('Version mismatch')
   })
 
   it('rejects leading-zero numeric prereleases and accepts valid prereleases', async () => {
@@ -435,5 +422,20 @@ describe('Claude plugin tag', () => {
     await expect(
       tagClaudePlugin({ path: value.plugin, dryRun: true }),
     ).resolves.toMatchObject({ tag: 'fixture--v1.2.3-alpha.1' })
+  })
+
+  it('rejects plugins that fail normal manifest validation', async () => {
+    const value = await pluginRepository()
+    await writeFile(
+      join(value.plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        version: '1.2.3',
+        commands: '../outside',
+      }),
+    )
+    await expect(
+      tagClaudePlugin({ path: value.plugin, force: true, dryRun: true }),
+    ).rejects.toThrow('escapes plugin root')
   })
 })

@@ -364,6 +364,53 @@ try {
     atomicSettings.pluginConfigs?.[id]?.options?.level === undefined,
     'Praxis persisted part of a mixed valid/unknown --config assignment',
   )
+  await run(
+    process.execPath,
+    [
+      praxisCli,
+      '--json',
+      'plugin',
+      'install',
+      id,
+      '--scope',
+      'project',
+      '--config',
+      'level=3',
+    ],
+    cwd,
+    praxisConfig,
+  )
+  const projectSettings = JSON.parse(
+    await readFile(join(cwd, '.claude', 'settings.json'), 'utf8'),
+  )
+  assert(
+    projectSettings.pluginConfigs?.[id]?.options?.level === 3 &&
+      atomicSettings.pluginConfigs?.[id]?.options?.level === undefined,
+    'Praxis did not persist plugin config at the installation scope',
+  )
+  await run(
+    process.execPath,
+    [
+      praxisCli,
+      '--json',
+      'plugin',
+      'install',
+      id,
+      '--scope',
+      'local',
+      '--config',
+      'level=4',
+    ],
+    cwd,
+    praxisConfig,
+  )
+  const localSettings = JSON.parse(
+    await readFile(join(cwd, '.claude', 'settings.local.json'), 'utf8'),
+  )
+  assert(
+    localSettings.pluginConfigs?.[id]?.options?.level === 4,
+    'Praxis did not persist local-scope plugin config',
+  )
   const praxisAvailable = JSON.parse(
     (
       await run(

@@ -432,6 +432,9 @@ describe('Praxis CLI', () => {
       [['plugin', 'update', '--help'], 'Usage: praxis plugin update'],
       [['plugin', 'init', '--help'], 'Usage: praxis plugin init'],
       [['plugin', 'new', '--help'], 'Usage: praxis plugin init'],
+      [['plugin', 'prune', '--help'], 'Usage: praxis plugin prune'],
+      [['plugin', 'autoremove', '--help'], 'Usage: praxis plugin prune'],
+      [['plugin', 'tag', '--help'], 'Usage: praxis plugin tag'],
       [['plugin', 'validate', '--help'], 'Usage: praxis plugin validate'],
       [['plugin', 'marketplace', '--help'], 'Usage: praxis plugin marketplace'],
       [

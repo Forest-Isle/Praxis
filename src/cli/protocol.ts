@@ -766,7 +766,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     const selectedMcpScope =
       value === '-s'
         ? { value: requiredValue(argv, index, '--scope'), consumed: 1 }
-        : optionValue(argv, index, '--scope')
+        : value.startsWith('-s=')
+          ? { value: value.slice(3), consumed: 0 }
+          : optionValue(argv, index, '--scope')
     if (selectedMcpScope) {
       if (mcpScope !== undefined)
         throw new Error('--scope may only be specified once')
@@ -896,7 +898,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     const selectedPluginMessage =
       value === '-m'
         ? { value: requiredValue(argv, index, '--message'), consumed: 1 }
-        : optionValue(argv, index, '--message')
+        : value.startsWith('-m=')
+          ? { value: value.slice(3), consumed: 0 }
+          : optionValue(argv, index, '--message')
     if (selectedPluginMessage) {
       if (pluginMessage !== undefined)
         throw new Error('--message may only be specified once')

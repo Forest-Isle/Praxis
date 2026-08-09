@@ -146,7 +146,14 @@ import {
   validateClaudeMarketplace,
   type ClaudePluginScope,
 } from './plugins/claude-plugin-marketplace.js'
-import { executeClaudePluginMaintenanceCommand } from './plugins/claude-plugin-maintenance.js'
+import {
+  CLAUDE_PLUGIN_PRUNE_HELP,
+  CLAUDE_PLUGIN_TAG_HELP,
+  executeClaudePluginPrune,
+  planClaudePluginPrune,
+  tagClaudePlugin,
+  type ClaudePluginPrunePlan,
+} from './plugins/claude-plugin-maintenance.js'
 import { formatDoctorReport, runDoctor } from './maintenance/doctor.js'
 import {
   runSelfUpdate,
@@ -270,7 +277,7 @@ Usage:
   praxis stop <agent-id>
   praxis mcp <list|get|add|add-json|remove|reset-project-choices|login|logout|serve> ...
   praxis auto-mode <config|defaults|critique>
-  praxis plugin|plugins <details|list|install|uninstall|enable|disable|update|init|validate|marketplace> ...
+  praxis plugin|plugins <details|list|install|uninstall|enable|disable|update|init|prune|tag|validate|marketplace> ...
   praxis doctor [--json]
   praxis install [--force] [stable|latest|version]
   praxis update|upgrade
@@ -521,6 +528,8 @@ Commands:
   disable [options] [id]           Disable one plugin, or all with --all
   update [options] <id>            Update a plugin
   init|new [options] <name>         Scaffold ~/.claude/skills/<name>
+  prune|autoremove [options]        Remove unused auto-installed dependencies
+  tag [options] [path]              Create a validated plugin release tag
   validate [options] <path>         Validate a plugin or marketplace manifest
   marketplace [command]            Manage configured marketplaces
 `
@@ -635,6 +644,9 @@ const PLUGIN_ACTION_HELP: Record<string, string> = {
   update: PLUGIN_UPDATE_HELP,
   init: PLUGIN_INIT_HELP,
   new: PLUGIN_INIT_HELP,
+  prune: CLAUDE_PLUGIN_PRUNE_HELP,
+  autoremove: CLAUDE_PLUGIN_PRUNE_HELP,
+  tag: CLAUDE_PLUGIN_TAG_HELP,
   validate: PLUGIN_VALIDATE_HELP,
 }
 
@@ -2230,6 +2242,174 @@ function pluginOutput(
   }
 }
 
+function pluginPruneSummary(plan: ClaudePluginPrunePlan): string {
+  const count = plan.candidates.length
+  return `${count} auto-installed plugin${count === 1 ? '' : 's'} no longer needed at ${plan.scope} scope:\n${plan.candidates.map((plugin) => `  ${plugin.id} (${plugin.version})`).join('\n')}\n`
+}
+
+async function pluginConfirmation(io: CliIO): Promise<boolean> {
+  const input = io.readStdinLines?.()
+  if (!input) return false
+  const next = await input[Symbol.asyncIterator]().next()
+  const value =
+    typeof next.value === 'string'
+      ? next.value
+      : next.value instanceof Uint8Array
+        ? Buffer.from(next.value).toString('utf8')
+        : ''
+  return ['y', 'yes'].includes(value.trim().toLowerCase())
+}
+
+async function executePluginPruneFlow(
+  configRoot: string,
+  cwd: string,
+  scope: ClaudePluginScope,
+  invocation: CliInvocation,
+  io: CliIO,
+  uninstalledName?: string,
+): Promise<number> {
+  const structured = invocation.legacyJson || invocation.outputFormat !== 'text'
+  const structuredOutput = (
+    status: string,
+    value: Record<string, unknown> = {},
+  ): void => {
+    pluginOutput(io, invocation, {
+      type:
+        uninstalledName === undefined
+          ? 'plugin-pruned'
+          : 'plugin-uninstalled-and-pruned',
+      ...(uninstalledName === undefined ? {} : { name: uninstalledName }),
+      scope,
+      status,
+      ...value,
+    })
+  }
+  const plan = await planClaudePluginPrune(configRoot, cwd, scope)
+  if (plan.failedPluginIds) {
+    const message = `Skipped — cannot determine orphans: ${plan.failedPluginIds.join(', ')} failed to load. Fix or uninstall, then retry.`
+    if (structured) {
+      structuredOutput('skipped', {
+        message,
+        failedPluginIds: plan.failedPluginIds,
+      })
+    } else io.stdout(`${message}\n`)
+    return 0
+  }
+  if (plan.candidates.length === 0) {
+    const message =
+      plan.autoCount === 0
+        ? `Nothing to prune (no auto-installed plugins at ${scope} scope).`
+        : `Nothing to prune (${plan.autoCount} auto-installed plugin${plan.autoCount === 1 ? '' : 's'} at ${scope} scope, all still needed).`
+    if (structured) {
+      structuredOutput('complete', {
+        dryRun: invocation.pluginDryRun,
+        removed: [],
+      })
+    } else io.stdout(`${message}\n`)
+    return 0
+  }
+  if (structured) {
+    if (invocation.pluginDryRun) {
+      structuredOutput('complete', {
+        dryRun: true,
+        removed: [],
+        candidates: plan.candidates,
+      })
+      return 0
+    }
+  } else {
+    io.stdout(pluginPruneSummary(plan))
+    if (invocation.pluginDryRun) {
+      io.stdout('(dry run — nothing removed)\n')
+      return 0
+    }
+  }
+  if (!invocation.pluginYes && io.isTTY !== true) {
+    if (structured) {
+      structuredOutput('confirmation-required', {
+        dryRun: false,
+        removed: [],
+        candidates: plan.candidates,
+      })
+    } else {
+      io.stdout('Not a TTY — run `praxis plugin prune -y` to remove.\n')
+    }
+    return 0
+  }
+  if (!invocation.pluginYes) {
+    if (structured) io.stderr('Remove? [y/N] ')
+    else io.stdout('Remove? [y/N] ')
+    if (!(await pluginConfirmation(io))) {
+      if (structured) {
+        structuredOutput('cancelled', {
+          dryRun: false,
+          removed: [],
+          candidates: plan.candidates,
+        })
+      } else io.stdout('Cancelled.\n')
+      return 0
+    }
+  }
+  const removed = await executeClaudePluginPrune(configRoot, cwd, plan)
+  if (structured) {
+    structuredOutput('complete', {
+      dryRun: false,
+      removed,
+    })
+  } else {
+    io.stdout(
+      `Removed ${removed.length} auto-installed plugin${removed.length === 1 ? '' : 's'}: ${removed.map((plugin) => plugin.id.split('@')[0]).join(', ')}\n`,
+    )
+  }
+  return 0
+}
+
+async function executePluginTag(
+  path: string,
+  invocation: CliInvocation,
+  io: CliIO,
+): Promise<number> {
+  try {
+    const result = await tagClaudePlugin({
+      path,
+      ...(invocation.pluginDryRun ? { dryRun: true } : {}),
+      ...(invocation.pluginForce ? { force: true } : {}),
+      ...(invocation.pluginMessage === undefined
+        ? {}
+        : { message: invocation.pluginMessage }),
+      ...(invocation.pluginPush ? { push: true } : {}),
+      ...(invocation.pluginRemote === undefined
+        ? {}
+        : { remote: invocation.pluginRemote }),
+    })
+    if (invocation.legacyJson || invocation.outputFormat !== 'text') {
+      pluginOutput(io, invocation, { type: 'plugin-tagged', ...result })
+      return 0
+    }
+    for (const warning of result.warnings) io.stdout(`⚠ ${warning}\n`)
+    io.stdout(
+      `Plugin:  ${result.name}\nVersion: ${result.version} (from plugin.json)\n${result.marketplaceEntry === undefined ? '' : `Marketplace entry: plugins[${result.marketplaceEntry.index}] in ${result.marketplaceEntry.path}${result.marketplaceEntry.version === undefined ? '' : ` (version: ${result.marketplaceEntry.version})`}\n`}Tag:     ${result.tag}\n\n`,
+    )
+    const forceFlag = result.force ? ' --force' : ''
+    if (result.dryRun) {
+      io.stdout(
+        `✔ Dry run — would create tag ${result.tag} at HEAD in ${result.repository}\n  git -C ${result.repository} tag${forceFlag} -a ${result.tag} -m ${JSON.stringify(result.message)}\n  git -C ${result.repository} push${forceFlag} ${result.remote} refs/tags/${result.tag}\n`,
+      )
+    } else {
+      io.stdout(`✔ Created tag ${result.tag}\n`)
+      io.stdout(
+        result.pushed
+          ? `✔ Pushed to ${result.remote}\n`
+          : `  Push with: git -C ${result.repository} push${forceFlag} ${result.remote} refs/tags/${result.tag}\n`,
+      )
+    }
+    return 0
+  } catch (error) {
+    io.stdout(`✘ ${error instanceof Error ? error.message : String(error)}\n`)
+    return 1
+  }
+}
+
 function isClaudeMarketplacePluginId(value: string): boolean {
   const separator = value.lastIndexOf('@')
   return (
@@ -2515,9 +2695,7 @@ async function executePluginCommand(
         }
       }),
     )
-    const includeAvailable =
-      invocation.pluginAvailable &&
-      (invocation.legacyJson || invocation.outputFormat !== 'text')
+    const includeAvailable = invocation.pluginAvailable
     pluginOutput(
       io,
       invocation,
@@ -2566,6 +2744,7 @@ async function executePluginCommand(
       const config = await saveClaudePluginConfig(
         configRoot,
         cwd,
+        installScope,
         plugin.id,
         plugin.installPath,
         invocation.pluginConfig,
@@ -2577,10 +2756,16 @@ async function executePluginCommand(
       })
       return 0
     }
+    if (requestedScope !== undefined) {
+      throw new Error(
+        '--scope is only supported when installing plugin@marketplace',
+      )
+    }
     const plugin = await installClaudePlugin(configRoot, source)
     const config = await saveClaudePluginConfig(
       configRoot,
       cwd,
+      installScope,
       plugin.name,
       plugin.path,
       invocation.pluginConfig,
@@ -2606,8 +2791,23 @@ async function executePluginCommand(
       )
     else
       await uninstallClaudePlugin(configRoot, name, !invocation.pluginKeepData)
-    pluginOutput(io, invocation, { type: 'plugin-uninstalled', name: args[2] })
-    return 0
+    if (!invocation.pluginPrune) {
+      pluginOutput(io, invocation, { type: 'plugin-uninstalled', name })
+      return 0
+    }
+    const structured =
+      invocation.legacyJson || invocation.outputFormat !== 'text'
+    if (!structured) {
+      pluginOutput(io, invocation, { type: 'plugin-uninstalled', name })
+    }
+    return executePluginPruneFlow(
+      configRoot,
+      cwd,
+      installScope,
+      invocation,
+      io,
+      structured ? name : undefined,
+    )
   }
   if (action === 'enable' || action === 'disable') {
     if (action === 'disable' && invocation.pluginAll) {
@@ -2661,6 +2861,14 @@ async function executePluginCommand(
         : await updateClaudePlugin(configRoot, name),
     })
     return 0
+  }
+  if (action === 'prune' || action === 'autoremove') {
+    if (args.length !== 2) throw new Error(`plugin ${action} takes no operands`)
+    return executePluginPruneFlow(configRoot, cwd, installScope, invocation, io)
+  }
+  if (action === 'tag') {
+    if (args.length > 3) throw new Error('plugin tag accepts at most one path')
+    return executePluginTag(args[2] ?? cwd, invocation, io)
   }
   if (action === 'validate') {
     if (args.length !== 3)
@@ -3252,14 +3460,6 @@ async function execute(
     io.stdout(MCP_ADD_HELP)
     return 0
   }
-  const pluginMaintenance = await executeClaudePluginMaintenanceCommand(argv, {
-    configRoot: resolve(
-      process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
-    ),
-    cwd: process.cwd(),
-    io,
-  })
-  if (pluginMaintenance !== null) return pluginMaintenance
   if (argv[0] === 'project' && argv[1] === 'purge') {
     return executeProjectPurgeCommand(argv, io)
   }
