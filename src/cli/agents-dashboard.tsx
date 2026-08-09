@@ -39,6 +39,13 @@ export interface AgentsDashboardAppProps {
 
 type DashboardMode = 'list' | 'attach' | 'review'
 
+const DASHBOARD_SECTIONS = [
+  'Ready for review',
+  'Needs input',
+  'Working',
+  'Completed',
+] as const
+
 interface PromptQueue {
   input: AsyncIterable<string>
   push(value: string): void
@@ -119,6 +126,14 @@ function sectionFor(
   return agent.status === 'idle' ? 'Ready for review' : 'Working'
 }
 
+function groupAgents(
+  agents: readonly TopLevelAgentSummary[],
+): TopLevelAgentSummary[] {
+  return DASHBOARD_SECTIONS.flatMap((section) =>
+    agents.filter((agent) => sectionFor(agent) === section),
+  )
+}
+
 function AgentSection({
   title,
   agents,
@@ -174,10 +189,12 @@ export function AgentsDashboardApp({
 
   const refresh = useCallback(async () => {
     try {
-      const next = await manager.list({
-        all: true,
-        ...(defaults.cwd === undefined ? {} : { cwd: defaults.cwd }),
-      })
+      const next = groupAgents(
+        await manager.list({
+          all: true,
+          ...(defaults.cwd === undefined ? {} : { cwd: defaults.cwd }),
+        }),
+      )
       setAgents(next)
       setSelectedIndex((current) => {
         const selected = Math.min(current, Math.max(0, next.length - 1))
@@ -396,12 +413,12 @@ export function AgentsDashboardApp({
       exit()
       return
     }
-    if (value === '?') {
-      setShowHelp((current) => !current)
-      return
-    }
     if ((key.ctrl && value.toLowerCase() === 'x') || value === '\u0018') {
       void stopSelected()
+      return
+    }
+    if (value === '?') {
+      setShowHelp((current) => !current)
       return
     }
     const editInput = () => {
@@ -463,7 +480,6 @@ export function AgentsDashboardApp({
         inputRef.current = ''
         setInput('')
       } else {
-        onCancel?.()
         exit()
       }
       return
@@ -472,19 +488,13 @@ export function AgentsDashboardApp({
   })
 
   const selected = agents[selectedIndex]
-  const sections = [
-    'Ready for review',
-    'Needs input',
-    'Working',
-    'Completed',
-  ] as const
   return (
     <Box flexDirection="column">
       <Text bold color="cyan">
         Praxis agents
       </Text>
       <Text dimColor>{agents.length} sessions · live refresh</Text>
-      {sections.map((title) => (
+      {DASHBOARD_SECTIONS.map((title) => (
         <AgentSection
           key={title}
           title={title}

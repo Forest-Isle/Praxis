@@ -113,6 +113,13 @@ set timeout 20
 spawn $env(PRAXIS_NODE) $env(PRAXIS_CLI) agents
 expect {
   -re {Completed [(]1[)]} {
+    send "\\033\\[B"
+    set selected_pattern "Selected $env(INITIAL_ID)"
+    expect {
+      -re $selected_pattern {}
+      timeout { puts stderr "completed agent was not selected"; exit 1 }
+      eof { puts stderr "dashboard exited before completed agent selection"; exit 1 }
+    }
     send "\\r"
     set review_pattern "Reviewing $env(INITIAL_ID); enter a prompt to resume"
     expect {

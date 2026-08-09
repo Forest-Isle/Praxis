@@ -419,14 +419,22 @@ describe('Praxis CLI', () => {
       [['plugin', '--help'], 'Usage: praxis plugin'],
       [['plugins', '--help'], 'Usage: praxis plugin|plugins'],
       [['plugin', 'list', '--help'], 'Usage: praxis plugin list'],
+      [['plugin', 'details', '--help'], 'Usage: praxis plugin details'],
+      [['plugin', 'help', 'details'], 'Usage: praxis plugin details'],
       [['plugin', 'help', 'install'], 'Usage: praxis plugin install'],
       [['plugins', 'help', 'list'], 'Usage: praxis plugin list'],
       [['plugin', 'install', '--help'], 'Usage: praxis plugin install'],
+      [['plugin', 'i', '--help'], 'Usage: praxis plugin install'],
       [['plugin', 'uninstall', '--help'], 'Usage: praxis plugin uninstall'],
+      [['plugin', 'remove', '--help'], 'Usage: praxis plugin uninstall'],
       [['plugin', 'enable', '--help'], 'Usage: praxis plugin enable'],
       [['plugin', 'disable', '--help'], 'Usage: praxis plugin disable'],
       [['plugin', 'update', '--help'], 'Usage: praxis plugin update'],
       [['plugin', 'init', '--help'], 'Usage: praxis plugin init'],
+      [['plugin', 'new', '--help'], 'Usage: praxis plugin init'],
+      [['plugin', 'prune', '--help'], 'Usage: praxis plugin prune'],
+      [['plugin', 'autoremove', '--help'], 'Usage: praxis plugin prune'],
+      [['plugin', 'tag', '--help'], 'Usage: praxis plugin tag'],
       [['plugin', 'validate', '--help'], 'Usage: praxis plugin validate'],
       [['plugin', 'marketplace', '--help'], 'Usage: praxis plugin marketplace'],
       [
@@ -443,6 +451,10 @@ describe('Praxis CLI', () => {
       ],
       [
         ['plugin', 'marketplace', 'remove', '--help'],
+        'Usage: praxis plugin marketplace remove',
+      ],
+      [
+        ['plugin', 'marketplace', 'rm', '--help'],
         'Usage: praxis plugin marketplace remove',
       ],
       [
@@ -889,6 +901,17 @@ describe('Praxis CLI', () => {
     expect(capture.stderr.join('')).toBe(
       "'praxis agents' requires an interactive terminal (stdout is not a TTY) — use 'praxis agents --json' for a machine-readable listing.\n",
     )
+  })
+
+  it('rejects operands and unsupported options for agents', async () => {
+    for (const argv of [
+      ['agents', 'unexpected'],
+      ['agents', '--thinking', 'adaptive'],
+    ]) {
+      const capture = captureIO()
+      await expect(run(argv, capture.io, dependencies())).resolves.toBe(1)
+      expect(capture.stderr.join('')).toMatch(/not valid|Unexpected operand/u)
+    }
   })
 
   it('passes agents dashboard defaults into new background workers', async () => {

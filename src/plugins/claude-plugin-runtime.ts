@@ -9,7 +9,12 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
+import { promisify } from 'node:util'
+
+import { parse as parseYaml } from 'yaml'
+import { countTokens } from '@anthropic-ai/tokenizer'
 
 import type {
   ClaudeJsonResource,
@@ -17,10 +22,14 @@ import type {
   ClaudeTextResource,
 } from '../compatibility/claude/shared-resources.js'
 import {
+  claudePluginDataPath,
   materializeClaudePluginSource,
+  readClaudeSkillsDirectoryPlugins,
   replaceClaudePluginDirectory,
   readClaudeInstalledPlugins,
 } from './claude-plugin-marketplace.js'
+
+const execFileAsync = promisify(execFile)
 
 interface ClaudePluginCommandDefinition {
   source?: string
@@ -32,6 +41,7 @@ export interface ClaudePluginManifest {
   name: string
   version?: string
   description?: string
+  author?: string | { name?: string; email?: string }
   commands?:
     string | readonly string[] | Record<string, ClaudePluginCommandDefinition>
   skills?: string | readonly string[]
@@ -44,6 +54,9 @@ export interface ClaudePluginManifest {
     | string
     | Record<string, unknown>
     | readonly (string | Record<string, unknown>)[]
+  lspServers?: string | Record<string, unknown>
+  userConfig?: Record<string, unknown>
+  channels?: readonly Record<string, unknown>[]
 }
 
 export interface ClaudePluginRecord {
@@ -54,6 +67,7 @@ export interface ClaudePluginRecord {
   version?: string
   description?: string
   errors: readonly string[]
+  warnings?: readonly string[]
 }
 
 export interface ClaudePluginResources {
@@ -77,6 +91,52 @@ const PLUGIN_MANIFEST = join('.claude-plugin', 'plugin.json')
 const LEGACY_MANIFEST = 'plugin.json'
 const MAX_PLUGIN_FILES = 2_000
 const PLUGIN_NAME = /^[a-z0-9][a-z0-9._-]*$/
+const INIT_COMPONENTS = [
+  'skills',
+  'agents',
+  'hooks',
+  'mcp',
+  'lsp',
+  'output-style',
+  'channel',
+] as const
+
+export type ClaudePluginInitComponent = (typeof INIT_COMPONENTS)[number]
+
+export interface ClaudePluginInitOptions {
+  author?: string
+  authorEmail?: string
+  description?: string
+  force?: boolean
+  with?: readonly ClaudePluginInitComponent[]
+  nativeLayout?: boolean
+}
+
+export interface ClaudePluginDetails {
+  plugin: ClaudePluginRecord
+  components: {
+    commands: readonly string[]
+    skills: readonly string[]
+    agents: readonly string[]
+    hooks: readonly string[]
+    mcpServers: readonly string[]
+    lspServers: readonly string[]
+  }
+  componentCosts: readonly ClaudePluginComponentCost[]
+  tokenEstimate: {
+    alwaysOn: number
+    onInvoke: number
+  }
+}
+
+export type ClaudePluginComponentKind = 'command' | 'skill' | 'agent'
+
+export interface ClaudePluginComponentCost {
+  kind: ClaudePluginComponentKind
+  name: string
+  alwaysOn: number
+  onInvoke: number
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -196,6 +256,32 @@ async function readManifest(
       `Plugin mcpServers must be a path, object, or array: ${manifestPath}`,
     )
   }
+  if (
+    value.lspServers !== undefined &&
+    !(typeof value.lspServers === 'string' || isRecord(value.lspServers))
+  ) {
+    throw new Error(
+      `Plugin lspServers must be a path or object: ${manifestPath}`,
+    )
+  }
+  if (value.userConfig !== undefined) {
+    if (!isRecord(value.userConfig)) {
+      throw new Error(`Plugin userConfig must be an object: ${manifestPath}`)
+    }
+    for (const [key, definition] of Object.entries(value.userConfig)) {
+      if (!isRecord(definition)) {
+        throw new Error(
+          `Plugin userConfig ${key} must be an object: ${manifestPath}`,
+        )
+      }
+      nonEmptyString(definition.type, `Plugin userConfig ${key} type`)
+      nonEmptyString(definition.title, `Plugin userConfig ${key} title`)
+      nonEmptyString(
+        definition.description,
+        `Plugin userConfig ${key} description`,
+      )
+    }
+  }
   return value as unknown as ClaudePluginManifest
 }
 
@@ -289,6 +375,19 @@ async function componentFiles(
   return files
 }
 
+async function skillsDirectoryFiles(pluginPath: string): Promise<string[]> {
+  const rootSkill = join(pluginPath, 'SKILL.md')
+  const files: string[] = []
+  try {
+    if ((await stat(rootSkill)).isFile()) files.push(rootSkill)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  const nestedSkills = join(pluginPath, 'skills')
+  await assertPluginPath(pluginPath, nestedSkills)
+  return [...files, ...(await markdownFiles(nestedSkills))]
+}
+
 function namespacedPath(
   pluginPath: string,
   roots: readonly string[],
@@ -303,7 +402,10 @@ function namespacedPath(
   const rel = relative(root, file).replaceAll('\\', '/')
   const base = rel.replace(/\.md$/u, '')
   if (kind === 'skills') {
-    const skillName = base.split('/')[0] || basename(root)
+    const skillName =
+      root === pluginPath && basename(file) === 'SKILL.md'
+        ? name
+        : base.split('/')[0] || basename(root)
     return join(pluginPath, 'skills', `${name}:${skillName}`, 'SKILL.md')
   }
   return join(pluginPath, kind, `${name}:${base}.md`)
@@ -368,15 +470,23 @@ async function loadPlugin(
   const commandsRoots = pathList(commandPaths, 'commands').map((path) =>
     safePluginPath(canonical, path),
   )
-  const skillsRoots = pathList(manifest.skills, 'skills').map((path) =>
-    safePluginPath(canonical, path),
-  )
+  const isSkillsDirectoryPlugin = source.endsWith('@skills-dir')
+  const skillsDirectoryLayout =
+    isSkillsDirectoryPlugin &&
+    pathList(manifest.skills, 'skills').some((path) => path === './')
+  const skillsRoots = skillsDirectoryLayout
+    ? [join(canonical, 'skills'), canonical]
+    : pathList(manifest.skills, 'skills').map((path) =>
+        safePluginPath(canonical, path),
+      )
   const agentsRoots = pathList(manifest.agents, 'agents').map((path) =>
     safePluginPath(canonical, path),
   )
   const [commandFiles, skillFiles, agentFiles] = await Promise.all([
     componentFiles(canonical, commandPaths, 'commands', 'commands'),
-    componentFiles(canonical, manifest.skills, 'skills', 'skills'),
+    skillsDirectoryLayout
+      ? skillsDirectoryFiles(canonical)
+      : componentFiles(canonical, manifest.skills, 'skills', 'skills'),
     componentFiles(canonical, manifest.agents, 'agents', 'agents'),
   ])
   const [commands, skills, agents] = await Promise.all([
@@ -612,6 +722,10 @@ export async function loadClaudePlugins(options: {
     options.loadInstalled === false
       ? []
       : await readClaudeInstalledPlugins(options.configRoot, options.cwd)
+  const skillsDirectoryRegistry =
+    options.loadInstalled === false
+      ? []
+      : await readClaudeSkillsDirectoryPlugins(options.configRoot, options.cwd)
   const temporarySources: Array<() => Promise<void>> = []
   const inlineSources = [
     ...(options.pluginDirectories ?? []),
@@ -650,6 +764,14 @@ export async function loadClaudePlugins(options: {
         source: entry.id,
         enabled: entry.enabled,
         resourceScope: entry.scope as ClaudeResourceScope,
+      })),
+    ...skillsDirectoryRegistry
+      .filter((entry) => entry.enabled)
+      .map((entry) => ({
+        path: entry.installPath,
+        source: entry.id,
+        enabled: entry.enabled,
+        resourceScope: 'user' as ClaudeResourceScope,
       })),
     ...registry
       .filter((entry) => entry.enabled)
@@ -730,48 +852,499 @@ export async function loadClaudePlugins(options: {
   }
 }
 
+const KNOWN_MANIFEST_FIELDS = new Set([
+  '$schema',
+  'name',
+  'version',
+  'description',
+  'author',
+  'commands',
+  'skills',
+  'agents',
+  'hooks',
+  'mcpServers',
+  'lspServers',
+  'userConfig',
+  'channels',
+  'dependencies',
+  'outputStyles',
+  'keywords',
+  'license',
+  'homepage',
+  'repository',
+])
+
+function pluginValidationWarnings(manifest: ClaudePluginManifest): string[] {
+  const raw = manifest as unknown as Record<string, unknown>
+  const warnings: string[] = []
+  for (const key of Object.keys(raw)) {
+    if (!KNOWN_MANIFEST_FIELDS.has(key)) warnings.push(`Unknown field '${key}'`)
+  }
+  if (manifest.version === undefined) warnings.push('No version specified')
+  if (
+    manifest.description === undefined ||
+    manifest.description.trim() === ''
+  ) {
+    warnings.push('No description provided')
+  }
+  const author = manifest.author
+  const hasAuthor =
+    (typeof author === 'string' && author.trim().length > 0) ||
+    (isRecord(author) &&
+      typeof author.name === 'string' &&
+      author.name.trim().length > 0)
+  if (!hasAuthor) warnings.push('No author information provided')
+  return warnings
+}
+
 export async function validateClaudePlugin(
   path: string,
+  options: { strict?: boolean } = {},
 ): Promise<ClaudePluginRecord> {
-  return (await loadPlugin(path, 'validate', true, resolve(path), true)).record
+  const root = resolve(path)
+  const [loaded, manifest] = await Promise.all([
+    loadPlugin(root, 'validate', true, root, true),
+    readManifest(root, true),
+  ])
+  const warnings = pluginValidationWarnings(manifest)
+  if (options.strict && warnings.length > 0) {
+    throw new Error(
+      `Plugin validation failed (--strict treats warnings as errors): ${warnings.join('; ')}`,
+    )
+  }
+  return {
+    ...loaded.record,
+    ...(warnings.length === 0 ? {} : { warnings }),
+  }
+}
+
+async function gitConfig(key: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync('git', ['config', '--get', key])
+    const value = String(stdout).trim()
+    return value.length > 0 ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function writeScaffoldFile(
+  path: string,
+  content: string,
+  force: boolean,
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, content, { flag: force ? 'w' : 'wx' })
+}
+
+async function writeScaffoldComponent(
+  path: string,
+  content: string,
+  preserveExisting: boolean,
+): Promise<void> {
+  try {
+    await writeScaffoldFile(path, content, false)
+  } catch (error) {
+    if (
+      preserveExisting &&
+      (error as NodeJS.ErrnoException).code === 'EEXIST'
+    ) {
+      return
+    }
+    throw error
+  }
 }
 
 export async function initClaudePlugin(
   path: string,
   name = basename(resolve(path)),
-): Promise<void> {
+  options: ClaudePluginInitOptions = {},
+): Promise<ClaudePluginRecord> {
   if (!PLUGIN_NAME.test(name))
     throw new Error(`Plugin name must match ${PLUGIN_NAME}`)
   const root = resolve(path)
-  if (await isDirectory(root)) {
+  const nativeLayout = options.nativeLayout === true
+  const manifestDirectory = join(root, '.claude-plugin')
+  if (await isDirectory(manifestDirectory)) {
+    if (!options.force) {
+      throw new Error(
+        `${manifestDirectory} already exists. Use --force to overwrite.`,
+      )
+    }
+    await rm(manifestDirectory, { recursive: true, force: true })
+  } else if (!nativeLayout && (await isDirectory(root))) {
     const entries = await readdir(root)
     if (entries.length > 0)
       throw new Error(`Plugin directory is not empty: ${root}`)
   }
-  await mkdir(join(root, '.claude-plugin'), { recursive: true })
-  await mkdir(join(root, 'commands'), { recursive: true })
-  await mkdir(join(root, 'skills', 'example'), { recursive: true })
-  await mkdir(join(root, 'agents'), { recursive: true })
-  await writeFile(
-    join(root, '.claude-plugin', 'plugin.json'),
-    `${JSON.stringify({ name, version: '0.1.0', description: `${name} plugin` }, null, 2)}\n`,
-    { flag: 'wx' },
+
+  const components = new Set<ClaudePluginInitComponent>(
+    nativeLayout ? (options.with ?? []) : ['skills', 'agents'],
   )
-  await writeFile(
-    join(root, 'commands', 'hello.md'),
-    '# Hello\n\nDescribe the current workspace.\n',
-    { flag: 'wx' },
+  for (const component of components) {
+    if (!INIT_COMPONENTS.includes(component)) {
+      throw new Error(
+        `Unknown --with component ${component}. Valid: ${INIT_COMPONENTS.join(', ')}`,
+      )
+    }
+  }
+  const [defaultAuthor, defaultAuthorEmail] = nativeLayout
+    ? await Promise.all([gitConfig('user.name'), gitConfig('user.email')])
+    : [undefined, undefined]
+  const author = options.author ?? defaultAuthor
+  const authorEmail = options.authorEmail ?? defaultAuthorEmail
+  const manifest: Record<string, unknown> = nativeLayout
+    ? {
+        $schema: 'https://anthropic.com/claude-code/plugin.schema.json',
+        name,
+        version: '0.1.0',
+        description:
+          options.description ?? 'TODO: describe what this plugin provides',
+        ...(author === undefined && authorEmail === undefined
+          ? {}
+          : {
+              author: {
+                ...(author === undefined ? {} : { name: author }),
+                ...(authorEmail === undefined ? {} : { email: authorEmail }),
+              },
+            }),
+        skills: ['./'],
+        ...(components.has('channel')
+          ? { channels: [{ server: name, displayName: name }] }
+          : {}),
+      }
+    : {
+        name,
+        version: '0.1.0',
+        description: options.description ?? `${name} plugin`,
+      }
+  await writeScaffoldFile(
+    join(manifestDirectory, 'plugin.json'),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    options.force === true,
   )
-  await writeFile(
-    join(root, 'skills', 'example', 'SKILL.md'),
-    '---\ndescription: Example plugin skill\n---\nUse this skill to inspect the workspace.\n',
-    { flag: 'wx' },
+
+  if (nativeLayout) {
+    await writeScaffoldComponent(
+      join(root, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: TODO — describe when Claude should use this plugin.\n---\n\n# ${name}\n\nTODO: what this plugin does.\n`,
+      options.force === true,
+    )
+  } else {
+    await writeScaffoldComponent(
+      join(root, 'commands', 'hello.md'),
+      '# Hello\n\nDescribe the current workspace.\n',
+      options.force === true,
+    )
+  }
+  if (components.has('skills')) {
+    await writeScaffoldComponent(
+      join(root, 'skills', 'example', 'SKILL.md'),
+      '---\nname: example\ndescription: Example plugin skill\n---\n\nUse this skill to inspect the workspace.\n',
+      options.force === true,
+    )
+  }
+  if (components.has('agents')) {
+    await writeScaffoldComponent(
+      join(root, 'agents', nativeLayout ? 'example.md' : 'reviewer.md'),
+      '---\nname: example\ndescription: Review changes\n---\n\nReview the current changes.\n',
+      options.force === true,
+    )
+  }
+  if (components.has('hooks')) {
+    await writeScaffoldComponent(
+      join(root, 'hooks', 'hooks.json'),
+      '{\n  "hooks": {\n    "SessionStart": []\n  }\n}\n',
+      options.force === true,
+    )
+  }
+  if (components.has('mcp') || components.has('channel')) {
+    await writeScaffoldComponent(
+      join(root, '.mcp.json'),
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            [components.has('channel') ? name : 'example']: {
+              command: 'npx',
+              args: ['<your-mcp-server-package>'],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      options.force === true,
+    )
+  }
+  if (components.has('lsp')) {
+    await writeScaffoldComponent(
+      join(root, '.lsp.json'),
+      '{\n  "example": {\n    "command": "example-language-server",\n    "args": ["--stdio"]\n  }\n}\n',
+      options.force === true,
+    )
+  }
+  if (components.has('output-style')) {
+    await writeScaffoldComponent(
+      join(root, 'output-styles', `${name}.md`),
+      `---\nname: ${name}\ndescription: TODO — output style description\nforce-for-plugin: true\n---\n\nTODO: style instructions.\n`,
+      options.force === true,
+    )
+  }
+  if (components.has('channel')) {
+    await writeScaffoldComponent(
+      join(root, 'server.ts'),
+      '// TODO: implement channel server.\n',
+      options.force === true,
+    )
+    await writeScaffoldComponent(
+      join(root, 'package.json'),
+      `${JSON.stringify(
+        {
+          name: `claude-channel-${name}`,
+          version: '0.1.0',
+          type: 'module',
+        },
+        null,
+        2,
+      )}\n`,
+      options.force === true,
+    )
+  }
+  return validateClaudePlugin(root)
+}
+
+function detailComponentName(path: string): string {
+  const file = basename(path).replace(/\.md$/u, '')
+  const value = file === 'SKILL' ? basename(dirname(path)) : file
+  return value.includes(':') ? (value.split(':').at(-1) ?? value) : value
+}
+
+function detailPromptParts(content: string): {
+  description: string
+  whenToUse?: string
+  body: string
+} {
+  const lines = content.split(/\r?\n/u)
+  if (lines[0]?.trim() !== '---') {
+    const first = lines.find((line) => line.trim().length > 0)?.trim() ?? ''
+    const description = first.replace(/^#+\s+/u, '').slice(0, 100)
+    return { description, body: content.trim() }
+  }
+  const closingIndex = lines.findIndex(
+    (line, index) => index > 0 && line.trim() === '---',
   )
-  await writeFile(
-    join(root, 'agents', 'reviewer.md'),
-    '---\ndescription: Review changes\n---\nReview the current changes.\n',
-    { flag: 'wx' },
+  if (closingIndex < 0) return { description: '', body: content.trim() }
+  let metadata: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = parseYaml(lines.slice(1, closingIndex).join('\n'))
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed)
+    ) {
+      metadata = parsed as Record<string, unknown>
+    }
+  } catch {
+    // Invalid frontmatter is reported by plugin validation; keep details usable.
+  }
+  const body = lines
+    .slice(closingIndex + 1)
+    .join('\n')
+    .trim()
+  const fallback = body
+    .split(/\r?\n/u)
+    .find((line) => line.trim().length > 0)
+    ?.trim()
+    .replace(/^#+\s+/u, '')
+    .slice(0, 100)
+  const description =
+    typeof metadata.description === 'string' && metadata.description.trim()
+      ? metadata.description.trim()
+      : (fallback ?? '')
+  const rawWhen = metadata.when_to_use ?? metadata.whenToUse
+  return {
+    description,
+    ...(rawWhen === undefined || rawWhen === null
+      ? {}
+      : { whenToUse: String(rawWhen) }),
+    body,
+  }
+}
+
+function detailComponentCost(
+  kind: ClaudePluginComponentKind,
+  name: string,
+  content: string,
+  pluginName: string,
+): ClaudePluginComponentCost & {
+  alwaysOnText: string
+  onInvokeText: string
+} {
+  const parts = detailPromptParts(content)
+  const metadataName = kind === 'agent' ? name : `${pluginName}:${name}`
+  const alwaysOnText = [metadataName, parts.description, parts.whenToUse]
+    .filter(Boolean)
+    .join(' ')
+  return {
+    kind,
+    name,
+    alwaysOn: 0,
+    onInvoke: 0,
+    alwaysOnText,
+    onInvokeText: parts.body,
+  }
+}
+
+function scaledTokenCount(
+  chars: number,
+  totalChars: number,
+  totalTokens: number,
+): number {
+  return totalChars === 0 ? 0 : Math.round((chars / totalChars) * totalTokens)
+}
+
+function keysFromJsonResources(
+  resources: readonly ClaudeJsonResource[],
+  property: 'hooks' | 'mcpServers',
+): string[] {
+  return [
+    ...new Set(
+      resources.flatMap((resource) => {
+        if (!isRecord(resource.value) || !isRecord(resource.value[property])) {
+          return []
+        }
+        return Object.keys(resource.value[property])
+      }),
+    ),
+  ].sort((left, right) => left.localeCompare(right))
+}
+
+export async function describeClaudePlugin(
+  path: string,
+  source = 'details',
+): Promise<ClaudePluginDetails> {
+  const root = resolve(path)
+  const [loaded, manifest] = await Promise.all([
+    loadPlugin(root, source, true, root, true),
+    readManifest(root, true),
+  ])
+  const lspServers = new Set<string>()
+  const addLspServers = async (
+    value: string | Record<string, unknown>,
+    required: boolean,
+  ): Promise<void> => {
+    try {
+      const parsed: unknown =
+        typeof value === 'string'
+          ? JSON.parse(await readFile(safePluginPath(root, value), 'utf8'))
+          : value
+      if (!isRecord(parsed)) throw new Error('LSP config must be an object')
+      const definitions = isRecord(parsed.lspServers)
+        ? parsed.lspServers
+        : parsed
+      for (const name of Object.keys(definitions)) lspServers.add(name)
+    } catch (error) {
+      if (required || (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`Invalid plugin LSP config in ${root}`, {
+          cause: error,
+        })
+      }
+    }
+  }
+  await addLspServers('.lsp.json', false)
+  if (manifest.lspServers !== undefined) {
+    await addLspServers(manifest.lspServers, true)
+  }
+  const rootSkillPath = join(
+    root,
+    'skills',
+    `${loaded.record.name}:${loaded.record.name}`,
+    'SKILL.md',
   )
+  const skills = loaded.resources.skills.filter(
+    (resource) =>
+      !source.endsWith('@skills-dir') || resource.path !== rootSkillPath,
+  )
+  const rawComponentCosts = [
+    ...skills.map((resource) =>
+      detailComponentCost(
+        'skill',
+        detailComponentName(resource.path),
+        resource.content,
+        loaded.record.name,
+      ),
+    ),
+    ...loaded.resources.agents.map((resource) =>
+      detailComponentCost(
+        'agent',
+        detailComponentName(resource.path),
+        resource.content,
+        loaded.record.name,
+      ),
+    ),
+    ...loaded.resources.commands.map((resource) =>
+      detailComponentCost(
+        'command',
+        detailComponentName(resource.path),
+        resource.content,
+        loaded.record.name,
+      ),
+    ),
+  ]
+  const alwaysOnText = rawComponentCosts
+    .map((component) => component.alwaysOnText)
+    .join('\n')
+  const onInvokeText = rawComponentCosts
+    .map((component) => component.onInvokeText)
+    .join('\n')
+  const tokenEstimate = {
+    alwaysOn: countTokens(alwaysOnText),
+    onInvoke: countTokens(onInvokeText),
+  }
+  // Claude counts each assembled bucket once, then allocates that total by the
+  // component character share so rounded rows remain additive.
+  const alwaysOnChars = rawComponentCosts.reduce(
+    (total, component) => total + component.alwaysOnText.length,
+    0,
+  )
+  const onInvokeChars = rawComponentCosts.reduce(
+    (total, component) => total + component.onInvokeText.length,
+    0,
+  )
+  const componentCosts: ClaudePluginComponentCost[] = rawComponentCosts.map(
+    ({ alwaysOnText: componentAlwaysOn, onInvokeText, ...component }) => ({
+      ...component,
+      alwaysOn: scaledTokenCount(
+        componentAlwaysOn.length,
+        alwaysOnChars,
+        tokenEstimate.alwaysOn,
+      ),
+      onInvoke: scaledTokenCount(
+        onInvokeText.length,
+        onInvokeChars,
+        tokenEstimate.onInvoke,
+      ),
+    }),
+  )
+  return {
+    plugin: loaded.record,
+    components: {
+      commands: loaded.resources.commands
+        .map((resource) => detailComponentName(resource.path))
+        .sort(),
+      skills: skills
+        .map((resource) => detailComponentName(resource.path))
+        .sort(),
+      agents: loaded.resources.agents
+        .map((resource) => detailComponentName(resource.path))
+        .sort(),
+      hooks: keysFromJsonResources(loaded.resources.settings, 'hooks'),
+      mcpServers: keysFromJsonResources(loaded.resources.mcp, 'mcpServers'),
+      lspServers: [...lspServers].sort(),
+    },
+    componentCosts,
+    tokenEstimate,
+  }
 }
 
 export async function installClaudePlugin(
@@ -827,11 +1400,18 @@ export async function setClaudePluginEnabled(
 export async function uninstallClaudePlugin(
   configRoot: string,
   name: string,
+  deleteData = true,
 ): Promise<void> {
   const registry = await readPluginRegistry(configRoot)
   const entry = registry.find((item) => item.name === name)
   if (!entry) throw new Error(`Plugin not installed: ${name}`)
   await rm(entry.path, { recursive: true, force: true })
+  if (deleteData) {
+    await rm(claudePluginDataPath(configRoot, name), {
+      recursive: true,
+      force: true,
+    })
+  }
   await writePluginRegistry(
     configRoot,
     registry.filter((item) => item.name !== name),

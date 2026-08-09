@@ -138,12 +138,12 @@ describe('AgentsDashboardApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Attached to abcd1234')
     expect(app.lastFrame()).toContain('INITIAL RESULT')
-    app.stdin.write('continue review')
+    app.stdin.write('continue review?')
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(prompts).toEqual(['continue review\n'])
-    expect(app.lastFrame()).toContain('CONTINUED continue review')
+    expect(prompts).toEqual(['continue review?\n'])
+    expect(app.lastFrame()).toContain('CONTINUED continue review?')
 
     app.stdin.write('\u0018')
     await flush()
@@ -184,6 +184,60 @@ describe('AgentsDashboardApp', () => {
     app.stdin.write('\u0003')
     await flush()
     expect(cancelled).toBe(true)
+  })
+
+  it('exits normally with Escape and navigates in displayed section order', async () => {
+    let cancelled = false
+    const manager: AgentsDashboardManager = {
+      async launch() {
+        throw new Error('unused')
+      },
+      async list() {
+        return [
+          { ...activeAgent, id: 'work0001', status: 'active' },
+          {
+            id: 'done0001',
+            cwd: activeAgent.cwd,
+            kind: activeAgent.kind,
+            startedAt: activeAgent.startedAt,
+            sessionId: activeAgent.sessionId,
+            name: activeAgent.name,
+            state: 'done',
+          },
+          { ...activeAgent, id: 'ready001' },
+        ]
+      },
+      async review() {
+        return 'REVIEW'
+      },
+      async stop() {
+        throw new Error('unused')
+      },
+      async attach() {
+        throw new Error('unused')
+      },
+    }
+    const app = render(
+      <AgentsDashboardApp
+        manager={manager}
+        defaults={{ argv: [] }}
+        refreshIntervalMs={60_000}
+        onCancel={() => {
+          cancelled = true
+        }}
+      />,
+    )
+    await flush()
+    expect(app.lastFrame()).toContain('Selected ready001')
+    app.stdin.write('\u001b[B')
+    await flush()
+    expect(app.lastFrame()).toContain('Selected work0001')
+    app.stdin.write('\u001b[B')
+    await flush()
+    expect(app.lastFrame()).toContain('Selected done0001')
+    app.stdin.write('\u001b')
+    await flush()
+    expect(cancelled).toBe(false)
   })
 
   it('reviews completed sessions then resumes and attaches with original session identity', async () => {

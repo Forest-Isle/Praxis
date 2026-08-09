@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import {
   ClaudeJobStore,
   type ClaudeJobState,
@@ -279,11 +280,12 @@ describe('TopLevelAgentManager', () => {
     const otherCwd = join(fixtureState.configRoot, 'other')
     await mkdir(otherCwd)
     await mkdir(join(fixtureState.configRoot, 'sessions'))
+    const nativeSessionId = 'aaaaaaaa-1111-4111-8111-111111111111'
     await writeFile(
       join(fixtureState.configRoot, 'sessions', '12345.json'),
       JSON.stringify({
         pid: 12345,
-        sessionId: 'native-session',
+        sessionId: nativeSessionId,
         cwd: otherCwd,
         startedAt: 1,
         kind: 'interactive',
@@ -295,7 +297,7 @@ describe('TopLevelAgentManager', () => {
       join(fixtureState.configRoot, 'sessions', '12346.json'),
       JSON.stringify({
         id: 'native000',
-        sessionId: 'aaaaaaaa-1111-4111-8111-111111111111',
+        sessionId: 'bbbbbbbb-1111-4111-8111-111111111111',
         cwd: otherCwd,
         startedAt: 2,
         kind: 'background',
@@ -303,6 +305,13 @@ describe('TopLevelAgentManager', () => {
         state: 'done',
       }),
     )
+    const nativeTranscript = resolveClaudePaths({
+      configDir: fixtureState.configRoot,
+      cwd: otherCwd,
+      sessionId: nativeSessionId,
+    }).sessionFile
+    await mkdir(dirname(nativeTranscript), { recursive: true })
+    await writeFile(nativeTranscript, 'NATIVE_TRANSCRIPT\n')
     await fixtureState.store.update(fixtureState.id, (state) => ({
       ...state,
       state: 'stopped',
@@ -314,17 +323,17 @@ describe('TopLevelAgentManager', () => {
       expect.objectContaining({
         cwd: otherCwd,
         kind: 'interactive',
-        sessionId: 'native-session',
+        sessionId: nativeSessionId,
         status: 'idle',
       }),
     ])
     await expect(fixtureState.manager.list({ all: true })).resolves.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: fixtureState.id, state: 'stopped' }),
-        expect.objectContaining({ sessionId: 'native-session' }),
+        expect.objectContaining({ sessionId: nativeSessionId }),
         expect.objectContaining({
           id: 'native000',
-          sessionId: 'aaaaaaaa-1111-4111-8111-111111111111',
+          sessionId: 'bbbbbbbb-1111-4111-8111-111111111111',
           state: 'done',
         }),
       ]),
@@ -334,6 +343,12 @@ describe('TopLevelAgentManager', () => {
     ).resolves.toEqual([
       expect.objectContaining({ id: fixtureState.id, cwd: fixtureState.cwd }),
     ])
+    await expect(
+      fixtureState.manager.review({
+        cwd: otherCwd,
+        sessionId: nativeSessionId,
+      }),
+    ).resolves.toBe('NATIVE_TRANSCRIPT\n')
   })
 
   it('does not resurrect a job stopped while its runtime is initializing', async () => {

@@ -100,6 +100,22 @@ export interface CliInvocation extends CliControls {
   fromPr: string | true | undefined
   verbose: boolean
   legacyJson: boolean
+  pluginAvailable: boolean
+  pluginAll: boolean
+  pluginKeepData: boolean
+  pluginPrune: boolean
+  pluginYes: boolean
+  pluginStrict: boolean
+  pluginConfig: readonly string[]
+  pluginAuthor?: string
+  pluginAuthorEmail?: string
+  pluginDescription?: string
+  pluginForce: boolean
+  pluginWith: readonly string[]
+  pluginDryRun: boolean
+  pluginMessage?: string
+  pluginPush: boolean
+  pluginRemote?: string
   mcpScope?: CliMcpScope
   mcpTransport?: CliMcpTransport
   mcpEnv: readonly string[]
@@ -353,6 +369,15 @@ function isBase64Data(value: string): boolean {
 }
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const PLUGIN_INIT_COMPONENTS = new Set([
+  'skills',
+  'agents',
+  'hooks',
+  'mcp',
+  'lsp',
+  'output-style',
+  'channel',
+])
 
 function requiredValue(
   argv: readonly string[],
@@ -454,6 +479,46 @@ function listOptionValue(
   return null
 }
 
+function pluginWithOptionValue(
+  argv: readonly string[],
+  index: number,
+): { values: string[]; consumed: number } | null {
+  const current = argv[index]
+  if (current?.startsWith('--with=')) {
+    const value = current.slice('--with='.length)
+    if (!value) throw new Error('--with is required')
+    return { values: value.split(','), consumed: 0 }
+  }
+  if (current !== '--with') return null
+  const values: string[] = []
+  let consumed = 0
+  while (index + consumed + 1 < argv.length) {
+    const candidate = argv[index + consumed + 1]
+    if (
+      candidate === undefined ||
+      candidate === '--' ||
+      candidate.startsWith('-')
+    ) {
+      break
+    }
+    const components = candidate.split(',').map((value) => value.trim())
+    if (
+      components.length === 0 ||
+      components.some((component) => !PLUGIN_INIT_COMPONENTS.has(component))
+    ) {
+      break
+    }
+    values.push(...components)
+    consumed += 1
+  }
+  if (values.length === 0) {
+    throw new Error(
+      `--with requires one or more components: ${[...PLUGIN_INIT_COMPONENTS].join(', ')}`,
+    )
+  }
+  return { values, consumed }
+}
+
 function splitList(values: readonly string[]): string[] {
   return values.flatMap((value) =>
     value
@@ -502,6 +567,21 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let fromPr: string | true | undefined
   let verbose = false
   let legacyJson = false
+  let pluginAvailable = false
+  let pluginKeepData = false
+  let pluginPrune = false
+  let pluginYes = false
+  let pluginStrict = false
+  const pluginConfig: string[] = []
+  let pluginAuthor: string | undefined
+  let pluginAuthorEmail: string | undefined
+  let pluginDescription: string | undefined
+  let pluginForce = false
+  const pluginWith: string[] = []
+  let pluginDryRun = false
+  let pluginMessage: string | undefined
+  let pluginPush = false
+  let pluginRemote: string | undefined
   let optionsEnded = false
   let settings: string | undefined
   let maxTurns: number | undefined
@@ -686,7 +766,9 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     const selectedMcpScope =
       value === '-s'
         ? { value: requiredValue(argv, index, '--scope'), consumed: 1 }
-        : optionValue(argv, index, '--scope')
+        : value.startsWith('-s=')
+          ? { value: value.slice(3), consumed: 0 }
+          : optionValue(argv, index, '--scope')
     if (selectedMcpScope) {
       if (mcpScope !== undefined)
         throw new Error('--scope may only be specified once')
@@ -775,6 +857,63 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--settings may only be specified once')
       settings = selectedSettings.value
       index += selectedSettings.consumed
+      continue
+    }
+    const selectedPluginConfig = optionValue(argv, index, '--config')
+    if (selectedPluginConfig) {
+      pluginConfig.push(selectedPluginConfig.value)
+      index += selectedPluginConfig.consumed
+      continue
+    }
+    const selectedPluginAuthor = optionValue(argv, index, '--author')
+    if (selectedPluginAuthor) {
+      if (pluginAuthor !== undefined)
+        throw new Error('--author may only be specified once')
+      pluginAuthor = selectedPluginAuthor.value
+      index += selectedPluginAuthor.consumed
+      continue
+    }
+    const selectedPluginAuthorEmail = optionValue(argv, index, '--author-email')
+    if (selectedPluginAuthorEmail) {
+      if (pluginAuthorEmail !== undefined)
+        throw new Error('--author-email may only be specified once')
+      pluginAuthorEmail = selectedPluginAuthorEmail.value
+      index += selectedPluginAuthorEmail.consumed
+      continue
+    }
+    const selectedPluginDescription = optionValue(argv, index, '--description')
+    if (selectedPluginDescription) {
+      if (pluginDescription !== undefined)
+        throw new Error('--description may only be specified once')
+      pluginDescription = selectedPluginDescription.value
+      index += selectedPluginDescription.consumed
+      continue
+    }
+    const selectedPluginWith = pluginWithOptionValue(argv, index)
+    if (selectedPluginWith) {
+      pluginWith.push(...selectedPluginWith.values)
+      index += selectedPluginWith.consumed
+      continue
+    }
+    const selectedPluginMessage =
+      value === '-m'
+        ? { value: requiredValue(argv, index, '--message'), consumed: 1 }
+        : value.startsWith('-m=')
+          ? { value: value.slice(3), consumed: 0 }
+          : optionValue(argv, index, '--message')
+    if (selectedPluginMessage) {
+      if (pluginMessage !== undefined)
+        throw new Error('--message may only be specified once')
+      pluginMessage = selectedPluginMessage.value
+      index += selectedPluginMessage.consumed
+      continue
+    }
+    const selectedPluginRemote = optionValue(argv, index, '--remote')
+    if (selectedPluginRemote) {
+      if (pluginRemote !== undefined)
+        throw new Error('--remote may only be specified once')
+      pluginRemote = selectedPluginRemote.value
+      index += selectedPluginRemote.consumed
       continue
     }
     const selectedMaxTurns = optionValue(argv, index, '--max-turns')
@@ -1112,8 +1251,40 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       background = true
       continue
     }
-    if (value === '--all') {
+    if (value === '--all' || value === '-a') {
       agentsAll = true
+      continue
+    }
+    if (value === '--available') {
+      pluginAvailable = true
+      continue
+    }
+    if (value === '--keep-data') {
+      pluginKeepData = true
+      continue
+    }
+    if (value === '--prune') {
+      pluginPrune = true
+      continue
+    }
+    if (value === '-y' || value === '--yes') {
+      pluginYes = true
+      continue
+    }
+    if (value === '--strict') {
+      pluginStrict = true
+      continue
+    }
+    if (value === '-f' || value === '--force') {
+      pluginForce = true
+      continue
+    }
+    if (value === '--dry-run') {
+      pluginDryRun = true
+      continue
+    }
+    if (value === '--push') {
+      pluginPush = true
       continue
     }
     if (value === '-c' || value === '--continue') {
@@ -1370,13 +1541,37 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   ) {
     throw new Error('--session-id is only valid when starting a session')
   }
+  const pluginDisableAll =
+    agentsAll &&
+    ['plugin', 'plugins'].includes(args[0] ?? '') &&
+    args[1] === 'disable'
+  if (
+    (pluginAvailable ||
+      pluginKeepData ||
+      pluginPrune ||
+      pluginYes ||
+      pluginStrict ||
+      pluginConfig.length > 0 ||
+      pluginAuthor !== undefined ||
+      pluginAuthorEmail !== undefined ||
+      pluginDescription !== undefined ||
+      pluginForce ||
+      pluginWith.length > 0 ||
+      pluginDryRun ||
+      pluginMessage !== undefined ||
+      pluginPush ||
+      pluginRemote !== undefined) &&
+    !['plugin', 'plugins'].includes(args[0] ?? '')
+  ) {
+    throw new Error('Plugin options are only valid with plugin commands')
+  }
   return {
     command: args[0],
     args,
     agent,
     background,
     print,
-    agentsAll,
+    agentsAll: pluginDisableAll ? false : agentsAll,
     agentsCwd,
     inputFormat,
     outputFormat,
@@ -1389,6 +1584,22 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     fromPr,
     verbose,
     legacyJson,
+    pluginAvailable,
+    pluginAll: pluginDisableAll,
+    pluginKeepData,
+    pluginPrune,
+    pluginYes,
+    pluginStrict,
+    pluginConfig,
+    ...(pluginAuthor === undefined ? {} : { pluginAuthor }),
+    ...(pluginAuthorEmail === undefined ? {} : { pluginAuthorEmail }),
+    ...(pluginDescription === undefined ? {} : { pluginDescription }),
+    pluginForce,
+    pluginWith,
+    pluginDryRun,
+    ...(pluginMessage === undefined ? {} : { pluginMessage }),
+    pluginPush,
+    ...(pluginRemote === undefined ? {} : { pluginRemote }),
     settings,
     ...(agentDefinitions === undefined ? {} : { agentDefinitions }),
     mcpConfigs,
