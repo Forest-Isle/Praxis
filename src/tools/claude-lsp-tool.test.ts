@@ -83,6 +83,7 @@ function receive(message) {
     }
     const details = 'explicit=' + (process.env.EXPLICIT_LSP_ENV || '') +
       ';token=' + (process.env.LSP_API_TOKEN || '') +
+      ';arg=' + (process.argv.at(-1) || '') +
       ';ambient=' + (process.env.PRAXIS_LSP_SECRET || '') +
       ';notifications=' + notifications.map(value => value.method).join(',')
     return send({jsonrpc:'2.0', id:message.id, result:{contents:{kind:'markdown',value:details},range}})
@@ -154,7 +155,7 @@ async function fixture(): Promise<{
       pluginName: 'fixture-plugin',
       pluginRoot: root,
       command: process.execPath,
-      args: ['-e', serverScript],
+      args: ['-e', serverScript, 'argument-only-secret'],
       env: {
         EXPLICIT_LSP_ENV: 'allowed',
         LSP_API_TOKEN: 'explicit-secret',
@@ -162,6 +163,7 @@ async function fixture(): Promise<{
         LSP_CONFIG_RESPONSE_FILE: configResponseFile,
       },
       extensionToLanguage: { '.fixture': 'fixture' },
+      sensitiveValues: ['only-secret', 'argument-only-secret', ''],
     },
   }
 }
@@ -581,6 +583,7 @@ describe('Claude LSP tool', () => {
       expect(hover.content).toContain('explicit=allowed')
       expect(hover.content).toContain('token=[REDACTED]')
       expect(hover.content).not.toContain('explicit-secret')
+      expect(hover.content).not.toContain('argument-only-secret')
       expect(hover.content).not.toContain('ambient-secret')
 
       const controller = new AbortController()

@@ -17,6 +17,7 @@ import { promisify } from 'node:util'
 import { unzipSync } from 'fflate'
 
 import { writeFileAtomically } from '../platform/atomic-write.js'
+import { ClaudeMcpOAuthStore } from '../mcp/claude-mcp-oauth.js'
 import type { ClaudePluginRecord } from './claude-plugin-runtime.js'
 
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -27,6 +28,26 @@ const PLUGIN_MANIFEST = join('.claude-plugin', 'plugin.json')
 const execFileAsync = promisify(execFile)
 
 export type ClaudePluginScope = 'user' | 'project' | 'local'
+
+const PLUGIN_USER_CONFIG_KEY = /^[A-Za-z_]\w*$/u
+const PLUGIN_USER_CONFIG_TYPES = new Set([
+  'string',
+  'number',
+  'boolean',
+  'directory',
+  'file',
+])
+const PLUGIN_USER_CONFIG_FIELDS = new Set([
+  'type',
+  'title',
+  'description',
+  'required',
+  'default',
+  'multiple',
+  'sensitive',
+  'min',
+  'max',
+])
 
 export interface ClaudeMarketplaceSource {
   source: 'directory' | 'url' | 'git'
@@ -90,6 +111,73 @@ function nonEmptyString(value: unknown, label: string): string {
     throw new Error(`${label} must be a non-empty string`)
   }
   return value
+}
+
+export function validateClaudePluginUserConfig(
+  value: unknown,
+  manifestPath: string,
+): Record<string, Record<string, unknown>> | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) {
+    throw new Error(`Plugin userConfig must be an object: ${manifestPath}`)
+  }
+  for (const [key, definition] of Object.entries(value)) {
+    if (!PLUGIN_USER_CONFIG_KEY.test(key)) {
+      throw new Error(`Plugin userConfig key is invalid: ${key}`)
+    }
+    if (!isRecord(definition)) {
+      throw new Error(
+        `Plugin userConfig ${key} must be an object: ${manifestPath}`,
+      )
+    }
+    for (const field of Object.keys(definition)) {
+      if (!PLUGIN_USER_CONFIG_FIELDS.has(field)) {
+        throw new Error(`Plugin userConfig ${key} has unknown field ${field}`)
+      }
+    }
+    if (
+      typeof definition.type !== 'string' ||
+      !PLUGIN_USER_CONFIG_TYPES.has(definition.type)
+    ) {
+      throw new Error(`Plugin userConfig ${key} has invalid type`)
+    }
+    for (const field of ['title', 'description'] as const) {
+      if (typeof definition[field] !== 'string') {
+        throw new Error(`Plugin userConfig ${key} ${field} must be a string`)
+      }
+    }
+    for (const field of ['required', 'multiple', 'sensitive'] as const) {
+      if (
+        definition[field] !== undefined &&
+        typeof definition[field] !== 'boolean'
+      ) {
+        throw new Error(`Plugin userConfig ${key} ${field} must be a boolean`)
+      }
+    }
+    for (const field of ['min', 'max'] as const) {
+      if (
+        definition[field] !== undefined &&
+        (typeof definition[field] !== 'number' ||
+          !Number.isFinite(definition[field]))
+      ) {
+        throw new Error(`Plugin userConfig ${key} ${field} must be a number`)
+      }
+    }
+    const defaultValue = definition.default
+    if (
+      defaultValue !== undefined &&
+      typeof defaultValue !== 'string' &&
+      typeof defaultValue !== 'number' &&
+      typeof defaultValue !== 'boolean' &&
+      !(
+        Array.isArray(defaultValue) &&
+        defaultValue.every((item) => typeof item === 'string')
+      )
+    ) {
+      throw new Error(`Plugin userConfig ${key} default is invalid`)
+    }
+  }
+  return value as Record<string, Record<string, unknown>>
 }
 
 function safePathSegment(value: string, label: string): string {
@@ -367,7 +455,35 @@ export async function readClaudePluginOptions(
       }
     }
   }
+  Object.assign(
+    result,
+    await new ClaudeMcpOAuthStore({ configRoot }).readPluginSecrets(id),
+  )
   return result
+}
+
+export async function deleteClaudePluginOptions(
+  configRoot: string,
+  cwd: string,
+  id: string,
+): Promise<void> {
+  for (const scope of ['user', 'project', 'local'] as const) {
+    const path = settingsPath(configRoot, cwd, scope)
+    if (!(await pathExists(path))) continue
+    const root = await readJson(path)
+    if (!isRecord(root.pluginConfigs) || root.pluginConfigs[id] === undefined)
+      continue
+    const pluginConfigs = { ...root.pluginConfigs }
+    delete pluginConfigs[id]
+    if (Object.keys(pluginConfigs).length === 0) delete root.pluginConfigs
+    else root.pluginConfigs = pluginConfigs
+    await writeJson(path, root)
+  }
+  try {
+    await new ClaudeMcpOAuthStore({ configRoot }).deletePluginSecrets(id)
+  } catch {
+    // Uninstall remains successful when best-effort credential cleanup fails.
+  }
 }
 
 export async function writeClaudeInstalledPlugin(
@@ -449,6 +565,9 @@ export async function removeClaudeInstalledPlugin(
       recursive: true,
       force: true,
     })
+  }
+  if (isLastInstallation) {
+    await deleteClaudePluginOptions(configRoot, cwd, id)
   }
   await setClaudePluginEnabledNative(configRoot, cwd, id, scope, undefined)
   return target
@@ -998,24 +1117,7 @@ async function readPluginIdentity(
   const value: unknown = JSON.parse(await readFile(manifestPath, 'utf8'))
   if (!isRecord(value))
     throw new Error(`Plugin manifest must be an object: ${manifestPath}`)
-  if (value.userConfig !== undefined) {
-    if (!isRecord(value.userConfig)) {
-      throw new Error(`Plugin userConfig must be an object: ${manifestPath}`)
-    }
-    for (const [key, definition] of Object.entries(value.userConfig)) {
-      if (!isRecord(definition)) {
-        throw new Error(
-          `Plugin userConfig ${key} must be an object: ${manifestPath}`,
-        )
-      }
-      nonEmptyString(definition.type, `Plugin userConfig ${key} type`)
-      nonEmptyString(definition.title, `Plugin userConfig ${key} title`)
-      nonEmptyString(
-        definition.description,
-        `Plugin userConfig ${key} description`,
-      )
-    }
-  }
+  validateClaudePluginUserConfig(value.userConfig, manifestPath)
   return {
     name: nonEmptyString(value.name, 'Plugin name'),
     version: nonEmptyString(value.version ?? '0.0.0', 'Plugin version'),
@@ -1032,9 +1134,17 @@ function pluginConfigValue(
   const type = definition.type
   if (type === 'boolean') {
     if (value === 'true') return true
-    return false
+    if (value === 'false') return false
+    throw new Error(`--config ${key} must be true or false`)
   }
   if (type === 'number') {
+    if (value.trim().length === 0) {
+      throw new Error(
+        definition.required === true
+          ? `--config ${key} is required`
+          : `--config ${key}: ${JSON.stringify(value)} is not a number`,
+      )
+    }
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) {
       throw new Error(
@@ -1049,7 +1159,7 @@ function pluginConfigValue(
     }
     return parsed
   }
-  if (type === 'string' || type === 'directory' || type === 'file') {
+  if (type === 'string') {
     if (definition.required === true && value.length === 0) {
       throw new Error(`--config ${key} is required`)
     }
@@ -1060,7 +1170,51 @@ function pluginConfigValue(
           .filter((item) => item.length > 0)
       : value
   }
+  if (type === 'directory' || type === 'file') {
+    if (definition.required === true && value.length === 0) {
+      throw new Error(`--config ${key} is required`)
+    }
+    return value
+  }
   throw new Error(`Plugin userConfig ${key} has unsupported type`)
+}
+
+function pluginDefaultValue(
+  definition: Record<string, unknown>,
+  key: string,
+): ClaudePluginConfigValue | undefined {
+  const value = definition.default
+  if (value === undefined) return undefined
+  if (definition.type === 'boolean' && typeof value === 'boolean') return value
+  if (definition.type === 'number' && typeof value === 'number') {
+    if (typeof definition.min === 'number' && value < definition.min) {
+      throw new Error(`Plugin userConfig ${key} default is below min`)
+    }
+    if (typeof definition.max === 'number' && value > definition.max) {
+      throw new Error(`Plugin userConfig ${key} default is above max`)
+    }
+    return value
+  }
+  if (
+    (definition.type === 'string' ||
+      definition.type === 'directory' ||
+      definition.type === 'file') &&
+    typeof value === 'string'
+  ) {
+    if (definition.required === true && value === '') {
+      throw new Error(`Plugin userConfig ${key} default is required`)
+    }
+    return value
+  }
+  if (
+    definition.type === 'string' &&
+    definition.multiple === true &&
+    Array.isArray(value) &&
+    value.every((item) => typeof item === 'string')
+  ) {
+    return value as string[]
+  }
+  throw new Error(`Plugin userConfig ${key} default has the wrong type`)
 }
 
 export async function saveClaudePluginConfig(
@@ -1071,15 +1225,18 @@ export async function saveClaudePluginConfig(
   pluginPath: string,
   assignments: readonly string[],
 ): Promise<{ warnings: readonly string[] }> {
-  if (assignments.length === 0) return { warnings: [] }
   const manifestPath = join(await realpath(pluginPath), PLUGIN_MANIFEST)
   const manifest: unknown = JSON.parse(await readFile(manifestPath, 'utf8'))
   if (!isRecord(manifest) || !isRecord(manifest.userConfig)) {
     return {
-      warnings: [`Plugin ${id} does not declare userConfig options`],
+      warnings:
+        assignments.length === 0
+          ? []
+          : [`Plugin ${id} does not declare userConfig options`],
     }
   }
   const definitions = manifest.userConfig
+  const existing = await readClaudePluginOptions(configRoot, cwd, id)
   const values: Record<string, ClaudePluginConfigValue> = {}
   const warnings: string[] = []
   for (const assignment of assignments) {
@@ -1106,7 +1263,38 @@ export async function saveClaudePluginConfig(
       warnings.push(error instanceof Error ? error.message : String(error))
     }
   }
+  for (const [key, definition] of Object.entries(definitions)) {
+    if (!isRecord(definition) || values[key] !== undefined) continue
+    if (
+      existing[key] !== undefined &&
+      !(definition.required === true && existing[key] === '')
+    )
+      continue
+    try {
+      const defaultValue = pluginDefaultValue(definition, key)
+      if (defaultValue !== undefined) values[key] = defaultValue
+      else if (definition.required === true) {
+        warnings.push(`Plugin userConfig ${key} is required`)
+      }
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : String(error))
+    }
+  }
   if (warnings.length > 0) return { warnings }
+  if (Object.keys(values).length === 0) return { warnings: [] }
+  const sensitive: Record<string, string> = {}
+  const nonSensitive: Record<string, ClaudePluginConfigValue> = {}
+  for (const [key, value] of Object.entries(values)) {
+    const definition = definitions[key]
+    if (isRecord(definition) && definition.sensitive === true) {
+      sensitive[key] = String(value)
+    } else nonSensitive[key] = value
+  }
+  await new ClaudeMcpOAuthStore({ configRoot }).updatePluginSecrets(
+    id,
+    sensitive,
+    Object.keys(nonSensitive),
+  )
   const path = settingsPath(configRoot, cwd, scope)
   const root = await readJson(path)
   const pluginConfigs = isRecord(root.pluginConfigs)
@@ -1114,9 +1302,14 @@ export async function saveClaudePluginConfig(
     : {}
   const current = isRecord(pluginConfigs[id]) ? { ...pluginConfigs[id] } : {}
   const options = isRecord(current.options) ? { ...current.options } : {}
-  current.options = { ...options, ...values }
-  pluginConfigs[id] = current
-  root.pluginConfigs = pluginConfigs
+  for (const key of Object.keys(sensitive)) delete options[key]
+  const nextOptions = { ...options, ...nonSensitive }
+  if (Object.keys(nextOptions).length === 0) delete current.options
+  else current.options = nextOptions
+  if (Object.keys(current).length === 0) delete pluginConfigs[id]
+  else pluginConfigs[id] = current
+  if (Object.keys(pluginConfigs).length === 0) delete root.pluginConfigs
+  else root.pluginConfigs = pluginConfigs
   await writeJson(path, root)
   return { warnings: [] }
 }

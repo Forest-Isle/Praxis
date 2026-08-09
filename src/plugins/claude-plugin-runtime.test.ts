@@ -1,4 +1,5 @@
 import {
+  access,
   mkdir,
   mkdtemp,
   readFile,
@@ -9,7 +10,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import {
@@ -27,6 +28,7 @@ import {
 const roots: string[] = []
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true })),
   )
@@ -159,14 +161,37 @@ describe('Claude plugin runtime', () => {
         expect.stringContaining('/plugin/hooks/hooks.json'),
       ]),
     )
+    const pluginRoot = await realpath(join(root, 'plugin'))
+    const pluginData = resources.mcp[0]?.environment?.CLAUDE_PLUGIN_DATA
+    expect(pluginData).toBeTruthy()
+    await expect(access(pluginData ?? '')).resolves.toBeUndefined()
     expect(resources.mcp).toHaveLength(2)
     expect(resources.mcp.map((item) => item.value)).toEqual(
       expect.arrayContaining([
-        { mcpServers: { file: { command: 'file-mcp' } } },
-        { mcpServers: { inline: { command: 'fixture-mcp' } } },
+        {
+          mcpServers: {
+            file: {
+              command: 'file-mcp',
+              env: {
+                CLAUDE_PLUGIN_ROOT: pluginRoot,
+                CLAUDE_PLUGIN_DATA: pluginData,
+              },
+            },
+          },
+        },
+        {
+          mcpServers: {
+            inline: {
+              command: 'fixture-mcp',
+              env: {
+                CLAUDE_PLUGIN_ROOT: pluginRoot,
+                CLAUDE_PLUGIN_DATA: pluginData,
+              },
+            },
+          },
+        },
       ]),
     )
-    const pluginRoot = await realpath(join(root, 'plugin'))
     expect(resources.lsp).toEqual([
       expect.objectContaining({
         name: 'fileLsp',
@@ -210,6 +235,29 @@ describe('Claude plugin runtime', () => {
       JSON.stringify({
         name: 'fixture',
         version: '1.2.3',
+        commands: 'commands',
+        skills: 'skills',
+        agents: 'agents',
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command:
+                    'run ${user_config.label} ${user_config.token} ${CLAUDE_PLUGIN_DATA}',
+                },
+              ],
+            },
+          ],
+        },
+        mcpServers: {
+          configured: {
+            command: '${user_config.label}',
+            args: ['${user_config.token}'],
+            env: { LABEL: '${user_config.label}' },
+          },
+        },
         userConfig: {
           label: {
             type: 'string',
@@ -221,8 +269,26 @@ describe('Claude plugin runtime', () => {
             title: 'Retries',
             description: 'Retry count',
           },
+          token: {
+            type: 'string',
+            title: 'Token',
+            description: 'Fixture token',
+            sensitive: true,
+          },
         },
       }),
+    )
+    await writeFile(
+      join(root, 'plugin', 'commands', 'hello.md'),
+      'root=${CLAUDE_PLUGIN_ROOT} label=${user_config.label} token=${user_config.token}',
+    )
+    await writeFile(
+      join(root, 'plugin', 'skills', 'review', 'SKILL.md'),
+      '---\ndescription: review\n---\nskill=${CLAUDE_SKILL_DIR} label=${user_config.label} token=${user_config.token}',
+    )
+    await writeFile(
+      join(root, 'plugin', 'agents', 'reviewer.md'),
+      'data=${CLAUDE_PLUGIN_DATA} label=${user_config.label} token=${user_config.token}',
     )
     await writeFile(
       join(root, 'plugin', '.lsp.json'),
@@ -230,7 +296,10 @@ describe('Claude plugin runtime', () => {
         fixture: {
           command: '${user_config.label}',
           args: ['--retries', '${user_config.retries}'],
-          env: { FIXTURE_LABEL: '${user_config.label}' },
+          env: {
+            FIXTURE_LABEL: '${user_config.label}',
+            FIXTURE_TOKEN: '${user_config.token}',
+          },
           extensionToLanguage: { '.fixture': 'fixture' },
           workspaceFolder: '${user_config.label}',
         },
@@ -242,7 +311,13 @@ describe('Claude plugin runtime', () => {
       join(configRoot, 'settings.json'),
       JSON.stringify({
         pluginConfigs: {
-          fixture: { options: { label: 'user-label', retries: 1 } },
+          fixture: {
+            options: {
+              label: 'user-label',
+              retries: 1,
+              token: 'legacy-plaintext-token',
+            },
+          },
         },
       }),
     )
@@ -262,17 +337,91 @@ describe('Claude plugin runtime', () => {
         },
       }),
     )
+    await mkdir(configRoot, { recursive: true })
+    await writeFile(
+      join(configRoot, '.credentials.json'),
+      JSON.stringify({
+        pluginSecrets: { fixture: { token: 'secure-token' } },
+      }),
+    )
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
 
     const resources = await loadClaudePlugins({ configRoot, cwd: root })
+    const installedRoot = resources.plugins[0]?.path
+    const pluginData =
+      resources.settings[0]?.environment?.CLAUDE_PLUGIN_DATA ?? ''
+    const extensions = new ClaudeExtensionCatalog(resources)
+    expect(pluginData).toContain(join(configRoot, 'plugins', 'data'))
 
     expect(resources.lsp).toEqual([
       expect.objectContaining({
         command: 'local-label',
         args: ['--retries', '3'],
-        env: expect.objectContaining({ FIXTURE_LABEL: 'local-label' }),
+        env: expect.objectContaining({
+          FIXTURE_LABEL: 'local-label',
+          FIXTURE_TOKEN: 'secure-token',
+        }),
         workspaceFolder: 'local-label',
+        sensitiveValues: ['secure-token'],
       }),
     ])
+    expect(extensions.skill('fixture:hello')?.body).toBe(
+      `root=${installedRoot} label=local-label token=[sensitive option 'token' not available in skill content]`,
+    )
+    expect(extensions.skill('fixture:review')?.body).toBe(
+      `skill=${join(installedRoot ?? '', 'skills', 'review')} label=local-label token=[sensitive option 'token' not available in skill content]`,
+    )
+    expect(extensions.agent('fixture:reviewer')?.body).toBe(
+      `data=${pluginData} label=local-label token=[sensitive option 'token' not available in skill content]`,
+    )
+    expect(resources.settings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          value: {
+            hooks: {
+              SessionStart: [
+                {
+                  hooks: [
+                    {
+                      type: 'command',
+                      command: `run local-label secure-token ${pluginData}`,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          environment: expect.objectContaining({
+            CLAUDE_PLUGIN_ROOT: installedRoot,
+            CLAUDE_PLUGIN_DATA: pluginData,
+            CLAUDE_PLUGIN_OPTION_LABEL: 'local-label',
+            CLAUDE_PLUGIN_OPTION_RETRIES: '3',
+            CLAUDE_PLUGIN_OPTION_TOKEN: 'secure-token',
+          }),
+          sensitiveValues: ['secure-token'],
+        }),
+      ]),
+    )
+    expect(resources.mcp).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          value: {
+            mcpServers: {
+              configured: {
+                command: 'local-label',
+                args: ['secure-token'],
+                env: {
+                  CLAUDE_PLUGIN_ROOT: installedRoot,
+                  CLAUDE_PLUGIN_DATA: pluginData,
+                  LABEL: 'local-label',
+                },
+              },
+            },
+          },
+          sensitiveValues: ['secure-token'],
+        }),
+      ]),
+    )
   })
 
   it('fails a configured plugin closed when an LSP user option is missing', async () => {
@@ -301,6 +450,7 @@ describe('Claude plugin runtime', () => {
       }),
     )
     await installClaudePlugin(configRoot, join(root, 'plugin'))
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
 
     const resources = await loadClaudePlugins({ configRoot, cwd: root })
 
@@ -425,5 +575,44 @@ describe('Claude plugin runtime', () => {
     await expect(
       validateClaudePlugin(join(root, 'plugin'), { strict: true }),
     ).rejects.toThrow('--strict treats warnings as errors')
+  })
+
+  it('validates the complete strict plugin userConfig schema', async () => {
+    const { root } = await pluginFixture()
+    const manifest = join(root, 'plugin', '.claude-plugin', 'plugin.json')
+    const definition = {
+      type: 'string',
+      title: 'Token',
+      description: 'Fixture token',
+    }
+    await writeFile(
+      manifest,
+      JSON.stringify({ name: 'fixture', userConfig: { '1token': definition } }),
+    )
+    await expect(validateClaudePlugin(join(root, 'plugin'))).rejects.toThrow(
+      'key is invalid',
+    )
+
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        name: 'fixture',
+        userConfig: { token: { ...definition, unknown: true } },
+      }),
+    )
+    await expect(validateClaudePlugin(join(root, 'plugin'))).rejects.toThrow(
+      'unknown field',
+    )
+
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        name: 'fixture',
+        userConfig: { token: { ...definition, sensitive: 'yes' } },
+      }),
+    )
+    await expect(validateClaudePlugin(join(root, 'plugin'))).rejects.toThrow(
+      'sensitive must be a boolean',
+    )
   })
 })

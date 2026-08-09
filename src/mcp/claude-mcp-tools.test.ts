@@ -62,10 +62,10 @@ process.stdin.on('data', chunk => {
     process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
     if (request.method === 'initialize' && !sent) {
       sent = true
-      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 91, method: 'elicitation/create', params: { mode: 'form', message: 'Provide ' + process.env.MCP_API_KEY, requestedSchema: { type: 'object', properties: { code: { type: 'string', description: process.env.MCP_API_KEY } } } } }) + '\\n')
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 91, method: 'elicitation/create', params: { mode: 'form', message: 'Provide ' + process.argv[2], requestedSchema: { type: 'object', properties: { code: { type: 'string', description: process.argv[2] } } } } }) + '\\n')
     }
     if (request.id === 91) {
-      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 92, method: 'elicitation/create', params: { mode: 'url', message: 'Open ' + process.env.MCP_API_KEY, url: 'https://example.com/' + process.env.MCP_API_KEY, elicitationId: 'fixture-url-elicit' } }) + '\\n')
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 92, method: 'elicitation/create', params: { mode: 'url', message: 'Open ' + process.argv[2], url: 'https://example.com/' + process.argv[2], elicitationId: 'fixture-url-elicit' } }) + '\\n')
     }
     if (request.id === 92) {
       process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/elicitation/complete', params: { elicitationId: 'fixture-elicit' } }) + '\\n')
@@ -84,7 +84,7 @@ process.stdin.on('data', chunk => {
         requestedSchema?: Record<string, unknown>
       }) => {
         expect(request.serverName).toBe('fixture')
-        expect(JSON.stringify(request)).not.toContain('elicitation-secret')
+        expect(JSON.stringify(request)).not.toContain('plugin-mcp-secret')
         if (request.mode === 'form') {
           expect(request.message).toBe('Provide [REDACTED]')
           expect(request.requestedSchema).toEqual({
@@ -111,11 +111,12 @@ process.stdin.on('data', chunk => {
             mcpServers: {
               fixture: {
                 command: process.execPath,
-                args: [serverScript],
-                env: { MCP_API_KEY: 'elicitation-secret' },
+                args: [serverScript, 'plugin-mcp-secret'],
+                env: {},
               },
             },
           },
+          sensitiveValues: ['mcp-secret', 'plugin-mcp-secret', ''],
         },
       ],
       eventSink: (event) => events.push(event),

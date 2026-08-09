@@ -15,6 +15,7 @@ import { promisify } from 'node:util'
 import { strToU8, zipSync } from 'fflate'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ClaudeMcpOAuthStore } from '../mcp/claude-mcp-oauth.js'
 import { loadClaudePlugins } from './claude-plugin-runtime.js'
 import {
   addClaudeMarketplace,
@@ -26,6 +27,7 @@ import {
   readClaudeKnownMarketplaces,
   replaceClaudePluginDirectory,
   removeClaudeMarketplace,
+  saveClaudePluginConfig,
   setNativePluginEnabled,
   uninstallNativePlugin,
   updateClaudeMarketplace,
@@ -36,6 +38,7 @@ const execFileAsync = promisify(execFile)
 
 afterEach(async () => {
   vi.unstubAllEnvs()
+  vi.restoreAllMocks()
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   )
@@ -238,8 +241,392 @@ describe('Claude native plugin marketplace', () => {
     )
 
     await installClaudeMarketplacePlugin(value.configRoot, value.cwd, id)
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+    await writeFile(
+      join(value.configRoot, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          [id]: { options: { label: 'remove-option' } },
+          'other@market': { options: { label: 'keep-option' } },
+        },
+      }),
+    )
+    await writeFile(
+      join(value.configRoot, '.credentials.json'),
+      JSON.stringify({
+        pluginSecrets: {
+          [id]: { token: 'remove-secret' },
+          [`${id}/server`]: { token: 'remove-server-secret' },
+          'other@market': { token: 'keep-secret' },
+        },
+      }),
+    )
+    await mkdir(join(value.cwd, '.claude'), { recursive: true })
+    await writeFile(
+      join(value.cwd, '.claude', 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          [id]: { options: { level: 2 } },
+          'other@market': { options: { level: 3 } },
+        },
+      }),
+    )
+    await writeFile(
+      join(value.cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({
+        pluginConfigs: { [id]: { options: { level: 4 } } },
+      }),
+    )
     await uninstallNativePlugin(value.configRoot, value.cwd, id)
     await expect(access(data)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginConfigs: {
+        'other@market': { options: { label: 'keep-option' } },
+      },
+    })
+    await expect(
+      readFile(join(value.configRoot, '.credentials.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginSecrets: { 'other@market': { token: 'keep-secret' } },
+    })
+    await expect(
+      readFile(join(value.cwd, '.claude', 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginConfigs: {
+        'other@market': { options: { level: 3 } },
+      },
+    })
+    await expect(
+      readFile(join(value.cwd, '.claude', 'settings.local.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({})
+  })
+
+  it('keeps settings unchanged when sensitive option storage fails', async () => {
+    const value = await fixture()
+    const plugin = join(value.root, 'sensitive-plugin')
+    await mkdir(join(plugin, '.claude-plugin'), { recursive: true })
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'sensitive-plugin',
+        userConfig: {
+          token: {
+            type: 'string',
+            title: 'Token',
+            description: 'Sensitive token',
+            sensitive: true,
+          },
+        },
+      }),
+    )
+    await mkdir(value.configRoot, { recursive: true })
+    const settingsPath = join(value.configRoot, 'settings.json')
+    await writeFile(settingsPath, JSON.stringify({ preserved: true }))
+    vi.spyOn(
+      ClaudeMcpOAuthStore.prototype,
+      'updatePluginSecrets',
+    ).mockRejectedValueOnce(new Error('credential write failed'))
+
+    await expect(
+      saveClaudePluginConfig(
+        value.configRoot,
+        value.cwd,
+        'user',
+        'sensitive-plugin@market',
+        plugin,
+        ['token=new-secret'],
+      ),
+    ).rejects.toThrow('credential write failed')
+    await expect(
+      readFile(settingsPath, 'utf8').then(JSON.parse),
+    ).resolves.toEqual({ preserved: true })
+  })
+
+  it('applies typed plugin defaults and stores sensitive defaults securely', async () => {
+    const value = await fixture()
+    const plugin = join(value.root, 'default-plugin')
+    const id = 'default-plugin@market'
+    await mkdir(join(plugin, '.claude-plugin'), { recursive: true })
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'default-plugin',
+        userConfig: {
+          enabled: {
+            type: 'boolean',
+            title: 'Enabled',
+            description: 'Enable the plugin',
+            default: true,
+          },
+          token: {
+            type: 'string',
+            title: 'Token',
+            description: 'Sensitive token',
+            default: 'default-secret',
+            sensitive: true,
+          },
+          workspace: {
+            type: 'directory',
+            title: 'Workspace',
+            description: 'Workspace path',
+            default: '/tmp/default-workspace',
+            multiple: true,
+          },
+        },
+      }),
+    )
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+
+    await expect(
+      saveClaudePluginConfig(
+        value.configRoot,
+        value.cwd,
+        'user',
+        id,
+        plugin,
+        [],
+      ),
+    ).resolves.toEqual({ warnings: [] })
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginConfigs: {
+        [id]: {
+          options: {
+            enabled: true,
+            workspace: '/tmp/default-workspace',
+          },
+        },
+      },
+    })
+    await expect(
+      readFile(join(value.configRoot, '.credentials.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginSecrets: { [id]: { token: 'default-secret' } },
+    })
+
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'workspace=/tmp/one,/tmp/two',
+      ]),
+    ).resolves.toEqual({ warnings: [] })
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toMatchObject({
+      pluginConfigs: {
+        [id]: { options: { workspace: '/tmp/one,/tmp/two' } },
+      },
+    })
+  })
+
+  it('rejects invalid booleans and missing required plugin options atomically', async () => {
+    const value = await fixture()
+    const plugin = join(value.root, 'required-plugin')
+    const id = 'required-plugin@market'
+    await mkdir(join(plugin, '.claude-plugin'), { recursive: true })
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'required-plugin',
+        userConfig: {
+          enabled: {
+            type: 'boolean',
+            title: 'Enabled',
+            description: 'Enable the plugin',
+          },
+          token: {
+            type: 'string',
+            title: 'Token',
+            description: 'Required token',
+            required: true,
+            sensitive: true,
+          },
+          retries: {
+            type: 'number',
+            title: 'Retries',
+            description: 'Retry count',
+          },
+        },
+      }),
+    )
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'enabled=maybe',
+      ]),
+    ).resolves.toEqual({
+      warnings: [
+        '--config enabled must be true or false',
+        'Plugin userConfig token is required',
+      ],
+    })
+    await expect(
+      access(join(value.configRoot, 'settings.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(
+      access(join(value.configRoot, '.credentials.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+
+    await mkdir(value.configRoot, { recursive: true })
+    await writeFile(
+      join(value.configRoot, '.credentials.json'),
+      JSON.stringify({ pluginSecrets: { [id]: { token: '' } } }),
+    )
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'enabled=false',
+      ]),
+    ).resolves.toEqual({
+      warnings: ['Plugin userConfig token is required'],
+    })
+    await expect(
+      access(join(value.configRoot, 'settings.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+
+    await writeFile(
+      join(value.configRoot, '.credentials.json'),
+      JSON.stringify({ pluginSecrets: { [id]: { token: 'existing-secret' } } }),
+    )
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'enabled=false',
+      ]),
+    ).resolves.toEqual({ warnings: [] })
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginConfigs: { [id]: { options: { enabled: false } } },
+    })
+
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'retries=',
+      ]),
+    ).resolves.toEqual({
+      warnings: ['--config retries: "" is not a number'],
+    })
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginConfigs: { [id]: { options: { enabled: false } } },
+    })
+  })
+
+  it('rejects invalid plugin defaults without partial writes', async () => {
+    const value = await fixture()
+    const plugin = join(value.root, 'invalid-default-plugin')
+    await mkdir(join(plugin, '.claude-plugin'), { recursive: true })
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'invalid-default-plugin',
+        userConfig: {
+          label: {
+            type: 'string',
+            title: 'Label',
+            description: 'Valid default',
+            default: 'valid',
+          },
+          retries: {
+            type: 'number',
+            title: 'Retries',
+            description: 'Invalid default',
+            default: 10,
+            max: 5,
+          },
+        },
+      }),
+    )
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+
+    await expect(
+      saveClaudePluginConfig(
+        value.configRoot,
+        value.cwd,
+        'user',
+        'invalid-default-plugin@market',
+        plugin,
+        [],
+      ),
+    ).resolves.toEqual({
+      warnings: ['Plugin userConfig retries default is above max'],
+    })
+    await expect(
+      access(join(value.configRoot, 'settings.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(
+      access(join(value.configRoot, '.credentials.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('keeps plugin options until the last installation scope is removed', async () => {
+    const value = await fixture()
+    await addClaudeMarketplace(value.configRoot, value.cwd, value.marketplace)
+    const id = 'fixture@fixture-marketplace'
+    await installClaudeMarketplacePlugin(
+      value.configRoot,
+      value.cwd,
+      id,
+      'user',
+    )
+    await installClaudeMarketplacePlugin(
+      value.configRoot,
+      value.cwd,
+      id,
+      'project',
+    )
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+    await writeFile(
+      join(value.configRoot, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: { [id]: { options: { label: 'keep-until-last' } } },
+      }),
+    )
+    await writeFile(
+      join(value.configRoot, '.credentials.json'),
+      JSON.stringify({ pluginSecrets: { [id]: { token: 'keep-until-last' } } }),
+    )
+
+    await uninstallNativePlugin(value.configRoot, value.cwd, id, 'project')
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8'),
+    ).resolves.toContain('keep-until-last')
+    await expect(
+      readFile(join(value.configRoot, '.credentials.json'), 'utf8'),
+    ).resolves.toContain('keep-until-last')
+
+    await uninstallNativePlugin(value.configRoot, value.cwd, id, 'user')
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({})
+    await expect(
+      readFile(join(value.configRoot, '.credentials.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({})
   })
 
   it('uses and preserves bounded sparse paths for git marketplaces', async () => {

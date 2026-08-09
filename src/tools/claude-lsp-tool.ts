@@ -31,6 +31,19 @@ const REQUEST_TIMEOUT_MS = 15_000
 const execFileAsync = promisify(execFile)
 const NO_CALL_HIERARCHY = Symbol('no-call-hierarchy')
 
+function lspSensitiveValues(
+  definition: ClaudePluginLspServer,
+): readonly string[] {
+  return [
+    ...new Set([
+      ...sensitiveEnvironmentValues(definition.env),
+      ...(definition.sensitiveValues ?? []),
+    ]),
+  ]
+    .filter((value) => value.length > 0)
+    .sort((left, right) => right.length - left.length)
+}
+
 const LSP_DEFINITION: ModelToolDefinition = {
   name: 'LSP',
   description: `Interact with Language Server Protocol (LSP) servers to get code intelligence features.
@@ -298,10 +311,7 @@ class LspConnection {
   }
 
   private redactedStderr(): string {
-    return redactSensitiveText(
-      this.stderr,
-      sensitiveEnvironmentValues(this.definition.env),
-    )
+    return redactSensitiveText(this.stderr, lspSensitiveValues(this.definition))
   }
 
   isRunning(): boolean {
@@ -854,7 +864,7 @@ export class ClaudeLspToolManager {
             filtered === NO_CALL_HIERARCHY
               ? 'No call hierarchy item found at this position'
               : formatClaudeLspResult(input.operation, filtered, cwd),
-            sensitiveEnvironmentValues(definition.env),
+            lspSensitiveValues(definition),
           )
           return {
             content:
@@ -867,7 +877,7 @@ export class ClaudeLspToolManager {
         } catch (error) {
           const message = redactSensitiveText(
             error instanceof Error ? error.message : String(error),
-            sensitiveEnvironmentValues(definition.env),
+            lspSensitiveValues(definition),
           )
           failures.push(
             `${definition.pluginName}:${definition.name}: ${message}`,

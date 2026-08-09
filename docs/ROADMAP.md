@@ -673,3 +673,25 @@ Status: complete for Claude Code 2.1.208 single-user interactive CLI scope.
       excluded from the MCP-hosted surface
 - [x] `npm run check`: 88 files, 752 tests; format, lint, boundaries, typecheck,
       build, and focused strict-unused checks passed
+
+## Stage 87 - protected plugin option parity
+
+Status: complete for Claude Code 2.1.208 single-user plugin runtime scope.
+
+- [x] strict manifest `userConfig` schema plus typed boolean/number/range,
+      required, default, scalar path, and atomic warning behavior
+- [x] user/project/local plaintext option precedence with Claude-compatible
+      protected `pluginSecrets`; secure values win legacy plaintext collisions
+- [x] secure-first writes, cross-store scrubbing, unrelated credential
+      preservation, and exact/composite cleanup after the last installed scope
+- [x] `${user_config.*}` across LSP, MCP, and hook runtime configuration plus
+      `CLAUDE_PLUGIN_OPTION_*` hook environment variables
+- [x] plugin root/data/skill-dir and non-sensitive option substitution for
+      commands, skills, and agents; sensitive references remain outside model
+      context through explicit placeholders
+- [x] LSP/MCP/hook output, discovery, progress, error, and command redaction for
+      sensitive values used outside credential-named environment fields
+- [x] focused runtime/storage/CLI tests and expanded packed plugin gate;
+      `npm run check`: 88 files, 760 tests
+- [x] 51-gate Claude 2.1.208 compatibility matrix, clean package install,
+      performance budgets, strict unused checks, and production audit passed

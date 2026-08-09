@@ -28,6 +28,7 @@ import {
   readClaudeSkillsDirectoryPlugins,
   replaceClaudePluginDirectory,
   readClaudeInstalledPlugins,
+  validateClaudePluginUserConfig,
 } from './claude-plugin-marketplace.js'
 
 const execFileAsync = promisify(execFile)
@@ -97,6 +98,7 @@ export interface ClaudePluginLspServer {
   workspaceFolder?: string
   startupTimeout?: number
   maxRestarts?: number
+  sensitiveValues?: readonly string[]
 }
 
 export interface ClaudePluginRegistryEntry {
@@ -291,24 +293,7 @@ async function readManifest(
       `Plugin lspServers must be a path, object, or array: ${manifestPath}`,
     )
   }
-  if (value.userConfig !== undefined) {
-    if (!isRecord(value.userConfig)) {
-      throw new Error(`Plugin userConfig must be an object: ${manifestPath}`)
-    }
-    for (const [key, definition] of Object.entries(value.userConfig)) {
-      if (!isRecord(definition)) {
-        throw new Error(
-          `Plugin userConfig ${key} must be an object: ${manifestPath}`,
-        )
-      }
-      nonEmptyString(definition.type, `Plugin userConfig ${key} type`)
-      nonEmptyString(definition.title, `Plugin userConfig ${key} title`)
-      nonEmptyString(
-        definition.description,
-        `Plugin userConfig ${key} description`,
-      )
-    }
-  }
+  validateClaudePluginUserConfig(value.userConfig, manifestPath)
   return value as unknown as ClaudePluginManifest
 }
 
@@ -445,12 +430,22 @@ async function loadTextResources(
   name: string,
   scope: ClaudeResourceScope,
   kind: 'commands' | 'skills' | 'agents',
+  pluginData: string,
+  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+  userConfigSchema?: Readonly<Record<string, unknown>>,
 ): Promise<ClaudeTextResource[]> {
   return Promise.all(
     files.map(async (file) => ({
       path: namespacedPath(pluginPath, roots, file, name, kind),
       scope,
-      content: await readFile(file, 'utf8'),
+      content: expandPluginContent(
+        await readFile(file, 'utf8'),
+        pluginPath,
+        pluginData,
+        userConfig,
+        userConfigSchema,
+        kind === 'skills' ? dirname(file) : undefined,
+      ),
     })),
   )
 }
@@ -477,6 +472,7 @@ function expandLspString(
   pluginData: string,
   environment: Readonly<Record<string, string | undefined>>,
   userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+  expandEnvironment = true,
 ): string {
   let resolved = value
     .replaceAll('${CLAUDE_PLUGIN_ROOT}', pluginRoot)
@@ -493,10 +489,147 @@ function expandLspString(
       },
     )
   }
+  if (!expandEnvironment) return resolved
   return resolved.replace(/\$\{([^}]+)\}/gu, (source, expression: string) => {
     const [name, fallback] = expression.split(':-', 2)
     return environment[name ?? ''] ?? fallback ?? source
   })
+}
+
+function expandRuntimeValue(
+  value: unknown,
+  pluginRoot: string,
+  pluginData: string,
+  environment: Readonly<Record<string, string | undefined>>,
+  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+  expandEnvironment = true,
+): unknown {
+  if (typeof value === 'string') {
+    return expandLspString(
+      value,
+      pluginRoot,
+      pluginData,
+      environment,
+      userConfig,
+      expandEnvironment,
+    )
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      expandRuntimeValue(
+        item,
+        pluginRoot,
+        pluginData,
+        environment,
+        userConfig,
+        expandEnvironment,
+      ),
+    )
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        expandRuntimeValue(
+          item,
+          pluginRoot,
+          pluginData,
+          environment,
+          userConfig,
+          expandEnvironment,
+        ),
+      ]),
+    )
+  }
+  return value
+}
+
+function expandPluginContent(
+  content: string,
+  pluginRoot: string,
+  pluginData: string,
+  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+  userConfigSchema?: Readonly<Record<string, unknown>>,
+  skillDirectory?: string,
+): string {
+  let resolved = content
+    .replaceAll('${CLAUDE_PLUGIN_ROOT}', pluginRoot)
+    .replaceAll('${CLAUDE_PLUGIN_DATA}', pluginData)
+  if (skillDirectory !== undefined) {
+    resolved = resolved.replaceAll('${CLAUDE_SKILL_DIR}', skillDirectory)
+  }
+  if (userConfigSchema === undefined) return resolved
+  return resolved.replace(
+    /\$\{user_config\.([^}]+)\}/gu,
+    (source, key: string) => {
+      const definition = userConfigSchema[key]
+      if (isRecord(definition) && definition.sensitive === true) {
+        return `[sensitive option '${key}' not available in skill content]`
+      }
+      const configured = userConfig?.[key]
+      return configured === undefined ? source : String(configured)
+    },
+  )
+}
+
+function pluginOptionEnvironment(
+  pluginRoot: string,
+  pluginData: string,
+  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+): Record<string, string> {
+  const result: Record<string, string> = {
+    CLAUDE_PLUGIN_ROOT: pluginRoot,
+    CLAUDE_PLUGIN_DATA: pluginData,
+  }
+  for (const [key, value] of Object.entries(userConfig ?? {})) {
+    const envKey = key.replace(/[^A-Za-z0-9_]/gu, '_').toUpperCase()
+    result[`CLAUDE_PLUGIN_OPTION_${envKey}`] = String(value)
+  }
+  return result
+}
+
+function expandPluginMcpResource(
+  value: unknown,
+  pluginRoot: string,
+  pluginData: string,
+  environment: Readonly<Record<string, string | undefined>>,
+  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+): unknown {
+  const expanded = expandRuntimeValue(
+    value,
+    pluginRoot,
+    pluginData,
+    environment,
+    userConfig,
+  )
+  if (!isRecord(expanded) || !isRecord(expanded.mcpServers)) return expanded
+  return {
+    ...expanded,
+    mcpServers: Object.fromEntries(
+      Object.entries(expanded.mcpServers).map(([name, config]) => {
+        if (
+          !isRecord(config) ||
+          config.type === 'http' ||
+          config.type === 'sse' ||
+          config.url !== undefined
+        ) {
+          return [name, config]
+        }
+        const configuredEnv = isRecord(config.env) ? config.env : {}
+        return [
+          name,
+          {
+            ...config,
+            env: {
+              CLAUDE_PLUGIN_ROOT: pluginRoot,
+              CLAUDE_PLUGIN_DATA: pluginData,
+              ...configuredEnv,
+            },
+          },
+        ]
+      }),
+    ),
+  }
 }
 
 function lspServerDefinition(
@@ -508,6 +641,7 @@ function lspServerDefinition(
   configRoot: string | undefined,
   environment: Readonly<Record<string, string | undefined>>,
   userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+  sensitiveValues: readonly string[] = [],
 ): ClaudePluginLspServer {
   if (!isRecord(value)) throw new Error(`LSP server ${name} must be an object`)
   const pluginData = claudePluginDataPath(
@@ -639,6 +773,7 @@ function lspServerDefinition(
     ...(value.maxRestarts === undefined
       ? {}
       : { maxRestarts: Number(value.maxRestarts) }),
+    ...(sensitiveValues.length === 0 ? {} : { sensitiveValues }),
   }
 }
 
@@ -649,6 +784,7 @@ async function loadLspServers(
   configRoot: string | undefined,
   environment: Readonly<Record<string, string | undefined>>,
   userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+  sensitiveValues: readonly string[] = [],
 ): Promise<ClaudePluginLspServer[]> {
   const definitions = new Map<string, ClaudePluginLspServer>()
   const add = async (
@@ -681,6 +817,7 @@ async function loadLspServers(
             configRoot,
             environment,
             userConfig,
+            sensitiveValues,
           ),
         )
       }
@@ -711,7 +848,7 @@ async function loadPlugin(
   resourceScope?: ClaudeResourceScope,
   configRoot?: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
-  userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
+  configId?: string,
 ): Promise<{
   record: ClaudePluginRecord
   resources: Omit<ClaudePluginResources, 'plugins'>
@@ -720,6 +857,34 @@ async function loadPlugin(
   if (!(await isDirectory(canonical)))
     throw new Error(`Plugin path is not a directory: ${pluginPath}`)
   const manifest = await readManifest(canonical, requireManifest)
+  const userConfig =
+    configRoot !== undefined &&
+    configId !== undefined &&
+    manifest.userConfig !== undefined
+      ? await readClaudePluginOptions(configRoot, cwd, configId)
+      : undefined
+  const sensitiveValues = Object.entries(manifest.userConfig ?? {})
+    .flatMap(([key, definition]) =>
+      isRecord(definition) &&
+      definition.sensitive === true &&
+      userConfig?.[key] !== undefined
+        ? [String(userConfig[key])]
+        : [],
+    )
+    .filter((value) => value.length > 0)
+  const pluginData = claudePluginDataPath(configRoot ?? canonical, source)
+  if (configRoot !== undefined) {
+    await mkdir(pluginData, { recursive: true })
+  }
+  const pluginEnvironment = pluginOptionEnvironment(
+    canonical,
+    pluginData,
+    userConfig,
+  )
+  const pluginResourceMetadata = {
+    environment: pluginEnvironment,
+    ...(sensitiveValues.length === 0 ? {} : { sensitiveValues }),
+  }
   const scope = resourceScope ?? scopeForPath(canonical, cwd)
   const commandDefinitions = isRecord(manifest.commands)
     ? (manifest.commands as Record<string, ClaudePluginCommandDefinition>)
@@ -756,6 +921,7 @@ async function loadPlugin(
       configRoot,
       environment,
       manifest.userConfig === undefined ? undefined : userConfig,
+      sensitiveValues,
     ),
   ])
   const [commands, skills, agents] = await Promise.all([
@@ -766,6 +932,9 @@ async function loadPlugin(
       manifest.name,
       scope,
       'commands',
+      pluginData,
+      userConfig,
+      manifest.userConfig,
     ),
     loadTextResources(
       skillFiles,
@@ -774,6 +943,9 @@ async function loadPlugin(
       manifest.name,
       scope,
       'skills',
+      pluginData,
+      userConfig,
+      manifest.userConfig,
     ),
     loadTextResources(
       agentFiles,
@@ -782,6 +954,9 @@ async function loadPlugin(
       manifest.name,
       scope,
       'agents',
+      pluginData,
+      userConfig,
+      manifest.userConfig,
     ),
   ])
   if (commandDefinitions) {
@@ -796,7 +971,13 @@ async function loadPlugin(
             `${manifest.name}:${commandName}.md`,
           ),
           scope,
-          content: definition.content,
+          content: expandPluginContent(
+            definition.content,
+            canonical,
+            pluginData,
+            userConfig,
+            manifest.userConfig,
+          ),
         })
         continue
       }
@@ -811,7 +992,13 @@ async function loadPlugin(
       commands.push({
         path: join(canonical, 'commands', `${manifest.name}:${commandName}.md`),
         scope,
-        content: await readFile(sourcePath, 'utf8'),
+        content: expandPluginContent(
+          await readFile(sourcePath, 'utf8'),
+          canonical,
+          pluginData,
+          userConfig,
+          manifest.userConfig,
+        ),
       })
     }
   }
@@ -826,10 +1013,15 @@ async function loadPlugin(
       settings.push({
         path: hooksPath,
         scope,
-        value: expandPluginRoot(
+        value: expandRuntimeValue(
           normalizeHooks(JSON.parse(await readFile(hooksPath, 'utf8'))),
           canonical,
+          pluginData,
+          environment,
+          userConfig,
+          false,
         ),
+        ...pluginResourceMetadata,
       })
     } catch (error) {
       if (required || (error as NodeJS.ErrnoException).code !== 'ENOENT')
@@ -843,7 +1035,15 @@ async function loadPlugin(
     settings.push({
       path: join(canonical, '.claude-plugin', 'plugin.json'),
       scope,
-      value: expandPluginRoot(normalizeHooks(manifest.hooks), canonical),
+      value: expandRuntimeValue(
+        normalizeHooks(manifest.hooks),
+        canonical,
+        pluginData,
+        environment,
+        userConfig,
+        false,
+      ),
+      ...pluginResourceMetadata,
     })
   } else if (Array.isArray(manifest.hooks)) {
     for (const [index, hook] of manifest.hooks.entries()) {
@@ -853,7 +1053,15 @@ async function loadPlugin(
         settings.push({
           path: join(canonical, '.claude-plugin', `plugin-hooks-${index}.json`),
           scope,
-          value: expandPluginRoot(normalizeHooks(hook), canonical),
+          value: expandRuntimeValue(
+            normalizeHooks(hook),
+            canonical,
+            pluginData,
+            environment,
+            userConfig,
+            false,
+          ),
+          ...pluginResourceMetadata,
         })
       }
     }
@@ -869,7 +1077,20 @@ async function loadPlugin(
   const mcp: ClaudeJsonResource[] =
     mcpValue === undefined
       ? []
-      : [{ path: mcpPath, scope, value: expandPluginRoot(mcpValue, canonical) }]
+      : [
+          {
+            path: mcpPath,
+            scope,
+            value: expandPluginMcpResource(
+              mcpValue,
+              canonical,
+              pluginData,
+              environment,
+              userConfig,
+            ),
+            ...pluginResourceMetadata,
+          },
+        ]
   if (manifest.mcpServers !== undefined) {
     const specs = Array.isArray(manifest.mcpServers)
       ? manifest.mcpServers
@@ -888,13 +1109,27 @@ async function loadPlugin(
         mcp.push({
           path: specPath,
           scope,
-          value: expandPluginRoot(value, canonical),
+          value: expandPluginMcpResource(
+            value,
+            canonical,
+            pluginData,
+            environment,
+            userConfig,
+          ),
+          ...pluginResourceMetadata,
         })
       } else if (isRecord(spec)) {
         mcp.push({
           path: join(canonical, '.claude-plugin', `plugin-mcp-${index}.json`),
           scope,
-          value: expandPluginRoot({ mcpServers: spec }, canonical),
+          value: expandPluginMcpResource(
+            { mcpServers: spec },
+            canonical,
+            pluginData,
+            environment,
+            userConfig,
+          ),
+          ...pluginResourceMetadata,
         })
       } else {
         throw new Error(`Invalid plugin MCP config in ${canonical}`)
@@ -1074,13 +1309,7 @@ export async function loadClaudePlugins(options: {
             candidate.resourceScope,
             options.configRoot,
             options.environment ?? process.env,
-            candidate.configId === undefined
-              ? undefined
-              : await readClaudePluginOptions(
-                  options.configRoot,
-                  options.cwd,
-                  candidate.configId,
-                ),
+            candidate.configId,
           )
         } catch (error) {
           if (

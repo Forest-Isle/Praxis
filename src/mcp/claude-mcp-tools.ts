@@ -59,6 +59,7 @@ interface ConfiguredServer {
   name: string
   value: unknown
   path: string
+  sensitiveValues?: readonly string[]
 }
 
 interface ConnectedTool {
@@ -264,6 +265,9 @@ function configuredServers(
         name,
         value: config,
         path: resource.path,
+        ...(resource.sensitiveValues === undefined
+          ? {}
+          : { sensitiveValues: resource.sensitiveValues }),
       })
     }
   }
@@ -385,11 +389,21 @@ function parsePermissionResult(source: string): PermissionApproval {
   return invalidPermissionResult()
 }
 
-function configSensitiveValues(config: McpServerConfig): readonly string[] {
-  return sensitiveEnvironmentValues(
-    process.env,
-    config.type === 'stdio' ? config.env : config.headers,
-  )
+function configSensitiveValues(
+  config: McpServerConfig,
+  additional: readonly string[] = [],
+): readonly string[] {
+  return [
+    ...new Set([
+      ...sensitiveEnvironmentValues(
+        process.env,
+        config.type === 'stdio' ? config.env : config.headers,
+      ),
+      ...additional,
+    ]),
+  ]
+    .filter((value) => value.length > 0)
+    .sort((left, right) => right.length - left.length)
 }
 
 function requiredString(input: Record<string, unknown>, name: string): string {
@@ -858,7 +872,11 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
           )
           continue
         }
-        await registry.connectServer(server.name, config)
+        await registry.connectServer(
+          server.name,
+          config,
+          server.sensitiveValues,
+        )
       }
     } catch (error) {
       await registry.close()
@@ -1062,8 +1080,12 @@ export class ClaudeMcpToolRegistry implements ToolRegistry {
   private async connectServer(
     serverName: string,
     config: McpServerConfig,
+    additionalSensitiveValues: readonly string[] = [],
   ): Promise<void> {
-    const sensitiveValues = configSensitiveValues(config)
+    const sensitiveValues = configSensitiveValues(
+      config,
+      additionalSensitiveValues,
+    )
     const client = new Client(
       { name: 'praxis', version: '0.1.0' },
       {

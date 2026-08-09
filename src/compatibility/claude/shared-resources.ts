@@ -18,6 +18,8 @@ export interface ClaudeJsonResource {
   path: string
   scope: ClaudeResourceScope
   value: unknown
+  environment?: Readonly<Record<string, string>>
+  sensitiveValues?: readonly string[]
 }
 
 export interface ClaudeContextResources {
