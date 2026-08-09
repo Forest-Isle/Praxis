@@ -35,6 +35,7 @@ async function run(executable, args, cwd, configRoot) {
       ...process.env,
       CLAUDE_CONFIG_DIR: configRoot,
       DISABLE_AUTOUPDATER: '1',
+      PRAXIS_MCP_OAUTH_STORE: 'file',
     },
     maxBuffer: 4 * 1024 * 1024,
     timeout: 120_000,
@@ -87,6 +88,12 @@ async function marketplaceFixture(root) {
             type: 'number',
             title: 'Level',
             description: 'Fixture level',
+          },
+          token: {
+            type: 'string',
+            title: 'Token',
+            description: 'Fixture token',
+            sensitive: true,
           },
         },
       }),
@@ -299,7 +306,17 @@ try {
   )
   await run(
     process.execPath,
-    [praxisCli, '--json', 'plugin', 'install', id, '--config', 'enabled=true'],
+    [
+      praxisCli,
+      '--json',
+      'plugin',
+      'install',
+      id,
+      '--config',
+      'enabled=true',
+      '--config',
+      'token=plugin-secret-canary',
+    ],
     cwd,
     praxisConfig,
   )
@@ -344,6 +361,17 @@ try {
   assert(
     praxisSettings.pluginConfigs?.[id]?.options?.enabled === true,
     'Praxis did not persist typed plugin userConfig options',
+  )
+  assert(
+    !JSON.stringify(praxisSettings).includes('plugin-secret-canary'),
+    'Praxis persisted sensitive plugin userConfig in shared settings',
+  )
+  const praxisCredentials = JSON.parse(
+    await readFile(join(praxisConfig, '.credentials.json'), 'utf8'),
+  )
+  assert(
+    praxisCredentials.pluginSecrets?.[id]?.token === 'plugin-secret-canary',
+    'Praxis did not persist sensitive plugin userConfig in protected storage',
   )
   await run(
     process.execPath,

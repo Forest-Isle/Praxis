@@ -167,6 +167,49 @@ describe('ClaudeHookRunner', () => {
     ])
   })
 
+  it('passes plugin option environment and redacts plugin secrets', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-plugin-hook-'))
+    const resource = {
+      ...settings(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                hooks: [
+                  {
+                    type: 'command',
+                    command: 'printf "$CLAUDE_PLUGIN_OPTION_TOKEN"',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        'user',
+      ),
+      environment: { CLAUDE_PLUGIN_OPTION_TOKEN: 'plugin-hook-secret' },
+      sensitiveValues: ['plugin-hook-secret'],
+    } satisfies ClaudeJsonResource
+    try {
+      const runner = new ClaudeHookRunner({ settings: [resource], cwd })
+      const outcome = await runner.run({
+        ...input,
+        cwd,
+        hook_event_name: 'SessionStart',
+      })
+
+      expect(outcome.executions).toEqual([
+        expect.objectContaining({
+          stdout: '[REDACTED]',
+          command: 'printf "$CLAUDE_PLUGIN_OPTION_TOKEN"',
+        }),
+      ])
+      expect(JSON.stringify(outcome)).not.toContain('plugin-hook-secret')
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
+
   it('emits Claude-compatible hook lifecycle events without changing hook semantics', async () => {
     const events: unknown[] = []
     const runner = new ClaudeHookRunner({

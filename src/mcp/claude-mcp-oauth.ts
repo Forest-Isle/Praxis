@@ -54,6 +54,7 @@ export interface ClaudeMcpOAuthRecord {
 interface CredentialEnvelope {
   mcpOAuth?: Record<string, ClaudeMcpOAuthRecord>
   mcpOAuthClientConfig?: Record<string, { clientSecret?: string }>
+  pluginSecrets?: Record<string, Record<string, string>>
   [key: string]: unknown
 }
 
@@ -328,6 +329,76 @@ export class ClaudeMcpOAuthStore {
         string,
         { clientSecret?: string }
       >
+      await this.writeEnvelope(envelope)
+    })
+  }
+
+  async readPluginSecrets(pluginId: string): Promise<Record<string, string>> {
+    const envelope = await this.readEnvelope()
+    const stored = envelope.pluginSecrets?.[pluginId]
+    if (!isRecord(stored)) return {}
+    return Object.fromEntries(
+      Object.entries(stored).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      ),
+    )
+  }
+
+  async updatePluginSecrets(
+    pluginId: string,
+    values: Readonly<Record<string, string>>,
+    removeKeys: readonly string[] = [],
+  ): Promise<void> {
+    await this.withLock(async () => {
+      const envelope = await this.readEnvelope()
+      const all = isRecord(envelope.pluginSecrets)
+        ? { ...envelope.pluginSecrets }
+        : {}
+      const stored = all[pluginId]
+      const current = isRecord(stored)
+        ? Object.fromEntries(
+            Object.entries(stored).filter(
+              (entry): entry is [string, string] =>
+                typeof entry[1] === 'string',
+            ),
+          )
+        : {}
+      const before = JSON.stringify(current)
+      for (const key of removeKeys) delete current[key]
+      Object.assign(current, values)
+      if (JSON.stringify(current) === before) return
+      if (Object.keys(current).length === 0) delete all[pluginId]
+      else all[pluginId] = current as Record<string, string>
+      if (Object.keys(all).length === 0) delete envelope.pluginSecrets
+      else {
+        envelope.pluginSecrets = all as Record<string, Record<string, string>>
+      }
+      await this.writeEnvelope(envelope)
+    })
+  }
+
+  async deletePluginSecrets(pluginId: string): Promise<void> {
+    await this.withLock(async () => {
+      const envelope = await this.readEnvelope()
+      if (!isRecord(envelope.pluginSecrets)) return
+      const prefix = `${pluginId}/`
+      const remaining = Object.fromEntries(
+        Object.entries(envelope.pluginSecrets).filter(
+          ([key]) => key !== pluginId && !key.startsWith(prefix),
+        ),
+      )
+      if (
+        Object.keys(remaining).length ===
+        Object.keys(envelope.pluginSecrets).length
+      )
+        return
+      if (Object.keys(remaining).length === 0) delete envelope.pluginSecrets
+      else {
+        envelope.pluginSecrets = remaining as Record<
+          string,
+          Record<string, string>
+        >
+      }
       await this.writeEnvelope(envelope)
     })
   }

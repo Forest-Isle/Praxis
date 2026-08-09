@@ -195,11 +195,18 @@ describe('CLI plugin management', () => {
             title: 'Label',
             description: 'Fixture label',
           },
+          token: {
+            type: 'string',
+            title: 'Token',
+            description: 'Fixture token',
+            sensitive: true,
+          },
         },
       }),
     )
     await writeFile(join(plugin, 'commands', 'hello.md'), 'hello')
     vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
     const dependencies = {
       async createService() {
         throw new Error('service must not be created')
@@ -218,6 +225,16 @@ describe('CLI plugin management', () => {
       type: 'plugin-marketplace-added',
       marketplace: { name: 'fixture-marketplace' },
     })
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          'fixture@fixture-marketplace': {
+            options: { token: 'legacy-plaintext-secret' },
+          },
+        },
+      }),
+    )
 
     output = capture()
     await expect(
@@ -233,6 +250,8 @@ describe('CLI plugin management', () => {
           'retries=3',
           '--config',
           'label=fixture',
+          '--config',
+          'token=fixture-plugin-secret',
         ],
         output.io,
         dependencies,
@@ -248,6 +267,21 @@ describe('CLI plugin management', () => {
       pluginConfigs: {
         'fixture@fixture-marketplace': {
           options: { enabled: true, retries: 3, label: 'fixture' },
+        },
+      },
+    })
+    await expect(
+      readFile(join(configRoot, 'settings.json'), 'utf8'),
+    ).resolves.not.toContain('fixture-plugin-secret')
+    await expect(
+      readFile(join(configRoot, 'settings.json'), 'utf8'),
+    ).resolves.not.toContain('legacy-plaintext-secret')
+    await expect(
+      readFile(join(configRoot, '.credentials.json'), 'utf8').then(JSON.parse),
+    ).resolves.toMatchObject({
+      pluginSecrets: {
+        'fixture@fixture-marketplace': {
+          token: 'fixture-plugin-secret',
         },
       },
     })

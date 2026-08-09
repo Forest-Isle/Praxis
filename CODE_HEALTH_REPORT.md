@@ -8,11 +8,13 @@
 
 Praxis is buildable and fully wired for current single-user CLI scope. TypeScript
 typechecking, boundary checks, focused regressions, package-script references,
-and direct production dependencies pass. Stage 86 adds the fully wired
-interactive plugin LSP runtime, exact Claude result contract, bounded protocol
-lifecycle, plugin configuration, and awaited CLI shutdown. All 88 test modules
-and 752 tests pass. No
+and direct production dependencies pass. Stage 87 adds protected plugin option
+storage, scoped effective configuration, full LSP/MCP/hook/model-content
+substitution, last-scope cleanup, and cross-runtime secret redaction on top of
+the Stage 86 LSP runtime. All 88 test modules and 760 tests pass. No
 unfinished feature stubs, unresolved imports, or missing script targets remain.
+All 51 compatibility gates, clean package install, performance budgets, strict
+unused checks, and production dependency audit pass.
 
 ## 🔴 Critical Issues
 

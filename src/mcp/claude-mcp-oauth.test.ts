@@ -205,6 +205,45 @@ describe('Claude MCP OAuth compatibility', () => {
     })
   })
 
+  it('updates and removes plugin secrets without replacing other credentials', async () => {
+    const configRoot = await temporaryConfigRoot()
+    await mkdir(configRoot, { recursive: true })
+    await writeFile(
+      join(configRoot, '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'keep-account' },
+        pluginSecrets: {
+          'fixture@market': { old: 'remove-me', keep: 'old-value' },
+          'fixture@market/server': { token: 'remove-composite' },
+          'other@market': { token: 'keep-other' },
+        },
+      }),
+    )
+    const store = new ClaudeMcpOAuthStore({
+      configRoot,
+      useKeychain: false,
+    })
+
+    await store.updatePluginSecrets(
+      'fixture@market',
+      { token: 'new-secret', keep: 'new-value' },
+      ['old'],
+    )
+    await expect(store.readPluginSecrets('fixture@market')).resolves.toEqual({
+      keep: 'new-value',
+      token: 'new-secret',
+    })
+    await store.deletePluginSecrets('fixture@market')
+
+    const stored = JSON.parse(
+      await readFile(join(configRoot, '.credentials.json'), 'utf8'),
+    )
+    expect(stored).toEqual({
+      claudeAiOauth: { accessToken: 'keep-account' },
+      pluginSecrets: { 'other@market': { token: 'keep-other' } },
+    })
+  })
+
   it('persists discovery, client, and tokens and clears only the selected record', async () => {
     const configRoot = await temporaryConfigRoot()
     const store = new ClaudeMcpOAuthStore({ configRoot, useKeychain: false })

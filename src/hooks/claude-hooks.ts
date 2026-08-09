@@ -88,6 +88,8 @@ export interface ClaudeHookOutcome {
 interface CommandHook {
   command: string
   timeoutMs: number
+  environment?: Readonly<Record<string, string>>
+  sensitiveValues?: readonly string[]
 }
 
 interface HookMatcher {
@@ -110,6 +112,7 @@ export type ClaudeHookCommandExecutor = (
   timeoutMs: number,
   signal?: AbortSignal,
   onProgress?: (progress: ClaudeHookCommandProgress) => void,
+  environment?: Readonly<Record<string, string>>,
 ) => Promise<ProcessResult>
 
 export interface ClaudeHookRunnerOptions {
@@ -146,6 +149,14 @@ function nonEmptyString(value: unknown, label: string): string {
     throw new Error(`${label} must be a non-empty string`)
   }
   return value
+}
+
+function combinedSensitiveValues(
+  ...groups: readonly (readonly string[] | undefined)[]
+): readonly string[] {
+  return [...new Set(groups.flatMap((group) => group ?? []))]
+    .filter((value) => value.length > 0)
+    .sort((left, right) => right.length - left.length)
 }
 
 function eventSettings(
@@ -204,6 +215,12 @@ function eventSettings(
           {
             command,
             timeoutMs: Math.min(timeoutSeconds * 1000, maxTimeoutMs),
+            ...(resource.environment === undefined
+              ? {}
+              : { environment: resource.environment }),
+            ...(resource.sensitiveValues === undefined
+              ? {}
+              : { sensitiveValues: resource.sensitiveValues }),
           },
         ]
       })
@@ -287,7 +304,7 @@ export class ClaudeHookRunner {
     signal?: AbortSignal,
   ): Promise<ClaudeHookOutcome> {
     if (signal?.aborted) throw abortError()
-    const sensitiveValues = sensitiveEnvironmentValues(process.env)
+    const ambientSensitiveValues = sensitiveEnvironmentValues(process.env)
     const groups = eventSettings(
       this.settings,
       input.hook_event_name,
@@ -304,6 +321,10 @@ export class ClaudeHookRunner {
 
     for (const group of groups) {
       for (const hook of group.hooks) {
+        const sensitiveValues = combinedSensitiveValues(
+          ambientSensitiveValues,
+          hook.sensitiveValues,
+        )
         const hookId = crypto.randomUUID()
         const hookName = `${input.hook_event_name}${matcherValue ? `:${matcherValue}` : ''}`
         this.onEvent?.({
@@ -343,6 +364,7 @@ export class ClaudeHookRunner {
             hook.timeoutMs,
             signal,
             reportProgress,
+            hook.environment,
           )
         } catch (error) {
           const message = redactSensitiveText(
@@ -476,12 +498,16 @@ export class ClaudeHookRunner {
     timeoutMs: number,
     signal?: AbortSignal,
     onProgress?: (progress: ClaudeHookCommandProgress) => void,
+    environment?: Readonly<Record<string, string>>,
   ): Promise<ProcessResult> {
     return new Promise((resolve, reject) => {
       const startedAt = Date.now()
       const child = spawn(commandShell(), commandShellArguments(command), {
         cwd: input.cwd,
-        env: sanitizeChildEnvironment({ CLAUDE_PROJECT_DIR: input.cwd }),
+        env: sanitizeChildEnvironment({
+          ...environment,
+          CLAUDE_PROJECT_DIR: input.cwd,
+        }),
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
       })

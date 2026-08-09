@@ -10,8 +10,9 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Stage 86 interactive plugin LSP parity is implemented on top of the
-Stage 85 interactive question and plan-mode parity and
+Stage 87 protected plugin option parity is implemented on top of the
+Stage 86 interactive plugin LSP parity,
+Stage 85 interactive question and plan-mode parity, and
 Stage 84 completion audit, interactive dynamic wakeups,
 Workflow, scheduled prompts, and
 top-level background sessions and agent management, durable tasks, background Bash,
@@ -75,6 +76,14 @@ effective user/project/local `${user_config.*}` options, workspace settings,
 initialization options, and case-insensitive extension mapping follow the shared
 plugin contract. Headless, safe, bare, explicitly denied, and `mcp serve`
 surfaces do not expose LSP.
+Plugin options merge user, project, and local settings with protected
+`pluginSecrets`, with secure values winning collisions. Sensitive values are
+stored in Claude-compatible credentials, scrubbed from plaintext settings,
+removed after the last installed scope, and redacted from LSP, MCP, and hook
+diagnostics. `${user_config.*}` substitution spans LSP/MCP/hook runtime config;
+plugin hooks also receive `CLAUDE_PLUGIN_OPTION_*`. Commands, skills, and agents
+receive non-sensitive values while sensitive references become explicit
+model-safe placeholders.
 
 Each run or resume holds one session lease through model completion and final
 persistence. Native tool calls and results append immediately to the shared
@@ -397,6 +406,9 @@ manifest validation, typed `--config key=value` persistence, JSON marketplace
 availability, and native `plugin init <name>` scaffolds under
 `~/.claude/skills/<name>`. Skills-directory plugins load with normal plugin
 resources and can be enabled or disabled through their `<name>@skills-dir` ID.
+Plugin config validates required/default/range/boolean behavior atomically;
+sensitive options use shared protected credentials and never enter
+`settings.json`.
 Marketplace Git sources support bounded `--sparse <paths...>` checkout with
 paths preserved for later updates; `plugin disable -a|--all` disables every
 enabled native and skills-directory plugin.
@@ -410,7 +422,9 @@ Plugin LSP declarations may be inline objects, JSON paths, or ordered arrays;
 manifest entries override same-named `.lsp.json` defaults. LSP subprocesses
 receive sanitized ambient state plus explicit plugin env, `CLAUDE_PLUGIN_ROOT`,
 and persistent `CLAUDE_PLUGIN_DATA`. Saved LSP options use Claude settings
-precedence: local overrides project, and project overrides user.
+precedence: local overrides project, project overrides user, and protected
+secrets override legacy plaintext values. The same option plane feeds plugin
+MCP servers and hooks; model-visible plugin content excludes sensitive values.
 
 `PRAXIS_PROVIDER` defaults to `openai`. `PRAXIS_BASE_URL` defaults to the
 selected provider's official `/v1` endpoint. Native Anthropic requests accept
