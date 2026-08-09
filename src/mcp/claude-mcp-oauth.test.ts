@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -242,6 +250,240 @@ describe('Claude MCP OAuth compatibility', () => {
       claudeAiOauth: { accessToken: 'keep-account' },
       pluginSecrets: { 'other@market': { token: 'keep-other' } },
     })
+  })
+
+  it('rolls back batched plugin secrets when the paired commit fails', async () => {
+    const configRoot = await temporaryConfigRoot()
+    await mkdir(configRoot, { recursive: true })
+    const credentialPath = join(configRoot, '.credentials.json')
+    const original = '{"claudeAiOauth":{"accessToken":"keep-account"}}\n'
+    await writeFile(credentialPath, original)
+    const blockedParent = join(configRoot, 'blocked')
+    await writeFile(blockedParent, 'not a directory')
+    const store = new ClaudeMcpOAuthStore({
+      configRoot,
+      useKeychain: false,
+    })
+
+    await expect(
+      store.updatePluginSecretsTransaction(
+        [
+          {
+            pluginId: 'fixture@market',
+            values: { token: 'top-secret' },
+          },
+          {
+            pluginId: 'fixture@market/server',
+            values: { token: 'server-secret' },
+          },
+        ],
+        async () => ({
+          path: join(blockedParent, 'settings.json'),
+          afterSource: '{}\n',
+        }),
+      ),
+    ).rejects.toThrow()
+    await expect(readFile(credentialPath, 'utf8')).resolves.toBe(original)
+  })
+
+  it('removes a newly-created credential file when a paired commit fails', async () => {
+    const configRoot = await temporaryConfigRoot()
+    const credentialPath = join(configRoot, '.credentials.json')
+    const store = new ClaudeMcpOAuthStore({
+      configRoot,
+      useKeychain: false,
+    })
+    const blockedParent = join(configRoot, 'blocked')
+    await writeFile(blockedParent, 'not a directory')
+
+    await expect(
+      store.updatePluginSecretsTransaction(
+        [{ pluginId: 'fixture@market', values: { token: 'secret' } }],
+        async () => ({
+          path: join(blockedParent, 'settings.json'),
+          afterSource: '{}\n',
+        }),
+      ),
+    ).rejects.toThrow()
+    await expect(readFile(credentialPath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('writes Keychain secrets through stdin without exposing them in argv', async () => {
+    const configRoot = await temporaryConfigRoot()
+    const bin = join(configRoot, 'bin')
+    await mkdir(bin, { recursive: true })
+    const argsPath = join(configRoot, 'security-args')
+    const inputPath = join(configRoot, 'security-input')
+    const security = join(bin, 'security')
+    await writeFile(
+      security,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "find-generic-password" ]; then',
+        '  echo "could not be found" >&2',
+        '  exit 44',
+        'fi',
+        'printf "%s\\n" "$@" >> "$PRAXIS_TEST_SECURITY_ARGS"',
+        'if [ "$1" = "delete-generic-password" ]; then exit 0; fi',
+        'IFS= read -r secret',
+        'printf "%s\\n" "$secret" >> "$PRAXIS_TEST_SECURITY_INPUT"',
+      ].join('\n'),
+    )
+    await chmod(security, 0o700)
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`)
+    vi.stubEnv('PRAXIS_TEST_SECURITY_ARGS', argsPath)
+    vi.stubEnv('PRAXIS_TEST_SECURITY_INPUT', inputPath)
+    const store = new ClaudeMcpOAuthStore({ configRoot, useKeychain: true })
+
+    await store.updatePluginSecretsTransaction(
+      [{ pluginId: 'fixture@market', values: { token: 'argv-secret' } }],
+      async () => ({
+        path: join(configRoot, 'settings.json'),
+        afterSource: '{}\n',
+      }),
+    )
+
+    const args = await readFile(argsPath, 'utf8')
+    expect(args).toContain('add-generic-password')
+    expect(args).toContain('\n-w\n')
+    expect(args).not.toContain('argv-secret')
+    await expect(readFile(inputPath, 'utf8')).resolves.toContain('argv-secret')
+  })
+
+  it('recovers interrupted plugin config transactions before credential reads', async () => {
+    const configRoot = await temporaryConfigRoot()
+    await mkdir(configRoot, { recursive: true })
+    const credentialPath = join(configRoot, '.credentials.json')
+    const originalSource = '{"claudeAiOauth":{"accessToken":"keep"}}\n'
+    const nextEnvelope = {
+      claudeAiOauth: { accessToken: 'keep' },
+      pluginSecrets: { 'fixture@market': { token: 'interrupted' } },
+    }
+    await writeFile(
+      credentialPath,
+      `${JSON.stringify(nextEnvelope, null, 2)}\n`,
+    )
+    const settingsPath = join(configRoot, 'settings.json')
+    const afterSource = '{"pluginConfigs":{"fixture@market":{}}}\n'
+    const transactionPath = join(
+      configRoot,
+      'praxis',
+      'transactions',
+      'plugin-config.json',
+    )
+    await mkdir(join(configRoot, 'praxis', 'transactions'), { recursive: true })
+    await writeFile(
+      transactionPath,
+      JSON.stringify({
+        version: 1,
+        settingsPath,
+        settingsBeforeHash: null,
+        settingsAfterHash: createHash('sha256')
+          .update(afterSource)
+          .digest('hex'),
+        snapshot: {
+          envelope: { claudeAiOauth: { accessToken: 'keep' } },
+          fileSource: originalSource,
+        },
+        nextEnvelope,
+      }),
+    )
+    const store = new ClaudeMcpOAuthStore({
+      configRoot,
+      useKeychain: false,
+    })
+
+    await expect(store.readPluginSecrets('fixture@market')).resolves.toEqual({})
+    await expect(readFile(credentialPath, 'utf8')).resolves.toBe(originalSource)
+    await expect(readFile(transactionPath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+
+    await writeFile(credentialPath, originalSource)
+    await writeFile(settingsPath, afterSource)
+    await writeFile(
+      transactionPath,
+      JSON.stringify({
+        version: 1,
+        settingsPath,
+        settingsBeforeHash: null,
+        settingsAfterHash: createHash('sha256')
+          .update(afterSource)
+          .digest('hex'),
+        snapshot: {
+          envelope: { claudeAiOauth: { accessToken: 'keep' } },
+          fileSource: originalSource,
+        },
+        nextEnvelope,
+      }),
+    )
+    await expect(store.readPluginSecrets('fixture@market')).resolves.toEqual({
+      token: 'interrupted',
+    })
+    await expect(readFile(transactionPath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('rejects malformed or conflicting plugin config journals without changing credentials', async () => {
+    const configRoot = await temporaryConfigRoot()
+    const credentialPath = join(configRoot, '.credentials.json')
+    const credentialSource =
+      '{"pluginSecrets":{"fixture@market":{"token":"keep"}}}\n'
+    const settingsPath = join(configRoot, 'settings.json')
+    const transactionPath = join(
+      configRoot,
+      'praxis',
+      'transactions',
+      'plugin-config.json',
+    )
+    await mkdir(join(configRoot, 'praxis', 'transactions'), { recursive: true })
+    await writeFile(credentialPath, credentialSource)
+    await writeFile(settingsPath, '{"externallyChanged":true}\n')
+    const store = new ClaudeMcpOAuthStore({ configRoot, useKeychain: false })
+
+    await writeFile(
+      transactionPath,
+      JSON.stringify({
+        version: 1,
+        settingsPath: 'relative/settings.json',
+        settingsBeforeHash: null,
+        settingsAfterHash: 'not-a-sha256',
+        snapshot: { envelope: {} },
+        nextEnvelope: {},
+      }),
+    )
+    await expect(store.readPluginSecrets('fixture@market')).rejects.toThrow(
+      'Invalid plugin configuration transaction journal',
+    )
+    await expect(readFile(credentialPath, 'utf8')).resolves.toBe(
+      credentialSource,
+    )
+
+    const hash = (source: string): string =>
+      createHash('sha256').update(source).digest('hex')
+    await writeFile(
+      transactionPath,
+      JSON.stringify({
+        version: 1,
+        settingsPath,
+        settingsBeforeHash: hash('{"before":true}\n'),
+        settingsAfterHash: hash('{"after":true}\n'),
+        snapshot: { envelope: {} },
+        nextEnvelope: {},
+      }),
+    )
+    await expect(store.readPluginSecrets('fixture@market')).rejects.toThrow(
+      `Plugin configuration transaction conflicts with ${settingsPath}`,
+    )
+    await expect(readFile(credentialPath, 'utf8')).resolves.toBe(
+      credentialSource,
+    )
+    await expect(readFile(transactionPath, 'utf8')).resolves.toContain(
+      settingsPath,
+    )
   })
 
   it('persists discovery, client, and tokens and clears only the selected record', async () => {

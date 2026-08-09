@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
-import { execFile } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { execFile, spawn } from 'node:child_process'
+import { readFile, rm } from 'node:fs/promises'
 import { homedir, userInfo } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 import {
@@ -56,6 +56,27 @@ interface CredentialEnvelope {
   mcpOAuthClientConfig?: Record<string, { clientSecret?: string }>
   pluginSecrets?: Record<string, Record<string, string>>
   [key: string]: unknown
+}
+
+interface CredentialSnapshot {
+  envelope: CredentialEnvelope
+  fileSource?: string
+  keychainEnvelope?: CredentialEnvelope
+}
+
+export interface PluginConfigFileCommit {
+  path: string
+  beforeSource?: string
+  afterSource: string
+}
+
+interface PluginSecretTransactionJournal {
+  version: 1
+  settingsPath: string
+  settingsBeforeHash: string | null
+  settingsAfterHash: string
+  snapshot: CredentialSnapshot
+  nextEnvelope: CredentialEnvelope
 }
 
 export interface McpOAuthStoreOptions {
@@ -181,6 +202,40 @@ function parseEnvelope(source: string): CredentialEnvelope {
   return envelope
 }
 
+function sourceHash(source: string): string {
+  return createHash('sha256').update(source).digest('hex')
+}
+
+function isSourceHash(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)
+}
+
+function parsePluginSecretTransactionJournal(
+  value: unknown,
+): PluginSecretTransactionJournal {
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    typeof value.settingsPath !== 'string' ||
+    !isAbsolute(value.settingsPath) ||
+    !(
+      value.settingsBeforeHash === null ||
+      isSourceHash(value.settingsBeforeHash)
+    ) ||
+    !isSourceHash(value.settingsAfterHash) ||
+    !isRecord(value.snapshot) ||
+    !isRecord(value.snapshot.envelope) ||
+    (value.snapshot.fileSource !== undefined &&
+      typeof value.snapshot.fileSource !== 'string') ||
+    (value.snapshot.keychainEnvelope !== undefined &&
+      !isRecord(value.snapshot.keychainEnvelope)) ||
+    !isRecord(value.nextEnvelope)
+  ) {
+    throw new Error('Invalid plugin configuration transaction journal')
+  }
+  return value as unknown as PluginSecretTransactionJournal
+}
+
 function credentialAccount(): string {
   try {
     return userInfo().username
@@ -198,6 +253,21 @@ async function readFileEnvelope(path: string): Promise<CredentialEnvelope> {
     return parseEnvelope(source)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
+  }
+}
+
+async function readFileEnvelopeSource(
+  path: string,
+): Promise<string | undefined> {
+  try {
+    const source = await readFile(path, 'utf8')
+    if (Buffer.byteLength(source) > MAX_CREDENTIAL_BYTES) {
+      throw new Error('MCP OAuth credential file exceeds 2 MiB')
+    }
+    return source
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw error
   }
 }
@@ -236,20 +306,64 @@ async function writeKeychainEnvelope(
   if (Buffer.byteLength(source) > MAX_CREDENTIAL_BYTES) {
     throw new Error('MCP OAuth credentials exceed 2 MiB')
   }
-  await execFileAsync(
-    'security',
-    [
-      'add-generic-password',
-      '-U',
-      '-a',
-      credentialAccount(),
-      '-s',
-      service,
-      '-w',
-      source,
-    ],
-    { maxBuffer: MAX_CREDENTIAL_BYTES },
-  )
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn(
+      'security',
+      [
+        'add-generic-password',
+        '-U',
+        '-a',
+        credentialAccount(),
+        '-s',
+        service,
+        '-w',
+      ],
+      { stdio: ['pipe', 'ignore', 'ignore'] },
+    )
+    let settled = false
+    const rejectSafely = (code?: string): void => {
+      if (settled) return
+      settled = true
+      const error = new Error('Unable to update macOS Keychain credentials')
+      if (code !== undefined) (error as NodeJS.ErrnoException).code = code
+      rejectPromise(error)
+    }
+    child.once('error', (error: NodeJS.ErrnoException) =>
+      rejectSafely(error.code),
+    )
+    child.once('close', (code) => {
+      if (settled) return
+      settled = true
+      if (code === 0) resolvePromise()
+      else
+        rejectPromise(new Error('Unable to update macOS Keychain credentials'))
+    })
+    child.stdin.once('error', () => rejectSafely())
+    child.stdin.end(`${source}\n`)
+  })
+}
+
+async function deleteKeychainEnvelope(service: string): Promise<void> {
+  try {
+    await execFileAsync(
+      'security',
+      ['delete-generic-password', '-a', credentialAccount(), '-s', service],
+      { maxBuffer: MAX_CREDENTIAL_BYTES },
+    )
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    const detail = [
+      String(error),
+      String((error as { stderr?: unknown }).stderr ?? ''),
+    ].join('\n')
+    if (
+      code === 'ENOENT' ||
+      /could not be found|SecKeychainSearchCopyNext/u.test(detail)
+    ) {
+      return
+    }
+    throw error
+  }
 }
 
 export class ClaudeMcpOAuthStore {
@@ -273,8 +387,10 @@ export class ClaudeMcpOAuthStore {
   async read(
     server: McpOAuthServerIdentity,
   ): Promise<ClaudeMcpOAuthRecord | undefined> {
-    const envelope = await this.readEnvelope()
-    return normalizeRecord(envelope.mcpOAuth?.[mcpOAuthRecordKey(server)])
+    return this.withLock(async () => {
+      const envelope = await this.readEnvelope()
+      return normalizeRecord(envelope.mcpOAuth?.[mcpOAuthRecordKey(server)])
+    })
   }
 
   async mutate(
@@ -307,10 +423,13 @@ export class ClaudeMcpOAuthStore {
   async readClientSecret(
     server: McpOAuthServerIdentity,
   ): Promise<string | undefined> {
-    const envelope = await this.readEnvelope()
-    return stringValue(
-      envelope.mcpOAuthClientConfig?.[mcpOAuthRecordKey(server)]?.clientSecret,
-    )
+    return this.withLock(async () => {
+      const envelope = await this.readEnvelope()
+      return stringValue(
+        envelope.mcpOAuthClientConfig?.[mcpOAuthRecordKey(server)]
+          ?.clientSecret,
+      )
+    })
   }
 
   async saveClientSecret(
@@ -334,14 +453,16 @@ export class ClaudeMcpOAuthStore {
   }
 
   async readPluginSecrets(pluginId: string): Promise<Record<string, string>> {
-    const envelope = await this.readEnvelope()
-    const stored = envelope.pluginSecrets?.[pluginId]
-    if (!isRecord(stored)) return {}
-    return Object.fromEntries(
-      Object.entries(stored).filter(
-        (entry): entry is [string, string] => typeof entry[1] === 'string',
-      ),
-    )
+    return this.withLock(async () => {
+      const envelope = await this.readEnvelope()
+      const stored = envelope.pluginSecrets?.[pluginId]
+      if (!isRecord(stored)) return {}
+      return Object.fromEntries(
+        Object.entries(stored).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string',
+        ),
+      )
+    })
   }
 
   async updatePluginSecrets(
@@ -374,6 +495,83 @@ export class ClaudeMcpOAuthStore {
         envelope.pluginSecrets = all as Record<string, Record<string, string>>
       }
       await this.writeEnvelope(envelope)
+    })
+  }
+
+  async updatePluginSecretsTransaction(
+    updates: readonly {
+      pluginId: string
+      values: Readonly<Record<string, string>>
+      removeKeys?: readonly string[]
+    }[],
+    prepareCommit: () => Promise<PluginConfigFileCommit>,
+  ): Promise<void> {
+    await this.withLock(async () => {
+      const snapshot = await this.captureCredentialSnapshot()
+      const original = snapshot.envelope
+      const all = isRecord(original.pluginSecrets)
+        ? { ...original.pluginSecrets }
+        : {}
+      let changed = false
+      for (const update of updates) {
+        const stored = all[update.pluginId]
+        const current = isRecord(stored)
+          ? Object.fromEntries(
+              Object.entries(stored).filter(
+                (entry): entry is [string, string] =>
+                  typeof entry[1] === 'string',
+              ),
+            )
+          : {}
+        const before = JSON.stringify(current)
+        for (const key of update.removeKeys ?? []) delete current[key]
+        Object.assign(current, update.values)
+        if (JSON.stringify(current) === before) continue
+        changed = true
+        if (Object.keys(current).length === 0) delete all[update.pluginId]
+        else all[update.pluginId] = current
+      }
+      const next: CredentialEnvelope = { ...original }
+      if (Object.keys(all).length === 0) delete next.pluginSecrets
+      else {
+        next.pluginSecrets = all as Record<string, Record<string, string>>
+      }
+      const commit = await prepareCommit()
+      const journal: PluginSecretTransactionJournal = {
+        version: 1,
+        settingsPath: resolve(commit.path),
+        settingsBeforeHash:
+          commit.beforeSource === undefined
+            ? null
+            : sourceHash(commit.beforeSource),
+        settingsAfterHash: sourceHash(commit.afterSource),
+        snapshot,
+        nextEnvelope: next,
+      }
+      try {
+        if (changed) {
+          await this.writePluginSecretTransactionJournal(journal)
+          await this.writeEnvelope(next)
+        }
+        const committed = await writeFileAtomically(
+          journal.settingsPath,
+          commit.afterSource,
+        )
+        if (!committed) throw new Error('Plugin settings write was interrupted')
+        if (changed) await this.deletePluginSecretTransactionJournal()
+      } catch (error) {
+        if (changed) {
+          try {
+            await this.recoverPluginSecretTransaction(journal)
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              'Plugin configuration failed and credential rollback failed',
+            )
+          }
+        }
+        throw error
+      }
     })
   }
 
@@ -411,13 +609,177 @@ export class ClaudeMcpOAuthStore {
     return readFileEnvelope(credentialPath(this.configRoot))
   }
 
+  private pluginSecretTransactionPath(): string {
+    return join(this.configRoot, 'praxis', 'transactions', 'plugin-config.json')
+  }
+
+  private pluginSecretTransactionService(): string {
+    return `${this.service}-plugin-config-transaction`
+  }
+
+  private async readPluginSecretTransactionJournal(): Promise<
+    PluginSecretTransactionJournal | undefined
+  > {
+    if (this.useKeychain) {
+      const stored = await readKeychainEnvelope(
+        this.pluginSecretTransactionService(),
+      )
+      if (stored !== undefined)
+        return parsePluginSecretTransactionJournal(stored)
+    }
+    try {
+      const source = await readFile(this.pluginSecretTransactionPath(), 'utf8')
+      if (Buffer.byteLength(source) > MAX_CREDENTIAL_BYTES) {
+        throw new Error('Plugin configuration transaction exceeds 2 MiB')
+      }
+      return parsePluginSecretTransactionJournal(JSON.parse(source))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      if (error instanceof SyntaxError) {
+        throw new Error('Invalid plugin configuration transaction journal', {
+          cause: error,
+        })
+      }
+      throw error
+    }
+  }
+
+  private async writePluginSecretTransactionJournal(
+    journal: PluginSecretTransactionJournal,
+  ): Promise<void> {
+    const source = `${JSON.stringify(journal, null, 2)}\n`
+    if (Buffer.byteLength(source) > MAX_CREDENTIAL_BYTES) {
+      throw new Error('Plugin configuration transaction exceeds 2 MiB')
+    }
+    if (this.useKeychain) {
+      try {
+        await writeKeychainEnvelope(
+          this.pluginSecretTransactionService(),
+          journal as unknown as CredentialEnvelope,
+        )
+        await rm(this.pluginSecretTransactionPath(), { force: true })
+        return
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+    const committed = await writeFileAtomically(
+      this.pluginSecretTransactionPath(),
+      source,
+    )
+    if (!committed)
+      throw new Error('Plugin configuration transaction write was interrupted')
+  }
+
+  private async deletePluginSecretTransactionJournal(): Promise<void> {
+    const failures: unknown[] = []
+    if (this.useKeychain) {
+      try {
+        await deleteKeychainEnvelope(this.pluginSecretTransactionService())
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    try {
+      await rm(this.pluginSecretTransactionPath(), { force: true })
+    } catch (error) {
+      failures.push(error)
+    }
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        'Plugin configuration transaction cleanup failed',
+      )
+    }
+  }
+
+  private async recoverPluginSecretTransaction(
+    knownJournal?: PluginSecretTransactionJournal,
+  ): Promise<void> {
+    const journal =
+      knownJournal ?? (await this.readPluginSecretTransactionJournal())
+    if (journal === undefined) return
+    let settingsSource: string | undefined
+    try {
+      settingsSource = await readFile(journal.settingsPath, 'utf8')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+    }
+    const settingsHash =
+      settingsSource === undefined ? null : sourceHash(settingsSource)
+    if (settingsHash === journal.settingsAfterHash) {
+      await this.writeEnvelope(journal.nextEnvelope)
+    } else if (settingsHash === journal.settingsBeforeHash) {
+      await this.restoreCredentialSnapshot(journal.snapshot)
+    } else {
+      throw new Error(
+        `Plugin configuration transaction conflicts with ${journal.settingsPath}`,
+      )
+    }
+    await this.deletePluginSecretTransactionJournal()
+  }
+
+  private async captureCredentialSnapshot(): Promise<CredentialSnapshot> {
+    const fileSource = await readFileEnvelopeSource(
+      credentialPath(this.configRoot),
+    )
+    if (!this.useKeychain) {
+      return {
+        envelope: fileSource === undefined ? {} : parseEnvelope(fileSource),
+        ...(fileSource === undefined ? {} : { fileSource }),
+      }
+    }
+    const keychainEnvelope = await readKeychainEnvelope(this.service)
+    return {
+      envelope:
+        keychainEnvelope ??
+        (fileSource === undefined ? {} : parseEnvelope(fileSource)),
+      ...(fileSource === undefined ? {} : { fileSource }),
+      ...(keychainEnvelope === undefined ? {} : { keychainEnvelope }),
+    }
+  }
+
+  private async restoreCredentialSnapshot(
+    snapshot: CredentialSnapshot,
+  ): Promise<void> {
+    const failures: unknown[] = []
+    if (this.useKeychain) {
+      try {
+        if (snapshot.keychainEnvelope === undefined) {
+          await deleteKeychainEnvelope(this.service)
+        } else {
+          await writeKeychainEnvelope(this.service, snapshot.keychainEnvelope)
+        }
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    try {
+      const path = credentialPath(this.configRoot)
+      if (snapshot.fileSource === undefined) {
+        await rm(path, { force: true })
+      } else {
+        const committed = await writeFileAtomically(path, snapshot.fileSource)
+        if (!committed)
+          throw new Error('MCP OAuth credential rollback was interrupted')
+      }
+    } catch (error) {
+      failures.push(error)
+    }
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1)
+      throw new AggregateError(failures, 'Credential rollback failed')
+  }
+
   private async writeEnvelope(envelope: CredentialEnvelope): Promise<void> {
     if (this.useKeychain) {
       try {
         await writeKeychainEnvelope(this.service, envelope)
         return
       } catch (error) {
-        if (process.platform !== 'darwin') throw error
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
     }
     const committed = await writeFileAtomically(
@@ -439,6 +801,7 @@ export class ClaudeMcpOAuthStore {
       lock = await this.lease.tryAcquire()
     }
     try {
+      await this.recoverPluginSecretTransaction()
       return await operation()
     } finally {
       await lock.release()

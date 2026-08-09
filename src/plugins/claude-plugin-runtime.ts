@@ -25,11 +25,13 @@ import {
   claudePluginDataPath,
   materializeClaudePluginSource,
   readClaudePluginOptions,
+  readClaudePluginMcpServerOptions,
   readClaudeSkillsDirectoryPlugins,
   replaceClaudePluginDirectory,
   readClaudeInstalledPlugins,
   validateClaudePluginUserConfig,
 } from './claude-plugin-marketplace.js'
+import { loadClaudePluginMcpb } from './claude-plugin-mcpb.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -590,6 +592,7 @@ function pluginOptionEnvironment(
 
 function expandPluginMcpResource(
   value: unknown,
+  pluginName: string,
   pluginRoot: string,
   pluginData: string,
   environment: Readonly<Record<string, string | undefined>>,
@@ -607,17 +610,18 @@ function expandPluginMcpResource(
     ...expanded,
     mcpServers: Object.fromEntries(
       Object.entries(expanded.mcpServers).map(([name, config]) => {
+        const scopedName = `plugin:${pluginName}:${name}`
         if (
           !isRecord(config) ||
           config.type === 'http' ||
           config.type === 'sse' ||
           config.url !== undefined
         ) {
-          return [name, config]
+          return [scopedName, config]
         }
         const configuredEnv = isRecord(config.env) ? config.env : {}
         return [
-          name,
+          scopedName,
           {
             ...config,
             env: {
@@ -630,6 +634,14 @@ function expandPluginMcpResource(
       }),
     ),
   }
+}
+
+function isMcpbReference(value: string): boolean {
+  return value.endsWith('.mcpb') || value.endsWith('.dxt')
+}
+
+function isUrlReference(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//iu.test(value)
 }
 
 function lspServerDefinition(
@@ -861,7 +873,15 @@ async function loadPlugin(
     configRoot !== undefined &&
     configId !== undefined &&
     manifest.userConfig !== undefined
-      ? await readClaudePluginOptions(configRoot, cwd, configId)
+      ? await readClaudePluginOptions(
+          configRoot,
+          cwd,
+          configId,
+          manifest.userConfig as unknown as Record<
+            string,
+            Record<string, unknown>
+          >,
+        )
       : undefined
   const sensitiveValues = Object.entries(manifest.userConfig ?? {})
     .flatMap(([key, definition]) =>
@@ -1068,62 +1088,128 @@ async function loadPlugin(
   }
   const mcpPath = join(canonical, '.mcp.json')
   let mcpValue: unknown
+  const mcpErrors: string[] = []
   try {
     mcpValue = JSON.parse(await readFile(mcpPath, 'utf8'))
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-      throw new Error(`Invalid plugin MCP config: ${mcpPath}`, { cause: error })
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      mcpErrors.push(`Invalid plugin MCP config: ${mcpPath}`)
+    }
   }
-  const mcp: ClaudeJsonResource[] =
-    mcpValue === undefined
-      ? []
-      : [
-          {
-            path: mcpPath,
-            scope,
-            value: expandPluginMcpResource(
-              mcpValue,
-              canonical,
-              pluginData,
-              environment,
-              userConfig,
-            ),
-            ...pluginResourceMetadata,
-          },
-        ]
+  const mcp: ClaudeJsonResource[] = []
+  if (mcpValue !== undefined) {
+    try {
+      mcp.push({
+        path: mcpPath,
+        scope,
+        plugin: true,
+        value: expandPluginMcpResource(
+          mcpValue,
+          manifest.name,
+          canonical,
+          pluginData,
+          environment,
+          userConfig,
+        ),
+        ...pluginResourceMetadata,
+      })
+    } catch {
+      mcpErrors.push(`Invalid plugin MCP config: ${mcpPath}`)
+    }
+  }
   if (manifest.mcpServers !== undefined) {
     const specs = Array.isArray(manifest.mcpServers)
       ? manifest.mcpServers
       : [manifest.mcpServers]
     for (const [index, spec] of specs.entries()) {
       if (typeof spec === 'string') {
-        const specPath = safePluginPath(canonical, spec)
-        let value: unknown
-        try {
-          value = JSON.parse(await readFile(specPath, 'utf8'))
-        } catch (error) {
-          throw new Error(`Invalid plugin MCP config: ${specPath}`, {
-            cause: error,
-          })
+        const urlReference = isUrlReference(spec)
+        if (
+          (urlReference &&
+            (!/^https?:\/\//u.test(spec) || !isMcpbReference(spec))) ||
+          (!urlReference && isMcpbReference(spec) && !spec.startsWith('./'))
+        ) {
+          mcpErrors.push(
+            `Invalid plugin MCPB reference at index ${index}: expected ./file.mcpb, ./file.dxt, or an exact-suffix HTTP(S) URL`,
+          )
+          continue
         }
-        mcp.push({
-          path: specPath,
-          scope,
-          value: expandPluginMcpResource(
-            value,
-            canonical,
-            pluginData,
-            environment,
-            userConfig,
-          ),
-          ...pluginResourceMetadata,
-        })
+        if (isMcpbReference(spec)) {
+          try {
+            const loaded = await loadClaudePluginMcpb({
+              pluginRoot: canonical,
+              pluginData,
+              source: spec,
+              environment,
+              resolveUserConfig: async (bundleManifest) =>
+                configRoot !== undefined && configId !== undefined
+                  ? readClaudePluginMcpServerOptions(
+                      configRoot,
+                      cwd,
+                      configId,
+                      bundleManifest.name,
+                      bundleManifest.user_config as unknown as Record<
+                        string,
+                        Record<string, unknown>
+                      >,
+                    )
+                  : {},
+            })
+            mcp.push({
+              path: join(
+                canonical,
+                '.claude-plugin',
+                `plugin-mcpb-${index}.json`,
+              ),
+              scope,
+              plugin: true,
+              value: {
+                mcpServers: {
+                  [`plugin:${manifest.name}:${loaded.name}`]: loaded.config,
+                },
+              },
+              environment: pluginEnvironment,
+              sensitiveValues: [...sensitiveValues, ...loaded.sensitiveValues],
+            })
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error)
+            if (!message.includes('Required MCPB user_config is missing:')) {
+              mcpErrors.push(message)
+            }
+          }
+          continue
+        }
+        try {
+          const specPath = safePluginPath(canonical, spec)
+          const value: unknown = JSON.parse(await readFile(specPath, 'utf8'))
+          mcp.push({
+            path: specPath,
+            scope,
+            plugin: true,
+            value: expandPluginMcpResource(
+              value,
+              manifest.name,
+              canonical,
+              pluginData,
+              environment,
+              userConfig,
+            ),
+            ...pluginResourceMetadata,
+          })
+        } catch {
+          mcpErrors.push(
+            `Invalid plugin MCP config ${basename(spec)} at index ${index}`,
+          )
+        }
       } else if (isRecord(spec)) {
         mcp.push({
           path: join(canonical, '.claude-plugin', `plugin-mcp-${index}.json`),
           scope,
+          plugin: true,
           value: expandPluginMcpResource(
             { mcpServers: spec },
+            manifest.name,
             canonical,
             pluginData,
             environment,
@@ -1132,7 +1218,7 @@ async function loadPlugin(
           ...pluginResourceMetadata,
         })
       } else {
-        throw new Error(`Invalid plugin MCP config in ${canonical}`)
+        mcpErrors.push(`Invalid plugin MCP config in ${canonical}`)
       }
     }
   }
@@ -1146,7 +1232,7 @@ async function loadPlugin(
       ...(manifest.description === undefined
         ? {}
         : { description: manifest.description }),
-      errors: [],
+      errors: mcpErrors,
     },
     resources: { commands, skills, agents, settings, mcp, lsp },
   }
@@ -1858,7 +1944,17 @@ export async function describeClaudePlugin(
         .map((resource) => detailComponentName(resource.path))
         .sort(),
       hooks: keysFromJsonResources(loaded.resources.settings, 'hooks'),
-      mcpServers: keysFromJsonResources(loaded.resources.mcp, 'mcpServers'),
+      mcpServers: keysFromJsonResources(
+        loaded.resources.mcp.filter(
+          (resource) =>
+            !(
+              dirname(resource.path) ===
+                join(loaded.record.path, '.claude-plugin') &&
+              /^plugin-mcpb-\d+\.json$/u.test(basename(resource.path))
+            ),
+        ),
+        'mcpServers',
+      ).map((name) => name.replace(`plugin:${loaded.record.name}:`, '')),
       lspServers: [...lspServers].sort(),
     },
     componentCosts,

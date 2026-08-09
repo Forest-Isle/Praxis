@@ -1,17 +1,19 @@
 # Code Health Report
 
-> Generated: 2026-08-09
+> Generated: 2026-08-10
 > Project: Praxis
-> Scanned: 185 source files, 60 scripts, 88 test modules
+> Scanned: 186 source files, 60 scripts, 89 test modules
 
 ## Executive Summary
 
 Praxis is buildable and fully wired for current single-user CLI scope. TypeScript
 typechecking, boundary checks, focused regressions, package-script references,
-and direct production dependencies pass. Stage 87 adds protected plugin option
-storage, scoped effective configuration, full LSP/MCP/hook/model-content
-substitution, last-scope cleanup, and cross-runtime secret redaction on top of
-the Stage 86 LSP runtime. All 88 test modules and 760 tests pass. No
+and direct production dependencies pass. Stage 88 adds scoped plugin MCP
+naming/deduplication, official MCPB/DXT local and remote loading, protected
+bundle configuration, bounded cache/extraction, prompt discovery/invocation,
+durable prompt binaries, crash recovery, failure isolation, and packed runtime
+execution on top of Stage 87 protected options. All 89 test modules and 811
+tests pass. No
 unfinished feature stubs, unresolved imports, or missing script targets remain.
 All 51 compatibility gates, clean package install, performance budgets, strict
 unused checks, and production dependency audit pass.
@@ -60,4 +62,4 @@ direct-dependency inspection, and package-script target checks pass.
 
 - Total issues found: 2
 - Critical: 0 | Incomplete: 0 | Broken: 0 | Smells: 1 | Optimizations: 1
-- Files scanned: 185 source files, 60 scripts, 88 test modules
+- Files scanned: 186 source files, 60 scripts, 89 test modules

@@ -695,3 +695,39 @@ Status: complete for Claude Code 2.1.208 single-user plugin runtime scope.
       `npm run check`: 88 files, 760 tests
 - [x] 51-gate Claude 2.1.208 compatibility matrix, clean package install,
       performance budgets, strict unused checks, and production audit passed
+
+## Stage 88 - scoped plugin MCP and MCPB/DXT parity
+
+Status: complete for Claude Code 2.1.208 single-user plugin MCP runtime scope.
+
+- [x] Claude-compatible `plugin:<plugin>:<server>` runtime names, normalized
+      model tools, explicit plugin-origin metadata, raw status/resource routing,
+      manual-first command/URL signature deduplication, CCR URL handling, and
+      deterministic precedence
+- [x] ordinary JSON plus local/HTTP(S) `.mcpb` and `.dxt` manifests using the
+      official 0.1-0.4 schema/config generator, including 0.4 UV, platform
+      overrides, arrays, system directories, plugin root, data, and bundle root
+- [x] sticky remote/change-aware local cache, explicit refresh, bounded download,
+      redirect/cancellation handling, atomic concurrent replacement, corrupt
+      recovery, and rollback
+- [x] bounded ZIP validation/extraction with traversal, absolute path, symlink,
+      duplicate, encryption, count, size, and compression-ratio rejection plus
+      normalized executable restoration
+- [x] required/default semantics, user/project/local option merge, protected
+      composite secrets, qualified ambiguous assignments, atomic validation,
+      uninstall cleanup, error isolation, and sensitive diagnostics
+- [x] cross-process settings/credential commits with exact-hash crash recovery,
+      malformed/conflicting journal rejection, rollback/forward recovery, and
+      Keychain stdin writes that keep secrets out of process arguments
+- [x] MCP prompt pagination, collision handling, `list_changed`, reconnect,
+      raw wire names, positional arguments, rich content conversion, bounded
+      resource output, and durable per-session binary paths
+- [x] cache-root/entry/extracted/metadata/backup realpath and symlink boundaries,
+      malformed lease recovery, streaming extraction limits, and failed-output
+      cleanup
+- [x] packed ordinary MCP and MCPB/DXT connection, raw status, normalized tool,
+      and real invocation compatibility proof
+- [x] `npm run check`: 89 files, 811 tests; format, lint, boundaries, typecheck,
+      build, strict-unused checks, and production audit passed
+- [x] 51-gate compatibility matrix, clean package install, performance budgets,
+      strict unused checks, and production dependency audit passed

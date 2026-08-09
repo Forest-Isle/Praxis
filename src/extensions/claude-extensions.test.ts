@@ -198,4 +198,82 @@ describe('ClaudeExtensionCatalog', () => {
     ])
     expect(catalog.expandPrompt('/ignored').userMessages).toEqual(['/ignored'])
   })
+
+  it('expands MCP prompts asynchronously with internal-name precedence and rich content', async () => {
+    const calls: string[] = []
+    const catalog = new ClaudeExtensionCatalog({
+      agents: [],
+      skills: [],
+      commands: [
+        {
+          path: '/config/commands/mcp__occupied__prompt.md',
+          scope: 'user',
+          content: 'LOCAL_WINS',
+        },
+      ],
+    })
+    catalog.setMcpPrompts([
+      {
+        name: 'mcp__occupied__prompt',
+        userFacingName: 'occupied:prompt (MCP)',
+        description: 'suppressed',
+        argumentNames: [],
+        invoke: async () => ({ text: 'wrong', contentBlocks: [], images: [] }),
+      },
+      {
+        name: 'mcp__server__prompt.name',
+        userFacingName: 'server:prompt.name (MCP)',
+        description: 'dynamic',
+        argumentNames: ['first', 'second'],
+        invoke: async (args, options) => {
+          calls.push(args)
+          expect(options?.toolResultDirectory).toBe('/session/tool-results')
+          return {
+            text: 'MCP_BODY',
+            contentBlocks: [{ type: 'text', text: 'MCP_BODY' }],
+            images: [{ type: 'image', mediaType: 'image/png', data: 'aW1n' }],
+          }
+        },
+      },
+    ])
+
+    expect(catalog.mcpPromptNames()).toEqual(['server:prompt.name (MCP)'])
+    const expansion = await catalog.expandPromptAsync(
+      ' /server:prompt.name (MCP) first  second ',
+      undefined,
+      '/session/tool-results',
+    )
+    expect(calls).toEqual(['first  second'])
+    expect(expansion.userMessages).toEqual([
+      '<command-message>mcp__server__prompt.name</command-message>\n<command-name>/mcp__server__prompt.name</command-name>\n<command-args>first  second</command-args>',
+      'MCP_BODY',
+    ])
+    expect(expansion.messages?.[1]).toMatchObject({
+      contentBlocks: [{ type: 'text', text: 'MCP_BODY' }],
+      images: [{ type: 'image', mediaType: 'image/png', data: 'aW1n' }],
+    })
+    await expect(
+      catalog.expandPromptAsync('/occupied:prompt (MCP)'),
+    ).resolves.toEqual({ userMessages: ['/occupied:prompt (MCP)'] })
+  })
+
+  it('does not expose MCP prompts when slash commands are disabled', async () => {
+    const catalog = new ClaudeExtensionCatalog(
+      { agents: [], commands: [], skills: [] },
+      { disableSlashCommands: true },
+    )
+    catalog.setMcpPrompts([
+      {
+        name: 'mcp__server__prompt',
+        userFacingName: 'server:prompt (MCP)',
+        description: '',
+        argumentNames: [],
+        invoke: async () => ({ text: 'wrong', contentBlocks: [], images: [] }),
+      },
+    ])
+    expect(catalog.mcpPromptNames()).toEqual([])
+    await expect(
+      catalog.expandPromptAsync('/server:prompt (MCP)'),
+    ).resolves.toEqual({ userMessages: ['/server:prompt (MCP)'] })
+  })
 })

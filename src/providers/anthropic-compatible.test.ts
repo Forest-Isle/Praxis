@@ -518,6 +518,84 @@ describe('AnthropicCompatibleProvider', () => {
     ])
   })
 
+  it('merges user attachments with explicit content blocks without duplicates', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+        )
+      },
+    })
+    const promptImage = {
+      type: 'image' as const,
+      mediaType: 'image/png' as const,
+      data: 'cHJvbXB0',
+    }
+    for await (const event of provider.complete({
+      messages: [
+        {
+          role: 'user',
+          content: 'prompt',
+          contentBlocks: [{ type: 'text', text: 'prompt' }, promptImage],
+          images: [
+            promptImage,
+            {
+              type: 'image',
+              mediaType: 'image/jpeg',
+              data: 'dXNlcg==',
+            },
+          ],
+          documents: [
+            {
+              type: 'document',
+              mediaType: 'application/pdf',
+              data: 'JVBERg==',
+            },
+          ],
+        },
+      ],
+    })) {
+      void event
+    }
+    expect(body?.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'prompt' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'cHJvbXB0',
+            },
+          },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/jpeg',
+              data: 'dXNlcg==',
+            },
+          },
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: 'JVBERg==',
+            },
+          },
+        ],
+      },
+    ])
+  })
+
   it('serializes Anthropic messages and streams text with aggregate usage', async () => {
     let capturedUrl = ''
     let capturedInit: RequestInit | undefined

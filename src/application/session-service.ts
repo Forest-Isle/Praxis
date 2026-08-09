@@ -63,7 +63,10 @@ import {
   injectFirstUserMessageContext,
   type ContextAssembler,
 } from '../core/context.js'
-import type { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
+import type {
+  ClaudeExtensionCatalog,
+  ClaudePromptExpansionMessage,
+} from '../extensions/claude-extensions.js'
 import { ClaudeHookToolCoordinator } from '../hooks/claude-hook-tools.js'
 import type {
   ClaudeHookOutcome,
@@ -1456,9 +1459,18 @@ export class ClaudeSessionService {
             : []),
         ]
 
-        const expansion = this.options.extensions?.expandPrompt(prompt) ?? {
-          userMessages: [prompt],
-        }
+        const expansion = this.options.extensions
+          ? await this.options.extensions.expandPromptAsync(
+              prompt,
+              signal,
+              toolResultDirectory,
+            )
+          : { userMessages: [prompt] }
+        const expandedMessages: readonly ClaudePromptExpansionMessage[] =
+          expansion.messages ?? expansion.userMessages.map((text) => ({ text }))
+        const attachmentIndex = expansion.messages
+          ? expandedMessages.length - 1
+          : 0
         currentTurnUserMessages = [...expansion.userMessages]
         this.options.eventSink?.({
           type: 'state',
@@ -1472,14 +1484,25 @@ export class ClaudeSessionService {
           ? (structuredTools?.definitions() ?? [])
           : []
         const budget = this.contextBudget(provider)
-        const pendingUserMessages = expansion.userMessages.map(
-          (content, index) => ({
-            role: 'user' as const,
-            content,
-            ...(index === 0 && images.length > 0 ? { images } : {}),
-            ...(index === 0 && documents.length > 0 ? { documents } : {}),
-          }),
-        )
+        const pendingUserMessages = expandedMessages.map((message, index) => ({
+          role: 'user' as const,
+          content: message.text,
+          ...(message.contentBlocks?.length
+            ? { contentBlocks: message.contentBlocks }
+            : {}),
+          ...((index === attachmentIndex && images.length > 0) ||
+          message.images?.length
+            ? {
+                images: [
+                  ...(index === attachmentIndex ? images : []),
+                  ...(message.images ?? []),
+                ],
+              }
+            : {}),
+          ...(index === attachmentIndex && documents.length > 0
+            ? { documents }
+            : {}),
+        }))
         const injectDynamicContext = (
           messages: readonly ModelMessage[],
         ): ModelMessage[] =>
@@ -1665,14 +1688,26 @@ export class ClaudeSessionService {
         }
         await compactIfNeeded(pendingUserMessages)
 
-        for (const [index, text] of expansion.userMessages.entries()) {
+        for (const [index, message] of expandedMessages.entries()) {
+          const messageImages = [
+            ...(index === attachmentIndex ? images : []),
+            ...(message.images ?? []),
+          ]
           const [userEntry] = translateProviderEvents(
             [
-              index === 0 && (images.length > 0 || documents.length > 0)
-                ? { type: 'user-message', text, images, documents }
+              messageImages.length > 0 ||
+              (index === attachmentIndex && documents.length > 0)
+                ? {
+                    type: 'user-message',
+                    text: message.text,
+                    images: messageImages,
+                    ...(index === attachmentIndex && documents.length > 0
+                      ? { documents }
+                      : {}),
+                  }
                 : index === 0
-                  ? { type: 'user-text', text }
-                  : { type: 'user-text-block', text },
+                  ? { type: 'user-text', text: message.text }
+                  : { type: 'user-text-block', text: message.text },
             ],
             this.translationContext(sessionId, snapshot),
           )

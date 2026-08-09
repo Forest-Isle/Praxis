@@ -10,9 +10,12 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { strToU8, zipSync } from 'fflate'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
+import { ClaudeMcpOAuthStore } from '../mcp/claude-mcp-oauth.js'
+import { validateClaudeMcpConfiguration } from '../mcp/claude-mcp-tools.js'
 import {
   describeClaudePlugin,
   initClaudePlugin,
@@ -111,6 +114,48 @@ async function pluginFixture(): Promise<{ root: string; configRoot: string }> {
   return { root, configRoot }
 }
 
+function mcpbFixture(): Uint8Array {
+  return zipSync({
+    'manifest.json': strToU8(
+      JSON.stringify({
+        manifest_version: '0.3',
+        name: 'bundled',
+        version: '1.0.0',
+        description: 'bundled server',
+        author: { name: 'Fixture' },
+        server: {
+          type: 'node',
+          entry_point: 'server.mjs',
+          mcp_config: {
+            command: process.execPath,
+            args: [
+              '${__dirname}/server.mjs',
+              '${user_config.token}',
+              '${user_config.paths}',
+            ],
+          },
+        },
+        user_config: {
+          token: {
+            type: 'string',
+            title: 'Token',
+            description: 'secret',
+            required: true,
+            sensitive: true,
+          },
+          paths: {
+            type: 'string',
+            title: 'Paths',
+            description: 'paths',
+            multiple: true,
+          },
+        },
+      }),
+    ),
+    'server.mjs': strToU8('process.stdin.resume()'),
+  })
+}
+
 describe('Claude plugin runtime', () => {
   it('reports per-component metadata and invocation token estimates', async () => {
     const { root } = await pluginFixture()
@@ -126,6 +171,29 @@ describe('Claude plugin runtime', () => {
       hooks: ['SessionStart', 'Stop'],
       mcpServers: ['file', 'inline'],
       lspServers: ['fileLsp', 'inlineLsp'],
+    })
+  })
+
+  it('keeps user-authored MCP files with internal-looking names in plugin details', async () => {
+    const { root } = await pluginFixture()
+    await writeFile(
+      join(root, 'plugin', 'plugin-mcpb-7.json'),
+      JSON.stringify({
+        mcpServers: { visible: { command: 'visible-command' } },
+      }),
+    )
+    await writeFile(
+      join(root, 'plugin', '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        mcpServers: 'plugin-mcpb-7.json',
+      }),
+    )
+
+    await expect(
+      describeClaudePlugin(join(root, 'plugin')),
+    ).resolves.toMatchObject({
+      components: { mcpServers: ['file', 'visible'] },
     })
   })
 
@@ -170,7 +238,7 @@ describe('Claude plugin runtime', () => {
       expect.arrayContaining([
         {
           mcpServers: {
-            file: {
+            'plugin:fixture:file': {
               command: 'file-mcp',
               env: {
                 CLAUDE_PLUGIN_ROOT: pluginRoot,
@@ -181,7 +249,7 @@ describe('Claude plugin runtime', () => {
         },
         {
           mcpServers: {
-            inline: {
+            'plugin:fixture:inline': {
               command: 'fixture-mcp',
               env: {
                 CLAUDE_PLUGIN_ROOT: pluginRoot,
@@ -226,6 +294,213 @@ describe('Claude plugin runtime', () => {
         maxRestarts: 2,
       }),
     ])
+  })
+
+  it('isolates equal MCP leaf names across plugins and manual servers', async () => {
+    const { root } = await pluginFixture()
+    const second = join(root, 'second-plugin')
+    await mkdir(join(second, '.claude-plugin'), { recursive: true })
+    await writeFile(
+      join(second, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'second',
+        mcpServers: { shared: { command: 'second-mcp' } },
+      }),
+    )
+    const firstManifest = join(root, 'plugin', '.claude-plugin', 'plugin.json')
+    await writeFile(
+      firstManifest,
+      JSON.stringify({
+        name: 'fixture',
+        mcpServers: { shared: { command: 'fixture-mcp' } },
+      }),
+    )
+
+    const resources = await loadClaudePlugins({
+      configRoot: join(root, 'empty-config'),
+      cwd: root,
+      pluginDirectories: [join(root, 'plugin'), second],
+      strictPluginDirectories: true,
+    })
+    const names = resources.mcp.flatMap((resource) =>
+      Object.keys(
+        (resource.value as { mcpServers?: Record<string, unknown> })
+          .mcpServers ?? {},
+      ),
+    )
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'plugin:fixture:file',
+        'plugin:fixture:shared',
+        'plugin:second:shared',
+      ]),
+    )
+    expect(names).not.toContain('shared')
+  })
+
+  it('keeps valid plugin resources when sibling MCP declarations fail', async () => {
+    const { root } = await pluginFixture()
+    await writeFile(join(root, 'plugin', '.mcp.json'), '{invalid')
+    await writeFile(join(root, 'plugin', 'broken.dxt'), 'not-a-zip')
+    await writeFile(
+      join(root, 'plugin', '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        commands: 'commands',
+        mcpServers: [
+          'missing.json',
+          './broken.dxt',
+          'https://user:query-secret@example.test/bundle.dxt?version=1',
+          { valid: { command: 'valid-mcp' } },
+        ],
+      }),
+    )
+
+    const resources = await loadClaudePlugins({
+      configRoot: join(root, 'empty-config'),
+      cwd: root,
+      pluginDirectories: [join(root, 'plugin')],
+      strictPluginDirectories: true,
+    })
+
+    expect(resources.plugins[0]?.errors).toEqual([
+      expect.stringContaining('.mcp.json'),
+      expect.stringContaining('missing.json'),
+      expect.stringContaining('broken.dxt'),
+      expect.stringContaining('Invalid plugin MCPB reference at index 2'),
+    ])
+    expect(JSON.stringify(resources.plugins[0]?.errors)).not.toContain(
+      'query-secret',
+    )
+    expect(resources.commands).toHaveLength(1)
+    expect(resources.mcp).toEqual([
+      expect.objectContaining({
+        value: {
+          mcpServers: {
+            'plugin:fixture:valid': expect.objectContaining({
+              command: 'valid-mcp',
+            }),
+          },
+        },
+      }),
+    ])
+  })
+
+  it('applies manifest MCP declarations after .mcp.json and later bundles after earlier bundles', async () => {
+    const { root } = await pluginFixture()
+    const plugin = join(root, 'plugin')
+    const bundleWithCommand = (command: string): Uint8Array =>
+      zipSync({
+        'manifest.json': strToU8(
+          JSON.stringify({
+            manifest_version: '0.3',
+            name: 'shared-bundle',
+            version: '1.0.0',
+            description: 'precedence fixture',
+            author: { name: 'Fixture' },
+            server: {
+              type: 'node',
+              entry_point: 'server.mjs',
+              mcp_config: { command },
+            },
+          }),
+        ),
+        'server.mjs': strToU8('process.stdin.resume()'),
+      })
+    await writeFile(
+      join(plugin, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: { shared: { command: 'file-command' } },
+      }),
+    )
+    await writeFile(join(plugin, 'first.dxt'), bundleWithCommand('first'))
+    await writeFile(join(plugin, 'second.dxt'), bundleWithCommand('second'))
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        mcpServers: [
+          { shared: { command: 'manifest-command' } },
+          './first.dxt',
+          './second.dxt',
+        ],
+      }),
+    )
+
+    const resources = await loadClaudePlugins({
+      configRoot: join(root, 'empty-config'),
+      cwd: root,
+      pluginDirectories: [plugin],
+      strictPluginDirectories: true,
+    })
+    expect(validateClaudeMcpConfiguration(resources.mcp).servers).toEqual([
+      expect.objectContaining({
+        name: 'plugin:fixture:shared',
+        command: 'manifest-command',
+      }),
+      expect.objectContaining({
+        name: 'plugin:fixture:shared-bundle',
+        command: 'second',
+      }),
+    ])
+  })
+
+  it('loads local DXT servers with scoped protected user configuration', async () => {
+    const { root, configRoot } = await pluginFixture()
+    await writeFile(join(root, 'plugin', 'bundled.dxt'), mcpbFixture())
+    await writeFile(
+      join(root, 'plugin', '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'fixture', mcpServers: './bundled.dxt' }),
+    )
+    await installClaudePlugin(configRoot, join(root, 'plugin'))
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+
+    const unconfigured = await loadClaudePlugins({ configRoot, cwd: root })
+    expect(
+      unconfigured.mcp.some((resource) =>
+        JSON.stringify(resource.value).includes('plugin:fixture:bundled'),
+      ),
+    ).toBe(false)
+    expect(unconfigured.plugins[0]?.errors).toEqual([])
+    await expect(
+      access(join(unconfigured.plugins[0]?.path ?? '', '.mcpb-cache')),
+    ).resolves.toBeUndefined()
+
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          fixture: {
+            mcpServers: { bundled: { paths: ['alpha', 'beta'] } },
+          },
+        },
+      }),
+    )
+    await new ClaudeMcpOAuthStore({ configRoot }).updatePluginSecrets(
+      'fixture/bundled',
+      { token: 'protected-token' },
+      [],
+    )
+
+    const configured = await loadClaudePlugins({ configRoot, cwd: root })
+    const bundledResource = configured.mcp.find((resource) =>
+      JSON.stringify(resource.value).includes('plugin:fixture:bundled'),
+    )
+    const server = (
+      bundledResource?.value as
+        | {
+            mcpServers?: Record<string, { args?: string[] }>
+          }
+        | undefined
+    )?.mcpServers?.['plugin:fixture:bundled']
+    expect(server?.args).toEqual([
+      expect.stringContaining('.mcpb-cache'),
+      'protected-token',
+      'alpha',
+      'beta',
+    ])
+    expect(bundledResource?.sensitiveValues).toContain('protected-token')
   })
 
   it('substitutes effective user, project, and local plugin options into LSP config', async () => {
@@ -407,7 +682,7 @@ describe('Claude plugin runtime', () => {
         expect.objectContaining({
           value: {
             mcpServers: {
-              configured: {
+              'plugin:fixture:configured': {
                 command: 'local-label',
                 args: ['secure-token'],
                 env: {

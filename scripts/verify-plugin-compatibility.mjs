@@ -1,9 +1,9 @@
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { loadClaudePlugins } from '../dist/plugins/claude-plugin-runtime.js'
+import { strToU8, zipSync } from 'fflate'
 import {
   detectClaudeVersion,
   execFileAsync,
@@ -108,6 +108,31 @@ async function marketplaceFixture(root) {
 
 async function detailsFixture(root) {
   const marketplace = join(root, 'details-marketplace')
+  const mcpServer = `let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const marker = process.argv[2] ?? 'missing'
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: { name: marker, version: '1' } }
+      : request.method === 'tools/list'
+        ? { tools: [{ name: 'echo', description: marker, inputSchema: { type: 'object' } }] }
+        : request.method === 'resources/list'
+          ? { resources: [{ uri: 'fixture://' + marker, name: marker, mimeType: 'text/plain' }] }
+          : request.method === 'resources/read'
+            ? { contents: [{ uri: request.params.uri, mimeType: 'text/plain', text: marker }] }
+            : { content: [{ type: 'text', text: marker }] }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`
   await Promise.all([
     write(
       join(marketplace, '.claude-plugin', 'marketplace.json'),
@@ -129,6 +154,7 @@ async function detailsFixture(root) {
         name: 'praxis-details-plugin',
         version: '1.0.0',
         description: 'Details fixture',
+        mcpServers: './bundle.dxt',
       }),
     ),
     write(
@@ -150,7 +176,36 @@ async function detailsFixture(root) {
     write(
       join(marketplace, 'plugin', '.mcp.json'),
       JSON.stringify({
-        mcpServers: { fixtureMcp: { command: 'fixture-mcp' } },
+        mcpServers: {
+          fixtureMcp: {
+            command: process.execPath,
+            args: ['${CLAUDE_PLUGIN_ROOT}/server.mjs', 'file-server'],
+          },
+        },
+      }),
+    ),
+    write(join(marketplace, 'plugin', 'server.mjs'), mcpServer),
+    write(
+      join(marketplace, 'plugin', 'bundle.dxt'),
+      zipSync({
+        'manifest.json': strToU8(
+          JSON.stringify({
+            manifest_version: '0.3',
+            name: 'bundle-mcp',
+            version: '1.0.0',
+            description: 'Bundle fixture',
+            author: { name: 'Praxis Fixture' },
+            server: {
+              type: 'node',
+              entry_point: 'server.mjs',
+              mcp_config: {
+                command: process.execPath,
+                args: ['${__dirname}/server.mjs', 'bundle-server'],
+              },
+            },
+          }),
+        ),
+        'server.mjs': strToU8(mcpServer),
       }),
     ),
     write(
@@ -207,6 +262,16 @@ try {
     'praxis-agent',
     'dist',
     'cli.js',
+  )
+  const installedPackage = join(installRoot, 'node_modules', 'praxis-agent')
+  const { loadClaudePlugins } = await import(
+    pathToFileURL(
+      join(installedPackage, 'dist', 'plugins', 'claude-plugin-runtime.js'),
+    ).href
+  )
+  const { ClaudeMcpToolRegistry } = await import(
+    pathToFileURL(join(installedPackage, 'dist', 'mcp', 'claude-mcp-tools.js'))
+      .href
   )
   const version = await detectClaudeVersion(
     'Plugin compatibility probe',
@@ -332,6 +397,60 @@ try {
     cwd,
     praxisConfig,
   )
+  const packedResources = await loadClaudePlugins({
+    configRoot: praxisConfig,
+    cwd,
+  })
+  const packedMcp = await ClaudeMcpToolRegistry.connect({
+    base: {
+      definitions: () => [],
+      prepare: async (call) => call,
+      execute: async () => {
+        throw new Error('unexpected base tool')
+      },
+    },
+    resources: packedResources.mcp,
+    cwd,
+    configRoot: praxisConfig,
+  })
+  try {
+    const names = packedMcp.definitions().map((tool) => tool.name)
+    const fileTool = 'mcp__plugin_praxis-details-plugin_fixtureMcp__echo'
+    const bundleTool = 'mcp__plugin_praxis-details-plugin_bundle-mcp__echo'
+    assert(
+      names.includes(fileTool) && names.includes(bundleTool),
+      `Packed plugin MCP tools were incomplete: ${JSON.stringify(names)}`,
+    )
+    const statuses = packedMcp.serverStatuses()
+    assert(
+      statuses.some(
+        (server) =>
+          server.name === 'plugin:praxis-details-plugin:fixtureMcp' &&
+          server.status === 'connected',
+      ) &&
+        statuses.some(
+          (server) =>
+            server.name === 'plugin:praxis-details-plugin:bundle-mcp' &&
+            server.status === 'connected',
+        ),
+      `Packed plugin MCP statuses were incomplete: ${JSON.stringify(statuses)}`,
+    )
+    for (const [name, marker] of [
+      [fileTool, 'file-server'],
+      [bundleTool, 'bundle-server'],
+    ]) {
+      const result = await packedMcp.execute(
+        { id: marker, name, input: {} },
+        { cwd },
+      )
+      assert(
+        result.content === marker,
+        `Packed plugin MCP ${name} returned ${result.content}`,
+      )
+    }
+  } finally {
+    await packedMcp.close()
+  }
   for (const [label, output] of [
     ['Claude', nativeDetails.stdout],
     ['Praxis', praxisDetails.stdout],
@@ -505,7 +624,7 @@ try {
   )
 
   console.log(
-    `Claude ${version} plugin compatibility passed: native marketplace and skills-directory registries, typed userConfig, available discovery, bidirectional list, details inventory/token costs, and Praxis runtime loading`,
+    `Claude ${version} plugin compatibility passed: native marketplace and skills-directory registries, typed userConfig, bidirectional list/details, packed ordinary MCP + MCPB/DXT connections, raw scoped statuses, normalized tools, and Praxis runtime loading`,
   )
 } finally {
   await rm(root, { recursive: true, force: true })

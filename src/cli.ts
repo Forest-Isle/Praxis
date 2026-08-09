@@ -606,7 +606,7 @@ Install a plugin from a local directory, URL, or configured marketplace. A
 marketplace plugin identifier uses the form plugin@marketplace.
 
 Options:
-  --config <key=value>  Set a declared userConfig option (repeatable)
+  --config <key=value>  Set userConfig; use server.key=value for MCPB (repeatable)
   -s, --scope <scope>  Install native marketplace plugin at local, project, or user scope (default: user)
   --json               Print a machine-readable plugin-installed result
   -h, --help            Display help for command
@@ -1290,6 +1290,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     cwd,
     configRoot,
     onWarning: (message) => runtimeEventSink({ type: 'warning', message }),
+    onPromptsChanged: (prompts) => extensions.setMcpPrompts(prompts),
     ...(onElicitation ? { onElicitation } : {}),
     eventSink: runtimeEventSink,
     ...(signal ? { signal } : {}),
@@ -1529,7 +1530,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : cli.permissionMode,
       slashCommands: extensions
         .modelInvocableSkills()
-        .map((definition) => definition.name),
+        .map((definition) => definition.name)
+        .concat(extensions.mcpPromptNames()),
       agents: extensions.agentNames(),
       skills: extensions
         .modelInvocableSkills()
