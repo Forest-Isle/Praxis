@@ -32,6 +32,7 @@ const excludedCommands = new Map([
   ['', new Set(['auth', 'gateway', 'setup-token', 'ultrareview'])],
   ['mcp', new Set(['add-from-claude-desktop'])],
 ])
+const optionSignatureExtensions = new Map([['', new Set(['--tmux'])]])
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -101,17 +102,97 @@ function section(output, name) {
   return selected
 }
 
-function options(output) {
-  const names = new Set()
+function optionSurface(output) {
+  const surface = new Map()
   for (const line of section(output, 'Options')) {
-    if (!/^\s{2,}--?[A-Za-z]/u.test(line)) continue
-    for (const match of line.matchAll(
-      /(?:^|[\s,])(--?[A-Za-z][A-Za-z0-9-]*)(?=[\s,[<=]|$)/gu,
-    )) {
-      names.add(match[1])
+    const declaration =
+      /^ {2}((?:--?[A-Za-z][A-Za-z0-9-]*)(?:,\s+--?[A-Za-z][A-Za-z0-9-]*)?)(\s*(?:\[[^\]]+\]|<[^>]+>))?/u.exec(
+        line,
+      )
+    if (!declaration) continue
+    const names = declaration[1].split(/,\s+/u)
+    const argument = declaration[2]?.trim()
+    const signature = {
+      kind: argument?.startsWith('[')
+        ? 'optional'
+        : argument?.startsWith('<')
+          ? 'required'
+          : 'none',
+      variadic: argument?.includes('...') ?? false,
+    }
+    for (const name of names) surface.set(name, signature)
+  }
+  return surface
+}
+
+function incompatibleOptionSignatures(
+  required,
+  actual,
+  excluded = new Set(),
+  extensions = new Set(),
+) {
+  const incompatible = []
+  for (const [name, expected] of required) {
+    if (excluded.has(name) || !actual.has(name)) continue
+    const received = actual.get(name)
+    if (
+      extensions.has(name) &&
+      expected.kind === 'none' &&
+      received.kind === 'optional' &&
+      !received.variadic
+    ) {
+      continue
+    }
+    const kindCompatible = received.kind === expected.kind
+    if (!kindCompatible || expected.variadic !== received.variadic) {
+      incompatible.push(
+        `${name} expected ${expected.kind}${expected.variadic ? ' variadic' : ''}, got ${received.kind}${received.variadic ? ' variadic' : ''}`,
+      )
     }
   }
-  return names
+  return incompatible
+}
+
+function positionalSurface(output, command, route) {
+  if (route.length === 0) return []
+  const usage = output
+    .split(/\r?\n/u)
+    .find((line) => line.startsWith(`Usage: ${command} `))
+  assert(usage, `${command} ${routeKey(route)} has no usage declaration`)
+  const normalized = usage.replace(/\|[a-z][a-z0-9-]*/giu, '')
+  const prefix = `Usage: ${command} ${route.join(' ')}`
+  assert(
+    normalized.startsWith(prefix),
+    `${command} ${routeKey(route)} usage does not start with ${prefix}`,
+  )
+  return [...normalized.slice(prefix.length).matchAll(/<[^>]+>|\[[^\]]+\]/gu)]
+    .map((match) => match[0])
+    .filter((argument) => argument !== '[options]' && argument !== '[command]')
+    .map((argument) => ({
+      kind: argument.startsWith('[') ? 'optional' : 'required',
+      variadic: argument.includes('...'),
+    }))
+}
+
+function incompatiblePositionals(required, actual) {
+  const incompatible = []
+  for (const [index, expected] of required.entries()) {
+    const received = actual[index]
+    if (!received) {
+      incompatible.push(`argument ${index + 1} is missing`)
+      continue
+    }
+    const kindCompatible = received.kind === expected.kind
+    if (!kindCompatible || expected.variadic !== received.variadic) {
+      incompatible.push(
+        `argument ${index + 1} expected ${expected.kind}${expected.variadic ? ' variadic' : ''}, got ${received.kind}${received.variadic ? ' variadic' : ''}`,
+      )
+    }
+  }
+  for (let index = required.length; index < actual.length; index += 1) {
+    incompatible.push(`unexpected argument ${index + 1}`)
+  }
+  return incompatible
 }
 
 function commandGroups(output) {
@@ -175,8 +256,10 @@ try {
     ])
     routes += 1
 
-    const claudeOptions = options(claudeHelp)
-    const praxisOptions = options(praxisHelp)
+    const claudeOptionSurface = optionSurface(claudeHelp)
+    const praxisOptionSurface = optionSurface(praxisHelp)
+    const claudeOptions = new Set(claudeOptionSurface.keys())
+    const praxisOptions = new Set(praxisOptionSurface.keys())
     for (const excluded of excludedOptions.get(key) ?? []) {
       assert(
         claudeOptions.has(excluded),
@@ -191,6 +274,34 @@ try {
     assert(
       missingOptions.length === 0,
       `${key || 'root'} missing options: ${missingOptions.join(', ')}`,
+    )
+    const incompatibleSignatures = incompatibleOptionSignatures(
+      claudeOptionSurface,
+      praxisOptionSurface,
+      excludedOptions.get(key),
+      optionSignatureExtensions.get(key),
+    )
+    assert(
+      incompatibleSignatures.length === 0,
+      `${key || 'root'} incompatible option signatures: ${incompatibleSignatures.join('; ')}`,
+    )
+    for (const extension of optionSignatureExtensions.get(key) ?? []) {
+      const expected = claudeOptionSurface.get(extension)
+      const received = praxisOptionSurface.get(extension)
+      assert(
+        expected?.kind === 'none' &&
+          received?.kind === 'optional' &&
+          !received.variadic,
+        `${key || 'root'} stale option signature extension: ${extension}`,
+      )
+    }
+    const incompatibleArguments = incompatiblePositionals(
+      positionalSurface(claudeHelp, 'claude', route),
+      positionalSurface(praxisHelp, 'praxis', route),
+    )
+    assert(
+      incompatibleArguments.length === 0,
+      `${key || 'root'} incompatible positional signatures: ${incompatibleArguments.join('; ')}`,
     )
     optionsChecked +=
       claudeOptions.size -
@@ -243,12 +354,16 @@ try {
     }
   }
 
-  for (const key of [...excludedOptions.keys(), ...excludedCommands.keys()]) {
+  for (const key of [
+    ...excludedOptions.keys(),
+    ...excludedCommands.keys(),
+    ...optionSignatureExtensions.keys(),
+  ]) {
     assert(seen.has(key), `Exclusion references undiscovered route: ${key}`)
   }
 
   console.log(
-    `CLI surface parity passed: ${routes} routes, ${optionsChecked} options, ${commandsChecked} commands/aliases, ${aliasesDispatched} alias dispatches.`,
+    `CLI surface parity passed: ${routes} routes, ${optionsChecked} option signatures, ${commandsChecked} commands/aliases, ${aliasesDispatched} alias dispatches.`,
   )
 } finally {
   await rm(probeRoot, { recursive: true, force: true })

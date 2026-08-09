@@ -10,7 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Stage 89 executable CLI surface closure is implemented on top of the
+Stage 90 exact CLI signature closure is implemented on top of the
+Stage 89 executable CLI surface closure,
 Stage 88 plugin MCP bundle parity,
 Stage 87 protected plugin option parity,
 Stage 86 interactive plugin LSP parity,
@@ -37,9 +38,9 @@ The hidden-compatible `--permission-prompt-tool` control routes ask decisions
 through a reserved MCP tool, supports approved input replacement, and keeps the
 permission tool out of the model-visible tool surface. Denials can either return
 a failed tool result or interrupt the run, matching the MCP response contract.
-Classifier-backed `auto` permissions remain fail-closed until their dedicated
-runtime lands; no-persistence runs disable Agent because native
-sidechains are disk-backed.
+Classifier-backed `auto` permissions use the bounded provider decision path and
+fail closed when classification is unavailable. No-persistence runs disable
+Agent because native sidechains are disk-backed.
 Running `praxis` or `praxis "prompt"` in a
 TTY opens an
 Ink session UI with streaming
@@ -485,8 +486,9 @@ npm run test:compat:all
 The aggregate command discovers every `test:*` compatibility gate except the
 provider-free package and performance gates, validates each command shape, and
 runs 52 isolated gates in sequence. The CLI surface gate dynamically walks all
-included Claude Code 2.1.208 command routes and aliases, compares route-local
-options, verifies functional `help <command>` dispatch, and keeps product-scope
+included Claude Code 2.1.208 command routes and aliases, compares exact
+route-local option and positional required/optional/variadic signatures,
+verifies functional `help <command>` and alias dispatch, and keeps product-scope
 exclusions explicit. Run an individual `test:*` command when iterating on one
 surface.
 
