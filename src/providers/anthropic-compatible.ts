@@ -553,6 +553,30 @@ type AnthropicMessage = {
   content: Record<string, unknown>[]
 }
 
+function serializeMediaContent(
+  message: Extract<ModelMessage, { role: 'user' | 'tool' }>,
+): Record<string, unknown>[] {
+  const blocks = message.contentBlocks ?? [
+    ...(message.content.length > 0
+      ? [{ type: 'text' as const, text: message.content }]
+      : []),
+    ...(message.images ?? []),
+    ...(message.documents ?? []),
+  ]
+  return blocks.map((block) =>
+    block.type === 'text'
+      ? { type: 'text', text: block.text }
+      : {
+          type: block.type,
+          source: {
+            type: 'base64',
+            media_type: block.mediaType,
+            data: block.data,
+          },
+        },
+  )
+}
+
 function serializeMessages(messages: readonly ModelMessage[]): {
   system: string
   messages: AnthropicMessage[]
@@ -575,57 +599,35 @@ function serializeMessages(messages: readonly ModelMessage[]): {
       continue
     }
     if (message.role === 'user') {
-      append('user', [
-        ...(message.content.length > 0
-          ? [{ type: 'text', text: message.content }]
-          : []),
-        ...(message.images ?? []).map((image) => ({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: image.mediaType,
-            data: image.data,
-          },
-        })),
-        ...(message.documents ?? []).map((document) => ({
-          type: 'document',
-          source: {
-            type: 'base64',
-            media_type: document.mediaType,
-            data: document.data,
-          },
-        })),
-      ])
+      append('user', serializeMediaContent(message))
       continue
     }
     if (message.role === 'tool') {
-      const media = [
-        ...(message.images ?? []).map((image) => ({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: image.mediaType,
-            data: image.data,
+      if (message.contentBlocks) {
+        const content = serializeMediaContent(message)
+        append('user', [
+          {
+            type: 'tool_result',
+            tool_use_id: message.toolCallId,
+            content:
+              content.length === 1 && content[0]?.type === 'text'
+                ? content[0].text
+                : content,
+            ...(message.isError ? { is_error: true } : {}),
           },
-        })),
-        ...(message.documents ?? []).map((document) => ({
-          type: 'document',
-          source: {
-            type: 'base64',
-            media_type: document.mediaType,
-            data: document.data,
+        ])
+      } else {
+        const media = serializeMediaContent({ ...message, content: '' })
+        append('user', [
+          {
+            type: 'tool_result',
+            tool_use_id: message.toolCallId,
+            content: message.content,
+            is_error: message.isError,
           },
-        })),
-      ]
-      append('user', [
-        {
-          type: 'tool_result',
-          tool_use_id: message.toolCallId,
-          content: message.content,
-          is_error: message.isError,
-        },
-        ...media,
-      ])
+          ...media,
+        ])
+      }
       continue
     }
     if (message.role !== 'assistant') continue

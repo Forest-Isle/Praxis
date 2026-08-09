@@ -2,11 +2,15 @@
 
 > Generated: 2026-08-09
 > Project: Praxis
-> Scanned: 180 source files, 57 scripts, 86 test modules
+> Scanned: 180 source files, 58 scripts, 86 test modules
 
 ## Executive Summary
 
-Praxis is buildable and fully wired for the current single-user CLI scope. TypeScript typechecking, boundary checks, focused regression tests, and package-script reference checks pass. No unfinished feature stubs, unresolved imports, or missing script targets were found. Remaining work is limited to maintainability in two large orchestration paths and a small diagnostic redaction allocation optimization.
+Praxis is buildable and fully wired for current single-user CLI scope. TypeScript
+typechecking, boundary checks, focused regressions, package-script references,
+and direct production dependencies pass. Stage 84 added the previously implicit
+`quickjs-emscripten-core` dependency and closed MCP media persistence wiring. No
+unfinished feature stubs, unresolved imports, or missing script targets remain.
 
 ## 🔴 Critical Issues
 
@@ -24,7 +28,8 @@ No incomplete implementations detected. TODO-like matches are documentation, tes
 
 ## 🟠 Broken Module Connections
 
-No broken module connections detected. `npm run typecheck`, boundary validation, and package script target checks pass.
+No broken module connections detected. `npm run typecheck`, boundary validation,
+direct-dependency inspection, and package-script target checks pass.
 
 | #   | Location | Connection gap | Suggested fix |
 | --- | -------- | -------------- | ------------- |
@@ -51,4 +56,4 @@ No broken module connections detected. `npm run typecheck`, boundary validation,
 
 - Total issues found: 2
 - Critical: 0 | Incomplete: 0 | Broken: 0 | Smells: 1 | Optimizations: 1
-- Files scanned: 180 source files, 57 scripts, 86 test modules
+- Files scanned: 180 source files, 58 scripts, 86 test modules

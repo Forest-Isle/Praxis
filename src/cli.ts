@@ -2918,7 +2918,7 @@ async function executePluginCommand(
       }
       pluginOutput(io, invocation, {
         type: 'plugin-marketplace-updated',
-        marketplaces: await updateClaudeMarketplace(configRoot, cwd, args[3]),
+        marketplaces: await updateClaudeMarketplace(configRoot, args[3]),
       })
       return 0
     }

@@ -80,15 +80,13 @@ Failed execution remains visible through output and notification status; any
 persisted sidechain remains available for inspection. Exclusive creation
 prevents overwriting native or Praxis output.
 
-## Deferred
+## Extended lifecycle
 
-- top-level `--background` sessions and `praxis agents` management;
-- background Bash and durable structured task graphs;
-- concurrent work stealing and process-independent live Agent ownership.
-
-These require separate black-box probes and lifecycle semantics. Current Agent
-background tasks remain owned by one Praxis process until their completion
-notification is delivered; completed native sidechains are resumable later.
+Top-level background sessions, `praxis agents`, background Bash, durable task
+graphs, owner-authenticated dispatch, stale-worker repair, and completed-session
+resume share the validated native session and sidechain contracts. Live work is
+owned by its Praxis worker; persisted output and completed sidechains remain
+cross-runtime resumable.
 
 ## Acceptance
 

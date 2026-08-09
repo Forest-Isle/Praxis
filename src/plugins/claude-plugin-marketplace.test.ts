@@ -149,7 +149,7 @@ describe('Claude native plugin marketplace', () => {
       ).commands,
     ).toHaveLength(1)
 
-    await updateClaudeMarketplace(value.configRoot, value.cwd, marketplace.name)
+    await updateClaudeMarketplace(value.configRoot, marketplace.name)
     await removeClaudeMarketplace(value.configRoot, value.cwd, marketplace.name)
     expect(await readClaudeKnownMarketplaces(value.configRoot)).toEqual([])
   })
@@ -296,7 +296,7 @@ describe('Claude native plugin marketplace', () => {
         },
       },
     ])
-    await updateClaudeMarketplace(value.configRoot, value.cwd, marketplace.name)
+    await updateClaudeMarketplace(value.configRoot, marketplace.name)
     await expect(
       addClaudeMarketplace(
         value.configRoot,

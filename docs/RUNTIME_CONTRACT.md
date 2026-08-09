@@ -164,6 +164,7 @@ Included:
 - Anthropic-compatible and OpenAI-compatible provider adapters;
 - file read/write/edit, search, shell, and MCP tools;
 - PNG, JPEG, GIF, and WebP results from the local `Read` tool;
+- user image/document inputs and ordered MCP media/structured-content results;
 - local permissions, sessions, resume/fork, compaction, CLAUDE.md, auto memory,
   skills, commands, agents, hooks, and MCP compatible subset;
 - text and structured JSON output;
@@ -179,8 +180,6 @@ Deferred:
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
 - transcript migration across unsupported Claude versions;
-- user image attachments and MCP-specific image-result writers until their
-  native Claude profiles are validated.
 
 Stream JSON event contract: runtime/provider events are the sole source for
 machine records. Compaction, tool timing, retry, and task lifecycle records

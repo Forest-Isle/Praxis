@@ -206,10 +206,8 @@ Status: complete for Claude Code 2.1.208 `Read` image results.
 - [x] strict native message/`toolUseResult` metadata consistency validation
 - [x] real Claude 2.1.208 resume of a Praxis-written image result
 
-User image attachments and MCP image-result writers remain closed pending
-separate Claude black-box envelopes. Exit gate covers focused runtime/provider/
-schema tests, real bidirectional projection, and the existing package,
-performance, recovery, subagent, and compatibility suites.
+User image attachments landed in later machine-I/O stages. MCP media-result
+writers and their separate Claude black-box envelope land in Stage 84.
 
 ## Sprint 13 — print and machine I/O contract
 
@@ -230,9 +228,8 @@ results report those unknown values as `null` rather than zero.
 - [x] legacy Praxis `--json` behavior retained as a separate compatibility alias
 - [x] clean-installed OpenAI/Anthropic two-turn stdin protocol gate
 
-User image/file input records and SDK control request/response messages remain
-explicit gaps in [PARITY_MATRIX.md](PARITY_MATRIX.md); they are not silently
-accepted or reported as compatible.
+User image/file input records landed in later stages. SDK control
+request/response messages remain outside current CLI invocation scope.
 
 ## Sprint 14 — CLI customization and session controls
 
@@ -617,3 +614,16 @@ Status: complete for agreed Claude Code 2.1.208 single-user CLI scope.
       `npm audit --omit=dev`: 0 vulnerabilities
 - [x] clean-tarball install and installed OpenAI/Anthropic provider/tool/resume/
       native-fork/subagent/two-turn-stream package matrix
+
+## Stage 84 - completion audit and MCP media closure
+
+Status: complete for Claude Code 2.1.208 single-user CLI scope.
+
+- [x] direct QuickJS runtime dependency declared; strict unused-symbol findings fixed
+- [x] ordered MCP text/image/audio/resource/structured-content provider envelope
+- [x] native `toolUseResult`, `mcpMeta`, assistant attribution, and turn `promptId`
+- [x] bounded exclusive binary writes with rollback on later conversion failure
+- [x] single document and multi-media transcript append validation
+- [x] installed Claude/Praxis MCP media compatibility gate; aggregate matrix now 49 gates
+- [x] `npm run check`: 86 files, 718 tests; package, performance, strict unused,
+      production audit, and 49-gate compatibility matrix passed

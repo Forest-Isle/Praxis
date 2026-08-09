@@ -449,6 +449,164 @@ describe('ClaudeSchemaAdapter', () => {
     )
   })
 
+  it('validates native MCP content-array metadata', () => {
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+    const blocks = [
+      { type: 'text', text: 'IMAGE_MARKER' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: 'aGVsbG8=',
+        },
+      },
+      { type: 'text', text: '{"value":"fixture"}' },
+    ]
+    const entry = {
+      parentUuid: '10000000-0000-4000-8000-000000000001',
+      isSidechain: false,
+      promptId: '10000000-0000-4000-8000-000000000002',
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call_media',
+            content: blocks,
+          },
+        ],
+      },
+      uuid: '10000000-0000-4000-8000-000000000002',
+      timestamp: '2026-08-09T00:00:00.000Z',
+      toolUseResult: blocks,
+      mcpMeta: { structuredContent: { value: 'fixture' } },
+      sourceToolAssistantUUID: '10000000-0000-4000-8000-000000000001',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: '/tmp/praxis-fixture',
+      sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      version: '2.1.208',
+      gitBranch: 'HEAD',
+    }
+    expect(adapter.serializeForAppend(entry)).toBe(JSON.stringify(entry))
+    expect(() =>
+      adapter.serializeForAppend({
+        ...entry,
+        toolUseResult: [{ type: 'text', text: 'different' }],
+      }),
+    ).toThrow('MCP tool result metadata')
+    expect(() =>
+      adapter.serializeForAppend({
+        ...entry,
+        toolUseResult: undefined,
+      }),
+    ).toThrow('MCP tool result metadata')
+    expect(() =>
+      adapter.serializeForAppend({
+        ...entry,
+        mcpMeta: { structuredContent: { value: 'different' } },
+      }),
+    ).toThrow('MCP tool result metadata')
+  })
+
+  it('validates document and multi-media tool result metadata', () => {
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+    const document = {
+      type: 'document',
+      source: {
+        type: 'base64',
+        media_type: 'application/pdf',
+        data: 'JVBERg==',
+      },
+    }
+    const image = {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: 'aGVsbG8=',
+      },
+    }
+    const entry = {
+      parentUuid: '10000000-0000-4000-8000-000000000001',
+      isSidechain: false,
+      promptId: '10000000-0000-4000-8000-000000000002',
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call_media',
+            content: [{ type: 'text', text: 'media' }, document],
+          },
+        ],
+      },
+      uuid: '10000000-0000-4000-8000-000000000002',
+      timestamp: '2026-08-09T00:00:00.000Z',
+      toolUseResult: {
+        type: 'document',
+        file: {
+          base64: 'JVBERg==',
+          type: 'application/pdf',
+          originalSize: 4,
+        },
+      },
+      sourceToolAssistantUUID: '10000000-0000-4000-8000-000000000001',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: '/tmp/praxis-fixture',
+      sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      version: '2.1.208',
+      gitBranch: 'HEAD',
+    }
+    expect(adapter.serializeForAppend(entry)).toBe(JSON.stringify(entry))
+
+    const multi = {
+      ...entry,
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call_media',
+            content: [image, document],
+          },
+        ],
+      },
+      toolUseResult: { type: 'media', count: 2 },
+    }
+    expect(adapter.serializeForAppend(multi)).toBe(JSON.stringify(multi))
+    expect(() =>
+      adapter.serializeForAppend({
+        ...multi,
+        toolUseResult: { type: 'media', count: 1 },
+      }),
+    ).toThrow('media tool result metadata')
+    expect(() =>
+      adapter.serializeForAppend({
+        ...entry,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_media',
+              content: [
+                {
+                  ...document,
+                  source: { ...document.source, data: 'not-base64' },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    ).toThrow('media tool result metadata')
+  })
+
   it('writes only the validated native compaction profile from advanced entries', async () => {
     const adapter = selectClaudeSchemaAdapter('2.1.208')
     const fixtures = await Promise.all(
@@ -543,7 +701,7 @@ describe('ClaudeSchemaAdapter', () => {
           },
         },
       }),
-    ).toThrow('image tool result metadata')
+    ).toThrow('media tool result metadata')
     const imageMessage = imageResult.message as Record<string, unknown>
     const imageToolResult = (
       imageMessage.content as Record<string, unknown>[]
@@ -556,7 +714,7 @@ describe('ClaudeSchemaAdapter', () => {
         content: [
           {
             ...imageToolResult,
-            content: [{ type: 'text', text: 'unexpected' }],
+            content: [{ type: 'future', value: 'unexpected' }],
           },
         ],
       },
@@ -569,14 +727,14 @@ describe('ClaudeSchemaAdapter', () => {
         ...textArrayResult,
         toolUseResult: imageResult.toolUseResult,
       }),
-    ).toThrow('image tool result metadata')
+    ).toThrow('media tool result metadata')
     const textMessageWithImageMetadata = {
       ...imageResult,
       message: { role: 'user', content: 'unexpected' },
     }
     expect(() =>
       adapter.serializeForAppend(textMessageWithImageMetadata),
-    ).toThrow('image tool result metadata')
+    ).toThrow('media tool result metadata')
     expect(() =>
       adapter.serializeForSidechainAppend({
         ...textMessageWithImageMetadata,
@@ -584,7 +742,7 @@ describe('ClaudeSchemaAdapter', () => {
         entrypoint: 'cli',
         agentId: '0123456789abcdef',
       }),
-    ).toThrow('image tool result metadata')
+    ).toThrow('media tool result metadata')
     expect(() =>
       adapter.serializeForFork({
         ...imageResult,

@@ -288,12 +288,12 @@ before append, and every `tool_result` must match the historical `tool_use` plus
 only through the bounded runtime in `docs/SUBAGENT_CONTRACT.md` and its
 write/resume probes. Async launch metadata, `TaskOutput`, `TaskStop`,
 `SendMessage`, task notifications, and same-ID continuation use that validated
-path. Image, tool-denial, and other entry writers remain disabled until their
-runtime implementations and probes pass. The validated image exception is exactly one successful PNG, JPEG, GIF, or
-WebP image nested in a `tool_result`, with matching base64, media type, and
-decoded byte size in native `toolUseResult.file` metadata. It uses the same
-bounded runtime path on main chains and Agent sidechains. Top-level user
-image attachments and MCP-specific image results remain write-disabled.
+path. Tool denial, user image/document input, and tool-result media writers use
+strict message/metadata pairing. Single image/document results carry matching
+base64, media type, and decoded size in native `toolUseResult.file`; multiple
+media results carry an exact count. MCP results preserve ordered native text and
+image blocks, materialize bounded audio/resource blobs, retain structured MCP
+metadata and attribution, and reuse the turn prompt ID.
 
 Structured tasks are authoritative shared files under
 `<config>/tasks/<session-id>`, not transcript or Praxis-only records. Praxis
@@ -482,7 +482,7 @@ through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork
 against that same root. It compares source and fork records field-for-field
 after the defined session-ID and transient-record transformation.
-`npm run test:compat:all` is the authoritative aggregate: it discovers all
+`npm run test:compat:all` is the authoritative aggregate: it discovers all 49
 compatibility gates from `package.json`, rejects unsupported command shapes or
 duplicate entrypoints, and runs each in an isolated child process. The complete
 matrix passed on Claude Code 2.1.208 after the conditional-rule and compaction

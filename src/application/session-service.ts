@@ -42,6 +42,7 @@ import {
 import {
   AgentRunCancelledError,
   AgentRuntime,
+  type ModelContentBlock,
   type ModelDocument,
   type ModelImage,
   type ModelMessage,
@@ -1191,12 +1192,14 @@ export class ClaudeSessionService {
           call: ModelToolCall,
           toolResult: {
             content: string
+            contentBlocks?: readonly ModelContentBlock[]
             images?: readonly ModelImage[]
             documents?: readonly ModelDocument[]
             isError: boolean
             accessedPaths?: readonly string[]
             followUpUserMessages?: readonly string[]
             nativeToolUseResult?: Record<string, unknown>
+            nativeMcpMeta?: Record<string, unknown>
           },
         ) => {
           const transition = this.worktreeManager?.consumeTransition(call.id)
@@ -1222,6 +1225,9 @@ export class ClaudeSessionService {
                 type: 'tool-result',
                 toolCallId: call.id,
                 content: toolResult.content,
+                ...(toolResult.contentBlocks
+                  ? { contentBlocks: toolResult.contentBlocks }
+                  : {}),
                 ...(toolResult.images ? { images: toolResult.images } : {}),
                 ...(toolResult.documents
                   ? { documents: toolResult.documents }
@@ -1229,6 +1235,9 @@ export class ClaudeSessionService {
                 isError: toolResult.isError,
                 ...(toolResult.nativeToolUseResult
                   ? { nativeToolUseResult: toolResult.nativeToolUseResult }
+                  : {}),
+                ...(toolResult.nativeMcpMeta
+                  ? { nativeMcpMeta: toolResult.nativeMcpMeta }
                   : {}),
               },
             ],

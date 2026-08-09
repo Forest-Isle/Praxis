@@ -384,6 +384,69 @@ describe('Claude transcript projection', () => {
     ])
   })
 
+  it('preserves ordered content blocks only for native MCP results', () => {
+    const blocks = [
+      { type: 'text', text: 'before' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: 'aGVsbG8=',
+        },
+      },
+    ]
+    expect(
+      projectClaudeModelMessages([
+        {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'call_mcp',
+                name: 'mcp__fixture__media',
+                input: {},
+              },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          toolUseResult: blocks,
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'call_mcp',
+                content: blocks,
+              },
+            ],
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_mcp', name: 'mcp__fixture__media', input: {} }],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_mcp',
+        content: 'before',
+        contentBlocks: [
+          { type: 'text', text: 'before' },
+          { type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' },
+        ],
+        images: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+        isError: false,
+      },
+    ])
+  })
+
   it('projects document blocks from native tool results', () => {
     expect(
       projectClaudeModelMessages([

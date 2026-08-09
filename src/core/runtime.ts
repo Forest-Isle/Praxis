@@ -16,6 +16,7 @@ export type ModelMessage =
   | {
       role: 'user'
       content: string
+      contentBlocks?: readonly ModelContentBlock[]
       images?: readonly ModelImage[]
       documents?: readonly ModelDocument[]
     }
@@ -29,6 +30,7 @@ export type ModelMessage =
       role: 'tool'
       toolCallId: string
       content: string
+      contentBlocks?: readonly ModelContentBlock[]
       images?: readonly ModelImage[]
       documents?: readonly ModelDocument[]
       isError: boolean
@@ -51,6 +53,9 @@ export interface ModelDocument {
   mediaType: ModelDocumentMediaType
   data: string
 }
+
+export type ModelContentBlock =
+  { type: 'text'; text: string } | ModelImage | ModelDocument
 
 export interface ModelToolCall {
   id: string
@@ -248,6 +253,7 @@ export type RuntimeEvent =
 
 export interface ToolExecutionResult {
   content: string
+  contentBlocks?: readonly ModelContentBlock[]
   images?: readonly ModelImage[]
   documents?: readonly ModelDocument[]
   isError: boolean
@@ -255,6 +261,7 @@ export interface ToolExecutionResult {
   accessedPaths?: readonly string[]
   followUpUserMessages?: readonly string[]
   nativeToolUseResult?: Record<string, unknown>
+  nativeMcpMeta?: Record<string, unknown>
   durationApiMs?: number
 }
 
@@ -735,6 +742,9 @@ export class AgentRuntime {
             role: 'tool',
             toolCallId: call.id,
             content: result.content,
+            ...(result.contentBlocks
+              ? { contentBlocks: result.contentBlocks }
+              : {}),
             ...(result.images ? { images: result.images } : {}),
             ...(result.documents ? { documents: result.documents } : {}),
             isError: result.isError,

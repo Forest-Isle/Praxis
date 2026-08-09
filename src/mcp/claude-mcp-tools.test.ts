@@ -1,4 +1,11 @@
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -356,13 +363,21 @@ process.stdin.on('data', chunk => {
           { id: '1', name: 'mcp__stdio__marker', input: {} },
           { cwd: root },
         ),
-      ).resolves.toEqual({ content: `STDIO:${root}`, isError: false })
+      ).resolves.toEqual({
+        content: `STDIO:${root}`,
+        contentBlocks: [{ type: 'text', text: `STDIO:${root}` }],
+        isError: false,
+      })
       await expect(
         registry.execute(
           { id: '2', name: 'mcp__http__marker', input: {} },
           { cwd: root },
         ),
-      ).resolves.toEqual({ content: 'HTTP', isError: false })
+      ).resolves.toEqual({
+        content: 'HTTP',
+        contentBlocks: [{ type: 'text', text: 'HTTP' }],
+        isError: false,
+      })
       await expect(
         registry.execute(
           {
@@ -392,6 +407,131 @@ process.stdin.on('data', chunk => {
       await new Promise<void>((resolve, reject) =>
         http.close((error) => (error ? reject(error) : resolve())),
       )
+    }
+  })
+
+  it('preserves MCP media order and materializes non-image binary blocks', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-media-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'media-server.mjs')
+    const resultDirectory = join(root, 'tool-results')
+    const image =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'media-fixture', version: '1' } }
+      : request.method === 'tools/list'
+        ? { tools: [{ name: 'media', description: 'media', inputSchema: { type: 'object' } }, { name: 'rollback', description: 'rollback', inputSchema: { type: 'object' } }, { name: 'invalid_base64', description: 'invalid base64', inputSchema: { type: 'object' } }, { name: 'missing_directory', description: 'missing directory', inputSchema: { type: 'object' } }] }
+        : request.params.name === 'rollback'
+          ? { content: [{ type: 'audio', mimeType: 'audio/wav', data: 'UklGRg==' }, { type: 'image', mimeType: 'image/svg+xml', data: 'PHN2Zy8+' }] }
+          : request.params.name === 'invalid_base64'
+            ? { content: [{ type: 'image', mimeType: 'image/png', data: 'not-base64' }] }
+            : request.params.name === 'missing_directory'
+              ? { content: [{ type: 'audio', mimeType: 'audio/wav', data: 'UklGRg==' }] }
+          : { content: [{ type: 'text', text: 'omitted when structured' }, { type: 'image', mimeType: 'image/png', data: '${image}' }, { type: 'audio', mimeType: 'audio/wav', data: 'UklGRg==' }, { type: 'resource_link', uri: 'fixture://linked', name: 'Linked' }, { type: 'resource', resource: { uri: 'fixture://embedded', mimeType: 'text/plain', text: 'EMBEDDED' } }], structuredContent: { value: 'STRUCTURED' } }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/fixture.json',
+          scope: 'local',
+          value: {
+            mcpServers: {
+              fixture: { command: process.execPath, args: [serverScript] },
+            },
+          },
+        },
+      ],
+    })
+    try {
+      const result = await registry.execute(
+        { id: 'media', name: 'mcp__fixture__media', input: {} },
+        { cwd: root, toolResultDirectory: resultDirectory },
+      )
+      expect(result.images).toEqual([
+        { type: 'image', mediaType: 'image/png', data: image },
+      ])
+      expect(result.nativeMcpMeta).toEqual({
+        structuredContent: { value: 'STRUCTURED' },
+      })
+      expect(result.contentBlocks).toHaveLength(5)
+      expect(result.contentBlocks?.[0]).toEqual({
+        type: 'image',
+        mediaType: 'image/png',
+        data: image,
+      })
+      const audioText = result.contentBlocks?.[1]
+      expect(audioText).toMatchObject({ type: 'text' })
+      if (audioText?.type !== 'text') throw new Error('audio text missing')
+      expect(audioText.text).toMatch(
+        /\[Audio from fixture\] Binary content \(audio\/wav, 4 bytes\) saved to .*\/mcp-fixture-blob-\d+-[a-f0-9]{6}\.wav$/u,
+      )
+      const audioPath = audioText.text.slice(
+        audioText.text.indexOf(' saved to ') + 10,
+      )
+      expect(await readFile(audioPath)).toEqual(Buffer.from('RIFF'))
+      expect(result.contentBlocks?.slice(2)).toEqual([
+        { type: 'text', text: '[Resource link: Linked] fixture://linked' },
+        {
+          type: 'text',
+          text: '[Resource from fixture at fixture://embedded] EMBEDDED',
+        },
+        { type: 'text', text: '{"value":"STRUCTURED"}' },
+      ])
+      expect(result.content).not.toContain('omitted when structured')
+      expect(result.isError).toBe(false)
+      const existingFiles = await readdir(resultDirectory)
+      await expect(
+        registry.execute(
+          { id: 'rollback', name: 'mcp__fixture__rollback', input: {} },
+          { cwd: root, toolResultDirectory: resultDirectory },
+        ),
+      ).rejects.toThrow('MCP image result is invalid or unsupported')
+      expect(await readdir(resultDirectory)).toEqual(existingFiles)
+      await expect(
+        registry.execute(
+          {
+            id: 'invalid-base64',
+            name: 'mcp__fixture__invalid_base64',
+            input: {},
+          },
+          { cwd: root, toolResultDirectory: resultDirectory },
+        ),
+      ).rejects.toThrow('Invalid Base64 string')
+      await expect(
+        registry.execute(
+          {
+            id: 'missing-directory',
+            name: 'mcp__fixture__missing_directory',
+            input: {},
+          },
+          { cwd: root },
+        ),
+      ).rejects.toThrow(
+        'MCP binary tool result output directory is unavailable',
+      )
+    } finally {
+      await registry.close()
     }
   })
 
@@ -528,6 +668,15 @@ process.stdin.on('data', chunk => {
           ambient: 'missing',
           explicit: '[REDACTED]',
         }),
+        contentBlocks: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ambient: 'missing',
+              explicit: '[REDACTED]',
+            }),
+          },
+        ],
         isError: false,
       })
       const error = await registry
@@ -618,7 +767,11 @@ process.stdin.on('data', chunk => {
           { id: 'header', name: 'mcp__secret__header', input: {} },
           { cwd: root },
         ),
-      ).resolves.toEqual({ content: '[REDACTED]', isError: false })
+      ).resolves.toEqual({
+        content: '[REDACTED]',
+        contentBlocks: [{ type: 'text', text: '[REDACTED]' }],
+        isError: false,
+      })
     } finally {
       await registry?.close()
       await new Promise<void>((resolve, reject) =>

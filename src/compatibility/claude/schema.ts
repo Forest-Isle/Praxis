@@ -346,14 +346,17 @@ function validateUserContent(content: unknown): void {
     if (!Array.isArray(block.content) || block.content.length === 0) {
       throw new Error('Claude transcript has invalid tool result content')
     }
-    if (
-      block.content.length !== 1 ||
-      !isRecord(block.content[0]) ||
-      block.content[0].type !== 'image'
-    ) {
+    for (const nested of block.content) {
+      if (!isRecord(nested)) {
+        throw new Error('Claude transcript has invalid tool result content')
+      }
+      if (nested.type === 'text' && typeof nested.text === 'string') continue
+      if (nested.type === 'image' || nested.type === 'document') {
+        validateMediaSource(nested.source)
+        continue
+      }
       throw new Error('Claude transcript has invalid tool result content')
     }
-    validateMediaSource(block.content[0].source)
   }
 }
 
@@ -405,6 +408,12 @@ const APPENDABLE_IMAGE_MEDIA_TYPES = new Set([
   'image/gif',
   'image/webp',
 ])
+const APPENDABLE_DOCUMENT_MEDIA_TYPES = new Set([
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'application/json',
+])
 
 function decodedBase64Size(data: string): number | null {
   if (
@@ -418,15 +427,75 @@ function decodedBase64Size(data: string): number | null {
   return decoded.toString('base64') === data ? decoded.length : null
 }
 
-function validateImageToolResultMetadata(
+function validateMcpToolResultMetadata(
+  entry: ClaudeTranscriptEntry,
+  message: Record<string, unknown>,
+): boolean {
+  if (!Array.isArray(entry.toolUseResult)) {
+    if (entry.mcpMeta !== undefined) {
+      throw new Error('Claude MCP tool result metadata is invalid')
+    }
+    return false
+  }
+  if (
+    entry.type !== 'user' ||
+    !Array.isArray(message.content) ||
+    message.content.length !== 1 ||
+    !isRecord(message.content[0]) ||
+    message.content[0].type !== 'tool_result' ||
+    !Array.isArray(message.content[0].content) ||
+    JSON.stringify(message.content[0].content) !==
+      JSON.stringify(entry.toolUseResult) ||
+    (entry.mcpMeta !== undefined && !isRecord(entry.mcpMeta))
+  ) {
+    throw new Error('Claude MCP tool result metadata is invalid')
+  }
+  for (const block of entry.toolUseResult) {
+    if (!isRecord(block)) {
+      throw new Error('Claude MCP tool result metadata is invalid')
+    }
+    if (block.type === 'text' && typeof block.text === 'string') continue
+    if (
+      block.type === 'image' &&
+      isRecord(block.source) &&
+      block.source.type === 'base64' &&
+      isNonEmptyString(block.source.media_type) &&
+      APPENDABLE_IMAGE_MEDIA_TYPES.has(block.source.media_type) &&
+      isNonEmptyString(block.source.data) &&
+      decodedBase64Size(block.source.data) !== null
+    ) {
+      continue
+    }
+    throw new Error('Claude MCP tool result metadata is invalid')
+  }
+  if (entry.mcpMeta !== undefined) {
+    const lastBlock = entry.toolUseResult.at(-1)
+    if (
+      !isRecord(entry.mcpMeta) ||
+      !('structuredContent' in entry.mcpMeta) ||
+      !isRecord(lastBlock) ||
+      lastBlock.type !== 'text' ||
+      lastBlock.text !== JSON.stringify(entry.mcpMeta.structuredContent)
+    ) {
+      throw new Error('Claude MCP tool result metadata is invalid')
+    }
+  }
+  return true
+}
+
+function validateMediaToolResultMetadata(
   entry: ClaudeTranscriptEntry,
   message: Record<string, unknown>,
 ): void {
-  const hasImageMetadata =
-    isRecord(entry.toolUseResult) && entry.toolUseResult.type === 'image'
+  if (validateMcpToolResultMetadata(entry, message)) return
+  const hasMediaMetadata =
+    isRecord(entry.toolUseResult) &&
+    (entry.toolUseResult.type === 'image' ||
+      entry.toolUseResult.type === 'document' ||
+      entry.toolUseResult.type === 'media')
   if (!Array.isArray(message.content)) {
-    if (hasImageMetadata) {
-      throw new Error('Claude image tool result metadata is invalid')
+    if (hasMediaMetadata) {
+      throw new Error('Claude media tool result metadata is invalid')
     }
     return
   }
@@ -434,56 +503,74 @@ function validateImageToolResultMetadata(
     (block): block is Record<string, unknown> =>
       isRecord(block) && block.type === 'tool_result',
   )
-  const images = toolResults.flatMap((toolResult) =>
+  const media = toolResults.flatMap((toolResult) =>
     Array.isArray(toolResult.content)
       ? toolResult.content.filter(
           (block): block is Record<string, unknown> =>
-            isRecord(block) && block.type === 'image',
+            isRecord(block) &&
+            (block.type === 'image' || block.type === 'document'),
         )
       : [],
   )
-  if (images.length === 0 && !hasImageMetadata) return
-  const toolResult = toolResults.find(
-    (block) =>
-      Array.isArray(block.content) &&
-      block.content.some(
-        (nested) => isRecord(nested) && nested.type === 'image',
-      ),
-  )
-  const image = images[0]
+  if (media.length === 0 && !hasMediaMetadata) return
+  const toolResult = toolResults[0]
   if (
     entry.type !== 'user' ||
     message.content.length !== 1 ||
     toolResults.length !== 1 ||
-    images.length !== 1 ||
     !toolResult ||
     toolResult.is_error !== undefined ||
     !Array.isArray(toolResult.content) ||
-    toolResult.content.length !== 1 ||
-    !image ||
-    !isRecord(image.source) ||
-    image.source.type !== 'base64' ||
-    !isNonEmptyString(image.source.media_type) ||
-    !APPENDABLE_IMAGE_MEDIA_TYPES.has(image.source.media_type) ||
-    !isNonEmptyString(image.source.data) ||
-    !isRecord(entry.toolUseResult) ||
-    entry.toolUseResult.type !== 'image' ||
-    !isRecord(entry.toolUseResult.file)
+    media.length === 0 ||
+    !isRecord(entry.toolUseResult)
   ) {
-    throw new Error('Claude image tool result metadata is invalid')
+    throw new Error('Claude media tool result metadata is invalid')
   }
+
+  for (const block of media) {
+    const allowedTypes =
+      block.type === 'image'
+        ? APPENDABLE_IMAGE_MEDIA_TYPES
+        : APPENDABLE_DOCUMENT_MEDIA_TYPES
+    if (
+      !isRecord(block.source) ||
+      block.source.type !== 'base64' ||
+      !isNonEmptyString(block.source.media_type) ||
+      !allowedTypes.has(block.source.media_type) ||
+      !isNonEmptyString(block.source.data) ||
+      decodedBase64Size(block.source.data) === null
+    ) {
+      throw new Error('Claude media tool result metadata is invalid')
+    }
+  }
+
+  if (media.length > 1) {
+    if (
+      entry.toolUseResult.type !== 'media' ||
+      entry.toolUseResult.count !== media.length
+    ) {
+      throw new Error('Claude media tool result metadata is invalid')
+    }
+    return
+  }
+
+  const block = media[0]
   const file = entry.toolUseResult.file
-  const decodedSize = decodedBase64Size(image.source.data)
+  if (!block || !isRecord(block.source) || !isRecord(file)) {
+    throw new Error('Claude media tool result metadata is invalid')
+  }
+  const decodedSize = decodedBase64Size(String(block.source.data))
   if (
-    file.base64 !== image.source.data ||
-    file.type !== image.source.media_type ||
+    entry.toolUseResult.type !== block.type ||
+    file.base64 !== block.source.data ||
+    file.type !== block.source.media_type ||
     !Number.isSafeInteger(file.originalSize) ||
     typeof file.originalSize !== 'number' ||
     file.originalSize < 0 ||
     decodedSize === null ||
     file.originalSize !== decodedSize
   ) {
-    throw new Error('Claude image tool result metadata is invalid')
+    throw new Error('Claude media tool result metadata is invalid')
   }
 }
 
@@ -815,7 +902,7 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
   if (role !== entry.type) {
     throw new Error('Claude transcript message role does not match entry type')
   }
-  validateImageToolResultMetadata(entry, entry.message)
+  validateMediaToolResultMetadata(entry, entry.message)
 
   if (entry.type === 'user') {
     validateUserContent(entry.message.content)
@@ -870,7 +957,7 @@ function validateSidechainEntry(entry: ClaudeTranscriptEntry): void {
   if (!isRecord(entry.message) || entry.message.role !== entry.type) {
     throw new Error('Claude sidechain entry has invalid message role')
   }
-  validateImageToolResultMetadata(entry, entry.message)
+  validateMediaToolResultMetadata(entry, entry.message)
   if (entry.type === 'user') {
     if (!isNonEmptyString(entry.promptId)) {
       throw new Error('Claude sidechain user entry is missing promptId')

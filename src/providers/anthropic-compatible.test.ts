@@ -404,6 +404,63 @@ describe('AnthropicCompatibleProvider', () => {
     ])
   })
 
+  it('nests ordered MCP media inside the Anthropic tool result', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+        )
+      },
+    })
+    for await (const event of provider.complete({
+      messages: [
+        {
+          role: 'tool',
+          toolCallId: 'call_mcp',
+          content: 'audio',
+          contentBlocks: [
+            { type: 'text', text: 'audio' },
+            {
+              type: 'image',
+              mediaType: 'image/png',
+              data: 'aGVsbG8=',
+            },
+          ],
+          isError: false,
+        },
+      ],
+    })) {
+      void event
+    }
+    expect(body?.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call_mcp',
+            content: [
+              { type: 'text', text: 'audio' },
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: 'aGVsbG8=',
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ])
+  })
+
   it('serializes user image attachments as native Anthropic content blocks', async () => {
     let body: Record<string, unknown> | undefined
     const provider = new AnthropicCompatibleProvider({
