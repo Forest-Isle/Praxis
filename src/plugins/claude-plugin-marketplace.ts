@@ -67,6 +67,17 @@ export interface ClaudeInstalledPlugin {
   enabled: boolean
 }
 
+export interface ClaudeSkillsDirectoryPlugin {
+  id: string
+  scope: 'user'
+  installPath: string
+  version: string
+  enabled: boolean
+}
+
+export type ClaudePluginTarget =
+  ClaudeInstalledPlugin | ClaudeSkillsDirectoryPlugin
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -176,6 +187,15 @@ function installedPath(configRoot: string): string {
   return join(configRoot, 'plugins', 'installed_plugins.json')
 }
 
+export function claudePluginDataPath(configRoot: string, id: string): string {
+  return join(
+    resolve(configRoot),
+    'plugins',
+    'data',
+    id.replace(/[^a-zA-Z0-9_-]/gu, '-'),
+  )
+}
+
 function knownPath(configRoot: string): string {
   return join(configRoot, 'plugins', 'known_marketplaces.json')
 }
@@ -240,6 +260,45 @@ export async function readClaudeInstalledPlugins(
   return result.sort((left, right) => left.id.localeCompare(right.id))
 }
 
+export async function readClaudeSkillsDirectoryPlugins(
+  configRoot: string,
+  cwd: string,
+): Promise<ClaudeSkillsDirectoryPlugin[]> {
+  const root = join(resolve(configRoot), 'skills')
+  let entries
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+  const enabled = await readEffectiveEnabledPlugins(configRoot, cwd)
+  const plugins = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map(async (entry) => {
+        const installPath = join(root, entry.name)
+        try {
+          const identity = await readPluginIdentity(installPath)
+          const id = `${identity.name}@skills-dir`
+          return {
+            id,
+            scope: 'user' as const,
+            installPath,
+            version: identity.version,
+            enabled: enabled[id] ?? true,
+          }
+        } catch {
+          return null
+        }
+      }),
+  )
+  return plugins.filter(
+    (plugin): plugin is ClaudeSkillsDirectoryPlugin => plugin !== null,
+  )
+}
+
 async function readEffectiveEnabledPlugins(
   configRoot: string,
   cwd: string,
@@ -293,6 +352,7 @@ export async function removeClaudeInstalledPlugin(
   id: string,
   scope: ClaudePluginScope,
   cwd: string,
+  deleteData = true,
 ): Promise<ClaudeInstalledPlugin> {
   const installed = await readClaudeInstalledPlugins(configRoot, cwd)
   const target = installed.find(
@@ -311,6 +371,8 @@ export async function removeClaudeInstalledPlugin(
   )
   if (remaining.length === 0) delete plugins[id]
   else plugins[id] = remaining
+  const isLastInstallation =
+    !Array.isArray(plugins[id]) || plugins[id].length === 0
   root.plugins = plugins
   await writeJson(path, root)
   const remainingPaths = Object.values(plugins).flatMap((value) =>
@@ -324,6 +386,12 @@ export async function removeClaudeInstalledPlugin(
   )
   if (!remainingPaths.includes(target.installPath)) {
     await rm(target.installPath, { recursive: true, force: true })
+  }
+  if (isLastInstallation && deleteData) {
+    await rm(claudePluginDataPath(configRoot, id), {
+      recursive: true,
+      force: true,
+    })
   }
   await setClaudePluginEnabledNative(configRoot, cwd, id, scope, undefined)
   return target
@@ -786,10 +854,180 @@ async function readPluginIdentity(
   const value: unknown = JSON.parse(await readFile(manifestPath, 'utf8'))
   if (!isRecord(value))
     throw new Error(`Plugin manifest must be an object: ${manifestPath}`)
+  if (value.userConfig !== undefined) {
+    if (!isRecord(value.userConfig)) {
+      throw new Error(`Plugin userConfig must be an object: ${manifestPath}`)
+    }
+    for (const [key, definition] of Object.entries(value.userConfig)) {
+      if (!isRecord(definition)) {
+        throw new Error(
+          `Plugin userConfig ${key} must be an object: ${manifestPath}`,
+        )
+      }
+      nonEmptyString(definition.type, `Plugin userConfig ${key} type`)
+      nonEmptyString(definition.title, `Plugin userConfig ${key} title`)
+      nonEmptyString(
+        definition.description,
+        `Plugin userConfig ${key} description`,
+      )
+    }
+  }
   return {
     name: nonEmptyString(value.name, 'Plugin name'),
     version: nonEmptyString(value.version ?? '0.0.0', 'Plugin version'),
   }
+}
+
+type ClaudePluginConfigValue = string | number | boolean | string[]
+
+function pluginConfigValue(
+  value: string,
+  definition: Record<string, unknown>,
+  key: string,
+): ClaudePluginConfigValue {
+  const type = definition.type
+  if (type === 'boolean') {
+    if (value === 'true') return true
+    return false
+  }
+  if (type === 'number') {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) {
+      throw new Error(
+        `--config ${key}: ${JSON.stringify(value)} is not a number`,
+      )
+    }
+    if (typeof definition.min === 'number' && parsed < definition.min) {
+      throw new Error(`--config ${key} must be at least ${definition.min}`)
+    }
+    if (typeof definition.max === 'number' && parsed > definition.max) {
+      throw new Error(`--config ${key} must be at most ${definition.max}`)
+    }
+    return parsed
+  }
+  if (type === 'string' || type === 'directory' || type === 'file') {
+    if (definition.required === true && value.length === 0) {
+      throw new Error(`--config ${key} is required`)
+    }
+    return definition.multiple === true
+      ? value
+          .split(',')
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0)
+      : value
+  }
+  throw new Error(`Plugin userConfig ${key} has unsupported type`)
+}
+
+export async function saveClaudePluginConfig(
+  configRoot: string,
+  cwd: string,
+  id: string,
+  pluginPath: string,
+  assignments: readonly string[],
+): Promise<{ warnings: readonly string[] }> {
+  if (assignments.length === 0) return { warnings: [] }
+  const manifestPath = join(await realpath(pluginPath), PLUGIN_MANIFEST)
+  const manifest: unknown = JSON.parse(await readFile(manifestPath, 'utf8'))
+  if (!isRecord(manifest) || !isRecord(manifest.userConfig)) {
+    return {
+      warnings: [`Plugin ${id} does not declare userConfig options`],
+    }
+  }
+  const definitions = manifest.userConfig
+  const values: Record<string, ClaudePluginConfigValue> = {}
+  const warnings: string[] = []
+  for (const assignment of assignments) {
+    const separator = assignment.indexOf('=')
+    if (separator <= 0) {
+      warnings.push('--config must use key=value')
+      continue
+    }
+    const key = assignment.slice(0, separator)
+    const definition = definitions[key]
+    if (!isRecord(definition)) {
+      warnings.push(
+        `--config key ${JSON.stringify(key)} isn't declared in this plugin's userConfig. Known keys: ${Object.keys(definitions).join(', ') || '(none)'}.`,
+      )
+      continue
+    }
+    try {
+      values[key] = pluginConfigValue(
+        assignment.slice(separator + 1),
+        definition,
+        key,
+      )
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : String(error))
+    }
+  }
+  if (warnings.length > 0) return { warnings }
+  const path = settingsPath(configRoot, cwd, 'user')
+  const root = await readJson(path)
+  const pluginConfigs = isRecord(root.pluginConfigs)
+    ? { ...root.pluginConfigs }
+    : {}
+  const current = isRecord(pluginConfigs[id]) ? { ...pluginConfigs[id] } : {}
+  const options = isRecord(current.options) ? { ...current.options } : {}
+  current.options = { ...options, ...values }
+  pluginConfigs[id] = current
+  root.pluginConfigs = pluginConfigs
+  await writeJson(path, root)
+  return { warnings: [] }
+}
+
+export async function listClaudeMarketplaceAvailablePlugins(
+  configRoot: string,
+  cwd: string,
+): Promise<
+  Array<{
+    pluginId: string
+    name: string
+    description?: string
+    marketplaceName: string
+    version?: string
+    source: string | Record<string, unknown>
+  }>
+> {
+  const installed = new Set(
+    (await readClaudeInstalledPlugins(configRoot, cwd)).map(
+      (plugin) => plugin.id,
+    ),
+  )
+  const available: Array<{
+    pluginId: string
+    name: string
+    description?: string
+    marketplaceName: string
+    version?: string
+    source: string | Record<string, unknown>
+  }> = []
+  for (const marketplace of await readClaudeKnownMarketplaces(configRoot)) {
+    try {
+      const manifest = await readClaudeMarketplaceManifest(
+        marketplace.installLocation,
+      )
+      for (const plugin of manifest.plugins) {
+        const pluginId = `${plugin.name}@${marketplace.name}`
+        if (installed.has(pluginId)) continue
+        available.push({
+          pluginId,
+          name: plugin.name,
+          ...(plugin.description === undefined
+            ? {}
+            : { description: plugin.description }),
+          marketplaceName: marketplace.name,
+          ...(plugin.version === undefined ? {} : { version: plugin.version }),
+          source: plugin.source,
+        })
+      }
+    } catch {
+      // Match Claude's list behavior: one unreadable marketplace does not hide others.
+    }
+  }
+  return available.sort((left, right) =>
+    left.pluginId.localeCompare(right.pluginId),
+  )
 }
 
 function pluginSourcePath(
@@ -885,22 +1123,74 @@ export async function installClaudeMarketplacePlugin(
   }
 }
 
+async function nativePluginTargets(
+  configRoot: string,
+  cwd: string,
+): Promise<ClaudePluginTarget[]> {
+  const [installed, skills] = await Promise.all([
+    readClaudeInstalledPlugins(configRoot, cwd),
+    readClaudeSkillsDirectoryPlugins(configRoot, cwd),
+  ])
+  return [...installed, ...skills]
+}
+
+function selectNativePluginTarget(
+  targets: readonly ClaudePluginTarget[],
+  id: string,
+  requestedScope?: ClaudePluginScope,
+): ClaudePluginTarget | undefined {
+  const selected = targets.filter(
+    (entry) =>
+      entry.id === id &&
+      (requestedScope === undefined || entry.scope === requestedScope),
+  )
+  if (requestedScope !== undefined) return selected[0]
+  const priority: Record<ClaudePluginScope, number> = {
+    local: 0,
+    project: 1,
+    user: 2,
+  }
+  return selected.sort(
+    (left, right) => priority[left.scope] - priority[right.scope],
+  )[0]
+}
+
 export async function setNativePluginEnabled(
   configRoot: string,
   cwd: string,
   id: string,
   enabled: boolean,
   requestedScope?: ClaudePluginScope,
-): Promise<ClaudeInstalledPlugin> {
-  const installed = await readClaudeInstalledPlugins(configRoot, cwd)
-  const target = installed.find(
-    (entry) =>
-      entry.id === id &&
-      (requestedScope === undefined || entry.scope === requestedScope),
+): Promise<ClaudePluginTarget> {
+  const target = selectNativePluginTarget(
+    await nativePluginTargets(configRoot, cwd),
+    id,
+    requestedScope,
   )
   if (!target) throw new Error(`Plugin not installed: ${id}`)
   await setClaudePluginEnabledNative(configRoot, cwd, id, target.scope, enabled)
   return { ...target, enabled }
+}
+
+export async function disableAllNativePlugins(
+  configRoot: string,
+  cwd: string,
+): Promise<ClaudePluginTarget[]> {
+  const enabled = (await nativePluginTargets(configRoot, cwd)).filter(
+    (plugin) => plugin.enabled,
+  )
+  await Promise.all(
+    enabled.map(async (plugin) =>
+      setClaudePluginEnabledNative(
+        configRoot,
+        cwd,
+        plugin.id,
+        plugin.scope,
+        false,
+      ),
+    ),
+  )
+  return enabled.map((plugin) => ({ ...plugin, enabled: false }))
 }
 
 export async function updateNativePlugin(
@@ -909,13 +1199,17 @@ export async function updateNativePlugin(
   id: string,
   requestedScope?: ClaudePluginScope,
 ): Promise<ClaudeInstalledPlugin> {
-  const installed = await readClaudeInstalledPlugins(configRoot, cwd)
-  const target = installed.find(
-    (entry) =>
-      entry.id === id &&
-      (requestedScope === undefined || entry.scope === requestedScope),
+  const target = selectNativePluginTarget(
+    await nativePluginTargets(configRoot, cwd),
+    id,
+    requestedScope,
   )
   if (!target) throw new Error(`Plugin not installed: ${id}`)
+  if (!('installedAt' in target)) {
+    throw new Error(
+      `Plugin ${id} is loaded from ${join(resolve(configRoot), 'skills')} with no marketplace backing and cannot be updated`,
+    )
+  }
   const updated = await installClaudeMarketplacePlugin(
     configRoot,
     cwd,
@@ -932,22 +1226,33 @@ export async function uninstallNativePlugin(
   cwd: string,
   id: string,
   requestedScope?: ClaudePluginScope,
+  deleteData = true,
 ): Promise<ClaudeInstalledPlugin> {
-  const installed = await readClaudeInstalledPlugins(configRoot, cwd)
-  const target = installed.find(
-    (entry) =>
-      entry.id === id &&
-      (requestedScope === undefined || entry.scope === requestedScope),
+  const target = selectNativePluginTarget(
+    await nativePluginTargets(configRoot, cwd),
+    id,
+    requestedScope,
   )
   if (!target) throw new Error(`Plugin not installed: ${id}`)
-  return removeClaudeInstalledPlugin(configRoot, id, target.scope, cwd)
+  if (!('installedAt' in target)) {
+    throw new Error(
+      `Plugin ${id} is loaded from ${join(resolve(configRoot), 'skills')} with no marketplace backing and cannot be uninstalled`,
+    )
+  }
+  return removeClaudeInstalledPlugin(
+    configRoot,
+    id,
+    target.scope,
+    cwd,
+    deleteData,
+  )
 }
 
 export async function listNativePluginRecords(
   configRoot: string,
   cwd: string,
 ): Promise<ClaudePluginRecord[]> {
-  const installed = await readClaudeInstalledPlugins(configRoot, cwd)
+  const installed = await nativePluginTargets(configRoot, cwd)
   return installed.map((entry) => ({
     name: entry.id,
     path: entry.installPath,

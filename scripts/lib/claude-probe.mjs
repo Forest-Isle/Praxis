@@ -7,8 +7,11 @@ import { parseClaudeVersionOutput } from '../../dist/compatibility/claude/schema
 
 export const execFileAsync = promisify(execFile)
 
-export async function detectClaudeVersion(probeName) {
-  const { stdout } = await execFileAsync('claude', ['--version'])
+export async function detectClaudeVersion(
+  probeName,
+  executable = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude',
+) {
+  const { stdout } = await execFileAsync(executable, ['--version'])
   const version = parseClaudeVersionOutput(stdout)
   if (version !== '2.1.208') {
     throw new Error(`${probeName} does not support Claude ${version}`)

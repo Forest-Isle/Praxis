@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -37,6 +37,11 @@ async function marketplaceFixture(root) {
             source: './plugin',
             version: '1.0.0',
           },
+          {
+            name: 'praxis-available-plugin',
+            source: './available-plugin',
+            version: '1.0.0',
+          },
         ],
       }),
     ),
@@ -45,6 +50,13 @@ async function marketplaceFixture(root) {
       JSON.stringify({
         name: 'praxis-fixture-plugin',
         version: '1.0.0',
+        userConfig: {
+          enabled: {
+            type: 'boolean',
+            title: 'Enabled',
+            description: 'Enable fixture behavior',
+          },
+        },
       }),
     ),
     write(
@@ -55,25 +67,90 @@ async function marketplaceFixture(root) {
   return marketplace
 }
 
+async function detailsFixture(root) {
+  const marketplace = join(root, 'details-marketplace')
+  await Promise.all([
+    write(
+      join(marketplace, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'praxis-details-marketplace',
+        owner: { name: 'Praxis Details Fixture' },
+        plugins: [
+          {
+            name: 'praxis-details-plugin',
+            source: './plugin',
+            version: '1.0.0',
+          },
+        ],
+      }),
+    ),
+    write(
+      join(marketplace, 'plugin', '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'praxis-details-plugin',
+        version: '1.0.0',
+        description: 'Details fixture',
+      }),
+    ),
+    write(
+      join(marketplace, 'plugin', 'commands', 'hello.md'),
+      `---\ndescription: hello command\n---\n${'hello '.repeat(67)}`,
+    ),
+    write(
+      join(marketplace, 'plugin', 'skills', 'review', 'SKILL.md'),
+      `---\ndescription: review skill\nwhen_to_use: review code\n---\n${'review '.repeat(134)}`,
+    ),
+    write(
+      join(marketplace, 'plugin', 'agents', 'worker.md'),
+      `---\ndescription: worker agent\n---\n${'worker '.repeat(200)}`,
+    ),
+  ])
+  return marketplace
+}
+
 const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-compat-'))
 const praxisCli = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
+const claudeCli = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
 try {
-  const version = await detectClaudeVersion('Plugin compatibility probe')
+  const version = await detectClaudeVersion(
+    'Plugin compatibility probe',
+    claudeCli,
+  )
   const cwd = join(root, 'workspace')
   const marketplace = await marketplaceFixture(root)
+  const detailsMarketplace = await detailsFixture(root)
   await mkdir(cwd, { recursive: true })
   const id = 'praxis-fixture-plugin@praxis-fixture-marketplace'
+  const detailsId = 'praxis-details-plugin@praxis-details-marketplace'
 
   const claudeConfig = join(root, 'claude-config')
   await run(
-    'claude',
+    claudeCli,
     ['plugin', 'marketplace', 'add', '--scope', 'user', marketplace],
     cwd,
     claudeConfig,
   )
   await run(
-    'claude',
+    claudeCli,
+    ['plugin', 'marketplace', 'add', '--scope', 'user', detailsMarketplace],
+    cwd,
+    claudeConfig,
+  )
+  await run(
+    claudeCli,
     ['plugin', 'install', '--scope', 'user', id],
+    cwd,
+    claudeConfig,
+  )
+  await run(
+    claudeCli,
+    ['plugin', 'install', '--scope', 'user', detailsId],
+    cwd,
+    claudeConfig,
+  )
+  const nativeDetails = await run(
+    claudeCli,
+    ['plugin', 'details', detailsId],
     cwd,
     claudeConfig,
   )
@@ -108,12 +185,70 @@ try {
   )
   await run(
     process.execPath,
-    [praxisCli, '--json', 'plugin', 'install', id],
+    [praxisCli, '--json', 'plugin', 'marketplace', 'add', detailsMarketplace],
     cwd,
     praxisConfig,
   )
+  await run(
+    process.execPath,
+    [praxisCli, '--json', 'plugin', 'install', id, '--config', 'enabled=true'],
+    cwd,
+    praxisConfig,
+  )
+  await run(
+    process.execPath,
+    [praxisCli, '--json', 'plugin', 'install', detailsId],
+    cwd,
+    praxisConfig,
+  )
+  const praxisDetails = await run(
+    process.execPath,
+    [praxisCli, 'plugin', 'details', detailsId],
+    cwd,
+    praxisConfig,
+  )
+  for (const [label, output] of [
+    ['Claude', nativeDetails.stdout],
+    ['Praxis', praxisDetails.stdout],
+  ]) {
+    assert(
+      output.includes('Skills (2)  hello, review') &&
+        output.includes('Agents (1)  worker') &&
+        output.includes('Per-component (rounded)') &&
+        /review\s+< 20\s+~\d+/u.test(output) &&
+        /worker\s+< 20\s+~\d+/u.test(output) &&
+        /hello\s+< 20\s+~\d+/u.test(output),
+      `${label} plugin details inventory/token output was incomplete: ${output}`,
+    )
+  }
+  const praxisSettings = JSON.parse(
+    await readFile(join(praxisConfig, 'settings.json'), 'utf8'),
+  )
+  assert(
+    praxisSettings.pluginConfigs?.[id]?.options?.enabled === true,
+    'Praxis did not persist typed plugin userConfig options',
+  )
+  const praxisAvailable = JSON.parse(
+    (
+      await run(
+        process.execPath,
+        [praxisCli, '--json', 'plugin', 'list', '--available'],
+        cwd,
+        praxisConfig,
+      )
+    ).stdout,
+  )
+  assert(
+    praxisAvailable.installed?.some((plugin) => plugin.name === id) &&
+      praxisAvailable.available?.some(
+        (plugin) =>
+          plugin.pluginId ===
+          'praxis-available-plugin@praxis-fixture-marketplace',
+      ),
+    `Praxis --available output was incomplete: ${JSON.stringify(praxisAvailable)}`,
+  )
   const claudeList = JSON.parse(
-    (await run('claude', ['plugin', 'list', '--json'], cwd, praxisConfig))
+    (await run(claudeCli, ['plugin', 'list', '--json'], cwd, praxisConfig))
       .stdout,
   )
   assert(
@@ -126,8 +261,36 @@ try {
     `Claude did not read Praxis plugin installation: ${JSON.stringify(claudeList)}`,
   )
 
+  const skillsPlugin = 'praxis-native-skill'
+  const skillsPluginId = `${skillsPlugin}@skills-dir`
+  await run(
+    process.execPath,
+    [praxisCli, '--json', 'plugin', 'init', skillsPlugin, '--with', 'agents'],
+    cwd,
+    praxisConfig,
+  )
+  const claudeSkillsList = JSON.parse(
+    (await run(claudeCli, ['plugin', 'list', '--json'], cwd, praxisConfig))
+      .stdout,
+  )
+  assert(
+    claudeSkillsList.some(
+      (plugin) => plugin.id === skillsPluginId && plugin.enabled === true,
+    ),
+    `Claude did not read Praxis skills-directory plugin: ${JSON.stringify(claudeSkillsList)}`,
+  )
+  const skillsRuntime = await loadClaudePlugins({
+    configRoot: praxisConfig,
+    cwd,
+  })
+  assert(
+    skillsRuntime.plugins.some((plugin) => plugin.source === skillsPluginId) &&
+      skillsRuntime.agents.some((agent) => agent.path.includes(skillsPlugin)),
+    'Praxis did not load its skills-directory plugin resources',
+  )
+
   console.log(
-    `Claude ${version} plugin compatibility passed: native marketplace and installed registries, settings enablement, bidirectional list, and Praxis runtime loading`,
+    `Claude ${version} plugin compatibility passed: native marketplace and skills-directory registries, typed userConfig, available discovery, bidirectional list, details inventory/token costs, and Praxis runtime loading`,
   )
 } finally {
   await rm(root, { recursive: true, force: true })

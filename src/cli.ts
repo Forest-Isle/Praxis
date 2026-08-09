@@ -119,6 +119,8 @@ import {
   type StreamControlResponse,
 } from './cli/protocol.js'
 import {
+  describeClaudePlugin,
+  type ClaudePluginInitComponent,
   initClaudePlugin,
   installClaudePlugin,
   loadClaudePlugins,
@@ -130,11 +132,14 @@ import {
 } from './plugins/claude-plugin-runtime.js'
 import {
   addClaudeMarketplace,
+  disableAllNativePlugins,
   installClaudeMarketplacePlugin,
+  listClaudeMarketplaceAvailablePlugins,
   listNativePluginRecords,
   readClaudeKnownMarketplaces,
   removeClaudeMarketplace,
   setNativePluginEnabled,
+  saveClaudePluginConfig,
   uninstallNativePlugin,
   updateClaudeMarketplace,
   updateNativePlugin,
@@ -1743,12 +1748,109 @@ function isClaudeMarketplacePluginId(value: string): boolean {
   )
 }
 
+function formatPluginDetails(
+  details: Awaited<ReturnType<typeof describeClaudePlugin>>,
+): string {
+  const { plugin, components, tokenEstimate } = details
+  const lines = [
+    `${plugin.name}${plugin.version ? ` ${plugin.version}` : ''}`,
+    ...(plugin.description ? [`  ${plugin.description}`] : []),
+    `  Source: ${plugin.source}`,
+    '',
+    'Component inventory',
+  ]
+  const groups: Array<[string, readonly string[], string]> = [
+    ['Skills', [...components.skills, ...components.commands].sort(), ''],
+    ['Agents', components.agents, ''],
+    [
+      'Hooks',
+      components.hooks,
+      '  (harness-only — no model context cost)',
+    ],
+    [
+      'MCP servers',
+      components.mcpServers,
+      '  (tool schemas resolved at runtime; not counted)',
+    ],
+    [
+      'LSP servers',
+      components.lspServers,
+      '  (out-of-process tooling; no model context cost)',
+    ],
+  ]
+  for (const [label, values, annotation] of groups) {
+    lines.push(
+      `  ${label} (${values.length})${
+        values.length === 0 ? '' : `  ${values.join(', ')}`
+      }${values.length > 0 ? annotation : ''}`,
+    )
+  }
+  lines.push(
+    '',
+    'Projected token cost',
+    `  Always-on:   ${formatPluginTokenEstimate(
+      tokenEstimate.alwaysOn,
+    )} tok   added to every session`,
+  )
+  const textComponents = details.componentCosts
+  if (textComponents.length === 0) return lines.join('\n')
+  lines.push('', 'Per-component (rounded)', '  component  always-on  on-invoke')
+  const width = Math.max(9, ...textComponents.map((component) => component.name.length))
+  for (const component of textComponents) {
+    lines.push(
+      `  ${component.name.padEnd(width)}  ${formatPluginTokenEstimate(
+        component.alwaysOn,
+      ).padStart(9)}  ${formatPluginTokenEstimate(component.onInvoke).padStart(9)}`,
+    )
+  }
+  lines.push(
+    '',
+    '  On-invoke cost is paid each time a skill or agent fires.',
+    '  Token counts are estimates and may differ from actual usage.',
+  )
+  return lines.join('\n')
+}
+
+function formatPluginTokenEstimate(value: number): string {
+  if (value < 20) return '< 20'
+  return `~${Math.round(value / 10) * 10}`
+}
+
+async function pluginDetailsForName(
+  configRoot: string,
+  cwd: string,
+  name: string,
+): Promise<Awaited<ReturnType<typeof describeClaudePlugin>>> {
+  const [native, local] = await Promise.all([
+    listNativePluginRecords(configRoot, cwd),
+    readPluginRegistry(configRoot),
+  ])
+  const entries = [...native, ...local]
+  const entry =
+    entries.find((candidate) => candidate.name === name) ??
+    entries.find((candidate) => candidate.name.startsWith(`${name}@`))
+  if (!entry) {
+    throw new Error(
+      `Plugin "${name}" not found. Run \`praxis plugin list\` to see installed plugins.`,
+    )
+  }
+  return describeClaudePlugin(entry.path, entry.source)
+}
+
 async function executePluginCommand(
   args: readonly string[],
   invocation: CliInvocation,
   io: CliIO,
 ): Promise<number> {
-  const action = args[1]
+  const requestedAction = args[1]
+  const action =
+    requestedAction === 'i'
+      ? 'install'
+      : requestedAction === 'new'
+        ? 'init'
+        : requestedAction === 'remove'
+          ? 'uninstall'
+          : requestedAction
   const cwd = process.cwd()
   const configRoot = resolve(
     process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
@@ -1761,8 +1863,85 @@ async function executePluginCommand(
     )
     return 0
   }
+  if (invocation.pluginAvailable && action !== 'list') {
+    throw new Error('--available is only valid with plugin list')
+  }
+  if (invocation.pluginAll || invocation.agentsAll) {
+    if (action !== 'disable') {
+      throw new Error('--all is only valid with plugin disable')
+    }
+  }
+  if (
+    (invocation.pluginKeepData || invocation.pluginPrune) &&
+    action !== 'uninstall'
+  ) {
+    throw new Error(
+      '--keep-data and --prune are only valid with plugin uninstall',
+    )
+  }
+  if (
+    invocation.pluginYes &&
+    !['uninstall', 'prune', 'autoremove'].includes(action)
+  ) {
+    throw new Error('--yes is only valid with plugin uninstall or prune')
+  }
+  if (invocation.pluginStrict && action !== 'validate') {
+    throw new Error('--strict is only valid with plugin validate')
+  }
+  if (invocation.pluginConfig.length > 0 && action !== 'install') {
+    throw new Error('--config is only valid with plugin install')
+  }
+  if (
+    (invocation.pluginAuthor !== undefined ||
+      invocation.pluginAuthorEmail !== undefined ||
+      invocation.pluginDescription !== undefined ||
+      invocation.pluginWith.length > 0) &&
+    action !== 'init'
+  ) {
+    throw new Error(
+      '--author, --author-email, --description, and --with are only valid with plugin init',
+    )
+  }
+  if (invocation.pluginForce && !['init', 'tag'].includes(action)) {
+    throw new Error('--force is only valid with plugin init or tag')
+  }
+  if (
+    invocation.pluginDryRun &&
+    !['prune', 'autoremove', 'tag'].includes(action)
+  ) {
+    throw new Error('--dry-run is only valid with plugin prune or tag')
+  }
+  if (
+    (invocation.pluginMessage !== undefined ||
+      invocation.pluginPush ||
+      invocation.pluginRemote !== undefined) &&
+    action !== 'tag'
+  ) {
+    throw new Error(
+      '--message, --push, and --remote are only valid with plugin tag',
+    )
+  }
+  if (
+    requestedScope !== undefined &&
+    ![
+      'install',
+      'uninstall',
+      'enable',
+      'disable',
+      'update',
+      'marketplace',
+      'prune',
+      'autoremove',
+    ].includes(action)
+  ) {
+    throw new Error(`--scope is not valid with plugin ${action}`)
+  }
   if (action === 'marketplace') {
-    const marketplaceAction = args[2]
+    const requestedMarketplaceAction = args[2]
+    const marketplaceAction =
+      requestedMarketplaceAction === 'rm'
+        ? 'remove'
+        : requestedMarketplaceAction
     if (!marketplaceAction || marketplaceAction === 'help') {
       io.stdout(
         'Usage: praxis plugin marketplace <list|add|remove|update> ...\n',
@@ -1772,6 +1951,9 @@ async function executePluginCommand(
     if (marketplaceAction === 'list') {
       if (args.length !== 3)
         throw new Error('plugin marketplace list takes no operands')
+      if (requestedScope !== undefined) {
+        throw new Error('--scope is not valid with plugin marketplace list')
+      }
       pluginOutput(
         io,
         invocation,
@@ -1811,6 +1993,9 @@ async function executePluginCommand(
     if (marketplaceAction === 'update') {
       if (args.length > 4)
         throw new Error('plugin marketplace update accepts at most one name')
+      if (requestedScope !== undefined) {
+        throw new Error('--scope is not valid with plugin marketplace update')
+      }
       pluginOutput(io, invocation, {
         type: 'plugin-marketplace-updated',
         marketplaces: await updateClaudeMarketplace(configRoot, cwd, args[3]),
@@ -1823,7 +2008,7 @@ async function executePluginCommand(
     if (args.length !== 2) throw new Error('plugin list takes no operands')
     const registry = await readPluginRegistry(configRoot)
     const native = await listNativePluginRecords(configRoot, cwd)
-    const output = await Promise.all(
+    const installed = await Promise.all(
       [...native, ...registry].map(async (entry) => {
         try {
           const record = await validateClaudePlugin(entry.path)
@@ -1843,7 +2028,39 @@ async function executePluginCommand(
         }
       }),
     )
-    pluginOutput(io, invocation, output)
+    const includeAvailable =
+      invocation.pluginAvailable &&
+      (invocation.legacyJson || invocation.outputFormat !== 'text')
+    pluginOutput(
+      io,
+      invocation,
+      includeAvailable
+        ? {
+            installed,
+            available: await listClaudeMarketplaceAvailablePlugins(
+              configRoot,
+              cwd,
+            ),
+          }
+        : installed,
+    )
+    return 0
+  }
+  if (action === 'details') {
+    if (args.length !== 3)
+      throw new Error('plugin details requires a plugin name')
+    const details = await pluginDetailsForName(
+      configRoot,
+      cwd,
+      args[2] as string,
+    )
+    pluginOutput(
+      io,
+      invocation,
+      invocation.legacyJson || invocation.outputFormat !== 'text'
+        ? details
+        : formatPluginDetails(details),
+    )
     return 0
   }
   if (action === 'install') {
@@ -1853,20 +2070,38 @@ async function executePluginCommand(
       )
     const source = args[2] as string
     if (isClaudeMarketplacePluginId(source)) {
+      const plugin = await installClaudeMarketplacePlugin(
+        configRoot,
+        cwd,
+        source,
+        installScope,
+      )
+      const config = await saveClaudePluginConfig(
+        configRoot,
+        cwd,
+        plugin.id,
+        plugin.installPath,
+        invocation.pluginConfig,
+      )
       pluginOutput(io, invocation, {
         type: 'plugin-installed',
-        plugin: await installClaudeMarketplacePlugin(
-          configRoot,
-          cwd,
-          source,
-          installScope,
-        ),
+        plugin,
+        ...(config.warnings.length === 0 ? {} : { warnings: config.warnings }),
       })
       return 0
     }
+    const plugin = await installClaudePlugin(configRoot, source)
+    const config = await saveClaudePluginConfig(
+      configRoot,
+      cwd,
+      plugin.name,
+      plugin.path,
+      invocation.pluginConfig,
+    )
     pluginOutput(io, invocation, {
       type: 'plugin-installed',
-      plugin: await installClaudePlugin(configRoot, source),
+      plugin,
+      ...(config.warnings.length === 0 ? {} : { warnings: config.warnings }),
     })
     return 0
   }
@@ -1875,12 +2110,41 @@ async function executePluginCommand(
       throw new Error('plugin uninstall requires a plugin name')
     const name = args[2] as string
     if (isClaudeMarketplacePluginId(name))
-      await uninstallNativePlugin(configRoot, cwd, name, requestedScope)
-    else await uninstallClaudePlugin(configRoot, name)
+      await uninstallNativePlugin(
+        configRoot,
+        cwd,
+        name,
+        installScope,
+        !invocation.pluginKeepData,
+      )
+    else
+      await uninstallClaudePlugin(configRoot, name, !invocation.pluginKeepData)
     pluginOutput(io, invocation, { type: 'plugin-uninstalled', name: args[2] })
     return 0
   }
   if (action === 'enable' || action === 'disable') {
+    if (action === 'disable' && invocation.pluginAll) {
+      if (args.length !== 2) {
+        throw new Error('plugin disable --all takes no plugin name')
+      }
+      if (requestedScope !== undefined) {
+        throw new Error('--scope cannot be used with plugin disable --all')
+      }
+      const native = await disableAllNativePlugins(configRoot, cwd)
+      const local = (await readPluginRegistry(configRoot)).filter(
+        (plugin) => plugin.enabled,
+      )
+      const disabledLocal = await Promise.all(
+        local.map((plugin) =>
+          setClaudePluginEnabled(configRoot, plugin.name, false),
+        ),
+      )
+      pluginOutput(io, invocation, {
+        type: 'plugins-disabled',
+        plugins: [...native, ...disabledLocal],
+      })
+      return 0
+    }
     if (args.length !== 3)
       throw new Error(`plugin ${action} requires a plugin name`)
     const name = args[2] as string
@@ -1906,7 +2170,7 @@ async function executePluginCommand(
     pluginOutput(io, invocation, {
       type: 'plugin-updated',
       plugin: isClaudeMarketplacePluginId(name)
-        ? await updateNativePlugin(configRoot, cwd, name, requestedScope)
+        ? await updateNativePlugin(configRoot, cwd, name, installScope)
         : await updateClaudePlugin(configRoot, name),
     })
     return 0
@@ -1916,18 +2180,58 @@ async function executePluginCommand(
       throw new Error('plugin validate requires a plugin directory')
     pluginOutput(io, invocation, {
       type: 'plugin-valid',
-      plugin: await validateClaudePlugin(args[2] as string),
+      plugin: await validateClaudePlugin(args[2] as string, {
+        strict: invocation.pluginStrict,
+      }),
     })
     return 0
   }
   if (action === 'init') {
-    if (args.length < 3 || args.length > 4)
-      throw new Error('plugin init requires a directory and optional name')
-    await initClaudePlugin(args[2] as string, args[3])
+    if (args.length < 3 || args.length > 4) {
+      throw new Error('plugin init requires a name')
+    }
+    const nativeOptionsUsed =
+      invocation.pluginAuthor !== undefined ||
+      invocation.pluginAuthorEmail !== undefined ||
+      invocation.pluginDescription !== undefined ||
+      invocation.pluginForce ||
+      invocation.pluginWith.length > 0
+    if (args.length === 4 && nativeOptionsUsed) {
+      throw new Error(
+        'plugin init native syntax accepts one name; use plugin init <directory> <name> without native init options for legacy scaffolding',
+      )
+    }
+    const options = {
+      ...(invocation.pluginAuthor === undefined
+        ? {}
+        : { author: invocation.pluginAuthor }),
+      ...(invocation.pluginAuthorEmail === undefined
+        ? {}
+        : { authorEmail: invocation.pluginAuthorEmail }),
+      ...(invocation.pluginDescription === undefined
+        ? {}
+        : { description: invocation.pluginDescription }),
+      ...(invocation.pluginForce ? { force: true } : {}),
+      ...(invocation.pluginWith.length === 0
+        ? {}
+        : {
+            with: invocation.pluginWith as readonly ClaudePluginInitComponent[],
+          }),
+    }
+    const nativeLayout = args.length === 3
+    const path = nativeLayout
+      ? join(configRoot, 'skills', args[2] as string)
+      : (args[2] as string)
+    const name = nativeLayout ? (args[2] as string) : args[3]
+    const plugin = await initClaudePlugin(path, name, {
+      ...options,
+      nativeLayout,
+    })
     pluginOutput(io, invocation, {
       type: 'plugin-initialized',
-      path: resolve(args[2] as string),
-      ...(args[3] ? { name: args[3] } : {}),
+      path: resolve(path),
+      ...(name ? { name } : {}),
+      plugin,
     })
     return 0
   }
