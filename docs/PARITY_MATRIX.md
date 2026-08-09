@@ -131,15 +131,15 @@ routing.
 
 ## Management commands
 
-| Capability           | Status   | Evidence / remaining work                                                                                                                                                  |
-| -------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                                                            |
-| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier                                                |
-| `plugin`             | Complete | Local and Claude-native marketplace install/enable/disable/update/list/details/init/validate, aliases, config persistence, skills-dir loading, and bounded source recovery |
-| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                                                           |
-| `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate                                    |
-| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                                                                  |
-| `auto-mode`          | Complete | `config` and `defaults` configuration surface plus permission classifier                                                                                                   |
+| Capability           | Status   | Evidence / remaining work                                                                                                                                               |
+| -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                                                         |
+| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier                                             |
+| `plugin`             | Partial  | Core marketplace/install/list/details/init/validate, aliases, config persistence, skills-dir loading, and bounded source recovery complete; maintenance and eval remain |
+| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                                                        |
+| `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate                                 |
+| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                                                               |
+| `auto-mode`          | Complete | `config`, `defaults`, and provider-backed `critique [--model]` plus permission classifier                                                                               |
 
 ## Final audit status
 

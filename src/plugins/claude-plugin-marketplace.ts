@@ -44,6 +44,7 @@ export interface ClaudeMarketplacePlugin {
 
 export interface ClaudeMarketplaceManifest {
   name: string
+  description?: string
   owner?: Record<string, unknown>
   metadata?: Record<string, unknown>
   plugins: readonly ClaudeMarketplacePlugin[]
@@ -461,9 +462,42 @@ export async function readClaudeMarketplaceManifest(
     throw new Error(`Marketplace plugins must be an array: ${path}`)
   return {
     name,
+    ...(value.description === undefined
+      ? {}
+      : {
+          description: nonEmptyString(
+            value.description,
+            'Marketplace description',
+          ),
+        }),
     ...(isRecord(value.owner) ? { owner: value.owner } : {}),
     ...(isRecord(value.metadata) ? { metadata: value.metadata } : {}),
     plugins: value.plugins.map(validateMarketplacePlugin),
+  }
+}
+
+export async function validateClaudeMarketplace(
+  directory: string,
+  options: { strict?: boolean } = {},
+): Promise<ClaudeMarketplaceManifest & { warnings?: readonly string[] }> {
+  const manifest = await readClaudeMarketplaceManifest(directory)
+  const warnings: string[] = []
+  if (manifest.plugins.length === 0) {
+    warnings.push('Marketplace has no plugins defined')
+  }
+  if (manifest.description === undefined) {
+    warnings.push(
+      'No marketplace description provided. Adding a description helps users understand what this marketplace offers',
+    )
+  }
+  if (options.strict && warnings.length > 0) {
+    throw new Error(
+      `Marketplace validation failed (--strict treats warnings as errors): ${warnings.join('; ')}`,
+    )
+  }
+  return {
+    ...manifest,
+    ...(warnings.length === 0 ? {} : { warnings }),
   }
 }
 

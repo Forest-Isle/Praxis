@@ -26,6 +26,52 @@ function capture() {
 }
 
 describe('CLI plugin management', () => {
+  it('validates marketplace manifests and applies strict warning handling', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-marketplace-validate-'))
+    roots.push(root)
+    const marketplace = join(root, 'marketplace')
+    await mkdir(join(marketplace, '.claude-plugin'), { recursive: true })
+    await writeFile(
+      join(marketplace, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({ name: 'fixture-marketplace', plugins: [] }),
+    )
+    const dependencies = {
+      async createService() {
+        throw new Error('service must not be created')
+      },
+    }
+
+    let output = capture()
+    await expect(
+      run(
+        ['--json', 'plugin', 'validate', marketplace],
+        output.io,
+        dependencies,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(output.stdout[0] as string)).toMatchObject({
+      type: 'plugin-valid',
+      marketplace: {
+        name: 'fixture-marketplace',
+        warnings: expect.arrayContaining([
+          'Marketplace has no plugins defined',
+        ]),
+      },
+    })
+
+    output = capture()
+    await expect(
+      run(
+        ['plugin', 'validate', '--strict', marketplace],
+        output.io,
+        dependencies,
+      ),
+    ).resolves.toBe(1)
+    expect(output.stderr.join('')).toContain(
+      '--strict treats warnings as errors',
+    )
+  })
+
   it('routes init, validate, install, list, and disable commands', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-cli-'))
     roots.push(root)

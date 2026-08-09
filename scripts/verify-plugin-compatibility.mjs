@@ -14,13 +14,40 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+function detailsCosts(output) {
+  const alwaysOn = /Always-on:\s+((?:<\s*)?\d+|~\d+)\s+tok/u.exec(output)?.[1]
+  const components = Object.fromEntries(
+    ['review', 'worker', 'hello'].map((name) => {
+      const match = new RegExp(
+        `^\\s*${name}\\s+(<\\s*20|~\\d+)\\s+(<\\s*20|~\\d+)\\s*$`,
+        'mu',
+      ).exec(output)
+      return [name, match?.slice(1)]
+    }),
+  )
+  return { alwaysOn, components }
+}
+
 async function run(executable, args, cwd, configRoot) {
   return execFileAsync(executable, args, {
     cwd,
-    env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+    env: {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: configRoot,
+      DISABLE_AUTOUPDATER: '1',
+    },
     maxBuffer: 4 * 1024 * 1024,
     timeout: 120_000,
   })
+}
+
+async function runFailure(executable, args, cwd, configRoot) {
+  try {
+    await run(executable, args, cwd, configRoot)
+  } catch (error) {
+    return `${error.stdout ?? ''}${error.stderr ?? ''}`
+  }
+  throw new Error(`${executable} ${args.join(' ')} unexpectedly succeeded`)
 }
 
 async function marketplaceFixture(root) {
@@ -55,6 +82,11 @@ async function marketplaceFixture(root) {
             type: 'boolean',
             title: 'Enabled',
             description: 'Enable fixture behavior',
+          },
+          level: {
+            type: 'number',
+            title: 'Level',
+            description: 'Fixture level',
           },
         },
       }),
@@ -104,14 +136,67 @@ async function detailsFixture(root) {
       join(marketplace, 'plugin', 'agents', 'worker.md'),
       `---\ndescription: worker agent\n---\n${'worker '.repeat(200)}`,
     ),
+    write(
+      join(marketplace, 'plugin', 'hooks', 'hooks.json'),
+      JSON.stringify({ hooks: { SessionStart: [] } }),
+    ),
+    write(
+      join(marketplace, 'plugin', '.mcp.json'),
+      JSON.stringify({
+        mcpServers: { fixtureMcp: { command: 'fixture-mcp' } },
+      }),
+    ),
+    write(
+      join(marketplace, 'plugin', '.lsp.json'),
+      JSON.stringify({
+        fixtureLsp: { command: 'fixture-lsp', args: ['--stdio'] },
+      }),
+    ),
   ])
   return marketplace
 }
 
 const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-compat-'))
-const praxisCli = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
+const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
+let praxisCli = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
 const claudeCli = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
 try {
+  const installRoot = join(root, 'packed-install')
+  await mkdir(installRoot, { recursive: true })
+  const packed = JSON.parse(
+    (
+      await execFileAsync(
+        'npm',
+        ['pack', '--json', '--pack-destination', root],
+        {
+          cwd: repositoryRoot,
+          timeout: 120_000,
+        },
+      )
+    ).stdout,
+  )
+  const filename = packed[0]?.filename
+  assert(typeof filename === 'string', 'npm pack did not return a filename')
+  await execFileAsync(
+    'npm',
+    [
+      'install',
+      '--prefix',
+      installRoot,
+      '--ignore-scripts',
+      '--no-audit',
+      '--no-fund',
+      join(root, filename),
+    ],
+    { cwd: repositoryRoot, timeout: 120_000 },
+  )
+  praxisCli = join(
+    installRoot,
+    'node_modules',
+    'praxis-agent',
+    'dist',
+    'cli.js',
+  )
   const version = await detectClaudeVersion(
     'Plugin compatibility probe',
     claudeCli,
@@ -124,6 +209,25 @@ try {
   const detailsId = 'praxis-details-plugin@praxis-details-marketplace'
 
   const claudeConfig = join(root, 'claude-config')
+  const [claudeStrict, praxisStrict] = await Promise.all([
+    runFailure(
+      claudeCli,
+      ['plugin', 'validate', '--strict', marketplace],
+      cwd,
+      claudeConfig,
+    ),
+    runFailure(
+      process.execPath,
+      [praxisCli, 'plugin', 'validate', '--strict', marketplace],
+      cwd,
+      join(root, 'praxis-validation-config'),
+    ),
+  ])
+  assert(
+    claudeStrict.includes('strict treats warnings as errors') &&
+      praxisStrict.includes('strict treats warnings as errors'),
+    'Claude/Praxis marketplace strict validation did not fail on warnings',
+  )
   await run(
     claudeCli,
     ['plugin', 'marketplace', 'add', '--scope', 'user', marketplace],
@@ -214,6 +318,9 @@ try {
     assert(
       output.includes('Skills (2)  hello, review') &&
         output.includes('Agents (1)  worker') &&
+        output.includes('Hooks (1)  SessionStart') &&
+        output.includes('MCP servers (1)  fixtureMcp') &&
+        output.includes('LSP servers (1)  fixtureLsp') &&
         output.includes('Per-component (rounded)') &&
         /review\s+< 20\s+~\d+/u.test(output) &&
         /worker\s+< 20\s+~\d+/u.test(output) &&
@@ -221,12 +328,41 @@ try {
       `${label} plugin details inventory/token output was incomplete: ${output}`,
     )
   }
+  const claudeCosts = detailsCosts(nativeDetails.stdout)
+  const praxisCosts = detailsCosts(praxisDetails.stdout)
+  assert(
+    JSON.stringify(praxisCosts) === JSON.stringify(claudeCosts),
+    `Praxis plugin details token projection differed from Claude:\nClaude: ${nativeDetails.stdout}\nPraxis: ${praxisDetails.stdout}`,
+  )
   const praxisSettings = JSON.parse(
     await readFile(join(praxisConfig, 'settings.json'), 'utf8'),
   )
   assert(
     praxisSettings.pluginConfigs?.[id]?.options?.enabled === true,
     'Praxis did not persist typed plugin userConfig options',
+  )
+  await run(
+    process.execPath,
+    [
+      praxisCli,
+      '--json',
+      'plugin',
+      'install',
+      id,
+      '--config',
+      'level=2',
+      '--config',
+      'unknown=value',
+    ],
+    cwd,
+    praxisConfig,
+  )
+  const atomicSettings = JSON.parse(
+    await readFile(join(praxisConfig, 'settings.json'), 'utf8'),
+  )
+  assert(
+    atomicSettings.pluginConfigs?.[id]?.options?.level === undefined,
+    'Praxis persisted part of a mixed valid/unknown --config assignment',
   )
   const praxisAvailable = JSON.parse(
     (

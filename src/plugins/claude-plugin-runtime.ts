@@ -14,6 +14,7 @@ import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 import { parse as parseYaml } from 'yaml'
+import { countTokens } from '@anthropic-ai/tokenizer'
 
 import type {
   ClaudeJsonResource,
@@ -253,6 +254,14 @@ async function readManifest(
   ) {
     throw new Error(
       `Plugin mcpServers must be a path, object, or array: ${manifestPath}`,
+    )
+  }
+  if (
+    value.lspServers !== undefined &&
+    !(typeof value.lspServers === 'string' || isRecord(value.lspServers))
+  ) {
+    throw new Error(
+      `Plugin lspServers must be a path or object: ${manifestPath}`,
     )
   }
   if (value.userConfig !== undefined) {
@@ -1138,7 +1147,10 @@ function detailPromptParts(content: string): {
   } catch {
     // Invalid frontmatter is reported by plugin validation; keep details usable.
   }
-  const body = lines.slice(closingIndex + 1).join('\n').trim()
+  const body = lines
+    .slice(closingIndex + 1)
+    .join('\n')
+    .trim()
   const fallback = body
     .split(/\r?\n/u)
     .find((line) => line.trim().length > 0)
@@ -1164,7 +1176,10 @@ function detailComponentCost(
   name: string,
   content: string,
   pluginName: string,
-): ClaudePluginComponentCost {
+): ClaudePluginComponentCost & {
+  alwaysOnText: string
+  onInvokeText: string
+} {
   const parts = detailPromptParts(content)
   const metadataName = kind === 'agent' ? name : `${pluginName}:${name}`
   const alwaysOnText = [metadataName, parts.description, parts.whenToUse]
@@ -1173,9 +1188,19 @@ function detailComponentCost(
   return {
     kind,
     name,
-    alwaysOn: Math.round(alwaysOnText.length / 4),
-    onInvoke: Math.round(parts.body.length / 4),
+    alwaysOn: 0,
+    onInvoke: 0,
+    alwaysOnText,
+    onInvokeText: parts.body,
   }
+}
+
+function scaledTokenCount(
+  chars: number,
+  totalChars: number,
+  totalTokens: number,
+): number {
+  return totalChars === 0 ? 0 : Math.round((chars / totalChars) * totalTokens)
 }
 
 function keysFromJsonResources(
@@ -1199,15 +1224,36 @@ export async function describeClaudePlugin(
   source = 'details',
 ): Promise<ClaudePluginDetails> {
   const root = resolve(path)
-  const loaded = await loadPlugin(root, source, true, root, true)
-  let lspServers: string[] = []
-  try {
-    const value: unknown = JSON.parse(
-      await readFile(join(root, '.lsp.json'), 'utf8'),
-    )
-    if (isRecord(value)) lspServers = Object.keys(value).sort()
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  const [loaded, manifest] = await Promise.all([
+    loadPlugin(root, source, true, root, true),
+    readManifest(root, true),
+  ])
+  const lspServers = new Set<string>()
+  const addLspServers = async (
+    value: string | Record<string, unknown>,
+    required: boolean,
+  ): Promise<void> => {
+    try {
+      const parsed: unknown =
+        typeof value === 'string'
+          ? JSON.parse(await readFile(safePluginPath(root, value), 'utf8'))
+          : value
+      if (!isRecord(parsed)) throw new Error('LSP config must be an object')
+      const definitions = isRecord(parsed.lspServers)
+        ? parsed.lspServers
+        : parsed
+      for (const name of Object.keys(definitions)) lspServers.add(name)
+    } catch (error) {
+      if (required || (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`Invalid plugin LSP config in ${root}`, {
+          cause: error,
+        })
+      }
+    }
+  }
+  await addLspServers('.lsp.json', false)
+  if (manifest.lspServers !== undefined) {
+    await addLspServers(manifest.lspServers, true)
   }
   const rootSkillPath = join(
     root,
@@ -1219,7 +1265,7 @@ export async function describeClaudePlugin(
     (resource) =>
       !source.endsWith('@skills-dir') || resource.path !== rootSkillPath,
   )
-  const componentCosts = [
+  const rawComponentCosts = [
     ...skills.map((resource) =>
       detailComponentCost(
         'skill',
@@ -1245,16 +1291,39 @@ export async function describeClaudePlugin(
       ),
     ),
   ]
+  const alwaysOnText = rawComponentCosts
+    .map((component) => component.alwaysOnText)
+    .join('\n')
+  const onInvokeText = rawComponentCosts
+    .map((component) => component.onInvokeText)
+    .join('\n')
   const tokenEstimate = {
-    alwaysOn: componentCosts.reduce(
-      (total, component) => total + component.alwaysOn,
-      0,
-    ),
-    onInvoke: componentCosts.reduce(
-      (total, component) => total + component.onInvoke,
-      0,
-    ),
+    alwaysOn: countTokens(alwaysOnText),
+    onInvoke: countTokens(onInvokeText),
   }
+  const alwaysOnChars = rawComponentCosts.reduce(
+    (total, component) => total + component.alwaysOnText.length,
+    0,
+  )
+  const onInvokeChars = rawComponentCosts.reduce(
+    (total, component) => total + component.onInvokeText.length,
+    0,
+  )
+  const componentCosts: ClaudePluginComponentCost[] = rawComponentCosts.map(
+    ({ alwaysOnText: componentAlwaysOn, onInvokeText, ...component }) => ({
+      ...component,
+      alwaysOn: scaledTokenCount(
+        componentAlwaysOn.length,
+        alwaysOnChars,
+        tokenEstimate.alwaysOn,
+      ),
+      onInvoke: scaledTokenCount(
+        onInvokeText.length,
+        onInvokeChars,
+        tokenEstimate.onInvoke,
+      ),
+    }),
+  )
   return {
     plugin: loaded.record,
     components: {
@@ -1269,7 +1338,7 @@ export async function describeClaudePlugin(
         .sort(),
       hooks: keysFromJsonResources(loaded.resources.settings, 'hooks'),
       mcpServers: keysFromJsonResources(loaded.resources.mcp, 'mcpServers'),
-      lspServers,
+      lspServers: [...lspServers].sort(),
     },
     componentCosts,
     tokenEstimate,

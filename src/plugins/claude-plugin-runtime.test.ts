@@ -52,6 +52,7 @@ async function pluginFixture(): Promise<{ root: string; configRoot: string }> {
         ],
       },
       mcpServers: { inline: { command: 'fixture-mcp' } },
+      lspServers: { inlineLsp: { command: 'fixture-lsp' } },
     }),
   )
   await writeFile(join(root, 'plugin', 'commands', 'hello.md'), 'hello')
@@ -63,6 +64,10 @@ async function pluginFixture(): Promise<{ root: string; configRoot: string }> {
   await writeFile(
     join(root, 'plugin', '.mcp.json'),
     JSON.stringify({ mcpServers: { file: { command: 'file-mcp' } } }),
+  )
+  await writeFile(
+    join(root, 'plugin', '.lsp.json'),
+    JSON.stringify({ fileLsp: { command: 'file-lsp' } }),
   )
   await writeFile(
     join(root, 'plugin', 'hooks', 'hooks.json'),
@@ -79,11 +84,16 @@ describe('Claude plugin runtime', () => {
     const details = await describeClaudePlugin(join(root, 'plugin'))
 
     expect(details.componentCosts).toEqual([
-      { kind: 'skill', name: 'review', alwaysOn: 5, onInvoke: 3 },
+      { kind: 'skill', name: 'review', alwaysOn: 4, onInvoke: 3 },
       { kind: 'agent', name: 'reviewer', alwaysOn: 4, onInvoke: 2 },
-      { kind: 'command', name: 'hello', alwaysOn: 5, onInvoke: 1 },
+      { kind: 'command', name: 'hello', alwaysOn: 4, onInvoke: 1 },
     ])
-    expect(details.tokenEstimate).toEqual({ alwaysOn: 14, onInvoke: 6 })
+    expect(details.tokenEstimate).toEqual({ alwaysOn: 12, onInvoke: 6 })
+    expect(details.components).toMatchObject({
+      hooks: ['SessionStart', 'Stop'],
+      mcpServers: ['file', 'inline'],
+      lspServers: ['fileLsp', 'inlineLsp'],
+    })
   })
 
   it('loads namespaced components, hooks, and MCP resources', async () => {
