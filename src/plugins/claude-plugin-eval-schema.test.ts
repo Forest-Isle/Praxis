@@ -65,4 +65,47 @@ describe('loadClaudePluginEvalCase', () => {
     )
     await expect(loadClaudePluginEvalCase(dir)).rejects.toThrow('unknown field')
   })
+
+  it('rejects unsafe names and every file-bearing traversal path', async () => {
+    const fields = [
+      'name: ../../escape',
+      'context:\n  history_file: ../history.jsonl',
+      'context:\n  scaffold_script: /tmp/setup.sh',
+      'context:\n  add_dirs: [../outside]',
+    ]
+    for (const field of fields) {
+      const dir = await root()
+      await writeFile(
+        join(dir, 'case.yaml'),
+        `schema_version: "1.0"\nname: safe\n${field}\nexecution:\n  prompt: x\ngraders:\n  - type: regex\n    name: ok\n    pattern: x\n`,
+      )
+      await expect(loadClaudePluginEvalCase(dir)).rejects.toThrow()
+    }
+  })
+
+  it('bounds inline graders and nested input_match objects', async () => {
+    const tooMany = await root()
+    const graders = Array.from(
+      { length: 257 },
+      (_, index) => `  - type: regex\n    name: g-${index}\n    pattern: x`,
+    ).join('\n')
+    await writeFile(
+      join(tooMany, 'case.yaml'),
+      `schema_version: "1.0"\nname: bounded\nexecution:\n  prompt: x\ngraders:\n${graders}\n`,
+    )
+    await expect(loadClaudePluginEvalCase(tooMany)).rejects.toThrow(
+      'oversized array',
+    )
+
+    const tooDeep = await root()
+    const nested = `${Array.from(
+      { length: 18 },
+      (_, index) => `${' '.repeat(6 + index * 2)}child${index}:`,
+    ).join('\n')}\n${' '.repeat(42)}value: x`
+    await writeFile(
+      join(tooDeep, 'case.yaml'),
+      `schema_version: "1.0"\nname: bounded\nexecution:\n  prompt: x\ngraders:\n  - type: tool_used\n    name: tool\n    tool: Read\n    input_match:\n${nested}`,
+    )
+    await expect(loadClaudePluginEvalCase(tooDeep)).rejects.toThrow('depth')
+  })
 })

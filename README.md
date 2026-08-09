@@ -83,8 +83,11 @@ task path, and shares `TaskOutput`/`TaskStop` routing with Agent IDs. Resumable
 Bash sidecars use atomic replacement and malformed records are ignored. Only
 `Read` can access the temporary output root.
 Top-level `--bg`/`--background` launches a detached, persistent session whose
-eight-hex job ID owns an idle/active/stopped lifecycle. `praxis agents` supports
-JSON, historical, and cwd-filtered views; `logs`, `attach`, and `stop` use an
+eight-hex job ID owns an idle/active/stopped lifecycle. In a TTY, `praxis agents`
+opens a live grouped dashboard for native Claude and Praxis sessions, including
+history review, background dispatch, completed-session resume, attach,
+continuation, detach, and stop. `agents --json [--all] [--cwd <path>]` retains a
+non-interactive scripting surface; `logs`, `attach`, and `stop` use an
 owner-authenticated local control socket. Job state follows Claude's local
 `jobs/` and `sessions/` layout while Praxis-only dispatch ownership prevents
 cross-runtime process takeover. Background user/assistant entries carry native
@@ -217,7 +220,8 @@ later messages. Activated nested-memory rules remain active across compaction.
 - Shared local agent definitions plus background Agent launch, output, stop,
   same-ID messaging, completion notification, and native sidechains
 - Shared durable task graph plus foreground/background Bash lifecycle
-- Persistent top-level background sessions plus agents/logs/attach/stop controls
+- Persistent top-level background sessions plus native/Praxis agents dashboard,
+  history review/resume, JSON, logs, attach, continuation, and stop controls
 - Session-only dynamic wakeups, shared durable scheduled prompts, and
   fixed-interval `/loop`
 
@@ -296,6 +300,7 @@ node dist/cli.js -p --init "Run setup hooks, then continue"
 node dist/cli.js -p --maintenance "Run maintenance hooks, then continue"
 node dist/cli.js fork <session-id>
 node dist/cli.js --bg "Inspect this project"
+node dist/cli.js agents
 node dist/cli.js agents --json --all --cwd "$PWD"
 node dist/cli.js logs <agent-id>
 node dist/cli.js attach <agent-id>
@@ -304,6 +309,10 @@ node dist/cli.js mcp list
 node dist/cli.js mcp add-json fixture '{"type":"stdio","command":"node","args":["server.mjs"]}'
 node dist/cli.js mcp get fixture
 node dist/cli.js mcp remove fixture --scope local
+node dist/cli.js --json plugin list --available
+node dist/cli.js plugin init my-plugin --with skills agents
+node dist/cli.js plugin eval --scaffold --allow-tools Bash ./my-plugin
+node dist/cli.js plugin eval init --bare smoke-test
 node dist/cli.js
 ```
 
@@ -355,6 +364,18 @@ state), project (`.mcp.json`), or user (`.claude.json` root) scopes atomically;
 `add`, `add-json`, `list`, `get`, `remove`, and `reset-project-choices` are
 implemented. OAuth login/logout, Desktop import, and MCP server hosting remain
 separate management surfaces.
+
+Plugin management supports local and marketplace installs, details, strict
+manifest validation, typed `--config key=value` persistence, JSON marketplace
+availability, and native `plugin init <name>` scaffolds under
+`~/.claude/skills/<name>`. Skills-directory plugins load with normal plugin
+resources and can be enabled or disabled through their `<name>@skills-dir` ID.
+`plugin eval` discovers strict YAML or prose cases under `evals/`, runs each case
+in an isolated non-persistent session, supports with/without-plugin ablation,
+bounded opt-in scaffolds, operator grants for gated tools, deterministic and
+three-vote model graders, cost ceilings, scored JSON artifacts, and resumable
+Claude JSONL history context. `plugin eval init` provides TTY authoring or an
+immediately runnable `--bare` template.
 
 `PRAXIS_PROVIDER` defaults to `openai`. `PRAXIS_BASE_URL` defaults to the
 selected provider's official `/v1` endpoint. Native Anthropic requests accept

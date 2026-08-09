@@ -68,9 +68,9 @@ it('scores free graders and three-vote paid graders by weight', async () => {
   } satisfies ClaudePluginEvalCase
   const vote = vi
     .fn()
-    .mockResolvedValueOnce({ passed: true })
-    .mockResolvedValueOnce({ passed: false })
-    .mockResolvedValueOnce({ passed: true })
+    .mockResolvedValueOnce({ passed: true, costUsd: 0.01 })
+    .mockResolvedValueOnce({ passed: false, costUsd: 0.01 })
+    .mockResolvedValueOnce({ passed: true, costUsd: 0.01 })
   const result = await gradeClaudePluginEvalRun({
     case: item,
     artifacts: {
@@ -80,7 +80,67 @@ it('scores free graders and three-vote paid graders by weight', async () => {
     },
     judge: { vote },
     judgeModel: 'haiku',
+    arm: 'with',
   })
   expect(result.score).toBe(1)
+  expect(result.judgeCostUsd).toBeCloseTo(0.03)
   expect(vote).toHaveBeenCalledTimes(3)
+})
+
+it('scores with-only graders only in the plugin arm', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'eval-grade-arm-'))
+  roots.push(cwd)
+  const item = {
+    name: 'case',
+    dir: cwd,
+    source: 'case_yaml',
+    schemaVersion: '1.0',
+    tags: [],
+    context: { addDirs: [] },
+    execution: {
+      prompt: 'x',
+      maxTurns: 10,
+      timeoutSeconds: 30,
+      allowedTools: [],
+      env: {},
+    },
+    runs: 1,
+    graders: [
+      {
+        type: 'regex',
+        name: 'plugin-only',
+        target: 'last_message',
+        pattern: 'plugin',
+        flags: '',
+        match: 'contains',
+        weight: 1,
+        arm: 'with-only',
+      },
+      {
+        type: 'regex',
+        name: 'common',
+        target: 'last_message',
+        pattern: 'answer',
+        flags: '',
+        match: 'contains',
+        weight: 1,
+      },
+    ],
+  } satisfies ClaudePluginEvalCase
+  const withResult = await gradeClaudePluginEvalRun({
+    case: item,
+    artifacts: { lastMessage: 'plugin answer', cwd, trace: [] },
+    judgeModel: 'haiku',
+    arm: 'with',
+  })
+  const withoutResult = await gradeClaudePluginEvalRun({
+    case: item,
+    artifacts: { lastMessage: 'answer', cwd, trace: [] },
+    judgeModel: 'haiku',
+    arm: 'without',
+  })
+  expect(withResult.score).toBe(1)
+  expect(withResult.graders).toHaveLength(2)
+  expect(withoutResult.score).toBe(1)
+  expect(withoutResult.graders.map((grader) => grader.name)).toEqual(['common'])
 })

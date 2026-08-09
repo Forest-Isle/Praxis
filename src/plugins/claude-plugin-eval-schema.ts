@@ -1,11 +1,17 @@
 import { readFile, readdir, realpath, stat } from 'node:fs/promises'
-import { basename, join, resolve } from 'node:path'
+import { basename, isAbsolute, join, resolve, sep } from 'node:path'
 
 import { parse as parseYaml } from 'yaml'
 
 export const EVAL_SCHEMA_VERSION = '1.0'
 export const MAX_EVAL_FILE_BYTES = 1024 * 1024
 export const MAX_EVAL_GRADERS = 256
+export const MAX_EVAL_ARRAY_ITEMS = 256
+export const MAX_EVAL_STRING_LENGTH = 16 * 1024
+export const MAX_EVAL_OBJECT_DEPTH = 16
+export const MAX_EVAL_OBJECT_NODES = 4096
+
+const EVAL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u
 
 export type EvalFocus =
   'last_message' | 'trace' | 'files' | { source: 'file'; path: string }
@@ -102,7 +108,59 @@ function text(
   if (value === undefined && !required) return undefined
   if (typeof value !== 'string' || value.trim().length === 0)
     throw new Error(`${label} must be a non-empty string`)
+  if (value.length > MAX_EVAL_STRING_LENGTH)
+    throw new Error(`${label} exceeds ${MAX_EVAL_STRING_LENGTH} characters`)
   return value
+}
+
+function safeName(value: unknown, label: string): string {
+  const selected = text(value, label, true) as string
+  if (!EVAL_NAME.test(selected) || selected === '.' || selected === '..')
+    throw new Error(`${label} must be a safe eval identifier`)
+  return selected
+}
+
+function safeRelativePath(value: unknown, label: string): string {
+  const selected = text(value, label, true) as string
+  const segments = selected.replaceAll('\\', '/').split('/')
+  if (
+    isAbsolute(selected) ||
+    selected.includes('\0') ||
+    segments.includes('..') ||
+    segments.includes('')
+  )
+    throw new Error(`${label} must be a contained relative path`)
+  return selected
+}
+
+function boundedObject(value: unknown, label: string): Record<string, unknown> {
+  const selected = record(value, label)
+  let nodes = 0
+  const visit = (item: unknown, depth: number): void => {
+    nodes += 1
+    if (nodes > MAX_EVAL_OBJECT_NODES)
+      throw new Error(`${label} exceeds ${MAX_EVAL_OBJECT_NODES} nodes`)
+    if (depth > MAX_EVAL_OBJECT_DEPTH)
+      throw new Error(`${label} exceeds depth ${MAX_EVAL_OBJECT_DEPTH}`)
+    if (typeof item === 'string' && item.length > MAX_EVAL_STRING_LENGTH)
+      throw new Error(`${label} contains an oversized string`)
+    if (Array.isArray(item)) {
+      if (item.length > MAX_EVAL_ARRAY_ITEMS)
+        throw new Error(`${label} contains an oversized array`)
+      for (const child of item) visit(child, depth + 1)
+    } else if (item && typeof item === 'object') {
+      const entries = Object.entries(item as Record<string, unknown>)
+      if (entries.length > MAX_EVAL_ARRAY_ITEMS)
+        throw new Error(`${label} contains an oversized object`)
+      for (const [key, child] of entries) {
+        if (key.length > 256)
+          throw new Error(`${label} contains an oversized key`)
+        visit(child, depth + 1)
+      }
+    }
+  }
+  visit(selected, 0)
+  return selected
 }
 
 function integer(
@@ -126,6 +184,11 @@ function strings(value: unknown, label: string): string[] {
   if (value === undefined) return []
   if (!Array.isArray(value) || !value.every((item) => typeof item === 'string'))
     throw new Error(`${label} must be a string array`)
+  if (value.length > MAX_EVAL_ARRAY_ITEMS)
+    throw new Error(`${label} exceeds ${MAX_EVAL_ARRAY_ITEMS} items`)
+  for (const item of value)
+    if (item.length === 0 || item.length > MAX_EVAL_STRING_LENGTH)
+      throw new Error(`${label} contains an invalid string`)
   return [...value]
 }
 
@@ -138,7 +201,7 @@ function focus(value: unknown, label: string, fallback: EvalFocus): EvalFocus {
   if (item.source !== 'file') throw new Error(`${label}.source must be file`)
   return {
     source: 'file',
-    path: text(item.path, `${label}.path`, true) as string,
+    path: safeRelativePath(item.path, `${label}.path`),
   }
 }
 
@@ -150,14 +213,16 @@ function toolMatch(value: unknown, label: string): EvalToolMatch {
     tool: text(item.tool, `${label}.tool`, true) as string,
     ...(item.input_match === undefined
       ? {}
-      : { input_match: record(item.input_match, `${label}.input_match`) }),
+      : {
+          input_match: boundedObject(item.input_match, `${label}.input_match`),
+        }),
   }
 }
 
 function grader(value: unknown, index: number): ClaudePluginEvalGrader {
   const item = record(value, `graders[${index}]`)
   const type = text(item.type, `graders[${index}].type`, true)
-  const name = text(item.name, `graders[${index}].name`, true) as string
+  const name = safeName(item.name, `graders[${index}].name`)
   const weight = item.weight === undefined ? 1 : Number(item.weight)
   if (!(weight > 0) || !Number.isFinite(weight))
     throw new Error(`${name}.weight must be positive`)
@@ -227,7 +292,9 @@ function grader(value: unknown, index: number): ClaudePluginEvalGrader {
       tool,
       ...(item.input_match === undefined
         ? {}
-        : { input_match: record(item.input_match, `${name}.input_match`) }),
+        : {
+            input_match: boundedObject(item.input_match, `${name}.input_match`),
+          }),
       min,
       max,
     }
@@ -239,7 +306,7 @@ function grader(value: unknown, index: number): ClaudePluginEvalGrader {
     return {
       ...base,
       type,
-      path: text(item.path, `${name}.path`, true) as string,
+      path: safeRelativePath(item.path, `${name}.path`),
       exists: item.exists !== false,
     }
   }
@@ -261,11 +328,10 @@ function grader(value: unknown, index: number): ClaudePluginEvalGrader {
     return {
       ...base,
       type,
-      baseline_file: text(
+      baseline_file: safeRelativePath(
         item.baseline_file,
         `${name}.baseline_file`,
-        true,
-      ) as string,
+      ),
       criteria: text(item.criteria, `${name}.criteria`, true) as string,
     }
   }
@@ -282,7 +348,7 @@ function frontmatter(
   if (end < 0) throw new Error(`${label} has unterminated YAML frontmatter`)
   return {
     metadata: record(
-      parseYaml(content.slice(4, end)) ?? {},
+      yaml(content.slice(4, end), `${label} frontmatter`) ?? {},
       `${label} frontmatter`,
     ),
     body: content
@@ -296,6 +362,12 @@ async function boundedRead(path: string): Promise<string> {
   if ((await stat(path)).size > MAX_EVAL_FILE_BYTES)
     throw new Error(`${path} exceeds 1 MiB`)
   return readFile(path, 'utf8')
+}
+
+function yaml(content: string, label: string): unknown {
+  const parsed = parseYaml(content, { maxAliasCount: 20 })
+  if (parsed !== undefined) boundedObject(parsed, label)
+  return parsed
 }
 
 function normalize(
@@ -353,12 +425,14 @@ function normalize(
   const gradersRaw = raw.graders
   if (!Array.isArray(gradersRaw) || gradersRaw.length < 1)
     throw new Error('Case requires at least one grader')
+  if (gradersRaw.length > MAX_EVAL_GRADERS)
+    throw new Error(`Case exceeds ${MAX_EVAL_GRADERS} graders`)
   const graders = gradersRaw.map(grader)
   if (new Set(graders.map((item) => item.name)).size !== graders.length)
     throw new Error('Grader names must be unique')
   return {
     schemaVersion: version,
-    name: text(raw.name, 'name', true) as string,
+    name: safeName(raw.name, 'name'),
     ...(raw.description === undefined
       ? {}
       : { description: text(raw.description, 'description') as string }),
@@ -370,13 +444,17 @@ function normalize(
       ...(context.scaffold_script === undefined
         ? {}
         : {
-            scaffoldScript: text(
+            scaffoldScript: safeRelativePath(
               context.scaffold_script,
               'context.scaffold_script',
-            ) as string,
+            ),
           }),
-      ...(historyFile ? { historyFile } : {}),
-      addDirs: strings(context.add_dirs, 'context.add_dirs'),
+      ...(historyFile
+        ? { historyFile: safeRelativePath(historyFile, 'context.history_file') }
+        : {}),
+      addDirs: strings(context.add_dirs, 'context.add_dirs').map((path) =>
+        safeRelativePath(path, 'context.add_dirs'),
+      ),
     },
     execution: {
       ...(prompt ? { prompt } : {}),
@@ -400,7 +478,12 @@ function normalize(
               'execution.append_system_prompt',
             ) as string,
           }),
-      env: env as Record<string, string>,
+      env: Object.fromEntries(
+        Object.entries(env).map(([key, value]) => [
+          key,
+          text(value, `execution.env.${key}`, true) as string,
+        ]),
+      ),
     },
     runs: integer(raw.runs, 'runs', 3, 1, 50),
     graders,
@@ -425,7 +508,7 @@ export async function loadClaudePluginEvalCase(
   let proseRaw: UnknownRecord | undefined
   try {
     yamlRaw = record(
-      parseYaml(await boundedRead(join(dir, 'case.yaml'))),
+      yaml(await boundedRead(join(dir, 'case.yaml')), 'case.yaml'),
       'case.yaml',
     )
   } catch (error) {
@@ -509,7 +592,7 @@ export async function resolveContainedPath(
 ): Promise<string> {
   const rootPath = await realpath(resolve(root))
   const path = await realpath(resolve(rootPath, candidate))
-  if (path !== rootPath && !path.startsWith(`${rootPath}/`))
+  if (path !== rootPath && !path.startsWith(`${rootPath}${sep}`))
     throw new Error(`${label} escapes eval root: ${candidate}`)
   return path
 }

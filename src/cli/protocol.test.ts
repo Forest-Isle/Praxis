@@ -315,6 +315,56 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('parses plugin core and maintenance controls without consuming init names', () => {
+    expect(
+      parseCliInvocation([
+        'plugin',
+        'new',
+        '--with',
+        'skills',
+        'agents',
+        '--description',
+        'fixture plugin',
+        'fixture',
+      ]),
+    ).toMatchObject({
+      args: ['plugin', 'new', 'fixture'],
+      pluginWith: ['skills', 'agents'],
+      pluginDescription: 'fixture plugin',
+    })
+    expect(
+      parseCliInvocation([
+        'plugin',
+        'tag',
+        '--dry-run',
+        '--force',
+        '--push',
+        '-m',
+        'Release %s',
+        '--remote=upstream',
+        'plugins/fixture',
+      ]),
+    ).toMatchObject({
+      args: ['plugin', 'tag', 'plugins/fixture'],
+      pluginDryRun: true,
+      pluginForce: true,
+      pluginPush: true,
+      pluginMessage: 'Release %s',
+      pluginRemote: 'upstream',
+    })
+    expect(parseCliInvocation(['plugin', 'disable', '--all'])).toMatchObject({
+      pluginAll: true,
+      agentsAll: false,
+    })
+    expect(
+      parseCliInvocation(['plugin', 'autoremove', '-s=user', '--dry-run']),
+    ).toMatchObject({
+      args: ['plugin', 'autoremove'],
+      mcpScope: 'user',
+      pluginDryRun: true,
+    })
+  })
+
   it('parses worktree and tmux controls', () => {
     expect(
       parseCliInvocation([

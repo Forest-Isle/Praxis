@@ -419,14 +419,22 @@ describe('Praxis CLI', () => {
       [['plugin', '--help'], 'Usage: praxis plugin'],
       [['plugins', '--help'], 'Usage: praxis plugin|plugins'],
       [['plugin', 'list', '--help'], 'Usage: praxis plugin list'],
+      [['plugin', 'details', '--help'], 'Usage: praxis plugin details'],
+      [['plugin', 'help', 'details'], 'Usage: praxis plugin details'],
       [['plugin', 'help', 'install'], 'Usage: praxis plugin install'],
       [['plugins', 'help', 'list'], 'Usage: praxis plugin list'],
       [['plugin', 'install', '--help'], 'Usage: praxis plugin install'],
+      [['plugin', 'i', '--help'], 'Usage: praxis plugin install'],
       [['plugin', 'uninstall', '--help'], 'Usage: praxis plugin uninstall'],
+      [['plugin', 'remove', '--help'], 'Usage: praxis plugin uninstall'],
       [['plugin', 'enable', '--help'], 'Usage: praxis plugin enable'],
       [['plugin', 'disable', '--help'], 'Usage: praxis plugin disable'],
       [['plugin', 'update', '--help'], 'Usage: praxis plugin update'],
       [['plugin', 'init', '--help'], 'Usage: praxis plugin init'],
+      [['plugin', 'new', '--help'], 'Usage: praxis plugin init'],
+      [['plugin', 'prune', '--help'], 'Usage: praxis plugin prune'],
+      [['plugin', 'autoremove', '--help'], 'Usage: praxis plugin prune'],
+      [['plugin', 'tag', '--help'], 'Usage: praxis plugin tag'],
       [['plugin', 'validate', '--help'], 'Usage: praxis plugin validate'],
       [['plugin', 'marketplace', '--help'], 'Usage: praxis plugin marketplace'],
       [
@@ -443,6 +451,10 @@ describe('Praxis CLI', () => {
       ],
       [
         ['plugin', 'marketplace', 'remove', '--help'],
+        'Usage: praxis plugin marketplace remove',
+      ],
+      [
+        ['plugin', 'marketplace', 'rm', '--help'],
         'Usage: praxis plugin marketplace remove',
       ],
       [
@@ -880,6 +892,166 @@ describe('Praxis CLI', () => {
     ).resolves.toBe(0)
     expect(attached.stdout.join('')).toBe('continue\n')
     expect(calls).toContain('attach:abcd1234')
+  })
+
+  it('requires a TTY for the agents dashboard unless JSON was requested', async () => {
+    const capture = captureIO()
+
+    await expect(run(['agents'], capture.io, dependencies())).resolves.toBe(1)
+    expect(capture.stderr.join('')).toBe(
+      "'praxis agents' requires an interactive terminal (stdout is not a TTY) — use 'praxis agents --json' for a machine-readable listing.\n",
+    )
+  })
+
+  it('rejects operands and unsupported options for agents', async () => {
+    for (const argv of [
+      ['agents', 'unexpected'],
+      ['agents', '--thinking', 'adaptive'],
+    ]) {
+      const capture = captureIO()
+      await expect(run(argv, capture.io, dependencies())).resolves.toBe(1)
+      expect(capture.stderr.join('')).toMatch(/not valid|Unexpected operand/u)
+    }
+  })
+
+  it('passes agents dashboard defaults into new background workers', async () => {
+    const capture = captureIO()
+    capture.io.isTTY = true
+    let dashboard:
+      | Parameters<NonNullable<CliDependencies['runAgentsDashboard']>>[0]
+      | undefined
+    const manager: NonNullable<CliDependencies['topLevelAgents']> = {
+      async launch() {
+        throw new Error('unused')
+      },
+      async list() {
+        return []
+      },
+      async logs() {
+        throw new Error('unused')
+      },
+      async stop() {
+        throw new Error('unused')
+      },
+      async attach() {
+        throw new Error('unused')
+      },
+    }
+    const managed: CliDependencies = {
+      async createService() {
+        throw new Error('provider must not be created')
+      },
+      topLevelAgents: manager,
+      async runAgentsDashboard(options) {
+        dashboard = options
+        return 0
+      },
+    }
+
+    await expect(
+      run(
+        [
+          'agents',
+          '--model',
+          'fixture-model',
+          '--effort',
+          'xhigh',
+          '--permission-mode',
+          'plan',
+          '--dangerously-skip-permissions',
+          '--allow-dangerously-skip-permissions',
+          '--agent',
+          'reviewer',
+          '--add-dir',
+          '/workspace/one',
+          '--add-dir',
+          '/workspace/two',
+          '--mcp-config',
+          '{"mcpServers":{}}',
+          '--mcp-config',
+          'config.json',
+          '--strict-mcp-config',
+          '--settings',
+          '{}',
+          '--setting-sources',
+          'user,project',
+          '--plugin-dir',
+          '/plugins/one',
+          '--plugin-dir',
+          '/plugins/two',
+          '--cwd',
+          '/workspace',
+        ],
+        capture.io,
+        managed,
+      ),
+    ).resolves.toBe(0)
+
+    expect(dashboard).toMatchObject({
+      manager,
+      defaults: {
+        cwd: '/workspace',
+        argv: [
+          '--model',
+          'fixture-model',
+          '--effort',
+          'xhigh',
+          '--permission-mode',
+          'plan',
+          '--dangerously-skip-permissions',
+          '--allow-dangerously-skip-permissions',
+          '--agent',
+          'reviewer',
+          '--add-dir',
+          '/workspace/one',
+          '--add-dir',
+          '/workspace/two',
+          '--mcp-config',
+          '{"mcpServers":{}}',
+          '--mcp-config',
+          'config.json',
+          '--strict-mcp-config',
+          '--settings',
+          '{}',
+          '--setting-sources',
+          'user,project',
+          '--plugin-dir',
+          '/plugins/one',
+          '--plugin-dir',
+          '/plugins/two',
+        ],
+      },
+    })
+    expect(capture.stdout).toEqual([])
+
+    if (!dashboard) throw new Error('agents dashboard did not start')
+    let worker: Parameters<CliDependencies['createService']>[0] | undefined
+    const workerBase = dependencies()
+    await createBackgroundWorkerRuntime(
+      () => undefined,
+      { argv: [...dashboard.defaults.argv, '--', 'background task'] },
+      async (options) => {
+        worker = options
+        return workerBase.createService(options)
+      },
+    )
+    expect(worker).toMatchObject({
+      agent: 'reviewer',
+      sessionKind: 'bg',
+      controls: {
+        model: 'fixture-model',
+        effort: 'xhigh',
+        permissionMode: 'plan',
+        dangerouslySkipPermissions: true,
+        allowDangerouslySkipPermissions: true,
+        addDirectories: ['/workspace/one', '/workspace/two'],
+        mcpConfigs: ['{"mcpServers":{}}', 'config.json'],
+        strictMcpConfig: true,
+        settings: '{}',
+        settingSources: ['user', 'project'],
+        pluginDirectories: ['/plugins/one', '/plugins/two'],
+      },
+    })
   })
 
   it('rejects print-mode background sessions with Claude-compatible guidance', async () => {

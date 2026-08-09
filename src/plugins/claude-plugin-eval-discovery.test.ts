@@ -41,3 +41,38 @@ it('discovers bounded evals cases and applies anchored case/tag filters', async 
   expect(result.cases.map((item) => item.name)).toEqual(['alpha'])
   expect(result.plugins).toHaveLength(1)
 })
+
+it('rejects duplicate output names and non-plugin explicit directories', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'eval-discovery-invalid-'))
+  roots.push(root)
+  for (const dirName of ['one', 'two']) {
+    const dir = join(root, 'evals', dirName)
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, 'case.yaml'),
+      `schema_version: "1.0"\nname: duplicate\nexecution:\n  prompt: x\ngraders:\n  - type: regex\n    name: ok\n    pattern: x\n`,
+    )
+  }
+  await expect(
+    discoverClaudePluginEvals({
+      target: root,
+      cwd: root,
+      configRoot: join(root, 'config'),
+    }),
+  ).rejects.toThrow('Duplicate eval case name')
+
+  await rm(join(root, 'evals', 'two'), { recursive: true, force: true })
+  const caseFile = join(root, 'evals', 'one', 'case.yaml')
+  await mkdir(join(root, 'evals', 'one', 'fixture'))
+  await writeFile(
+    caseFile,
+    `schema_version: "1.0"\nname: unique\nplugins: [fixture]\nexecution:\n  prompt: x\ngraders:\n  - type: regex\n    name: ok\n    pattern: x\n`,
+  )
+  await expect(
+    discoverClaudePluginEvals({
+      target: root,
+      cwd: root,
+      configRoot: join(root, 'config'),
+    }),
+  ).rejects.toThrow('is not a plugin')
+})

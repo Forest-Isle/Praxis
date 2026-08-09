@@ -1,4 +1,5 @@
 import {
+  access,
   mkdir,
   mkdtemp,
   readFile,
@@ -15,6 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { loadClaudePlugins } from './claude-plugin-runtime.js'
 import {
   addClaudeMarketplace,
+  claudePluginDataPath,
   installClaudeMarketplacePlugin,
   listNativePluginRecords,
   materializeClaudePluginSource,
@@ -23,6 +25,7 @@ import {
   replaceClaudePluginDirectory,
   removeClaudeMarketplace,
   setNativePluginEnabled,
+  uninstallNativePlugin,
   updateClaudeMarketplace,
 } from './claude-plugin-marketplace.js'
 
@@ -208,5 +211,30 @@ describe('Claude native plugin marketplace', () => {
         ),
       ),
     ).resolves.toEqual([])
+  })
+
+  it('preserves or removes sanitized plugin data with native uninstalls', async () => {
+    const value = await fixture()
+    await addClaudeMarketplace(value.configRoot, value.cwd, value.marketplace)
+    const id = 'fixture@fixture-marketplace'
+    await installClaudeMarketplacePlugin(value.configRoot, value.cwd, id)
+    const data = claudePluginDataPath(value.configRoot, id)
+    await mkdir(data, { recursive: true })
+    await writeFile(join(data, 'state.json'), '{"ok":true}')
+
+    await uninstallNativePlugin(
+      value.configRoot,
+      value.cwd,
+      id,
+      undefined,
+      false,
+    )
+    await expect(readFile(join(data, 'state.json'), 'utf8')).resolves.toContain(
+      'true',
+    )
+
+    await installClaudeMarketplacePlugin(value.configRoot, value.cwd, id)
+    await uninstallNativePlugin(value.configRoot, value.cwd, id)
+    await expect(access(data)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

@@ -87,7 +87,8 @@ async function walk(
   depth: number,
   found: Set<string>,
 ): Promise<void> {
-  if (depth > MAX_DEPTH) return
+  if (depth > MAX_DEPTH)
+    throw new Error(`Eval discovery exceeds maximum depth ${MAX_DEPTH}: ${dir}`)
   if (
     insideEvals &&
     ((await exists(join(dir, 'case.yaml'))) ||
@@ -153,12 +154,11 @@ export async function discoverClaudePluginEvals(options: {
       (!options.tags?.length ||
         options.tags.some((tag) => item.tags.includes(tag))),
   )
-  const warnings: string[] = []
   const counts = new Map<string, number>()
   for (const item of cases)
     counts.set(item.name, (counts.get(item.name) ?? 0) + 1)
   for (const [name, count] of counts)
-    if (count > 1) warnings.push(`Duplicate eval case name: ${name}`)
+    if (count > 1) throw new Error(`Duplicate eval case name: ${name}`)
   const plugins = new Map(resolved.plugins.map((item) => [item.path, item]))
   for (const item of cases) {
     if (item.plugins?.length) {
@@ -168,6 +168,8 @@ export async function discoverClaudePluginEvals(options: {
           resolve(item.dir, path),
           'Plugin path',
         )
+        if (!(await pluginAt(contained)))
+          throw new Error(`Plugin path is not a plugin: ${path}`)
         plugins.set(contained, { name: basename(contained), path: contained })
       }
     } else {
@@ -181,6 +183,6 @@ export async function discoverClaudePluginEvals(options: {
     root: resolved.root,
     cases,
     plugins: [...plugins.values()],
-    warnings,
+    warnings: [],
   }
 }

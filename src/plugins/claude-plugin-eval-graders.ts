@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
 
 import { minimatch } from 'minimatch'
 
@@ -9,6 +8,7 @@ import type {
   EvalFocus,
   EvalToolMatch,
 } from './claude-plugin-eval-schema.js'
+import { resolveContainedPath } from './claude-plugin-eval-schema.js'
 
 export interface EvalTraceEvent {
   type: string
@@ -36,7 +36,8 @@ export interface EvalJudge {
     focus: string
     baseline?: string
     model: string
-  }): Promise<{ passed: boolean; explanation?: string }>
+    signal?: AbortSignal
+  }): Promise<{ passed: boolean; explanation?: string; costUsd: number }>
 }
 
 function subset(actual: unknown, expected: unknown): boolean {
@@ -76,7 +77,10 @@ async function focusText(
       names.push(path)
     return names.sort().join('\n')
   }
-  return readFile(join(artifacts.cwd, focus.path), 'utf8')
+  return readFile(
+    await resolveContainedPath(artifacts.cwd, focus.path, 'Grader focus'),
+    'utf8',
+  )
 }
 
 async function freeGrade(
@@ -120,8 +124,11 @@ async function freeGrade(
   } else {
     const { glob } = await import('node:fs/promises')
     let count = 0
-    for await (const path of glob('**/*', { cwd: artifacts.cwd }))
-      if (minimatch(path, grader.path)) count += 1
+    for await (const path of glob('**/*', { cwd: artifacts.cwd })) {
+      if (!minimatch(path, grader.path)) continue
+      await resolveContainedPath(artifacts.cwd, path, 'file_exists match')
+      count += 1
+    }
     passed = grader.exists ? count > 0 : count === 0
     evidence = `files=${count}`
   }
@@ -141,22 +148,29 @@ export async function gradeClaudePluginEvalRun(options: {
   judge?: EvalJudge
   judgeModel: string
   skipPaid?: boolean
+  arm: 'with' | 'without'
+  signal?: AbortSignal
 }): Promise<{
   score: number
   graders: EvalGraderResult[]
   skippedPaidGraders: boolean
+  judgeCostUsd: number
 }> {
   const results: EvalGraderResult[] = []
   let skippedPaidGraders = false
+  let judgeCostUsd = 0
   for (const item of options.case.graders) {
+    if (options.arm === 'without' && item.arm === 'with-only') continue
     if (item.type !== 'llm' && item.type !== 'baseline') {
       results.push(await freeGrade(item, options.artifacts))
       continue
     }
-    if (options.skipPaid || !options.judge) {
+    if (options.skipPaid) {
       skippedPaidGraders = true
       continue
     }
+    if (!options.judge)
+      throw new Error(`Paid grader ${item.name} requires an eval judge`)
     const judge = options.judge
     const focus =
       item.type === 'llm'
@@ -164,7 +178,14 @@ export async function gradeClaudePluginEvalRun(options: {
         : options.artifacts.lastMessage
     const baseline =
       item.type === 'baseline'
-        ? await readFile(join(options.case.dir, item.baseline_file), 'utf8')
+        ? await readFile(
+            await resolveContainedPath(
+              options.case.dir,
+              item.baseline_file,
+              'Baseline file',
+            ),
+            'utf8',
+          )
         : undefined
     const votes = await Promise.all(
       Array.from({ length: 3 }, () =>
@@ -173,10 +194,12 @@ export async function gradeClaudePluginEvalRun(options: {
           focus,
           ...(baseline === undefined ? {} : { baseline }),
           model: options.judgeModel,
+          ...(options.signal ? { signal: options.signal } : {}),
         }),
       ),
     )
     const passed = votes.filter((vote) => vote.passed).length >= 2
+    judgeCostUsd += votes.reduce((sum, vote) => sum + vote.costUsd, 0)
     results.push({
       name: item.name,
       passed,
@@ -188,7 +211,7 @@ export async function gradeClaudePluginEvalRun(options: {
       ...(item.arm === 'with-only' ? { with_only: true } : {}),
     })
   }
-  const scored = results.filter((item) => !item.with_only)
+  const scored = results
   const total = scored.reduce((sum, item) => sum + item.weight, 0)
   const score =
     total === 0
@@ -196,5 +219,5 @@ export async function gradeClaudePluginEvalRun(options: {
       : scored
           .filter((item) => item.passed)
           .reduce((sum, item) => sum + item.weight, 0) / total
-  return { score, graders: results, skippedPaidGraders }
+  return { score, graders: results, skippedPaidGraders, judgeCostUsd }
 }

@@ -16,21 +16,24 @@ import {
 
 export const PLUGIN_EVAL_HELP = `Usage: praxis plugin eval [options] [command] [target]
 
-Evaluate a plugin against cases under evals/.
+Run eval cases (evals/**/case.yaml or evals/**/prompt.md + graders/*.md) against
+a plugin and report scored results. Target is a path, a plugin name, or a
+\`plugin@marketplace\` id — installed and skills-dir plugins both resolve (and add
+a no-plugin baseline arm).
 
 Options:
-  --ablation <mode>        none or with-without
-  --allow-tools <tools...> Grant additional tools
-  --case <glob>            Filter case names
+  --ablation <mode>        Ablation mode: none or with-without (default depends on target)
+  --allow-tools <tools...> Operator grant for gated case tools such as Bash or Write
+  --case <glob>            Filter safe case names with a glob
   --json                   Print aggregate JSON
   --judge-model <model>    Judge model (default: haiku)
   --keep-temp              Keep isolated run directories
-  --max-cost-usd <usd>     Stop before next run at cost ceiling
+  --max-cost-usd <usd>     Stop before next run at ceiling; one active run may overrun
   --model <model>          Override case model
-  --no-scaffold            Disable scaffold scripts (default)
-  --output-dir <dir>       Results directory
+  --no-scaffold            Disable opt-in scaffold scripts (default)
+  --output-dir <dir>       Results directory (default: evals/results/<timestamp>)
   --runs <n>               Override case run count
-  --scaffold               Enable scaffold scripts
+  --scaffold               Enable contained, bounded scaffold scripts
   --tag <tag...>           Include cases matching any tag
   --threshold <0..1>       Passing score (default: 1.0)
   --verbose                Print run progress
@@ -43,10 +46,8 @@ Commands:
 export const PLUGIN_EVAL_INIT_HELP = `Usage: praxis plugin eval init [options] [name]
 
 Options:
-  --bare         Write starter files without an interview
-  -i, --interactive  Launch eval-authoring interview
-  --interview    Launch eval-authoring interview
-  -h, --help     Display help for command
+  --bare      Write starter files without an interview
+  -h, --help  Display help for command
 `
 
 export interface PluginEvalIo {
@@ -150,6 +151,64 @@ function parseOptions(argv: readonly string[]): EvalOptions {
 }
 
 const INIT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u
+async function writeEvalTemplate(options: {
+  cwd: string
+  name: string
+  prompt: string
+  grader: string
+}): Promise<void> {
+  if (!INIT_NAME.test(options.name) || options.name === '..')
+    throw new Error(`Eval name must match ${INIT_NAME}`)
+  const dir = join(options.cwd, 'evals', options.name)
+  try {
+    await stat(dir)
+    throw new Error(`Eval case already exists: ${dir}`)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  try {
+    await mkdir(join(dir, 'graders'), { recursive: true })
+    await writeFileAtomically(join(dir, 'prompt.md'), options.prompt)
+    await writeFileAtomically(
+      join(dir, 'graders', 'criteria.md'),
+      options.grader,
+    )
+  } catch (error) {
+    await rm(dir, { recursive: true, force: true })
+    throw error
+  }
+}
+
+async function interactiveEvalInit(options: {
+  cwd: string
+  name?: string
+}): Promise<number> {
+  const { createInterface } = await import('node:readline/promises')
+  const interview = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  })
+  const ask = async (question: string): Promise<string> => {
+    const answer = (await interview.question(question)).trim()
+    if (!answer) throw new Error('Eval interview answers must not be empty')
+    return answer
+  }
+  try {
+    const name = options.name ?? (await ask('Eval case name: '))
+    const prompt = await ask('Task prompt: ')
+    const criteria = await ask('Success criteria: ')
+    await writeEvalTemplate({
+      cwd: options.cwd,
+      name,
+      prompt: `---\nmax_turns: 10\nallowed_tools: [Read, Glob, Grep, Skill]\n---\n${prompt}\n`,
+      grader: `---\ntype: llm\nweight: 1\n---\n${criteria}\n`,
+    })
+    return 0
+  } finally {
+    interview.close()
+  }
+}
+
 export async function initClaudePluginEval(options: {
   cwd: string
   name?: string
@@ -165,37 +224,19 @@ export async function initClaudePluginEval(options: {
         : 'plugin eval init requires a name when stdin is not a TTY',
     )
   if (!options.bare && (options.interactive || options.isTTY)) {
-    if (!options.interactiveInit)
-      throw new Error('Interactive eval authoring is unavailable')
-    return options.interactiveInit({
+    return (options.interactiveInit ?? interactiveEvalInit)({
       cwd: options.cwd,
       ...(options.name ? { name: options.name } : {}),
     })
   }
   const name = options.name as string
-  if (!INIT_NAME.test(name) || name === '..')
-    throw new Error(`Eval name must match ${INIT_NAME}`)
-  const dir = join(options.cwd, 'evals', name)
-  try {
-    await stat(dir)
-    throw new Error(`Eval case already exists: ${dir}`)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-  try {
-    await mkdir(join(dir, 'graders'), { recursive: true })
-    await writeFileAtomically(
-      join(dir, 'prompt.md'),
-      '---\nmax_turns: 10\nallowed_tools: [Read, Glob, Grep, Skill]\n---\nTODO: describe what the agent should do\n',
-    )
-    await writeFileAtomically(
-      join(dir, 'graders', 'criteria.md'),
-      '---\ntype: llm\nweight: 1\n---\nTODO: describe what a successful response looks like\n',
-    )
-  } catch (error) {
-    await rm(dir, { recursive: true, force: true })
-    throw error
-  }
+  await writeEvalTemplate({
+    cwd: options.cwd,
+    name,
+    prompt:
+      '---\nmax_turns: 10\nallowed_tools: [Read, Glob, Grep, Skill]\n---\nInspect the current directory and summarize relevant findings.\n',
+    grader: '---\ntype: regex\nweight: 1\nmatch: contains\n---\n.+\n',
+  })
   return 0
 }
 
@@ -208,6 +249,7 @@ export interface EvalRunReport {
   trace_path: string
   error: string | null
   skipped_paid_graders: boolean
+  temp_root?: string
 }
 interface EvalCaseReport {
   name: string
@@ -257,7 +299,8 @@ export async function runClaudePluginEval(
   let partialReason: string | undefined
   let interrupted = false
   const reports: EvalCaseReport[] = []
-  outer: for (const caseDef of discovered.cases) {
+  let stop = false
+  for (const caseDef of discovered.cases) {
     const arms =
       defaultAblation === 'with-without'
         ? (['with', 'without'] as const)
@@ -270,7 +313,8 @@ export async function runClaudePluginEval(
           interrupted = true
           partial = true
           partialReason = 'interrupted'
-          break outer
+          stop = true
+          break
         }
         if (
           options.maxCostUsd !== undefined &&
@@ -278,7 +322,8 @@ export async function runClaudePluginEval(
         ) {
           partial = true
           partialReason = 'cost_ceiling'
-          break outer
+          stop = true
+          break
         }
         if (options.verbose)
           process.stderr.write(`Running ${caseDef.name} ${arm} ${index + 1}\n`)
@@ -290,42 +335,89 @@ export async function runClaudePluginEval(
           ...(options.model ? { model: options.model } : {}),
           allowTools: options.allowTools,
           scaffold: options.scaffold,
-          keepTemp: options.keepTemp,
           ...(options.signal ? { signal: options.signal } : {}),
-        })
-        const remaining =
-          options.maxCostUsd === undefined
-            ? undefined
-            : options.maxCostUsd - totalCost - single.costUsd
-        const graded = await gradeClaudePluginEvalRun({
-          case: caseDef,
-          artifacts: single.artifacts,
-          ...(options.dependencies.judge
-            ? { judge: options.dependencies.judge }
-            : {}),
-          judgeModel: options.judgeModel,
-          skipPaid: remaining !== undefined && remaining <= 0,
         })
         const resultDir = join(outputDir, caseDef.name, arm, String(index + 1))
         await mkdir(resultDir, { recursive: true })
         const savedTrace = join(resultDir, 'trace.jsonl')
-        await copyFile(single.tracePath, savedTrace)
-        const report: EvalRunReport = {
-          score: graded.score,
-          turns: single.turns,
-          cost_usd: single.costUsd,
-          judge_cost_usd: 0,
-          graders: graded.graders,
-          trace_path: savedTrace,
-          error: single.error,
-          skipped_paid_graders: graded.skippedPaidGraders,
+        let report: EvalRunReport
+        try {
+          await copyFile(single.tracePath, savedTrace)
+          if (options.maxCostUsd !== undefined && !single.costKnown)
+            throw new Error(
+              'Cannot enforce --max-cost-usd: eval model cost is unavailable',
+            )
+          const remaining =
+            options.maxCostUsd === undefined
+              ? undefined
+              : options.maxCostUsd - totalCost - single.costUsd
+          const graded = await gradeClaudePluginEvalRun({
+            case: caseDef,
+            artifacts: single.artifacts,
+            ...(options.dependencies.judge
+              ? { judge: options.dependencies.judge }
+              : {}),
+            judgeModel: options.judgeModel,
+            arm,
+            ...(options.signal ? { signal: options.signal } : {}),
+            skipPaid:
+              single.error !== null ||
+              (remaining !== undefined && remaining <= 0),
+          })
+          report = {
+            score: graded.score,
+            turns: single.turns,
+            cost_usd: single.costUsd,
+            judge_cost_usd: graded.judgeCostUsd,
+            graders: graded.graders,
+            trace_path: savedTrace,
+            error: single.error,
+            skipped_paid_graders: graded.skippedPaidGraders,
+            ...(options.keepTemp && single.tempRoot
+              ? { temp_root: single.tempRoot }
+              : {}),
+          }
+        } catch (error) {
+          report = {
+            score: 0,
+            turns: single.turns,
+            cost_usd: single.costUsd,
+            judge_cost_usd: 0,
+            graders: [],
+            trace_path: savedTrace,
+            error: error instanceof Error ? error.message : String(error),
+            skipped_paid_graders: false,
+            ...(options.keepTemp && single.tempRoot
+              ? { temp_root: single.tempRoot }
+              : {}),
+          }
+        } finally {
+          if (!options.keepTemp && single.tempRoot)
+            await rm(single.tempRoot, { recursive: true, force: true })
         }
         runs.push(report)
         totalCost += report.cost_usd + report.judge_cost_usd
-        if (!options.keepTemp && !single.error && single.tempRoot)
-          await rm(single.tempRoot, { recursive: true, force: true })
+        await writeFileAtomically(
+          join(resultDir, 'result.json'),
+          `${JSON.stringify(report, null, 2)}\n`,
+        )
+        if (single.termination === 'interrupted') {
+          interrupted = true
+          partial = true
+          partialReason = 'interrupted'
+          stop = true
+          break
+        }
+        if (options.signal?.aborted) {
+          interrupted = true
+          partial = true
+          partialReason = 'interrupted'
+          stop = true
+          break
+        }
       }
       armReports.push(runs)
+      if (stop) break
     }
     const average = (runs: EvalRunReport[]) =>
       runs.length
@@ -358,6 +450,7 @@ export async function runClaudePluginEval(
         report.delta = withScore - withoutScore
     }
     reports.push(report)
+    if (stop) break
   }
   const aggregate: Record<string, unknown> = {
     schema_version: '1.0',
@@ -368,6 +461,7 @@ export async function runClaudePluginEval(
     partial,
     ...(partialReason ? { partial_reason: partialReason } : {}),
     plugins: discovered.plugins,
+    warnings: discovered.warnings,
     cases: reports,
   }
   await writeFileAtomically(
@@ -376,7 +470,8 @@ export async function runClaudePluginEval(
   )
   const failed = reports.some(
     (item) =>
-      item.score < options.threshold || item.runs.some((run) => run.error),
+      item.score < options.threshold ||
+      [...item.runs, ...(item.runs_without ?? [])].some((run) => run.error),
   )
   return {
     code: interrupted
@@ -402,16 +497,9 @@ export async function executeClaudePluginEvalCommand(
   }
   if (argv[0] === 'init') {
     let bare = false
-    let interactive = false
     const operands: string[] = []
     for (const value of argv.slice(1)) {
       if (value === '--bare') bare = true
-      else if (
-        value === '-i' ||
-        value === '--interactive' ||
-        value === '--interview'
-      )
-        interactive = true
       else if (value.startsWith('-'))
         throw new Error(`Unknown plugin eval init option: ${value}`)
       else operands.push(value)
@@ -424,7 +512,7 @@ export async function executeClaudePluginEvalCommand(
       cwd: process.cwd(),
       ...(operands[0] ? { name: operands[0] } : {}),
       bare: bare || !io.isTTY,
-      interactive,
+      interactive: false,
       isTTY: Boolean(io.isTTY),
       ...(dependencies.interactiveInit
         ? { interactiveInit: dependencies.interactiveInit }

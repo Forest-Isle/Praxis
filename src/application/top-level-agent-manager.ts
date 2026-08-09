@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createConnection, createServer, type Socket } from 'node:net'
-import { mkdir, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
+import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import type { RuntimeEventSink } from '../core/runtime.js'
 import {
   ClaudeJobStore,
@@ -23,14 +24,14 @@ import type { SessionRunResult } from './session-service.js'
 
 export interface TopLevelAgentSummary {
   pid?: number
-  id: string
+  id?: string
   cwd: string
-  kind: 'background'
+  kind: 'background' | 'interactive'
   startedAt: number
   sessionId: string
   name: string
   status?: 'active' | 'idle'
-  state: 'working' | 'stopped' | 'failed'
+  state?: 'working' | 'stopped' | 'failed' | 'done'
 }
 
 export interface TopLevelAgentRuntime {
@@ -73,6 +74,7 @@ const MAX_JOB_OUTPUT_BYTES = 1024 * 1024
 const MAX_ATTACH_PROMPT_BYTES = 1024 * 1024
 const MAX_WIRE_LINE_BYTES = 8 * 1024 * 1024
 const MAX_SOCKET_BUFFER_BYTES = 10 * 1024 * 1024
+const SOCKET_RETRY_INTERVAL_MS = 25
 
 // Background workers are trusted Praxis runtimes, but still must not inherit
 // unrelated credentials or shell startup injection from the launching shell.
@@ -136,6 +138,34 @@ function clearWorkerFields(state: ClaudeJobState): ClaudeJobState {
   return next
 }
 
+type NativeClaudeSession = TopLevelAgentSummary
+
+function nativeClaudeSession(value: unknown): NativeClaudeSession | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return
+  const record = value as Record<string, unknown>
+  const interactive =
+    Number.isSafeInteger(record.pid) &&
+    typeof record.cwd === 'string' &&
+    record.kind === 'interactive' &&
+    Number.isSafeInteger(record.startedAt) &&
+    typeof record.sessionId === 'string' &&
+    typeof record.name === 'string' &&
+    ['active', 'idle'].includes(String(record.status))
+  if (interactive) return record as unknown as NativeClaudeSession
+  if (
+    typeof record.id !== 'string' ||
+    typeof record.cwd !== 'string' ||
+    record.kind !== 'background' ||
+    !Number.isSafeInteger(record.startedAt) ||
+    typeof record.sessionId !== 'string' ||
+    typeof record.name !== 'string' ||
+    !['done', 'failed'].includes(String(record.state))
+  )
+    return
+  return record as unknown as NativeClaudeSession
+}
+
 function parseWire(line: string): WireMessage | null {
   try {
     const value = JSON.parse(line) as unknown
@@ -180,6 +210,60 @@ function lines(socket: Socket, receive: (message: WireMessage) => void): void {
   })
 }
 
+function transientSocketError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code
+  return code === 'ENOENT' || code === 'ECONNREFUSED'
+}
+
+function waitForSocketRetry(signal?: AbortSignal): Promise<void> {
+  return new Promise((resolveWait, rejectWait) => {
+    if (signal?.aborted) {
+      rejectWait(new Error('Attach cancelled'))
+      return
+    }
+    const abort = () => {
+      clearTimeout(timer)
+      rejectWait(new Error('Attach cancelled'))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort)
+      resolveWait()
+    }, SOCKET_RETRY_INTERVAL_MS)
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+}
+
+async function connectToWorker(
+  path: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Socket> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (signal?.aborted) throw new Error('Attach cancelled')
+    const socket = createConnection(path)
+    try {
+      await new Promise<void>((resolveConnect, rejectConnect) => {
+        const connected = () => {
+          socket.removeListener('error', failed)
+          resolveConnect()
+        }
+        const failed = (error: Error) => {
+          socket.removeListener('connect', connected)
+          rejectConnect(error)
+        }
+        socket.once('connect', connected)
+        socket.once('error', failed)
+      })
+      return socket
+    } catch (error) {
+      socket.destroy()
+      if (!transientSocketError(error) || Date.now() >= deadline) throw error
+      await waitForSocketRetry(signal)
+    }
+  }
+}
+
 async function canonicalDirectory(path: string): Promise<string> {
   try {
     return await realpath(path)
@@ -199,8 +283,9 @@ export class TopLevelAgentManager {
     prompt: string
     argv: string[]
     resumeSessionId?: string
+    cwd?: string
   }): Promise<{ id: string; sessionId: string }> {
-    const cwd = await canonicalDirectory(this.options.cwd)
+    const cwd = await canonicalDirectory(options.cwd ?? this.options.cwd)
     let identity: { id: string; sessionId: string } | undefined
     let state: ClaudeJobState | undefined
     for (let attempt = 0; attempt < JOB_CREATE_ATTEMPTS; attempt += 1) {
@@ -313,7 +398,10 @@ export class TopLevelAgentManager {
     cwd?: string
     all: boolean
   }): Promise<TopLevelAgentSummary[]> {
-    const cwd = await canonicalDirectory(options.cwd ?? this.options.cwd)
+    const cwd =
+      options.cwd === undefined
+        ? undefined
+        : await canonicalDirectory(options.cwd)
     const states = await this.store.list()
     const reconciled = await Promise.all(
       states.map(async (state) => {
@@ -336,8 +424,8 @@ export class TopLevelAgentManager {
         })
       }),
     )
-    return reconciled
-      .filter((state) => state.cwd === cwd)
+    const praxis = reconciled
+      .filter((state) => cwd === undefined || state.cwd === cwd)
       .filter((state) => options.all || state.state === 'working')
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .map((state) => ({
@@ -360,11 +448,86 @@ export class TopLevelAgentManager {
           : {}),
         state: state.state,
       }))
+    const native = await this.nativeSessions(
+      cwd,
+      new Set(reconciled.map((state) => state.sessionId)),
+      options.all,
+    )
+    return [...praxis, ...native].sort(
+      (left, right) => right.startedAt - left.startedAt,
+    )
+  }
+
+  private async nativeSessions(
+    cwd: string | undefined,
+    knownSessionIds: ReadonlySet<string>,
+    all: boolean,
+  ): Promise<TopLevelAgentSummary[]> {
+    let files: string[]
+    try {
+      files = await readdir(join(this.options.configRoot, 'sessions'))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
+    const sessions = await Promise.all(
+      files
+        .filter((file) => file.endsWith('.json'))
+        .map(async (file) => {
+          try {
+            return nativeClaudeSession(
+              JSON.parse(
+                await readFile(
+                  join(this.options.configRoot, 'sessions', file),
+                  'utf8',
+                ),
+              ),
+            )
+          } catch {
+            return undefined
+          }
+        }),
+    )
+    return sessions
+      .filter(
+        (session): session is NativeClaudeSession => session !== undefined,
+      )
+      .filter((session) => !knownSessionIds.has(session.sessionId))
+      .filter((session) => cwd === undefined || session.cwd === cwd)
+      .filter((session) => all || session.status !== undefined)
   }
 
   async logs(id: string): Promise<string> {
     await this.store.read(id)
     return this.store.output(id)
+  }
+
+  async review(
+    agent: Pick<TopLevelAgentSummary, 'id' | 'cwd' | 'sessionId'>,
+  ): Promise<string> {
+    if (agent.id !== undefined) {
+      try {
+        await this.store.read(agent.id)
+        return this.logs(agent.id)
+      } catch (error) {
+        if (!String(error).includes('No agent found')) throw error
+      }
+    }
+    try {
+      return await readFile(
+        resolveClaudePaths({
+          configDir: this.options.configRoot,
+          cwd: agent.cwd,
+          sessionId: agent.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return 'No local transcript is available for this Claude session.\n'
+      }
+      throw error
+    }
   }
 
   async stop(id: string): Promise<void> {
@@ -413,11 +576,11 @@ export class TopLevelAgentManager {
     if (state.state !== 'working' || !state.socketPath || !state.controlToken) {
       throw new Error(`Agent ${id} is not attachable (state: ${state.state})`)
     }
-    const socket = createConnection(state.socketPath)
-    await new Promise<void>((resolveConnect, reject) => {
-      socket.once('connect', resolveConnect)
-      socket.once('error', reject)
-    })
+    const socket = await connectToWorker(
+      state.socketPath,
+      ATTACH_READY_WAIT_MS,
+      signal,
+    )
     let readyResolve: (() => void) | undefined
     let readyReject: ((error: Error) => void) | undefined
     let isReady = false
@@ -459,7 +622,7 @@ export class TopLevelAgentManager {
     }
     socket.once('close', connectionClosed)
     writeWire(socket, { type: 'attach', token: state.controlToken })
-    const abort = () => socket.destroy(new Error('Attach cancelled'))
+    const abort = () => socket.destroy()
     signal?.addEventListener('abort', abort, { once: true })
     try {
       await ready

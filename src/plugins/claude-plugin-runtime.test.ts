@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import {
+  describeClaudePlugin,
   initClaudePlugin,
   installClaudePlugin,
   loadClaudePlugins,
@@ -51,6 +52,7 @@ async function pluginFixture(): Promise<{ root: string; configRoot: string }> {
         ],
       },
       mcpServers: { inline: { command: 'fixture-mcp' } },
+      lspServers: { inlineLsp: { command: 'fixture-lsp' } },
     }),
   )
   await writeFile(join(root, 'plugin', 'commands', 'hello.md'), 'hello')
@@ -64,6 +66,10 @@ async function pluginFixture(): Promise<{ root: string; configRoot: string }> {
     JSON.stringify({ mcpServers: { file: { command: 'file-mcp' } } }),
   )
   await writeFile(
+    join(root, 'plugin', '.lsp.json'),
+    JSON.stringify({ fileLsp: { command: 'file-lsp' } }),
+  )
+  await writeFile(
     join(root, 'plugin', 'hooks', 'hooks.json'),
     JSON.stringify({
       hooks: { Stop: [{ hooks: [{ type: 'command', command: 'stop' }] }] },
@@ -73,6 +79,23 @@ async function pluginFixture(): Promise<{ root: string; configRoot: string }> {
 }
 
 describe('Claude plugin runtime', () => {
+  it('reports per-component metadata and invocation token estimates', async () => {
+    const { root } = await pluginFixture()
+    const details = await describeClaudePlugin(join(root, 'plugin'))
+
+    expect(details.componentCosts).toEqual([
+      { kind: 'skill', name: 'review', alwaysOn: 4, onInvoke: 3 },
+      { kind: 'agent', name: 'reviewer', alwaysOn: 4, onInvoke: 2 },
+      { kind: 'command', name: 'hello', alwaysOn: 4, onInvoke: 1 },
+    ])
+    expect(details.tokenEstimate).toEqual({ alwaysOn: 12, onInvoke: 6 })
+    expect(details.components).toMatchObject({
+      hooks: ['SessionStart', 'Stop'],
+      mcpServers: ['file', 'inline'],
+      lspServers: ['fileLsp', 'inlineLsp'],
+    })
+  })
+
   it('loads namespaced components, hooks, and MCP resources', async () => {
     const { root } = await pluginFixture()
     const resources = await loadClaudePlugins({
@@ -181,5 +204,50 @@ describe('Claude plugin runtime', () => {
     await expect(
       readFile(join(fresh, 'commands', 'hello.md'), 'utf8'),
     ).resolves.toContain('Hello')
+  })
+
+  it('loads native skills-directory plugins without treating agents and styles as skills', async () => {
+    const { root } = await pluginFixture()
+    const configRoot = join(root, 'config')
+    const skillDirectory = join(configRoot, 'skills', 'fixture-skill')
+    await initClaudePlugin(skillDirectory, 'fixture-skill', {
+      nativeLayout: true,
+      with: ['skills', 'agents', 'output-style'],
+    })
+
+    const resources = await loadClaudePlugins({ configRoot, cwd: root })
+    expect(resources.plugins).toMatchObject([
+      { name: 'fixture-skill', source: 'fixture-skill@skills-dir' },
+    ])
+    expect(resources.skills.map((skill) => skill.path)).toEqual([
+      expect.stringContaining('fixture-skill:fixture-skill'),
+      expect.stringContaining('fixture-skill:example'),
+    ])
+    expect(resources.agents.map((agent) => agent.path)).toEqual([
+      expect.stringContaining('fixture-skill:example'),
+    ])
+  })
+
+  it('returns validation warnings and makes them strict failures on request', async () => {
+    const { root } = await pluginFixture()
+    const manifest = join(root, 'plugin', '.claude-plugin', 'plugin.json')
+    await writeFile(
+      manifest,
+      JSON.stringify({ name: 'fixture', unknown: true }),
+    )
+
+    await expect(
+      validateClaudePlugin(join(root, 'plugin')),
+    ).resolves.toMatchObject({
+      warnings: expect.arrayContaining([
+        "Unknown field 'unknown'",
+        'No version specified',
+        'No description provided',
+        'No author information provided',
+      ]),
+    })
+    await expect(
+      validateClaudePlugin(join(root, 'plugin'), { strict: true }),
+    ).rejects.toThrow('--strict treats warnings as errors')
   })
 })
