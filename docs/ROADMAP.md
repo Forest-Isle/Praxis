@@ -731,3 +731,19 @@ Status: complete for Claude Code 2.1.208 single-user plugin MCP runtime scope.
       build, strict-unused checks, and production audit passed
 - [x] 51-gate compatibility matrix, clean package install, performance budgets,
       strict unused checks, and production dependency audit passed
+
+## Stage 89 - executable CLI surface closure
+
+Status: complete for the agreed Claude Code 2.1.208 single-user CLI surface.
+
+- [x] recursive installed-Claude command discovery across 40 root, management,
+      plugin, marketplace, MCP, project, auto-mode, and leaf routes
+- [x] 243 included route-local long/short options checked against the Praxis
+      source build with command-help fallthrough rejection
+- [x] 46 included commands and aliases checked, including functional generic
+      `help <command>` routing where Claude exposes it
+- [x] explicit root Chrome, IDE, Remote Control, subscription-auth, enterprise
+      gateway, hosted Ultrareview, and Claude Desktop import exclusions
+- [x] Claude version pin, isolated config root, bounded subprocess execution,
+      automatic aggregate-gate discovery, and focused CLI surface command
+- [x] aggregate compatibility matrix expanded from 51 to 52 isolated gates

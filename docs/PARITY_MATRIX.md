@@ -146,7 +146,12 @@ routing.
 ## Final audit status
 
 Supported single-user CLI surface is closed against Claude Code 2.1.208. Latest
-residual audit closed scoped plugin MCP naming/deduplication, local and remote
+executable surface audit recursively walks the installed Claude command tree,
+checks 40 included routes, 243 route-local options, and 46 commands/aliases
+against Praxis, and verifies command-specific help dispatch. Root Chrome, IDE,
+Remote Control, subscription-auth, enterprise gateway, hosted Ultrareview, and
+Claude Desktop import exclusions are asserted in the gate rather than silently
+ignored. The preceding residual audit closed scoped plugin MCP naming/deduplication, local and remote
 MCPB/DXT loading, protected bundle configuration, MCP prompt discovery and rich
 invocation, durable prompt binaries, crash-recoverable settings/credential
 commits, and packed runtime execution after protected plugin option storage and
