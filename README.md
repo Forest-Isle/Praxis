@@ -304,6 +304,8 @@ node dist/cli.js mcp list
 node dist/cli.js mcp add-json fixture '{"type":"stdio","command":"node","args":["server.mjs"]}'
 node dist/cli.js mcp get fixture
 node dist/cli.js mcp remove fixture --scope local
+node dist/cli.js --json plugin list --available
+node dist/cli.js plugin init my-plugin --with skills agents
 node dist/cli.js
 ```
 
@@ -355,6 +357,12 @@ state), project (`.mcp.json`), or user (`.claude.json` root) scopes atomically;
 `add`, `add-json`, `list`, `get`, `remove`, and `reset-project-choices` are
 implemented. OAuth login/logout, Desktop import, and MCP server hosting remain
 separate management surfaces.
+
+Plugin management supports local and marketplace installs, details, strict
+manifest validation, typed `--config key=value` persistence, JSON marketplace
+availability, and native `plugin init <name>` scaffolds under
+`~/.claude/skills/<name>`. Skills-directory plugins load with normal plugin
+resources and can be enabled or disabled through their `<name>@skills-dir` ID.
 
 `PRAXIS_PROVIDER` defaults to `openai`. `PRAXIS_BASE_URL` defaults to the
 selected provider's official `/v1` endpoint. Native Anthropic requests accept

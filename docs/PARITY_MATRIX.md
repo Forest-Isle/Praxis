@@ -77,7 +77,7 @@ and foreground/background Agent and Bash `task_*` records. Subscription-only
 | Agents                                     | Complete for local runtime          | Shared definitions, foreground/background Agent sidechains, and persistent top-level dispatch with bidirectional resume                                                                     |
 | Hooks                                      | Complete for current runtime events | Shared settings, bounded child execution, native attachments                                                                                                                                |
 | MCP                                        | Complete                            | Shared config, tool/resource calls, OAuth login/logout, configured-server status, redacted elicitation/error diagnostics, local lifecycle management, and stdio hosting; live/package gates |
-| Plugins                                    | Complete                            | Claude-native plugin discovery, validation, lifecycle, marketplace records, sources, install/enable/disable/update, and session loading                                                     |
+| Plugins                                    | Complete                            | Claude-native plugin discovery, details, strict validation, typed userConfig, marketplace availability, skills-directory init/loading, lifecycle, and session loading                       |
 | Version gate                               | Complete for 2.1.208                | Exact read-write allowlist; all other versions read-only                                                                                                                                    |
 
 ## Runtime and controls
@@ -131,21 +131,21 @@ routing.
 
 ## Management commands
 
-| Capability           | Status   | Evidence / remaining work                                                                                                               |
-| -------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                         |
-| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier             |
-| `plugin`             | Complete | Local and Claude-native marketplace install/enable/disable/update/list/init/validate with bounded sources and recovery                  |
-| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                        |
-| `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate |
-| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                               |
-| `auto-mode`          | Complete | `config`, `defaults`, and provider-backed `critique [--model]` plus permission classifier                                               |
+| Capability           | Status   | Evidence / remaining work                                                                                                                                     |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents`             | Complete | Active/history listing, JSON, cwd filter, plus logs/attach/stop                                                                                               |
+| `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; add transport/env/header/OAuth controls and verifier                                   |
+| `plugin`             | Partial  | Marketplace/install/list/details/init/validate/prune/tag, aliases, config persistence, skills-dir loading, and bounded source recovery complete; eval remains |
+| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                                              |
+| `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate                       |
+| `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                                                     |
+| `auto-mode`          | Complete | `config`, `defaults`, and provider-backed `critique [--model]` plus permission classifier                                                                     |
 
 ## Final audit status
 
-All identified single-user CLI feature gaps from Claude Code 2.1.208 are
-implemented and have passed the integrated CLI-surface and end-to-end link
-audit: 643 unit/integration tests, 43 isolated compatibility gates, and the
-clean-tarball package gate pass. Unsupported Claude versions remain deliberately read-only, and
-enterprise, desktop, remote-control, and subscription-auth surfaces remain
-excluded by scope.
+Reopened after the Claude Code 2.1.208 management-command surface audit.
+Plugin eval, agents-dashboard lifecycle, and native iTerm worktree launch remain
+pending; final CLI-surface, clean-tarball, and end-to-end link gates must be
+rerun after those stages. Unsupported Claude versions remain deliberately
+read-only. Enterprise, desktop, remote-control, and subscription-auth surfaces
+remain excluded by scope.
