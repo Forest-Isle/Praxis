@@ -140,6 +140,11 @@ import {
   updateNativePlugin,
   type ClaudePluginScope,
 } from './plugins/claude-plugin-marketplace.js'
+import {
+  executeClaudePluginEvalCommand,
+  PLUGIN_EVAL_HELP,
+  type PluginEvalDependencies,
+} from './plugins/claude-plugin-eval.js'
 import { formatDoctorReport, runDoctor } from './maintenance/doctor.js'
 import {
   runSelfUpdate,
@@ -514,6 +519,7 @@ Commands:
   update [options] <name>      Update a plugin
   init <directory> [name]      Initialize a plugin directory
   validate <directory>         Validate a plugin manifest
+  eval [options] [target]      Evaluate plugin behavior
   marketplace [command]        Manage configured marketplaces
 `
 
@@ -604,6 +610,7 @@ const PLUGIN_ACTION_HELP: Record<string, string> = {
   update: PLUGIN_UPDATE_HELP,
   init: PLUGIN_INIT_HELP,
   validate: PLUGIN_VALIDATE_HELP,
+  eval: PLUGIN_EVAL_HELP,
 }
 
 const PLUGIN_MARKETPLACE_HELP = `Usage: praxis plugin marketplace [options] [command]
@@ -851,11 +858,15 @@ export interface CliDependencies extends InteractiveServiceFactory {
     signal?: AbortSignal
     exposeToolRegistry?: boolean
     emitToolUseSummaries?: boolean
+    cwd?: string
+    configRoot?: string
+    environment?: Readonly<Record<string, string>>
     onElicitation?: (
       request: CliElicitationRequest,
     ) => Promise<CliElicitationResult>
   }): Promise<SessionCommands>
   createAutoModeCritic?(options: { model?: string }): Promise<ModelProvider>
+  pluginEval?: PluginEvalDependencies
   runInteractive?(options: {
     agent?: string
     controls?: CliControls
@@ -893,12 +904,17 @@ const createDefaultService: CliDependencies['createService'] = async ({
   exposeToolRegistry = false,
   onElicitation,
   emitToolUseSummaries = false,
+  cwd: requestedCwd,
+  configRoot: requestedConfigRoot,
+  environment,
 }) => {
   const claudeVersion = await detectInstalledClaudeVersion()
-  const cwd = process.cwd()
+  const cwd = requestedCwd ?? process.cwd()
   const workspace = new WorkspaceContext(cwd)
   const configuredRoot = process.env.CLAUDE_CONFIG_DIR || undefined
-  const configRoot = resolve(configuredRoot ?? resolve(homedir(), '.claude'))
+  const configRoot = resolve(
+    requestedConfigRoot ?? configuredRoot ?? resolve(homedir(), '.claude'),
+  )
   const claudeStatePath = configuredRoot
     ? join(configRoot, '.claude.json')
     : resolve(homedir(), '.claude.json')
@@ -1142,6 +1158,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
     additionalDirectories: cli.additionalDirectories,
     additionalReadDirectories: [claudeBackgroundTaskParent(cwd)],
+    ...(environment ? { environment } : {}),
   })
   const mcpTools = await ClaudeMcpToolRegistry.connect({
     base: cli.bare
@@ -1482,9 +1499,58 @@ const createDefaultAutoModeCritic: NonNullable<
   )(selectedModel)
 }
 
+const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] =
+  {
+    create: async (options) => {
+      let turns = 0
+      const service = await createDefaultService({
+        eventSink: (event) => {
+          if (event.type === 'state' && event.state === 'awaiting-model')
+            turns += 1
+          options.eventSink(event)
+        },
+        requireProvider: true,
+        cwd: options.cwd,
+        configRoot: options.configRoot,
+        controls: {
+          ...DEFAULT_CLI_CONTROLS,
+          sessionPersistence: false,
+          maxTurns: options.maxTurns,
+          pluginDirectories: [...options.pluginDirectories],
+          addDirectories: [...options.addDirs],
+          allowedTools: [...options.allowedTools],
+          disallowedTools: [],
+          tools: [...options.allowedTools],
+          permissionMode: 'dontAsk',
+          ...(options.model ? { model: options.model } : {}),
+          ...(options.appendSystemPrompt
+            ? { appendSystemPrompt: options.appendSystemPrompt }
+            : {}),
+        },
+      })
+      return {
+        run: async (prompt, signal) => {
+          const result = await service.run(prompt, signal)
+          return {
+            text: result.text,
+            turns,
+            ...(result.costUsd === undefined
+              ? {}
+              : { costUsd: result.costUsd }),
+          }
+        },
+        close: () => service.close?.() ?? Promise.resolve(),
+      }
+    },
+  }
+
 const defaultDependencies: CliDependencies = {
   createService: createDefaultService,
   createAutoModeCritic: createDefaultAutoModeCritic,
+  pluginEval: {
+    runtimeFactory: defaultPluginEvalRuntimeFactory,
+    claudeVersion: VERSION,
+  },
   runInteractive: ({ agent, controls, resume, signal }) =>
     renderInteractive({
       factory: {
@@ -2888,6 +2954,15 @@ async function execute(
   }
   if (argv.length === 0 && io.isTTY && dependencies.runInteractive) {
     return dependencies.runInteractive(signal ? { signal } : {})
+  }
+  if ((argv[0] === 'plugin' || argv[0] === 'plugins') && argv[1] === 'eval') {
+    if (!dependencies.pluginEval) throw new Error('Plugin eval unavailable')
+    return executeClaudePluginEvalCommand(
+      argv.slice(2),
+      io,
+      dependencies.pluginEval,
+      signal,
+    )
   }
   if (printCommandHelp(argv, io)) return 0
   if (

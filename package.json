@@ -52,6 +52,7 @@
     "test:init-maintenance-compat": "npm run build && node scripts/verify-init-maintenance-compatibility.mjs",
     "test:stream-json-compat": "npm run build && node scripts/verify-stream-json-compatibility.mjs",
     "test:plugin-compat": "npm run build && node scripts/verify-plugin-compatibility.mjs",
+    "test:plugin-eval-compat": "npm run build && node scripts/verify-plugin-eval-compatibility.mjs",
     "test:mcp-management": "npm run build && node scripts/verify-mcp-management.mjs",
     "test:mcp-oauth-serve": "npm run build && node scripts/verify-mcp-oauth-serve.mjs",
     "test:package": "npm run build && node scripts/verify-release-package.mjs",

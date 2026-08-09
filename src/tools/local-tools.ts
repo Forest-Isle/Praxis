@@ -52,6 +52,7 @@ export interface LocalToolRegistryOptions {
   maxFileBytes?: number
   maxShellTimeoutMs?: number
   enableReportFindings?: boolean
+  environment?: Readonly<Record<string, string>>
 }
 
 const REPORT_FINDINGS_DEFINITION: ModelToolDefinition = {
@@ -549,6 +550,7 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly maxShellTimeoutMs: number
   private readonly processRunner: BoundedProcessRunner
   private readonly enableReportFindings: boolean
+  private readonly environment: Readonly<Record<string, string>> | undefined
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
@@ -566,6 +568,7 @@ export class LocalToolRegistry implements ToolRegistry {
     this.maxFileBytes = options.maxFileBytes ?? 10 * 1024 * 1024
     this.maxShellTimeoutMs = options.maxShellTimeoutMs ?? 120_000
     this.enableReportFindings = options.enableReportFindings ?? false
+    this.environment = options.environment
     this.processRunner = new BoundedProcessRunner({
       cwd: this.cwd,
       maxOutputBytes: this.maxOutputBytes,
@@ -1300,6 +1303,7 @@ export class LocalToolRegistry implements ToolRegistry {
       args,
       timeoutMs: this.maxShellTimeoutMs,
       cwd: this.currentCwd(context),
+      ...(this.environment ? { env: this.environment } : {}),
       ...(context.signal ? { signal: context.signal } : {}),
     })
     if (result.timedOut) {
@@ -1330,6 +1334,7 @@ export class LocalToolRegistry implements ToolRegistry {
       args: commandShellArguments(stringInput(call.input, 'command')),
       timeoutMs: timeout,
       cwd: this.currentCwd(context),
+      ...(this.environment ? { env: this.environment } : {}),
       ...(context.signal ? { signal: context.signal } : {}),
     })
     if (result.timedOut) {

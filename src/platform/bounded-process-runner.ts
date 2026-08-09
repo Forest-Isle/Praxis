@@ -27,6 +27,7 @@ export interface RunProcessOptions {
   cwd?: string
   signal?: AbortSignal
   onOutput?: (output: string) => void | Promise<void>
+  env?: Readonly<Record<string, string>>
 }
 
 function abortError(): DOMException {
@@ -148,7 +149,7 @@ export class BoundedProcessRunner {
       const child = spawn(options.command, options.args, {
         cwd: options.cwd ?? this.options.cwd,
         detached: process.platform !== 'win32',
-        env: sanitizeChildEnvironment(),
+        env: { ...sanitizeChildEnvironment(), ...options.env },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] }
