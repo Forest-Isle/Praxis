@@ -8,9 +8,11 @@
 
 Praxis is buildable and fully wired for current single-user CLI scope. TypeScript
 typechecking, boundary checks, focused regressions, package-script references,
-and direct production dependencies pass. Stage 89 adds a recursive executable
-CLI surface gate covering 40 routes, 243 included options, 46 commands/aliases,
-help routing, and explicit product exclusions. Stage 88 adds scoped plugin MCP
+and direct production dependencies pass. Stage 90 hardens the recursive CLI
+surface gate with exact option and positional signatures, declaration-only
+parsing, alias execution, and one explicit `--tmux=classic` extension across 40
+routes, 243 included options, and 46 commands/aliases. Stage 89 established the
+route/help/exclusion walk. Stage 88 adds scoped plugin MCP
 naming/deduplication, official MCPB/DXT local and remote loading, protected
 bundle configuration, bounded cache/extraction, prompt discovery/invocation,
 durable prompt binaries, crash recovery, failure isolation, and packed runtime

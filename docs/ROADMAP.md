@@ -747,3 +747,21 @@ Status: complete for the agreed Claude Code 2.1.208 single-user CLI surface.
 - [x] Claude version pin, isolated config root, bounded subprocess execution,
       automatic aggregate-gate discovery, and focused CLI surface command
 - [x] aggregate compatibility matrix expanded from 51 to 52 isolated gates
+
+## Stage 90 - exact CLI signature closure
+
+Status: complete for Claude Code 2.1.208 included option and positional
+signatures.
+
+- [x] exact required, optional, and variadic signature comparison for all 243
+      included long and short options across 40 routes
+- [x] exact positional argument kind and variadic comparison for every included
+      management and leaf route
+- [x] declaration-only option parsing so wrapped descriptions and embedded flag
+      examples cannot overwrite authoritative signatures
+- [x] explicit, stale-checked `--tmux=classic` compatible extension while all
+      other included option signatures remain exact
+- [x] alias dispatch, generic-help dispatch, version pin, product exclusions,
+      and undiscovered-route rejection retained in one executable gate
+- [x] stale README auto-permission status corrected to match the implemented
+      bounded classifier runtime
