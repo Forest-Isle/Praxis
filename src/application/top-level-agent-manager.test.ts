@@ -82,6 +82,44 @@ afterEach(async () => {
 })
 
 describe('TopLevelAgentManager', () => {
+  it('waits for a newly launched worker socket before attaching', async () => {
+    const fixtureState = await fixture()
+    let ran = false
+    const attaching = fixtureState.manager.attach(
+      fixtureState.id,
+      (async function* () {})(),
+      () => undefined,
+    )
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50))
+    const worker = runTopLevelAgentWorker({
+      configRoot: fixtureState.configRoot,
+      id: fixtureState.id,
+      async createRuntime() {
+        return {
+          async run(_prompt, _signal, sessionId) {
+            ran = true
+            return {
+              sessionId,
+              text: 'STARTED_AFTER_ATTACH',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+        }
+      },
+    })
+    await attaching
+    await waitFor(
+      async () =>
+        (await fixtureState.store.read(fixtureState.id)).tempo === 'idle',
+    )
+    expect(ran).toBe(true)
+    await fixtureState.manager.stop(fixtureState.id)
+    await worker
+  })
+
   it('keeps a completed turn idle, accepts attached continuation, logs, and stops', async () => {
     const fixtureState = await fixture()
     const calls: string[] = []

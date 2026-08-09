@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { detectClaudeVersion } from './lib/claude-probe.mjs'
+import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
 
 const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-agents-dashboard-compat-'))
@@ -15,6 +17,35 @@ const otherCwd = join(root, 'other-work')
 const installRoot = join(root, 'install')
 let praxisCli
 let launchedId
+let resumedId
+let providerPort
+let providerTurn = 0
+const providerRequests = []
+
+const provider = createServer(async (request, response) => {
+  let source = ''
+  request.setEncoding('utf8')
+  for await (const chunk of request) source += chunk
+  if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
+    response.writeHead(404).end()
+    return
+  }
+  providerRequests.push(JSON.parse(source))
+  providerTurn += 1
+  const text = `AGENTS_DASHBOARD_FAKE_${providerTurn}`
+  response.writeHead(200, { 'content-type': 'text/event-stream' })
+  response.end(
+    `data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
+  )
+})
+
+async function listenProvider() {
+  await new Promise((resolveListen, reject) => {
+    provider.once('error', reject)
+    provider.listen(0, '127.0.0.1', resolveListen)
+  })
+  providerPort = provider.address().port
+}
 
 process.env.DISABLE_AUTOUPDATER = '1'
 
@@ -23,6 +54,10 @@ function environment() {
     ...process.env,
     CLAUDE_CONFIG_DIR: configRoot,
     DISABLE_AUTOUPDATER: '1',
+    PRAXIS_PROVIDER: 'openai',
+    PRAXIS_API_KEY: 'fixture-key',
+    PRAXIS_MODEL: 'fixture-model',
+    PRAXIS_BASE_URL: `http://127.0.0.1:${providerPort}/v1`,
   }
 }
 
@@ -74,11 +109,70 @@ async function runPraxisPty() {
     [
       '-c',
       `
-set timeout 15
+set timeout 20
 spawn $env(PRAXIS_NODE) $env(PRAXIS_CLI) agents
 expect {
-  -re {Ready for review [(]} { send "?"; expect -re {Shortcuts}; send "\\022"; expect -re {Working [(]}; send "\\003"; expect eof; exit 0 }
+  -re {Completed [(]1[)]} {
+    send "\\r"
+    set review_pattern "Reviewing $env(INITIAL_ID); enter a prompt to resume"
+    expect {
+      -re $review_pattern {}
+      timeout { puts stderr "review did not load"; exit 1 }
+      eof { puts stderr "dashboard exited before review loaded"; exit 1 }
+    }
+    send "resume dashboard"
+    expect {
+      -re {› resume dashboard} {}
+      timeout { puts stderr "resume prompt did not render"; exit 1 }
+      eof { puts stderr "dashboard exited before resume prompt rendered"; exit 1 }
+    }
+    send "\\r"
+    expect {
+      -re {Attached to ([0-9a-f]{8})} {}
+      timeout { puts stderr "resumed agent did not attach"; exit 1 }
+      eof { puts stderr "dashboard exited before resumed agent attached"; exit 1 }
+    }
+    set resumed_id $expect_out(1,string)
+    set detached_pattern "Detached from $resumed_id"
+    set stopped_pattern "Stopped $resumed_id"
+    expect {
+      -re {AGENTS_DASHBOARD_FAKE_2} {}
+      timeout { puts stderr "resumed output did not render"; exit 1 }
+      eof { puts stderr "dashboard exited before resumed output rendered"; exit 1 }
+    }
+    send "continuation"
+    expect {
+      -re {› continuation} {}
+      timeout { puts stderr "continuation prompt did not render"; exit 1 }
+      eof { puts stderr "dashboard exited before continuation prompt rendered"; exit 1 }
+    }
+    send "\\r"
+    expect {
+      -re {AGENTS_DASHBOARD_FAKE_3} {}
+      timeout { puts stderr "continuation output did not render"; exit 1 }
+      eof { puts stderr "dashboard exited before continuation output rendered"; exit 1 }
+    }
+    send "\\033"
+    expect {
+      -re $detached_pattern {}
+      timeout { puts stderr "resumed agent did not detach"; exit 1 }
+      eof { puts stderr "dashboard exited before detach"; exit 1 }
+    }
+    send "\\030"
+    expect {
+      -re $stopped_pattern {}
+      timeout { puts stderr "resumed agent did not stop"; exit 1 }
+      eof { puts stderr "dashboard exited before stop"; exit 1 }
+    }
+    send "\\003"
+    expect {
+      eof {}
+      timeout { puts stderr "dashboard did not exit"; exit 1 }
+    }
+    exit 0
+  }
   timeout { puts stderr "Praxis agents PTY did not render"; exit 1 }
+  eof { puts stderr "Praxis agents PTY exited before rendering"; exit 1 }
 }
 `,
     ],
@@ -88,6 +182,7 @@ expect {
         ...environment(),
         PRAXIS_NODE: process.execPath,
         PRAXIS_CLI: praxisCli,
+        INITIAL_ID: launchedId,
       },
       timeout: 30_000,
     },
@@ -103,6 +198,7 @@ try {
     mkdir(otherCwd),
     mkdir(installRoot),
   ])
+  await listenProvider()
   const { stdout: packed } = await execFileAsync(
     'npm',
     ['pack', '--pack-destination', root],
@@ -223,8 +319,31 @@ try {
   )
   launchedId = /backgrounded · ([0-9a-f]{8})/u.exec(launched.stdout)?.[1]
   assert.ok(launchedId, `Praxis background launch failed: ${launched.stdout}`)
-  const completed = await waitForCompletedAgent(launchedId)
-  assert.notEqual(completed.status, 'active')
+  let becameIdle = false
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const current = (await jsonAgents()).find(
+      (agent) => agent.id === launchedId,
+    )
+    if (current?.status === 'idle') {
+      becameIdle = true
+      break
+    }
+    await new Promise((resolveWait) => globalThis.setTimeout(resolveWait, 50))
+  }
+  assert.equal(
+    becameIdle,
+    true,
+    'Initial background worker did not become idle',
+  )
+  await execFileAsync(process.execPath, [praxisCli, 'stop', launchedId], {
+    cwd,
+    env: environment(),
+    timeout: 30_000,
+  })
+  const completed = (await jsonAgents(true)).find(
+    (agent) => agent.id === launchedId,
+  )
+  assert.equal(completed?.state, 'stopped')
   assert.equal(
     (await jsonAgents()).some((agent) => agent.id === launchedId),
     false,
@@ -235,6 +354,50 @@ try {
   )
 
   await runPraxisPty()
+  const resumed = (await jsonAgents(true)).find(
+    (agent) =>
+      agent.id !== launchedId && agent.sessionId === completed.sessionId,
+  )
+  assert(resumed?.id, 'PTY resume did not create a new background worker')
+  resumedId = resumed.id
+  assert.equal((await waitForCompletedAgent(resumedId)).state, 'stopped')
+  const logs = await execFileAsync(
+    process.execPath,
+    [praxisCli, 'logs', resumedId],
+    { cwd, env: environment(), timeout: 30_000 },
+  )
+  assert.equal(
+    [...logs.stdout.matchAll(/AGENTS_DASHBOARD_FAKE_/gu)].length >= 2,
+    true,
+    'Resumed worker log omitted resume or continuation output',
+  )
+  const transcript = await readFile(
+    resolveClaudePaths({
+      configDir: configRoot,
+      cwd: completed.cwd,
+      sessionId: completed.sessionId,
+    }).sessionFile,
+    'utf8',
+  )
+  assert.match(transcript, /resume dashboard/u)
+  assert.match(transcript, /continuation/u)
+  assert.equal(
+    [...transcript.matchAll(/AGENTS_DASHBOARD_FAKE_/gu)].length >= 3,
+    true,
+    'Shared transcript omitted a lifecycle provider response',
+  )
+  assert.equal(providerTurn >= 3, true, 'Provider did not receive all turns')
+  const providerPayloads = JSON.stringify(providerRequests)
+  assert.match(providerPayloads, /AGENTS_DASHBOARD_JSON_GATE/u)
+  assert.match(providerPayloads, /resume dashboard/u)
+  assert.match(providerPayloads, /continuation/u)
+  const persistedState = JSON.parse(
+    await readFile(join(configRoot, 'jobs', resumedId, 'state.json'), 'utf8'),
+  )
+  assert.equal(persistedState.state, 'stopped')
+  assert.equal(persistedState.tempo, 'idle')
+  assert.equal(persistedState.sessionId, completed.sessionId)
+  assert.equal(persistedState.resumeSessionId, completed.sessionId)
 
   process.stdout.write(
     `Claude ${version} agents dashboard compatibility passed: packed artifact, help, non-TTY guard, native/cross-CWD JSON, strict options, and interactive dashboard controls\n`,
@@ -247,5 +410,12 @@ try {
       timeout: 30_000,
     }).catch(() => undefined)
   }
+  if (resumedId)
+    await execFileAsync(process.execPath, [praxisCli, 'stop', resumedId], {
+      cwd,
+      env: environment(),
+      timeout: 30_000,
+    }).catch(() => undefined)
+  await new Promise((resolveClose) => provider.close(resolveClose))
   await rm(root, { recursive: true, force: true })
 }

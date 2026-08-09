@@ -74,6 +74,7 @@ const MAX_JOB_OUTPUT_BYTES = 1024 * 1024
 const MAX_ATTACH_PROMPT_BYTES = 1024 * 1024
 const MAX_WIRE_LINE_BYTES = 8 * 1024 * 1024
 const MAX_SOCKET_BUFFER_BYTES = 10 * 1024 * 1024
+const SOCKET_RETRY_INTERVAL_MS = 25
 
 // Background workers are trusted Praxis runtimes, but still must not inherit
 // unrelated credentials or shell startup injection from the launching shell.
@@ -207,6 +208,60 @@ function lines(socket: Socket, receive: (message: WireMessage) => void): void {
       if (message) receive(message)
     }
   })
+}
+
+function transientSocketError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code
+  return code === 'ENOENT' || code === 'ECONNREFUSED'
+}
+
+function waitForSocketRetry(signal?: AbortSignal): Promise<void> {
+  return new Promise((resolveWait, rejectWait) => {
+    if (signal?.aborted) {
+      rejectWait(new Error('Attach cancelled'))
+      return
+    }
+    const abort = () => {
+      clearTimeout(timer)
+      rejectWait(new Error('Attach cancelled'))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort)
+      resolveWait()
+    }, SOCKET_RETRY_INTERVAL_MS)
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+}
+
+async function connectToWorker(
+  path: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Socket> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (signal?.aborted) throw new Error('Attach cancelled')
+    const socket = createConnection(path)
+    try {
+      await new Promise<void>((resolveConnect, rejectConnect) => {
+        const connected = () => {
+          socket.removeListener('error', failed)
+          resolveConnect()
+        }
+        const failed = (error: Error) => {
+          socket.removeListener('connect', connected)
+          rejectConnect(error)
+        }
+        socket.once('connect', connected)
+        socket.once('error', failed)
+      })
+      return socket
+    } catch (error) {
+      socket.destroy()
+      if (!transientSocketError(error) || Date.now() >= deadline) throw error
+      await waitForSocketRetry(signal)
+    }
+  }
 }
 
 async function canonicalDirectory(path: string): Promise<string> {
@@ -521,11 +576,11 @@ export class TopLevelAgentManager {
     if (state.state !== 'working' || !state.socketPath || !state.controlToken) {
       throw new Error(`Agent ${id} is not attachable (state: ${state.state})`)
     }
-    const socket = createConnection(state.socketPath)
-    await new Promise<void>((resolveConnect, reject) => {
-      socket.once('connect', resolveConnect)
-      socket.once('error', reject)
-    })
+    const socket = await connectToWorker(
+      state.socketPath,
+      ATTACH_READY_WAIT_MS,
+      signal,
+    )
     let readyResolve: (() => void) | undefined
     let readyReject: ((error: Error) => void) | undefined
     let isReady = false
@@ -567,7 +622,7 @@ export class TopLevelAgentManager {
     }
     socket.once('close', connectionClosed)
     writeWire(socket, { type: 'attach', token: state.controlToken })
-    const abort = () => socket.destroy(new Error('Attach cancelled'))
+    const abort = () => socket.destroy()
     signal?.addEventListener('abort', abort, { once: true })
     try {
       await ready
