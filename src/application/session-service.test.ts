@@ -30,6 +30,7 @@ import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
+import { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
 
@@ -75,6 +76,120 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('persists and restores interactive plan-mode transitions without duplicate tools', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-interactive-plan-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '85858585-8585-4585-8585-858585858585'
+    await mkdir(cwd, { recursive: true })
+    const planPath = join(configRoot, 'plans', `praxis-${sessionId}.md`)
+    const requests: ModelRequest[] = []
+    let providerTurn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        providerTurn += 1
+        if (providerTurn === 1) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'enter-plan', name: 'EnterPlanMode', input: {} },
+          }
+        } else if (providerTurn === 3) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'write-plan',
+              name: 'Write',
+              input: {
+                file_path: planPath,
+                content: '# Plan\n\n1. Implement it.\n',
+              },
+            },
+          }
+        } else if (providerTurn === 4) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'exit-plan', name: 'ExitPlanMode', input: {} },
+          }
+        } else {
+          yield {
+            type: 'text-delta',
+            delta: providerTurn === 6 ? 'implemented' : 'complete',
+          }
+        }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const allow = { resolve: () => ({ behavior: 'allow' as const }) }
+    const interactiveTools = new ClaudeInteractiveToolManager({
+      configRoot,
+      initialMode: 'default',
+      enabledTools: ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'],
+      callbacks: {
+        askUser: async () => null,
+        approvePlan: async () => true,
+      },
+      permissionResolverForMode: (mode) =>
+        mode === 'plan'
+          ? {
+              resolve: (call) =>
+                call.name === 'Write' || call.name === 'Edit'
+                  ? { behavior: 'deny', reason: 'plan mode' }
+                  : { behavior: 'allow' },
+            }
+          : allow,
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({
+        cwd,
+        additionalDirectories: [join(configRoot, 'plans')],
+      }),
+      permissions: allow,
+      interactiveTools,
+    })
+
+    await service.run('plan it', undefined, sessionId)
+    await service.resume(sessionId, 'finish the plan')
+    await service.resume(sessionId, 'implement it')
+
+    const interactiveNames = [
+      'AskUserQuestion',
+      'EnterPlanMode',
+      'ExitPlanMode',
+    ]
+    for (const request of requests) {
+      for (const name of interactiveNames) {
+        expect(
+          request.tools?.filter((tool) => tool.name === name),
+        ).toHaveLength(1)
+      }
+    }
+    expect(JSON.stringify(requests[2]?.messages)).toContain('# Plan mode')
+    expect(JSON.stringify(requests[2]?.messages)).toContain(planPath)
+    await expect(readFile(planPath, 'utf8')).resolves.toBe(
+      '# Plan\n\n1. Implement it.\n',
+    )
+    expect(JSON.stringify(requests[5]?.messages)).not.toContain('# Plan mode')
+
+    const transcript = await readFile(
+      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
+      'utf8',
+    )
+    const modes = transcript
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.type === 'permission-mode')
+      .map((entry) => entry.permissionMode)
+    expect(modes).toEqual(['plan', 'default'])
+  })
+
   it('persists native file checkpoints and rewinds without a provider call', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-rewind-'))
     roots.push(root)

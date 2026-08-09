@@ -100,6 +100,7 @@ import {
   CLAUDE_USER_MESSAGE_PROMPT,
   type UserMessage,
 } from '../tools/claude-user-message.js'
+import type { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -150,6 +151,7 @@ export interface ClaudeSessionServiceOptions {
   fileResourceConfig?: Omit<ClaudeFileResourceConfig, 'sessionId' | 'signal'>
   fileCheckpointing?: boolean
   fileRewindRoots?: readonly string[]
+  interactiveTools?: ClaudeInteractiveToolManager
 }
 
 export interface SessionRunResult {
@@ -432,10 +434,15 @@ export class ClaudeSessionService {
           }),
         )
       : registry
+    const interactiveRegistry = this.options.interactiveTools
+      ? this.options.interactiveTools.registry(messageRegistry, sessionId)
+      : messageRegistry
     const preferredOrder = [
       'Agent',
+      'AskUserQuestion',
       'TaskOutput',
       'Bash',
+      'EnterPlanMode',
       'Read',
       'Edit',
       'Write',
@@ -449,6 +456,7 @@ export class ClaudeSessionService {
       'TaskCreate',
       'TaskGet',
       'TaskUpdate',
+      'ExitPlanMode',
       'EnterWorktree',
       'ExitWorktree',
       'SendMessage',
@@ -463,7 +471,7 @@ export class ClaudeSessionService {
     ]
     return {
       definitions: () => {
-        const definitions = messageRegistry.definitions()
+        const definitions = interactiveRegistry.definitions()
         return [...definitions].sort((left, right) => {
           const leftIndex = preferredOrder.indexOf(left.name)
           const rightIndex = preferredOrder.indexOf(right.name)
@@ -473,8 +481,8 @@ export class ClaudeSessionService {
           )
         })
       },
-      prepare: (call, context) => messageRegistry.prepare(call, context),
-      execute: (call, context) => messageRegistry.execute(call, context),
+      prepare: (call, context) => interactiveRegistry.prepare(call, context),
+      execute: (call, context) => interactiveRegistry.execute(call, context),
     }
   }
 
@@ -719,6 +727,7 @@ export class ClaudeSessionService {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
       this.restoreWorktree(snapshot.entries)
+      this.options.interactiveTools?.restore(sessionId, snapshot.entries)
       await new ClaudeFileHistory(this.options.configRoot, sessionId, [
         this.activeCwd(),
         ...(this.options.fileRewindRoots ?? []),
@@ -812,6 +821,7 @@ export class ClaudeSessionService {
         }
       }
       this.restoreWorktree(snapshot.entries)
+      this.options.interactiveTools?.restore(sessionId, snapshot.entries)
       if (
         requireExisting &&
         name !== undefined &&
@@ -942,10 +952,13 @@ export class ClaudeSessionService {
             })
           : null
       const baseTools = scheduledTools ?? taskTools ?? this.options.tools
+      const turnPermissions =
+        this.options.interactiveTools?.permissions(sessionId) ??
+        this.options.permissions
       const subagentExecutor =
         (this.options.enableSubagents || this.options.enableWorkflows) &&
         baseTools &&
-        this.options.permissions
+        turnPermissions
           ? new ClaudeSubagentExecutor({
               configRoot: this.options.configRoot,
               cwd: this.activeCwd(),
@@ -958,7 +971,7 @@ export class ClaudeSessionService {
                 ? { providerForModel: this.options.providerForModel }
                 : {}),
               baseTools,
-              permissions: this.options.permissions,
+              permissions: turnPermissions,
               ...(this.options.permissionResolverForMode
                 ? {
                     permissionResolverForMode:
@@ -1051,11 +1064,16 @@ export class ClaudeSessionService {
                 }),
             )
           : workspaceTools
+      const interactiveMessageTools =
+        this.options.interactiveTools && messageTools
+          ? this.options.interactiveTools.registry(messageTools, sessionId)
+          : messageTools
       const fileHistoryTools: ToolRegistry | undefined =
-        fileHistory && messageTools
+        fileHistory && interactiveMessageTools
           ? {
-              definitions: () => messageTools.definitions(),
-              prepare: (call, context) => messageTools.prepare(call, context),
+              definitions: () => interactiveMessageTools.definitions(),
+              prepare: (call, context) =>
+                interactiveMessageTools.prepare(call, context),
               execute: async (call, context) => {
                 const path =
                   call.name === 'Write' || call.name === 'Edit'
@@ -1064,7 +1082,7 @@ export class ClaudeSessionService {
                       ? call.input.notebook_path
                       : undefined
                 if (typeof path !== 'string') {
-                  return messageTools.execute(call, context)
+                  return interactiveMessageTools.execute(call, context)
                 }
                 const snapshotMessageId =
                   currentPromptId ??
@@ -1084,7 +1102,7 @@ export class ClaudeSessionService {
                 )
                 let result
                 try {
-                  result = await messageTools.execute(call, context)
+                  result = await interactiveMessageTools.execute(call, context)
                 } catch (error) {
                   await prepared.rollback()
                   throw error
@@ -1101,7 +1119,7 @@ export class ClaudeSessionService {
                 return result
               },
             }
-          : messageTools
+          : interactiveMessageTools
       const structuredCapture = this.options.structuredOutputSchema
         ? { calls: 0, value: undefined as unknown }
         : undefined
@@ -1114,10 +1132,10 @@ export class ClaudeSessionService {
             )
           : fileHistoryTools
       const hookTools =
-        this.options.hooks && structuredTools && this.options.permissions
+        this.options.hooks && structuredTools && turnPermissions
           ? new ClaudeHookToolCoordinator({
               tools: structuredTools,
-              permissions: this.options.permissions,
+              permissions: turnPermissions,
               hooks: this.options.hooks,
               session: hookSession,
               recordOutcome: recordHookOutcome,
@@ -1155,9 +1173,7 @@ export class ClaudeSessionService {
           ? { tools: hookTools, permissions: hookTools }
           : {
               ...(structuredTools ? { tools: structuredTools } : {}),
-              ...(this.options.permissions
-                ? { permissions: this.options.permissions }
-                : {}),
+              ...(turnPermissions ? { permissions: turnPermissions } : {}),
             }),
       })
       let currentTurnUserMessages: string[] | null = null
@@ -1217,6 +1233,20 @@ export class ClaudeSessionService {
             snapshot = {
               entries: [...snapshot.entries, stateEntry],
               tail: stateTail,
+            }
+          }
+          const permissionMode =
+            this.options.interactiveTools?.consumeTransition(call.id)
+          if (permissionMode) {
+            const modeEntry: ClaudeTranscriptEntry = {
+              type: 'permission-mode',
+              permissionMode,
+              sessionId,
+            }
+            const modeTail = await this.append(lease, snapshot.tail, modeEntry)
+            snapshot = {
+              entries: [...snapshot.entries, modeEntry],
+              tail: modeTail,
             }
           }
           const [entry] = translateProviderEvents(
@@ -1391,8 +1421,13 @@ export class ClaudeSessionService {
         const assembledContext = await this.options.contextAssembler?.assemble({
           cwd: this.activeCwd(),
         })
+        const planModeMessage =
+          this.options.interactiveTools?.contextMessage(sessionId)
         const contextMessages = [
           ...(assembledContext?.systemMessages ?? []),
+          ...(planModeMessage
+            ? [{ role: 'system' as const, content: planModeMessage }]
+            : []),
           ...(this.options.brief
             ? [
                 {

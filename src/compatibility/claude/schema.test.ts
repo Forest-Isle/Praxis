@@ -92,6 +92,14 @@ describe('ClaudeSchemaAdapter', () => {
     expect(adapter.serializeForAppend(agentName)).toBe(
       JSON.stringify(agentName),
     )
+    const permissionMode = {
+      type: 'permission-mode',
+      permissionMode: 'plan',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    }
+    expect(adapter.serializeForAppend(permissionMode)).toBe(
+      JSON.stringify(permissionMode),
+    )
     expect(adapter.serializeForFork(customTitle)).toBe(
       JSON.stringify(customTitle),
     )

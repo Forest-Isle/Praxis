@@ -627,3 +627,20 @@ Status: complete for Claude Code 2.1.208 single-user CLI scope.
 - [x] installed Claude/Praxis MCP media compatibility gate; aggregate matrix now 49 gates
 - [x] `npm run check`: 86 files, 718 tests; package, performance, strict unused,
       production audit, and 49-gate compatibility matrix passed
+
+## Stage 85 - interactive question and plan-mode parity
+
+Status: complete for Claude Code 2.1.208 single-user interactive CLI scope.
+
+- [x] positional TTY prompts enter the persistent Ink session and submit once
+      after optional resume selection; `-p` remains headless
+- [x] interactive-only `AskUserQuestion`, `EnterPlanMode`, and `ExitPlanMode`
+      schemas and tool filtering match Claude's observable surface
+- [x] numbered, multi-select, custom-text, cancellation, and abort-aware question
+      handling plus explicit plan-exit approval
+- [x] plan context, exact canonical plan-file write access, shared plans directory,
+      native `permission-mode` append, resume, and previous-mode restoration
+- [x] real PTY Claude/Praxis schema, routing, question-result, plan-file, and
+      transcript-transition compatibility gate; aggregate matrix now 50 gates
+- [x] `npm run check`: 87 files, 732 tests; package, performance, strict unused,
+      production audit, and 50-gate compatibility matrix passed

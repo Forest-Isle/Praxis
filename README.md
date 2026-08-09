@@ -10,7 +10,8 @@ IDE surfaces, and telemetry control planes.
 
 ## Status
 
-Stage 84 completion audit is implemented on top of interactive dynamic wakeups,
+Stage 85 interactive question and plan-mode parity is implemented on top of the
+Stage 84 completion audit, interactive dynamic wakeups,
 Workflow, scheduled prompts, and
 top-level background sessions and agent management, durable tasks, background Bash,
 WebFetch/WebSearch, MCP resource tools,
@@ -35,10 +36,15 @@ a failed tool result or interrupt the run, matching the MCP response contract.
 Classifier-backed `auto` permissions remain fail-closed until their dedicated
 runtime lands; no-persistence runs disable Agent because native
 sidechains are disk-backed.
-Running `praxis` in a
+Running `praxis` or `praxis "prompt"` in a
 TTY opens an
 Ink session UI with streaming
-responses, recent-session selection, runtime status, and ask-permission prompts.
+responses, recent-session selection, runtime status, ask-permission prompts,
+model-driven `AskUserQuestion`, and `EnterPlanMode`/`ExitPlanMode`. A positional
+TTY prompt is submitted once after any required resume selection; `-p` remains
+headless. Plan mode persists native `permission-mode` records, resumes across
+Praxis and Claude transcripts, and restricts writes to the current session's
+exact plan file under the shared Claude plans directory.
 When resume finds a tool call interrupted before its result was persisted, the
 UI shows the prepared tool name/input and requires a separate retry decision.
 Praxis can run, resume, fork, and list Claude-compatible sessions
@@ -407,8 +413,10 @@ intentional grants to that server, with matching output redaction.
 Permissions load from the shared global and current-project Claude settings.
 `Read`, `Grep`, `Agent`, `SendMessage`, and Task tools default to `allow`;
 `Write`, `Edit`, `Bash`, `WebFetch`, and `WebSearch` default to `ask`.
-Interactive mode prompts before an `ask` tool
-call. Headless commands remain non-interactive and return a denied tool result
+Interactive mode prompts before an `ask` tool call. Entering plan mode is
+automatic; leaving it displays the plan and requires user approval. Question and
+plan prompts honor tool cancellation. Headless commands remain non-interactive
+and return a denied tool result
 unless a compatible `allow` rule exists.
 
 With a Claude Code 2.1.208 installation, run the isolated compatibility probes
@@ -421,7 +429,7 @@ npm run test:compat:all
 
 The aggregate command discovers every `test:*` compatibility gate except the
 provider-free package and performance gates, validates each command shape, and
-runs 49 isolated gates in sequence. Run an individual `test:*` command when
+runs 50 isolated gates in sequence. Run an individual `test:*` command when
 iterating on one surface.
 
 `npm run test:performance` is a local, provider-free release gate covering CLI

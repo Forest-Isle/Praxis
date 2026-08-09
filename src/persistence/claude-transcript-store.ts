@@ -94,6 +94,7 @@ const NON_TAIL_ENTRY_TYPES = new Set([
   'custom-title',
   'file-history-delta',
   'file-history-snapshot',
+  'permission-mode',
   'pr-link',
   'worktree-state',
 ])
