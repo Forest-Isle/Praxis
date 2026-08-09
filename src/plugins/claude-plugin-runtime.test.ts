@@ -351,6 +351,7 @@ describe('Claude plugin runtime', () => {
         mcpServers: [
           'missing.json',
           './broken.dxt',
+          'https://user:query-secret@example.test/bundle.dxt?version=1',
           { valid: { command: 'valid-mcp' } },
         ],
       }),
@@ -367,7 +368,11 @@ describe('Claude plugin runtime', () => {
       expect.stringContaining('.mcp.json'),
       expect.stringContaining('missing.json'),
       expect.stringContaining('broken.dxt'),
+      expect.stringContaining('Invalid plugin MCPB reference at index 2'),
     ])
+    expect(JSON.stringify(resources.plugins[0]?.errors)).not.toContain(
+      'query-secret',
+    )
     expect(resources.commands).toHaveLength(1)
     expect(resources.mcp).toEqual([
       expect.objectContaining({

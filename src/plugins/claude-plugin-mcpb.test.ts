@@ -1,12 +1,15 @@
 import {
   access,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
@@ -15,12 +18,14 @@ import { join, sep } from 'node:path'
 import { strToU8, zipSync, type Zippable } from 'fflate'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ExclusiveFileLease } from '../platform/exclusive-file-lease.js'
 import { loadClaudePluginMcpb } from './claude-plugin-mcpb.js'
 
 const roots: string[] = []
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   )
@@ -91,6 +96,36 @@ function bundle(
   })
 }
 
+function withCentralSize(
+  archive: Uint8Array,
+  entryName: string,
+  size: number,
+): Uint8Array {
+  const patched = archive.slice()
+  const decoder = new TextDecoder()
+  for (let offset = 0; offset + 46 <= patched.byteLength; offset += 1) {
+    if (
+      patched[offset] !== 0x50 ||
+      patched[offset + 1] !== 0x4b ||
+      patched[offset + 2] !== 0x01 ||
+      patched[offset + 3] !== 0x02
+    )
+      continue
+    const nameLength =
+      (patched[offset + 28] ?? 0) | ((patched[offset + 29] ?? 0) << 8)
+    const name = decoder.decode(
+      patched.subarray(offset + 46, offset + 46 + nameLength),
+    )
+    if (name !== entryName) continue
+    patched[offset + 24] = size & 0xff
+    patched[offset + 25] = (size >>> 8) & 0xff
+    patched[offset + 26] = (size >>> 16) & 0xff
+    patched[offset + 27] = (size >>> 24) & 0xff
+    return patched
+  }
+  throw new Error(`Central ZIP entry not found: ${entryName}`)
+}
+
 async function fixture(bytes = bundle()): Promise<{
   root: string
   pluginRoot: string
@@ -102,6 +137,7 @@ async function fixture(bytes = bundle()): Promise<{
   const pluginRoot = join(root, 'plugin')
   const source = join(pluginRoot, 'fixture.mcpb')
   const pluginData = join(root, 'data')
+  vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, 'config'))
   await mkdir(pluginRoot, { recursive: true })
   await writeFile(source, bytes)
   return { root, pluginRoot, source, pluginData }
@@ -377,6 +413,129 @@ describe('Claude MCPB/DXT loader', () => {
     }
   })
 
+  it('enforces declared bounds while streaming and removes partial output', async () => {
+    const bytes = withCentralSize(
+      bundle(manifest(), {
+        'server/payload.txt': strToU8('abcdefgh'.repeat(8_000)),
+      }),
+      'server/payload.txt',
+      16,
+    )
+    const { pluginRoot, pluginData } = await fixture(bytes)
+    await expect(
+      loadClaudePluginMcpb({
+        pluginRoot,
+        pluginData,
+        source: 'fixture.mcpb',
+        userConfig: { TOKEN: 'secret' },
+      }),
+    ).rejects.toThrow('Unable to load MCPB bundle')
+    expect(
+      (await readdir(join(pluginRoot, '.mcpb-cache'))).filter(
+        (entry) => entry.includes('.tmp-') || entry.endsWith('.bak'),
+      ),
+    ).toEqual([])
+  })
+
+  it('rejects a symlinked cache root before writing outside the plugin', async () => {
+    const { root, pluginRoot, pluginData } = await fixture()
+    const externalCache = join(root, 'external-cache')
+    await mkdir(externalCache)
+    await symlink(externalCache, join(pluginRoot, '.mcpb-cache'), 'dir')
+    await expect(
+      loadClaudePluginMcpb({
+        pluginRoot,
+        pluginData,
+        source: 'fixture.mcpb',
+        userConfig: { TOKEN: 'secret' },
+      }),
+    ).rejects.toThrow('cache root must be a real directory')
+    expect(await readdir(externalCache)).toEqual([])
+  })
+
+  it('rebuilds preseeded symlinked cache entries, extracted directories, and metadata', async () => {
+    for (const target of ['cache-entry', 'extracted', 'metadata'] as const) {
+      const { root, pluginRoot, pluginData } = await fixture()
+      const first = await loadClaudePluginMcpb({
+        pluginRoot,
+        pluginData,
+        source: 'fixture.mcpb',
+        userConfig: { TOKEN: 'secret' },
+      })
+      const cacheEntry = join(first.extractedPath, '..')
+      const external = join(root, `external-${target}`)
+      if (target === 'cache-entry') {
+        await rename(cacheEntry, external)
+        await symlink(external, cacheEntry, 'dir')
+      } else if (target === 'extracted') {
+        await rename(first.extractedPath, external)
+        await symlink(external, first.extractedPath, 'dir')
+      } else {
+        const metadataPath = join(cacheEntry, 'metadata.json')
+        await rename(metadataPath, external)
+        await symlink(external, metadataPath, 'file')
+      }
+
+      const sentinel =
+        target === 'metadata' ? external : join(external, 'sentinel')
+      if (target !== 'metadata') await writeFile(sentinel, 'outside')
+      const outsideBefore = await readFile(sentinel, 'utf8')
+      const recovered = await loadClaudePluginMcpb({
+        pluginRoot,
+        pluginData,
+        source: 'fixture.mcpb',
+        userConfig: { TOKEN: 'secret' },
+      })
+
+      expect(recovered.manifest.version).toBe('1.0.0')
+      expect((await lstat(cacheEntry)).isDirectory()).toBe(true)
+      expect((await lstat(cacheEntry)).isSymbolicLink()).toBe(false)
+      expect((await lstat(recovered.extractedPath)).isDirectory()).toBe(true)
+      expect((await lstat(recovered.extractedPath)).isSymbolicLink()).toBe(
+        false,
+      )
+      expect((await lstat(join(cacheEntry, 'metadata.json'))).isFile()).toBe(
+        true,
+      )
+      expect(
+        (await lstat(join(cacheEntry, 'metadata.json'))).isSymbolicLink(),
+      ).toBe(false)
+      expect(await readFile(sentinel, 'utf8')).toBe(outsideBefore)
+    }
+  })
+
+  it('discards a backup whose extracted directory is a symlink', async () => {
+    const { root, pluginRoot, pluginData } = await fixture()
+    const first = await loadClaudePluginMcpb({
+      pluginRoot,
+      pluginData,
+      source: 'fixture.mcpb',
+      userConfig: { TOKEN: 'secret' },
+    })
+    const cacheEntry = join(first.extractedPath, '..')
+    const backup = `${cacheEntry}.999999.deadbeef.bak`
+    const externalExtracted = join(root, 'external-backup-extracted')
+    await rename(cacheEntry, backup)
+    await rename(join(backup, 'extracted'), externalExtracted)
+    await writeFile(join(externalExtracted, 'sentinel'), 'outside')
+    await symlink(externalExtracted, join(backup, 'extracted'), 'dir')
+
+    const recovered = await loadClaudePluginMcpb({
+      pluginRoot,
+      pluginData,
+      source: 'fixture.mcpb',
+      userConfig: { TOKEN: 'secret' },
+    })
+
+    expect(recovered.manifest.version).toBe('1.0.0')
+    expect((await lstat(cacheEntry)).isDirectory()).toBe(true)
+    expect((await lstat(recovered.extractedPath)).isSymbolicLink()).toBe(false)
+    await expect(access(backup)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readFile(join(externalExtracted, 'sentinel'), 'utf8')).toBe(
+      'outside',
+    )
+  })
+
   it('strictly validates manifests and required user_config values', async () => {
     const unknown = await fixture(bundle(manifest({ surprise: true })))
     await expect(
@@ -488,6 +647,156 @@ describe('Claude MCPB/DXT loader', () => {
     ).toEqual([])
   })
 
+  it('recovers a malformed cache lock without deleting a new active lease', async () => {
+    const { pluginRoot, pluginData } = await fixture()
+    const first = await loadClaudePluginMcpb({
+      pluginRoot,
+      pluginData,
+      source: 'fixture.mcpb',
+      userConfig: { TOKEN: 'secret' },
+    })
+    const cacheEntry = join(first.extractedPath, '..')
+    const lockFile = `${cacheEntry}.lock`
+    await writeFile(lockFile, '{malformed', { mode: 0o600 })
+
+    const loaded = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        loadClaudePluginMcpb({
+          pluginRoot,
+          pluginData,
+          source: 'fixture.mcpb',
+          userConfig: { TOKEN: 'secret' },
+        }),
+      ),
+    )
+    expect(new Set(loaded.map((item) => item.extractedPath))).toEqual(
+      new Set([first.extractedPath]),
+    )
+    await expect(access(lockFile)).rejects.toMatchObject({ code: 'ENOENT' })
+
+    await mkdir(lockFile)
+    await writeFile(join(lockFile, 'partial'), 'partial')
+    await expect(
+      loadClaudePluginMcpb({
+        pluginRoot,
+        pluginData,
+        source: 'fixture.mcpb',
+        userConfig: { TOKEN: 'secret' },
+      }),
+    ).resolves.toMatchObject({ extractedPath: first.extractedPath })
+    await expect(access(lockFile)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('serializes independent loader instances across canonical symlink aliases', async () => {
+    const { root, pluginRoot, pluginData } = await fixture()
+    const pluginAlias = join(root, 'plugin-alias')
+    await symlink(pluginRoot, pluginAlias, 'dir')
+    vi.resetModules()
+    const firstLoader = (await import('./claude-plugin-mcpb.js'))
+      .loadClaudePluginMcpb
+    vi.resetModules()
+    const secondLoader = (await import('./claude-plugin-mcpb.js'))
+      .loadClaudePluginMcpb
+    let releaseDownload = (): void => undefined
+    const downloadBlocked = new Promise<void>((resolveDownload) => {
+      releaseDownload = resolveDownload
+    })
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
+      await downloadBlocked
+      return new Response(bundle(), { status: 200 })
+    })
+    const source = 'https://example.test/serialized.dxt'
+    const first = firstLoader({
+      pluginRoot,
+      pluginData,
+      source,
+      fetch: fetcher,
+      userConfig: { TOKEN: 'secret' },
+    })
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
+    const second = secondLoader({
+      pluginRoot: pluginAlias,
+      pluginData,
+      source,
+      fetch: fetcher,
+      userConfig: { TOKEN: 'secret' },
+    })
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25))
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    releaseDownload()
+
+    const [firstLoaded, secondLoaded] = await Promise.all([first, second])
+    expect(firstLoaded.extractedPath).toBe(secondLoaded.extractedPath)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores interrupted backups and removes stale staging under its lease', async () => {
+    const { pluginRoot, pluginData } = await fixture()
+    const first = await loadClaudePluginMcpb({
+      pluginRoot,
+      pluginData,
+      source: 'fixture.mcpb',
+      userConfig: { TOKEN: 'secret' },
+    })
+    const cacheEntry = join(first.extractedPath, '..')
+    const cacheRoot = join(cacheEntry, '..')
+    const cacheName = cacheEntry.split(sep).at(-1) ?? ''
+    const backup = `${cacheEntry}.999999.deadbeef.bak`
+    const staleStaging = join(cacheRoot, `.${cacheName}.999999.tmp-orphan`)
+    await rename(cacheEntry, backup)
+    await mkdir(staleStaging)
+    await writeFile(join(staleStaging, 'partial'), 'partial')
+
+    const recovered = await loadClaudePluginMcpb({
+      pluginRoot,
+      pluginData,
+      source: 'fixture.mcpb',
+      userConfig: { TOKEN: 'secret' },
+    })
+    expect(recovered.manifest.version).toBe('1.0.0')
+    await expect(access(backup)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(staleStaging)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('honors timeout and caller cancellation while waiting for the cache lease', async () => {
+    const { pluginRoot, pluginData } = await fixture()
+    const loaded = await loadClaudePluginMcpb({
+      pluginRoot,
+      pluginData,
+      source: 'fixture.mcpb',
+      userConfig: { TOKEN: 'secret' },
+    })
+    const lease = new ExclusiveFileLease(
+      `${join(loaded.extractedPath, '..')}.lock`,
+    )
+    const held = await lease.tryAcquire()
+    expect(held).not.toBeNull()
+    try {
+      await expect(
+        loadClaudePluginMcpb({
+          pluginRoot,
+          pluginData,
+          source: 'fixture.mcpb',
+          timeoutMs: 20,
+          userConfig: { TOKEN: 'secret' },
+        }),
+      ).rejects.toThrow(/timeout/u)
+
+      const controller = new AbortController()
+      const waiting = loadClaudePluginMcpb({
+        pluginRoot,
+        pluginData,
+        source: 'fixture.mcpb',
+        signal: controller.signal,
+        userConfig: { TOKEN: 'secret' },
+      })
+      controller.abort(new Error('lease cancelled'))
+      await expect(waiting).rejects.toThrow('lease cancelled')
+    } finally {
+      await held?.release()
+    }
+  })
+
   it('supports DXT versions and current-platform MCP config overrides', async () => {
     const value = await fixture(
       bundle(
@@ -589,7 +898,7 @@ describe('Claude MCPB/DXT loader', () => {
         pluginData,
         source: 'https://example.test/x.dxt',
         fetch: hanging,
-        timeoutMs: 5,
+        timeoutMs: 1_000,
         userConfig: { TOKEN: 'secret' },
       }),
     ).rejects.toThrow('MCPB download failed')

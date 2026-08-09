@@ -8,7 +8,7 @@ import {
 } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -37,11 +37,439 @@ afterEach(async () => {
 })
 
 describe('ClaudeMcpToolRegistry', () => {
+  it('discovers, invokes, refreshes, and closes MCP prompts with Claude naming and content semantics', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-prompts-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'prompt-server.mjs')
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+let refreshed = false
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    let result
+    if (request.method === 'initialize') {
+      result = { protocolVersion: request.params.protocolVersion, capabilities: { prompts: { listChanged: true } }, serverInfo: { name: 'prompt-fixture', version: '1' } }
+    } else if (request.method === 'prompts/list') {
+      result = { prompts: refreshed
+        ? [{ name: 'after-refresh', description: 'new prompt' }]
+        : [
+            { name: 'ｍｙ.prompt', title: 'Ignored Display Name', description: 'Prompt description', arguments: [{ name: 'ｆirst', required: true }, { name: 'second' }, { name: 'third' }, { name: 'omitted' }] },
+            { name: 'broken' }
+          ] }
+    } else if (request.method === 'prompts/get') {
+      result = request.params.name === 'broken'
+        ? { messages: [
+            { role: 'user', content: { type: 'audio', mimeType: 'audio/wav', data: 'YXVkaW8=' } },
+            { role: 'user', content: { type: 'image', mimeType: 'image/tiff', data: 'aW1hZ2U=' } }
+          ] }
+        : { description: 'result description', messages: [
+        { role: 'user', content: { type: 'text', text: JSON.stringify(request.params.arguments) } },
+        { role: 'assistant', content: { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' } },
+        { role: 'user', content: { type: 'audio', mimeType: 'audio/wav', data: 'YXVkaW8=' } },
+        { role: 'assistant', content: { type: 'resource', resource: { uri: 'fixture://text', mimeType: 'text/plain', text: 'resource text' } } },
+        { role: 'user', content: { type: 'resource', resource: { uri: 'fixture://blob', mimeType: 'application/pdf', blob: 'cGRm' } } },
+        { role: 'assistant', content: { type: 'resource_link', name: 'linked', uri: 'fixture://link', description: 'link detail' } }
+      ] }
+      refreshed = true
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/prompts/list_changed' }) + '\\n')
+    } else {
+      result = {}
+    }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+    const updates: string[][] = []
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      configRoot: root,
+      resources: [
+        {
+          path: '/fixture.json',
+          scope: 'user',
+          value: {
+            mcpServers: {
+              'plugin:demo:prompt/server': {
+                command: process.execPath,
+                args: [serverScript],
+              },
+            },
+          },
+        },
+      ],
+      onPromptsChanged: (prompts) =>
+        updates.push(prompts.map((prompt) => prompt.name)),
+    })
+
+    const [prompt] = registry.prompts()
+    expect(prompt).toMatchObject({
+      name: 'mcp__plugin_demo_prompt_server__my.prompt',
+      userFacingName: 'plugin:demo:prompt/server:my.prompt (MCP)',
+      description: 'Prompt description',
+      argumentNames: ['first', 'second', 'third', 'omitted'],
+    })
+    if (!prompt) throw new Error('prompt missing')
+    const broken = registry
+      .prompts()
+      .find((candidate) => candidate.userFacingName.endsWith(':broken (MCP)'))
+    if (!broken) throw new Error('broken prompt missing')
+    const temporaryEntries = new Set(await readdir(tmpdir()))
+    await expect(broken.invoke('')).rejects.toThrow(
+      'MCP image result is invalid or unsupported',
+    )
+    const promptDirectories = (await readdir(tmpdir())).filter(
+      (entry) =>
+        entry.startsWith('praxis-mcp-prompts-') && !temporaryEntries.has(entry),
+    )
+    expect(promptDirectories).toHaveLength(1)
+    const temporaryPromptDirectory = join(tmpdir(), promptDirectories[0] ?? '')
+    expect(await readdir(temporaryPromptDirectory)).toEqual([])
+    const durableDirectory = join(root, 'session-tool-results')
+    const result = await prompt.invoke('one  three', {
+      toolResultDirectory: durableDirectory,
+    })
+    expect(result.text).toContain(
+      '{"ｆirst":"one","second":"","third":"three"}',
+    )
+    expect(result.text).toContain(
+      '[Resource from plugin:demo:prompt/server at fixture://text] resource text',
+    )
+    expect(result.text).toContain(
+      '[Resource link: linked] fixture://link (link detail)',
+    )
+    expect(result.images).toEqual([
+      { type: 'image', mediaType: 'image/png', data: 'aW1hZ2U=' },
+    ])
+    const savedFiles = [...result.text.matchAll(/saved to (.+)$/gm)].map(
+      (match) => match[1],
+    )
+    expect(savedFiles).toHaveLength(2)
+    const promptResultDirectory = dirname(savedFiles[0] ?? '')
+    expect(promptResultDirectory).toBe(durableDirectory)
+    expect(await readdir(promptResultDirectory)).toHaveLength(2)
+    await vi.waitFor(() =>
+      expect(registry.prompts().map((item) => item.name)).toEqual([
+        'mcp__plugin_demo_prompt_server__after-refresh',
+      ]),
+    )
+    expect(updates.at(-1)).toEqual([
+      'mcp__plugin_demo_prompt_server__after-refresh',
+    ])
+    await registry.close()
+    expect(await readdir(promptResultDirectory)).toHaveLength(2)
+    await expect(readdir(temporaryPromptDirectory)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(prompt.invoke('closed')).rejects.toThrow(
+      'MCP registry is closed',
+    )
+  })
+
+  it('reconnects a disconnected MCP prompt server before invoking a retained command', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-prompt-reconnect-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'reconnect-server.mjs')
+    const generationFile = join(root, 'generation')
+    await writeFile(
+      serverScript,
+      `import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+const generationFile = process.argv[2]
+const generation = existsSync(generationFile) ? Number(readFileSync(generationFile, 'utf8')) + 1 : 1
+writeFileSync(generationFile, String(generation))
+let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { prompts: {} }, serverInfo: { name: 'reconnect-fixture', version: '1' } }
+      : request.method === 'prompts/list'
+        ? { prompts: [{ name: 'probe' }] }
+        : { messages: [{ role: 'user', content: { type: 'text', text: 'generation=' + generation } }] }
+    const send = () => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n', () => {
+      if (request.method === 'prompts/get') setTimeout(() => process.exit(0), 5)
+    })
+    if (request.method === 'initialize' && generation > 1 && process.argv[3] === 'slow') setTimeout(send, 500)
+    else send()
+  }
+})
+`,
+    )
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/fixture.json',
+          scope: 'user',
+          value: {
+            mcpServers: {
+              reconnect: {
+                command: process.execPath,
+                args: [serverScript, generationFile],
+              },
+            },
+          },
+        },
+      ],
+    })
+    const [prompt] = registry.prompts()
+    if (!prompt) throw new Error('prompt missing')
+    expect((await prompt.invoke('')).text).toBe('generation=1')
+    await vi.waitFor(() =>
+      expect(registry.serverStatuses()).toContainEqual({
+        name: 'reconnect',
+        status: 'failed',
+      }),
+    )
+    expect((await prompt.invoke('')).text).toBe('generation=2')
+    await registry.close()
+  })
+
+  it('closes an in-flight prompt reconnect without registering or leaking the new client', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-prompt-close-race-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'reconnect-server.mjs')
+    const generationFile = join(root, 'generation')
+    await writeFile(
+      serverScript,
+      `import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+const generationFile = process.argv[2]
+const generation = existsSync(generationFile) ? Number(readFileSync(generationFile, 'utf8')) + 1 : 1
+writeFileSync(generationFile, String(generation))
+let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { prompts: {} }, serverInfo: { name: 'close-race', version: '1' } }
+      : request.method === 'prompts/list'
+        ? { prompts: [{ name: 'probe' }] }
+        : { messages: [{ role: 'user', content: { type: 'text', text: 'generation=' + generation } }] }
+    const send = () => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n', () => {
+      if (request.method === 'prompts/get') setTimeout(() => process.exit(0), 5)
+    })
+    if (request.method === 'initialize' && generation > 1) setTimeout(send, 500)
+    else send()
+  }
+})
+`,
+    )
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/fixture.json',
+          scope: 'user',
+          value: {
+            mcpServers: {
+              reconnect: {
+                command: process.execPath,
+                args: [serverScript, generationFile],
+              },
+            },
+          },
+        },
+      ],
+    })
+    const [prompt] = registry.prompts()
+    if (!prompt) throw new Error('prompt missing')
+    expect((await prompt.invoke('')).text).toBe('generation=1')
+    await vi.waitFor(() =>
+      expect(registry.serverStatuses()).toContainEqual({
+        name: 'reconnect',
+        status: 'failed',
+      }),
+    )
+    const reconnect = prompt.invoke('')
+    await vi.waitFor(async () =>
+      expect(await readFile(generationFile, 'utf8')).toBe('2'),
+    )
+    const firstClose = registry.close()
+    expect(registry.close()).toBe(firstClose)
+    await expect(reconnect).rejects.toThrow()
+    await firstClose
+    await expect(prompt.invoke('')).rejects.toThrow('MCP registry is closed')
+  })
+
+  it('keeps the first MCP prompt when normalized internal names collide', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-prompt-collision-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'collision-server.mjs')
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { prompts: {} }, serverInfo: { name: process.argv[2], version: '1' } }
+      : request.method === 'prompts/list'
+        ? { prompts: [{ name: 'probe' }] }
+        : { messages: [{ role: 'user', content: { type: 'text', text: process.argv[2] } }] }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/fixture.json',
+          scope: 'user',
+          value: {
+            mcpServers: {
+              'a.b': {
+                command: process.execPath,
+                args: [serverScript, 'first'],
+              },
+              'a/b': {
+                command: process.execPath,
+                args: [serverScript, 'second'],
+              },
+            },
+          },
+        },
+      ],
+    })
+    try {
+      expect(registry.prompts()).toHaveLength(1)
+      expect(registry.prompts()[0]).toMatchObject({
+        name: 'mcp__a_b__probe',
+        userFacingName: 'a.b:probe (MCP)',
+      })
+      expect(await registry.prompts()[0]?.invoke('')).toMatchObject({
+        text: 'first',
+      })
+    } finally {
+      await registry.close()
+    }
+  })
+
+  it('paginates MCP prompts and isolates cursor, page, and count limit failures', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-prompt-pages-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'prompt-pages-server.mjs')
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+const mode = process.argv[2]
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    let result
+    if (request.method === 'initialize') {
+      result = { protocolVersion: request.params.protocolVersion, capabilities: { prompts: {} }, serverInfo: { name: mode, version: '1' } }
+    } else if (mode === 'paged') {
+      result = request.params?.cursor === 'next'
+        ? { prompts: [{ name: 'second' }] }
+        : { prompts: [{ name: 'first' }], nextCursor: 'next' }
+    } else if (mode === 'repeat') {
+      result = { prompts: [], nextCursor: 'same' }
+    } else if (mode === 'too-many') {
+      result = { prompts: Array.from({ length: 10001 }, (_, index) => ({ name: 'p' + index })) }
+    } else {
+      const page = Number(request.params?.cursor ?? 0)
+      result = { prompts: [], nextCursor: page < 100 ? String(page + 1) : undefined }
+    }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+    const warnings: string[] = []
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      onWarning: (warning) => warnings.push(warning),
+      resources: [
+        {
+          path: '/fixture.json',
+          scope: 'user',
+          value: {
+            mcpServers: Object.fromEntries(
+              ['paged', 'repeat', 'too-many', 'too-many-pages'].map((mode) => [
+                mode,
+                { command: process.execPath, args: [serverScript, mode] },
+              ]),
+            ),
+          },
+        },
+      ],
+    })
+    try {
+      expect(registry.prompts().map((prompt) => prompt.userFacingName)).toEqual(
+        ['paged:first (MCP)', 'paged:second (MCP)'],
+      )
+      expect(warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('Repeated MCP prompts cursor'),
+          expect.stringContaining('MCP prompt limit exceeded'),
+          expect.stringContaining('MCP prompts page limit exceeded'),
+        ]),
+      )
+    } finally {
+      await registry.close()
+    }
+  })
+
   it('deduplicates plugin servers by command or URL with manual precedence', () => {
     const report = validateClaudeMcpConfiguration([
       {
         path: '/plugins.json',
         scope: 'user',
+        plugin: true,
         value: {
           mcpServers: {
             'plugin:first:stdio': {
@@ -94,6 +522,37 @@ describe('ClaudeMcpToolRegistry', () => {
       'plugin:first:unique',
       'manual',
       'upstream',
+    ])
+  })
+
+  it('does not infer plugin origin from a manual server name', () => {
+    const report = validateClaudeMcpConfiguration([
+      {
+        path: '/manual.json',
+        scope: 'user',
+        value: {
+          mcpServers: {
+            'plugin:user-chosen:name': {
+              command: 'same-command',
+              args: [],
+            },
+          },
+        },
+      },
+      {
+        path: '/plugin.json',
+        scope: 'user',
+        plugin: true,
+        value: {
+          mcpServers: {
+            'plugin:actual:name': { command: 'same-command', args: [] },
+          },
+        },
+      },
+    ])
+
+    expect(report.servers.map((server) => server.name)).toEqual([
+      'plugin:user-chosen:name',
     ])
   })
 
@@ -1084,6 +1543,109 @@ process.stdin.on('data', chunk => {
       })
     } finally {
       await registry.close()
+    }
+  })
+
+  it('bounds resource list and aggregate decoded blobs while cleaning partial files', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-resource-list-limit-')),
+    )
+    roots.push(root)
+    const resultDirectory = join(root, 'tool-results')
+    const http = createServer(async (request, response) => {
+      let body = ''
+      request.setEncoding('utf8')
+      for await (const chunk of request) body += chunk
+      if (!body) {
+        response.writeHead(405).end()
+        return
+      }
+      const message = JSON.parse(body)
+      if (message.id === undefined) {
+        response.writeHead(202).end()
+        return
+      }
+      let result
+      if (message.method === 'initialize') {
+        result = {
+          protocolVersion: message.params.protocolVersion,
+          capabilities: { resources: {} },
+          serverInfo: { name: 'large-resource', version: '1' },
+        }
+      } else if (message.method === 'resources/list') {
+        result =
+          request.url === '/large-list'
+            ? {
+                resources: [
+                  {
+                    uri: 'fixture://large',
+                    name: 'Large',
+                    description: 'x'.repeat(25 * 1024 * 1024),
+                  },
+                ],
+              }
+            : { resources: [{ uri: 'fixture://multi', name: 'Multi' }] }
+      } else {
+        const blob = Buffer.alloc(1024 * 1024).toString('base64')
+        result = {
+          contents: Array.from({ length: 26 }, (_, index) => ({
+            uri: 'fixture://multi/' + index,
+            blob,
+          })),
+        }
+      }
+      response
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      http.once('error', reject)
+      http.listen(0, '127.0.0.1', resolve)
+    })
+    const address = http.address()
+    if (!address || typeof address === 'string') throw new Error('no address')
+    const origin = `http://127.0.0.1:${address.port}`
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/fixture.json',
+          scope: 'user',
+          value: {
+            mcpServers: {
+              large: { type: 'http', url: `${origin}/large-list` },
+              multi: { type: 'http', url: `${origin}/multi` },
+            },
+          },
+        },
+      ],
+    })
+    try {
+      await expect(
+        registry.execute(
+          {
+            id: 'large-list',
+            name: 'ListMcpResourcesTool',
+            input: { server: 'large' },
+          },
+          { cwd: root },
+        ),
+      ).rejects.toThrow('MCP resource list exceeded 26214400 bytes')
+      await expect(
+        registry.execute(
+          {
+            id: 'multi-blob',
+            name: 'ReadMcpResourceTool',
+            input: { server: 'multi', uri: 'fixture://multi' },
+          },
+          { cwd: root, toolResultDirectory: resultDirectory },
+        ),
+      ).rejects.toThrow('MCP resource result exceeded 26214400 bytes')
+      expect(await readdir(resultDirectory)).toEqual([])
+    } finally {
+      await registry.close()
+      await new Promise<void>((resolve) => http.close(() => resolve()))
     }
   })
 

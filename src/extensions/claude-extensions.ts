@@ -2,6 +2,8 @@ import { basename, dirname, extname } from 'node:path'
 
 import { parse as parseYaml } from 'yaml'
 
+import type { ModelContentBlock, ModelImage } from '../core/runtime.js'
+import type { ClaudeMcpPromptDefinition } from '../mcp/claude-mcp-tools.js'
 import type {
   ClaudeSharedResources,
   ClaudeTextResource,
@@ -19,6 +21,13 @@ export interface ClaudeExtensionDefinition extends ClaudeTextResource {
 
 export interface ClaudePromptExpansion {
   userMessages: readonly string[]
+  messages?: readonly ClaudePromptExpansionMessage[]
+}
+
+export interface ClaudePromptExpansionMessage {
+  text: string
+  contentBlocks?: readonly ModelContentBlock[]
+  images?: readonly ModelImage[]
 }
 
 const BUILTIN_LOOP: ClaudeExtensionDefinition = {
@@ -220,11 +229,14 @@ export class ClaudeExtensionCatalog {
   private readonly commands: Map<string, ClaudeExtensionDefinition>
   private readonly skills: Map<string, ClaudeExtensionDefinition>
   private readonly agents: Map<string, ClaudeExtensionDefinition>
+  private readonly disableSlashCommands: boolean
+  private mcpPrompts = new Map<string, ClaudeMcpPromptDefinition>()
 
   constructor(
     resources: Pick<ClaudeSharedResources, 'agents' | 'commands' | 'skills'>,
     options: { disableSlashCommands?: boolean } = {},
   ) {
+    this.disableSlashCommands = options.disableSlashCommands === true
     this.commands = options.disableSlashCommands
       ? new Map()
       : new Map([['loop', BUILTIN_LOOP]])
@@ -237,6 +249,17 @@ export class ClaudeExtensionCatalog {
       ? new Map()
       : indexed('skill', resources.skills)
     this.agents = indexed('agent', resources.agents)
+  }
+
+  setMcpPrompts(prompts: readonly ClaudeMcpPromptDefinition[]): void {
+    this.mcpPrompts.clear()
+    if (this.disableSlashCommands) return
+    const occupied = new Set([...this.commands.keys(), ...this.skills.keys()])
+    for (const prompt of prompts) {
+      if (occupied.has(prompt.name) || this.mcpPrompts.has(prompt.name))
+        continue
+      this.mcpPrompts.set(prompt.name, prompt)
+    }
   }
 
   expandPrompt(prompt: string): ClaudePromptExpansion {
@@ -262,6 +285,54 @@ export class ClaudeExtensionCatalog {
         renderInvocation(definition, argumentsText),
       ],
     }
+  }
+
+  async expandPromptAsync(
+    prompt: string,
+    signal?: AbortSignal,
+    toolResultDirectory?: string,
+  ): Promise<ClaudePromptExpansion> {
+    const staticExpansion = this.expandPrompt(prompt)
+    if (
+      staticExpansion.userMessages.length !== 1 ||
+      staticExpansion.userMessages[0] !== prompt
+    ) {
+      return staticExpansion
+    }
+    const match = /^\/([^\s]+) \(MCP\)(?: (.*))?$/.exec(prompt.trim())
+    if (!match?.[1]) return staticExpansion
+    const userFacingName = `${match[1]} (MCP)`
+    const definition = [...this.mcpPrompts.values()].find(
+      (candidate) => candidate.userFacingName === userFacingName,
+    )
+    if (!definition) return staticExpansion
+    const argumentsText = match[2] ?? ''
+    const result = await definition.invoke(argumentsText, {
+      ...(signal ? { signal } : {}),
+      ...(toolResultDirectory ? { toolResultDirectory } : {}),
+    })
+    const metadata = [
+      `<command-message>${definition.name}</command-message>`,
+      `<command-name>/${definition.name}</command-name>`,
+      ...(argumentsText
+        ? [`<command-args>${argumentsText}</command-args>`]
+        : []),
+    ].join('\n')
+    return {
+      userMessages: [metadata, result.text],
+      messages: [
+        { text: metadata },
+        {
+          text: result.text,
+          contentBlocks: result.contentBlocks,
+          images: result.images,
+        },
+      ],
+    }
+  }
+
+  mcpPromptNames(): readonly string[] {
+    return [...this.mcpPrompts.values()].map((prompt) => prompt.userFacingName)
   }
 
   skill(name: string): ClaudeExtensionDefinition | null {

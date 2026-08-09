@@ -25,6 +25,7 @@ import {
   materializeClaudePluginSource,
   readClaudeInstalledPlugins,
   readClaudeKnownMarketplaces,
+  readClaudePluginOptions,
   readClaudePluginMcpServerOptions,
   replaceClaudePluginDirectory,
   removeClaudeMarketplace,
@@ -311,6 +312,454 @@ describe('Claude native plugin marketplace', () => {
     })
   })
 
+  it('requires qualification when top-level and MCPB config keys collide', async () => {
+    const value = await fixture()
+    const id = 'fixture@fixture-marketplace'
+    const plugin = join(value.marketplace, 'plugins', 'fixture')
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        userConfig: {
+          token: { type: 'string', title: 'Token', description: 'top token' },
+        },
+        mcpServers: './bundled.dxt',
+      }),
+    )
+    await writeFile(
+      join(plugin, 'bundled.dxt'),
+      zipSync({
+        'manifest.json': strToU8(
+          JSON.stringify({
+            manifest_version: '0.3',
+            name: 'bundled',
+            version: '1.0.0',
+            description: 'bundle',
+            author: { name: 'Fixture' },
+            server: {
+              type: 'node',
+              entry_point: 'server.mjs',
+              mcp_config: { command: process.execPath },
+            },
+            user_config: {
+              token: {
+                type: 'string',
+                title: 'Token',
+                description: 'bundle token',
+              },
+            },
+          }),
+        ),
+        'server.mjs': strToU8('process.stdin.resume()'),
+      }),
+    )
+
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'token=ambiguous',
+      ]),
+    ).resolves.toEqual({
+      warnings: ['--config key "token" is ambiguous; use server.key'],
+    })
+    await expect(
+      access(join(value.configRoot, 'settings.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'bundled.token=bundle-value',
+      ]),
+    ).resolves.toEqual({ warnings: [] })
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginConfigs: {
+        [id]: { mcpServers: { bundled: { token: 'bundle-value' } } },
+      },
+    })
+  })
+
+  it('rejects invalid stored top-level and MCPB config values atomically', async () => {
+    const value = await fixture()
+    const id = 'fixture@fixture-marketplace'
+    const plugin = join(value.marketplace, 'plugins', 'fixture')
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        userConfig: {
+          retries: {
+            type: 'number',
+            title: 'Retries',
+            description: 'retries',
+            max: 3,
+          },
+        },
+        mcpServers: './bundled.dxt',
+      }),
+    )
+    await writeFile(
+      join(plugin, 'bundled.dxt'),
+      zipSync({
+        'manifest.json': strToU8(
+          JSON.stringify({
+            manifest_version: '0.3',
+            name: 'bundled',
+            version: '1.0.0',
+            description: 'bundle',
+            author: { name: 'Fixture' },
+            server: {
+              type: 'node',
+              entry_point: 'server.mjs',
+              mcp_config: { command: process.execPath },
+            },
+            user_config: {
+              paths: {
+                type: 'string',
+                title: 'Paths',
+                description: 'paths',
+                multiple: true,
+                required: true,
+              },
+            },
+          }),
+        ),
+        'server.mjs': strToU8('process.stdin.resume()'),
+      }),
+    )
+    await mkdir(value.configRoot, { recursive: true })
+    const settingsPath = join(value.configRoot, 'settings.json')
+    const original = JSON.stringify({
+      pluginConfigs: {
+        [id]: {
+          options: { retries: 10 },
+          mcpServers: { bundled: { paths: [] } },
+        },
+      },
+    })
+    await writeFile(settingsPath, original)
+
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'bundled.paths=valid',
+      ]),
+    ).resolves.toEqual({
+      warnings: ['Plugin userConfig retries must be at most 3'],
+    })
+    await expect(readFile(settingsPath, 'utf8')).resolves.toBe(original)
+
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'retries=2',
+      ]),
+    ).resolves.toEqual({
+      warnings: ['MCPB bundled user_config paths is required'],
+    })
+    await expect(readFile(settingsPath, 'utf8')).resolves.toBe(original)
+  })
+
+  it('saves valid sibling config when another MCP bundle is damaged', async () => {
+    const value = await fixture()
+    const id = 'fixture@fixture-marketplace'
+    const plugin = join(value.marketplace, 'plugins', 'fixture')
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        mcpServers: ['./damaged.dxt', './healthy.dxt'],
+      }),
+    )
+    await writeFile(join(plugin, 'damaged.dxt'), 'not a zip archive')
+    await writeFile(
+      join(plugin, 'healthy.dxt'),
+      zipSync({
+        'manifest.json': strToU8(
+          JSON.stringify({
+            manifest_version: '0.3',
+            name: 'healthy',
+            version: '1.0.0',
+            description: 'healthy bundle',
+            author: { name: 'Fixture' },
+            server: {
+              type: 'node',
+              entry_point: 'server.mjs',
+              mcp_config: { command: process.execPath },
+            },
+            user_config: {
+              label: {
+                type: 'string',
+                title: 'Label',
+                description: 'label',
+              },
+            },
+          }),
+        ),
+        'server.mjs': strToU8('process.stdin.resume()'),
+      }),
+    )
+
+    const result = await saveClaudePluginConfig(
+      value.configRoot,
+      value.cwd,
+      'user',
+      id,
+      plugin,
+      ['healthy.label=saved'],
+    )
+    expect(result.warnings).toHaveLength(1)
+    expect(result.warnings[0]).not.toContain(value.root)
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginConfigs: {
+        [id]: { mcpServers: { healthy: { label: 'saved' } } },
+      },
+    })
+  })
+
+  it('round-trips typed sensitive top-level and MCPB config', async () => {
+    const value = await fixture()
+    const id = 'fixture@fixture-marketplace'
+    const plugin = join(value.marketplace, 'plugins', 'fixture')
+    const typedDefinitions = {
+      enabled: {
+        type: 'boolean',
+        title: 'Enabled',
+        description: 'enabled',
+        sensitive: true,
+      },
+      retries: {
+        type: 'number',
+        title: 'Retries',
+        description: 'retries',
+        min: 1,
+        max: 5,
+        sensitive: true,
+      },
+      tags: {
+        type: 'string',
+        title: 'Tags',
+        description: 'tags',
+        multiple: true,
+        required: true,
+        sensitive: true,
+      },
+    }
+    const bundleDefinitions = {
+      active: { ...typedDefinitions.enabled, title: 'Active' },
+      attempts: { ...typedDefinitions.retries, title: 'Attempts' },
+      labels: { ...typedDefinitions.tags, title: 'Labels' },
+    }
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        userConfig: typedDefinitions,
+        mcpServers: './bundled.dxt',
+      }),
+    )
+    await writeFile(
+      join(plugin, 'bundled.dxt'),
+      zipSync({
+        'manifest.json': strToU8(
+          JSON.stringify({
+            manifest_version: '0.3',
+            name: 'bundled',
+            version: '1.0.0',
+            description: 'bundle',
+            author: { name: 'Fixture' },
+            server: {
+              type: 'node',
+              entry_point: 'server.mjs',
+              mcp_config: { command: process.execPath },
+            },
+            user_config: bundleDefinitions,
+          }),
+        ),
+        'server.mjs': strToU8('process.stdin.resume()'),
+      }),
+    )
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+
+    await expect(
+      saveClaudePluginConfig(value.configRoot, value.cwd, 'user', id, plugin, [
+        'enabled=false',
+        'retries=3',
+        'tags=one,two',
+        'bundled.active=true',
+        'bundled.attempts=4',
+        'bundled.labels=three,four',
+      ]),
+    ).resolves.toEqual({ warnings: [] })
+    await expect(
+      saveClaudePluginConfig(
+        value.configRoot,
+        value.cwd,
+        'user',
+        id,
+        plugin,
+        [],
+      ),
+    ).resolves.toEqual({ warnings: [] })
+    await expect(
+      readClaudePluginOptions(
+        value.configRoot,
+        value.cwd,
+        id,
+        typedDefinitions,
+      ),
+    ).resolves.toEqual({ enabled: false, retries: 3, tags: ['one', 'two'] })
+    await expect(
+      readClaudePluginMcpServerOptions(
+        value.configRoot,
+        value.cwd,
+        id,
+        'bundled',
+        bundleDefinitions,
+      ),
+    ).resolves.toEqual({
+      active: true,
+      attempts: 4,
+      labels: ['three', 'four'],
+    })
+  })
+
+  it('serializes concurrent settings and credential config commits', async () => {
+    const value = await fixture()
+    vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
+    const original =
+      ClaudeMcpOAuthStore.prototype.updatePluginSecretsTransaction
+    let arrivals = 0
+    let release = (): void => undefined
+    const together = new Promise<void>((resolveTogether) => {
+      release = resolveTogether
+    })
+    vi.spyOn(
+      ClaudeMcpOAuthStore.prototype,
+      'updatePluginSecretsTransaction',
+    ).mockImplementation(async function (
+      this: ClaudeMcpOAuthStore,
+      updates,
+      commit,
+    ) {
+      arrivals += 1
+      if (arrivals === 2) release()
+      await together
+      return original.call(this, updates, commit)
+    })
+    const createPlugin = async (name: string): Promise<string> => {
+      const plugin = join(value.root, name)
+      await mkdir(join(plugin, '.claude-plugin'), { recursive: true })
+      await writeFile(
+        join(plugin, '.claude-plugin', 'plugin.json'),
+        JSON.stringify({
+          name,
+          userConfig: {
+            label: { type: 'string', title: 'Label', description: 'label' },
+            token: {
+              type: 'string',
+              title: 'Token',
+              description: 'token',
+              sensitive: true,
+            },
+          },
+        }),
+      )
+      return plugin
+    }
+    const first = await createPlugin('first')
+    const second = await createPlugin('second')
+
+    await Promise.all([
+      saveClaudePluginConfig(
+        value.configRoot,
+        value.cwd,
+        'user',
+        'first@market',
+        first,
+        ['label=first', 'token=first-secret'],
+      ),
+      saveClaudePluginConfig(
+        value.configRoot,
+        value.cwd,
+        'user',
+        'second@market',
+        second,
+        ['label=second', 'token=second-secret'],
+      ),
+    ])
+    await expect(
+      readFile(join(value.configRoot, 'settings.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginConfigs: {
+        'first@market': { options: { label: 'first' } },
+        'second@market': { options: { label: 'second' } },
+      },
+    })
+    await expect(
+      readFile(join(value.configRoot, '.credentials.json'), 'utf8').then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual({
+      pluginSecrets: {
+        'first@market': { token: 'first-secret' },
+        'second@market': { token: 'second-secret' },
+      },
+    })
+  })
+
+  it('does not discover local MCPB references without a dot-slash prefix', async () => {
+    const value = await fixture()
+    const id = 'fixture@fixture-marketplace'
+    const plugin = join(value.marketplace, 'plugins', 'fixture')
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'fixture', mcpServers: 'bundled.dxt' }),
+    )
+    await writeFile(
+      join(plugin, 'bundled.dxt'),
+      zipSync({
+        'manifest.json': strToU8(
+          JSON.stringify({
+            manifest_version: '0.3',
+            name: 'bundled',
+            version: '1.0.0',
+            description: 'bundle',
+            author: { name: 'Fixture' },
+            server: {
+              type: 'node',
+              entry_point: 'server.mjs',
+              mcp_config: { command: process.execPath },
+            },
+            user_config: {
+              token: { type: 'string', title: 'Token', description: 'token' },
+            },
+          }),
+        ),
+        'server.mjs': strToU8('process.stdin.resume()'),
+      }),
+    )
+
+    const result = await saveClaudePluginConfig(
+      value.configRoot,
+      value.cwd,
+      'user',
+      id,
+      plugin,
+      ['bundled.token=must-not-save'],
+    )
+    expect(result.warnings).toEqual([expect.stringContaining('bundled.token')])
+    await expect(
+      access(join(value.configRoot, 'settings.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('persists native marketplace and installed plugin records', async () => {
     const value = await fixture()
     const marketplace = await addClaudeMarketplace(
@@ -557,7 +1006,7 @@ describe('Claude native plugin marketplace', () => {
     await writeFile(settingsPath, JSON.stringify({ preserved: true }))
     vi.spyOn(
       ClaudeMcpOAuthStore.prototype,
-      'updatePluginSecrets',
+      'updatePluginSecretsTransaction',
     ).mockRejectedValueOnce(new Error('credential write failed'))
 
     await expect(

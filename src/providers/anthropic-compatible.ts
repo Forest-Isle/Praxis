@@ -556,13 +556,25 @@ type AnthropicMessage = {
 function serializeMediaContent(
   message: Extract<ModelMessage, { role: 'user' | 'tool' }>,
 ): Record<string, unknown>[] {
-  const blocks = message.contentBlocks ?? [
-    ...(message.content.length > 0
+  const blocks = message.contentBlocks
+    ? [...message.contentBlocks]
+    : message.content.length > 0
       ? [{ type: 'text' as const, text: message.content }]
-      : []),
+      : []
+  const mediaKeys = new Set(
+    blocks
+      .filter((block) => block.type !== 'text')
+      .map((block) => `${block.type}\0${block.mediaType}\0${block.data}`),
+  )
+  for (const block of [
     ...(message.images ?? []),
     ...(message.documents ?? []),
-  ]
+  ]) {
+    const key = `${block.type}\0${block.mediaType}\0${block.data}`
+    if (mediaKeys.has(key)) continue
+    mediaKeys.add(key)
+    blocks.push(block)
+  }
   return blocks.map((block) =>
     block.type === 'text'
       ? { type: 'text', text: block.text }

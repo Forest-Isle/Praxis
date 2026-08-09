@@ -280,21 +280,6 @@ async function readManifest(
       `Plugin mcpServers must be a path, object, or array: ${manifestPath}`,
     )
   }
-  const mcpSpecs = Array.isArray(value.mcpServers)
-    ? value.mcpServers
-    : value.mcpServers === undefined
-      ? []
-      : [value.mcpServers]
-  for (const spec of mcpSpecs) {
-    if (
-      typeof spec === 'string' &&
-      isMcpbReference(spec) &&
-      !/^https?:\/\//u.test(spec) &&
-      !spec.startsWith('./')
-    ) {
-      throw new Error(`Plugin MCPB paths must start with ./: ${manifestPath}`)
-    }
-  }
   if (
     value.lspServers !== undefined &&
     !(
@@ -655,6 +640,10 @@ function isMcpbReference(value: string): boolean {
   return value.endsWith('.mcpb') || value.endsWith('.dxt')
 }
 
+function isUrlReference(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//iu.test(value)
+}
+
 function lspServerDefinition(
   name: string,
   value: unknown,
@@ -884,7 +873,15 @@ async function loadPlugin(
     configRoot !== undefined &&
     configId !== undefined &&
     manifest.userConfig !== undefined
-      ? await readClaudePluginOptions(configRoot, cwd, configId)
+      ? await readClaudePluginOptions(
+          configRoot,
+          cwd,
+          configId,
+          manifest.userConfig as unknown as Record<
+            string,
+            Record<string, unknown>
+          >,
+        )
       : undefined
   const sensitiveValues = Object.entries(manifest.userConfig ?? {})
     .flatMap(([key, definition]) =>
@@ -1105,6 +1102,7 @@ async function loadPlugin(
       mcp.push({
         path: mcpPath,
         scope,
+        plugin: true,
         value: expandPluginMcpResource(
           mcpValue,
           manifest.name,
@@ -1125,6 +1123,17 @@ async function loadPlugin(
       : [manifest.mcpServers]
     for (const [index, spec] of specs.entries()) {
       if (typeof spec === 'string') {
+        const urlReference = isUrlReference(spec)
+        if (
+          (urlReference &&
+            (!/^https?:\/\//u.test(spec) || !isMcpbReference(spec))) ||
+          (!urlReference && isMcpbReference(spec) && !spec.startsWith('./'))
+        ) {
+          mcpErrors.push(
+            `Invalid plugin MCPB reference at index ${index}: expected ./file.mcpb, ./file.dxt, or an exact-suffix HTTP(S) URL`,
+          )
+          continue
+        }
         if (isMcpbReference(spec)) {
           try {
             const loaded = await loadClaudePluginMcpb({
@@ -1139,6 +1148,10 @@ async function loadPlugin(
                       cwd,
                       configId,
                       bundleManifest.name,
+                      bundleManifest.user_config as unknown as Record<
+                        string,
+                        Record<string, unknown>
+                      >,
                     )
                   : {},
             })
@@ -1149,6 +1162,7 @@ async function loadPlugin(
                 `plugin-mcpb-${index}.json`,
               ),
               scope,
+              plugin: true,
               value: {
                 mcpServers: {
                   [`plugin:${manifest.name}:${loaded.name}`]: loaded.config,
@@ -1166,12 +1180,13 @@ async function loadPlugin(
           }
           continue
         }
-        const specPath = safePluginPath(canonical, spec)
         try {
+          const specPath = safePluginPath(canonical, spec)
           const value: unknown = JSON.parse(await readFile(specPath, 'utf8'))
           mcp.push({
             path: specPath,
             scope,
+            plugin: true,
             value: expandPluginMcpResource(
               value,
               manifest.name,
@@ -1183,12 +1198,15 @@ async function loadPlugin(
             ...pluginResourceMetadata,
           })
         } catch {
-          mcpErrors.push(`Invalid plugin MCP config: ${specPath}`)
+          mcpErrors.push(
+            `Invalid plugin MCP config ${basename(spec)} at index ${index}`,
+          )
         }
       } else if (isRecord(spec)) {
         mcp.push({
           path: join(canonical, '.claude-plugin', `plugin-mcp-${index}.json`),
           scope,
+          plugin: true,
           value: expandPluginMcpResource(
             { mcpServers: spec },
             manifest.name,

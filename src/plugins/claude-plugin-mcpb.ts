@@ -1,15 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
   stat,
   writeFile,
 } from 'node:fs/promises'
+import { closeSync, openSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import {
   basename,
@@ -22,6 +25,11 @@ import {
 } from 'node:path'
 
 import { Unzip, UnzipInflate } from 'fflate'
+
+import {
+  ExclusiveFileLease,
+  type ExclusiveFileLeaseHandle,
+} from '../platform/exclusive-file-lease.js'
 
 const DEFAULT_ARCHIVE_BYTES = 512 * 1024 * 1024
 const DEFAULT_EXTRACTED_BYTES = 1024 * 1024 * 1024
@@ -121,11 +129,16 @@ interface CacheMetadata {
 interface ArchiveEntry {
   name: string
   size: number
+  compressedSize: number
   mode?: number
   directory: boolean
 }
 
-const mcpbLoadTails = new Map<string, Promise<void>>()
+interface ResolvedMcpbSource {
+  pluginRoot: string
+  source: string
+  remote: boolean
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -462,6 +475,7 @@ function archiveEntries(
     result.push({
       name,
       size,
+      compressedSize,
       ...(mode === 0 ? {} : { mode }),
       directory,
     })
@@ -479,75 +493,125 @@ async function extractArchive(
   signal.throwIfAborted()
   const entries = archiveEntries(bytes, limits)
   const entryByName = new Map(entries.map((entry) => [entry.name, entry]))
-  const files = new Map<string, Uint8Array>()
-  let totalBytes = 0
-  let extractionError: Error | undefined
-  const unzip = new Unzip((file) => {
-    const name = file.name.replaceAll('\\', '/')
-    const entry = entryByName.get(name)
-    if (entry === undefined || entry.directory) {
-      file.ondata = (error) => {
-        if (error !== null) extractionError = error
-      }
-      file.start()
-      return
-    }
-    const chunks: Uint8Array[] = []
-    let length = 0
-    file.ondata = (error, chunk, final) => {
-      if (extractionError !== undefined) return
-      if (error !== null) {
-        extractionError = error
-        return
-      }
-      length += chunk.byteLength
-      totalBytes += chunk.byteLength
-      if (length > entry.size || totalBytes > limits.extractedBytes) {
-        extractionError = new Error(
-          `MCPB archive exceeds ${limits.extractedBytes} extracted bytes`,
-        )
-        file.terminate()
-        return
-      }
-      chunks.push(chunk)
-      if (!final) return
-      if (length !== entry.size) {
-        extractionError = new Error(`Invalid MCPB archive content: ${name}`)
-        return
-      }
-      const content = new Uint8Array(length)
-      let offset = 0
-      for (const part of chunks) {
-        content.set(part, offset)
-        offset += part.byteLength
-      }
-      files.set(name, content)
-    }
-    file.start()
-  })
-  unzip.register(UnzipInflate)
-  for (let offset = 0; offset < bytes.byteLength; offset += 4 * 1024) {
-    signal.throwIfAborted()
-    unzip.push(
-      bytes.subarray(offset, Math.min(offset + 4 * 1024, bytes.byteLength)),
-      offset + 4 * 1024 >= bytes.byteLength,
-    )
-    if (extractionError !== undefined) throw extractionError
-  }
-  if (extractionError !== undefined) throw extractionError
   await mkdir(destination, { recursive: true })
   for (const entry of entries) {
     signal.throwIfAborted()
     const target = join(destination, entry.name)
-    if (entry.directory) {
-      await mkdir(target, { recursive: true, mode: 0o755 })
-      continue
+    await mkdir(entry.directory ? target : dirname(target), {
+      recursive: true,
+      mode: 0o755,
+    })
+  }
+
+  const openFiles = new Map<string, { descriptor: number; length: number }>()
+  const completed = new Set<string>()
+  let totalBytes = 0
+  let extractionError: Error | undefined
+  const unzip = new Unzip((file) => {
+    let name: string
+    let entry: ArchiveEntry | undefined
+    try {
+      name = safeRelativePath(file.name, 'MCPB archive path')
+      entry = entryByName.get(name)
+      if (entry === undefined)
+        throw new Error(`Invalid MCPB archive entry: ${name}`)
+    } catch (error) {
+      extractionError =
+        error instanceof Error ? error : new Error(String(error))
+      file.terminate()
+      return
     }
-    const content = files.get(entry.name)
-    if (content === undefined || content.byteLength !== entry.size)
+
+    file.ondata = (error, chunk, final) => {
+      try {
+        if (extractionError !== undefined) {
+          file.terminate()
+          return
+        }
+        signal.throwIfAborted()
+        if (error !== null) throw error
+        if (entry.directory) {
+          if (chunk.byteLength !== 0)
+            throw new Error(`Invalid MCPB archive directory: ${name}`)
+          if (final) completed.add(name)
+          return
+        }
+
+        let state = openFiles.get(name)
+        if (state === undefined) {
+          state = {
+            descriptor: openSync(join(destination, name), 'wx', 0o600),
+            length: 0,
+          }
+          openFiles.set(name, state)
+        }
+        const nextLength = state.length + chunk.byteLength
+        const ratioLimit = entry.compressedSize * MAX_COMPRESSION_RATIO
+        if (
+          nextLength > entry.size ||
+          (nextLength > 0 &&
+            (entry.compressedSize === 0 || nextLength > ratioLimit)) ||
+          totalBytes + chunk.byteLength > limits.extractedBytes
+        ) {
+          throw new Error(
+            `MCPB archive exceeds ${limits.extractedBytes} extracted bytes or compression ratio ${MAX_COMPRESSION_RATIO}`,
+          )
+        }
+        let written = 0
+        while (written < chunk.byteLength) {
+          const count = writeSync(
+            state.descriptor,
+            chunk,
+            written,
+            chunk.byteLength - written,
+            state.length + written,
+          )
+          if (count === 0)
+            throw new Error(`Unable to write MCPB archive content: ${name}`)
+          written += count
+        }
+        state.length = nextLength
+        totalBytes += chunk.byteLength
+        if (!final) return
+        if (state.length !== entry.size)
+          throw new Error(`Invalid MCPB archive content: ${name}`)
+        closeSync(state.descriptor)
+        openFiles.delete(name)
+        completed.add(name)
+      } catch (caught) {
+        extractionError =
+          caught instanceof Error ? caught : new Error(String(caught))
+        file.terminate()
+      }
+    }
+    file.start()
+  })
+  unzip.register(UnzipInflate)
+  try {
+    for (let offset = 0; offset < bytes.byteLength; offset += 4 * 1024) {
+      signal.throwIfAborted()
+      unzip.push(
+        bytes.subarray(offset, Math.min(offset + 4 * 1024, bytes.byteLength)),
+        offset + 4 * 1024 >= bytes.byteLength,
+      )
+      if (extractionError !== undefined) throw extractionError
+    }
+    if (extractionError !== undefined) throw extractionError
+  } finally {
+    for (const { descriptor } of openFiles.values()) {
+      try {
+        closeSync(descriptor)
+      } catch {
+        /* preserve extraction failure */
+      }
+    }
+  }
+  for (const entry of entries) {
+    signal.throwIfAborted()
+    if (!completed.has(entry.name))
       throw new Error(`Invalid MCPB archive content: ${entry.name}`)
-    await mkdir(dirname(target), { recursive: true })
-    await writeFile(target, content, { flag: 'wx', mode: 0o600 })
+    if (entry.directory) continue
+    const target = join(destination, entry.name)
     await chmod(
       target,
       entry.mode === undefined
@@ -610,16 +674,50 @@ function hash(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
+function isWellFormedLease(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return (
+    value.version === 1 &&
+    Number.isSafeInteger(value.pid) &&
+    Number(value.pid) > 0 &&
+    typeof value.token === 'string' &&
+    /^[A-Za-z0-9_-]{1,128}$/u.test(value.token) &&
+    typeof value.createdAt === 'string'
+  )
+}
+
 async function readCached(
   entry: string,
   source: string,
+  cacheRoot: string,
 ): Promise<
   { metadata: CacheMetadata; manifest: ClaudePluginMcpbManifest } | undefined
 > {
   try {
-    const metadata = JSON.parse(
-      await readFile(join(entry, 'metadata.json'), 'utf8'),
-    ) as unknown
+    const entryStat = await lstat(entry)
+    if (!entryStat.isDirectory() || entryStat.isSymbolicLink()) return undefined
+    const canonicalEntry = await realpath(entry)
+    if (!pathIsWithin(cacheRoot, canonicalEntry, false)) return undefined
+    const extracted = join(entry, 'extracted')
+    const extractedStat = await lstat(extracted)
+    if (!extractedStat.isDirectory() || extractedStat.isSymbolicLink())
+      return undefined
+    const canonicalExtracted = await realpath(extracted)
+    if (!pathIsWithin(canonicalEntry, canonicalExtracted, false))
+      return undefined
+    const metadataPath = join(entry, 'metadata.json')
+    const metadataStat = await lstat(metadataPath)
+    if (!metadataStat.isFile() || metadataStat.isSymbolicLink())
+      return undefined
+    if (!pathIsWithin(canonicalEntry, await realpath(metadataPath), false))
+      return undefined
+    const manifestPath = join(extracted, MANIFEST_FILE)
+    const manifestStat = await lstat(manifestPath)
+    if (!manifestStat.isFile() || manifestStat.isSymbolicLink())
+      return undefined
+    if (!pathIsWithin(canonicalExtracted, await realpath(manifestPath), false))
+      return undefined
+    const metadata = JSON.parse(await readFile(metadataPath, 'utf8')) as unknown
     if (
       !isRecord(metadata) ||
       metadata.source !== source ||
@@ -627,14 +725,26 @@ async function readCached(
     )
       return undefined
     const manifest = await validateManifest(
-      JSON.parse(
-        await readFile(join(entry, 'extracted', MANIFEST_FILE), 'utf8'),
-      ),
+      JSON.parse(await readFile(manifestPath, 'utf8')),
     )
     return { metadata: metadata as unknown as CacheMetadata, manifest }
   } catch {
     return undefined
   }
+}
+
+function pathIsWithin(
+  root: string,
+  candidate: string,
+  allowSame: boolean,
+): boolean {
+  const rel = relative(root, candidate)
+  return (
+    (allowSame || rel.length > 0) &&
+    rel !== '..' &&
+    !rel.startsWith('../') &&
+    !isAbsolute(rel)
+  )
 }
 
 async function fetchArchive(
@@ -745,6 +855,181 @@ async function replaceCache(staging: string, target: string): Promise<void> {
   }
 }
 
+async function resolveMcpbSource(
+  options: LoadClaudePluginMcpbOptions,
+  signal: AbortSignal,
+): Promise<ResolvedMcpbSource> {
+  signal.throwIfAborted()
+  const pluginRoot = await realpath(resolve(options.pluginRoot))
+  signal.throwIfAborted()
+  const remote = /^https?:\/\//u.test(options.source)
+  if (!remote && /^[a-z][a-z0-9+.-]*:\/\//iu.test(options.source))
+    throw new Error('MCPB source URL must use HTTP or HTTPS')
+  if (
+    !['.mcpb', '.dxt'].some((extension) => options.source.endsWith(extension))
+  ) {
+    throw new Error('MCPB source must end in .mcpb or .dxt')
+  }
+  if (remote) return { pluginRoot, source: options.source, remote: true }
+
+  const requestedSource = resolve(pluginRoot, options.source)
+  const requestedRelative = relative(pluginRoot, requestedSource)
+  if (
+    requestedRelative === '..' ||
+    requestedRelative.startsWith('../') ||
+    isAbsolute(requestedRelative)
+  )
+    throw new Error('Local MCPB source escapes plugin root')
+  const source = await realpath(requestedSource)
+  signal.throwIfAborted()
+  const canonicalRelative = relative(pluginRoot, source)
+  if (
+    canonicalRelative === '..' ||
+    canonicalRelative.startsWith('../') ||
+    isAbsolute(canonicalRelative)
+  )
+    throw new Error('Local MCPB source escapes plugin root')
+  return { pluginRoot, source, remote: false }
+}
+
+async function cacheEntryIsRealDirectory(cacheEntry: string): Promise<boolean> {
+  try {
+    const entryStat = await lstat(cacheEntry)
+    return entryStat.isDirectory() && !entryStat.isSymbolicLink()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
+async function canonicalCacheRoot(
+  pluginRoot: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const requested = join(pluginRoot, '.mcpb-cache')
+  await mkdir(requested, { recursive: true })
+  signal.throwIfAborted()
+  const requestedStat = await lstat(requested)
+  if (!requestedStat.isDirectory() || requestedStat.isSymbolicLink())
+    throw new Error('MCPB cache root must be a real directory')
+  const canonical = await realpath(requested)
+  const rel = relative(pluginRoot, canonical)
+  if (rel === '..' || rel.startsWith('../') || isAbsolute(rel))
+    throw new Error('MCPB cache root escapes plugin root')
+  signal.throwIfAborted()
+  return canonical
+}
+
+async function cleanupCacheArtifacts(
+  cacheRoot: string,
+  cacheEntry: string,
+  cacheSource: string,
+): Promise<void> {
+  await mkdir(cacheRoot, { recursive: true })
+  const cacheName = basename(cacheEntry)
+  const stagingPrefix = `.${cacheName}.`
+  const backupPattern = new RegExp(
+    `^${cacheName}\\.[0-9]+\\.[A-Za-z0-9-]+\\.bak$`,
+    'u',
+  )
+  const entries = await readdir(cacheRoot, { withFileTypes: true })
+  const backups: Array<{ path: string; modified: number }> = []
+  for (const entry of entries) {
+    const artifact = join(cacheRoot, entry.name)
+    if (entry.name.startsWith(stagingPrefix) && entry.name.includes('.tmp-')) {
+      await rm(artifact, { recursive: true, force: true })
+      continue
+    }
+    if (!backupPattern.test(entry.name)) continue
+    let artifactStat
+    try {
+      artifactStat = await lstat(artifact)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw error
+    }
+    if (!artifactStat.isDirectory()) {
+      await rm(artifact, { recursive: true, force: true })
+      continue
+    }
+    backups.push({ path: artifact, modified: artifactStat.mtimeMs })
+  }
+  if (backups.length === 0) return
+  backups.sort((left, right) => right.modified - left.modified)
+  if (!(await cacheEntryIsRealDirectory(cacheEntry))) {
+    await rm(cacheEntry, { recursive: true, force: true })
+    for (let index = 0; index < backups.length; index += 1) {
+      const candidate = backups[index]
+      if (
+        candidate === undefined ||
+        (await readCached(candidate.path, cacheSource, cacheRoot)) === undefined
+      )
+        continue
+      await rename(candidate.path, cacheEntry)
+      backups.splice(index, 1)
+      break
+    }
+  }
+  await Promise.all(
+    backups.map((backup) => rm(backup.path, { recursive: true, force: true })),
+  )
+}
+
+async function waitForLeaseRetry(signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolveWait, rejectWait) => {
+    const timer = setTimeout(finish, 10)
+    const abort = (): void => finish(signal.reason)
+    function finish(reason?: unknown): void {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      if (reason === undefined) resolveWait()
+      else rejectWait(reason)
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
+  })
+}
+
+async function cacheLockIsWellFormed(lockFile: string): Promise<boolean> {
+  try {
+    const lockStat = await lstat(lockFile)
+    if (!lockStat.isFile() || lockStat.size > 4 * 1024) return false
+    return isWellFormedLease(JSON.parse(await readFile(lockFile, 'utf8')))
+  } catch (error) {
+    if (error instanceof SyntaxError) return false
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
+async function waitForCacheLease(
+  cacheEntry: string,
+  recoveryLockFile: string,
+  signal: AbortSignal,
+): Promise<ExclusiveFileLeaseHandle> {
+  const lockFile = `${cacheEntry}.lock`
+  const lease = new ExclusiveFileLease(lockFile)
+  const recoveryLease = new ExclusiveFileLease(recoveryLockFile)
+  for (;;) {
+    signal.throwIfAborted()
+    const recovery = await recoveryLease.tryAcquire()
+    if (recovery === null) {
+      await waitForLeaseRetry(signal)
+      continue
+    }
+    try {
+      if (!(await cacheLockIsWellFormed(lockFile))) {
+        await rm(lockFile, { recursive: true, force: true })
+      }
+      const acquired = await lease.tryAcquire()
+      if (acquired !== null) return acquired
+    } finally {
+      await recovery.release()
+    }
+    await waitForLeaseRetry(signal)
+  }
+}
+
 /**
  * Loads one MCPB/DXT server referenced by a plugin manifest.
  *
@@ -755,48 +1040,21 @@ async function replaceCache(staging: string, target: string): Promise<void> {
  */
 async function loadClaudePluginMcpbUnlocked(
   options: LoadClaudePluginMcpbOptions,
+  resolvedSource: ResolvedMcpbSource,
+  cacheRoot: string,
+  signal: AbortSignal,
 ): Promise<LoadedClaudePluginMcpb> {
-  const requestedPluginRoot = resolve(options.pluginRoot)
-  const pluginRoot = await realpath(requestedPluginRoot)
+  const { pluginRoot, source, remote } = resolvedSource
   const pluginData = resolve(options.pluginData)
-  const remote = /^https?:\/\//u.test(options.source)
-  if (!remote && /^[a-z][a-z0-9+.-]*:\/\//iu.test(options.source))
-    throw new Error('MCPB source URL must use HTTP or HTTPS')
-  if (
-    !['.mcpb', '.dxt'].some((extension) => options.source.endsWith(extension))
-  ) {
-    throw new Error('MCPB source must end in .mcpb or .dxt')
-  }
-  let source = options.source
-  if (!remote) {
-    const requestedSource = resolve(pluginRoot, options.source)
-    const requestedRelative = relative(pluginRoot, requestedSource)
-    if (
-      requestedRelative === '..' ||
-      requestedRelative.startsWith('../') ||
-      isAbsolute(requestedRelative)
-    )
-      throw new Error('Local MCPB source escapes plugin root')
-    source = await realpath(requestedSource)
-    const rel = relative(pluginRoot, source)
-    if (rel === '..' || rel.startsWith('../') || isAbsolute(rel))
-      throw new Error('Local MCPB source escapes plugin root')
-  }
   const limits: Required<ClaudePluginMcpbLimits> = {
     archiveBytes: options.limits?.archiveBytes ?? DEFAULT_ARCHIVE_BYTES,
     extractedBytes: options.limits?.extractedBytes ?? DEFAULT_EXTRACTED_BYTES,
     files: options.limits?.files ?? DEFAULT_FILES,
   }
-  const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
-  const signal =
-    options.signal === undefined
-      ? timeout
-      : AbortSignal.any([options.signal, timeout])
   signal.throwIfAborted()
-  const cacheRoot = join(pluginRoot, '.mcpb-cache')
   const cacheEntry = join(cacheRoot, hash(source))
   const cacheSource = remote ? `url:${hash(source)}` : source
-  const cached = await readCached(cacheEntry, cacheSource)
+  const cached = await readCached(cacheEntry, cacheSource, cacheRoot)
   let effectiveUserConfig = options.userConfig ?? {}
   let bytes: Uint8Array | undefined
   let fingerprint: string | undefined
@@ -909,19 +1167,39 @@ async function loadClaudePluginMcpbUnlocked(
 export async function loadClaudePluginMcpb(
   options: LoadClaudePluginMcpbOptions,
 ): Promise<LoadedClaudePluginMcpb> {
-  const key = `${resolve(options.pluginRoot)}\0${options.source}`
-  const previous = mcpbLoadTails.get(key) ?? Promise.resolve()
-  let release = (): void => undefined
-  const current = new Promise<void>((resolveCurrent) => {
-    release = resolveCurrent
-  })
-  const tail = previous.then(() => current)
-  mcpbLoadTails.set(key, tail)
-  await previous
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  const signal =
+    options.signal === undefined
+      ? timeout
+      : AbortSignal.any([options.signal, timeout])
+  const resolvedSource = await resolveMcpbSource(options, signal)
+  const cacheRoot = await canonicalCacheRoot(resolvedSource.pluginRoot, signal)
+  const cacheEntry = join(cacheRoot, hash(resolvedSource.source))
+  const cacheSource = resolvedSource.remote
+    ? `url:${hash(resolvedSource.source)}`
+    : resolvedSource.source
+  const configRoot = resolve(
+    process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+  )
+  const recoveryLockFile = join(
+    configRoot,
+    'praxis',
+    'locks',
+    'mcpb',
+    `${hash(cacheEntry)}.lock`,
+  )
+  const lease = await waitForCacheLease(cacheEntry, recoveryLockFile, signal)
   try {
-    return await loadClaudePluginMcpbUnlocked(options)
+    signal.throwIfAborted()
+    await cleanupCacheArtifacts(cacheRoot, cacheEntry, cacheSource)
+    signal.throwIfAborted()
+    return await loadClaudePluginMcpbUnlocked(
+      options,
+      resolvedSource,
+      cacheRoot,
+      signal,
+    )
   } finally {
-    release()
-    if (mcpbLoadTails.get(key) === tail) mcpbLoadTails.delete(key)
+    await lease.release()
   }
 }

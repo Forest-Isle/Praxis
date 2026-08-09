@@ -1290,6 +1290,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     cwd,
     configRoot,
     onWarning: (message) => runtimeEventSink({ type: 'warning', message }),
+    onPromptsChanged: (prompts) => extensions.setMcpPrompts(prompts),
     ...(onElicitation ? { onElicitation } : {}),
     eventSink: runtimeEventSink,
     ...(signal ? { signal } : {}),
@@ -1529,7 +1530,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : cli.permissionMode,
       slashCommands: extensions
         .modelInvocableSkills()
-        .map((definition) => definition.name),
+        .map((definition) => definition.name)
+        .concat(extensions.mcpPromptNames()),
       agents: extensions.agentNames(),
       skills: extensions
         .modelInvocableSkills()

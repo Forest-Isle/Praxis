@@ -147,8 +147,10 @@ routing.
 
 Supported single-user CLI surface is closed against Claude Code 2.1.208. Latest
 residual audit closed scoped plugin MCP naming/deduplication, local and remote
-MCPB/DXT loading, protected bundle configuration, and packed runtime execution
-after protected plugin option storage and interactive plugin LSP. Final audit
+MCPB/DXT loading, protected bundle configuration, MCP prompt discovery and rich
+invocation, durable prompt binaries, crash-recoverable settings/credential
+commits, and packed runtime execution after protected plugin option storage and
+interactive plugin LSP. Final audit
 covers public/hidden/optional-value parsing, command-specific help,
 source and packed artifacts, bidirectional session/data-plane links, TODO/skip
 and dispatcher wiring, performance, release packaging, and production

@@ -2544,6 +2544,104 @@ describe('ClaudeSessionService', () => {
     ])
   })
 
+  it('routes MCP prompt rich content and user attachments through the expanded message', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-mcp-prompt-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let promptToolResultDirectory: string | undefined
+    const extensions = new ClaudeExtensionCatalog({
+      agents: [],
+      commands: [],
+      skills: [],
+    })
+    extensions.setMcpPrompts([
+      {
+        name: 'mcp__fixture__probe',
+        userFacingName: 'fixture:probe (MCP)',
+        description: '',
+        argumentNames: [],
+        invoke: async (_argumentsText, options) => {
+          promptToolResultDirectory = options?.toolResultDirectory
+          return {
+            text: 'MCP_TEXT',
+            contentBlocks: [
+              { type: 'text', text: 'MCP_TEXT' },
+              { type: 'image', mediaType: 'image/png', data: 'bWNw' },
+            ],
+            images: [{ type: 'image', mediaType: 'image/png', data: 'bWNw' }],
+          }
+        },
+      },
+    ])
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      extensions,
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          images: true,
+          documents: true,
+        },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: 'done' }
+        },
+      },
+    })
+
+    const result = await service.run(
+      '/fixture:probe (MCP)',
+      undefined,
+      undefined,
+      undefined,
+      [{ type: 'image', mediaType: 'image/jpeg', data: 'dXNlcg==' }],
+    )
+    expect(requests[0]?.messages).toEqual([
+      {
+        role: 'user',
+        content:
+          '<command-message>mcp__fixture__probe</command-message>\n<command-name>/mcp__fixture__probe</command-name>',
+      },
+      {
+        role: 'user',
+        content: 'MCP_TEXT',
+        images: [
+          { type: 'image', mediaType: 'image/jpeg', data: 'dXNlcg==' },
+          { type: 'image', mediaType: 'image/png', data: 'bWNw' },
+        ],
+      },
+    ])
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    expect(promptToolResultDirectory).toBe(
+      join(paths.projectRoot, result.sessionId, 'tool-results'),
+    )
+    const entries = (await readFile(paths.sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(entries[1]?.message.content).toEqual([
+      { type: 'text', text: 'MCP_TEXT' },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/jpeg', data: 'dXNlcg==' },
+      },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'bWNw' },
+      },
+    ])
+  })
+
   it('persists tool-provided skill context before the next model turn', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-skill-tool-'))
     roots.push(root)
