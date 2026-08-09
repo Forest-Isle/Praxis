@@ -118,7 +118,7 @@ routing.
 | Glob                               | Complete | Native hidden/ignored matching, mtime order, 100-result bound, live resume                                                                                              |
 | WebFetch / WebSearch               | Complete | Live schemas/search/errors/resume; real Claude/Praxis fetch and filtered search; bidirectional resume                                                                   |
 | NotebookEdit                       | Complete | Native cell view, read-before-edit, replace/insert/delete, Claude resume gate                                                                                           |
-| Worktree enter/exit                | Complete | Native Git lifecycle, state entries, dynamic cwd, CLI `--worktree`, and classic tmux launcher; live bidirectional gate                                                  |
+| Worktree enter/exit                | Complete | Native Git lifecycle/state/cwd, CLI `--worktree`, iTerm2 native panes, classic/fallback tmux, and packed/live gates                                                     |
 | TaskCreate/Get/List/Update         | Complete | Shared Claude task files, dependencies, metadata, deletion, high-watermark recovery, and bidirectional live gate                                                        |
 | CronCreate/List/Delete and `/loop` | Complete | Session/durable jobs, shared native file, idle delivery, expiry, and live bidirectional gate                                                                            |
 | ScheduleWakeup                     | Complete | Exact SDK schema/executable result; minute-aligned replacement lifecycle, max age, stop, inactive gate, and native result                                               |
@@ -143,9 +143,9 @@ routing.
 
 ## Final audit status
 
-Reopened after the Claude Code 2.1.208 management-command surface audit.
-Native iTerm worktree launch remains pending; final CLI-surface,
-clean-tarball, and end-to-end link gates must be rerun after those stages.
+All reopened feature stages from the Claude Code 2.1.208 management-command
+surface audit are implemented. Final CLI-surface, clean-tarball, and end-to-end
+link gates must still be rerun before declaring full closure.
 Unsupported Claude versions remain deliberately
 read-only. Enterprise, desktop, remote-control, and subscription-auth surfaces
 remain excluded by scope.

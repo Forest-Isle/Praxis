@@ -92,6 +92,9 @@ owner-authenticated local control socket. Job state follows Claude's local
 `jobs/` and `sessions/` layout while Praxis-only dispatch ownership prevents
 cross-runtime process takeover. Background user/assistant entries carry native
 `sessionKind: "bg"` metadata, and either CLI can resume the shared transcript.
+CLI worktree sessions support `--tmux`: iTerm2 receives a native split pane
+with an explicitly rooted, shell-escaped child command; other terminals fall
+back to detached classic tmux. `--tmux=classic` always forces traditional tmux.
 `CronCreate`, `CronList`, and `CronDelete` expose Claude Code 2.1.208-compatible
 schemas and results for session-only and durable prompts. Durable jobs share
 `<cwd>/.claude/scheduled_tasks.json`, preserve unknown native fields, use atomic
@@ -299,6 +302,8 @@ node dist/cli.js --init-only
 node dist/cli.js -p --init "Run setup hooks, then continue"
 node dist/cli.js -p --maintenance "Run maintenance hooks, then continue"
 node dist/cli.js fork <session-id>
+node dist/cli.js --worktree=review --tmux "Inspect in a native pane"
+node dist/cli.js --worktree=review --tmux=classic "Inspect in tmux"
 node dist/cli.js --bg "Inspect this project"
 node dist/cli.js agents
 node dist/cli.js agents --json --all --cwd "$PWD"

@@ -78,7 +78,7 @@ export interface CliControls {
   promptSuggestions?: boolean
   worktreeName?: string
   worktreeRequested?: boolean
-  tmux?: 'classic'
+  tmux?: 'native' | 'classic'
 }
 
 export interface CliInvocation extends CliControls {
@@ -623,7 +623,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let sessionPersistence = true
   let worktreeName: string | undefined
   let worktreeRequested = false
-  let tmux: 'classic' | undefined
+  let tmux: 'native' | 'classic' | undefined
   let model: string | undefined
   let effort: (typeof EFFORT_LEVELS)[number] | undefined
   let thinking: (typeof THINKING_MODES)[number] | undefined
@@ -1179,7 +1179,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     if (value === '--tmux' || value === '--tmux=classic') {
       if (tmux !== undefined)
         throw new Error('--tmux may only be specified once')
-      tmux = 'classic'
+      tmux = value === '--tmux' ? 'native' : 'classic'
       continue
     }
     if (value.startsWith('--tmux=')) throw new Error('--tmux must be classic')

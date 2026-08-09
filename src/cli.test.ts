@@ -750,7 +750,11 @@ describe('Praxis CLI', () => {
       },
       async launchTmux(options) {
         launched = options
-        return { sessionName: 'praxis-review', worktreeName: 'review' }
+        return {
+          kind: 'tmux',
+          sessionName: 'praxis-review',
+          worktreeName: 'review',
+        }
       },
     }
     await expect(
@@ -762,6 +766,7 @@ describe('Praxis CLI', () => {
     ).resolves.toBe(0)
     expect(launched).toMatchObject({
       worktreeName: 'review',
+      mode: 'native',
       attach: false,
     })
     expect(capture.stdout).toEqual(['Started tmux session praxis-review\n'])

@@ -384,6 +384,13 @@ describe('CLI protocol', () => {
       worktreeRequested: true,
       args: ['prompt'],
     })
+    expect(
+      parseCliInvocation(['--worktree', '--tmux', 'prompt']),
+    ).toMatchObject({
+      worktreeRequested: true,
+      tmux: 'native',
+      args: ['prompt'],
+    })
     expect(() => parseCliInvocation(['--tmux', 'prompt'])).toThrow(
       '--tmux requires --worktree',
     )

@@ -358,7 +358,7 @@ Options:
   -h, --help                          Show help
   -v, --version                       Show version
   -w, --worktree [name]               Start in an isolated Git worktree
-  --tmux[=classic]                    Launch the worktree session in tmux
+  --tmux[=classic]                    Launch worktree in an iTerm2 native pane when available; classic forces tmux
 
 Provider environment:
   PRAXIS_PROVIDER=openai|anthropic, PRAXIS_API_KEY, PRAXIS_MODEL
@@ -3833,9 +3833,15 @@ async function execute(
       ...(invocation.worktreeName === undefined
         ? {}
         : { worktreeName: invocation.worktreeName }),
+      mode: invocation.tmux,
       attach: Boolean(io.isTTY),
     })
-    if (!io.isTTY) io.stdout(`Started tmux session ${launched.sessionName}\n`)
+    if (!io.isTTY)
+      io.stdout(
+        launched.kind === 'iterm'
+          ? `Started iTerm2 pane ${launched.sessionName}\n`
+          : `Started tmux session ${launched.sessionName}\n`,
+      )
     return 0
   }
   if (
