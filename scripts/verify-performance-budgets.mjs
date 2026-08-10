@@ -33,6 +33,7 @@ const budgets = {
 const sessionCount = 500
 const transcriptEntryCount = 20_000
 const cliTimeoutMs = 5_000
+const cliColdStartSampleCount = 21
 if (typeof globalThis.gc !== 'function') {
   throw new Error(
     'Performance heap probe requires Node.js --expose-gc; use npm run test:performance',
@@ -179,7 +180,9 @@ try {
   const cwd = await realpath(workDirectory)
 
   const cliP95Ms = percentile(
-    await samples(7, () => runCli(repositoryRoot, packageJson.version)),
+    await samples(cliColdStartSampleCount, () =>
+      runCli(repositoryRoot, packageJson.version),
+    ),
     95,
   )
   assertBudget('CLI cold start p95', cliP95Ms, budgets.cliColdStartP95Ms)
