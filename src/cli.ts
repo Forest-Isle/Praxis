@@ -3936,6 +3936,17 @@ async function execute(
       },
       supportedRunKinds: ['interactive', 'headless', 'background', 'workflow'],
       mutationPolicy: 'managed-worktree-only',
+      validationCommands: {
+        focused: [],
+        full: [
+          ['npm', 'run', 'format:check'],
+          ['npm', 'run', 'lint'],
+          ['npm', 'run', 'typecheck'],
+          ['npm', 'test'],
+          ['npm', 'run', 'build'],
+        ],
+        compatibility: [['npm', 'run', 'test:compat']],
+      },
     })
     return 0
   }
