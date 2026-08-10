@@ -1518,6 +1518,7 @@ export function Composer({
   input,
   cursor,
   busy,
+  clipboardBusy = false,
   status,
   display,
   usage,
@@ -1533,6 +1534,7 @@ export function Composer({
   input: string
   cursor?: number
   busy: boolean
+  clipboardBusy?: boolean
   status: string
   display: TuiDisplayMetadata
   usage?: ModelUsage
@@ -1557,11 +1559,13 @@ export function Composer({
   if (screenReader)
     return (
       <Text>
-        {busy
-          ? `Status: ${status}`
-          : shellMode
-            ? `Shell command: ${input}`
-            : `Prompt: ${input}`}
+        {clipboardBusy
+          ? 'Pasting…'
+          : busy
+            ? `Status: ${status}`
+            : shellMode
+              ? `Shell command: ${input}`
+              : `Prompt: ${input}`}
       </Text>
     )
   const line = '─'.repeat(Math.max(12, Math.min(100, width)))
@@ -1587,7 +1591,9 @@ export function Composer({
         </Text>
       ) : null}
       <Text dimColor>{line}</Text>
-      {busy ? (
+      {clipboardBusy ? (
+        <Text>Pasting…</Text>
+      ) : busy ? (
         <Text>
           <Text color={ACCENT}>{SPINNER[spinnerIndex]}</Text> {status}…{' '}
           <Text dimColor>· esc to interrupt</Text>

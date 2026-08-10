@@ -22,6 +22,9 @@ const installRoot = join(root, 'install')
 const binRoot = join(root, 'bin')
 const claude = join(binRoot, 'claude')
 const editor = join(binRoot, 'editor-wrapper')
+const osascript = join(binRoot, 'osascript')
+const pbpaste = join(binRoot, 'pbpaste')
+const wlPaste = join(binRoot, 'wl-paste')
 let cli
 let port
 const packageJson = JSON.parse(
@@ -92,6 +95,17 @@ try {
     '#!/bin/sh\nprintf \'edited first line\\nedited second line\\n\\n\' > "$1"\n',
   )
   await chmod(editor, 0o755)
+  await writeFile(osascript, '#!/bin/sh\nexit 1\n')
+  await writeFile(pbpaste, "#!/bin/sh\nprintf 'INSTALLED_CLIPBOARD'\n")
+  await writeFile(
+    wlPaste,
+    '#!/bin/sh\ncase "$*" in *image/png*) exit 1 ;; *) printf \'INSTALLED_CLIPBOARD\' ;; esac\n',
+  )
+  await Promise.all([
+    chmod(osascript, 0o755),
+    chmod(pbpaste, 0o755),
+    chmod(wlPaste, 0o755),
+  ])
   const { stdout: packed } = await execFileAsync(
     'npm',
     ['pack', '--pack-destination', root],
@@ -203,6 +217,11 @@ expect -re {Save and close editor to continue}
 expect -re {edited first line}
 expect -re {edited second line}
 expect -re {ctrl.*g to edit in Editor-wrapper}
+send "\025"
+expect -re {Try.*review this project}
+send "clipboard:"
+send "\026"
+expect -re {clipboard:INSTALLED_CLIPBOARD}
 send "\025"
 expect -re {Try.*review this project}
 send "!"

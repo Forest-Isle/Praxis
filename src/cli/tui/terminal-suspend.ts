@@ -9,8 +9,7 @@ export function suspendTuiProcess(
   } = {},
 ): void {
   const write = options.write ?? ((message) => process.stdout.write(message))
-  const stop =
-    options.stop ?? (() => process.kill(process.pid, 'SIGTSTP'))
+  const stop = options.stop ?? (() => process.kill(process.pid, 'SIGTSTP'))
   write(SUSPEND_NOTICE)
   stop()
 }

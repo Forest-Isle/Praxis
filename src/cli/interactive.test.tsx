@@ -420,6 +420,163 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('❯ review @src')
   })
 
+  it('shows Pasting… and inserts clipboard text at the real cursor', async () => {
+    let finishPaste: ((text: string) => void) | undefined
+    const clipboardReader = vi.fn(
+      () =>
+        new Promise<{ kind: 'text'; text: string }>((resolve) => {
+          finishPaste = (text) => resolve({ kind: 'text', text })
+        }),
+    )
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        clipboardReader={clipboardReader}
+      />,
+    )
+
+    app.stdin.write('abcd')
+    app.stdin.write('\u001B[D')
+    app.stdin.write('\u001B[D')
+    app.stdin.write('\u0016')
+    await flush()
+    expect(app.lastFrame()).toContain('Pasting…')
+
+    finishPaste?.('clipboard')
+    await flush()
+    expect(app.lastFrame()).toContain('abclipboardcd')
+    expect(clipboardReader).toHaveBeenCalledOnce()
+  })
+
+  it('keeps composer input and reports clipboard read failures', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        clipboardReader={async () => {
+          throw new Error('Clipboard is unavailable')
+        }}
+      />,
+    )
+
+    app.stdin.write('keep this')
+    app.stdin.write('\u0016')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ keep this')
+    expect(app.lastFrame()).toContain('Clipboard is unavailable')
+  })
+
+  it('pastes, atomically edits, undoes, and submits images on run and resume', async () => {
+    const images = ['first-image', 'second-image', 'third-image'].map(
+      (data) => ({
+        kind: 'image' as const,
+        image: {
+          type: 'image' as const,
+          mediaType: 'image/png' as const,
+          data,
+        },
+      }),
+    )
+    const clipboardReader = vi.fn(async () => {
+      const image = images.shift()
+      if (!image) throw new Error('clipboard fixture exhausted')
+      return image
+    })
+    const calls: Array<{
+      operation: string
+      prompt: string
+      images: readonly { data: string }[] | undefined
+    }> = []
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt, _signal, _sessionId, _name, submittedImages) {
+            calls.push({
+              operation: 'run',
+              prompt,
+              images: submittedImages?.map(({ data }) => ({ data })),
+            })
+            return {
+              sessionId: 'session-1',
+              text: 'first answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume(sessionId, prompt, _signal, _name, submittedImages) {
+            calls.push({
+              operation: `resume:${sessionId}`,
+              prompt,
+              images: submittedImages?.map(({ data }) => ({ data })),
+            })
+            return {
+              sessionId,
+              text: 'next answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        clipboardReader={clipboardReader}
+      />,
+    )
+
+    app.stdin.write('start')
+    app.stdin.write('\u0016')
+    await flush()
+    app.stdin.write('\u0016')
+    await flush()
+    expect(app.lastFrame()).toContain('start[Image #1] [Image #2]')
+
+    app.stdin.write('\u007F')
+    await flush()
+    expect(app.lastFrame()).toContain('start[Image #1]')
+    expect(app.lastFrame()).not.toContain('[Image #2]')
+    app.stdin.write('\u001F')
+    await flush()
+    expect(app.lastFrame()).toContain('start[Image #1] [Image #2]')
+
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u0016')
+    await flush()
+    expect(app.lastFrame()).toContain('[Image #3]')
+    app.stdin.write('\r')
+    await flush()
+
+    expect(calls).toEqual([
+      {
+        operation: 'run',
+        prompt: 'start[Image #1] [Image #2]',
+        images: [{ data: 'first-image' }, { data: 'second-image' }],
+      },
+      {
+        operation: 'resume:session-1',
+        prompt: '[Image #3]',
+        images: [{ data: 'third-image' }],
+      },
+    ])
+  })
+
   it('edits the composer through Ctrl+G without creating a model service', async () => {
     let serviceCreations = 0
     let finishEditor:

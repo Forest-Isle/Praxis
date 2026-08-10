@@ -883,3 +883,20 @@ contract; broader interactive TTY parity remains partial.
       full redraw with exact in-memory composer retention
 - [x] focused notice/signal tests, idle and busy interaction tests, and a real
       installed-package zsh `jobs -l` stopped-state plus `fg` recovery gate
+
+## Stage 98 - interactive clipboard and image-paste parity
+
+Status: complete for the Claude Code 2.1.208 `Ctrl+V` text/image clipboard
+contract; broader interactive TTY parity remains partial.
+
+- [x] observed `Pasting…` transition and real-cursor text insertion through
+      native macOS, Linux Wayland/X11, and Windows text clipboard adapters
+- [x] monotonic `[Image #N]` markers with adjacent-image spacing, atomic cursor
+      movement and deletion, external-editor visibility, and composer undo
+- [x] marker-ordered image collection for new and resumed turns through the
+      existing `ModelImage`, provider, and Claude-native append-only JSONL path
+      without a competing attachment format
+- [x] bounded clipboard payloads, strict macOS PNG decoding, command argument
+      arrays without a shell, and isolated reader injection for tests
+- [x] focused parser/editor/Ink interaction coverage plus installed-package PTY
+      text-paste verification; existing image/provider/transcript gates retained

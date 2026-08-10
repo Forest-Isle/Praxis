@@ -84,10 +84,11 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external
-  editing, `Ctrl+Z` shell suspension and `fg` recovery, permission-gated `!`
-  shell turns, navigable current/per-turn Git diff views, rich decision panels,
-  and measured context budgets; print mode, structured JSON/JSONL, context
-  compaction, tool loops, and bounded execution.
+  editing, `Ctrl+V` text/image clipboard paste, `Ctrl+Z` shell suspension and
+  `fg` recovery, permission-gated `!` shell turns, navigable current/per-turn
+  Git diff views, rich decision panels, and measured context budgets; print
+  mode, structured JSON/JSONL, context compaction, tool loops, and bounded
+  execution.
 - **Built-in tools** — read, write, edit, glob, search, shell, notebook, PDF,
   image, web, scheduled prompts, workflows, and worktrees.
 - **Permission boundary** — local allow/ask/deny rules, safe and bare modes,

@@ -8,6 +8,7 @@ import type {
   SessionSummary,
 } from '../application/session-service.js'
 import type {
+  ModelImage,
   ModelToolCall,
   ModelUsage,
   RuntimeEvent,
@@ -68,13 +69,10 @@ import {
 } from './tui/slash-commands.js'
 import {
   createComposerEditor,
-  deleteComposerBackward,
-  deleteComposerForward,
   deleteComposerToEnd,
   deleteComposerToStart,
   deleteComposerWordBackward,
   insertComposerText,
-  moveComposerCursor,
   moveComposerCursorByWord,
 } from './tui/composer-editor.js'
 import {
@@ -91,13 +89,29 @@ import {
   type TuiEditorResult,
 } from './tui/external-editor.js'
 import { suspendTuiProcess } from './tui/terminal-suspend.js'
+import { readTuiClipboard, type TuiClipboardContent } from './tui/clipboard.js'
+import {
+  composerImageIds,
+  deleteComposerImageBackward,
+  deleteComposerImageForward,
+  insertComposerImageMarker,
+  moveComposerCursorAcrossImages,
+} from './tui/composer-images.js'
 
 interface InteractiveSessionCommands {
-  run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult>
+  run(
+    prompt: string,
+    signal?: AbortSignal,
+    sessionId?: string,
+    name?: string,
+    images?: readonly ModelImage[],
+  ): Promise<SessionRunResult>
   resume(
     sessionId: string,
     prompt: string,
     signal?: AbortSignal,
+    name?: string,
+    images?: readonly ModelImage[],
   ): Promise<SessionRunResult>
   runShell?(command: string, signal?: AbortSignal): Promise<SessionRunResult>
   resumeShell?(
@@ -173,6 +187,7 @@ interface InteractiveAppProps {
     options: TuiEditorOptions,
   ) => Promise<TuiEditorResult>
   suspendProcess?: () => void | Promise<void>
+  clipboardReader?: () => Promise<TuiClipboardContent>
   permissionRuleStore?: {
     load(): Promise<readonly TuiPermissionRule[]>
     add(input: {
@@ -413,6 +428,7 @@ export function InteractiveApp({
   fileLoader,
   externalEditor = editTuiPrompt,
   suspendProcess = suspendTuiProcess,
+  clipboardReader = readTuiClipboard,
   permissionRuleStore,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
@@ -477,6 +493,12 @@ export function InteractiveApp({
   const undoStackRef = useRef<Array<ReturnType<typeof createComposerEditor>>>(
     [],
   )
+  const composerImagesRef = useRef(new Map<number, ModelImage>())
+  const nextImageIdRef = useRef(1)
+  const clipboardQueueRef = useRef(Promise.resolve())
+  const clipboardPendingRef = useRef(0)
+  const componentMountedRef = useRef(true)
+  const [clipboardBusy, setClipboardBusy] = useState(false)
   const stashedInputRef = useRef('')
   const lastEscapeAtRef = useRef(0)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
@@ -720,6 +742,7 @@ export function InteractiveApp({
 
   useEffect(
     () => () => {
+      componentMountedRef.current = false
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
@@ -767,6 +790,58 @@ export function InteractiveApp({
   }
 
   const clearComposerInput = () => updateComposerInput('')
+
+  const promptImages = (prompt: string): readonly ModelImage[] => {
+    const seen = new Set<number>()
+    return composerImageIds(prompt).flatMap((id) => {
+      if (seen.has(id)) return []
+      seen.add(id)
+      const image = composerImagesRef.current.get(id)
+      return image ? [image] : []
+    })
+  }
+
+  const pasteClipboard = () => {
+    clipboardPendingRef.current += 1
+    setClipboardBusy(true)
+    const paste = clipboardQueueRef.current.then(async () => {
+      if (!componentMountedRef.current) return
+      const content = await clipboardReader()
+      if (!componentMountedRef.current) return
+      if (content.kind === 'text') {
+        updateComposerEditor(
+          insertComposerText(
+            createComposerEditor(inputRef.current, inputCursorRef.current),
+            content.text,
+          ),
+        )
+      } else if (content.kind === 'image') {
+        const id = nextImageIdRef.current
+        nextImageIdRef.current += 1
+        composerImagesRef.current.set(id, content.image)
+        updateComposerEditor(
+          insertComposerImageMarker(
+            createComposerEditor(inputRef.current, inputCursorRef.current),
+            id,
+          ),
+        )
+      }
+    })
+    clipboardQueueRef.current = paste.catch(() => undefined)
+    void paste
+      .catch((error: unknown) => {
+        if (!componentMountedRef.current) return
+        setEditorFooterMessage({
+          text: error instanceof Error ? error.message : String(error),
+          isError: true,
+        })
+      })
+      .finally(() => {
+        clipboardPendingRef.current -= 1
+        if (componentMountedRef.current && clipboardPendingRef.current === 0)
+          setClipboardBusy(false)
+      })
+  }
 
   useEffect(() => {
     if (externalEditorRequest === null) return
@@ -1333,7 +1408,11 @@ export function InteractiveApp({
     void loading.finally(() => onTurnChange?.(null))
   }
 
-  const submit = async (prompt: string, shellCommand?: string) => {
+  const submit = async (
+    prompt: string,
+    shellCommand?: string,
+    images: readonly ModelImage[] = [],
+  ) => {
     const turnNumber = turnNumberRef.current + 1
     turnNumberRef.current = turnNumber
     turnMutatedFilesRef.current = false
@@ -1366,8 +1445,20 @@ export function InteractiveApp({
       const result =
         shellCommand === undefined
           ? activeSessionId
-            ? await commands.resume(activeSessionId, prompt, turnSignal)
-            : await commands.run(prompt, turnSignal)
+            ? await commands.resume(
+                activeSessionId,
+                prompt,
+                turnSignal,
+                undefined,
+                images,
+              )
+            : await commands.run(
+                prompt,
+                turnSignal,
+                undefined,
+                undefined,
+                images,
+              )
           : activeSessionId
             ? commands.resumeShell
               ? await commands.resumeShell(
@@ -1529,7 +1620,7 @@ export function InteractiveApp({
         updateComposerEditor(
           key.meta
             ? moveComposerCursorByWord(editor(), 'backward')
-            : moveComposerCursor(editor(), -1),
+            : moveComposerCursorAcrossImages(editor(), -1),
         )
         return true
       }
@@ -1537,7 +1628,7 @@ export function InteractiveApp({
         updateComposerEditor(
           key.meta
             ? moveComposerCursorByWord(editor(), 'forward')
-            : moveComposerCursor(editor(), 1),
+            : moveComposerCursorAcrossImages(editor(), 1),
         )
         return true
       }
@@ -1550,11 +1641,11 @@ export function InteractiveApp({
         return true
       }
       if (controlKey('b')) {
-        updateComposerEditor(moveComposerCursor(editor(), -1))
+        updateComposerEditor(moveComposerCursorAcrossImages(editor(), -1))
         return true
       }
       if (controlKey('f')) {
-        updateComposerEditor(moveComposerCursor(editor(), 1))
+        updateComposerEditor(moveComposerCursorAcrossImages(editor(), 1))
         return true
       }
       if (controlKey('w')) {
@@ -1570,11 +1661,11 @@ export function InteractiveApp({
         return true
       }
       if (key.backspace) {
-        updateComposerEditor(deleteComposerBackward(editor()))
+        updateComposerEditor(deleteComposerImageBackward(editor()))
         return true
       }
       if (key.delete) {
-        updateComposerEditor(deleteComposerForward(editor()))
+        updateComposerEditor(deleteComposerImageForward(editor()))
         return true
       }
       if (!key.ctrl && !key.meta && value && printable) {
@@ -1733,6 +1824,11 @@ export function InteractiveApp({
     }
 
     if (externalEditorRequest !== null) return
+
+    if (clipboardPendingRef.current > 0) {
+      if (controlKey('v')) pasteClipboard()
+      return
+    }
 
     if (
       !busy &&
@@ -2144,6 +2240,10 @@ export function InteractiveApp({
       if (key.escape || value === '\u001B') turnControllerRef.current?.abort()
       return
     }
+    if (controlKey('v')) {
+      pasteClipboard()
+      return
+    }
     if (value === '\u001F' || (key.ctrl && value === '_')) {
       const previous = undoStackRef.current.at(-1)
       if (previous) {
@@ -2243,8 +2343,10 @@ export function InteractiveApp({
         return
       }
       const prompt = inputRef.current.trim()
+      const images = promptImages(prompt)
       clearComposerInput()
       undoStackRef.current = []
+      composerImagesRef.current.clear()
       if (!prompt || prompt === '!') return
       if (prompt === '/exit') {
         exit()
@@ -2379,7 +2481,7 @@ export function InteractiveApp({
           () => onTurnChange?.(null),
         )
       } else {
-        const turn = submit(prompt)
+        const turn = submit(prompt, undefined, images)
         onTurnChange?.(turn)
         void turn.then(
           () => onTurnChange?.(null),
@@ -2656,6 +2758,7 @@ export function InteractiveApp({
                 cursor={shellMode ? Math.max(0, inputCursor - 1) : inputCursor}
                 shellMode={shellMode}
                 busy={busy}
+                clipboardBusy={clipboardBusy}
                 status={status}
                 display={runtimeDisplay}
                 {...(usage === undefined ? {} : { usage })}
