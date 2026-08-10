@@ -21,14 +21,15 @@
   ],
   "type": "module",
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "bin": {
     "praxis": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run format:check && npm run lint && npm run check:boundaries && npm run typecheck && npm test && npm run build",
+    "check": "npm run format:check && npm run lint && npm run test:docs && npm run check:boundaries && npm run typecheck && npm test && npm run build",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "dev": "tsx src/cli.ts",
     "format": "prettier --write .",
@@ -39,6 +40,7 @@
     "release:artifacts": "node scripts/build-release-artifacts.mjs",
     "release:verify": "node scripts/verify-release-ref.mjs",
     "test": "vitest run",
+    "test:docs": "node scripts/verify-docs.mjs",
     "test:compat": "npm run build && node scripts/verify-claude-compatibility.mjs && node scripts/verify-claude-advanced-fixtures.mjs",
     "test:compat:all": "npm run build && node scripts/verify-compatibility-matrix.mjs",
     "test:cli-surface-compat": "npm run build && node scripts/verify-cli-surface-parity.mjs",

@@ -150,6 +150,7 @@ function assertPackageContents(files, distFiles) {
   const expected = new Set([
     'LICENSE',
     'README.md',
+    'THIRD_PARTY_NOTICES.md',
     'package.json',
     ...distFiles,
   ])
