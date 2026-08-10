@@ -10,7 +10,7 @@ describe('TUI slash command catalog', () => {
   it('keeps built-ins authoritative and normalizes extension names', () => {
     const commands = mergeTuiSlashCommands([
       {
-        name: '/new',
+        name: '/resume',
         description: 'Should not replace the local command.',
         source: 'command',
       },
@@ -21,10 +21,12 @@ describe('TUI slash command catalog', () => {
       },
     ])
 
-    expect(commands.find((command) => command.name === 'new')).toMatchObject({
-      source: 'builtin',
-      description: 'Start a new session.',
-    })
+    expect(commands.find((command) => command.name === 'resume')).toMatchObject(
+      {
+        source: 'builtin',
+        description: 'Resume a previous conversation',
+      },
+    )
     expect(commands.find((command) => command.name === 'review')).toEqual({
       name: 'review',
       description: 'Review the current change.',
@@ -50,7 +52,7 @@ describe('TUI slash command catalog', () => {
     expect(slashCommandQuery('/review src')).toBeNull()
     expect(
       filterTuiSlashCommands(commands, 'rev').map(({ name }) => name),
-    ).toEqual(['review'])
+    ).toEqual(['review', 'clear', 'resume'])
     expect(
       filterTuiSlashCommands(commands, 'resource').map(({ name }) => name),
     ).toEqual(['server:lookup (MCP)'])

@@ -9,47 +9,43 @@ export interface TuiSlashCommand {
 export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
     name: 'help',
-    description: 'Browse available commands.',
-    source: 'builtin',
-  },
-  {
-    name: 'new',
-    description: 'Start a new session.',
+    description: 'Show help and available commands',
     source: 'builtin',
   },
   {
     name: 'clear',
-    description: 'Start a new session with empty context.',
+    description:
+      'Start a new session with empty context; previous session stays on disk (resumable with /resume)',
     source: 'builtin',
   },
   {
     name: 'model',
-    description: 'Set the model for this session.',
+    description: 'Set the AI model for this session',
     source: 'builtin',
   },
   {
     name: 'effort',
-    description: 'Set the model effort level for this session.',
+    description: 'Set effort level for model usage',
     source: 'builtin',
   },
   {
     name: 'permissions',
-    description: 'Manage the permission mode for this session.',
+    description: 'Manage allow and deny tool permission rules',
     source: 'builtin',
   },
   {
-    name: 'sessions',
-    description: 'Resume an existing session.',
+    name: 'resume',
+    description: 'Resume a previous conversation',
     source: 'builtin',
   },
   {
     name: 'workflows',
-    description: 'List local workflows.',
+    description: 'Browse running and completed workflows',
     source: 'builtin',
   },
   {
     name: 'exit',
-    description: 'Quit Praxis.',
+    description: 'Exit the CLI',
     source: 'builtin',
   },
 ]

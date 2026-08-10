@@ -49,19 +49,70 @@ describe('InteractiveApp', () => {
             status: 'ready',
             issue: null,
           },
+          {
+            sessionId: 'other-session',
+            name: 'Other work',
+            lastPrompt: 'unrelated prompt',
+            updatedAt: '2026-08-05T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
         ]}
       />,
     )
     await flush()
     expect(app.lastFrame()).toContain('Welcome back!')
     expect(app.lastFrame()).not.toContain('Resume a session')
-    app.stdin.write('/sessions')
+    app.stdin.write('/resume')
     await flush()
     app.stdin.write('\r')
     await flush()
+    app.stdin.write('release')
+    await flush()
+    expect(app.lastFrame()).toContain('⌕ release')
     expect(app.lastFrame()).toContain('Release review · named-session')
+    expect(app.lastFrame()).not.toContain('Other work')
     app.stdin.write('\r')
     await flush()
+  })
+
+  it('keeps an empty resume search open and cancels without changing session', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[
+          {
+            sessionId: 'named-session',
+            name: 'Release review',
+            lastPrompt: 'review release notes',
+            updatedAt: '2026-08-06T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        resume={{ sessionId: 'named-session' }}
+      />,
+    )
+
+    app.stdin.write('/resume')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('missing')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Resume session')
+    expect(app.lastFrame()).toContain('No sessions found.')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).not.toContain('Resume session')
+    expect(app.lastFrame()).toContain('? for shortcuts')
   })
 
   it('omits the new-session choice for a required filtered resume', async () => {
@@ -221,8 +272,8 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('/')
     await flush()
-    expect(app.lastFrame()).toContain('Commands')
     expect(app.lastFrame()).toContain('/review')
+    expect(app.lastFrame()).not.toContain('╭─ Commands')
 
     app.stdin.write('rev')
     await flush()
@@ -231,12 +282,52 @@ describe('InteractiveApp', () => {
     app.stdin.write('\t')
     await flush()
     expect(app.lastFrame()).toContain('❯ /review')
-    expect(app.lastFrame()).not.toContain('Commands')
+    expect(app.lastFrame()).not.toContain('Review the current change.')
 
     app.stdin.write('src')
     app.stdin.write('\r')
     await flush()
     expect(calls).toEqual(['/review src'])
+  })
+
+  it('opens the shortcut grid and tabbed help without a model turn', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        slashCommands={[
+          {
+            name: 'review',
+            description: 'Review the current change.',
+            source: 'command',
+          },
+        ]}
+      />,
+    )
+
+    app.stdin.write('?')
+    await flush()
+    expect(app.lastFrame()).toContain('! for shell mode')
+    expect(app.lastFrame()).toContain('ctrl + o for verbose output')
+    expect(app.lastFrame()).not.toContain('❯ ?')
+
+    app.stdin.write('?')
+    app.stdin.write('/help')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Praxis understands your codebase')
+    app.stdin.write('\u001B[C')
+    await flush()
+    expect(app.lastFrame()).toContain('Browse default commands')
+    expect(app.lastFrame()).toContain('/resume')
+    app.stdin.write('\u001B[C')
+    await flush()
+    expect(app.lastFrame()).toContain('Browse shared commands and skills')
+    expect(app.lastFrame()).toContain('/review')
   })
 
   it('edits at the real cursor and restores submitted prompt history', async () => {
@@ -567,7 +658,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u000f')
     await flush()
     expect(app.lastFrame()).toContain('reasoning tail stays visible')
-    expect(app.lastFrame()).toContain('ctrl+o to collapse thinking')
+    expect(app.lastFrame()).toContain('ctrl+o collapse')
   })
 
   it('streams a new session and then resumes it', async () => {
@@ -1048,7 +1139,7 @@ describe('InteractiveApp', () => {
 
     expect(app.lastFrame()).toContain('done')
     expect(app.lastFrame()).toContain('close failed')
-    expect(app.lastFrame()).toContain('/new')
+    expect(app.lastFrame()).toContain('? for shortcuts')
     expect(app.lastFrame()).not.toContain('ready…')
   })
 

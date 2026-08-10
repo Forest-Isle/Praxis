@@ -90,13 +90,17 @@ expect -re {Welcome back!}
 expect -re {Tips for getting started}
 expect -re {Try.*review this project}
 expect -re {bypass permissions on}
+send "?"
+expect -re {! for shell mode}
+expect -re {ctrl.*o for verbose output}
+send "?"
+expect -re {bypass permissions on.*\? for shortcuts}
 send "/"
-expect -re {Commands}
 expect -re {/clear}
 expect -re {/review}
 expect -re {Review the shared fixture}
-expect -re {Tab fill}
 send "\033"
+send "\025"
 send "reply briefly"
 expect -re {❯.*reply briefly}
 send "\r"

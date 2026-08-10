@@ -80,7 +80,7 @@ export function WelcomePanel({
   display: TuiDisplayMetadata
   width: number
 }) {
-  const panelWidth = Math.min(80, Math.max(32, width))
+  const panelWidth = Math.min(100, Math.max(32, width))
   const wide = panelWidth >= 68
   return (
     <Box
@@ -98,13 +98,17 @@ export function WelcomePanel({
         <Text dimColor>{'─'.repeat(Math.max(1, panelWidth - 24))}</Text>
       </Box>
       <Box flexDirection={wide ? 'row' : 'column'} marginTop={1}>
-        <Box flexDirection="column" width={wide ? '62%' : '100%'}>
+        <Box
+          alignItems={wide ? 'center' : undefined}
+          flexDirection="column"
+          width={wide ? '50%' : '100%'}
+        >
           <Text bold>Welcome back!</Text>
           <Text color={BRAND} bold>
-            {'        ◆'}
+            ▐▛███▜▌
           </Text>
-          <Text color={BRAND}>{'      ◆ ◆ ◆'}</Text>
-          <Text color={BRAND}>{'        ◆'}</Text>
+          <Text color={BRAND}>▝▜█████▛▘</Text>
+          <Text color={BRAND}> ▘▘ ▝▝</Text>
           <Text>
             {display.model ?? 'provider default'}
             {display.effort ? (
@@ -115,7 +119,7 @@ export function WelcomePanel({
         </Box>
         <Box
           flexDirection="column"
-          width={wide ? '38%' : '100%'}
+          width={wide ? '50%' : '100%'}
           marginTop={wide ? 0 : 1}
         >
           <Text bold>Tips for getting started</Text>
@@ -391,6 +395,7 @@ export function SessionPicker({
   sessions,
   selectedIndex,
   screenReader,
+  query = '',
 }: {
   sessions: readonly (null | {
     sessionId: string
@@ -400,6 +405,7 @@ export function SessionPicker({
   })[]
   selectedIndex: number
   screenReader: boolean
+  query?: string
 }) {
   const maxVisible = 8
   const start = Math.max(
@@ -411,17 +417,21 @@ export function SessionPicker({
   )
   const visible = sessions.slice(start, start + maxVisible)
   return (
-    <Box
-      flexDirection="column"
-      borderStyle={screenReader ? undefined : 'round'}
-      borderColor="gray"
-      paddingX={screenReader ? 0 : 1}
-    >
-      <Text bold>Resume a session</Text>
-      {!screenReader ? (
-        <Text dimColor>↑/↓ to move · Enter to select · Esc to cancel</Text>
-      ) : null}
+    <Box flexDirection="column">
+      {!screenReader ? <Text dimColor>{'─'.repeat(80)}</Text> : null}
+      <Text bold> Resume session</Text>
+      <Box
+        borderStyle={screenReader ? undefined : 'round'}
+        borderColor="gray"
+        paddingX={screenReader ? 0 : 1}
+        marginY={1}
+      >
+        <Text {...(query ? {} : { dimColor: true })}>
+          ⌕ {query || 'Search…'}
+        </Text>
+      </Box>
       {start > 0 ? <Text dimColor> ↑ {start} earlier</Text> : null}
+      {visible.length === 0 ? <Text dimColor>No sessions found.</Text> : null}
       {visible.map((session, visibleIndex) => {
         const index = start + visibleIndex
         return (
@@ -447,6 +457,11 @@ export function SessionPicker({
       {start + visible.length < sessions.length ? (
         <Text dimColor> ↓ {sessions.length - start - visible.length} more</Text>
       ) : null}
+      {!screenReader ? (
+        <Text dimColor>
+          ↑/↓ to navigate · Enter to select · Type to search · Esc to cancel
+        </Text>
+      ) : null}
     </Box>
   )
 }
@@ -462,7 +477,7 @@ export function CommandPalette({
   width: number
   screenReader: boolean
 }) {
-  const maxVisible = 10
+  const maxVisible = 12
   const start = Math.max(
     0,
     Math.min(
@@ -488,15 +503,7 @@ export function CommandPalette({
     )
   }
   return (
-    <Box
-      borderStyle="round"
-      borderColor="gray"
-      flexDirection="column"
-      marginTop={1}
-      paddingX={1}
-      width={Math.min(80, width)}
-    >
-      <Text bold>Commands</Text>
+    <Box flexDirection="column" width={Math.min(100, width)}>
       {visible.length === 0 ? (
         <Text dimColor>No matching commands.</Text>
       ) : (
@@ -504,31 +511,152 @@ export function CommandPalette({
           const index = start + visibleIndex
           const selected = index === selectedIndex
           return (
-            <Box key={command.name} flexDirection="column">
-              <Text {...(selected ? { color: BRAND, bold: true } : {})}>
-                {selected ? '❯ ' : '  '}/{command.name}
-              </Text>
-              {command.description ? (
-                <Text dimColor> {command.description}</Text>
-              ) : null}
+            <Box key={command.name} flexDirection="row">
+              <Box width={30}>
+                <Text {...(selected ? { color: BRAND, bold: true } : {})}>
+                  /{command.name}
+                </Text>
+              </Box>
+              <Box flexGrow={1}>
+                <Text dimColor>{command.description}</Text>
+              </Box>
             </Box>
           )
         })
       )}
-      {start > 0 || start + visible.length < commands.length ? (
-        <Text dimColor>
-          {start > 0 ? `↑ ${start} earlier` : ''}
-          {start > 0 && start + visible.length < commands.length ? ' · ' : ''}
-          {start + visible.length < commands.length
-            ? `↓ ${commands.length - start - visible.length} more`
-            : ''}
-        </Text>
-      ) : null}
-      <Text dimColor>
-        {commands.length === 0
-          ? 'Esc closes the palette'
-          : '↑/↓ select · Tab fill · Enter runs an exact command'}
-      </Text>
+    </Box>
+  )
+}
+
+const SHORTCUT_ROWS: readonly (readonly string[])[] = [
+  [
+    '! for shell mode',
+    'double tap esc to clear input',
+    'ctrl + shift + _ to undo',
+  ],
+  ['/ for commands', 'shift + tab to cycle permissions', 'ctrl + z to suspend'],
+  [
+    '@ for file paths',
+    'ctrl + o for verbose output',
+    'ctrl + v to paste images',
+  ],
+  [
+    '/btw for side question',
+    'ctrl + t to toggle tasks',
+    'opt + p to switch model',
+  ],
+  ['', 'backslash (\\) + return (⏎) for newline', 'ctrl + s to stash prompt'],
+  ['', '', 'ctrl + g to edit in $EDITOR'],
+  ['', '', '/keybindings to customize'],
+]
+
+export function ShortcutHelp({ width }: { width: number }) {
+  const wide = width >= 78
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {SHORTCUT_ROWS.map((row, rowIndex) =>
+        wide ? (
+          <Box key={rowIndex} flexDirection="row">
+            {row.map((cell, cellIndex) => (
+              <Box key={cellIndex} width={cellIndex === 2 ? undefined : '33%'}>
+                <Text dimColor>{cell}</Text>
+              </Box>
+            ))}
+          </Box>
+        ) : (
+          row.filter(Boolean).map((cell, cellIndex) => (
+            <Text key={`${rowIndex}-${cellIndex}`} dimColor>
+              {cell}
+            </Text>
+          ))
+        ),
+      )}
+    </Box>
+  )
+}
+
+export function HelpMenu({
+  tabIndex,
+  selectedIndex,
+  builtinCommands,
+  customCommands,
+  width,
+  screenReader,
+}: {
+  tabIndex: number
+  selectedIndex: number
+  builtinCommands: readonly TuiSlashCommand[]
+  customCommands: readonly TuiSlashCommand[]
+  width: number
+  screenReader: boolean
+}) {
+  const tabs = ['General', 'Commands', 'Custom commands'] as const
+  const commands = tabIndex === 1 ? builtinCommands : customCommands
+  const maxVisible = 10
+  const start = Math.max(
+    0,
+    Math.min(
+      selectedIndex - Math.floor(maxVisible / 2),
+      Math.max(0, commands.length - maxVisible),
+    ),
+  )
+  const visible = commands.slice(start, start + maxVisible)
+  const line = '─'.repeat(Math.max(12, Math.min(100, width)))
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {!screenReader ? <Text dimColor>{line}</Text> : null}
+      <Box>
+        <Text bold> Help </Text>
+        {tabs.map((tab, index) => (
+          <Text
+            key={tab}
+            {...(index === tabIndex ? { color: BRAND, bold: true } : {})}
+          >
+            {' '}
+            {tab}{' '}
+          </Text>
+        ))}
+      </Box>
+      <Box flexDirection="column" marginTop={1}>
+        {tabIndex === 0 ? (
+          <>
+            <Text>
+              Praxis understands your codebase, makes edits with your
+              permission, and executes commands from your terminal.
+            </Text>
+            <Text bold>Shortcuts</Text>
+            <ShortcutHelp width={width} />
+          </>
+        ) : (
+          <>
+            <Text bold>
+              {tabIndex === 1
+                ? 'Browse default commands'
+                : 'Browse shared commands and skills'}
+            </Text>
+            {visible.length === 0 ? (
+              <Text dimColor>No commands found.</Text>
+            ) : (
+              visible.map((command, visibleIndex) => {
+                const index = start + visibleIndex
+                return (
+                  <Box key={command.name} flexDirection="column">
+                    <Text
+                      {...(index === selectedIndex
+                        ? { color: BRAND, bold: true }
+                        : {})}
+                    >
+                      {index === selectedIndex ? '↓ ' : '  '}/{command.name}
+                    </Text>
+                    <Text dimColor> {command.description}</Text>
+                  </Box>
+                )
+              })
+            )}
+          </>
+        )}
+      </Box>
+      <Text dimColor>←/→ to switch · ↑/↓ to navigate · Esc to cancel</Text>
     </Box>
   )
 }
@@ -639,6 +767,7 @@ export function Composer({
   screenReader,
   hasThinking = false,
   thinkingExpanded = false,
+  shortcutsVisible = false,
 }: {
   input: string
   cursor?: number
@@ -651,6 +780,7 @@ export function Composer({
   screenReader: boolean
   hasThinking?: boolean
   thinkingExpanded?: boolean
+  shortcutsVisible?: boolean
 }) {
   const [spinnerIndex, setSpinnerIndex] = useState(0)
   useEffect(() => {
@@ -663,15 +793,9 @@ export function Composer({
   }, [busy, screenReader])
   if (screenReader)
     return <Text>{busy ? `Status: ${status}` : `Prompt: ${input}`}</Text>
-  const line = '─'.repeat(Math.max(12, Math.min(80, width)))
+  const line = '─'.repeat(Math.max(12, Math.min(100, width)))
   return (
     <Box flexDirection="column" marginTop={1}>
-      {display.effort ? (
-        <Box justifyContent="flex-end" width={Math.min(80, width)}>
-          <Text color={ACCENT}>◉ {display.effort}</Text>
-          <Text dimColor> · /effort</Text>
-        </Box>
-      ) : null}
       {usage ? (
         <Text dimColor>
           Context · {usage.inputTokens + usage.outputTokens} tokens
@@ -713,17 +837,26 @@ export function Composer({
         </Text>
       )}
       <Text dimColor>{line}</Text>
-      <Text dimColor>
-        ⏵⏵ {permissionLabel(display.permissionMode)} · shift+tab to cycle
-      </Text>
-      {hasThinking ? (
-        <Text dimColor>
-          ctrl+o to {thinkingExpanded ? 'collapse' : 'expand'} thinking
-        </Text>
-      ) : null}
-      <Text dimColor>
-        /new · /model · /effort · /permissions · /sessions · /exit
-      </Text>
+      {shortcutsVisible ? (
+        <ShortcutHelp width={width} />
+      ) : (
+        <Box width={Math.min(100, width)}>
+          <Text dimColor>
+            ⏵⏵ {permissionLabel(display.permissionMode)} ·{' '}
+            {busy ? 'esc to interrupt' : '? for shortcuts'} · ← for agents
+            {hasThinking
+              ? ` · ctrl+o ${thinkingExpanded ? 'collapse' : 'expand'}`
+              : ''}
+          </Text>
+          <Box flexGrow={1} />
+          {display.effort ? (
+            <Text>
+              <Text color={ACCENT}>● {display.effort}</Text>
+              <Text dimColor> · /effort</Text>
+            </Text>
+          ) : null}
+        </Box>
+      )}
     </Box>
   )
 }

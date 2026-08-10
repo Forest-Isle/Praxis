@@ -6,9 +6,11 @@ import {
   CommandPalette,
   Composer,
   DialogFrame,
+  HelpMenu,
   MarkdownText,
   SelectionMenu,
   SessionPicker,
+  ShortcutHelp,
   Transcript,
   WelcomePanel,
 } from './claude-style.js'
@@ -32,7 +34,7 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('Tips for getting started')
     expect(frame).toContain('test-model · high effort')
     expect(frame).toContain('/Users/test/dev/Praxis')
-    expect(frame.split('\n')[0]?.length).toBeLessThanOrEqual(80)
+    expect(frame.split('\n')[0]?.length).toBeLessThanOrEqual(100)
   })
 
   it('collapses welcome columns on a narrow terminal', () => {
@@ -150,11 +152,39 @@ describe('Claude-style TUI components', () => {
       />,
     )
     const frame = app.lastFrame() ?? ''
-    expect(frame).toContain('Commands')
     expect(frame).toContain('/review')
     expect(frame).toContain('Review the current change.')
-    expect(frame).toContain('❯ /check')
-    expect(frame).toContain('Tab fill')
+    expect(frame).toContain('/check')
+    expect(frame).not.toContain('╭')
+  })
+
+  it('renders the shortcut grid and tabbed help surface', () => {
+    const shortcuts = render(<ShortcutHelp width={100} />)
+    expect(shortcuts.lastFrame()).toContain('! for shell mode')
+    expect(shortcuts.lastFrame()).toContain('ctrl + o for verbose output')
+    expect(shortcuts.lastFrame()).toContain('/keybindings to customize')
+
+    const help = render(
+      <HelpMenu
+        tabIndex={1}
+        selectedIndex={0}
+        builtinCommands={[
+          {
+            name: 'resume',
+            description: 'Resume a previous conversation',
+            source: 'builtin',
+          },
+        ]}
+        customCommands={[]}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(help.lastFrame()).toContain(
+      'Help  General  Commands  Custom commands',
+    )
+    expect(help.lastFrame()).toContain('Browse default commands')
+    expect(help.lastFrame()).toContain('/resume')
   })
 
   it('renders an accessible selected runtime menu', () => {
@@ -187,11 +217,11 @@ describe('Claude-style TUI components', () => {
         display={{ ...display, contextWindowTokens: 200 }}
         usage={{ inputTokens: 2, outputTokens: 1 }}
         costUsd={0.001}
-        width={60}
+        width={100}
         screenReader={false}
       />,
     )
-    expect(idle.lastFrame()).toContain('◉ high · /effort')
+    expect(idle.lastFrame()).toContain('● high · /effort')
     expect(idle.lastFrame()).toContain('❯ Try "review this project"')
     expect(idle.lastFrame()).toContain('permissions default')
     expect(idle.lastFrame()).toContain(

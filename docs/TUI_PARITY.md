@@ -12,14 +12,14 @@ interactive parity.
 
 Black-box capture at 100 x 32 columns establishes these stable visual rules:
 
-- capped-width bordered welcome card with product/version, identity, cwd, and a
-  concise help area;
+- full terminal-width (up to 100 columns) bordered welcome card with
+  product/version, identity, cwd, and a concise help area;
 - conversation and composer remain separate regions;
 - composer uses full-width horizontal rules and a `❯` prompt;
-- entering `/` opens a named, described, filterable command list rather than
-  requiring users to remember the available slash commands;
-- model effort appears above the composer; permission mode and shortcuts appear
-  below it;
+- entering `/` opens an unboxed, named, described, filterable command list
+  rather than requiring users to remember the available slash commands;
+- permission mode, shortcut hint, and model effort share the footer row;
+- entering `?` on an empty composer immediately opens the shortcut grid;
 - user, assistant, tool, warning, permission, question, plan, hook/MCP
   lifecycle, and busy states have distinct hierarchy rather than sharing one
   plain text style;
@@ -37,6 +37,7 @@ status-line plugins are not native parity requirements.
 | Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate           |
 | Streaming     | animated-status hierarchy above composer | runtime-event interaction tests          |
 | Slash command | filterable command name and description  | palette, selection, and PTY fixtures     |
+| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures    |
 | Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures |
 | Tool          | named call with indented input/result    | structured tool and diff fixtures        |
 | Decision      | bordered, numbered choices               | permission/question/plan/MCP tests       |
@@ -62,12 +63,16 @@ is passed from the CLI composition root and never written to shared JSONL.
 ## Components
 
 - `WelcomePanel`: responsive product card and local-first help.
-- `SessionPicker`: selected-row hierarchy and bounded session identity.
+- `SessionPicker`: selected-row hierarchy, local search, and bounded session
+  identity behind the Claude-compatible `/resume` name (`/sessions` remains a
+  hidden compatibility alias).
 - `Transcript`: user/assistant/tool/result/notice/warning and operational
   lifecycle presentation, with retained thinking collapsed by default and
   expandable in place.
 - `CommandPalette`: bounded, keyboard-selectable list of built-in controls and
   shared commands, skills, and MCP prompts.
+- `ShortcutHelp` and `HelpMenu`: immediate empty-composer shortcut grid plus
+  General, Commands, and Custom commands tabs.
 - `Composer`: prompt, cursor, history, effort, mode, busy state, measured
   context/cost status, and keyboard help.
 - `SelectionMenu`: reusable model, effort, and permission-mode chooser; it
@@ -82,6 +87,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   into the composer, and an exact command runs through the existing local or
   shared-command path. The catalog is read from the existing Claude command,
   skill, and MCP prompt discovery rather than duplicated into a Praxis store.
+- `?` toggles the shortcut grid only when the normal composer is empty.
+  `/help` opens the same shortcuts with separate built-in and shared-command
+  tabs. `/resume` filters native session names, prompts, and IDs without a model
+  turn; the old `/sessions` spelling remains accepted but is not advertised.
 - `/model` retains the current model, restores the invocation default, or accepts
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
@@ -94,7 +103,7 @@ is passed from the CLI composition root and never written to shared JSONL.
   movement, Meta-word movement, `Ctrl+A/E/B/F/W/U/K`, backspace/delete,
   multiline `Shift+Enter`, and submitted-prompt history. The first `Ctrl+C`
   clears input and asks for confirmation; the second exits.
-- Existing `/new`, `/clear`, `/sessions`, `/workflows`, `/exit`, resume,
+- Existing `/new`, `/clear`, `/resume`, `/workflows`, `/exit`, resume,
   scheduled prompt, cancellation, permission, plan, question, and elicitation
   behavior is unchanged.
 - Active thinking renders in full as it streams. Retained thinking is compact
@@ -115,18 +124,20 @@ is passed from the CLI composition root and never written to shared JSONL.
 - focused Ink render fixtures at wide and narrow widths;
 - interaction tests for prompts, selection, permission, questions, plan, MCP,
   streaming, tools, cancellation, and screen-reader mode;
-- PTY installed-package capture proving borders, composer, mode footer, and
-  clean exit, plus `/` command-palette discovery;
+- PTY installed-package capture proving borders, composer, mode footer, bare
+  `?` shortcuts, clean exit, and `/` command-palette discovery;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
 
 ## Remaining interactive parity work
 
-The Stage TUI-1/2 controls close the slash, thinking, composer, per-session
-runtime-control, and measured-status seams, but they do not justify a blanket
-“complete Claude Code TUI” claim. Remaining black-box-driven work includes the
-full permission-rule dashboard (rules, tabs, search, and settings editing),
-tool/diff expansion and keyboard navigation, and command-specific dialogs plus
-exact layout/shortcut coverage. Each item needs an observed contract and a
-focused TTY or Ink gate before the matrix can return to a complete status.
+The Stage TUI-1/2/3 controls close the slash presentation, help/shortcut,
+searchable-resume, thinking, composer, per-session runtime-control, and
+measured-status seams, but they do not justify a blanket “complete Claude Code
+TUI” claim. Remaining black-box-driven work includes the full built-in command
+catalog and its command-specific dialogs, the permission-rule dashboard (rules,
+tabs, search, and settings editing), tool/diff expansion and keyboard
+navigation, and remaining exact layout/shortcut behavior. Each item needs an
+observed contract and a focused TTY or Ink gate before the matrix can return to
+a complete status.

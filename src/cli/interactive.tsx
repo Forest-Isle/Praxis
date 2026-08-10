@@ -33,6 +33,7 @@ import {
   CommandPalette,
   Composer,
   DialogFrame,
+  HelpMenu,
   SelectionMenu,
   SessionPicker,
   Transcript,
@@ -191,6 +192,7 @@ const PERMISSION_OPTIONS: readonly {
 ]
 
 type InteractiveMenu =
+  | { kind: 'help'; tabIndex: number; selectedIndex: number }
   | { kind: 'model'; selectedIndex: number }
   | { kind: 'model-input' }
   | { kind: 'effort'; selectedIndex: number }
@@ -263,6 +265,20 @@ function describeToolInput(
   return detail.length > 160 ? `${detail.slice(0, 157)}...` : detail
 }
 
+function filterSessionChoices(
+  sessions: readonly (SessionSummary | null)[],
+  search: string,
+): readonly (SessionSummary | null)[] {
+  const query = search.trim().toLowerCase()
+  if (!query) return sessions
+  return sessions.filter((session) => {
+    if (!session) return false
+    return [session.sessionId, session.name, session.lastPrompt].some((value) =>
+      value?.toLowerCase().includes(query),
+    )
+  })
+}
+
 export function InteractiveApp({
   factory,
   initialSessions,
@@ -290,6 +306,16 @@ export function InteractiveApp({
       allowNewSession ? ([null, ...initialSessions] as const) : initialSessions,
     [allowNewSession, initialSessions],
   )
+  const [pickerIncludesNewSession, setPickerIncludesNewSession] =
+    useState(allowNewSession)
+  const pickerIncludesNewSessionRef = useRef(allowNewSession)
+  const pickerChoices = pickerIncludesNewSession ? choices : initialSessions
+  const [sessionSearch, setSessionSearch] = useState('')
+  const sessionSearchRef = useRef('')
+  const filteredPickerChoices = useMemo(
+    () => filterSessionChoices(pickerChoices, sessionSearch),
+    [pickerChoices, sessionSearch],
+  )
   const [selectingSession, setSelectingSession] = useState(
     initialSessions.length > 0 &&
       resume?.sessionId === undefined &&
@@ -310,6 +336,7 @@ export function InteractiveApp({
   const inputHistoryDraftRef = useRef('')
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandSelection, setCommandSelection] = useState(0)
+  const [shortcutsVisible, setShortcutsVisible] = useState(false)
   const [availableSlashCommands, setAvailableSlashCommands] =
     useState(slashCommands)
   const [menu, setMenu] = useState<InteractiveMenu | null>(null)
@@ -365,6 +392,14 @@ export function InteractiveApp({
   const allSlashCommands = useMemo(
     () => mergeTuiSlashCommands(availableSlashCommands),
     [availableSlashCommands],
+  )
+  const builtinSlashCommands = useMemo(
+    () => allSlashCommands.filter((command) => command.source === 'builtin'),
+    [allSlashCommands],
+  )
+  const customSlashCommands = useMemo(
+    () => allSlashCommands.filter((command) => command.source !== 'builtin'),
+    [allSlashCommands],
   )
   const commandQuery = commandPaletteOpen ? slashCommandQuery(input) : null
   const matchingSlashCommands = useMemo(
@@ -486,6 +521,7 @@ export function InteractiveApp({
     inputCursorRef.current = editor.cursor
     setInput(editor.text)
     setInputCursor(editor.cursor)
+    setShortcutsVisible(false)
     setCommandPaletteOpen(slashCommandQuery(editor.text) !== null)
     setCommandSelection(0)
   }
@@ -1247,10 +1283,12 @@ export function InteractiveApp({
     }
 
     if (selectingSession) {
-      if (key.escape) {
-        if (allowNewSession) {
+      if (key.escape || value === '\u001B') {
+        if (pickerIncludesNewSessionRef.current && allowNewSession) {
           setSessionId(null)
           setPendingFork(false)
+          setSelectingSession(false)
+        } else if (allowNewSession) {
           setSelectingSession(false)
         } else {
           onCancel?.()
@@ -1261,21 +1299,77 @@ export function InteractiveApp({
         setSelectedIndex(selectedIndexRef.current)
       } else if (key.downArrow) {
         selectedIndexRef.current = Math.min(
-          choices.length - 1,
+          Math.max(0, filteredPickerChoices.length - 1),
           selectedIndexRef.current + 1,
         )
         setSelectedIndex(selectedIndexRef.current)
       } else if (key.return) {
-        const selected = choices[selectedIndexRef.current]
+        const currentPickerChoices = pickerIncludesNewSessionRef.current
+          ? choices
+          : initialSessions
+        const selected = filterSessionChoices(
+          currentPickerChoices,
+          sessionSearchRef.current,
+        )[selectedIndexRef.current]
+        if (selected === undefined) return
         setSessionId(selected?.sessionId ?? null)
         if (!selected) setPendingFork(false)
         setSelectingSession(false)
+      } else if (key.backspace || key.delete) {
+        sessionSearchRef.current = sessionSearchRef.current.slice(0, -1)
+        setSessionSearch(sessionSearchRef.current)
+        selectedIndexRef.current = 0
+        setSelectedIndex(0)
+      } else if (!key.ctrl && !key.meta && value) {
+        sessionSearchRef.current += value
+        setSessionSearch(sessionSearchRef.current)
+        selectedIndexRef.current = 0
+        setSelectedIndex(0)
       }
       return
     }
 
     const activeMenu = menuRef.current
     if (activeMenu) {
+      if (activeMenu.kind === 'help') {
+        if (key.escape) {
+          updateMenu(null)
+          return
+        }
+        if (key.leftArrow || key.rightArrow) {
+          updateMenu({
+            kind: 'help',
+            tabIndex: Math.max(
+              0,
+              Math.min(2, activeMenu.tabIndex + (key.leftArrow ? -1 : 1)),
+            ),
+            selectedIndex: 0,
+          })
+          return
+        }
+        const commands =
+          activeMenu.tabIndex === 1
+            ? builtinSlashCommands
+            : activeMenu.tabIndex === 2
+              ? customSlashCommands
+              : []
+        if (key.upArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(0, activeMenu.selectedIndex - 1),
+          })
+        } else if (key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.min(
+              Math.max(0, commands.length - 1),
+              activeMenu.selectedIndex + 1,
+            ),
+          })
+        }
+        return
+      }
+
       if (activeMenu.kind === 'model-input') {
         if (key.escape) {
           clearComposerInput()
@@ -1358,6 +1452,10 @@ export function InteractiveApp({
       return
     }
 
+    if (!busy && value === '?' && inputRef.current.length === 0) {
+      setShortcutsVisible((current) => !current)
+      return
+    }
     if (key.ctrl && lower === 'o' && hasThinking) {
       setThinkingExpanded((current) => !current)
       return
@@ -1419,7 +1517,7 @@ export function InteractiveApp({
       if (prompt === '/exit') {
         exit()
       } else if (prompt === '/help' || prompt === '?') {
-        updateComposerInput('/')
+        updateMenu({ kind: 'help', tabIndex: 0, selectedIndex: 0 })
       } else if (prompt === '/new') {
         setSessionId(null)
         setPendingFork(false)
@@ -1454,7 +1552,11 @@ export function InteractiveApp({
             ),
           ),
         })
-      } else if (prompt === '/sessions') {
+      } else if (prompt === '/resume' || prompt === '/sessions') {
+        pickerIncludesNewSessionRef.current = false
+        setPickerIncludesNewSession(false)
+        sessionSearchRef.current = ''
+        setSessionSearch('')
         selectedIndexRef.current = 0
         setSelectedIndex(0)
         setSelectingSession(true)
@@ -1508,9 +1610,10 @@ export function InteractiveApp({
     <Box flexDirection="column">
       {selectingSession ? (
         <SessionPicker
-          sessions={choices}
+          sessions={filteredPickerChoices}
           selectedIndex={selectedIndex}
           screenReader={axScreenReader}
+          query={sessionSearch}
         />
       ) : (
         <>
@@ -1606,7 +1709,16 @@ export function InteractiveApp({
               <Text dimColor>Enter confirms · Esc cancels</Text>
             </DialogFrame>
           ) : menu ? (
-            menu.kind === 'model' ? (
+            menu.kind === 'help' ? (
+              <HelpMenu
+                tabIndex={menu.tabIndex}
+                selectedIndex={menu.selectedIndex}
+                builtinCommands={builtinSlashCommands}
+                customCommands={customSlashCommands}
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'model' ? (
               <SelectionMenu
                 title="Select model"
                 description={`Effort: ${runtimePreferences.effort}`}
@@ -1675,6 +1787,7 @@ export function InteractiveApp({
                 screenReader={axScreenReader}
                 hasThinking={hasThinking}
                 thinkingExpanded={thinkingExpanded}
+                shortcutsVisible={shortcutsVisible}
               />
             </>
           )}
