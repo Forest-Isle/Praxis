@@ -16,16 +16,19 @@ package; manual-only versioning was rejected because it can drift from tags.
 
 ## Architecture
 
-1. Pull requests and `main` run `CI`: quality, production audit, Claude Code
-   2.1.208 compatibility, and macOS/Linux Node 24/25 package/performance lanes.
+1. Pull requests and `main` run `CI`: quality, production audit, exact
+   credential-free Claude Code 2.1.208 CLI surface compatibility, macOS/Linux
+   Node 24/25 installed-package lanes, and stable Linux Node 24/macOS Node 25
+   performance sentinels.
 2. Release Please opens or updates one version PR from Conventional Commit
    titles. Changelog files remain intentionally disabled; GitHub release notes
    are authoritative.
 3. Merging the version PR creates `v<package.version>` and a GitHub release.
 4. Release Please sends a `release-created` repository dispatch carrying the
    exact tag.
-5. Publish checks out that tag, repeats all release gates, builds artifacts,
-   attests and uploads them, then publishes the same tarball to npm.
+5. Publish checks out that tag, repeats all credential-free release gates,
+   builds artifacts, attests and uploads them, then publishes the same tarball
+   to npm.
 
 ## Key components
 
@@ -75,6 +78,10 @@ npm run test:performance
 npm audit --omit=dev
 npm run release:artifacts -- "v$(node -p "require('./package.json').version")" /tmp/praxis-release
 ```
+
+`test:compat:all` includes live Claude model calls and remains a maintainer
+qualification gate, not a public CI dependency. Public and fork CI never needs
+Claude subscription state, provider credentials, or billable model requests.
 
 Validate workflows with `actionlint`. On GitHub, branch protection requires the
 aggregate `CI` check; publication additionally requires the `npm` environment.

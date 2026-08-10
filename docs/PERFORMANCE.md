@@ -33,5 +33,9 @@ value beside its limit, and removes the fixture. Any exceeded budget exits
 non-zero.
 
 Wall-clock limits intentionally leave headroom for macOS and Linux CI noise.
+Hosted CI runs the sentinel on Linux Node 24 and macOS Node 25; the full
+installed-package regression still covers Node 24 and 25 on both platforms.
+This avoids treating one unusually slow hosted runtime/OS pairing as a machine
+ranking while retaining minimum-runtime and cross-platform performance checks.
 Changes that intentionally alter fixture size, sampling, or limits must update
 this document and receive the same Standards/Spec review as runtime changes.

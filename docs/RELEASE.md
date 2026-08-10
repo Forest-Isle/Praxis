@@ -96,8 +96,9 @@ request titles. Merging that pull request creates an immutable `v<version>` tag
 and GitHub release, then dispatches the isolated `Publish` workflow. No
 repository workflow writes directly to `main`.
 
-`Publish` checks out the immutable tag and repeats quality, compatibility,
-installed-package, performance, and production-audit gates. It then creates the
+`Publish` checks out the immutable tag and repeats quality, credential-free CLI
+surface compatibility, installed-package, performance, and production-audit
+gates. It then creates the
 npm tarball, CycloneDX SBOM, and `SHA256SUMS`, records GitHub artifact
 attestations, attaches all files to the GitHub release, and publishes the exact
 same tarball to npm with provenance. Publication is idempotent: rerunning an

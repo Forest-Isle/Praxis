@@ -56,7 +56,7 @@ jobs:
       - name: Run complete release regression
         run: |
           npm run check
-          npm run test:compat:all
+          npm run test:cli-surface-compat
           npm run test:package
           npm run test:performance
           npm audit --omit=dev

@@ -8,8 +8,10 @@
 
 Praxis is buildable and fully wired for current single-user CLI scope. TypeScript
 typechecking, boundary checks, focused regressions, package-script references,
-and direct production dependencies pass. Stage 91 adds repeatable GitHub and
-npm release engineering: complete compatibility CI, version/tag automation,
+and direct production dependencies pass. Stage 92 hardens hosted execution with
+platform-neutral LSP fixtures, credential-free Claude CLI contract checks, and
+stable cross-platform performance sentinels. Stage 91 adds repeatable GitHub and
+npm release engineering: exact CLI compatibility CI, version/tag automation,
 retryable immutable-tag publication, tarball/SBOM/checksum generation,
 provenance attestations, security analysis, dependency maintenance, and open
 source governance. Stage 90 hardens the recursive CLI

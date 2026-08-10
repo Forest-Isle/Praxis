@@ -771,9 +771,10 @@ signatures.
 Status: complete in source; remote bootstrap and initial publication are
 tracked by the release runbook.
 
-- [x] stable aggregate `CI` check over quality, production audit, all 52 Claude
-      Code 2.1.208 compatibility gates, and macOS/Linux Node 24/25 package and
-      performance regression lanes
+- [x] stable aggregate `CI` check over quality, production audit, exact
+      credential-free Claude Code 2.1.208 CLI surface parity, macOS/Linux Node
+      24/25 installed-package lanes, and stable cross-platform performance
+      sentinels; all 52 live-model gates remain a maintainer qualification gate
 - [x] Release Please version PR, immutable `v<version>` tag, GitHub release, and
       retryable repository-dispatch publication flow without generated
       changelog files
@@ -787,3 +788,16 @@ tracked by the release runbook.
       vulnerability reporting
 - [x] release automation architecture, failure recovery, local fallback, and
       maintainer bootstrap documentation
+
+## Stage 92 - hosted CI hardening
+
+Status: complete for public GitHub-hosted execution.
+
+- [x] canonical LSP fixture roots and platform-neutral relative result
+      assertions across Linux and macOS
+- [x] credential-free hosted Claude CLI contract gate; no subscription state,
+      provider secret, or billable model request required for public/fork CI
+- [x] installed-package matrix retained on macOS/Linux Node 24/25, with
+      deterministic performance sentinels on Linux Node 24 and macOS Node 25
+- [x] full 52-gate live-model suite retained unchanged as an explicit local
+      maintainer qualification gate
