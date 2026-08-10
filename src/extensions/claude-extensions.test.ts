@@ -79,6 +79,23 @@ describe('ClaudeExtensionCatalog', () => {
       '/unknown value',
     ])
     expect(catalog.agent('reviewer')?.body).toBe('AGENT_BODY')
+    expect(catalog.agentDefinitions()).toEqual([
+      {
+        name: 'general-purpose',
+        description:
+          'General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.',
+      },
+      { name: 'reviewer', description: 'Review work.' },
+    ])
+    expect(
+      catalog.agentMentionMessages('Ask @"reviewer (agent)" to inspect this'),
+    ).toEqual([
+      '<system-reminder>\nThe user has expressed a desire to invoke the agent "reviewer". Please invoke the agent appropriately, passing in the required context to it.\n</system-reminder>',
+      '<system-reminder>\nAvailable agent types for the Agent tool:\n- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.\n- reviewer: Review work.\n</system-reminder>',
+    ])
+    expect(
+      catalog.agentMentionMessages('Read @"reviewer.md" as a file'),
+    ).toEqual([])
   })
 
   it('keeps malformed bodies and gives a colliding skill precedence', () => {

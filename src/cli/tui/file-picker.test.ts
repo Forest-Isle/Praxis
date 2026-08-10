@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   applyFileReference,
+  applyMentionReference,
   fileReferenceAtCursor,
   filterTuiFileEntries,
+  filterTuiMentionEntries,
   loadTuiFileEntries,
 } from './file-picker.js'
 
@@ -40,6 +42,42 @@ describe('TUI file picker', () => {
         'src',
       ).map(({ path }) => path),
     ).toEqual(['src/', 'src/agent.ts', 'docs/src-note.md'])
+  })
+
+  it('mixes matching agents with files and applies Claude agent syntax', () => {
+    const entries = filterTuiMentionEntries(
+      [
+        { path: '.claude/agents/reviewer.md', directory: false },
+        { path: 'alpha.ts', directory: false },
+      ],
+      [
+        {
+          name: 'reviewer',
+          description: 'Reviews code for subtle regressions.',
+        },
+      ],
+      'rev',
+    )
+    expect(entries).toEqual([
+      {
+        kind: 'file',
+        path: '.claude/agents/reviewer.md',
+        directory: false,
+      },
+      {
+        kind: 'agent',
+        name: 'reviewer',
+        description: 'Reviews code for subtle regressions.',
+      },
+    ])
+
+    const reference = fileReferenceAtCursor('ask @rev later', 8)
+    if (!reference) throw new Error('expected an active mention reference')
+    const agentEntry = entries[1]
+    if (!agentEntry) throw new Error('expected a matching agent entry')
+    expect(
+      applyMentionReference('ask @rev later', 8, reference, agentEntry),
+    ).toEqual({ text: 'ask @"reviewer (agent)" later', cursor: 23 })
   })
 
   it('loads bounded workspace files and their parent directories', async () => {

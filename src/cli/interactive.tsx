@@ -34,9 +34,9 @@ import {
   Composer,
   DiffDashboard,
   DialogFrame,
-  FilePicker,
   HelpMenu,
   ListDashboard,
+  MentionPicker,
   PermissionDashboard,
   SelectionMenu,
   SessionPicker,
@@ -77,10 +77,11 @@ import {
   moveComposerCursorByWord,
 } from './tui/composer-editor.js'
 import {
-  applyFileReference,
+  applyMentionReference,
   fileReferenceAtCursor,
-  filterTuiFileEntries,
+  filterTuiMentionEntries,
   loadTuiFileEntries,
+  type TuiAgentEntry,
   type TuiFileEntry,
 } from './tui/file-picker.js'
 
@@ -101,6 +102,7 @@ interface InteractiveSessionCommands {
   sessions(): Promise<SessionSummary[]>
   workflows?(): readonly Record<string, unknown>[]
   slashCommands?(): readonly TuiSlashCommand[]
+  agentDefinitions?(): readonly TuiAgentEntry[]
   runtimeInfo?(): CliRuntimeInfo
   setPermissionMode?(
     sessionId: string,
@@ -155,6 +157,7 @@ interface InteractiveAppProps {
   display?: TuiDisplayMetadata
   terminalWidth?: number
   slashCommands?: readonly TuiSlashCommand[]
+  agents?: readonly TuiAgentEntry[]
   allowDangerouslySkipPermissions?: boolean
   diffLoader?: () => Promise<TuiDiffSnapshot>
   fileLoader?: () => Promise<readonly TuiFileEntry[]>
@@ -192,6 +195,7 @@ type PendingPlanApproval = {
 }
 
 const EMPTY_SLASH_COMMANDS: readonly TuiSlashCommand[] = []
+const EMPTY_AGENTS: readonly TuiAgentEntry[] = []
 
 const EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const PERMISSION_OPTIONS: readonly {
@@ -391,6 +395,7 @@ export function InteractiveApp({
   display = { version: 'dev', cwd: process.cwd() },
   terminalWidth,
   slashCommands = EMPTY_SLASH_COMMANDS,
+  agents = EMPTY_AGENTS,
   allowDangerouslySkipPermissions = false,
   diffLoader,
   fileLoader,
@@ -470,6 +475,7 @@ export function InteractiveApp({
   const [shortcutsVisible, setShortcutsVisible] = useState(false)
   const [availableSlashCommands, setAvailableSlashCommands] =
     useState(slashCommands)
+  const [availableAgents, setAvailableAgents] = useState(agents)
   const [menu, setMenu] = useState<InteractiveMenu | null>(null)
   const menuRef = useRef<InteractiveMenu | null>(null)
   const [busy, setBusy] = useState(false)
@@ -559,12 +565,16 @@ export function InteractiveApp({
     !elicitation &&
     !selectingSession &&
     commandQuery !== null
-  const matchingFileEntries = useMemo(
+  const matchingMentionEntries = useMemo(
     () =>
       fileEntries === null || fileReference === null
         ? []
-        : filterTuiFileEntries(fileEntries, fileReference.query),
-    [fileEntries, fileReference?.query],
+        : filterTuiMentionEntries(
+            fileEntries,
+            availableAgents,
+            fileReference.query,
+          ),
+    [availableAgents, fileEntries, fileReference?.query],
   )
   const filePickerVisible =
     !busy &&
@@ -578,7 +588,7 @@ export function InteractiveApp({
     fileReference !== null
   const selectedFileIndex = Math.min(
     fileSelection,
-    Math.max(0, matchingFileEntries.length - 1),
+    Math.max(0, matchingMentionEntries.length - 1),
   )
   const hasThinking =
     activeThinking.length > 0 ||
@@ -640,6 +650,10 @@ export function InteractiveApp({
   useEffect(() => {
     setAvailableSlashCommands(slashCommands)
   }, [slashCommands])
+
+  useEffect(() => {
+    setAvailableAgents(agents)
+  }, [agents])
 
   useEffect(() => {
     if (!commandPaletteOpen) return
@@ -802,9 +816,9 @@ export function InteractiveApp({
 
   useEffect(() => {
     setFileSelection((current) =>
-      Math.min(current, Math.max(0, matchingFileEntries.length - 1)),
+      Math.min(current, Math.max(0, matchingMentionEntries.length - 1)),
     )
-  }, [matchingFileEntries.length])
+  }, [matchingMentionEntries.length])
 
   const handleEvent = (event: RuntimeEvent) => {
     switch (event.type) {
@@ -1151,6 +1165,7 @@ export function InteractiveApp({
       }
       serviceRef.current = created
       setAvailableSlashCommands(created.slashCommands?.() ?? slashCommands)
+      setAvailableAgents(created.agentDefinitions?.() ?? agents)
       const runtimeInfo = created.runtimeInfo?.()
       if (runtimeInfo?.contextWindowTokens !== undefined)
         setContextWindowTokens(runtimeInfo.contextWindowTokens)
@@ -2051,18 +2066,18 @@ export function InteractiveApp({
       }
       if (key.downArrow) {
         setFileSelection((current) =>
-          Math.min(matchingFileEntries.length - 1, current + 1),
+          Math.min(matchingMentionEntries.length - 1, current + 1),
         )
         return
       }
-      const selected = matchingFileEntries[selectedFileIndex]
+      const selected = matchingMentionEntries[selectedFileIndex]
       if (selected && (key.tab || key.return) && fileReference) {
         updateComposerEditor(
-          applyFileReference(
+          applyMentionReference(
             inputRef.current,
             inputCursorRef.current,
             fileReference,
-            selected.path,
+            selected,
           ),
         )
         setFilePickerOpen(false)
@@ -2527,8 +2542,8 @@ export function InteractiveApp({
                 />
               ) : null}
               {filePickerVisible ? (
-                <FilePicker
-                  entries={matchingFileEntries}
+                <MentionPicker
+                  entries={matchingMentionEntries}
                   selectedIndex={selectedFileIndex}
                   width={width}
                   screenReader={axScreenReader}
@@ -2583,12 +2598,14 @@ export async function runInteractive(options: {
   })
   let initialSessions: SessionSummary[]
   let initialSlashCommands: readonly TuiSlashCommand[]
+  let initialAgents: readonly TuiAgentEntry[]
   try {
     const sessions = await listing.sessions()
     initialSessions = options.sessionFilter
       ? sessions.filter(options.sessionFilter)
       : sessions
     initialSlashCommands = listing.slashCommands?.() ?? []
+    initialAgents = listing.agentDefinitions?.() ?? []
     if (options.requireSession && initialSessions.length === 0) {
       throw new Error(
         options.missingSessionMessage ??
@@ -2622,6 +2639,7 @@ export async function runInteractive(options: {
       factory={options.factory}
       initialSessions={initialSessions}
       slashCommands={initialSlashCommands}
+      agents={initialAgents}
       {...(options.initialPrompt === undefined
         ? {}
         : { initialPrompt: options.initialPrompt })}

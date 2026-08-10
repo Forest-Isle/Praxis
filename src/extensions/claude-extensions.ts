@@ -25,6 +25,11 @@ export interface ClaudeSlashCommandDefinition {
   kind: 'command' | 'skill' | 'mcp'
 }
 
+export interface ClaudeAgentDefinition {
+  name: string
+  description: string
+}
+
 export interface ClaudePromptExpansion {
   userMessages: readonly string[]
   messages?: readonly ClaudePromptExpansionMessage[]
@@ -69,6 +74,12 @@ Call CronCreate with the derived cron, the parsed prompt verbatim, and recurring
 
 Input:
 $ARGUMENTS`,
+}
+
+const GENERAL_PURPOSE_AGENT: ClaudeAgentDefinition = {
+  name: 'general-purpose',
+  description:
+    'General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.',
 }
 
 function parseFrontmatter(resource: ClaudeTextResource): {
@@ -378,6 +389,44 @@ export class ClaudeExtensionCatalog {
 
   agentNames(): readonly string[] {
     return [...this.agents.keys()]
+  }
+
+  agentDefinitions(): readonly ClaudeAgentDefinition[] {
+    const definitions = new Map<string, ClaudeAgentDefinition>([
+      [GENERAL_PURPOSE_AGENT.name, GENERAL_PURPOSE_AGENT],
+    ])
+    for (const agent of this.agents.values()) {
+      definitions.set(agent.name, {
+        name: agent.name,
+        description: agent.description,
+      })
+    }
+    return [...definitions.values()].sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )
+  }
+
+  agentMentionMessages(prompt: string): readonly string[] {
+    const definitions = this.agentDefinitions()
+    const available = new Set(definitions.map((definition) => definition.name))
+    const mentioned = [...prompt.matchAll(/@"([^"\r\n]+) \(agent\)"/gu)]
+      .map((match) => match[1])
+      .filter(
+        (name): name is string => name !== undefined && available.has(name),
+      )
+      .filter((name, index, names) => names.indexOf(name) === index)
+    if (mentioned.length === 0) return []
+    return [
+      ...mentioned.map(
+        (name) =>
+          `<system-reminder>\nThe user has expressed a desire to invoke the agent "${name}". Please invoke the agent appropriately, passing in the required context to it.\n</system-reminder>`,
+      ),
+      `<system-reminder>\nAvailable agent types for the Agent tool:\n${definitions
+        .map((definition) =>
+          `- ${definition.name}: ${definition.description}`.trimEnd(),
+        )
+        .join('\n')}\n</system-reminder>`,
+    ]
   }
 
   renderSkill(name: string, argumentsText: string): string | null {

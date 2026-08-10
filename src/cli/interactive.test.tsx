@@ -420,6 +420,58 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('❯ review @src')
   })
 
+  it('selects an @ agent mention and submits Claude-compatible syntax', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run(prompt) {
+                calls.push(prompt)
+                return {
+                  sessionId: 'session-1',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        agents={[
+          {
+            name: 'reviewer',
+            description: 'Reviews code for subtle regressions.',
+          },
+        ]}
+        fileLoader={async () => [{ path: 'alpha.ts', directory: false }]}
+      />,
+    )
+
+    app.stdin.write('@rev')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      '* reviewer (agent) – Reviews code for subtle regressions.',
+    )
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ @"reviewer (agent)"')
+    app.stdin.write(' inspect this')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['@"reviewer (agent)" inspect this'])
+  })
+
   it('enables plan mode locally before the next turn', async () => {
     const modes: Array<string | undefined> = []
     const factory: InteractiveServiceFactory = {

@@ -927,6 +927,7 @@ interface SessionCommands {
   slashCommands?(): readonly TuiSlashCommand[]
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
+  agentDefinitions?(): readonly { name: string; description: string }[]
   promptSuggestion?(
     sessionId: string,
     signal?: AbortSignal,
@@ -1674,6 +1675,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
           description: definition.description,
           source: definition.kind,
         })),
+      agentDefinitions: () => extensions.agentDefinitions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
       nextScheduledPrompt: (signal) => service.nextScheduledPrompt(signal),

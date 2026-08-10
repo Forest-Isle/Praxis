@@ -11,6 +11,7 @@ import {
   HelpMenu,
   ListDashboard,
   MarkdownText,
+  MentionPicker,
   PermissionDashboard,
   SelectionMenu,
   SessionPicker,
@@ -426,6 +427,60 @@ describe('Claude-style TUI components', () => {
       />,
     )
     expect(accessible.lastFrame()).toContain('Selected: src/agent.ts')
+  })
+
+  it('renders Claude-shaped agent entries in the mention picker', () => {
+    const visual = render(
+      <MentionPicker
+        entries={[
+          {
+            kind: 'agent',
+            name: 'reviewer',
+            description: 'Reviews code for subtle regressions.',
+          },
+        ]}
+        selectedIndex={0}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(visual.lastFrame()).toContain(
+      '* reviewer (agent) – Reviews code for subtle regressions.',
+    )
+
+    const narrow = render(
+      <MentionPicker
+        entries={[
+          {
+            kind: 'agent',
+            name: 'reviewer',
+            description:
+              'Reviews code for subtle regressions across the repository.',
+          },
+        ]}
+        selectedIndex={0}
+        width={32}
+        screenReader={false}
+      />,
+    )
+    expect(narrow.lastFrame()?.split('\n').filter(Boolean)).toHaveLength(1)
+    expect(narrow.lastFrame()).toContain('…')
+
+    const accessible = render(
+      <MentionPicker
+        entries={[
+          {
+            kind: 'agent',
+            name: 'reviewer',
+            description: 'Reviews code for subtle regressions.',
+          },
+        ]}
+        selectedIndex={0}
+        width={80}
+        screenReader
+      />,
+    )
+    expect(accessible.lastFrame()).toContain('Selected agent: reviewer')
   })
 
   it('renders the shortcut grid and tabbed help surface', () => {

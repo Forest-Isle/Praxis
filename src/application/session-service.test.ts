@@ -2810,6 +2810,105 @@ describe('ClaudeSessionService', () => {
     ])
   })
 
+  it('injects selected @ agent reminders without persisting them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-agent-mention-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'reviewer.md'),
+          scope: 'user',
+          content:
+            '---\nname: reviewer\ndescription: Review work.\n---\nAGENT_BODY',
+        },
+      ],
+    })
+    let turn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_read_mention',
+              name: 'Read',
+              input: { file_path: 'README.md' },
+            },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'done' }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read a file',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return { content: '# Fixture', isError: false }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      extensions,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const result = await service.run('@"reviewer (agent)" inspect this')
+
+    expect(requests[0]?.messages).toEqual([
+      {
+        role: 'user',
+        content:
+          '<system-reminder>\nThe user has expressed a desire to invoke the agent "reviewer". Please invoke the agent appropriately, passing in the required context to it.\n</system-reminder>',
+      },
+      {
+        role: 'user',
+        content:
+          '<system-reminder>\nAvailable agent types for the Agent tool:\n- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.\n- reviewer: Review work.\n</system-reminder>',
+      },
+      { role: 'user', content: '@"reviewer (agent)" inspect this' },
+    ])
+    expect(requests[1]?.messages.slice(0, 3)).toEqual(requests[0]?.messages)
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'call_read_mention',
+      content: '# Fixture',
+      isError: false,
+    })
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: result.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('@\\"reviewer (agent)\\" inspect this')
+    expect(transcript).not.toContain('expressed a desire to invoke')
+    expect(transcript).not.toContain('Available agent types')
+  })
+
   it('routes MCP prompt rich content and user attachments through the expanded message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-mcp-prompt-'))
     roots.push(root)

@@ -4,7 +4,7 @@ import { Box, Text, useStdout } from 'ink'
 
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import { composerEditorSegments } from './composer-editor.js'
-import type { TuiFileEntry } from './file-picker.js'
+import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
 import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
 import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'
@@ -1204,6 +1204,64 @@ export function FilePicker({
               inverse={!screenReader && index === selectedIndex}
             >
               {screenReader && index === selectedIndex ? 'Selected: ' : '+ '}
+              {entry.path}
+            </Text>
+          )
+        })
+      )}
+    </Box>
+  )
+}
+
+export function MentionPicker({
+  entries,
+  selectedIndex,
+  width,
+  screenReader,
+}: {
+  entries: readonly TuiMentionEntry[]
+  selectedIndex: number
+  width: number
+  screenReader: boolean
+}) {
+  const maxVisible = 12
+  const start = Math.max(
+    0,
+    Math.min(
+      selectedIndex - Math.floor(maxVisible / 2),
+      Math.max(0, entries.length - maxVisible),
+    ),
+  )
+  const visible = entries.slice(start, start + maxVisible)
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {visible.length === 0 ? (
+        <Text dimColor>No matching files or agents.</Text>
+      ) : (
+        visible.map((entry, visibleIndex) => {
+          const index = start + visibleIndex
+          const selected = index === selectedIndex
+          if (entry.kind === 'agent') {
+            return (
+              <Text
+                key={`agent:${entry.name}`}
+                inverse={!screenReader && selected}
+                {...(screenReader ? {} : { wrap: 'truncate-end' as const })}
+              >
+                {screenReader && selected ? 'Selected agent: ' : '* '}
+                {entry.name}
+                {screenReader ? '' : ' (agent)'}
+                {entry.description ? ` – ${entry.description}` : ''}
+              </Text>
+            )
+          }
+          return (
+            <Text
+              key={`file:${entry.path}`}
+              inverse={!screenReader && selected}
+              {...(screenReader ? {} : { wrap: 'truncate-end' as const })}
+            >
+              {screenReader && selected ? 'Selected: ' : '+ '}
               {entry.path}
             </Text>
           )

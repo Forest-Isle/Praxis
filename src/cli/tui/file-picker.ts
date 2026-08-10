@@ -8,6 +8,14 @@ export interface TuiFileEntry {
   directory: boolean
 }
 
+export interface TuiAgentEntry {
+  name: string
+  description: string
+}
+
+export type TuiMentionEntry =
+  ({ kind: 'file' } & TuiFileEntry) | ({ kind: 'agent' } & TuiAgentEntry)
+
 export async function loadTuiFileEntries(
   cwd: string,
 ): Promise<readonly TuiFileEntry[]> {
@@ -70,6 +78,38 @@ export function filterTuiFileEntries(
     })
 }
 
+export function filterTuiMentionEntries(
+  files: readonly TuiFileEntry[],
+  agents: readonly TuiAgentEntry[],
+  query: string,
+): readonly TuiMentionEntry[] {
+  const normalized = query.toLowerCase()
+  const matchingAgents = [...agents]
+    .filter(
+      (agent) =>
+        !normalized ||
+        agent.name.toLowerCase().includes(normalized) ||
+        agent.description.toLowerCase().includes(normalized),
+    )
+    .sort((left, right) => {
+      const leftPrefix = left.name.toLowerCase().startsWith(normalized)
+      const rightPrefix = right.name.toLowerCase().startsWith(normalized)
+      if (leftPrefix !== rightPrefix) return leftPrefix ? -1 : 1
+      return left.name.localeCompare(right.name)
+    })
+    .map((agent) => ({ kind: 'agent' as const, ...agent }))
+  const matchingFiles = filterTuiFileEntries(files, query).map((file) => ({
+    kind: 'file' as const,
+    ...file,
+  }))
+  if (normalized) return [...matchingFiles, ...matchingAgents]
+  return [
+    ...matchingFiles.filter((entry) => entry.directory),
+    ...matchingAgents,
+    ...matchingFiles.filter((entry) => !entry.directory),
+  ]
+}
+
 export function fileReferenceAtCursor(
   input: string,
   cursor: number,
@@ -99,4 +139,25 @@ export function applyFileReference(
     ...characters.slice(cursor),
   ].join('')
   return { text, cursor: reference.start + replacement.length }
+}
+
+export function applyMentionReference(
+  input: string,
+  cursor: number,
+  reference: { start: number },
+  entry: TuiMentionEntry,
+): { text: string; cursor: number } {
+  if (entry.kind === 'file') {
+    return applyFileReference(input, cursor, reference, entry.path)
+  }
+  const characters = Array.from(input)
+  const replacement = Array.from(`@"${entry.name} (agent)"`)
+  return {
+    text: [
+      ...characters.slice(0, reference.start),
+      ...replacement,
+      ...characters.slice(cursor),
+    ].join(''),
+    cursor: reference.start + replacement.length,
+  }
 }

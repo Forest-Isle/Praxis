@@ -83,9 +83,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   streaming and expandable thinking, globally expandable tool results,
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
-  filterable `@` file references, composer undo, permission-gated `!` shell
-  turns, navigable current/per-turn Git diff views, rich decision panels, and
-  measured context budgets; print mode, structured JSON/JSONL, context
+  filterable `@` file and agent references, composer undo, permission-gated `!`
+  shell turns, navigable current/per-turn Git diff views, rich decision panels,
+  and measured context budgets; print mode, structured JSON/JSONL, context
   compaction, tool loops, and bounded execution.
 - **Built-in tools** — read, write, edit, glob, search, shell, notebook, PDF,
   image, web, scheduled prompts, workflows, and worktrees.

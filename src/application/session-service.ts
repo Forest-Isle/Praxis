@@ -1582,6 +1582,38 @@ export class ClaudeSessionService {
             ? { documents }
             : {}),
         }))
+        const agentMentionMessages =
+          shellCommand === undefined
+            ? (this.options.extensions?.agentMentionMessages(prompt) ?? [])
+            : []
+        const injectAgentMentionContext = (
+          messages: readonly ModelMessage[],
+        ): ModelMessage[] => {
+          if (agentMentionMessages.length === 0) return [...messages]
+          let insertionIndex = messages.length
+          let foundPrompt = false
+          for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const message = messages[index]
+            if (
+              message?.role === 'user' &&
+              typeof message.content === 'string' &&
+              message.content.endsWith(prompt)
+            ) {
+              insertionIndex = index
+              foundPrompt = true
+              break
+            }
+          }
+          if (!foundPrompt) return [...messages]
+          return [
+            ...messages.slice(0, insertionIndex),
+            ...agentMentionMessages.map((content) => ({
+              role: 'user' as const,
+              content,
+            })),
+            ...messages.slice(insertionIndex),
+          ]
+        }
         const injectDynamicContext = (
           messages: readonly ModelMessage[],
         ): ModelMessage[] =>
@@ -1589,6 +1621,10 @@ export class ClaudeSessionService {
             messages,
             assembledContext?.firstUserMessageContext,
           )
+        const injectTurnContext = (
+          messages: readonly ModelMessage[],
+        ): ModelMessage[] =>
+          injectAgentMentionContext(injectDynamicContext(messages))
         let compactionAnchorUuid = this.lastMessageUuid(snapshot.entries)
         const compactIfNeeded = async (
           pendingMessages: readonly {
@@ -1602,14 +1638,14 @@ export class ClaudeSessionService {
           const predicted = budget.evaluate(
             [
               ...contextMessages,
-              ...injectDynamicContext([...historyMessages, ...pendingMessages]),
+              ...injectTurnContext([...historyMessages, ...pendingMessages]),
             ],
             definitions,
           )
           if (!predicted.shouldCompact) return
           const irreducibleMessages = [
             ...contextMessages,
-            ...injectDynamicContext([
+            ...injectTurnContext([
               ...pendingMessages,
               ...preservedUserMessages.map((content) => ({
                 role: 'user' as const,
@@ -1671,7 +1707,7 @@ export class ClaudeSessionService {
           const summaryUuid = randomUUID()
           const timestamp = new Date().toISOString()
           const preTokens = budget.evaluate(
-            [...contextMessages, ...injectDynamicContext(historyMessages)],
+            [...contextMessages, ...injectTurnContext(historyMessages)],
             definitions,
           ).estimatedTokens
           const compactEntries = (postTokens: number) => {
@@ -1722,16 +1758,13 @@ export class ClaudeSessionService {
             ...replayEntries,
           ])
           const afterHistory = budget.evaluate(
-            [...contextMessages, ...injectDynamicContext(compactedHistory)],
+            [...contextMessages, ...injectTurnContext(compactedHistory)],
             definitions,
           )
           const afterPending = budget.evaluate(
             [
               ...contextMessages,
-              ...injectDynamicContext([
-                ...compactedHistory,
-                ...pendingMessages,
-              ]),
+              ...injectTurnContext([...compactedHistory, ...pendingMessages]),
             ],
             definitions,
           )
@@ -1924,7 +1957,7 @@ export class ClaudeSessionService {
             budget.evaluate(
               [
                 ...contextMessages,
-                ...injectDynamicContext(
+                ...injectTurnContext(
                   projectClaudeModelMessages(snapshot.entries),
                 ),
               ],
@@ -1937,9 +1970,7 @@ export class ClaudeSessionService {
         const runtimeRequest = {
           messages: [
             ...contextMessages,
-            ...injectDynamicContext(
-              projectClaudeModelMessages(snapshot.entries),
-            ),
+            ...injectTurnContext(projectClaudeModelMessages(snapshot.entries)),
           ],
           cwd: this.activeCwd(),
           toolResultDirectory,
@@ -1954,7 +1985,7 @@ export class ClaudeSessionService {
             await compactIfNeeded([], currentTurnUserMessages ?? [])
             return [
               ...contextMessages,
-              ...injectDynamicContext(
+              ...injectTurnContext(
                 projectClaudeModelMessages(snapshot.entries),
               ),
             ]

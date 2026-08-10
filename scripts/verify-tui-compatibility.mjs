@@ -47,8 +47,9 @@ const provider = createServer(async (request, response) => {
 
 try {
   await Promise.all([
-    mkdir(configRoot),
+    mkdir(configRoot, { recursive: true }),
     mkdir(join(configRoot, 'commands'), { recursive: true }),
+    mkdir(join(configRoot, 'agents'), { recursive: true }),
     mkdir(cwd),
     mkdir(installRoot),
     mkdir(binRoot),
@@ -56,6 +57,10 @@ try {
   await writeFile(
     join(configRoot, 'commands', 'review.md'),
     '---\ndescription: Review the shared fixture.\n---\nReview $ARGUMENTS\n',
+  )
+  await writeFile(
+    join(configRoot, 'agents', 'reviewer.md'),
+    '---\nname: reviewer\ndescription: Reviews the shared fixture.\n---\nReview the requested fixture.\n',
   )
   await writeFile(
     join(configRoot, 'settings.json'),
@@ -155,6 +160,12 @@ send "\r"
 expect -re {❯ @fixture.txt}
 send "\037"
 expect -re {❯ @fix}
+send "\025"
+expect -re {Try.*review this project}
+send "@rev"
+expect -re {reviewer.*\(agent\)}
+send "\r"
+expect -re {❯.*reviewer.*agent}
 send "\025"
 expect -re {Try.*review this project}
 send "/context"

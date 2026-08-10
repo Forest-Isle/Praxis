@@ -836,3 +836,19 @@ interactive TTY parity remains partial.
       the transient transcript row, and restores the command to the composer
 - [x] focused runtime, application, translation, local-tool, Ink interaction,
       component, and installed-package PTY coverage
+
+## Stage 95 - interactive agent mention parity
+
+Status: complete for the Claude Code 2.1.208 `@` agent-selection contract;
+broader interactive TTY parity remains partial.
+
+- [x] mixed workspace file and shared agent discovery in the existing `@`
+      picker, including described `* name (agent)` rows, bounded truncation,
+      keyboard selection, and screen-reader labels
+- [x] Claude-compatible `@"name (agent)"` composer insertion without a
+      Praxis-specific mention syntax or competing agent registry
+- [x] provider-only invocation and available-agent reminders that retain the
+      original prompt, survive tool-loop reloads, participate in context-budget
+      checks, and never enter the shared append-only JSONL
+- [x] focused catalog, session, picker, Ink interaction, component, and
+      installed-package PTY coverage
