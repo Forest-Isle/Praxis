@@ -22,7 +22,7 @@ Evidence levels:
 
 | Capability                           | Status                              | Evidence / remaining work                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ------------------------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Interactive TTY                      | Complete                            | Ink event adapter, permission/recovery prompts, session picker, one-shot positional prompt submission, model-driven questions, and plan approval; live PTY, package, and unit gates                                                                                                                                                                                                                                         |
+| Interactive TTY                      | Complete                            | Claude-style responsive welcome/composer/status layout, Markdown and diff transcript, thinking/tool/task/context panels, bounded session picker, numbered permission/recovery/question/plan/MCP decisions, one-shot positional prompt submission, screen-reader fallback, and Esc turn interruption; wide/narrow Ink fixtures, real PTY provider loop, package, and unit gates                                              |
 | Print/headless prompt                | Complete                            | `-p`, `--print`, top-level prompt, and legacy `run`; installed package gate                                                                                                                                                                                                                                                                                                                                                 |
 | Resume syntax                        | Complete                            | Optional `-r`/`--resume` UUID/title/search selector, required TTY picker, exact case-insensitive headless title resolution with ambiguity errors, attached short/equals forms, canonical UUID routing, legacy `resume`, and shared transcript continuation; live Claude/Praxis gate                                                                                                                                         |
 | `--resume-session-at`                | Complete                            | Explicit `--resume` targeting of any active user/assistant message; append-only native `parentUuid` branching, active-chain projection, fork truncation, interactive/background/no-persistence routing, invalid/inactive target errors, and live Claude ↔ Praxis resume gate                                                                                                                                                |
@@ -155,21 +155,22 @@ description examples from being mistaken for option declarations. Bare
 `--tmux=classic`. Root Chrome, IDE,
 Remote Control, subscription-auth, enterprise gateway, hosted Ultrareview, and
 Claude Desktop import exclusions are asserted in the gate rather than silently
-ignored. The preceding residual audit closed scoped plugin MCP naming/deduplication, local and remote
-MCPB/DXT loading, protected bundle configuration, MCP prompt discovery and rich
-invocation, durable prompt binaries, crash-recoverable settings/credential
-commits, and packed runtime execution after protected plugin option storage and
-interactive plugin LSP. Final audit
-covers public/hidden/optional-value parsing, command-specific help,
-source and packed artifacts, bidirectional session/data-plane links, TODO/skip
-and dispatcher wiring, performance, release packaging, and production
+ignored. The preceding residual audit closed scoped plugin MCP
+naming/deduplication, local and remote MCPB/DXT loading, protected bundle
+configuration, MCP prompt discovery and rich invocation, durable prompt
+binaries, crash-recoverable settings/credential commits, and packed runtime
+execution after protected plugin option storage and interactive plugin LSP.
+Final audit covers public/hidden/optional-value parsing, command-specific help,
+source and packed artifacts, bidirectional session/data-plane links,
+Claude-style interactive presentation and PTY input/stream/result lifecycle,
+TODO/skip and dispatcher wiring, performance, release packaging, and production
 dependency audit. Unsupported Claude versions remain deliberately read-only.
 Enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.
 
 The required GitHub `CI` status installs exact Claude Code 2.1.208 and executes
-its credential-free recursive CLI signature gate plus installed-package,
-performance, and production-audit lanes. The full 52-gate suite includes real
+its credential-free recursive CLI signature gate plus interactive PTY,
+installed-package, performance, and production-audit lanes. The full 52-gate suite includes real
 model calls and remains an explicit maintainer qualification gate rather than
 requiring subscription state or billable credentials in public/fork CI.
 Release automation does not expand or alter product parity scope.

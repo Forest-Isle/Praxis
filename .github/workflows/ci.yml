@@ -26,12 +26,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Install ripgrep
-        run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+      - name: Install terminal test tools
+        run: command -v rg >/dev/null && command -v expect >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep expect)
       - name: Install dependencies
         run: npm ci
       - name: Run quality gates
         run: npm run check
+      - name: Verify interactive TUI
+        run: npm run test:tui-compat
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
