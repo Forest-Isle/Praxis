@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Box, Text, useStdout } from 'ink'
 
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
+import { composerEditorSegments } from './composer-editor.js'
 import type { TuiSlashCommand } from './slash-commands.js'
 
 const BRAND = '#D97757'
@@ -15,6 +16,7 @@ export interface TuiDisplayMetadata {
   model?: string
   effort?: string
   permissionMode?: string
+  contextWindowTokens?: number
 }
 
 export type TranscriptItem =
@@ -460,7 +462,7 @@ export function CommandPalette({
   width: number
   screenReader: boolean
 }) {
-  const maxVisible = 7
+  const maxVisible = 10
   const start = Math.max(
     0,
     Math.min(
@@ -531,22 +533,120 @@ export function CommandPalette({
   )
 }
 
+export interface TuiSelectionOption {
+  label: string
+  description: string
+  selected?: boolean
+}
+
+export function SelectionMenu({
+  title,
+  description,
+  options,
+  selectedIndex,
+  footer,
+  width,
+  screenReader,
+}: {
+  title: string
+  description?: string
+  options: readonly TuiSelectionOption[]
+  selectedIndex: number
+  footer: string
+  width: number
+  screenReader: boolean
+}) {
+  const maxVisible = 7
+  const start = Math.max(
+    0,
+    Math.min(
+      selectedIndex - Math.floor(maxVisible / 2),
+      Math.max(0, options.length - maxVisible),
+    ),
+  )
+  const visible = options.slice(start, start + maxVisible)
+  return (
+    <Box
+      borderStyle={screenReader ? undefined : 'round'}
+      borderColor="gray"
+      flexDirection="column"
+      marginTop={1}
+      paddingX={screenReader ? 0 : 1}
+      width={screenReader ? undefined : Math.min(80, width)}
+    >
+      <Text bold>{title}</Text>
+      {description ? <Text dimColor>{description}</Text> : null}
+      {visible.map((option, visibleIndex) => {
+        const index = start + visibleIndex
+        const selected = index === selectedIndex
+        return (
+          <Box
+            key={`${index}-${option.label}`}
+            flexDirection="column"
+            marginTop={1}
+          >
+            <Text {...(selected ? { color: BRAND, bold: true } : {})}>
+              {selected ? '❯ ' : '  '}
+              {index + 1}. {option.label}
+              {option.selected ? ' ✔' : ''}
+            </Text>
+            {option.description ? (
+              <Text dimColor> {option.description}</Text>
+            ) : null}
+          </Box>
+        )
+      })}
+      {start > 0 || start + visible.length < options.length ? (
+        <Text dimColor>
+          {start > 0 ? `↑ ${start} earlier` : ''}
+          {start > 0 && start + visible.length < options.length ? ' · ' : ''}
+          {start + visible.length < options.length
+            ? `↓ ${options.length - start - visible.length} more`
+            : ''}
+        </Text>
+      ) : null}
+      <Text dimColor>{footer}</Text>
+    </Box>
+  )
+}
+
+function ComposerInput({ input, cursor }: { input: string; cursor: number }) {
+  const { before, current, after } = composerEditorSegments({
+    text: input,
+    cursor,
+  })
+  const cursorText = current === '\n' ? '↵' : (current ?? ' ')
+  return (
+    <Text>
+      {before}
+      <Text color="black" backgroundColor={ACCENT}>
+        {cursorText}
+      </Text>
+      {after}
+    </Text>
+  )
+}
+
 export function Composer({
   input,
+  cursor,
   busy,
   status,
   display,
   usage,
+  costUsd,
   width,
   screenReader,
   hasThinking = false,
   thinkingExpanded = false,
 }: {
   input: string
+  cursor?: number
   busy: boolean
   status: string
   display: TuiDisplayMetadata
   usage?: ModelUsage
+  costUsd?: number
   width: number
   screenReader: boolean
   hasThinking?: boolean
@@ -575,9 +675,20 @@ export function Composer({
       {usage ? (
         <Text dimColor>
           Context · {usage.inputTokens + usage.outputTokens} tokens
+          {display.contextWindowTokens
+            ? ` / ${display.contextWindowTokens} (${Math.min(
+                100,
+                Math.round(
+                  ((usage.inputTokens + usage.outputTokens) /
+                    display.contextWindowTokens) *
+                    100,
+                ),
+              )}%)`
+            : ''}
           {usage.cacheReadInputTokens
             ? ` · ${usage.cacheReadInputTokens} cached`
             : ''}
+          {costUsd === undefined ? '' : ` · $${costUsd.toFixed(6)}`}
         </Text>
       ) : null}
       <Text dimColor>{line}</Text>
@@ -591,19 +702,28 @@ export function Composer({
           <Text color={BRAND} bold>
             ❯{' '}
           </Text>
-          {input || <Text dimColor>Try "review this project"</Text>}
+          {input ? (
+            <ComposerInput
+              cursor={cursor ?? Array.from(input).length}
+              input={input}
+            />
+          ) : (
+            <Text dimColor>Try "review this project"</Text>
+          )}
         </Text>
       )}
       <Text dimColor>{line}</Text>
       <Text dimColor>
-        ⏵⏵ {permissionLabel(display.permissionMode)} · /help for shortcuts
+        ⏵⏵ {permissionLabel(display.permissionMode)} · shift+tab to cycle
       </Text>
       {hasThinking ? (
         <Text dimColor>
           ctrl+o to {thinkingExpanded ? 'collapse' : 'expand'} thinking
         </Text>
       ) : null}
-      <Text dimColor>/new · /sessions · /workflows · /exit</Text>
+      <Text dimColor>
+        /new · /model · /effort · /permissions · /sessions · /exit
+      </Text>
     </Box>
   )
 }

@@ -385,6 +385,18 @@ export class ClaudeInteractiveToolManager {
     })
   }
 
+  async setMode(sessionId: string, mode: ClaudePermissionMode): Promise<void> {
+    const state = this.state(sessionId)
+    if (state.mode === mode) return
+    if (mode === 'plan') {
+      await mkdir(resolve(this.options.configRoot, 'plans'), {
+        recursive: true,
+      })
+      state.previousMode = state.mode
+    }
+    state.mode = mode
+  }
+
   permissions(sessionId: string): PermissionResolver {
     return {
       resolve: (call, context) => this.resolve(sessionId, call, context),

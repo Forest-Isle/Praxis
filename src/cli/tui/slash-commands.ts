@@ -23,6 +23,21 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'model',
+    description: 'Set the model for this session.',
+    source: 'builtin',
+  },
+  {
+    name: 'effort',
+    description: 'Set the model effort level for this session.',
+    source: 'builtin',
+  },
+  {
+    name: 'permissions',
+    description: 'Manage the permission mode for this session.',
+    source: 'builtin',
+  },
+  {
     name: 'sessions',
     description: 'Resume an existing session.',
     source: 'builtin',

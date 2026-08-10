@@ -239,6 +239,284 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual(['/review src'])
   })
 
+  it('edits at the real cursor and restores submitted prompt history', async () => {
+    const calls: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt) {
+            calls.push(`run:${prompt}`)
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume(sessionId, prompt) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            return {
+              sessionId,
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('abcd')
+    app.stdin.write('\u001B[D')
+    app.stdin.write('\u001B[D')
+    app.stdin.write('X')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['run:abXcd'])
+
+    app.stdin.write('second')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[A')
+    app.stdin.write('\u001B[A')
+    await flush()
+    expect(app.lastFrame()).toContain('abXcd')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual([
+      'run:abXcd',
+      'resume:session-1:second',
+      'resume:session-1:abXcd',
+    ])
+  })
+
+  it('applies slash-selected model and effort choices to the next service', async () => {
+    const creates: Array<{
+      model: string | undefined
+      effort: string | undefined
+    }> = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creates.push({ model: options.model, effort: options.effort })
+        return {
+          async run() {
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('/effort')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Select effort')
+    app.stdin.write('\u001B[A')
+    app.stdin.write('\u001B[A')
+    app.stdin.write('\r')
+    await flush()
+
+    app.stdin.write('/model')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Select model')
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Enter model ID')
+    app.stdin.write('provider/model-custom')
+    app.stdin.write('\r')
+    await flush()
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    expect(creates).toContainEqual({
+      model: 'provider/model-custom',
+      effort: 'low',
+    })
+  })
+
+  it('persists a slash-selected permission mode before the next resume', async () => {
+    const creates: Array<{ permissionMode: string | undefined }> = []
+    const changes: Array<{ sessionId: string; mode: string }> = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creates.push({ permissionMode: options.permissionMode })
+        return {
+          async run() {
+            return {
+              sessionId: 'session-1',
+              text: 'first',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume(sessionId) {
+            return {
+              sessionId,
+              text: 'second',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async setPermissionMode(sessionId, mode) {
+            changes.push({ sessionId, mode })
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('first')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('/permissions')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Permission mode')
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    await flush()
+
+    expect(changes).toEqual([{ sessionId: 'session-1', mode: 'acceptEdits' }])
+    app.stdin.write('continue')
+    app.stdin.write('\r')
+    await flush()
+    expect(creates).toContainEqual({ permissionMode: 'acceptEdits' })
+  })
+
+  it('starts a truly empty visible conversation for /clear', async () => {
+    const calls: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt) {
+            calls.push(`run:${prompt}`)
+            return {
+              sessionId: `session-${calls.length}`,
+              text: `answer:${prompt}`,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume(sessionId, prompt) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            return {
+              sessionId,
+              text: `answer:${prompt}`,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('first')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('answer:first')
+    app.stdin.write('/clear')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).not.toContain('answer:first')
+    expect(app.lastFrame()).toContain('Welcome back!')
+
+    app.stdin.write('second')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['run:first', 'run:second'])
+  })
+
+  it('renders measured cost with the active provider context budget', async () => {
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 4, outputTokens: 2 },
+              costUsd: 0.000321,
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          runtimeInfo() {
+            return {
+              cwd: '/workspace',
+              model: 'fixture-model',
+              contextWindowTokens: 100,
+              tools: [],
+              mcpServers: [],
+              permissionMode: 'default',
+              slashCommands: [],
+              agents: [],
+              skills: [],
+              claudeCodeVersion: '2.1.208',
+            }
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain(
+      'Context · 6 tokens / 100 (6%) · $0.000321',
+    )
+  })
+
   it('toggles retained thinking with Ctrl+O without losing the full text', async () => {
     const reasoning = `Start ${'detail '.repeat(40)}reasoning tail stays visible`
     const factory: InteractiveServiceFactory = {
@@ -1320,7 +1598,7 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('resumed answer')
   })
 
-  it('propagates Ctrl+C through the interactive cancellation seam', async () => {
+  it('requires a second Ctrl+C before cancelling the interactive process', async () => {
     let cancelled = false
     const factory: InteractiveServiceFactory = {
       async createService() {
@@ -1341,6 +1619,10 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u0003')
     await flush()
 
+    expect(cancelled).toBe(false)
+    expect(app.lastFrame()).toContain('Press Ctrl-C again to exit')
+    app.stdin.write('\u0003')
+    await flush()
     expect(cancelled).toBe(true)
   })
 

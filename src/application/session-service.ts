@@ -104,6 +104,7 @@ import {
   type UserMessage,
 } from '../tools/claude-user-message.js'
 import type { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
+import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -739,6 +740,33 @@ export class ClaudeSessionService {
     })
     if (result.status === 'conflict') {
       throw new Error(`Claude file rewind conflict: ${result.reason}`)
+    }
+  }
+
+  async setPermissionMode(
+    sessionId: string,
+    permissionMode: ClaudePermissionMode,
+  ): Promise<void> {
+    this.assertSessionPersistence()
+    this.assertWritable()
+    const result = await this.store(sessionId).withLease(async (lease) => {
+      const snapshot = await lease.load()
+      if (snapshot.entries.length === 0) {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      this.options.interactiveTools?.restore(sessionId, snapshot.entries)
+      const entry: ClaudeTranscriptEntry = {
+        type: 'permission-mode',
+        permissionMode,
+        sessionId,
+      }
+      await this.append(lease, snapshot.tail, entry)
+      await this.options.interactiveTools?.setMode(sessionId, permissionMode)
+    })
+    if (result.status === 'conflict') {
+      throw new Error(
+        `Claude permission mode update conflict: ${result.reason}`,
+      )
     }
   }
 

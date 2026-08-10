@@ -107,6 +107,8 @@ expect {
 }
 expect -re {Context.*3 tokens}
 send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
 expect eof
 exit 0
 `

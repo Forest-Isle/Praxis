@@ -51,6 +51,7 @@ components under `src/cli/tui` render that state:
 ```text
 RuntimeEvent -> interactive state -> transcript/dialog/composer components
 shared extensions -> slash catalog -> command palette -> existing session service
+runtime controls -> service retirement/recreation -> existing session service
 keyboard input -------------------> existing callbacks and session service
 ```
 
@@ -67,7 +68,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   expandable in place.
 - `CommandPalette`: bounded, keyboard-selectable list of built-in controls and
   shared commands, skills, and MCP prompts.
-- `Composer`: prompt, effort, mode, busy state, and keyboard help.
+- `Composer`: prompt, cursor, history, effort, mode, busy state, measured
+  context/cost status, and keyboard help.
+- `SelectionMenu`: reusable model, effort, and permission-mode chooser; it
+  does not replace the full Claude Code permission-rule dashboard.
 - `DialogFrame`: shared bordered surface used by permission, question, plan,
   recovery, and elicitation decisions.
 - screen-reader branches: semantic text-only rendering through the same state.
@@ -78,6 +82,18 @@ is passed from the CLI composition root and never written to shared JSONL.
   into the composer, and an exact command runs through the existing local or
   shared-command path. The catalog is read from the existing Claude command,
   skill, and MCP prompt discovery rather than duplicated into a Praxis store.
+- `/model` retains the current model, restores the invocation default, or accepts
+  an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
+  `xhigh`, or `max`. Each change retires the idle runtime service so the next
+  turn receives the selected provider controls.
+- `/permissions` selects the active session mode. Once a session exists, Praxis
+  appends the native Claude-compatible `permission-mode` record under the
+  transcript lease before the next turn; it stores no Praxis-only transcript
+  fields. `Shift+Tab` cycles the same local mode set.
+- The composer edits at its real Unicode code-point cursor. It supports arrow
+  movement, Meta-word movement, `Ctrl+A/E/B/F/W/U/K`, backspace/delete,
+  multiline `Shift+Enter`, and submitted-prompt history. The first `Ctrl+C`
+  clears input and asks for confirmation; the second exits.
 - Existing `/new`, `/clear`, `/sessions`, `/workflows`, `/exit`, resume,
   scheduled prompt, cancellation, permission, plan, question, and elicitation
   behavior is unchanged.
@@ -90,6 +106,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   remain visible as compact operational feedback.
 - Streaming text is rendered once and replaced by the completed assistant turn.
 - Empty input shows a suggestion; typed input never gets replaced.
+- Per-turn cost comes from the actual model result; context capacity comes from
+  the active provider capability rather than a TUI constant.
 - Terminal resize changes layout only, never session or input state.
 
 ## Verification
@@ -105,10 +123,10 @@ is passed from the CLI composition root and never written to shared JSONL.
 
 ## Remaining interactive parity work
 
-The Stage TUI-1 palette and thinking controls close the previously missing
-interaction seam, but they do not justify a blanket “complete Claude Code TUI”
-claim. Remaining black-box-driven work includes native picker/menu coverage for
-model and permission changes, command-specific interactive controls, editor
-history and cursor shortcuts, tool/diff expansion navigation, and richer
-context/cost status. Each item needs an observed contract and a focused TTY or
-Ink gate before the matrix can return to a complete status.
+The Stage TUI-1/2 controls close the slash, thinking, composer, per-session
+runtime-control, and measured-status seams, but they do not justify a blanket
+“complete Claude Code TUI” claim. Remaining black-box-driven work includes the
+full permission-rule dashboard (rules, tabs, search, and settings editing),
+tool/diff expansion and keyboard navigation, and command-specific dialogs plus
+exact layout/shortcut coverage. Each item needs an observed contract and a
+focused TTY or Ink gate before the matrix can return to a complete status.

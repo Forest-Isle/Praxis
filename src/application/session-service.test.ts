@@ -190,6 +190,31 @@ describe('ClaudeSessionService', () => {
     expect(modes).toEqual(['plan', 'default'])
   })
 
+  it('appends an explicit Claude permission mode for an existing session', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const sessionId = '87878787-8787-4787-8787-878787878787'
+
+    await service.run('start', undefined, sessionId)
+    await service.setPermissionMode(sessionId, 'acceptEdits')
+
+    const transcript = await readFile(
+      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
+      'utf8',
+    )
+    const modes = transcript
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.type === 'permission-mode')
+    expect(modes).toEqual([
+      {
+        type: 'permission-mode',
+        permissionMode: 'acceptEdits',
+        sessionId,
+      },
+    ])
+  })
+
   it('persists native file checkpoints and rewinds without a provider call', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-rewind-'))
     roots.push(root)

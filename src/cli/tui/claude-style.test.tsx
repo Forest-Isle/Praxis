@@ -7,6 +7,7 @@ import {
   Composer,
   DialogFrame,
   MarkdownText,
+  SelectionMenu,
   SessionPicker,
   Transcript,
   WelcomePanel,
@@ -156,14 +157,36 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('Tab fill')
   })
 
+  it('renders an accessible selected runtime menu', () => {
+    const app = render(
+      <SelectionMenu
+        title="Select effort"
+        description="Choose reasoning effort."
+        options={[
+          { label: 'low', description: 'Fast', selected: false },
+          { label: 'high', description: 'Thorough', selected: true },
+        ]}
+        selectedIndex={1}
+        footer="Enter applies · Esc cancels"
+        width={70}
+        screenReader={false}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Select effort')
+    expect(frame).toContain('❯ 2. high ✔')
+    expect(frame).toContain('Enter applies · Esc cancels')
+  })
+
   it('renders composer effort, prompt, mode, and busy states', () => {
     const idle = render(
       <Composer
         input=""
         busy={false}
         status="ready"
-        display={display}
+        display={{ ...display, contextWindowTokens: 200 }}
         usage={{ inputTokens: 2, outputTokens: 1 }}
+        costUsd={0.001}
         width={60}
         screenReader={false}
       />,
@@ -171,7 +194,9 @@ describe('Claude-style TUI components', () => {
     expect(idle.lastFrame()).toContain('◉ high · /effort')
     expect(idle.lastFrame()).toContain('❯ Try "review this project"')
     expect(idle.lastFrame()).toContain('permissions default')
-    expect(idle.lastFrame()).toContain('Context · 3 tokens')
+    expect(idle.lastFrame()).toContain(
+      'Context · 3 tokens / 200 (2%) · $0.001000',
+    )
 
     const busy = render(
       <Composer
@@ -185,6 +210,19 @@ describe('Claude-style TUI components', () => {
     )
     expect(busy.lastFrame()).toContain('✳ streaming…')
     expect(busy.lastFrame()).toContain('esc to interrupt')
+
+    const cursor = render(
+      <Composer
+        input="abXcd"
+        cursor={2}
+        busy={false}
+        status="ready"
+        display={display}
+        width={60}
+        screenReader={false}
+      />,
+    )
+    expect(cursor.lastFrame()).toContain('❯ abXcd')
   })
 
   it('keeps dialogs and session selection visually bounded', () => {

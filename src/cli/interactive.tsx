@@ -13,13 +13,18 @@ import type {
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
-import type { CliElicitationRequest, CliElicitationResult } from './protocol.js'
+import type {
+  CliElicitationRequest,
+  CliElicitationResult,
+  CliRuntimeInfo,
+} from './protocol.js'
 import type {
   ClaudeInteractiveToolCallbacks,
   ClaudePlanApprovalRequest,
   ClaudeQuestion,
   ClaudeQuestionResult,
 } from '../tools/claude-interactive-tools.js'
+import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
 import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
@@ -28,6 +33,7 @@ import {
   CommandPalette,
   Composer,
   DialogFrame,
+  SelectionMenu,
   SessionPicker,
   Transcript,
   WelcomePanel,
@@ -41,6 +47,17 @@ import {
   slashCommandQuery,
   type TuiSlashCommand,
 } from './tui/slash-commands.js'
+import {
+  createComposerEditor,
+  deleteComposerBackward,
+  deleteComposerForward,
+  deleteComposerToEnd,
+  deleteComposerToStart,
+  deleteComposerWordBackward,
+  insertComposerText,
+  moveComposerCursor,
+  moveComposerCursorByWord,
+} from './tui/composer-editor.js'
 
 interface InteractiveSessionCommands {
   run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult>
@@ -53,6 +70,11 @@ interface InteractiveSessionCommands {
   sessions(): Promise<SessionSummary[]>
   workflows?(): readonly Record<string, unknown>[]
   slashCommands?(): readonly TuiSlashCommand[]
+  runtimeInfo?(): CliRuntimeInfo
+  setPermissionMode?(
+    sessionId: string,
+    mode: ClaudePermissionMode,
+  ): Promise<void>
   nextScheduledPrompt?(
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
@@ -72,6 +94,9 @@ export interface InteractiveServiceFactory {
     askUser?: ClaudeInteractiveToolCallbacks['askUser']
     approvePlan?: ClaudeInteractiveToolCallbacks['approvePlan']
     agent?: string
+    model?: string
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+    permissionMode?: ClaudePermissionMode
     signal?: AbortSignal
   }): Promise<InteractiveSessionCommands>
 }
@@ -99,6 +124,7 @@ interface InteractiveAppProps {
   display?: TuiDisplayMetadata
   terminalWidth?: number
   slashCommands?: readonly TuiSlashCommand[]
+  allowDangerouslySkipPermissions?: boolean
 }
 
 type PendingPermission = {
@@ -125,6 +151,75 @@ type PendingPlanApproval = {
 }
 
 const EMPTY_SLASH_COMMANDS: readonly TuiSlashCommand[] = []
+
+const EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+const PERMISSION_OPTIONS: readonly {
+  mode: ClaudePermissionMode
+  label: string
+  description: string
+}[] = [
+  {
+    mode: 'default',
+    label: 'Default',
+    description: 'Ask before changes that need approval.',
+  },
+  {
+    mode: 'acceptEdits',
+    label: 'Accept edits',
+    description: 'Allow file edits while keeping command approval.',
+  },
+  {
+    mode: 'auto',
+    label: 'Auto',
+    description: 'Classify safe tool calls before asking.',
+  },
+  {
+    mode: 'manual',
+    label: 'Manual',
+    description: 'Ask for every tool call that is not explicitly allowed.',
+  },
+  {
+    mode: 'dontAsk',
+    label: "Don't ask",
+    description: 'Deny tool calls that require confirmation.',
+  },
+  {
+    mode: 'plan',
+    label: 'Plan mode',
+    description: 'Restrict changes to the plan file until approval.',
+  },
+]
+
+type InteractiveMenu =
+  | { kind: 'model'; selectedIndex: number }
+  | { kind: 'model-input' }
+  | { kind: 'effort'; selectedIndex: number }
+  | { kind: 'permission'; selectedIndex: number }
+
+type RuntimePreferences = {
+  model?: string
+  effort: (typeof EFFORT_OPTIONS)[number]
+  permissionMode: ClaudePermissionMode
+}
+
+function permissionMode(value: string | undefined): ClaudePermissionMode {
+  return [
+    'acceptEdits',
+    'auto',
+    'bypassPermissions',
+    'manual',
+    'dontAsk',
+    'plan',
+  ].includes(value ?? '')
+    ? (value as ClaudePermissionMode)
+    : 'default'
+}
+
+function effort(value: string | undefined): RuntimePreferences['effort'] {
+  return EFFORT_OPTIONS.includes(value as RuntimePreferences['effort'])
+    ? (value as RuntimePreferences['effort'])
+    : 'high'
+}
 
 function questionAnswer(question: ClaudeQuestion, input: string): string {
   const answer = input.trim()
@@ -182,6 +277,7 @@ export function InteractiveApp({
   display = { version: 'dev', cwd: process.cwd() },
   terminalWidth,
   slashCommands = EMPTY_SLASH_COMMANDS,
+  allowDangerouslySkipPermissions = false,
 }: InteractiveAppProps) {
   const { exit } = useApp()
   const width = useTerminalWidth(terminalWidth)
@@ -207,10 +303,17 @@ export function InteractiveApp({
   const [pendingFork, setPendingFork] = useState(resume?.forkSession === true)
   const [input, setInput] = useState('')
   const inputRef = useRef('')
+  const [inputCursor, setInputCursor] = useState(0)
+  const inputCursorRef = useRef(0)
+  const inputHistoryRef = useRef<string[]>([])
+  const inputHistoryIndexRef = useRef<number | null>(null)
+  const inputHistoryDraftRef = useRef('')
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandSelection, setCommandSelection] = useState(0)
   const [availableSlashCommands, setAvailableSlashCommands] =
     useState(slashCommands)
+  const [menu, setMenu] = useState<InteractiveMenu | null>(null)
+  const menuRef = useRef<InteractiveMenu | null>(null)
   const [busy, setBusy] = useState(false)
   const initialPromptRef = useRef(initialPrompt?.trim() ?? '')
   const [initialPromptPending, setInitialPromptPending] = useState(
@@ -221,7 +324,21 @@ export function InteractiveApp({
   const [activeThinking, setActiveThinking] = useState('')
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
   const [usage, setUsage] = useState<ModelUsage | undefined>()
+  const [costUsd, setCostUsd] = useState<number | undefined>()
+  const [contextWindowTokens, setContextWindowTokens] = useState(
+    display.contextWindowTokens,
+  )
   const [history, setHistory] = useState<TranscriptItem[]>([])
+  const [exitConfirmation, setExitConfirmation] = useState(false)
+  const exitConfirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  )
+  const [runtimePreferences, setRuntimePreferences] =
+    useState<RuntimePreferences>(() => ({
+      effort: effort(display.effort),
+      permissionMode: permissionMode(display.permissionMode),
+    }))
+  const runtimePreferencesRef = useRef(runtimePreferences)
   const [permission, setPermission] = useState<PendingPermission | null>(null)
   const permissionRef = useRef<PendingPermission | null>(null)
   const [elicitation, setElicitation] = useState<PendingElicitation | null>(
@@ -242,6 +359,9 @@ export function InteractiveApp({
   onCleanupRef.current = onCleanup
   const scheduledWaitRef = useRef<AbortController | null>(null)
   const turnControllerRef = useRef<AbortController | null>(null)
+  const serviceRetirementRef = useRef<Promise<void> | null>(null)
+  const serviceEpochRef = useRef(0)
+  const serviceCreationEpochRef = useRef<number | null>(null)
   const allSlashCommands = useMemo(
     () => mergeTuiSlashCommands(availableSlashCommands),
     [availableSlashCommands],
@@ -268,6 +388,52 @@ export function InteractiveApp({
   const selectedSlashCommandIndex = Math.min(
     commandSelection,
     Math.max(0, matchingSlashCommands.length - 1),
+  )
+  const runtimeDisplay: TuiDisplayMetadata = {
+    ...display,
+    ...(runtimePreferences.model === undefined
+      ? {}
+      : { model: runtimePreferences.model }),
+    effort: runtimePreferences.effort,
+    permissionMode: runtimePreferences.permissionMode,
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+  }
+  const permissionOptions = useMemo(
+    () => [
+      ...PERMISSION_OPTIONS,
+      ...(allowDangerouslySkipPermissions
+        ? [
+            {
+              mode: 'bypassPermissions' as const,
+              label: 'Bypass permissions',
+              description:
+                'Allow tool calls except explicit deny rules for this session.',
+            },
+          ]
+        : []),
+    ],
+    [allowDangerouslySkipPermissions],
+  )
+  const modelOptions = useMemo(
+    () => [
+      {
+        label: runtimeDisplay.model
+          ? `Current: ${runtimeDisplay.model}`
+          : 'Current: provider default',
+        description: 'Keep the model selected for this interactive session.',
+        selected: true,
+      },
+      {
+        label: 'Use invocation default',
+        description: 'Use the model supplied by the original CLI invocation.',
+      },
+      {
+        label: 'Enter a model ID…',
+        description:
+          'Use any model identifier supported by the configured provider.',
+      },
+    ],
+    [runtimeDisplay.model],
   )
 
   useEffect(() => {
@@ -300,6 +466,8 @@ export function InteractiveApp({
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
       planApprovalRef.current?.resolve(false)
+      if (exitConfirmationTimerRef.current)
+        clearTimeout(exitConfirmationTimerRef.current)
       scheduledWaitRef.current?.abort()
       turnControllerRef.current?.abort()
       const closing = serviceRef.current?.close?.() ?? Promise.resolve()
@@ -312,11 +480,83 @@ export function InteractiveApp({
   const append = (line: TranscriptItem) =>
     setHistory((current) => [...current, line])
 
-  const updateComposerInput = (next: string) => {
-    inputRef.current = next
-    setInput(next)
-    setCommandPaletteOpen(slashCommandQuery(next) !== null)
+  const updateComposerInput = (next: string, cursor?: number) => {
+    const editor = createComposerEditor(next, cursor)
+    inputRef.current = editor.text
+    inputCursorRef.current = editor.cursor
+    setInput(editor.text)
+    setInputCursor(editor.cursor)
+    setCommandPaletteOpen(slashCommandQuery(editor.text) !== null)
     setCommandSelection(0)
+  }
+
+  const updateComposerEditor = (
+    editor: ReturnType<typeof createComposerEditor>,
+  ) => updateComposerInput(editor.text, editor.cursor)
+
+  const clearComposerInput = () => updateComposerInput('')
+
+  const updateMenu = (next: InteractiveMenu | null) => {
+    menuRef.current = next
+    setMenu(next)
+  }
+
+  const appendPromptHistory = (prompt: string) => {
+    if (!prompt) return
+    const history = inputHistoryRef.current.filter((item) => item !== prompt)
+    inputHistoryRef.current = [prompt, ...history].slice(0, 100)
+    inputHistoryIndexRef.current = null
+    inputHistoryDraftRef.current = ''
+  }
+
+  const restorePromptHistory = (direction: 'previous' | 'next') => {
+    const history = inputHistoryRef.current
+    if (history.length === 0) return
+    const currentIndex = inputHistoryIndexRef.current
+    if (direction === 'previous') {
+      if (currentIndex === null) inputHistoryDraftRef.current = inputRef.current
+      const nextIndex = Math.min(history.length - 1, (currentIndex ?? -1) + 1)
+      inputHistoryIndexRef.current = nextIndex
+      updateComposerInput(history[nextIndex] ?? '')
+      return
+    }
+    if (currentIndex === null) return
+    const nextIndex = currentIndex - 1
+    if (nextIndex < 0) {
+      inputHistoryIndexRef.current = null
+      updateComposerInput(inputHistoryDraftRef.current)
+      return
+    }
+    inputHistoryIndexRef.current = nextIndex
+    updateComposerInput(history[nextIndex] ?? '')
+  }
+
+  const dismissExitConfirmation = () => {
+    if (!exitConfirmation) return
+    if (exitConfirmationTimerRef.current)
+      clearTimeout(exitConfirmationTimerRef.current)
+    exitConfirmationTimerRef.current = null
+    setExitConfirmation(false)
+  }
+
+  const armExitConfirmation = () => {
+    if (exitConfirmation) {
+      permissionRef.current?.resolve(false)
+      elicitationRef.current?.resolve({ action: 'cancel' })
+      questionRef.current?.resolve(null)
+      planApprovalRef.current?.resolve(false)
+      onCancel?.()
+      exit()
+      return
+    }
+    clearComposerInput()
+    setExitConfirmation(true)
+    if (exitConfirmationTimerRef.current)
+      clearTimeout(exitConfirmationTimerRef.current)
+    exitConfirmationTimerRef.current = setTimeout(() => {
+      exitConfirmationTimerRef.current = null
+      setExitConfirmation(false)
+    }, 1_500)
   }
 
   useEffect(() => {
@@ -518,8 +758,7 @@ export function InteractiveApp({
         return
       }
       signal?.addEventListener('abort', abort, { once: true })
-      inputRef.current = ''
-      setInput('')
+      clearComposerInput()
       questionRef.current = pending
       setQuestion(pending)
     })
@@ -552,33 +791,159 @@ export function InteractiveApp({
       setPlanApproval(pending)
     })
 
+  const warn = (error: unknown) =>
+    append({
+      kind: 'warning',
+      text: redactSensitiveText(
+        error instanceof Error ? error.message : String(error),
+        sensitiveValues,
+      ),
+    })
+
+  const retireService = (): Promise<void> => {
+    serviceEpochRef.current += 1
+    scheduledWaitRef.current?.abort()
+    const current = serviceRef.current
+    serviceRef.current = null
+    if (!current?.close) return Promise.resolve()
+    const closing = current.close().catch((error: unknown) => {
+      warn(error)
+    })
+    serviceRetirementRef.current = closing
+    void closing.finally(() => {
+      if (serviceRetirementRef.current === closing)
+        serviceRetirementRef.current = null
+    })
+    return closing
+  }
+
+  const updateRuntimePreferences = (
+    update: (current: RuntimePreferences) => RuntimePreferences,
+  ) => {
+    const next = update(runtimePreferencesRef.current)
+    runtimePreferencesRef.current = next
+    setRuntimePreferences(next)
+    return next
+  }
+
   const service = async () => {
     if (serviceRef.current) return serviceRef.current
-    const pending =
-      serviceCreationRef.current ??
-      factory.createService({
-        eventSink: handleEvent,
-        requireProvider: true,
-        approveRecovery,
-        approveTool,
-        onElicitation: requestElicitation,
-        askUser,
-        approvePlan,
-        ...(signal ? { signal } : {}),
-      })
-    serviceCreationRef.current = pending
+    let pending = serviceCreationRef.current
+    let epoch = serviceCreationEpochRef.current
+    if (!pending) {
+      epoch = serviceEpochRef.current
+      const preferences = runtimePreferencesRef.current
+      pending = (async () => {
+        await serviceRetirementRef.current
+        return factory.createService({
+          eventSink: handleEvent,
+          requireProvider: true,
+          approveRecovery,
+          approveTool,
+          onElicitation: requestElicitation,
+          askUser,
+          approvePlan,
+          ...(preferences.model === undefined
+            ? {}
+            : { model: preferences.model }),
+          effort: preferences.effort,
+          permissionMode: preferences.permissionMode,
+          ...(signal ? { signal } : {}),
+        })
+      })()
+      serviceCreationRef.current = pending
+      serviceCreationEpochRef.current = epoch
+    }
     try {
       const created = await pending
+      if (epoch !== serviceEpochRef.current) {
+        try {
+          await created.close?.()
+        } catch (error) {
+          warn(error)
+        }
+        if (serviceCreationRef.current === pending) {
+          serviceCreationRef.current = undefined
+          serviceCreationEpochRef.current = null
+        }
+        return service()
+      }
       serviceRef.current = created
       setAvailableSlashCommands(created.slashCommands?.() ?? slashCommands)
+      const runtimeInfo = created.runtimeInfo?.()
+      if (runtimeInfo?.contextWindowTokens !== undefined)
+        setContextWindowTokens(runtimeInfo.contextWindowTokens)
       return created
     } finally {
-      serviceCreationRef.current = undefined
+      if (serviceCreationRef.current === pending) {
+        serviceCreationRef.current = undefined
+        serviceCreationEpochRef.current = null
+      }
     }
+  }
+
+  const changeModel = (model: string | undefined) => {
+    updateRuntimePreferences((current) => {
+      if (model !== undefined) return { ...current, model }
+      const withoutModel = { ...current }
+      delete withoutModel.model
+      return withoutModel
+    })
+    void retireService()
+    append({
+      kind: 'notice',
+      text: model
+        ? `Model set to ${model} for this session.`
+        : 'Model reset to the invocation default for this session.',
+    })
+  }
+
+  const changeEffort = (nextEffort: RuntimePreferences['effort']) => {
+    updateRuntimePreferences((current) => ({ ...current, effort: nextEffort }))
+    void retireService()
+    append({
+      kind: 'notice',
+      text: `Effort set to ${nextEffort} for this session.`,
+    })
+  }
+
+  const changePermissionMode = (mode: ClaudePermissionMode) => {
+    updateRuntimePreferences((current) => ({
+      ...current,
+      permissionMode: mode,
+    }))
+    const change = (async () => {
+      setBusy(true)
+      setStatus('updating permission mode')
+      try {
+        if (sessionId) {
+          const commands = await service()
+          if (!commands.setPermissionMode) {
+            throw new Error(
+              'This interactive service cannot persist permission mode changes.',
+            )
+          }
+          await commands.setPermissionMode(sessionId, mode)
+        }
+        await retireService()
+        append({
+          kind: 'notice',
+          text: `Permission mode set to ${mode} for this session.`,
+        })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(change)
+    void change.finally(() => onTurnChange?.(null))
   }
 
   const submit = async (prompt: string) => {
     scheduledWaitRef.current?.abort()
+    appendPromptHistory(prompt)
     const turnController = new AbortController()
     turnControllerRef.current?.abort()
     turnControllerRef.current = turnController
@@ -595,6 +960,7 @@ export function InteractiveApp({
     try {
       commands = await service()
       let activeSessionId = sessionId
+      const startedNewSession = activeSessionId === null
       if (activeSessionId && pendingFork) {
         const fork = await commands.fork(activeSessionId, resume?.forkSessionId)
         activeSessionId = fork.sessionId
@@ -605,7 +971,21 @@ export function InteractiveApp({
         ? await commands.resume(activeSessionId, prompt, turnSignal)
         : await commands.run(prompt, turnSignal)
       setSessionId(result.sessionId)
+      if (
+        startedNewSession &&
+        runtimePreferencesRef.current.permissionMode !== 'default'
+      ) {
+        try {
+          await commands.setPermissionMode?.(
+            result.sessionId,
+            runtimePreferencesRef.current.permissionMode,
+          )
+        } catch (error) {
+          warn(error)
+        }
+      }
       setUsage(result.usage)
+      setCostUsd(result.costUsd)
       append({ kind: 'assistant', text: result.text })
       setActiveText('')
       setActiveThinking('')
@@ -709,38 +1089,88 @@ export function InteractiveApp({
   }, [busy, initialPromptPending, permission, selectingSession, sessionId])
 
   useInput((value, key) => {
-    if (key.ctrl && value.toLowerCase() === 'c') {
-      permissionRef.current?.resolve(false)
-      elicitationRef.current?.resolve({ action: 'cancel' })
-      questionRef.current?.resolve(null)
-      planApprovalRef.current?.resolve(false)
-      onCancel?.()
-      exit()
+    const lower = value.toLowerCase()
+    const editor = () =>
+      createComposerEditor(inputRef.current, inputCursorRef.current)
+    const editComposer = () => {
+      if (key.leftArrow) {
+        updateComposerEditor(
+          key.meta
+            ? moveComposerCursorByWord(editor(), 'backward')
+            : moveComposerCursor(editor(), -1),
+        )
+        return true
+      }
+      if (key.rightArrow) {
+        updateComposerEditor(
+          key.meta
+            ? moveComposerCursorByWord(editor(), 'forward')
+            : moveComposerCursor(editor(), 1),
+        )
+        return true
+      }
+      if (key.ctrl && lower === 'a') {
+        updateComposerEditor(createComposerEditor(inputRef.current, 0))
+        return true
+      }
+      if (key.ctrl && lower === 'e') {
+        updateComposerEditor(createComposerEditor(inputRef.current))
+        return true
+      }
+      if (key.ctrl && lower === 'b') {
+        updateComposerEditor(moveComposerCursor(editor(), -1))
+        return true
+      }
+      if (key.ctrl && lower === 'f') {
+        updateComposerEditor(moveComposerCursor(editor(), 1))
+        return true
+      }
+      if (key.ctrl && lower === 'w') {
+        updateComposerEditor(deleteComposerWordBackward(editor()))
+        return true
+      }
+      if (key.ctrl && lower === 'u') {
+        updateComposerEditor(deleteComposerToStart(editor()))
+        return true
+      }
+      if (key.ctrl && lower === 'k') {
+        updateComposerEditor(deleteComposerToEnd(editor()))
+        return true
+      }
+      if (key.backspace) {
+        updateComposerEditor(deleteComposerBackward(editor()))
+        return true
+      }
+      if (key.delete) {
+        updateComposerEditor(deleteComposerForward(editor()))
+        return true
+      }
+      if (!key.ctrl && !key.meta && value) {
+        updateComposerEditor(insertComposerText(editor(), value))
+        return true
+      }
+      return false
+    }
+
+    if (key.ctrl && lower === 'c') {
+      armExitConfirmation()
       return
     }
+    dismissExitConfirmation()
+
     if (permission) {
-      if (value.toLowerCase() === 'y' || value === '1') {
+      if (lower === 'y' || value === '1') {
         permission.resolve(true)
-      } else if (
-        value.toLowerCase() === 'n' ||
-        value === '2' ||
-        key.return ||
-        key.escape
-      ) {
+      } else if (lower === 'n' || value === '2' || key.return || key.escape) {
         permission.resolve(false)
       }
       return
     }
 
     if (planApproval) {
-      if (value.toLowerCase() === 'y' || value === '1') {
+      if (lower === 'y' || value === '1') {
         planApproval.resolve(true)
-      } else if (
-        value.toLowerCase() === 'n' ||
-        value === '2' ||
-        key.return ||
-        key.escape
-      ) {
+      } else if (lower === 'n' || value === '2' || key.return || key.escape) {
         planApproval.resolve(false)
       }
       return
@@ -755,8 +1185,7 @@ export function InteractiveApp({
           if (!current) throw new Error('Question state is invalid.')
           const answer = questionAnswer(current, inputRef.current.trim())
           const answers = { ...question.answers, [current.question]: answer }
-          inputRef.current = ''
-          setInput('')
+          clearComposerInput()
           if (question.index === question.questions.length - 1) {
             question.resolve({ answers })
           } else {
@@ -770,12 +1199,8 @@ export function InteractiveApp({
             text: error instanceof Error ? error.message : String(error),
           })
         }
-      } else if (key.backspace || key.delete) {
-        inputRef.current = inputRef.current.slice(0, -1)
-        setInput(inputRef.current)
-      } else if (!key.ctrl && !key.meta && value) {
-        inputRef.current += value
-        setInput(inputRef.current)
+      } else {
+        editComposer()
       }
       return
     }
@@ -785,8 +1210,7 @@ export function InteractiveApp({
         elicitation.resolve({ action: 'cancel' })
       } else if (key.return) {
         const answer = inputRef.current.trim()
-        inputRef.current = ''
-        setInput('')
+        clearComposerInput()
         if (!answer || answer.toLowerCase() === 'decline') {
           elicitation.resolve({ action: 'decline' })
         } else if (answer.toLowerCase() === 'cancel') {
@@ -802,13 +1226,12 @@ export function InteractiveApp({
               Array.isArray(content)
             )
               throw new Error('elicitation content must be a JSON object')
-            const elicitationContent = content as Record<
-              string,
-              string | number | boolean | string[]
-            >
             elicitation.resolve({
               action: 'accept',
-              content: elicitationContent,
+              content: content as Record<
+                string,
+                string | number | boolean | string[]
+              >,
             })
           } catch {
             append({
@@ -817,12 +1240,8 @@ export function InteractiveApp({
             })
           }
         }
-      } else if (key.backspace || key.delete) {
-        inputRef.current = inputRef.current.slice(0, -1)
-        setInput(inputRef.current)
-      } else if (!key.ctrl && !key.meta && value) {
-        inputRef.current += value
-        setInput(inputRef.current)
+      } else {
+        editComposer()
       }
       return
     }
@@ -855,12 +1274,105 @@ export function InteractiveApp({
       return
     }
 
-    if (key.ctrl && value.toLowerCase() === 'o' && hasThinking) {
+    const activeMenu = menuRef.current
+    if (activeMenu) {
+      if (activeMenu.kind === 'model-input') {
+        if (key.escape) {
+          clearComposerInput()
+          updateMenu(null)
+        } else if (key.return) {
+          const model = inputRef.current.trim()
+          if (!model) {
+            append({ kind: 'warning', text: 'Enter a model ID or press Esc.' })
+          } else {
+            clearComposerInput()
+            updateMenu(null)
+            changeModel(model)
+          }
+        } else {
+          editComposer()
+        }
+        return
+      }
+
+      if (key.escape) {
+        updateMenu(null)
+        return
+      }
+
+      const optionCount =
+        activeMenu.kind === 'model'
+          ? modelOptions.length
+          : activeMenu.kind === 'effort'
+            ? EFFORT_OPTIONS.length
+            : permissionOptions.length
+      const select = (selectedIndex: number) =>
+        updateMenu({ ...activeMenu, selectedIndex })
+      if (key.upArrow) {
+        select(Math.max(0, activeMenu.selectedIndex - 1))
+        return
+      }
+      if (key.downArrow) {
+        select(Math.min(optionCount - 1, activeMenu.selectedIndex + 1))
+        return
+      }
+      if (/^[1-9]$/u.test(value)) {
+        select(Math.min(optionCount - 1, Number(value) - 1))
+        return
+      }
+      if (activeMenu.kind === 'model' && (key.leftArrow || key.rightArrow)) {
+        const currentEffort = runtimePreferencesRef.current.effort
+        const currentIndex = EFFORT_OPTIONS.indexOf(currentEffort)
+        const nextIndex = Math.max(
+          0,
+          Math.min(
+            EFFORT_OPTIONS.length - 1,
+            currentIndex + (key.leftArrow ? -1 : 1),
+          ),
+        )
+        const nextEffort = EFFORT_OPTIONS[nextIndex]
+        if (nextEffort && nextEffort !== currentEffort) changeEffort(nextEffort)
+        return
+      }
+      if (!key.return && lower !== 's') return
+
+      if (activeMenu.kind === 'model') {
+        if (activeMenu.selectedIndex === 1) {
+          updateMenu(null)
+          changeModel(undefined)
+        } else if (activeMenu.selectedIndex === 2) {
+          clearComposerInput()
+          updateMenu({ kind: 'model-input' })
+        } else {
+          updateMenu(null)
+        }
+      } else if (activeMenu.kind === 'effort') {
+        const selectedEffort = EFFORT_OPTIONS[activeMenu.selectedIndex]
+        if (selectedEffort) changeEffort(selectedEffort)
+        updateMenu(null)
+      } else {
+        const selectedMode = permissionOptions[activeMenu.selectedIndex]?.mode
+        if (selectedMode) changePermissionMode(selectedMode)
+        updateMenu(null)
+      }
+      return
+    }
+
+    if (key.ctrl && lower === 'o' && hasThinking) {
       setThinkingExpanded((current) => !current)
       return
     }
     if (busy) {
       if (key.escape || value === '\u001B') turnControllerRef.current?.abort()
+      return
+    }
+    if (key.tab && key.shift) {
+      const currentIndex = permissionOptions.findIndex(
+        (option) => option.mode === runtimePreferences.permissionMode,
+      )
+      const next =
+        permissionOptions[(currentIndex + 1) % permissionOptions.length]
+      if (next) changePermissionMode(next.mode)
       return
     }
     if (commandPaletteVisible) {
@@ -898,20 +1410,50 @@ export function InteractiveApp({
     }
     if (key.return) {
       if (key.shift) {
-        updateComposerInput(`${inputRef.current}\n`)
+        updateComposerEditor(insertComposerText(editor(), '\n'))
         return
       }
       const prompt = inputRef.current.trim()
-      updateComposerInput('')
+      clearComposerInput()
       if (!prompt) return
       if (prompt === '/exit') {
         exit()
       } else if (prompt === '/help' || prompt === '?') {
         updateComposerInput('/')
-      } else if (prompt === '/new' || prompt === '/clear') {
+      } else if (prompt === '/new') {
         setSessionId(null)
         setPendingFork(false)
         append({ kind: 'notice', text: 'Started a new session.' })
+      } else if (prompt === '/clear') {
+        setSessionId(null)
+        setPendingFork(false)
+        setHistory([])
+        setUsage(undefined)
+        setCostUsd(undefined)
+        setActiveText('')
+        setActiveThinking('')
+        setThinkingExpanded(false)
+        setStatus('ready')
+        inputHistoryRef.current = []
+        inputHistoryIndexRef.current = null
+        inputHistoryDraftRef.current = ''
+      } else if (prompt === '/model') {
+        updateMenu({ kind: 'model', selectedIndex: 0 })
+      } else if (prompt === '/effort') {
+        updateMenu({
+          kind: 'effort',
+          selectedIndex: EFFORT_OPTIONS.indexOf(runtimePreferences.effort),
+        })
+      } else if (prompt === '/permissions') {
+        updateMenu({
+          kind: 'permission',
+          selectedIndex: Math.max(
+            0,
+            permissionOptions.findIndex(
+              (option) => option.mode === runtimePreferences.permissionMode,
+            ),
+          ),
+        })
       } else if (prompt === '/sessions') {
         selectedIndexRef.current = 0
         setSelectedIndex(0)
@@ -934,13 +1476,7 @@ export function InteractiveApp({
                       .join('\n'),
             })
           } catch (error) {
-            append({
-              kind: 'warning',
-              text: redactSensitiveText(
-                error instanceof Error ? error.message : String(error),
-                sensitiveValues,
-              ),
-            })
+            warn(error)
           } finally {
             setBusy(false)
           }
@@ -955,11 +1491,17 @@ export function InteractiveApp({
           () => onTurnChange?.(null),
         )
       }
-    } else if (key.backspace || key.delete) {
-      updateComposerInput(inputRef.current.slice(0, -1))
-    } else if (!key.ctrl && !key.meta && value) {
-      updateComposerInput(inputRef.current + value)
+      return
     }
+    if (key.upArrow) {
+      restorePromptHistory('previous')
+      return
+    }
+    if (key.downArrow) {
+      restorePromptHistory('next')
+      return
+    }
+    editComposer()
   })
 
   return (
@@ -973,7 +1515,7 @@ export function InteractiveApp({
       ) : (
         <>
           {!axScreenReader && history.length === 0 && !sessionId ? (
-            <WelcomePanel display={display} width={width} />
+            <WelcomePanel display={runtimeDisplay} width={width} />
           ) : null}
           {sessionId ? (
             <Text dimColor>Session {sessionId.slice(0, 8)}</Text>
@@ -1055,6 +1597,59 @@ export function InteractiveApp({
               <Text>› {input}</Text>
               <Text dimColor>Enter JSON object to accept · Esc to cancel</Text>
             </DialogFrame>
+          ) : menu?.kind === 'model-input' ? (
+            <DialogFrame title="Enter model ID" screenReader={axScreenReader}>
+              <Text dimColor>
+                Enter a model ID supported by the configured provider.
+              </Text>
+              <Text>› {input}</Text>
+              <Text dimColor>Enter confirms · Esc cancels</Text>
+            </DialogFrame>
+          ) : menu ? (
+            menu.kind === 'model' ? (
+              <SelectionMenu
+                title="Select model"
+                description={`Effort: ${runtimePreferences.effort}`}
+                options={modelOptions}
+                selectedIndex={menu.selectedIndex}
+                footer="↑/↓ select · ←/→ effort · Enter applies to this session · Esc cancels"
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'effort' ? (
+              <SelectionMenu
+                title="Select effort"
+                description="Controls how much reasoning effort the provider should use."
+                options={EFFORT_OPTIONS.map((option) => ({
+                  label: option,
+                  description:
+                    option === 'low'
+                      ? 'Fastest and least deliberative.'
+                      : option === 'max'
+                        ? 'Highest available reasoning effort.'
+                        : 'Use this effort for the next session turns.',
+                  selected: option === runtimePreferences.effort,
+                }))}
+                selectedIndex={menu.selectedIndex}
+                footer="↑/↓ select · Enter applies to this session · Esc cancels"
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : (
+              <SelectionMenu
+                title="Permission mode"
+                description="Changes are kept in the current Claude-compatible session."
+                options={permissionOptions.map((option) => ({
+                  label: option.label,
+                  description: option.description,
+                  selected: option.mode === runtimePreferences.permissionMode,
+                }))}
+                selectedIndex={menu.selectedIndex}
+                footer="↑/↓ select · Enter applies · Esc cancels"
+                width={width}
+                screenReader={axScreenReader}
+              />
+            )
           ) : (
             <>
               {commandPaletteVisible ? (
@@ -1065,12 +1660,17 @@ export function InteractiveApp({
                   screenReader={axScreenReader}
                 />
               ) : null}
+              {exitConfirmation ? (
+                <Text color="yellow">Press Ctrl-C again to exit</Text>
+              ) : null}
               <Composer
                 input={input}
+                cursor={inputCursor}
                 busy={busy}
                 status={status}
-                display={display}
+                display={runtimeDisplay}
                 {...(usage === undefined ? {} : { usage })}
+                {...(costUsd === undefined ? {} : { costUsd })}
                 width={width}
                 screenReader={axScreenReader}
                 hasThinking={hasThinking}
@@ -1089,6 +1689,7 @@ export async function runInteractive(options: {
   initialPrompt?: string
   signal?: AbortSignal
   axScreenReader?: boolean
+  allowDangerouslySkipPermissions?: boolean
   display?: TuiDisplayMetadata
   sessionFilter?: (session: SessionSummary) => boolean
   requireSession?: boolean
@@ -1160,6 +1761,9 @@ export async function runInteractive(options: {
       {...(resume === undefined ? {} : { resume })}
       {...(options.display === undefined ? {} : { display: options.display })}
       {...(options.axScreenReader ? { axScreenReader: true } : {})}
+      {...(options.allowDangerouslySkipPermissions
+        ? { allowDangerouslySkipPermissions: true }
+        : {})}
     />,
     {
       exitOnCtrlC: false,

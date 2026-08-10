@@ -897,6 +897,10 @@ interface SessionCommands {
     documents?: readonly ModelDocument[],
   ): Promise<SessionRunResult>
   fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
+  setPermissionMode?(
+    sessionId: string,
+    mode: ClaudePermissionMode,
+  ): Promise<void>
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
   lifecycle?(
     trigger: 'init' | 'maintenance',
@@ -945,6 +949,9 @@ export interface CliDependencies extends InteractiveServiceFactory {
       originalCall?: ModelToolCall,
     ) => PermissionApproval | Promise<PermissionApproval>
     agent?: string
+    model?: string
+    effort?: CliControls['effort']
+    permissionMode?: ClaudePermissionMode
     controls?: CliControls
     interactive?: boolean
     sessionKind?: 'bg'
@@ -999,6 +1006,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
   approveRecovery,
   approveTool,
   agent,
+  model: interactiveModel,
+  effort: interactiveEffort,
+  permissionMode: interactivePermissionMode,
   controls = DEFAULT_CLI_CONTROLS,
   interactive = false,
   sessionKind,
@@ -1025,7 +1035,17 @@ const createDefaultService: CliDependencies['createService'] = async ({
     requestedConfigRoot || configuredRoot
       ? join(configRoot, '.claude.json')
       : resolve(homedir(), '.claude.json')
-  const cli = await resolveCliControls(controls, cwd)
+  const cli = await resolveCliControls(
+    {
+      ...controls,
+      ...(interactiveModel === undefined ? {} : { model: interactiveModel }),
+      ...(interactiveEffort === undefined ? {} : { effort: interactiveEffort }),
+      ...(interactivePermissionMode === undefined
+        ? {}
+        : { permissionMode: interactivePermissionMode }),
+    },
+    cwd,
+  )
   const debug =
     cli.debug !== undefined || cli.debugFile !== undefined
       ? createCliDebugSink(eventSink, {
@@ -1526,6 +1546,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const runtimeInfo: CliRuntimeInfo = {
       cwd: workspace.cwd(),
       model: provider?.model ?? runtimeEnvironment.PRAXIS_MODEL ?? 'unknown',
+      ...(provider?.capabilities.contextWindowTokens === undefined
+        ? {}
+        : { contextWindowTokens: provider.capabilities.contextWindowTokens }),
       tools: toolNames,
       mcpServers: mcpTools.serverStatuses(),
       permissionMode: cli.dangerouslySkipPermissions
@@ -1577,6 +1600,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
         pendingResumeSessionAt = undefined
         return service.fork(sessionId, targetSessionId, resumeSessionAt)
       },
+      setPermissionMode: (sessionId, permissionMode) =>
+        service.setPermissionMode(sessionId, permissionMode),
       rewindFiles: (sessionId, userMessageId) =>
         service.rewindFiles(sessionId, userMessageId),
       lifecycle: async (trigger, lifecycleOptions = {}) => {
@@ -1872,6 +1897,9 @@ const defaultDependencies: CliDependencies = {
       ...(signal ? { signal } : {}),
       ...(initialPrompt === undefined ? {} : { initialPrompt }),
       ...(controls?.axScreenReader ? { axScreenReader: true } : {}),
+      ...(controls?.allowDangerouslySkipPermissions
+        ? { allowDangerouslySkipPermissions: true }
+        : {}),
       display: {
         version: VERSION,
         cwd: process.cwd(),
