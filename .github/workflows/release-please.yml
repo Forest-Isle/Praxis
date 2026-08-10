@@ -9,6 +9,7 @@ permissions:
   actions: write
   contents: write
   pull-requests: write
+  statuses: write
 
 concurrency:
   group: release-please
@@ -25,7 +26,7 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      - name: Run CI and enable automatic merge for release pull request
+      - name: Run CI, bridge its result, and enable automatic merge
         if: steps.release.outputs.prs_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,16 +36,61 @@ jobs:
           HEAD_BRANCH=$(jq -r '.headBranchName // empty' <<< "$RELEASE_PR")
           test -n "$PR_NUMBER"
           test -n "$HEAD_BRANCH"
-          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_BRANCH"
           PR_DETAILS=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --json autoMergeRequest,headRefName,state)
+            --json autoMergeRequest,headRefName,headRefOid,state)
           test "$(jq -r '.headRefName' <<< "$PR_DETAILS")" = "$HEAD_BRANCH"
-          AUTO_MERGE=$(jq -r 'if .state != "OPEN" then .state elif .autoMergeRequest == null then "disabled" else "enabled" end' <<< "$PR_DETAILS")
+          HEAD_SHA=$(jq -r '.headRefOid // empty' <<< "$PR_DETAILS")
+          test -n "$HEAD_SHA"
+          PREVIOUS_RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+            --branch "$HEAD_BRANCH" --event workflow_dispatch --limit 20 \
+            --json databaseId,headSha | jq -r --arg sha "$HEAD_SHA" \
+            '[.[] | select(.headSha == $sha)] | max_by(.databaseId).databaseId // 0')
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+            -f state=pending -f context=CI \
+            -f description="Release CI is running"
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_BRANCH"
+          AUTO_MERGE=$(jq -r \
+            'if .state != "OPEN" then .state elif .autoMergeRequest == null then "disabled" else "enabled" end' \
+            <<< "$PR_DETAILS")
           if test "$AUTO_MERGE" = "disabled"; then
             gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash --delete-branch
           else
             test "$AUTO_MERGE" = "enabled"
           fi
+          DEADLINE=$((SECONDS + 2400))
+          while true; do
+            RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+              --branch "$HEAD_BRANCH" --event workflow_dispatch --limit 20 \
+              --json databaseId,headSha,status,conclusion)
+            RUN=$(jq -c --arg sha "$HEAD_SHA" --argjson previous "$PREVIOUS_RUN_ID" \
+              '[.[] | select(.headSha == $sha and .databaseId > $previous)] | max_by(.databaseId) // empty' \
+              <<< "$RUNS")
+            if test -n "$RUN"; then
+              RUN_ID=$(jq -r '.databaseId' <<< "$RUN")
+              if test "$(jq -r '.status' <<< "$RUN")" != "completed"; then
+                gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status || true
+              fi
+              RUN_DETAILS=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+                --json conclusion,url)
+              RUN_URL=$(jq -r '.url' <<< "$RUN_DETAILS")
+              if test "$(jq -r '.conclusion' <<< "$RUN_DETAILS")" = "success"; then
+                STATUS=success
+              else
+                STATUS=failure
+              fi
+              break
+            fi
+            if test "$SECONDS" -ge "$DEADLINE"; then
+              RUN_URL="https://github.com/$GITHUB_REPOSITORY/actions/workflows/ci.yml"
+              STATUS=error
+              break
+            fi
+            sleep 5
+          done
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+            -f state="$STATUS" -f context=CI \
+            -f description="Release CI $STATUS" -f target_url="$RUN_URL"
+          test "$STATUS" = success
       - name: Dispatch release publication
         if: steps.release.outputs.release_created == 'true'
         env:
