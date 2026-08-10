@@ -15,6 +15,7 @@ credential-named ambient variables from child environments.
 The tarball contains only:
 
 - compiled `dist/` JavaScript, declarations, and source maps;
+- versioned MCPB manifest schemas required by the runtime;
 - `package.json`;
 - `README.md` and `LICENSE`.
 
@@ -105,11 +106,12 @@ same tarball to npm with provenance. Publication is idempotent: rerunning an
 already published version verifies its presence and succeeds without replacing
 it.
 
-The initial npm publication uses the repository `NPM_TOKEN` secret because npm
-cannot attach a trusted publisher to a package that does not yet exist. After
-the first successful publish, configure npm Trusted Publishing for
-`Forest-Isle/Praxis`, workflow `publish.yml`, environment `npm`, then delete the
-secret. Future releases authenticate only with GitHub OIDC.
+The one-time initial npm publication uses a short-lived local bootstrap token
+because npm cannot attach a trusted publisher to a package that does not yet
+exist. Publish the exact attested GitHub release tarball, revoke the token, and
+configure npm Trusted Publishing for `Forest-Isle/Praxis`, workflow
+`publish.yml`, environment `npm`. Repository secrets are not a supported
+publication path; every automated release authenticates only with GitHub OIDC.
 
 See [RELEASE_AUTOMATION.md](RELEASE_AUTOMATION.md) for bootstrap, retry, and
 recovery procedures.

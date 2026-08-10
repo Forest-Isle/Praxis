@@ -154,9 +154,12 @@ function assertPackageContents(files, distFiles) {
     ...distFiles,
   ])
   const allowedDistSuffixes = ['.js', '.js.map', '.d.ts', '.d.ts.map']
+  const allowedSchemaJson =
+    /^dist\/plugins\/mcpb-schemas\/mcpb-manifest-v0\.[1-4]\.schema\.json$/u
   for (const path of distFiles) {
     if (
-      !allowedDistSuffixes.some((suffix) => path.endsWith(suffix)) ||
+      (!allowedDistSuffixes.some((suffix) => path.endsWith(suffix)) &&
+        !allowedSchemaJson.test(path)) ||
       /\.(?:spec|test)\./u.test(path)
     ) {
       throw new Error(`Unexpected dist release file: ${path}`)
@@ -1430,14 +1433,7 @@ try {
   )
   await run(
     'npm',
-    [
-      'install',
-      '--ignore-scripts',
-      '--no-audit',
-      '--no-fund',
-      '--no-package-lock',
-      tarball,
-    ],
+    ['install', '--ignore-scripts', '--no-audit', '--no-fund', tarball],
     { cwd: installRoot },
   )
 
@@ -1449,6 +1445,11 @@ try {
     throw new Error('Installed tarball version does not match package manifest')
   }
   await access(join(installedPackage, 'dist', 'cli.js'))
+  await run(
+    'npm',
+    ['audit', '--omit', 'dev', '--audit-level', 'high', '--json'],
+    { cwd: installRoot },
+  )
 
   const praxis = join(installRoot, 'node_modules', '.bin', 'praxis')
   const version = await run(praxis, ['--version'], { cwd: installRoot })
@@ -2046,7 +2047,7 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install with zero high-risk production advisories, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
   )
 } finally {
   try {
