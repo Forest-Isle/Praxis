@@ -134,7 +134,7 @@
     "ink-testing-library": "^4.0.0",
     "prettier": "^3.9.6",
     "tsx": "^4.20.0",
-    "typescript": "^5.9.0",
+    "typescript": "^7.0.2",
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10"
   }
