@@ -6,7 +6,10 @@ import type {
   ToolRegistry,
 } from '../core/runtime.js'
 import { ClaudeHookToolCoordinator } from './claude-hook-tools.js'
-import { ClaudeHookRunner } from './claude-hooks.js'
+import {
+  ClaudeHookRunner,
+  type ClaudeHookCommandExecutor,
+} from './claude-hooks.js'
 
 const call: ModelToolCall = {
   id: 'call_1',
@@ -22,7 +25,7 @@ const session = {
 }
 
 function fixture(
-  executeCommand: ReturnType<typeof vi.fn>,
+  executeCommand: ReturnType<typeof vi.fn<ClaudeHookCommandExecutor>>,
   tools: ToolRegistry,
   permissions: PermissionResolver = { resolve: () => ({ behavior: 'ask' }) },
 ) {
@@ -82,7 +85,7 @@ describe('ClaudeHookToolCoordinator', () => {
       execute: vi.fn(async () => ({ content: 'RESULT', isError: false })),
     }
     const executeCommand = vi
-      .fn()
+      .fn<ClaudeHookCommandExecutor>()
       .mockResolvedValueOnce({
         stdout: JSON.stringify({
           hookSpecificOutput: {
@@ -148,7 +151,7 @@ describe('ClaudeHookToolCoordinator', () => {
       execute: vi.fn(async () => ({ content: 'result', isError: false })),
     }
     const executeCommand = vi
-      .fn()
+      .fn<ClaudeHookCommandExecutor>()
       .mockResolvedValueOnce({
         stdout: '',
         stderr: '',
@@ -193,7 +196,7 @@ describe('ClaudeHookToolCoordinator', () => {
       }),
     }
     const executeCommand = vi
-      .fn()
+      .fn<ClaudeHookCommandExecutor>()
       .mockResolvedValueOnce({
         stdout: '',
         stderr: '',

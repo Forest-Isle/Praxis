@@ -1,3 +1,4 @@
+import { Console as NodeConsole } from 'node:console'
 import { setImmediate } from 'node:timers/promises'
 
 import { cleanup, render } from 'ink-testing-library'
@@ -1173,6 +1174,14 @@ describe('runInteractive', () => {
     let closed = 0
     const controller = new AbortController()
     controller.abort()
+    const consoleConstructor = Object.getOwnPropertyDescriptor(
+      console,
+      'Console',
+    )
+    Object.defineProperty(console, 'Console', {
+      configurable: true,
+      value: NodeConsole,
+    })
     const factory: InteractiveServiceFactory = {
       async createService() {
         return {
@@ -1195,10 +1204,18 @@ describe('runInteractive', () => {
       },
     }
 
-    await expect(
-      runInteractive({ factory, signal: controller.signal }),
-    ).resolves.toBe(130)
-    expect(closed).toBe(1)
+    try {
+      await expect(
+        runInteractive({ factory, signal: controller.signal }),
+      ).resolves.toBe(130)
+      expect(closed).toBe(1)
+    } finally {
+      if (consoleConstructor) {
+        Object.defineProperty(console, 'Console', consoleConstructor)
+      } else {
+        Reflect.deleteProperty(console, 'Console')
+      }
+    }
   })
 
   it('closes the listing service when loading sessions fails', async () => {
