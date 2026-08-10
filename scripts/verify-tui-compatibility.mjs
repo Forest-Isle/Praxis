@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -11,6 +11,8 @@ const root = await mkdtemp(join(tmpdir(), 'praxis-tui-compat-'))
 const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
 const installRoot = join(root, 'install')
+const binRoot = join(root, 'bin')
+const claude = join(binRoot, 'claude')
 let cli
 let port
 
@@ -26,7 +28,14 @@ const provider = createServer(async (request, response) => {
 })
 
 try {
-  await Promise.all([mkdir(configRoot), mkdir(cwd), mkdir(installRoot)])
+  await Promise.all([
+    mkdir(configRoot),
+    mkdir(cwd),
+    mkdir(installRoot),
+    mkdir(binRoot),
+  ])
+  await writeFile(claude, "#!/bin/sh\nprintf '2.1.208 (Claude Code)\\n'\n")
+  await chmod(claude, 0o755)
   const { stdout: packed } = await execFileAsync(
     'npm',
     ['pack', '--pack-destination', root],
@@ -76,6 +85,7 @@ exit 0
     cwd,
     env: {
       ...process.env,
+      PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
       TUI_CLI: cli,
       TUI_CONFIG_ROOT: configRoot,
       TUI_NODE: process.execPath,
