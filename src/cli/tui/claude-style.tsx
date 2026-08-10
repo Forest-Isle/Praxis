@@ -4,6 +4,7 @@ import { Box, Text, useStdout } from 'ink'
 
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import { composerEditorSegments } from './composer-editor.js'
+import type { TuiFileEntry } from './file-picker.js'
 import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
 import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'
@@ -1077,6 +1078,48 @@ export function CommandPalette({
                 <Text dimColor>{command.description}</Text>
               </Box>
             </Box>
+          )
+        })
+      )}
+    </Box>
+  )
+}
+
+export function FilePicker({
+  entries,
+  selectedIndex,
+  width,
+  screenReader,
+}: {
+  entries: readonly TuiFileEntry[]
+  selectedIndex: number
+  width: number
+  screenReader: boolean
+}) {
+  const maxVisible = 12
+  const start = Math.max(
+    0,
+    Math.min(
+      selectedIndex - Math.floor(maxVisible / 2),
+      Math.max(0, entries.length - maxVisible),
+    ),
+  )
+  const visible = entries.slice(start, start + maxVisible)
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {visible.length === 0 ? (
+        <Text dimColor>No matching files.</Text>
+      ) : (
+        visible.map((entry, visibleIndex) => {
+          const index = start + visibleIndex
+          return (
+            <Text
+              key={entry.path}
+              inverse={!screenReader && index === selectedIndex}
+            >
+              {screenReader && index === selectedIndex ? 'Selected: ' : '+ '}
+              {entry.path}
+            </Text>
           )
         })
       )}

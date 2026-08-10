@@ -7,6 +7,7 @@ import {
   Composer,
   DiffDashboard,
   DialogFrame,
+  FilePicker,
   HelpMenu,
   ListDashboard,
   MarkdownText,
@@ -399,6 +400,32 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('Review the current change.')
     expect(frame).toContain('/check')
     expect(frame).not.toContain('╭')
+  })
+
+  it('renders a Claude-shaped file picker with an accessible selection', () => {
+    const visual = render(
+      <FilePicker
+        entries={[
+          { path: 'alpha.ts', directory: false },
+          { path: 'src/', directory: true },
+        ]}
+        selectedIndex={1}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(visual.lastFrame()).toContain('+ alpha.ts')
+    expect(visual.lastFrame()).toContain('+ src/')
+
+    const accessible = render(
+      <FilePicker
+        entries={[{ path: 'src/agent.ts', directory: false }]}
+        selectedIndex={0}
+        width={80}
+        screenReader
+      />,
+    )
+    expect(accessible.lastFrame()).toContain('Selected: src/agent.ts')
   })
 
   it('renders the shortcut grid and tabbed help surface', () => {

@@ -381,6 +381,45 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual(['first\nsecond'])
   })
 
+  it('filters @ files into the composer and undoes text edits', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        fileLoader={async () => [
+          { path: 'alpha.ts', directory: false },
+          { path: 'src/', directory: true },
+          { path: 'src/agent.ts', directory: false },
+        ]}
+      />,
+    )
+
+    app.stdin.write('review @src')
+    await flush()
+    expect(app.lastFrame()).toContain('+ src/')
+    expect(app.lastFrame()).toContain('+ src/agent.ts')
+
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ review @src/agent.ts')
+
+    app.stdin.write(' later')
+    await flush()
+    expect(app.lastFrame()).toContain('review @src/agent.ts later')
+    app.stdin.write('\u001F')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ review @src/agent.ts')
+    app.stdin.write('\u001F')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ review @src')
+  })
+
   it('enables plan mode locally before the next turn', async () => {
     const modes: Array<string | undefined> = []
     const factory: InteractiveServiceFactory = {

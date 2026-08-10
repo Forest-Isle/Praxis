@@ -84,6 +84,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   argument arrays and never writes repository state.
 - `CommandPalette`: bounded, keyboard-selectable list of built-in controls and
   shared commands, skills, and MCP prompts.
+- `FilePicker`: bounded, filterable workspace paths discovered with ignored-file
+  semantics and inserted into the active `@` composer reference.
 - `ShortcutHelp` and `HelpMenu`: immediate empty-composer shortcut grid plus
   General, Commands, and Custom commands tabs.
 - `Composer`: prompt, cursor, history, effort, mode, busy state, measured
@@ -124,8 +126,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   cycles the same local mode set.
 - The composer edits at its real Unicode code-point cursor. It supports arrow
   movement, Meta-word movement, `Ctrl+A/E/B/F/W/U/K`, backspace/delete,
-  multiline `Shift+Enter`, and submitted-prompt history. The first `Ctrl+C`
-  clears input and asks for confirmation; the second exits.
+  multiline `Shift+Enter`, submitted-prompt history, and bounded edit undo with
+  `Ctrl+Shift+_`. Typing `@` opens a filterable path picker; Enter or Tab replaces
+  only the active reference. The first `Ctrl+C` clears input and asks for
+  confirmation; the second exits.
 - Existing `/new`, `/clear`, `/resume`, `/workflows`, `/exit`, resume,
   scheduled prompt, cancellation, permission, plan, question, and elicitation
   behavior is unchanged.
@@ -165,21 +169,22 @@ is passed from the CLI composition root and never written to shared JSONL.
   streaming, tools, cancellation, and screen-reader mode;
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
-  context/status/skill dashboards, and `Ctrl+T` task access;
+  context/status/skill dashboards, `Ctrl+T` task access, `@` selection, and
+  control-code undo;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
 
 ## Remaining interactive parity work
 
-The Stage TUI-1/2/3/4/5/6 controls close the slash presentation, help/shortcut,
+The Stage TUI-1/2/3/4/5/6/7 controls close the slash presentation, help/shortcut,
 searchable-resume, thinking, composer, runtime-control, measured-status,
 tool-detail, current/per-turn diff-navigation, context/status/skill/task panels,
-plan switching, prompt stash, and continuation seams, but they do not justify a
-blanket “complete Claude Code TUI” claim. Remaining black-box-driven work
-includes the full built-in command catalog and its command-specific dialogs,
-permission-rule removal and exact denied-history behavior, exact multi-read
-grouping and historical turn attribution, shell/file-picker/undo/suspend/editor/
-image/keybinding flows, and remaining exact layout behavior. Each item needs an
-observed contract and a focused TTY or Ink gate before the matrix can return to
-a complete status.
+plan switching, prompt stash, continuation, file-reference, and undo seams, but
+they do not justify a blanket “complete Claude Code TUI” claim. Remaining
+black-box-driven work includes the full built-in command catalog and its
+command-specific dialogs, permission-rule removal and exact denied-history
+behavior, exact multi-read grouping and historical turn attribution,
+shell/suspend/editor/image/keybinding flows, agent entries in the `@` picker,
+and remaining exact layout behavior. Each item needs an observed contract and a
+focused TTY or Ink gate before the matrix can return to a complete status.

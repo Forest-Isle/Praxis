@@ -148,6 +148,14 @@ expect -re {Bash\(npm test:\*\).*user}
 send "\033"
 after 100
 expect -re {bypass permissions on}
+send "@fix"
+expect -re {\+ fixture.txt}
+send "\r"
+expect -re {❯ @fixture.txt}
+send "\037"
+expect -re {❯ @fix}
+send "\025"
+expect -re {Try.*review this project}
 send "/context"
 expect -re {Visualize current context usage}
 send "\r"

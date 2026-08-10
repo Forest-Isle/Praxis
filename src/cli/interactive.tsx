@@ -34,6 +34,7 @@ import {
   Composer,
   DiffDashboard,
   DialogFrame,
+  FilePicker,
   HelpMenu,
   ListDashboard,
   PermissionDashboard,
@@ -75,6 +76,13 @@ import {
   moveComposerCursor,
   moveComposerCursorByWord,
 } from './tui/composer-editor.js'
+import {
+  applyFileReference,
+  fileReferenceAtCursor,
+  filterTuiFileEntries,
+  loadTuiFileEntries,
+  type TuiFileEntry,
+} from './tui/file-picker.js'
 
 interface InteractiveSessionCommands {
   run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult>
@@ -143,6 +151,7 @@ interface InteractiveAppProps {
   slashCommands?: readonly TuiSlashCommand[]
   allowDangerouslySkipPermissions?: boolean
   diffLoader?: () => Promise<TuiDiffSnapshot>
+  fileLoader?: () => Promise<readonly TuiFileEntry[]>
   permissionRuleStore?: {
     load(): Promise<readonly TuiPermissionRule[]>
     add(input: {
@@ -378,6 +387,7 @@ export function InteractiveApp({
   slashCommands = EMPTY_SLASH_COMMANDS,
   allowDangerouslySkipPermissions = false,
   diffLoader,
+  fileLoader,
   permissionRuleStore,
 }: InteractiveAppProps) {
   const { exit } = useApp()
@@ -389,6 +399,10 @@ export function InteractiveApp({
   const loadDiffSnapshot = useMemo(
     () => diffLoader ?? (() => loadGitDiff(display.cwd)),
     [diffLoader, display.cwd],
+  )
+  const loadFiles = useMemo(
+    () => fileLoader ?? (() => loadTuiFileEntries(display.cwd)),
+    [fileLoader, display.cwd],
   )
   const permissionStore = useMemo(
     () =>
@@ -435,10 +449,18 @@ export function InteractiveApp({
   const inputHistoryRef = useRef<string[]>([])
   const inputHistoryIndexRef = useRef<number | null>(null)
   const inputHistoryDraftRef = useRef('')
+  const undoStackRef = useRef<Array<ReturnType<typeof createComposerEditor>>>(
+    [],
+  )
   const stashedInputRef = useRef('')
   const lastEscapeAtRef = useRef(0)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandSelection, setCommandSelection] = useState(0)
+  const [filePickerOpen, setFilePickerOpen] = useState(false)
+  const [fileSelection, setFileSelection] = useState(0)
+  const [fileEntries, setFileEntries] = useState<
+    readonly TuiFileEntry[] | null
+  >(null)
   const [shortcutsVisible, setShortcutsVisible] = useState(false)
   const [availableSlashCommands, setAvailableSlashCommands] =
     useState(slashCommands)
@@ -512,6 +534,9 @@ export function InteractiveApp({
     [allSlashCommands],
   )
   const commandQuery = commandPaletteOpen ? slashCommandQuery(input) : null
+  const fileReference = filePickerOpen
+    ? fileReferenceAtCursor(input, inputCursor)
+    : null
   const matchingSlashCommands = useMemo(
     () =>
       commandQuery === null
@@ -527,6 +552,26 @@ export function InteractiveApp({
     !elicitation &&
     !selectingSession &&
     commandQuery !== null
+  const matchingFileEntries = useMemo(
+    () =>
+      fileEntries === null || fileReference === null
+        ? []
+        : filterTuiFileEntries(fileEntries, fileReference.query),
+    [fileEntries, fileReference?.query],
+  )
+  const filePickerVisible =
+    !busy &&
+    !permission &&
+    !planApproval &&
+    !question &&
+    !elicitation &&
+    !selectingSession &&
+    filePickerOpen &&
+    fileReference !== null
+  const selectedFileIndex = Math.min(
+    fileSelection,
+    Math.max(0, matchingFileEntries.length - 1),
+  )
   const hasThinking =
     activeThinking.length > 0 ||
     history.some((item) => item.kind === 'thinking')
@@ -594,6 +639,26 @@ export function InteractiveApp({
   }, [commandPaletteOpen])
 
   useEffect(() => {
+    setFileEntries(null)
+  }, [loadFiles])
+
+  useEffect(() => {
+    if (!filePickerVisible || fileEntries !== null) return
+    let cancelled = false
+    void loadFiles().then(
+      (entries) => {
+        if (!cancelled) setFileEntries(entries)
+      },
+      () => {
+        if (!cancelled) setFileEntries([])
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [fileEntries, filePickerVisible, loadFiles])
+
+  useEffect(() => {
     if (!signal) return
     const cancel = () => {
       permissionRef.current?.resolve(false)
@@ -636,11 +701,24 @@ export function InteractiveApp({
     setShortcutsVisible(false)
     setCommandPaletteOpen(slashCommandQuery(editor.text) !== null)
     setCommandSelection(0)
+    setFilePickerOpen(
+      fileReferenceAtCursor(editor.text, editor.cursor) !== null,
+    )
+    setFileSelection(0)
   }
 
   const updateComposerEditor = (
     editor: ReturnType<typeof createComposerEditor>,
-  ) => updateComposerInput(editor.text, editor.cursor)
+    recordUndo = true,
+  ) => {
+    if (recordUndo && editor.text !== inputRef.current) {
+      undoStackRef.current = [
+        ...undoStackRef.current,
+        createComposerEditor(inputRef.current, inputCursorRef.current),
+      ].slice(-100)
+    }
+    updateComposerInput(editor.text, editor.cursor)
+  }
 
   const clearComposerInput = () => updateComposerInput('')
 
@@ -712,6 +790,12 @@ export function InteractiveApp({
       Math.min(current, Math.max(0, matchingSlashCommands.length - 1)),
     )
   }, [matchingSlashCommands.length])
+
+  useEffect(() => {
+    setFileSelection((current) =>
+      Math.min(current, Math.max(0, matchingFileEntries.length - 1)),
+    )
+  }, [matchingFileEntries.length])
 
   const handleEvent = (event: RuntimeEvent) => {
     switch (event.type) {
@@ -1893,6 +1977,44 @@ export function InteractiveApp({
       if (key.escape || value === '\u001B') turnControllerRef.current?.abort()
       return
     }
+    if (value === '\u001F' || (key.ctrl && value === '_')) {
+      const previous = undoStackRef.current.at(-1)
+      if (previous) {
+        undoStackRef.current = undoStackRef.current.slice(0, -1)
+        updateComposerEditor(previous, false)
+      }
+      return
+    }
+    if (filePickerVisible) {
+      if (key.escape || value === '\u001B') {
+        setFilePickerOpen(false)
+        return
+      }
+      if (key.upArrow) {
+        setFileSelection((current) => Math.max(0, current - 1))
+        return
+      }
+      if (key.downArrow) {
+        setFileSelection((current) =>
+          Math.min(matchingFileEntries.length - 1, current + 1),
+        )
+        return
+      }
+      const selected = matchingFileEntries[selectedFileIndex]
+      if (selected && (key.tab || key.return) && fileReference) {
+        updateComposerEditor(
+          applyFileReference(
+            inputRef.current,
+            inputCursorRef.current,
+            fileReference,
+            selected.path,
+          ),
+        )
+        setFilePickerOpen(false)
+        return
+      }
+      if (key.tab) return
+    }
     if (key.escape || value === '\u001B') {
       const now = Date.now()
       if (now - lastEscapeAtRef.current <= 500) clearComposerInput()
@@ -1955,6 +2077,7 @@ export function InteractiveApp({
       }
       const prompt = inputRef.current.trim()
       clearComposerInput()
+      undoStackRef.current = []
       if (!prompt) return
       if (prompt === '/exit') {
         exit()
@@ -2336,6 +2459,14 @@ export function InteractiveApp({
                 <CommandPalette
                   commands={matchingSlashCommands}
                   selectedIndex={selectedSlashCommandIndex}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : null}
+              {filePickerVisible ? (
+                <FilePicker
+                  entries={matchingFileEntries}
+                  selectedIndex={selectedFileIndex}
                   width={width}
                   screenReader={axScreenReader}
                 />
