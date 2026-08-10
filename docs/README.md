@@ -19,6 +19,8 @@ authoritative CLI surface.
   versioned write profiles, provider translation, and exclusions.
 - [Single-User CLI Parity Matrix](PARITY_MATRIX.md) — feature-by-feature status
   and executable evidence.
+- [Claude-style TUI Parity](TUI_PARITY.md) — black-box visual rules,
+  presentation components, interactions, and verification gates.
 - [Agent Runtime Contract](RUNTIME_CONTRACT.md) — runtime states, ports,
   persistence, and error behavior.
 - [Native Subagent Contract](SUBAGENT_CONTRACT.md) — foreground/background

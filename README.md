@@ -78,7 +78,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 ## What Praxis provides
 
-- **Local agent runtime** — streaming interactive UI, print mode, structured
+- **Local agent runtime** — Claude-style responsive TUI with rich transcript,
+  tool, decision, thinking, and context-budget panels; print mode, structured
   JSON/JSONL, context compaction, tool loops, and bounded execution.
 - **Built-in tools** — read, write, edit, glob, search, shell, notebook, PDF,
   image, web, scheduled prompts, workflows, and worktrees.
@@ -124,6 +125,7 @@ for exact shared data, version boundaries, exclusions, and verification gates.
 | Understand module and data-flow boundaries | [Architecture](https://github.com/Forest-Isle/Praxis/blob/main/docs/ARCHITECTURE.md)       |
 | Review security assumptions                | [Threat Model](https://github.com/Forest-Isle/Praxis/blob/main/docs/THREAT_MODEL.md)       |
 | Check Claude Code parity                   | [Parity Matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)     |
+| Review interactive TUI design and evidence | [TUI Parity](https://github.com/Forest-Isle/Praxis/blob/main/docs/TUI_PARITY.md)           |
 | Build, test, and contribute                | [Contributing](https://github.com/Forest-Isle/Praxis/blob/main/CONTRIBUTING.md)            |
 | Verify release and supply-chain controls   | [Release Contract](https://github.com/Forest-Isle/Praxis/blob/main/docs/RELEASE.md)        |
 

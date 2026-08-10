@@ -46,9 +46,13 @@ src/
 The Ink interactive CLI is an event adapter under `src/cli`: it renders
 `RuntimeEvent` state and streaming deltas, requests user decisions through the
 existing `approveTool` callback, and starts or resumes application sessions.
-React and Ink do not enter `core`, application services, providers, tools, or
-shared persistence. Headless text and NDJSON modes retain the same runtime
-ports without terminal prompts.
+Stateless presentation components under `src/cli/tui` provide the responsive
+welcome card, Markdown/diff transcript, tool and thinking hierarchy, bounded
+session picker, composer/status area, and decision dialogs. TUI-only display
+metadata never enters shared transcripts. React and Ink do not enter `core`,
+application services, providers, tools, or shared persistence. Headless text
+and NDJSON modes retain the same runtime ports without terminal prompts. See
+[TUI_PARITY.md](TUI_PARITY.md).
 
 Headless protocol adaptation also stays under `src/cli`. Argument parsing
 normalizes Claude-style print/resume and machine-format options before the

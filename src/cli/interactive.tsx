@@ -9,6 +9,7 @@ import type {
 } from '../application/session-service.js'
 import type {
   ModelToolCall,
+  ModelUsage,
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
@@ -23,6 +24,16 @@ import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
+import {
+  Composer,
+  DialogFrame,
+  SessionPicker,
+  Transcript,
+  WelcomePanel,
+  useTerminalWidth,
+  type TranscriptItem,
+  type TuiDisplayMetadata,
+} from './tui/claude-style.js'
 
 interface InteractiveSessionCommands {
   run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult>
@@ -77,11 +88,8 @@ interface InteractiveAppProps {
   axScreenReader?: boolean
   allowNewSession?: boolean
   resume?: InteractiveResumeOptions
-}
-
-type HistoryLine = {
-  kind: 'user' | 'assistant' | 'notice' | 'warning'
-  text: string
+  display?: TuiDisplayMetadata
+  terminalWidth?: number
 }
 
 type PendingPermission = {
@@ -135,11 +143,18 @@ function describeTool(
   sensitiveValues: readonly string[],
 ): string {
   const name = redactSensitiveText(call.name, sensitiveValues)
+  return `${name} ${describeToolInput(call, sensitiveValues)}`
+}
+
+function describeToolInput(
+  call: ModelToolCall,
+  sensitiveValues: readonly string[],
+): string {
   const detail = redactSensitiveText(
     JSON.stringify(call.input),
     sensitiveValues,
   )
-  return `${name} ${detail.length > 160 ? `${detail.slice(0, 157)}...` : detail}`
+  return detail.length > 160 ? `${detail.slice(0, 157)}...` : detail
 }
 
 export function InteractiveApp({
@@ -153,8 +168,11 @@ export function InteractiveApp({
   axScreenReader = false,
   allowNewSession = true,
   resume,
+  display = { version: 'dev', cwd: process.cwd() },
+  terminalWidth,
 }: InteractiveAppProps) {
   const { exit } = useApp()
+  const width = useTerminalWidth(terminalWidth)
   const sensitiveValues = useMemo(
     () => sensitiveEnvironmentValues(process.env),
     [],
@@ -165,7 +183,9 @@ export function InteractiveApp({
     [allowNewSession, initialSessions],
   )
   const [selectingSession, setSelectingSession] = useState(
-    initialSessions.length > 0 && resume?.sessionId === undefined,
+    initialSessions.length > 0 &&
+      resume?.sessionId === undefined &&
+      (!allowNewSession || resume?.requireSession === true),
   )
   const [selectedIndex, setSelectedIndex] = useState(0)
   const selectedIndexRef = useRef(0)
@@ -182,7 +202,9 @@ export function InteractiveApp({
   )
   const [status, setStatus] = useState('ready')
   const [activeText, setActiveText] = useState('')
-  const [history, setHistory] = useState<HistoryLine[]>([])
+  const [activeThinking, setActiveThinking] = useState('')
+  const [usage, setUsage] = useState<ModelUsage | undefined>()
+  const [history, setHistory] = useState<TranscriptItem[]>([])
   const [permission, setPermission] = useState<PendingPermission | null>(null)
   const permissionRef = useRef<PendingPermission | null>(null)
   const [elicitation, setElicitation] = useState<PendingElicitation | null>(
@@ -202,6 +224,7 @@ export function InteractiveApp({
   const onCleanupRef = useRef(onCleanup)
   onCleanupRef.current = onCleanup
   const scheduledWaitRef = useRef<AbortController | null>(null)
+  const turnControllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (!signal) return
@@ -224,6 +247,7 @@ export function InteractiveApp({
       questionRef.current?.resolve(null)
       planApprovalRef.current?.resolve(false)
       scheduledWaitRef.current?.abort()
+      turnControllerRef.current?.abort()
       const closing = serviceRef.current?.close?.() ?? Promise.resolve()
       if (onCleanupRef.current) onCleanupRef.current(closing)
       else void closing.catch(() => undefined)
@@ -231,31 +255,128 @@ export function InteractiveApp({
     [],
   )
 
-  const append = (line: HistoryLine) =>
+  const append = (line: TranscriptItem) =>
     setHistory((current) => [...current, line])
 
   const handleEvent = (event: RuntimeEvent) => {
-    if (event.type === 'text-delta') {
-      setActiveText((current) => current + event.delta)
-    } else if (event.type === 'user-message') {
-      append({ kind: 'assistant', text: event.message })
-    } else if (event.type === 'state') {
-      setStatus(event.state)
-    } else if (event.type === 'tool-call') {
-      append({
-        kind: 'notice',
-        text: `Tool: ${describeTool(event.call, sensitiveValues)}`,
-      })
-    } else if (event.type === 'tool-result' && event.isError) {
-      append({
-        kind: 'warning',
-        text: `Tool failed: ${redactSensitiveText(event.content, sensitiveValues)}`,
-      })
-    } else if (event.type === 'warning' || event.type === 'failed') {
-      append({
-        kind: 'warning',
-        text: redactSensitiveText(event.message, sensitiveValues),
-      })
+    switch (event.type) {
+      case 'text-delta':
+        setActiveText((current) => current + event.delta)
+        break
+      case 'thinking-start':
+        setActiveThinking(
+          event.block.type === 'thinking' ? event.block.thinking : '',
+        )
+        break
+      case 'thinking-delta':
+        setActiveThinking((current) => current + event.delta)
+        break
+      case 'thinking-signature-delta':
+        // Signatures authenticate a thinking block for provider replay; they are
+        // intentionally not part of the user-visible reasoning summary.
+        break
+      case 'thinking-stop':
+        append({
+          kind: 'thinking',
+          text:
+            event.block.type === 'thinking'
+              ? event.block.thinking
+              : activeThinking,
+        })
+        setActiveThinking('')
+        break
+      case 'user-message':
+        append({ kind: 'assistant', text: event.message })
+        break
+      case 'state':
+        setStatus(event.state)
+        break
+      case 'usage':
+        setUsage(event.usage)
+        break
+      case 'tool-call':
+        append({
+          kind: 'tool',
+          call: event.call,
+          detail: describeToolInput(event.call, sensitiveValues),
+        })
+        break
+      case 'permission-decision':
+        append({
+          kind: event.behavior === 'deny' ? 'warning' : 'notice',
+          text:
+            event.behavior === 'ask'
+              ? `Permission confirmation required · ${event.callId}`
+              : `Permission ${event.behavior === 'allow' ? 'allowed' : 'denied'} · ${event.callId}`,
+        })
+        break
+      case 'tool-result':
+        append({
+          kind: 'tool-result',
+          callId: event.callId,
+          text: redactSensitiveText(event.content, sensitiveValues),
+          isError: event.isError,
+        })
+        break
+      case 'tool-progress':
+        setStatus(`${event.toolName} · ${event.elapsedTimeSeconds}s`)
+        break
+      case 'task-started':
+        append({ kind: 'notice', text: `Task started · ${event.description}` })
+        break
+      case 'task-progress':
+        setStatus(event.summary ?? event.description)
+        break
+      case 'task-notification':
+        append({
+          kind: event.status === 'failed' ? 'warning' : 'notice',
+          text: `Task ${event.status} · ${event.summary}`,
+        })
+        break
+      case 'compact-boundary':
+        append({
+          kind: 'notice',
+          text: `Conversation compacted · ${event.preTokens} tokens`,
+        })
+        break
+      case 'api-retry':
+        append({
+          kind: 'warning',
+          text: `API retry ${event.attempt}/${event.maxRetries} · ${event.error}`,
+        })
+        break
+      case 'elicitation-complete':
+        append({
+          kind: 'notice',
+          text: `MCP elicitation completed · ${event.mcpServerName}`,
+        })
+        break
+      case 'tool-use-summary':
+        append({ kind: 'notice', text: event.summary })
+        break
+      case 'hook': {
+        const { event: hook } = event
+        const outcome = hook.outcome ? ` · ${hook.outcome}` : ''
+        append({
+          kind: hook.outcome === 'error' ? 'warning' : 'notice',
+          text: `Hook ${hook.type} · ${hook.hookName}${outcome}`,
+        })
+        break
+      }
+      case 'session-state-changed':
+        setStatus(event.state.replace('_', ' '))
+        break
+      case 'warning':
+      case 'failed':
+        append({
+          kind: 'warning',
+          text: redactSensitiveText(event.message, sensitiveValues),
+        })
+        break
+      default: {
+        const unreachable: never = event
+        return unreachable
+      }
     }
   }
 
@@ -385,9 +506,16 @@ export function InteractiveApp({
 
   const submit = async (prompt: string) => {
     scheduledWaitRef.current?.abort()
+    const turnController = new AbortController()
+    turnControllerRef.current?.abort()
+    turnControllerRef.current = turnController
+    const turnSignal = signal
+      ? AbortSignal.any([signal, turnController.signal])
+      : turnController.signal
     setBusy(true)
     setStatus('assembling-context')
     setActiveText('')
+    setActiveThinking('')
     append({ kind: 'user', text: prompt })
     let commands: InteractiveSessionCommands | undefined
     try {
@@ -400,21 +528,28 @@ export function InteractiveApp({
         setPendingFork(false)
       }
       const result = activeSessionId
-        ? await commands.resume(activeSessionId, prompt, signal)
-        : await commands.run(prompt, signal)
+        ? await commands.resume(activeSessionId, prompt, turnSignal)
+        : await commands.run(prompt, turnSignal)
       setSessionId(result.sessionId)
+      setUsage(result.usage)
       append({ kind: 'assistant', text: result.text })
       setActiveText('')
+      setActiveThinking('')
       setStatus('ready')
     } catch (error) {
-      append({
-        kind: 'warning',
-        text: redactSensitiveText(
-          error instanceof Error ? error.message : String(error),
-          sensitiveValues,
-        ),
-      })
-      setStatus('failed')
+      if (turnController.signal.aborted && !signal?.aborted) {
+        append({ kind: 'notice', text: 'Interrupted by user.' })
+        setStatus('cancelled')
+      } else {
+        append({
+          kind: 'warning',
+          text: redactSensitiveText(
+            error instanceof Error ? error.message : String(error),
+            sensitiveValues,
+          ),
+        })
+        setStatus('failed')
+      }
     } finally {
       if (!factory.scheduledPrompts && commands) {
         try {
@@ -431,6 +566,8 @@ export function InteractiveApp({
           if (serviceRef.current === commands) serviceRef.current = null
         }
       }
+      if (turnControllerRef.current === turnController)
+        turnControllerRef.current = null
       setBusy(false)
     }
   }
@@ -508,18 +645,28 @@ export function InteractiveApp({
       return
     }
     if (permission) {
-      if (value.toLowerCase() === 'y') {
+      if (value.toLowerCase() === 'y' || value === '1') {
         permission.resolve(true)
-      } else if (value.toLowerCase() === 'n' || key.return || key.escape) {
+      } else if (
+        value.toLowerCase() === 'n' ||
+        value === '2' ||
+        key.return ||
+        key.escape
+      ) {
         permission.resolve(false)
       }
       return
     }
 
     if (planApproval) {
-      if (value.toLowerCase() === 'y') {
+      if (value.toLowerCase() === 'y' || value === '1') {
         planApproval.resolve(true)
-      } else if (value.toLowerCase() === 'n' || key.return || key.escape) {
+      } else if (
+        value.toLowerCase() === 'n' ||
+        value === '2' ||
+        key.return ||
+        key.escape
+      ) {
         planApproval.resolve(false)
       }
       return
@@ -607,7 +754,16 @@ export function InteractiveApp({
     }
 
     if (selectingSession) {
-      if (key.upArrow) {
+      if (key.escape) {
+        if (allowNewSession) {
+          setSessionId(null)
+          setPendingFork(false)
+          setSelectingSession(false)
+        } else {
+          onCancel?.()
+          exit()
+        }
+      } else if (key.upArrow) {
         selectedIndexRef.current = Math.max(0, selectedIndexRef.current - 1)
         setSelectedIndex(selectedIndexRef.current)
       } else if (key.downArrow) {
@@ -625,14 +781,27 @@ export function InteractiveApp({
       return
     }
 
-    if (busy) return
+    if (busy) {
+      if (key.escape || value === '\u001B') turnControllerRef.current?.abort()
+      return
+    }
     if (key.return) {
+      if (key.shift) {
+        inputRef.current += '\n'
+        setInput(inputRef.current)
+        return
+      }
       const prompt = inputRef.current.trim()
       inputRef.current = ''
       setInput('')
       if (!prompt) return
       if (prompt === '/exit') {
         exit()
+      } else if (prompt === '/help' || prompt === '?') {
+        append({
+          kind: 'notice',
+          text: '/new start a session · /sessions resume · /workflows list workflows · /exit quit',
+        })
       } else if (prompt === '/new') {
         setSessionId(null)
         setPendingFork(false)
@@ -691,67 +860,64 @@ export function InteractiveApp({
 
   return (
     <Box flexDirection="column">
-      {axScreenReader ? null : (
-        <Text bold color="cyan">
-          Praxis
-        </Text>
-      )}
       {selectingSession ? (
-        <Box flexDirection="column">
-          {axScreenReader ? null : (
-            <Text dimColor>Select session · ↑/↓ move · Enter confirm</Text>
-          )}
-          {choices.map((session, index) => (
-            <Text key={session?.sessionId ?? 'new'}>
-              {index === selectedIndex ? '› ' : '  '}
-              {session
-                ? `${session.name ?? session.lastPrompt ?? 'Untitled'} · ${session.sessionId}${session.status === 'ready' ? '' : ` · ${session.status}`}`
-                : 'New session'}
-            </Text>
-          ))}
-        </Box>
+        <SessionPicker
+          sessions={choices}
+          selectedIndex={selectedIndex}
+          screenReader={axScreenReader}
+        />
       ) : (
         <>
-          {sessionId ? <Text dimColor>Session {sessionId}</Text> : null}
-          {history.map((line, index) => (
-            <Text
-              key={`${index}-${line.kind}`}
-              {...(line.kind === 'warning' ? { color: 'red' } : {})}
-            >
-              {line.kind === 'user'
-                ? 'You: '
-                : line.kind === 'assistant'
-                  ? 'Praxis: '
-                  : '· '}
-              {line.text}
-            </Text>
-          ))}
-          {activeText ? <Text>Praxis: {activeText}</Text> : null}
+          {!axScreenReader && history.length === 0 && !sessionId ? (
+            <WelcomePanel display={display} width={width} />
+          ) : null}
+          {sessionId ? (
+            <Text dimColor>Session {sessionId.slice(0, 8)}</Text>
+          ) : null}
+          <Transcript
+            items={history}
+            activeText={activeText}
+            activeThinking={activeThinking}
+            screenReader={axScreenReader}
+          />
           {permission ? (
-            <Text color="yellow">
-              {permission.kind === 'recovery' ? 'Retry interrupted ' : 'Allow '}
-              {describeTool(permission.call, sensitiveValues)}? (y/N)
-            </Text>
+            <DialogFrame
+              title={
+                permission.kind === 'recovery'
+                  ? `Retry interrupted ${permission.call.name}?`
+                  : `Allow ${permission.call.name}?`
+              }
+              screenReader={axScreenReader}
+            >
+              <Text bold>{describeTool(permission.call, sensitiveValues)}</Text>
+              <Text>❯ 1. Yes</Text>
+              <Text> 2. No</Text>
+              <Text dimColor>Enter/Esc declines · y/n quick response</Text>
+            </DialogFrame>
           ) : planApproval ? (
-            <Box flexDirection="column">
-              <Text color="yellow">
-                Approve this plan and begin implementation? (y/N)
-              </Text>
+            <DialogFrame
+              title="Approve this plan and begin implementation?"
+              screenReader={axScreenReader}
+            >
               <Text dimColor>{planApproval.request.planPath}</Text>
               {planApproval.request.plan ? (
-                <Text>{planApproval.request.plan}</Text>
+                <Box marginY={1}>
+                  <Text>{planApproval.request.plan}</Text>
+                </Box>
               ) : null}
-            </Box>
+              <Text>❯ 1. Yes, implement the plan</Text>
+              <Text> 2. No, keep planning</Text>
+            </DialogFrame>
           ) : question ? (
-            <Box flexDirection="column">
-              <Text color="yellow">
-                {question.questions[question.index]?.header}:{' '}
-                {question.questions[question.index]?.question}
-              </Text>
+            <DialogFrame
+              title={`${question.questions[question.index]?.header}: ${question.questions[question.index]?.question}`}
+              screenReader={axScreenReader}
+            >
               {question.questions[question.index]?.options.map(
                 (option, index) => (
                   <Box key={`${index}-${option.label}`} flexDirection="column">
                     <Text>
+                      {index === 0 ? '❯ ' : '  '}
                       {index + 1}. {option.label} — {option.description}
                     </Text>
                     {option.preview ? (
@@ -766,13 +932,13 @@ export function InteractiveApp({
                   ? 'Enter comma-separated option numbers or custom text · Esc cancels'
                   : 'Enter one option number or custom text · Esc cancels'}
               </Text>
-            </Box>
+            </DialogFrame>
           ) : elicitation ? (
-            <Box flexDirection="column">
-              <Text color="yellow">
-                MCP elicitation ({elicitation.request.serverName}):{' '}
-                {elicitation.request.message}
-              </Text>
+            <DialogFrame
+              title={`MCP elicitation (${elicitation.request.serverName})`}
+              screenReader={axScreenReader}
+            >
+              <Text>{elicitation.request.message}</Text>
               {elicitation.request.url ? (
                 <Text>{elicitation.request.url}</Text>
               ) : null}
@@ -783,16 +949,17 @@ export function InteractiveApp({
               ) : null}
               <Text>› {input}</Text>
               <Text dimColor>Enter JSON object to accept · Esc to cancel</Text>
-            </Box>
-          ) : busy ? (
-            <Text dimColor>{status}…</Text>
+            </DialogFrame>
           ) : (
-            <>
-              <Text>› {input}</Text>
-              {axScreenReader ? null : (
-                <Text dimColor>/new · /sessions · /workflows · /exit</Text>
-              )}
-            </>
+            <Composer
+              input={input}
+              busy={busy}
+              status={status}
+              display={display}
+              {...(usage === undefined ? {} : { usage })}
+              width={width}
+              screenReader={axScreenReader}
+            />
           )}
         </>
       )}
@@ -805,6 +972,7 @@ export async function runInteractive(options: {
   initialPrompt?: string
   signal?: AbortSignal
   axScreenReader?: boolean
+  display?: TuiDisplayMetadata
   sessionFilter?: (session: SessionSummary) => boolean
   requireSession?: boolean
   missingSessionMessage?: string
@@ -870,6 +1038,7 @@ export async function runInteractive(options: {
       }}
       allowNewSession={!options.requireSession}
       {...(resume === undefined ? {} : { resume })}
+      {...(options.display === undefined ? {} : { display: options.display })}
       {...(options.axScreenReader ? { axScreenReader: true } : {})}
     />,
     { exitOnCtrlC: false, incrementalRendering: !options.axScreenReader },

@@ -53,7 +53,11 @@ describe('InteractiveApp', () => {
       />,
     )
     await flush()
+    expect(app.lastFrame()).toContain('Welcome back!')
+    expect(app.lastFrame()).not.toContain('Resume a session')
     app.stdin.write('/sessions')
+    await flush()
+    app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Release review · named-session')
     app.stdin.write('\r')
@@ -222,6 +226,160 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('second answer')
     expect(calls).toEqual(['run:first prompt', 'resume:session-1:continue'])
     expect(closed).toBe(2)
+  })
+
+  it('renders structured successful tool calls and results', async () => {
+    const factory: InteractiveServiceFactory = {
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            eventSink({
+              type: 'tool-call',
+              call: {
+                id: 'call-1',
+                name: 'Bash',
+                input: { command: 'npm test' },
+              },
+            })
+            eventSink({
+              type: 'tool-result',
+              callId: 'call-1',
+              content: 'tests passed',
+              isError: false,
+            })
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    app.stdin.write('run tests')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('● Bash')
+    expect(app.lastFrame()).toContain('npm test')
+    expect(app.lastFrame()).toContain('└ Result')
+    expect(app.lastFrame()).toContain('tests passed')
+  })
+
+  it('renders permission, MCP, and hook lifecycle feedback', async () => {
+    const factory: InteractiveServiceFactory = {
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            eventSink({
+              type: 'permission-decision',
+              callId: 'call-1',
+              behavior: 'allow',
+            })
+            eventSink({
+              type: 'elicitation-complete',
+              mcpServerName: 'fixture',
+              elicitationId: 'elicit-1',
+            })
+            eventSink({
+              type: 'hook',
+              event: {
+                type: 'started',
+                hookId: 'hook-1',
+                hookName: 'PreToolUse:Bash',
+                hookEvent: 'PreToolUse',
+              },
+            })
+            eventSink({
+              type: 'hook',
+              event: {
+                type: 'response',
+                hookId: 'hook-1',
+                hookName: 'PreToolUse:Bash',
+                hookEvent: 'PreToolUse',
+                outcome: 'error',
+              },
+            })
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Permission allowed · call-1')
+    expect(app.lastFrame()).toContain('MCP elicitation completed · fixture')
+    expect(app.lastFrame()).toContain('Hook started · PreToolUse:Bash')
+    expect(app.lastFrame()).toContain('Hook response · PreToolUse:Bash · error')
+  })
+
+  it('interrupts a busy turn with escape and restores the composer', async () => {
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(_prompt, signal) {
+            await new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener(
+                'abort',
+                () => reject(new Error('provider aborted')),
+                { once: true },
+              )
+            })
+            throw new Error('unreachable')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    app.stdin.write('long task')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('esc to interrupt')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Interrupted by user.')
+    expect(app.lastFrame()).toContain('Try "review this project"')
+    expect(app.lastFrame()).not.toContain('provider aborted')
   })
 
   it('submits an initial prompt once after mounting', async () => {
@@ -537,7 +695,7 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Allow Bash')
     expect(app.lastFrame()).toContain('npm test')
 
-    app.stdin.write('y')
+    app.stdin.write('1')
     await flush()
     expect(approval).toBe(true)
     expect(app.lastFrame()).toContain('done')
@@ -843,6 +1001,7 @@ describe('InteractiveApp', () => {
             issue: null,
           },
         ]}
+        resume={{ requireSession: true }}
       />,
     )
 
@@ -1022,6 +1181,7 @@ describe('InteractiveApp', () => {
             issue: null,
           },
         ]}
+        resume={{ requireSession: true }}
       />,
     )
 

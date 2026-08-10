@@ -1859,6 +1859,19 @@ const defaultDependencies: CliDependencies = {
       ...(signal ? { signal } : {}),
       ...(initialPrompt === undefined ? {} : { initialPrompt }),
       ...(controls?.axScreenReader ? { axScreenReader: true } : {}),
+      display: {
+        version: VERSION,
+        cwd: process.cwd(),
+        ...(controls?.model
+          ? { model: controls.model }
+          : process.env.PRAXIS_MODEL
+            ? { model: process.env.PRAXIS_MODEL }
+            : {}),
+        effort: controls?.effort ?? 'high',
+        permissionMode: controls?.dangerouslySkipPermissions
+          ? 'bypassPermissions'
+          : (controls?.permissionMode ?? 'default'),
+      },
       ...(resume === undefined ? {} : { resume }),
       ...(resume?.fromPr !== undefined
         ? {
