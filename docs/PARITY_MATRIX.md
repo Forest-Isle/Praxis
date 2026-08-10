@@ -166,3 +166,9 @@ and dispatcher wiring, performance, release packaging, and production
 dependency audit. Unsupported Claude versions remain deliberately read-only.
 Enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.
+
+The required GitHub `CI` status now executes the full 52-gate compatibility
+matrix against an exact Claude Code 2.1.208 installation. Release publication
+repeats that matrix plus installed-package, performance, and production-audit
+gates from the immutable tag before npm publication; release automation does
+not expand or alter product parity scope.

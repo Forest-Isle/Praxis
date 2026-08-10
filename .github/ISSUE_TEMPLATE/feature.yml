@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a change within Praxis's single-user CLI boundary
+title: 'feat: '
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem is not handled today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe CLI behavior and compatibility expectations.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Product boundary
+      options:
+        - label: This remains CLI-only and single-user.
+          required: true
+        - label: This does not require enterprise, organization, billing, or remote-control services.
+          required: true
