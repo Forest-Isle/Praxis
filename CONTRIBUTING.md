@@ -1,0 +1,46 @@
+# Contributing to Praxis
+
+## Development setup
+
+Praxis requires Node.js 24 or newer, npm 11, and `ripgrep`.
+
+```sh
+git clone git@github.com:Forest-Isle/Praxis.git
+cd Praxis
+npm ci
+npm run check
+```
+
+Keep changes focused and add tests for observable behavior. Changes affecting
+Claude interoperability must retain Claude Code 2.1.208 and run:
+
+```sh
+npm run test:compat:all
+```
+
+Package, persistence, provider, permission, hook, MCP, or performance changes
+must also run the relevant release gates:
+
+```sh
+npm run test:package
+npm run test:performance
+npm audit --omit=dev
+```
+
+## Pull requests
+
+- Open an issue first for product-boundary or compatibility-contract changes.
+- Use a Conventional Commit pull-request title: `feat:`, `fix:`, `docs:`,
+  `test:`, `refactor:`, `perf:`, `build:`, `ci:`, or `chore:`.
+- Describe user-visible behavior, compatibility impact, and verification.
+- Update relevant documentation in the same pull request.
+- Keep generated `dist/`, release tarballs, credentials, and local Claude data
+  out of commits.
+
+Squash merge is the canonical strategy. Release Please derives versions and
+GitHub release notes from merged pull-request titles. Maintainers do not edit
+package versions or create release tags manually after bootstrap.
+
+## Security reports
+
+Do not open public issues for vulnerabilities. Follow [SECURITY.md](SECURITY.md).

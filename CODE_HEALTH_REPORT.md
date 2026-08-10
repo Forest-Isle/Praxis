@@ -2,13 +2,17 @@
 
 > Generated: 2026-08-10
 > Project: Praxis
-> Scanned: 186 source files, 61 scripts, 89 test modules
+> Scanned: 186 source files, 63 scripts, 89 test modules
 
 ## Executive Summary
 
 Praxis is buildable and fully wired for current single-user CLI scope. TypeScript
 typechecking, boundary checks, focused regressions, package-script references,
-and direct production dependencies pass. Stage 90 hardens the recursive CLI
+and direct production dependencies pass. Stage 91 adds repeatable GitHub and
+npm release engineering: complete compatibility CI, version/tag automation,
+retryable immutable-tag publication, tarball/SBOM/checksum generation,
+provenance attestations, security analysis, dependency maintenance, and open
+source governance. Stage 90 hardens the recursive CLI
 surface gate with exact option and positional signatures, declaration-only
 parsing, alias execution, and one explicit `--tmux=classic` extension across 40
 routes, 243 included options, and 46 commands/aliases. Stage 89 established the
@@ -20,7 +24,8 @@ execution on top of Stage 87 protected options. All 89 test modules and 811
 tests pass. No
 unfinished feature stubs, unresolved imports, or missing script targets remain.
 All 52 compatibility gates, clean package install, performance budgets, strict
-unused checks, and production dependency audit pass.
+unused checks, production dependency audit, release artifact checksums, and
+GitHub workflow static validation pass.
 
 ## 🔴 Critical Issues
 
@@ -66,4 +71,4 @@ direct-dependency inspection, and package-script target checks pass.
 
 - Total issues found: 2
 - Critical: 0 | Incomplete: 0 | Broken: 0 | Smells: 1 | Optimizations: 1
-- Files scanned: 186 source files, 61 scripts, 89 test modules
+- Files scanned: 186 source files, 63 scripts, 89 test modules

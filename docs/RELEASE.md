@@ -2,7 +2,8 @@
 
 Praxis ships as the unscoped `praxis-agent` npm package with the `praxis`
 executable. Publishing is a separate, explicit operation; release validation
-never contacts a registry for publication.
+never contacts a registry for publication. GitHub Actions is the authoritative
+release path; local publication is an emergency-only fallback.
 
 Runtime prerequisites are Node.js 24 or newer, `ripgrep` (`rg`) for the Grep
 tool, and the native command shell: `/bin/zsh` on macOS or `/bin/bash` on Linux.
@@ -87,3 +88,27 @@ Install the resulting artifact without publishing:
 npm install --global ./praxis-agent-0.1.0.tgz
 praxis --version
 ```
+
+## Automated release path
+
+Release Please maintains a version pull request from Conventional Commit pull
+request titles. Merging that pull request creates an immutable `v<version>` tag
+and GitHub release, then dispatches the isolated `Publish` workflow. No
+repository workflow writes directly to `main`.
+
+`Publish` checks out the immutable tag and repeats quality, compatibility,
+installed-package, performance, and production-audit gates. It then creates the
+npm tarball, CycloneDX SBOM, and `SHA256SUMS`, records GitHub artifact
+attestations, attaches all files to the GitHub release, and publishes the exact
+same tarball to npm with provenance. Publication is idempotent: rerunning an
+already published version verifies its presence and succeeds without replacing
+it.
+
+The initial npm publication uses the repository `NPM_TOKEN` secret because npm
+cannot attach a trusted publisher to a package that does not yet exist. After
+the first successful publish, configure npm Trusted Publishing for
+`Forest-Isle/Praxis`, workflow `publish.yml`, environment `npm`, then delete the
+secret. Future releases authenticate only with GitHub OIDC.
+
+See [RELEASE_AUTOMATION.md](RELEASE_AUTOMATION.md) for bootstrap, retry, and
+recovery procedures.

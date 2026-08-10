@@ -765,3 +765,25 @@ signatures.
       and undiscovered-route rejection retained in one executable gate
 - [x] stale README auto-permission status corrected to match the implemented
       bounded classifier runtime
+
+## Stage 91 - open-source release engineering
+
+Status: complete in source; remote bootstrap and initial publication are
+tracked by the release runbook.
+
+- [x] stable aggregate `CI` check over quality, production audit, all 52 Claude
+      Code 2.1.208 compatibility gates, and macOS/Linux Node 24/25 package and
+      performance regression lanes
+- [x] Release Please version PR, immutable `v<version>` tag, GitHub release, and
+      retryable repository-dispatch publication flow without generated
+      changelog files
+- [x] exact tag/package validation, npm tarball, production CycloneDX SBOM,
+      SHA-256 checksums, GitHub build attestation, release attachment, and npm
+      provenance publication
+- [x] OIDC Trusted Publishing path with one-time `NPM_TOKEN` bootstrap for the
+      previously unclaimed package
+- [x] CodeQL, dependency review, OpenSSF Scorecard, Dependabot, CODEOWNERS,
+      issue/PR templates, contribution policy, conduct policy, and private
+      vulnerability reporting
+- [x] release automation architecture, failure recovery, local fallback, and
+      maintainer bootstrap documentation

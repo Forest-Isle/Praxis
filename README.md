@@ -1,5 +1,11 @@
 # Praxis
 
+[![CI](https://github.com/Forest-Isle/Praxis/actions/workflows/ci.yml/badge.svg)](https://github.com/Forest-Isle/Praxis/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Forest-Isle/Praxis/actions/workflows/codeql.yml/badge.svg)](https://github.com/Forest-Isle/Praxis/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Forest-Isle/Praxis/badge)](https://scorecard.dev/viewer/?uri=github.com/Forest-Isle/Praxis)
+[![npm](https://img.shields.io/npm/v/praxis-agent)](https://www.npmjs.com/package/praxis-agent)
+[![license](https://img.shields.io/github/license/Forest-Isle/Praxis)](LICENSE)
+
 Praxis is a local-first, single-user general agent for the command line.
 
 The project cleanly reimplements production-proven agent behavior without
@@ -7,6 +13,18 @@ copying Claude Code source. It keeps the CLI agent loop, tool use, permissions,
 sessions, context compaction, skills, hooks, and MCP concepts while excluding
 accounts, organizations, billing, managed enterprise policy, remote control,
 IDE surfaces, and telemetry control planes.
+
+## Installation
+
+Praxis requires Node.js 24 or newer and `ripgrep` (`rg`).
+
+```sh
+npm install --global praxis-agent
+praxis --version
+```
+
+Release tarballs, SBOMs, SHA-256 checksums, and build attestations are attached
+to each [GitHub release](https://github.com/Forest-Isle/Praxis/releases).
 
 ## Status
 
@@ -288,6 +306,9 @@ shared rather than copied into a separate Praxis ecosystem.
 
 See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for protocol boundaries and
 [docs/ROADMAP.md](docs/ROADMAP.md) for implementation gates.
+See [docs/RELEASE.md](docs/RELEASE.md) for release verification and
+[docs/RELEASE_AUTOMATION.md](docs/RELEASE_AUTOMATION.md) for maintainer
+operations.
 
 ## Development
 
@@ -305,6 +326,9 @@ npm run test:performance
 npm run test:package
 node dist/cli.js --help
 ```
+
+Contributions use Conventional Commit pull-request titles and must pass the
+required `CI` check. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Configure the first provider adapter, then run a prompt:
 

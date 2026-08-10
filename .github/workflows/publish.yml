@@ -1,0 +1,94 @@
+name: Publish
+
+on:
+  repository_dispatch:
+    types: [release-created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub release tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: publish-${{ github.event.client_payload.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish npm package and release artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/praxis-agent
+    env:
+      RELEASE_TAG: ${{ github.event.client_payload.tag_name || inputs.tag }}
+    steps:
+      - name: Validate dispatch input
+        run: test -n "$RELEASE_TAG"
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install release prerequisites
+        run: |
+          command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+          npm ci
+          npm install --global @anthropic-ai/claude-code@2.1.208
+      - name: Validate tag and GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm run release:verify -- "$RELEASE_TAG"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+      - name: Run complete release regression
+        run: |
+          npm run check
+          npm run test:compat:all
+          npm run test:package
+          npm run test:performance
+          npm audit --omit=dev
+      - name: Build release artifacts
+        run: npm run release:artifacts -- "$RELEASE_TAG" "$RUNNER_TEMP/praxis-release"
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/praxis-release/*
+      - name: Upload GitHub release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/praxis-release/"* --clobber
+      - name: Publish npm package
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED_VERSION=$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null || true)
+          if test "$PUBLISHED_VERSION" = "$PACKAGE_VERSION"; then
+            echo "$PACKAGE_NAME@$PACKAGE_VERSION is already published"
+            exit 0
+          fi
+          if test -n "$PUBLISHED_VERSION"; then
+            echo "registry returned unexpected version: $PUBLISHED_VERSION" >&2
+            exit 1
+          fi
+          if test -n "$NPM_TOKEN"; then
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$RUNNER_TEMP/praxis.npmrc"
+            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/praxis.npmrc"
+          fi
+          TARBALL=$(find "$RUNNER_TEMP/praxis-release" -maxdepth 1 -name '*.tgz' -print -quit)
+          test -n "$TARBALL"
+          npm publish "$TARBALL" --access public --provenance

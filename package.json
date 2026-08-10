@@ -3,6 +3,22 @@
   "version": "0.1.0",
   "description": "Local-first, single-user general agent for the command line.",
   "license": "MIT",
+  "author": "wuqisen",
+  "homepage": "https://github.com/Forest-Isle/Praxis#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Forest-Isle/Praxis.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Forest-Isle/Praxis/issues"
+  },
+  "keywords": [
+    "agent",
+    "ai",
+    "cli",
+    "claude-code",
+    "mcp"
+  ],
   "type": "module",
   "files": [
     "dist"
@@ -20,6 +36,8 @@
     "lint": "eslint .",
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "prepack": "npm run build",
+    "release:artifacts": "node scripts/build-release-artifacts.mjs",
+    "release:verify": "node scripts/verify-release-ref.mjs",
     "test": "vitest run",
     "test:compat": "npm run build && node scripts/verify-claude-compatibility.mjs && node scripts/verify-claude-advanced-fixtures.mjs",
     "test:compat:all": "npm run build && node scripts/verify-compatibility-matrix.mjs",
@@ -79,6 +97,11 @@
   },
   "engines": {
     "node": ">=24"
+  },
+  "packageManager": "npm@11.6.2",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "dependencies": {
     "@anthropic-ai/mcpb": "2.1.2",
