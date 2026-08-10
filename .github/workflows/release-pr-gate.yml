@@ -1,0 +1,55 @@
+name: Release version PR gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: release-version-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  wait-for-dispatched-ci:
+    name: CI
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == 'github-actions[bot]' &&
+      github.event.pull_request.head.ref == 'release-please--branches--main--components--praxis-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Require the exact dispatched CI run
+        run: |
+          DEADLINE=$((SECONDS + 2400))
+          while true; do
+            RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+              --branch "$HEAD_BRANCH" --event workflow_dispatch --limit 20 \
+              --json databaseId,headSha,status,conclusion)
+            RUN=$(jq -c --arg sha "$HEAD_SHA" \
+              '[.[] | select(.headSha == $sha)] | max_by(.databaseId) // empty' \
+              <<< "$RUNS")
+            if test -n "$RUN"; then
+              RUN_ID=$(jq -r '.databaseId' <<< "$RUN")
+              RUN_STATUS=$(jq -r '.status' <<< "$RUN")
+              if test "$RUN_STATUS" = "completed"; then
+                test "$(jq -r '.conclusion' <<< "$RUN")" = "success"
+                exit 0
+              fi
+              gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
+              exit 0
+            fi
+            if test "$SECONDS" -ge "$DEADLINE"; then
+              echo "No dispatched CI run found for $HEAD_SHA" >&2
+              exit 1
+            fi
+            sleep 5
+          done
