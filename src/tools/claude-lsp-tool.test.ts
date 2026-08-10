@@ -139,7 +139,7 @@ async function fixture(): Promise<{
   configResponseFile: string
   definition: ClaudePluginLspServer
 }> {
-  const root = await mkdtemp(join(tmpdir(), 'praxis-lsp-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'praxis-lsp-')))
   roots.push(root)
   const file = join(root, 'main.fixture')
   const pidFile = join(root, 'server.pid')
@@ -413,7 +413,7 @@ describe('Claude LSP tool', () => {
       cwd: root,
     })
     expect(incoming.content).toBe(
-      `Found 1 incoming call:\n\n${file}:\n  main (Function) - Line 2 [calls at: 1:1]`,
+      'Found 1 incoming call:\n\nmain.fixture:\n  main (Function) - Line 2 [calls at: 1:1]',
     )
     await manager.close()
   })
@@ -489,7 +489,7 @@ describe('Claude LSP tool', () => {
 
     expect(result).toMatchObject({
       isError: false,
-      content: `Found 1 reference:\n  ${file}:2:3`,
+      content: 'Found 1 reference:\n  main.fixture:2:3',
     })
     expect(result.content).not.toContain('ignored.fixture')
     await manager.close()
