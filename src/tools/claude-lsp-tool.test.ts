@@ -181,16 +181,20 @@ async function eventuallyStopped(pid: number): Promise<boolean> {
   return false
 }
 
-async function eventuallyRead(path: string): Promise<string> {
+async function eventuallyReadJson(path: string): Promise<unknown> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
-      return await readFile(path, 'utf8')
+      return JSON.parse(await readFile(path, 'utf8'))
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      if (
+        (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
+        !(error instanceof SyntaxError)
+      )
+        throw error
     }
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
-  return readFile(path, 'utf8')
+  return JSON.parse(await readFile(path, 'utf8'))
 }
 
 describe('Claude LSP tool', () => {
@@ -380,7 +384,7 @@ describe('Claude LSP tool', () => {
     expect(hover.content).toContain('Hover info at 2:3:')
     expect(hover.content).toContain('explicit=allowed')
     expect(hover.accessedPaths).toEqual([await realpath(file)])
-    expect(JSON.parse(await eventuallyRead(configResponseFile))).toEqual([null])
+    expect(await eventuallyReadJson(configResponseFile)).toEqual([null])
 
     const symbols = await registry.execute(
       call('2', 'workspaceSymbol', file, { query: 'main' }),
