@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
@@ -15,6 +22,16 @@ const binRoot = join(root, 'bin')
 const claude = join(binRoot, 'claude')
 let cli
 let port
+const packageJson = JSON.parse(
+  await readFile(join(process.cwd(), 'package.json'), 'utf8'),
+)
+if (typeof packageJson.version !== 'string') {
+  throw new Error('package.json version is missing')
+}
+const expectedVersionPattern = packageJson.version.replace(
+  /[.*+?^${}()|[\]\\]/gu,
+  '\\$&',
+)
 
 const provider = createServer(async (request, response) => {
   for await (const chunk of request) {
@@ -60,7 +77,7 @@ log_user 1
 spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect {
-  -re {Praxis.*Code.*v0\.1\.2} {}
+  -re {Praxis.*Code.*v${expectedVersionPattern}} {}
   timeout { puts stderr "welcome header did not render"; exit 1 }
   eof { puts stderr "Praxis exited before welcome header"; exit 1 }
 }

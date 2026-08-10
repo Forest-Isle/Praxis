@@ -93,9 +93,11 @@ praxis --version
 ## Automated release path
 
 Release Please maintains a version pull request from Conventional Commit pull
-request titles. Merging that pull request creates an immutable `v<version>` tag
-and GitHub release, then dispatches the isolated `Publish` workflow. No
-repository workflow writes directly to `main`.
+request titles. It dispatches the real `CI` workflow for that exact version
+branch and enables GitHub squash auto-merge. Once the protected aggregate `CI`
+check passes, GitHub merges the version pull request, creates an immutable
+`v<version>` tag and GitHub release, then dispatches the isolated `Publish`
+workflow. No repository workflow writes directly to `main`.
 
 `Publish` checks out the immutable tag and repeats quality, credential-free CLI
 surface compatibility, installed-package, performance, and production-audit

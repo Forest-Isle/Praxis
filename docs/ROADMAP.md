@@ -810,4 +810,7 @@ Status: complete for GitHub branch-protection integration.
       permissions from a pinned action
 - [x] version PR creation/update explicitly dispatches `CI` on the exact head
       branch, avoiding GitHub's `GITHUB_TOKEN` event-recursion suppression
+- [x] Release Please enables squash auto-merge only for its own version pull
+      request; the protected aggregate `CI` check remains required before tag
+      creation and publication
 - [x] release publication remains a separate retryable repository dispatch

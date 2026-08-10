@@ -43,8 +43,10 @@ npm audit --omit=dev
   out of commits.
 
 Squash merge is the canonical strategy. Release Please derives versions and
-GitHub release notes from merged pull-request titles. Maintainers do not edit
-package versions or create release tags manually after bootstrap.
+GitHub release notes from merged pull-request titles, then automatically
+squash-merges its version pull request after the protected `CI` check passes.
+Maintainers do not edit package versions, merge version pull requests, or
+create release tags manually after bootstrap.
 
 ## Security reports
 

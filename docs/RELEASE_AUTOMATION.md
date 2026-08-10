@@ -24,8 +24,10 @@ package; manual-only versioning was rejected because it can drift from tags.
    titles. Changelog files remain intentionally disabled; GitHub release notes
    are authoritative. Because GitHub suppresses workflows from resources made
    by `GITHUB_TOKEN`, Release Please explicitly dispatches `CI` on the version
-   branch so required checks cannot deadlock.
-3. Merging the version PR creates `v<package.version>` and a GitHub release.
+   branch, then enables squash auto-merge for that exact PR. The real aggregate
+   `CI` check remains the branch-protection gate; no workflow bypasses it.
+3. After `CI` succeeds, GitHub automatically squash-merges the version PR,
+   creating `v<package.version>` and a GitHub release.
 4. Release Please sends a `release-created` repository dispatch carrying the
    exact tag.
 5. Publish checks out that tag, repeats all credential-free release gates,
@@ -59,6 +61,8 @@ package; manual-only versioning was rejected because it can drift from tags.
 ## Error handling and recovery
 
 - Tag/version mismatch fails before package creation.
+- A version PR stays open when its dispatched `CI` fails; fixing source and
+  merging it to `main` updates the PR and reruns the protected auto-merge path.
 - Any regression failure stops artifact upload and npm publication.
 - Artifact upload uses `--clobber`; a retry replaces only same-release files.
 - npm versions are immutable. Publish checks the registry first and skips an

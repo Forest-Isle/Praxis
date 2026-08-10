@@ -45,12 +45,10 @@ import {
   type ToolRegistry,
   type RuntimeEventSink,
 } from './core/runtime.js'
-import {
-  runInteractive as renderInteractive,
-  type InteractiveResumeOptions,
-  type InteractiveServiceFactory,
+import type {
+  InteractiveResumeOptions,
+  InteractiveServiceFactory,
 } from './cli/interactive.js'
-import { runAgentsDashboard as renderAgentsDashboard } from './cli/agents-dashboard.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
 import { createCliDebugSink } from './cli/debug.js'
 import {
@@ -1844,8 +1842,15 @@ const defaultDependencies: CliDependencies = {
     runtimeFactory: defaultPluginEvalRuntimeFactory,
     judge: defaultPluginEvalJudge,
   },
-  runInteractive: ({ agent, controls, initialPrompt, resume, signal }) =>
-    renderInteractive({
+  runInteractive: async ({
+    agent,
+    controls,
+    initialPrompt,
+    resume,
+    signal,
+  }) => {
+    const { runInteractive } = await import('./cli/interactive.js')
+    return runInteractive({
       factory: {
         createService: (options) =>
           createDefaultService({
@@ -1890,13 +1895,16 @@ const defaultDependencies: CliDependencies = {
                 : `No conversation found matching: ${resume.sessionSelector}`,
             }),
       ...(resume?.requireSession ? { requireSession: true } : {}),
-    }),
-  runAgentsDashboard: ({ manager, defaults, signal }) =>
-    renderAgentsDashboard({
+    })
+  },
+  runAgentsDashboard: async ({ manager, defaults, signal }) => {
+    const { runAgentsDashboard } = await import('./cli/agents-dashboard.js')
+    return runAgentsDashboard({
       manager,
       defaults,
       ...(signal ? { signal } : {}),
-    }),
+    })
+  },
   topLevelAgents: new TopLevelAgentManager({
     configRoot: resolve(
       process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
