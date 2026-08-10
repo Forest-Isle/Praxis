@@ -78,9 +78,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 ## What Praxis provides
 
-- **Local agent runtime** — Claude-style responsive TUI with rich transcript,
-  tool, decision, thinking, and context-budget panels; print mode, structured
-  JSON/JSONL, context compaction, tool loops, and bounded execution.
+- **Local agent runtime** — Claude-style responsive TUI with a shared-command
+  slash palette, streaming and expandable thinking, rich transcript, tool,
+  decision, and context-budget panels; print mode, structured JSON/JSONL,
+  context compaction, tool loops, and bounded execution.
 - **Built-in tools** — read, write, edit, glob, search, shell, notebook, PDF,
   image, web, scheduled prompts, workflows, and worktrees.
 - **Permission boundary** — local allow/ask/deny rules, safe and bare modes,

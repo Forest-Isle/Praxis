@@ -3,6 +3,7 @@ import { Text } from 'ink'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  CommandPalette,
   Composer,
   DialogFrame,
   MarkdownText,
@@ -91,6 +92,68 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('+new')
     expect(frame).toContain('⚠ careful')
     expect(frame).toContain('✳ streaming')
+  })
+
+  it('shows active thinking in full and expands retained thinking on demand', () => {
+    const reasoning = `Start ${'detail '.repeat(40)}reasoning tail stays visible`
+    const collapsed = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        items={[{ kind: 'thinking', text: reasoning }]}
+      />,
+    )
+    expect(collapsed.lastFrame()).toContain('Thought for a moment')
+    expect(collapsed.lastFrame()).not.toContain('reasoning tail stays visible')
+
+    const expanded = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        thinkingExpanded
+        items={[{ kind: 'thinking', text: reasoning }]}
+      />,
+    )
+    expect(expanded.lastFrame()).toContain('reasoning tail stays visible')
+
+    const active = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        activeThinking={reasoning}
+        items={[]}
+      />,
+    )
+    expect(active.lastFrame()).toContain('Thinking…')
+    expect(active.lastFrame()).toContain('reasoning tail stays visible')
+  })
+
+  it('renders a bounded slash command palette with descriptions', () => {
+    const app = render(
+      <CommandPalette
+        commands={[
+          {
+            name: 'review',
+            description: 'Review the current change.',
+            source: 'command',
+          },
+          {
+            name: 'check',
+            description: 'Check the workspace.',
+            source: 'skill',
+          },
+        ]}
+        selectedIndex={1}
+        width={70}
+        screenReader={false}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Commands')
+    expect(frame).toContain('/review')
+    expect(frame).toContain('Review the current change.')
+    expect(frame).toContain('❯ /check')
+    expect(frame).toContain('Tab fill')
   })
 
   it('renders composer effort, prompt, mode, and busy states', () => {

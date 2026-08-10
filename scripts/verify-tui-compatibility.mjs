@@ -47,10 +47,15 @@ const provider = createServer(async (request, response) => {
 try {
   await Promise.all([
     mkdir(configRoot),
+    mkdir(join(configRoot, 'commands'), { recursive: true }),
     mkdir(cwd),
     mkdir(installRoot),
     mkdir(binRoot),
   ])
+  await writeFile(
+    join(configRoot, 'commands', 'review.md'),
+    '---\ndescription: Review the shared fixture.\n---\nReview $ARGUMENTS\n',
+  )
   await writeFile(claude, "#!/bin/sh\nprintf '2.1.208 (Claude Code)\\n'\n")
   await chmod(claude, 0o755)
   const { stdout: packed } = await execFileAsync(
@@ -85,6 +90,13 @@ expect -re {Welcome back!}
 expect -re {Tips for getting started}
 expect -re {Try.*review this project}
 expect -re {bypass permissions on}
+send "/"
+expect -re {Commands}
+expect -re {/clear}
+expect -re {/review}
+expect -re {Review the shared fixture}
+expect -re {Tab fill}
+send "\033"
 send "reply briefly"
 expect -re {❯.*reply briefly}
 send "\r"

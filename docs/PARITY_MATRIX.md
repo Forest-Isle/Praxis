@@ -22,7 +22,7 @@ Evidence levels:
 
 | Capability                           | Status                              | Evidence / remaining work                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ------------------------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Interactive TTY                      | Complete                            | Claude-style responsive welcome/composer/status layout, Markdown and diff transcript, thinking/tool/task/context panels, bounded session picker, numbered permission/recovery/question/plan/MCP decisions, one-shot positional prompt submission, screen-reader fallback, and Esc turn interruption; wide/narrow Ink fixtures, real PTY provider loop, package, and unit gates                                              |
+| Interactive TTY                      | Partial — interaction parity        | Slash palette (built-ins plus shared commands/skills/MCP), full live thinking with `Ctrl+O` expansion, session picker, decision dialogs, screen-reader fallback, and Esc interruption; Ink and installed PTY gates. Native model/permission menus, editor history/cursor shortcuts, command-specific controls, and tool/diff navigation remain under black-box parity work.                                                 |
 | Print/headless prompt                | Complete                            | `-p`, `--print`, top-level prompt, and legacy `run`; installed package gate                                                                                                                                                                                                                                                                                                                                                 |
 | Resume syntax                        | Complete                            | Optional `-r`/`--resume` UUID/title/search selector, required TTY picker, exact case-insensitive headless title resolution with ambiguity errors, attached short/equals forms, canonical UUID routing, legacy `resume`, and shared transcript continuation; live Claude/Praxis gate                                                                                                                                         |
 | `--resume-session-at`                | Complete                            | Explicit `--resume` targeting of any active user/assistant message; append-only native `parentUuid` branching, active-chain projection, fork truncation, interactive/background/no-persistence routing, invalid/inactive target errors, and live Claude ↔ Praxis resume gate                                                                                                                                                |
@@ -145,8 +145,10 @@ routing.
 
 ## Final audit status
 
-Supported single-user CLI surface is closed against Claude Code 2.1.208. Latest
-executable surface audit recursively walks the installed Claude command tree,
+The supported command and shared-data surface is closed against Claude Code
+2.1.208. Interactive TTY parity remains partial, as stated in the matrix
+above. The latest executable surface audit recursively walks the installed
+Claude command tree,
 checks 40 included routes, 243 route-local options, and 46 commands/aliases
 against Praxis, verifies exact option and positional required/optional/variadic
 signatures plus command-specific help and alias dispatch, and prevents wrapped
@@ -162,9 +164,10 @@ binaries, crash-recoverable settings/credential commits, and packed runtime
 execution after protected plugin option storage and interactive plugin LSP.
 Final audit covers public/hidden/optional-value parsing, command-specific help,
 source and packed artifacts, bidirectional session/data-plane links,
-Claude-style interactive presentation and PTY input/stream/result lifecycle,
-TODO/skip and dispatcher wiring, performance, release packaging, and production
-dependency audit. Unsupported Claude versions remain deliberately read-only.
+Claude-style interactive presentation plus the bounded PTY
+input/stream/result lifecycle, TODO/skip and dispatcher wiring, performance,
+release packaging, and production dependency audit. Unsupported Claude versions
+remain deliberately read-only.
 Enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.
 

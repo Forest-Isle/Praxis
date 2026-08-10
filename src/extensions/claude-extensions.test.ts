@@ -257,6 +257,57 @@ describe('ClaudeExtensionCatalog', () => {
     ).resolves.toEqual({ userMessages: ['/occupied:prompt (MCP)'] })
   })
 
+  it('exposes every user-invocable slash command with palette metadata', () => {
+    const catalog = new ClaudeExtensionCatalog({
+      agents: [],
+      commands: [
+        {
+          path: '/config/commands/review.md',
+          scope: 'user',
+          content: '---\ndescription: Review local changes.\n---\nREVIEW',
+        },
+      ],
+      skills: [
+        {
+          path: '/config/skills/check/SKILL.md',
+          scope: 'user',
+          content:
+            '---\nname: check\ndescription: Check the workspace.\ndisable-model-invocation: true\n---\nCHECK',
+        },
+      ],
+    })
+    catalog.setMcpPrompts([
+      {
+        name: 'mcp__server__lookup',
+        userFacingName: 'server:lookup (MCP)',
+        description: 'Look up a shared resource.',
+        argumentNames: [],
+        invoke: async () => ({ text: '', contentBlocks: [], images: [] }),
+      },
+    ])
+
+    expect(catalog.slashCommandDefinitions()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'loop', kind: 'command' }),
+        {
+          name: 'review',
+          description: 'Review local changes.',
+          kind: 'command',
+        },
+        {
+          name: 'check',
+          description: 'Check the workspace.',
+          kind: 'skill',
+        },
+        {
+          name: 'server:lookup (MCP)',
+          description: 'Look up a shared resource.',
+          kind: 'mcp',
+        },
+      ]),
+    )
+  })
+
   it('does not expose MCP prompts when slash commands are disabled', async () => {
     const catalog = new ClaudeExtensionCatalog(
       { agents: [], commands: [], skills: [] },

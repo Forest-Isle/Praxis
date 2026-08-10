@@ -19,6 +19,12 @@ export interface ClaudeExtensionDefinition extends ClaudeTextResource {
   modelInvocable: boolean
 }
 
+export interface ClaudeSlashCommandDefinition {
+  name: string
+  description: string
+  kind: 'command' | 'skill' | 'mcp'
+}
+
 export interface ClaudePromptExpansion {
   userMessages: readonly string[]
   messages?: readonly ClaudePromptExpansionMessage[]
@@ -333,6 +339,25 @@ export class ClaudeExtensionCatalog {
 
   mcpPromptNames(): readonly string[] {
     return [...this.mcpPrompts.values()].map((prompt) => prompt.userFacingName)
+  }
+
+  slashCommandDefinitions(): readonly ClaudeSlashCommandDefinition[] {
+    const definitions = new Map(this.commands)
+    for (const [name, skill] of this.skills) definitions.set(name, skill)
+    return [
+      ...[...definitions.values()].map(
+        (definition): ClaudeSlashCommandDefinition => ({
+          name: definition.name,
+          description: definition.description,
+          kind: definition.kind === 'skill' ? 'skill' : 'command',
+        }),
+      ),
+      ...[...this.mcpPrompts.values()].map((prompt) => ({
+        name: prompt.userFacingName,
+        description: prompt.description,
+        kind: 'mcp' as const,
+      })),
+    ]
   }
 
   skill(name: string): ClaudeExtensionDefinition | null {

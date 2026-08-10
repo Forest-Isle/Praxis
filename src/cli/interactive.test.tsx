@@ -171,6 +171,127 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('w12345678 [running] Review repository')
   })
 
+  it('filters shared slash commands and fills a palette selection', async () => {
+    const calls: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt) {
+            calls.push(prompt)
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          slashCommands() {
+            return [
+              {
+                name: 'review',
+                description: 'Review the current change.',
+                source: 'command',
+              },
+            ]
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        slashCommands={[
+          {
+            name: 'review',
+            description: 'Review the current change.',
+            source: 'command',
+          },
+        ]}
+      />,
+    )
+
+    app.stdin.write('/')
+    await flush()
+    expect(app.lastFrame()).toContain('Commands')
+    expect(app.lastFrame()).toContain('/review')
+
+    app.stdin.write('rev')
+    await flush()
+    expect(app.lastFrame()).toContain('Review the current change.')
+
+    app.stdin.write('\t')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ /review')
+    expect(app.lastFrame()).not.toContain('Commands')
+
+    app.stdin.write('src')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['/review src'])
+  })
+
+  it('toggles retained thinking with Ctrl+O without losing the full text', async () => {
+    const reasoning = `Start ${'detail '.repeat(40)}reasoning tail stays visible`
+    const factory: InteractiveServiceFactory = {
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            eventSink({
+              type: 'thinking-start',
+              block: { type: 'thinking', thinking: '' },
+            })
+            eventSink({ type: 'thinking-delta', delta: reasoning })
+            eventSink({
+              type: 'thinking-stop',
+              block: {
+                type: 'thinking',
+                thinking: reasoning,
+                signature: 'sig',
+              },
+            })
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('think')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Thought for a moment')
+    expect(app.lastFrame()).not.toContain('reasoning tail stays visible')
+
+    app.stdin.write('\u000f')
+    await flush()
+    expect(app.lastFrame()).toContain('reasoning tail stays visible')
+    expect(app.lastFrame()).toContain('ctrl+o to collapse thinking')
+  })
+
   it('streams a new session and then resumes it', async () => {
     const calls: string[] = []
     let closed = 0

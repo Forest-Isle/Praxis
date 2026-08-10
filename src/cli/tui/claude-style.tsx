@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Box, Text, useStdout } from 'ink'
 
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
+import type { TuiSlashCommand } from './slash-commands.js'
 
 const BRAND = '#D97757'
 const ACCENT = '#B8A1FF'
@@ -220,6 +221,41 @@ function ToolResultText({ text }: { text: string }) {
   )
 }
 
+function ThinkingBlock({
+  text,
+  active,
+  expanded,
+  screenReader,
+}: {
+  text: string
+  active: boolean
+  expanded: boolean
+  screenReader: boolean
+}) {
+  const summary = text.replace(/\s+/gu, ' ').trim()
+  const showFull = screenReader || active || expanded
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text
+        {...(!screenReader ? { color: ACCENT } : {})}
+        dimColor={!screenReader}
+        italic={!screenReader}
+      >
+        {screenReader ? 'Thinking:' : '✻ '}
+        {active ? 'Thinking…' : 'Thought for a moment'}
+        {!showFull && summary ? ` · ${summary.slice(0, 160)}` : ''}
+      </Text>
+      {showFull && text ? (
+        <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
+          <MarkdownText text={text} />
+        </Box>
+      ) : !screenReader && summary.length > 160 ? (
+        <Text dimColor> ctrl+o to expand thinking</Text>
+      ) : null}
+    </Box>
+  )
+}
+
 export function MarkdownText({ text }: { text: string }) {
   const lines = text.split('\n')
   let code = false
@@ -250,11 +286,13 @@ export function Transcript({
   items,
   activeText,
   activeThinking = '',
+  thinkingExpanded = false,
   screenReader,
 }: {
   items: readonly TranscriptItem[]
   activeText: string
   activeThinking?: string
+  thinkingExpanded?: boolean
   screenReader: boolean
 }) {
   return (
@@ -280,13 +318,13 @@ export function Transcript({
         }
         if (item.kind === 'thinking') {
           return (
-            <Box key={index} marginTop={1}>
-              <Text color={ACCENT}>✻ </Text>
-              <Text dimColor italic>
-                Thought for a moment
-                {item.text ? ` · ${item.text.slice(0, 160)}` : ''}
-              </Text>
-            </Box>
+            <ThinkingBlock
+              key={index}
+              text={item.text}
+              active={false}
+              expanded={thinkingExpanded}
+              screenReader={screenReader}
+            />
           )
         }
         if (item.kind === 'tool') {
@@ -327,16 +365,12 @@ export function Transcript({
         )
       })}
       {activeThinking ? (
-        <Box marginTop={1}>
-          {screenReader ? (
-            <Text>Thinking: </Text>
-          ) : (
-            <Text color={ACCENT}>✻ </Text>
-          )}
-          <Text dimColor italic>
-            Thinking… {activeThinking.slice(-160)}
-          </Text>
-        </Box>
+        <ThinkingBlock
+          text={activeThinking}
+          active
+          expanded={thinkingExpanded}
+          screenReader={screenReader}
+        />
       ) : activeText ? (
         <Box marginTop={1}>
           {screenReader ? (
@@ -415,6 +449,88 @@ export function SessionPicker({
   )
 }
 
+export function CommandPalette({
+  commands,
+  selectedIndex,
+  width,
+  screenReader,
+}: {
+  commands: readonly TuiSlashCommand[]
+  selectedIndex: number
+  width: number
+  screenReader: boolean
+}) {
+  const maxVisible = 7
+  const start = Math.max(
+    0,
+    Math.min(
+      selectedIndex - Math.floor(maxVisible / 2),
+      Math.max(0, commands.length - maxVisible),
+    ),
+  )
+  const visible = commands.slice(start, start + maxVisible)
+  if (screenReader) {
+    return (
+      <Box flexDirection="column">
+        <Text>Commands</Text>
+        {visible.length === 0 ? (
+          <Text>No matching commands.</Text>
+        ) : (
+          visible.map((command) => (
+            <Text key={command.name}>
+              /{command.name}: {command.description}
+            </Text>
+          ))
+        )}
+      </Box>
+    )
+  }
+  return (
+    <Box
+      borderStyle="round"
+      borderColor="gray"
+      flexDirection="column"
+      marginTop={1}
+      paddingX={1}
+      width={Math.min(80, width)}
+    >
+      <Text bold>Commands</Text>
+      {visible.length === 0 ? (
+        <Text dimColor>No matching commands.</Text>
+      ) : (
+        visible.map((command, visibleIndex) => {
+          const index = start + visibleIndex
+          const selected = index === selectedIndex
+          return (
+            <Box key={command.name} flexDirection="column">
+              <Text {...(selected ? { color: BRAND, bold: true } : {})}>
+                {selected ? '❯ ' : '  '}/{command.name}
+              </Text>
+              {command.description ? (
+                <Text dimColor> {command.description}</Text>
+              ) : null}
+            </Box>
+          )
+        })
+      )}
+      {start > 0 || start + visible.length < commands.length ? (
+        <Text dimColor>
+          {start > 0 ? `↑ ${start} earlier` : ''}
+          {start > 0 && start + visible.length < commands.length ? ' · ' : ''}
+          {start + visible.length < commands.length
+            ? `↓ ${commands.length - start - visible.length} more`
+            : ''}
+        </Text>
+      ) : null}
+      <Text dimColor>
+        {commands.length === 0
+          ? 'Esc closes the palette'
+          : '↑/↓ select · Tab fill · Enter runs an exact command'}
+      </Text>
+    </Box>
+  )
+}
+
 export function Composer({
   input,
   busy,
@@ -423,6 +539,8 @@ export function Composer({
   usage,
   width,
   screenReader,
+  hasThinking = false,
+  thinkingExpanded = false,
 }: {
   input: string
   busy: boolean
@@ -431,6 +549,8 @@ export function Composer({
   usage?: ModelUsage
   width: number
   screenReader: boolean
+  hasThinking?: boolean
+  thinkingExpanded?: boolean
 }) {
   const [spinnerIndex, setSpinnerIndex] = useState(0)
   useEffect(() => {
@@ -478,6 +598,11 @@ export function Composer({
       <Text dimColor>
         ⏵⏵ {permissionLabel(display.permissionMode)} · /help for shortcuts
       </Text>
+      {hasThinking ? (
+        <Text dimColor>
+          ctrl+o to {thinkingExpanded ? 'collapse' : 'expand'} thinking
+        </Text>
+      ) : null}
       <Text dimColor>/new · /sessions · /workflows · /exit</Text>
     </Box>
   )

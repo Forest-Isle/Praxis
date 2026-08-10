@@ -25,6 +25,7 @@ import {
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
 import {
+  CommandPalette,
   Composer,
   DialogFrame,
   SessionPicker,
@@ -34,6 +35,12 @@ import {
   type TranscriptItem,
   type TuiDisplayMetadata,
 } from './tui/claude-style.js'
+import {
+  filterTuiSlashCommands,
+  mergeTuiSlashCommands,
+  slashCommandQuery,
+  type TuiSlashCommand,
+} from './tui/slash-commands.js'
 
 interface InteractiveSessionCommands {
   run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult>
@@ -45,6 +52,7 @@ interface InteractiveSessionCommands {
   fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
   workflows?(): readonly Record<string, unknown>[]
+  slashCommands?(): readonly TuiSlashCommand[]
   nextScheduledPrompt?(
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
@@ -90,6 +98,7 @@ interface InteractiveAppProps {
   resume?: InteractiveResumeOptions
   display?: TuiDisplayMetadata
   terminalWidth?: number
+  slashCommands?: readonly TuiSlashCommand[]
 }
 
 type PendingPermission = {
@@ -114,6 +123,8 @@ type PendingPlanApproval = {
   request: ClaudePlanApprovalRequest
   resolve: (approved: boolean) => void
 }
+
+const EMPTY_SLASH_COMMANDS: readonly TuiSlashCommand[] = []
 
 function questionAnswer(question: ClaudeQuestion, input: string): string {
   const answer = input.trim()
@@ -170,6 +181,7 @@ export function InteractiveApp({
   resume,
   display = { version: 'dev', cwd: process.cwd() },
   terminalWidth,
+  slashCommands = EMPTY_SLASH_COMMANDS,
 }: InteractiveAppProps) {
   const { exit } = useApp()
   const width = useTerminalWidth(terminalWidth)
@@ -195,6 +207,10 @@ export function InteractiveApp({
   const [pendingFork, setPendingFork] = useState(resume?.forkSession === true)
   const [input, setInput] = useState('')
   const inputRef = useRef('')
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [commandSelection, setCommandSelection] = useState(0)
+  const [availableSlashCommands, setAvailableSlashCommands] =
+    useState(slashCommands)
   const [busy, setBusy] = useState(false)
   const initialPromptRef = useRef(initialPrompt?.trim() ?? '')
   const [initialPromptPending, setInitialPromptPending] = useState(
@@ -203,6 +219,7 @@ export function InteractiveApp({
   const [status, setStatus] = useState('ready')
   const [activeText, setActiveText] = useState('')
   const [activeThinking, setActiveThinking] = useState('')
+  const [thinkingExpanded, setThinkingExpanded] = useState(false)
   const [usage, setUsage] = useState<ModelUsage | undefined>()
   const [history, setHistory] = useState<TranscriptItem[]>([])
   const [permission, setPermission] = useState<PendingPermission | null>(null)
@@ -225,6 +242,43 @@ export function InteractiveApp({
   onCleanupRef.current = onCleanup
   const scheduledWaitRef = useRef<AbortController | null>(null)
   const turnControllerRef = useRef<AbortController | null>(null)
+  const allSlashCommands = useMemo(
+    () => mergeTuiSlashCommands(availableSlashCommands),
+    [availableSlashCommands],
+  )
+  const commandQuery = commandPaletteOpen ? slashCommandQuery(input) : null
+  const matchingSlashCommands = useMemo(
+    () =>
+      commandQuery === null
+        ? []
+        : filterTuiSlashCommands(allSlashCommands, commandQuery),
+    [allSlashCommands, commandQuery],
+  )
+  const commandPaletteVisible =
+    !busy &&
+    !permission &&
+    !planApproval &&
+    !question &&
+    !elicitation &&
+    !selectingSession &&
+    commandQuery !== null
+  const hasThinking =
+    activeThinking.length > 0 ||
+    history.some((item) => item.kind === 'thinking')
+  const selectedSlashCommandIndex = Math.min(
+    commandSelection,
+    Math.max(0, matchingSlashCommands.length - 1),
+  )
+
+  useEffect(() => {
+    setAvailableSlashCommands(slashCommands)
+  }, [slashCommands])
+
+  useEffect(() => {
+    if (!commandPaletteOpen) return
+    const currentCommands = serviceRef.current?.slashCommands?.()
+    if (currentCommands) setAvailableSlashCommands(currentCommands)
+  }, [commandPaletteOpen])
 
   useEffect(() => {
     if (!signal) return
@@ -258,6 +312,19 @@ export function InteractiveApp({
   const append = (line: TranscriptItem) =>
     setHistory((current) => [...current, line])
 
+  const updateComposerInput = (next: string) => {
+    inputRef.current = next
+    setInput(next)
+    setCommandPaletteOpen(slashCommandQuery(next) !== null)
+    setCommandSelection(0)
+  }
+
+  useEffect(() => {
+    setCommandSelection((current) =>
+      Math.min(current, Math.max(0, matchingSlashCommands.length - 1)),
+    )
+  }, [matchingSlashCommands.length])
+
   const handleEvent = (event: RuntimeEvent) => {
     switch (event.type) {
       case 'text-delta':
@@ -265,11 +332,16 @@ export function InteractiveApp({
         break
       case 'thinking-start':
         setActiveThinking(
-          event.block.type === 'thinking' ? event.block.thinking : '',
+          event.block.type === 'thinking'
+            ? redactSensitiveText(event.block.thinking, sensitiveValues)
+            : '',
         )
         break
       case 'thinking-delta':
-        setActiveThinking((current) => current + event.delta)
+        setActiveThinking(
+          (current) =>
+            current + redactSensitiveText(event.delta, sensitiveValues),
+        )
         break
       case 'thinking-signature-delta':
         // Signatures authenticate a thinking block for provider replay; they are
@@ -280,7 +352,7 @@ export function InteractiveApp({
           kind: 'thinking',
           text:
             event.block.type === 'thinking'
-              ? event.block.thinking
+              ? redactSensitiveText(event.block.thinking, sensitiveValues)
               : activeThinking,
         })
         setActiveThinking('')
@@ -498,6 +570,7 @@ export function InteractiveApp({
     try {
       const created = await pending
       serviceRef.current = created
+      setAvailableSlashCommands(created.slashCommands?.() ?? slashCommands)
       return created
     } finally {
       serviceCreationRef.current = undefined
@@ -513,6 +586,7 @@ export function InteractiveApp({
       ? AbortSignal.any([signal, turnController.signal])
       : turnController.signal
     setBusy(true)
+    setCommandPaletteOpen(false)
     setStatus('assembling-context')
     setActiveText('')
     setActiveThinking('')
@@ -781,28 +855,60 @@ export function InteractiveApp({
       return
     }
 
+    if (key.ctrl && value.toLowerCase() === 'o' && hasThinking) {
+      setThinkingExpanded((current) => !current)
+      return
+    }
     if (busy) {
       if (key.escape || value === '\u001B') turnControllerRef.current?.abort()
       return
     }
+    if (commandPaletteVisible) {
+      if (key.escape) {
+        setCommandPaletteOpen(false)
+        return
+      }
+      if (key.upArrow) {
+        if (matchingSlashCommands.length > 0) {
+          setCommandSelection((current) => Math.max(0, current - 1))
+        }
+        return
+      }
+      if (key.downArrow) {
+        if (matchingSlashCommands.length > 0) {
+          setCommandSelection((current) =>
+            Math.min(matchingSlashCommands.length - 1, current + 1),
+          )
+        }
+        return
+      }
+      const selectedCommand = matchingSlashCommands[selectedSlashCommandIndex]
+      const exactSelectedCommand =
+        selectedCommand !== undefined &&
+        inputRef.current.toLocaleLowerCase() ===
+          `/${selectedCommand.name}`.toLocaleLowerCase()
+      if (
+        selectedCommand &&
+        (key.tab || (key.return && !exactSelectedCommand))
+      ) {
+        updateComposerInput(`/${selectedCommand.name} `)
+        setCommandPaletteOpen(false)
+        return
+      }
+    }
     if (key.return) {
       if (key.shift) {
-        inputRef.current += '\n'
-        setInput(inputRef.current)
+        updateComposerInput(`${inputRef.current}\n`)
         return
       }
       const prompt = inputRef.current.trim()
-      inputRef.current = ''
-      setInput('')
+      updateComposerInput('')
       if (!prompt) return
       if (prompt === '/exit') {
         exit()
       } else if (prompt === '/help' || prompt === '?') {
-        append({
-          kind: 'notice',
-          text: '/new start a session · /sessions resume · /workflows list workflows · /exit quit',
-        })
-      } else if (prompt === '/new') {
+        updateComposerInput('/')
+      } else if (prompt === '/new' || prompt === '/clear') {
         setSessionId(null)
         setPendingFork(false)
         append({ kind: 'notice', text: 'Started a new session.' })
@@ -850,11 +956,9 @@ export function InteractiveApp({
         )
       }
     } else if (key.backspace || key.delete) {
-      inputRef.current = inputRef.current.slice(0, -1)
-      setInput(inputRef.current)
+      updateComposerInput(inputRef.current.slice(0, -1))
     } else if (!key.ctrl && !key.meta && value) {
-      inputRef.current += value
-      setInput(inputRef.current)
+      updateComposerInput(inputRef.current + value)
     }
   })
 
@@ -878,6 +982,7 @@ export function InteractiveApp({
             items={history}
             activeText={activeText}
             activeThinking={activeThinking}
+            thinkingExpanded={thinkingExpanded}
             screenReader={axScreenReader}
           />
           {permission ? (
@@ -951,15 +1056,27 @@ export function InteractiveApp({
               <Text dimColor>Enter JSON object to accept · Esc to cancel</Text>
             </DialogFrame>
           ) : (
-            <Composer
-              input={input}
-              busy={busy}
-              status={status}
-              display={display}
-              {...(usage === undefined ? {} : { usage })}
-              width={width}
-              screenReader={axScreenReader}
-            />
+            <>
+              {commandPaletteVisible ? (
+                <CommandPalette
+                  commands={matchingSlashCommands}
+                  selectedIndex={selectedSlashCommandIndex}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : null}
+              <Composer
+                input={input}
+                busy={busy}
+                status={status}
+                display={display}
+                {...(usage === undefined ? {} : { usage })}
+                width={width}
+                screenReader={axScreenReader}
+                hasThinking={hasThinking}
+                thinkingExpanded={thinkingExpanded}
+              />
+            </>
           )}
         </>
       )}
@@ -988,11 +1105,13 @@ export async function runInteractive(options: {
     signal,
   })
   let initialSessions: SessionSummary[]
+  let initialSlashCommands: readonly TuiSlashCommand[]
   try {
     const sessions = await listing.sessions()
     initialSessions = options.sessionFilter
       ? sessions.filter(options.sessionFilter)
       : sessions
+    initialSlashCommands = listing.slashCommands?.() ?? []
     if (options.requireSession && initialSessions.length === 0) {
       throw new Error(
         options.missingSessionMessage ??
@@ -1025,6 +1144,7 @@ export async function runInteractive(options: {
     <InteractiveApp
       factory={options.factory}
       initialSessions={initialSessions}
+      slashCommands={initialSlashCommands}
       {...(options.initialPrompt === undefined
         ? {}
         : { initialPrompt: options.initialPrompt })}

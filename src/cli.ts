@@ -49,6 +49,7 @@ import type {
   InteractiveResumeOptions,
   InteractiveServiceFactory,
 } from './cli/interactive.js'
+import type { TuiSlashCommand } from './cli/tui/slash-commands.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
 import { createCliDebugSink } from './cli/debug.js'
 import {
@@ -907,6 +908,7 @@ interface SessionCommands {
   nextScheduledPrompt?(
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
+  slashCommands?(): readonly TuiSlashCommand[]
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
   promptSuggestion?(
@@ -1616,6 +1618,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       },
       sessions: () => service.sessions(),
+      slashCommands: () =>
+        extensions.slashCommandDefinitions().map((definition) => ({
+          name: definition.name,
+          description: definition.description,
+          source: definition.kind,
+        })),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
       nextScheduledPrompt: (signal) => service.nextScheduledPrompt(signal),
