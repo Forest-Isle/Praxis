@@ -32,6 +32,9 @@ describe('TUI slash command catalog', () => {
       description: 'Review the current change.',
       source: 'skill',
     })
+    expect(commands.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(['context', 'status', 'skills', 'tasks', 'plan']),
+    )
   })
 
   it('filters a palette query until the user starts command arguments', () => {

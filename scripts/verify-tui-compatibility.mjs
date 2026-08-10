@@ -148,6 +148,28 @@ expect -re {Bash\(npm test:\*\).*user}
 send "\033"
 after 100
 expect -re {bypass permissions on}
+send "/context"
+expect -re {Visualize current context usage}
+send "\r"
+expect -re {Context Usage}
+expect -re {Auto-compact window}
+send "/status"
+send "\r"
+expect -re {Settings.*Status.*Config.*Usage.*Stats}
+expect -re {fixture-model}
+send "\033"
+after 100
+send "/skills"
+send "\r"
+expect -re {Skills}
+expect -re {No skills found}
+send "\033"
+after 100
+send "\024"
+expect -re {Background}
+expect -re {No tasks currently running}
+send "\033"
+after 100
 send "reply briefly"
 expect -re {❯.*reply briefly}
 send "\r"
@@ -174,7 +196,7 @@ exit 0
       TUI_NODE: process.execPath,
       TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
     },
-    timeout: 30_000,
+    timeout: 60_000,
   })
   assert.match(result.stdout, /TUI_FAKE_OK/u)
   console.log('TUI compatibility verification passed')

@@ -222,6 +222,204 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('w12345678 [running] Review repository')
   })
 
+  it('opens context, status, skills, and tasks as local TUI surfaces', async () => {
+    let serviceCreations = 0
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        serviceCreations += 1
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          workflows() {
+            return [
+              {
+                task_id: 'task-1',
+                status: 'running',
+                summary: 'Audit TUI',
+              },
+            ]
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        display={{
+          version: '0.2.0',
+          cwd: '/tmp/praxis',
+          model: 'fixture-model',
+          contextWindowTokens: 200_000,
+        }}
+        slashCommands={[
+          {
+            name: 'review',
+            description: 'Review the current change.',
+            source: 'skill',
+          },
+        ]}
+      />,
+    )
+
+    app.stdin.write('/context')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Context Usage')
+    expect(app.lastFrame()).toContain('review: ~')
+    expect(serviceCreations).toBe(0)
+
+    app.stdin.write('/status')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Settings  Status  Config  Usage  Stats')
+    expect(app.lastFrame()).toContain('fixture-model')
+    app.stdin.write('\u001B[C')
+    await flush()
+    expect(app.lastFrame()).toContain('Context window:')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+
+    app.stdin.write('/skills')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Skills')
+    expect(app.lastFrame()).toContain('Review the current change.')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+
+    app.stdin.write('/tasks')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Background')
+    expect(app.lastFrame()).toContain('task-1 [running] Audit TUI')
+    expect(serviceCreations).toBe(1)
+  })
+
+  it('supports task, model, stash, escape, and continuation shortcuts', async () => {
+    const calls: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt) {
+            calls.push(prompt)
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          workflows() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('\u0014')
+    await flush()
+    expect(app.lastFrame()).toContain('Background')
+    expect(app.lastFrame()).toContain('No tasks currently running')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+
+    app.stdin.write('\u001B[112;3u')
+    await flush()
+    expect(app.lastFrame()).toContain('Select model')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+
+    app.stdin.write('stashed prompt')
+    app.stdin.write('\u0013')
+    await flush()
+    expect(app.lastFrame()).not.toContain('❯ stashed prompt')
+    app.stdin.write('\u0013')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ stashed prompt')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).not.toContain('❯ stashed prompt')
+
+    app.stdin.write('first\\')
+    app.stdin.write('\r')
+    app.stdin.write('second')
+    await flush()
+    expect(app.lastFrame()).toContain('first')
+    expect(app.lastFrame()).toContain('second')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['first\nsecond'])
+  })
+
+  it('enables plan mode locally before the next turn', async () => {
+    const modes: Array<string | undefined> = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        modes.push(options.permissionMode)
+        return {
+          async run() {
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('/plan')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Permission mode set to plan')
+    app.stdin.write('inspect')
+    app.stdin.write('\r')
+    await flush()
+    expect(modes).toEqual(['plan'])
+  })
+
   it('filters shared slash commands and fills a palette selection', async () => {
     const calls: string[] = []
     const factory: InteractiveServiceFactory = {

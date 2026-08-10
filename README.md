@@ -82,6 +82,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   slash palette, tabbed help and shortcut surfaces, searchable resume picker,
   streaming and expandable thinking, globally expandable tool results,
   cursor/history composer, per-session model/effort/permission controls,
+  context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   navigable current/per-turn Git diff views, rich decision panels, and measured
   context budgets; print mode, structured JSON/JSONL, context compaction, tool
   loops, and bounded execution.

@@ -35,20 +35,23 @@ status-line plugins are not native parity requirements.
 
 ## State matrix
 
-| State         | Observable Claude Code shape             | Praxis evidence                          |
-| ------------- | ---------------------------------------- | ---------------------------------------- |
-| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures  |
-| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate           |
-| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests          |
-| Slash command | filterable command name and description  | palette, selection, and PTY fixtures     |
-| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures    |
-| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures |
-| Tool          | named call with indented input/result    | structured tool and diff fixtures        |
-| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures    |
-| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures  |
-| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests       |
-| Resume        | bounded selectable conversation list     | picker interaction and viewport tests    |
-| Accessibility | decoration-free semantic text            | screen-reader fixture                    |
+| State         | Observable Claude Code shape             | Praxis evidence                           |
+| ------------- | ---------------------------------------- | ----------------------------------------- |
+| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures   |
+| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate            |
+| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests           |
+| Slash command | filterable command name and description  | palette, selection, and PTY fixtures      |
+| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures     |
+| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures  |
+| Tool          | named call with indented input/result    | structured tool and diff fixtures         |
+| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures     |
+| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures   |
+| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures |
+| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures  |
+| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures  |
+| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests        |
+| Resume        | bounded selectable conversation list     | picker interaction and viewport tests     |
+| Accessibility | decoration-free semantic text            | screen-reader fixture                     |
 
 ## Architecture
 
@@ -88,6 +91,12 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `SelectionMenu`: reusable model, effort, and permission-rule scope chooser.
 - `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
   scoped rule search; rule creation; and workspace permission-mode selection.
+- `ContextUsageBlock`: transcript-native usage grid, autocompact reserve, and
+  estimates for skills discovered through the shared Claude data plane.
+- `StatusDashboard`: Settings, Status, Config, Usage, and Stats tabs backed by
+  the current local runtime state.
+- `ListDashboard`: shared presentation for `.claude` skills and local
+  background task/workflow state.
 - `DialogFrame`: shared bordered surface used by permission, question, plan,
   recovery, and elicitation decisions.
 - screen-reader branches: semantic text-only rendering through the same state.
@@ -131,6 +140,14 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `/diff` reads `git diff HEAD` without a model turn. Left/right switches
   Current and captured file-mutating-turn sources, up/down selects or scrolls,
   Enter drills into a file, and Esc returns or closes the dashboard.
+- `/context` appends a Claude-shaped context-usage block without a model turn.
+  `/status` opens tabbed local runtime details, `/skills` lists entries from the
+  existing shared skill catalog, and `/tasks` opens the existing workflow/task
+  state; `/workflows` remains a hidden legacy alias. `/plan` switches the
+  existing permission runtime into plan mode.
+- `Ctrl+T` opens tasks, Option+P opens model selection, and `Ctrl+S` stashes or
+  restores the current prompt. Double Esc clears the composer, while a trailing
+  backslash plus Return inserts a newline without submitting.
 - ASCII control codes and Ink control-key metadata are both accepted for
   composer navigation, while unrelated non-printable bytes are never inserted.
 - Permission policy, MCP elicitation completion, and hook lifecycle events
@@ -147,19 +164,22 @@ is passed from the CLI composition root and never written to shared JSONL.
 - interaction tests for prompts, selection, permission, questions, plan, MCP,
   streaming, tools, cancellation, and screen-reader mode;
 - PTY installed-package capture proving borders, composer, mode footer, bare
-  `?` shortcuts, `/` discovery, control-key clearing, and `/diff` drill-down;
+  `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
+  context/status/skill dashboards, and `Ctrl+T` task access;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
 
 ## Remaining interactive parity work
 
-The Stage TUI-1/2/3/4/5 controls close the slash presentation, help/shortcut,
+The Stage TUI-1/2/3/4/5/6 controls close the slash presentation, help/shortcut,
 searchable-resume, thinking, composer, runtime-control, measured-status,
-tool-detail, and current/per-turn diff-navigation seams, but they do not justify
-a blanket “complete Claude Code TUI” claim. Remaining black-box-driven work
+tool-detail, current/per-turn diff-navigation, context/status/skill/task panels,
+plan switching, prompt stash, and continuation seams, but they do not justify a
+blanket “complete Claude Code TUI” claim. Remaining black-box-driven work
 includes the full built-in command catalog and its command-specific dialogs,
 permission-rule removal and exact denied-history behavior, exact multi-read
-grouping and historical turn attribution, and remaining exact layout/shortcut
-behavior. Each item needs an observed contract and a focused TTY or Ink gate
-before the matrix can return to a complete status.
+grouping and historical turn attribution, shell/file-picker/undo/suspend/editor/
+image/keybinding flows, and remaining exact layout behavior. Each item needs an
+observed contract and a focused TTY or Ink gate before the matrix can return to
+a complete status.

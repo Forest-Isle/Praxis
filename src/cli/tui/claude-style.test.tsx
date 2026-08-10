@@ -8,11 +8,13 @@ import {
   DiffDashboard,
   DialogFrame,
   HelpMenu,
+  ListDashboard,
   MarkdownText,
   PermissionDashboard,
   SelectionMenu,
   SessionPicker,
   ShortcutHelp,
+  StatusDashboard,
   Transcript,
   WelcomePanel,
 } from './claude-style.js'
@@ -280,6 +282,96 @@ describe('Claude-style TUI components', () => {
     )
     expect(active.lastFrame()).toContain('Thinking…')
     expect(active.lastFrame()).toContain('reasoning tail stays visible')
+  })
+
+  it('renders context usage and local status dashboards', () => {
+    const context = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        items={[
+          {
+            kind: 'context',
+            usedTokens: 1_500,
+            contextWindowTokens: 200_000,
+            skills: [{ name: 'review', tokens: 290 }],
+          },
+        ]}
+      />,
+    )
+    expect(context.lastFrame()).toContain('Context Usage')
+    expect(context.lastFrame()).toContain('1,500/200,000 tokens')
+    expect(context.lastFrame()).toContain('Autocompact buffer: 33,000 tokens')
+    expect(context.lastFrame()).toContain('review: ~290 tokens')
+
+    const accessibleContext = render(
+      <Transcript
+        screenReader
+        activeText=""
+        items={[
+          {
+            kind: 'context',
+            usedTokens: 1_500,
+            contextWindowTokens: 200_000,
+            skills: [{ name: 'review', tokens: 290 }],
+          },
+        ]}
+      />,
+    )
+    expect(accessibleContext.lastFrame()).toContain('1,500 of 200,000 tokens')
+    expect(accessibleContext.lastFrame()).not.toContain('⛶')
+
+    const status = render(
+      <StatusDashboard
+        tabIndex={1}
+        version="0.2.0"
+        sessionId="session-1"
+        display={display}
+        usage={{ inputTokens: 12, outputTokens: 3 }}
+        costUsd={0.01}
+        turnCount={2}
+        toolCount={1}
+        commandCount={14}
+        detailedTranscript={false}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(status.lastFrame()).toContain(
+      'Settings  Status  Config  Usage  Stats',
+    )
+    expect(status.lastFrame()).toContain('Version:')
+    expect(status.lastFrame()).toContain('session-1')
+    expect(status.lastFrame()).toContain('test-model')
+  })
+
+  it('renders empty and populated local list dashboards', () => {
+    const empty = render(
+      <ListDashboard
+        title="Skills"
+        rows={[]}
+        emptyText={
+          'No skills found\nCreate skills in .claude/skills/ or ~/.claude/skills/'
+        }
+        selectedIndex={0}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(empty.lastFrame()).toContain('No skills found')
+    expect(empty.lastFrame()).toContain('.claude/skills/')
+
+    const populated = render(
+      <ListDashboard
+        title="Background"
+        rows={[{ label: 'w1 [running] Review repository' }]}
+        emptyText="No tasks currently running"
+        selectedIndex={0}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(populated.lastFrame()).toContain('❯ w1 [running] Review repository')
   })
 
   it('renders a bounded slash command palette with descriptions', () => {

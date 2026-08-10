@@ -24,6 +24,12 @@ export interface TuiDisplayMetadata {
 export type TranscriptItem =
   | { kind: 'user' | 'assistant' | 'notice' | 'warning'; text: string }
   | { kind: 'thinking'; text: string }
+  | {
+      kind: 'context'
+      usedTokens: number
+      contextWindowTokens: number
+      skills: readonly { name: string; tokens: number }[]
+    }
   | { kind: 'tool'; call: ModelToolCall; detail: string }
   | {
       kind: 'tool-result'
@@ -362,6 +368,87 @@ function ThinkingBlock({
   )
 }
 
+function ContextUsageBlock({
+  usedTokens,
+  contextWindowTokens,
+  skills,
+  screenReader,
+}: Extract<TranscriptItem, { kind: 'context' }> & { screenReader: boolean }) {
+  const totalTokens = Math.max(1, contextWindowTokens)
+  const compactBuffer = Math.round(totalTokens * 0.165)
+  const usable = Math.max(1, totalTokens - compactBuffer)
+  if (screenReader) {
+    return (
+      <Box flexDirection="column">
+        <Text>Context Usage</Text>
+        <Text>
+          {usedTokens.toLocaleString()} of {totalTokens.toLocaleString()} tokens
+        </Text>
+        <Text>Autocompact buffer: {compactBuffer.toLocaleString()} tokens</Text>
+        <Text>
+          Skills: {skills.map(({ name }) => name).join(', ') || 'none'}
+        </Text>
+      </Box>
+    )
+  }
+  const usedCells = Math.min(100, Math.ceil((usedTokens / totalTokens) * 100))
+  const bufferCells = Math.min(
+    100 - usedCells,
+    Math.ceil((compactBuffer / totalTokens) * 100),
+  )
+  const cells = Array.from({ length: 100 }, (_, index) =>
+    index < usedCells ? '⛁' : index >= 100 - bufferCells ? '⛝' : '⛶',
+  )
+  return (
+    <Box flexDirection="column" marginTop={1} marginLeft={2}>
+      <Text bold>Context Usage</Text>
+      <Box>
+        <Box flexDirection="column" marginRight={2}>
+          {Array.from({ length: 10 }, (_, row) => (
+            <Text key={row}>
+              {cells.slice(row * 10, row * 10 + 10).join(' ')}
+            </Text>
+          ))}
+        </Box>
+        <Box flexDirection="column">
+          <Text bold>
+            {usedTokens.toLocaleString()}/{totalTokens.toLocaleString()} tokens
+          </Text>
+          <Text> </Text>
+          <Text bold>Estimated usage by category</Text>
+          <Text>
+            ⛁ Skills:{' '}
+            {skills
+              .reduce((total, skill) => total + skill.tokens, 0)
+              .toLocaleString()}{' '}
+            tokens
+          </Text>
+          <Text>
+            ⛶ Free space: {Math.max(0, usable - usedTokens).toLocaleString()}
+          </Text>
+          <Text>
+            ⛝ Autocompact buffer: {compactBuffer.toLocaleString()} tokens
+          </Text>
+        </Box>
+      </Box>
+      <Text> </Text>
+      <Text>Auto-compact window: {totalTokens.toLocaleString()} tokens</Text>
+      <Text> </Text>
+      <Text bold>Skills · /skills</Text>
+      {skills.length === 0 ? (
+        <Text dimColor>└ No skills loaded</Text>
+      ) : (
+        skills.map((skill, index) => (
+          <Text key={skill.name} dimColor>
+            {index === skills.length - 1 ? '└' : '├'} {skill.name}: ~
+            {skill.tokens} tokens
+          </Text>
+        ))
+      )}
+    </Box>
+  )
+}
+
 export function MarkdownText({ text }: { text: string }) {
   const lines = text.split('\n')
   let code = false
@@ -449,6 +536,15 @@ export function Transcript({
               text={item.text}
               active={false}
               expanded={detailed}
+              screenReader={screenReader}
+            />
+          )
+        }
+        if (item.kind === 'context') {
+          return (
+            <ContextUsageBlock
+              key={index}
+              {...item}
               screenReader={screenReader}
             />
           )
@@ -701,6 +797,152 @@ export function PermissionDashboard({
       <Text dimColor>
         ←/→ tabs · ↑/↓ select · type to search · Enter to choose · Esc to close
       </Text>
+    </Box>
+  )
+}
+
+export function StatusDashboard({
+  tabIndex,
+  version,
+  sessionId,
+  display,
+  usage,
+  costUsd,
+  turnCount,
+  toolCount,
+  commandCount,
+  detailedTranscript,
+  width,
+  screenReader,
+}: {
+  tabIndex: number
+  version: string
+  sessionId: string | null
+  display: TuiDisplayMetadata
+  usage?: ModelUsage
+  costUsd?: number
+  turnCount: number
+  toolCount: number
+  commandCount: number
+  detailedTranscript: boolean
+  width: number
+  screenReader: boolean
+}) {
+  const tabs = ['Settings', 'Status', 'Config', 'Usage', 'Stats'] as const
+  const rows =
+    tabIndex === 0
+      ? [
+          ['Thinking mode', 'provider controlled'],
+          ['Verbose output', detailedTranscript ? 'true' : 'false'],
+          ['Default permission mode', permissionLabel(display.permissionMode)],
+          ['Context compaction', 'automatic'],
+          ['Shared Claude data', 'enabled'],
+        ]
+      : tabIndex === 1
+        ? [
+            ['Version', version],
+            ['Session ID', sessionId ?? 'new session'],
+            ['cwd', display.cwd],
+            ['Model', display.model ?? 'provider default'],
+            ['Permission mode', permissionLabel(display.permissionMode)],
+          ]
+        : tabIndex === 2
+          ? [
+              ['Model', display.model ?? 'provider default'],
+              ['Effort', display.effort ?? 'high'],
+              [
+                'Context window',
+                String(display.contextWindowTokens ?? 'provider default'),
+              ],
+              ['Available commands', String(commandCount)],
+            ]
+          : tabIndex === 3
+            ? [
+                ['Input tokens', String(usage?.inputTokens ?? 0)],
+                ['Output tokens', String(usage?.outputTokens ?? 0)],
+                [
+                  'Session cost',
+                  costUsd === undefined
+                    ? 'unavailable'
+                    : `$${costUsd.toFixed(4)}`,
+                ],
+              ]
+            : [
+                ['Turns', String(turnCount)],
+                ['Tool calls', String(toolCount)],
+                [
+                  'Context used',
+                  String(
+                    (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0),
+                  ),
+                ],
+              ]
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {!screenReader ? (
+        <Text dimColor>{'─'.repeat(Math.min(100, width))}</Text>
+      ) : null}
+      <Text>
+        {'  '}
+        {tabs.map((tab, index) => (
+          <Text key={tab} inverse={index === tabIndex}>
+            {' '}
+            {tab}{' '}
+          </Text>
+        ))}
+      </Text>
+      <Text> </Text>
+      {rows.map(([label, value]) => (
+        <Box key={label}>
+          <Box width={28}>
+            <Text>{label}:</Text>
+          </Box>
+          <Text>{value}</Text>
+        </Box>
+      ))}
+      <Text> </Text>
+      <Text dimColor>←/→/tab to switch · Esc to close</Text>
+    </Box>
+  )
+}
+
+export function ListDashboard({
+  title,
+  rows,
+  emptyText,
+  selectedIndex,
+  width,
+  screenReader,
+}: {
+  title: string
+  rows: readonly { label: string; description?: string }[]
+  emptyText: string
+  selectedIndex: number
+  width: number
+  screenReader: boolean
+}) {
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {!screenReader ? (
+        <Text dimColor>{'─'.repeat(Math.min(100, width))}</Text>
+      ) : null}
+      <Text bold> {title}</Text>
+      <Text> </Text>
+      {rows.length === 0 ? (
+        <Text dimColor> {emptyText}</Text>
+      ) : (
+        rows.map((row, index) => (
+          <Box key={`${index}-${row.label}`} flexDirection="column">
+            <Text inverse={index === selectedIndex}>
+              {index === selectedIndex ? '❯ ' : '  '}
+              {row.label}
+            </Text>
+            {row.description ? <Text dimColor> {row.description}</Text> : null}
+          </Box>
+        ))
+      )}
+      <Text> </Text>
+      <Text dimColor>↑/↓ to select · Esc to close</Text>
     </Box>
   )
 }

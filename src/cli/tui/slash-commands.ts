@@ -44,6 +44,31 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'context',
+    description: 'Visualize current context usage as a colored grid',
+    source: 'builtin',
+  },
+  {
+    name: 'status',
+    description: 'Show runtime status, configuration, usage, and statistics',
+    source: 'builtin',
+  },
+  {
+    name: 'skills',
+    description: 'List available skills',
+    source: 'builtin',
+  },
+  {
+    name: 'tasks',
+    description: 'View background work',
+    source: 'builtin',
+  },
+  {
+    name: 'plan',
+    description: 'Enable plan mode for this session',
+    source: 'builtin',
+  },
+  {
     name: 'workflows',
     description: 'Browse running and completed workflows',
     source: 'builtin',

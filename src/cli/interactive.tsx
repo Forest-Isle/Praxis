@@ -35,9 +35,11 @@ import {
   DiffDashboard,
   DialogFrame,
   HelpMenu,
+  ListDashboard,
   PermissionDashboard,
   SelectionMenu,
   SessionPicker,
+  StatusDashboard,
   Transcript,
   WelcomePanel,
   useTerminalWidth,
@@ -241,6 +243,14 @@ type InteractiveMenu =
   | { kind: 'model'; selectedIndex: number }
   | { kind: 'model-input' }
   | { kind: 'effort'; selectedIndex: number }
+  | { kind: 'status'; tabIndex: number }
+  | {
+      kind: 'list'
+      title: string
+      rows: readonly { label: string; description?: string }[]
+      emptyText: string
+      selectedIndex: number
+    }
 
 type RuntimePreferences = {
   model?: string
@@ -336,6 +346,22 @@ function filterSessionChoices(
   })
 }
 
+function estimatedCommandTokens(command: TuiSlashCommand): number {
+  return Math.max(
+    1,
+    Math.ceil(`/${command.name} ${command.description}`.length / 4),
+  )
+}
+
+function workflowRows(
+  workflows: readonly Record<string, unknown>[],
+): readonly { label: string; description?: string }[] {
+  return workflows.map((workflow) => ({
+    label:
+      `${String(workflow.task_id ?? workflow.id ?? 'task')} [${String(workflow.status ?? 'unknown')}] ${String(workflow.summary ?? workflow.description ?? '')}`.trim(),
+  }))
+}
+
 export function InteractiveApp({
   factory,
   initialSessions,
@@ -409,6 +435,8 @@ export function InteractiveApp({
   const inputHistoryRef = useRef<string[]>([])
   const inputHistoryIndexRef = useRef<number | null>(null)
   const inputHistoryDraftRef = useRef('')
+  const stashedInputRef = useRef('')
+  const lastEscapeAtRef = useRef(0)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandSelection, setCommandSelection] = useState(0)
   const [shortcutsVisible, setShortcutsVisible] = useState(false)
@@ -1074,6 +1102,30 @@ export function InteractiveApp({
     void change.finally(() => onTurnChange?.(null))
   }
 
+  const openTasks = () => {
+    const loading = (async () => {
+      setBusy(true)
+      setStatus('loading tasks')
+      try {
+        const rows = workflowRows((await service()).workflows?.() ?? [])
+        updateMenu({
+          kind: 'list',
+          title: 'Background',
+          rows,
+          emptyText: 'No tasks currently running',
+          selectedIndex: 0,
+        })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(loading)
+    void loading.finally(() => onTurnChange?.(null))
+  }
+
   const submit = async (prompt: string) => {
     const turnNumber = turnNumberRef.current + 1
     turnNumberRef.current = turnNumber
@@ -1447,6 +1499,26 @@ export function InteractiveApp({
       return
     }
 
+    if (!busy && controlKey('t')) {
+      openTasks()
+      return
+    }
+    if (!busy && key.meta && lower === 'p') {
+      updateMenu({ kind: 'model', selectedIndex: 0 })
+      return
+    }
+    if (!busy && controlKey('s')) {
+      if (inputRef.current.length > 0) {
+        stashedInputRef.current = inputRef.current
+        clearComposerInput()
+      } else if (stashedInputRef.current.length > 0) {
+        const stashed = stashedInputRef.current
+        stashedInputRef.current = ''
+        updateComposerInput(stashed)
+      }
+      return
+    }
+
     const activeMenu = menuRef.current
     if (activeMenu) {
       if (activeMenu.kind === 'help') {
@@ -1702,6 +1774,37 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'status') {
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+        } else if (key.leftArrow || key.rightArrow || key.tab) {
+          const direction = key.leftArrow || (key.tab && key.shift) ? -1 : 1
+          updateMenu({
+            kind: 'status',
+            tabIndex: Math.max(0, Math.min(4, activeMenu.tabIndex + direction)),
+          })
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'list') {
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+        } else if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                Math.max(0, activeMenu.rows.length - 1),
+                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+        }
+        return
+      }
+
       if (activeMenu.kind === 'model-input') {
         if (key.escape) {
           clearComposerInput()
@@ -1790,6 +1893,12 @@ export function InteractiveApp({
       if (key.escape || value === '\u001B') turnControllerRef.current?.abort()
       return
     }
+    if (key.escape || value === '\u001B') {
+      const now = Date.now()
+      if (now - lastEscapeAtRef.current <= 500) clearComposerInput()
+      lastEscapeAtRef.current = now
+      return
+    }
     if (key.tab && key.shift) {
       const currentIndex = permissionOptions.findIndex(
         (option) => option.mode === runtimePreferences.permissionMode,
@@ -1835,6 +1944,13 @@ export function InteractiveApp({
     if (key.return) {
       if (key.shift) {
         updateComposerEditor(insertComposerText(editor(), '\n'))
+        return
+      }
+      if (inputRef.current.endsWith('\\')) {
+        const withoutContinuation = createComposerEditor(
+          inputRef.current.slice(0, -1),
+        )
+        updateComposerEditor(insertComposerText(withoutContinuation, '\n'))
         return
       }
       const prompt = inputRef.current.trim()
@@ -1921,31 +2037,49 @@ export function InteractiveApp({
         })()
         onTurnChange?.(inspection)
         void inspection.finally(() => onTurnChange?.(null))
-      } else if (prompt === '/workflows') {
-        const turn = (async () => {
-          setBusy(true)
-          try {
-            const workflows = (await service()).workflows?.() ?? []
-            append({
-              kind: 'notice',
-              text:
-                workflows.length === 0
-                  ? 'No workflows.'
-                  : workflows
-                      .map(
-                        (workflow) =>
-                          `${String(workflow.task_id)} [${String(workflow.status)}] ${String(workflow.summary)}`,
-                      )
-                      .join('\n'),
-            })
-          } catch (error) {
-            warn(error)
-          } finally {
-            setBusy(false)
-          }
-        })()
-        onTurnChange?.(turn)
-        void turn.finally(() => onTurnChange?.(null))
+      } else if (prompt === '/context') {
+        const skills = allSlashCommands
+          .filter((command) => command.source === 'skill')
+          .map((command) => ({
+            name: command.name,
+            tokens: estimatedCommandTokens(command),
+          }))
+        const measuredTokens =
+          (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0)
+        const skillTokens = skills.reduce(
+          (total, skill) => total + skill.tokens,
+          0,
+        )
+        setHistory((current) => [
+          ...current,
+          { kind: 'user', text: '/context' },
+          {
+            kind: 'context',
+            usedTokens: Math.max(measuredTokens, skillTokens),
+            contextWindowTokens: runtimeDisplay.contextWindowTokens ?? 200_000,
+            skills,
+          },
+        ])
+      } else if (prompt === '/status') {
+        updateMenu({ kind: 'status', tabIndex: 1 })
+      } else if (prompt === '/skills') {
+        updateMenu({
+          kind: 'list',
+          title: 'Skills',
+          rows: allSlashCommands
+            .filter((command) => command.source === 'skill')
+            .map((command) => ({
+              label: command.name,
+              description: command.description,
+            })),
+          emptyText:
+            'No skills found\nCreate skills in .claude/skills/ or ~/.claude/skills/',
+          selectedIndex: 0,
+        })
+      } else if (prompt === '/tasks' || prompt === '/workflows') {
+        openTasks()
+      } else if (prompt === '/plan') {
+        changePermissionMode('plan')
       } else {
         const turn = submit(prompt)
         onTurnChange?.(turn)
@@ -2137,6 +2271,32 @@ export function InteractiveApp({
                 ]}
                 selectedIndex={menu.selectedIndex}
                 footer="↑/↓ select · Enter saves · Esc cancels"
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'status' ? (
+              <StatusDashboard
+                tabIndex={menu.tabIndex}
+                version={runtimeDisplay.version}
+                sessionId={sessionId}
+                display={runtimeDisplay}
+                {...(usage === undefined ? {} : { usage })}
+                {...(costUsd === undefined ? {} : { costUsd })}
+                turnCount={turnNumberRef.current}
+                toolCount={
+                  history.filter((item) => item.kind === 'tool').length
+                }
+                commandCount={allSlashCommands.length}
+                detailedTranscript={thinkingExpanded}
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'list' ? (
+              <ListDashboard
+                title={menu.title}
+                rows={menu.rows}
+                emptyText={menu.emptyText}
+                selectedIndex={menu.selectedIndex}
                 width={width}
                 screenReader={axScreenReader}
               />
