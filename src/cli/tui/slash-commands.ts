@@ -29,6 +29,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'keybindings',
+    description: 'Open your keyboard shortcuts file',
+    source: 'builtin',
+  },
+  {
     name: 'permissions',
     description: 'Manage allow and deny tool permission rules',
     source: 'builtin',

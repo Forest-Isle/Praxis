@@ -26,6 +26,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
   their description and selection inserts Claude's quoted agent mention;
 - `Ctrl+G` suspends Ink, opens `$VISUAL`, `$EDITOR`, or `vi` with the exact
   composer bytes, then restores and redraws the terminal;
+- `/keybindings` creates the observed 2.1.208 template when absent and opens the
+  shared Claude config-root file in the same external-editor lifecycle;
 - `Ctrl+V` briefly shows `Pasting…`, inserts clipboard text at the real cursor,
   and represents clipboard images as monotonic `[Image #N]` composer markers;
 - `Ctrl+Z` releases the terminal, prints the branded suspend/`fg` notice, and
@@ -45,28 +47,29 @@ status-line plugins are not native parity requirements.
 
 ## State matrix
 
-| State         | Observable Claude Code shape             | Praxis evidence                              |
-| ------------- | ---------------------------------------- | -------------------------------------------- |
-| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures      |
-| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate               |
-| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests              |
-| Slash command | filterable command name and description  | palette, selection, and PTY fixtures         |
-| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures        |
-| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures     |
-| Tool          | named call with indented input/result    | structured tool and diff fixtures            |
-| Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures   |
-| Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures  |
-| Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures  |
-| Clipboard     | cursor text/image paste with markers     | parser, interaction, image, and PTY fixtures |
-| Suspend       | stopped shell job plus `fg` recovery     | process, busy-state, and zsh PTY fixtures    |
-| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures        |
-| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures      |
-| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures    |
-| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures     |
-| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures     |
-| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests           |
-| Resume        | bounded selectable conversation list     | picker interaction and viewport tests        |
-| Accessibility | decoration-free semantic text            | screen-reader fixture                        |
+| State         | Observable Claude Code shape             | Praxis evidence                               |
+| ------------- | ---------------------------------------- | --------------------------------------------- |
+| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures       |
+| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate                |
+| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests               |
+| Slash command | filterable command name and description  | palette, selection, and PTY fixtures          |
+| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures         |
+| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures      |
+| Tool          | named call with indented input/result    | structured tool and diff fixtures             |
+| Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures    |
+| Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures   |
+| Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures   |
+| Keybindings   | shared template and editor round trip    | black-box, parser, interaction, and PTY gates |
+| Clipboard     | cursor text/image paste with markers     | parser, interaction, image, and PTY fixtures  |
+| Suspend       | stopped shell job plus `fg` recovery     | process, busy-state, and zsh PTY fixtures     |
+| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures         |
+| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures       |
+| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures     |
+| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures      |
+| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures      |
+| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests            |
+| Resume        | bounded selectable conversation list     | picker interaction and viewport tests         |
+| Accessibility | decoration-free semantic text            | screen-reader fixture                         |
 
 ## Architecture
 
@@ -82,6 +85,7 @@ keyboard input -------------------> existing callbacks and session service
 `!` command -> direct runtime Bash -> native bash user records -> model turn
 `@` agent -> quoted mention -> ephemeral invocation reminders -> model turn
 Ctrl+G -> terminal suspension -> external editor -> composer replacement/undo
+/keybindings -> shared config-root JSON -> external editor -> live action reload
 Ctrl+V -> OS clipboard -> text or ModelImage -> composer -> existing session service
 Ctrl+Z -> terminal release -> SIGTSTP -> shell job -> fg/SIGCONT -> full redraw
 ```
@@ -167,6 +171,15 @@ is passed from the CLI composition root and never written to shared JSONL.
   without trimming any leading/trailing whitespace and participate in existing
   `Ctrl+Shift+_` undo; non-zero exits preserve the original composer and show
   the editor's executable name and exit code. Prompt files are always removed.
+- `/keybindings` resolves `keybindings.json` under `CLAUDE_CONFIG_DIR` (or
+  `~/.claude`), creates the byte-for-byte observed Claude Code 2.1.208 template
+  with private permissions only when absent, and opens that authoritative file
+  directly without a temporary copy. Existing content is never overwritten.
+  Closing the editor reloads the shared file; partial context overrides merge
+  with defaults, `null` explicitly unbinds a chord, supported Chat/Global
+  actions can be rebound, and two-stroke sequences such as `Ctrl+X Ctrl+E`
+  retain their Claude action names. Invalid JSON is reported without replacing
+  the last valid in-memory bindings.
 - `Ctrl+V` reads the native OS clipboard without a shell. Text is inserted at
   the live Unicode cursor after the observed `Pasting…` state. Images become
   monotonic `[Image #N]` markers; adjacent images receive the observed separator,
@@ -229,8 +242,9 @@ is passed from the CLI composition root and never written to shared JSONL.
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, `Ctrl+T` task access, file and agent `@`
-  selection, `Ctrl+G` terminal suspension/edit/redraw, installed-package
-  `Ctrl+V` text paste, control-code undo, and a real zsh
+  selection, `Ctrl+G` terminal suspension/edit/redraw, `/keybindings` shared
+  template/editor creation, installed-package `Ctrl+V` text paste,
+  control-code undo, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus
   installed-package `!pwd` execution, provider continuation, and native
   transcript tags;
@@ -249,6 +263,6 @@ TUI” claim. Remaining
 black-box-driven work includes the full built-in command catalog and its
 command-specific dialogs, permission-rule removal and exact denied-history
 behavior, exact multi-read grouping and historical turn attribution,
-the keybinding catalog/dialog, and remaining exact layout behavior. Each
+remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

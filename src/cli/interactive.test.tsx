@@ -308,6 +308,48 @@ describe('InteractiveApp', () => {
     expect(serviceCreations).toBe(1)
   })
 
+  it('keeps Shift+Enter as a multiline composer shortcut', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run(prompt) {
+                calls.push(prompt)
+                return {
+                  sessionId: 'session-1',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('shift first')
+    app.stdin.write('\u001B[13;2u')
+    app.stdin.write('shift second')
+    await flush()
+    expect(app.lastFrame()).toContain('shift first')
+    expect(app.lastFrame()).toContain('shift second')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['shift first\nshift second'])
+  })
+
   it('supports task, model, stash, escape, and continuation shortcuts', async () => {
     const calls: string[] = []
     const factory: InteractiveServiceFactory = {
@@ -655,6 +697,50 @@ describe('InteractiveApp', () => {
     )
   })
 
+  it('loads shared custom keybindings and honors explicit rebinding', async () => {
+    const externalEditor = vi.fn(async (prompt: string) => ({
+      content: `${prompt} edited`,
+      editorName: 'Custom-editor',
+    }))
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        externalEditor={externalEditor}
+        keybindingsLoader={async () =>
+          new Map([
+            [
+              'Chat',
+              new Map([
+                ['ctrl+y', 'chat:externalEditor'],
+                ['ctrl+v', 'chat:imagePaste'],
+                ['enter', 'chat:submit'],
+              ]),
+            ],
+          ])
+        }
+      />,
+    )
+
+    await flush()
+    app.stdin.write('custom')
+    app.stdin.write('\u0007')
+    await flush()
+    expect(externalEditor).not.toHaveBeenCalled()
+
+    app.stdin.write('\u0019')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(externalEditor).toHaveBeenCalledWith('custom', {
+      cwd: process.cwd(),
+    })
+    expect(app.lastFrame()).toContain('custom edited')
+  })
+
   it('opens the Ctrl+G editor from an empty composer', async () => {
     const externalEditor = vi.fn(async () => ({
       content: 'prompt started in editor',
@@ -679,6 +765,139 @@ describe('InteractiveApp', () => {
       cwd: process.cwd(),
     })
     expect(app.lastFrame()).toContain('❯ prompt started in editor')
+  })
+
+  it('supports the default Ctrl+X Ctrl+E external-editor sequence', async () => {
+    const externalEditor = vi.fn(async (prompt: string) => ({
+      content: prompt,
+      editorName: 'Vi',
+    }))
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        externalEditor={externalEditor}
+      />,
+    )
+
+    app.stdin.write('sequence prompt')
+    app.stdin.write('\u0018')
+    await flush()
+    expect(externalEditor).not.toHaveBeenCalled()
+    app.stdin.write('\u0005')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(externalEditor).toHaveBeenCalledWith('sequence prompt', {
+      cwd: process.cwd(),
+    })
+  })
+
+  it('creates and opens the shared keybindings file without a model service', async () => {
+    let serviceCreations = 0
+    const keybindingsFile = vi.fn(async (configRoot: string) => ({
+      path: `${configRoot}/keybindings.json`,
+      created: true,
+    }))
+    const keybindingsEditor = vi.fn(async () => ({ editorName: 'Fixture' }))
+    const turns: Array<Promise<void> | null> = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            serviceCreations += 1
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'dev', cwd: '/workspace' }}
+        keybindingsConfigRoot="/shared-claude"
+        keybindingsFile={keybindingsFile}
+        keybindingsEditor={keybindingsEditor}
+        onTurnChange={(turn) => turns.push(turn)}
+      />,
+    )
+
+    app.stdin.write('/keyb')
+    await flush()
+    expect(app.lastFrame()).toContain('/keybindings')
+    expect(app.lastFrame()).toContain('Open your keyboard shortcuts file')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\r')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+
+    expect(keybindingsFile).toHaveBeenCalledWith('/shared-claude')
+    expect(keybindingsEditor).toHaveBeenCalledWith(
+      '/shared-claude/keybindings.json',
+      { cwd: '/workspace' },
+    )
+    expect(app.lastFrame()).toContain(
+      'Created /shared-claude/keybindings.json with template. Opened in your editor.',
+    )
+    expect(turns[0]).toBeInstanceOf(Promise)
+    expect(turns.at(-1)).toBeNull()
+    expect(serviceCreations).toBe(0)
+  })
+
+  it('retains the last valid keybindings when editor reload fails', async () => {
+    const retained = new Map([
+      [
+        'Chat',
+        new Map([
+          ['ctrl+y', 'chat:externalEditor'],
+          ['enter', 'chat:submit'],
+        ]),
+      ],
+    ])
+    const keybindingsLoader = vi
+      .fn()
+      .mockResolvedValueOnce(retained)
+      .mockRejectedValueOnce(new Error('Invalid shared keybindings JSON'))
+    const externalEditor = vi.fn(async (prompt: string) => ({
+      content: prompt,
+      editorName: 'Retained-editor',
+    }))
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        externalEditor={externalEditor}
+        keybindingsConfigRoot="/shared-claude"
+        keybindingsFile={async () => ({
+          path: '/shared-claude/keybindings.json',
+          created: false,
+        })}
+        keybindingsLoader={keybindingsLoader}
+        keybindingsEditor={async () => ({ editorName: 'Fixture' })}
+      />,
+    )
+
+    await flush()
+    app.stdin.write('/keybindings')
+    app.stdin.write('\r')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'Opened /shared-claude/keybindings.json in your editor.',
+    )
+    expect(app.lastFrame()).toContain('Invalid shared keybindings JSON')
+
+    app.stdin.write('retained')
+    app.stdin.write('\u0019')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(externalEditor).toHaveBeenCalledWith('retained', {
+      cwd: process.cwd(),
+    })
   })
 
   it('suspends on Ctrl+Z and restores the composer without a model service', async () => {

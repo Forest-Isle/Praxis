@@ -1,10 +1,21 @@
-import { chmod, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { editTuiPrompt, resolveTuiEditor } from './external-editor.js'
+import {
+  editTuiPrompt,
+  openTuiEditorFile,
+  resolveTuiEditor,
+} from './external-editor.js'
 
 const roots: string[] = []
 
@@ -93,6 +104,26 @@ describe('external TUI editor', () => {
       content: 'first\nsecond\n\n',
       editorName: 'Rewrite',
     })
+  })
+
+  it('opens an existing shared file without copying or removing it', async () => {
+    const root = await fixtureRoot()
+    const editor = await editorFixture(
+      root,
+      'open-existing',
+      'printf opened > "$1.opened"',
+    )
+    const path = join(root, 'keybindings.json')
+    await writeFile(path, '{"bindings":[]}\n', 'utf8')
+
+    await expect(
+      openTuiEditorFile(path, {
+        cwd: root,
+        environment: { EDITOR: editor },
+      }),
+    ).resolves.toEqual({ editorName: 'Open-existing' })
+    await expect(readFile(path, 'utf8')).resolves.toBe('{"bindings":[]}\n')
+    await expect(readFile(`${path}.opened`, 'utf8')).resolves.toBe('opened')
   })
 
   it('reports non-zero exits and always removes the prompt file', async () => {

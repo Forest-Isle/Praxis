@@ -24,6 +24,7 @@ export interface TuiDisplayMetadata {
 
 export type TranscriptItem =
   | { kind: 'user' | 'assistant' | 'notice' | 'warning'; text: string }
+  | { kind: 'local-result'; text: string }
   | { kind: 'thinking'; text: string }
   | {
       kind: 'context'
@@ -663,6 +664,13 @@ export function Transcript({
             >
               ⎿ {output}
             </Text>
+          )
+        }
+        if (item.kind === 'local-result') {
+          return (
+            <Box key={index} marginLeft={2}>
+              <Text dimColor>⎿ {item.text}</Text>
+            </Box>
           )
         }
         return (

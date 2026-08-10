@@ -900,3 +900,22 @@ contract; broader interactive TTY parity remains partial.
       arrays without a shell, and isolated reader injection for tests
 - [x] focused parser/editor/Ink interaction coverage plus installed-package PTY
       text-paste verification; existing image/provider/transcript gates retained
+
+## Stage 99 - shared keybindings editor parity
+
+Status: complete for the Claude Code 2.1.208 `/keybindings` shared-file and
+supported-action reload contract; broader interactive TTY parity remains
+partial.
+
+- [x] black-box-confirmed `Open your keyboard shortcuts file` catalog entry,
+      created-versus-existing result text, and direct external-editor lifecycle
+- [x] byte-for-byte Claude Code 2.1.208 `keybindings.json` template under the
+      existing `CLAUDE_CONFIG_DIR`/`~/.claude` data plane with create-once,
+      private-mode, no-overwrite behavior
+- [x] bounded parser with default merging, explicit `null` unbinding, Chat and
+      Global action rebinding, Ink chord normalization, and timed two-stroke
+      sequences including default `Ctrl+X Ctrl+E`
+- [x] live reload after editor close with invalid-file diagnostics and retention
+      of the last valid in-memory map
+- [x] focused file/parser/editor/interaction tests, exact live-template compare,
+      and installed-package PTY creation/content gate

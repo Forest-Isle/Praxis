@@ -139,6 +139,15 @@ async function runEditor(
   })
 }
 
+export async function openTuiEditorFile(
+  path: string,
+  options: TuiEditorOptions,
+): Promise<{ editorName: string }> {
+  const editor = resolveTuiEditor(options.environment)
+  await runEditor(editor, path, options)
+  return { editorName: editor.displayName }
+}
+
 export async function editTuiPrompt(
   prompt: string,
   options: TuiEditorOptions,

@@ -1,3 +1,6 @@
+import { homedir } from 'node:os'
+import { resolve } from 'node:path'
+
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Box, Text, render, useApp, useInput } from 'ink'
@@ -85,6 +88,7 @@ import {
 } from './tui/file-picker.js'
 import {
   editTuiPrompt,
+  openTuiEditorFile,
   type TuiEditorOptions,
   type TuiEditorResult,
 } from './tui/external-editor.js'
@@ -97,6 +101,15 @@ import {
   insertComposerImageMarker,
   moveComposerCursorAcrossImages,
 } from './tui/composer-images.js'
+import {
+  defaultTuiKeybindings,
+  ensureTuiKeybindingsFile,
+  hasTuiKeybindingPrefix,
+  loadTuiKeybindings,
+  resolveTuiKeybinding,
+  tuiKeyChord,
+  type TuiKeybindingsFile,
+} from './tui/keybindings.js'
 
 interface InteractiveSessionCommands {
   run(
@@ -186,6 +199,13 @@ interface InteractiveAppProps {
     prompt: string,
     options: TuiEditorOptions,
   ) => Promise<TuiEditorResult>
+  keybindingsConfigRoot?: string
+  keybindingsFile?: (configRoot: string) => Promise<TuiKeybindingsFile>
+  keybindingsLoader?: typeof loadTuiKeybindings
+  keybindingsEditor?: (
+    path: string,
+    options: TuiEditorOptions,
+  ) => Promise<{ editorName: string }>
   suspendProcess?: () => void | Promise<void>
   clipboardReader?: () => Promise<TuiClipboardContent>
   permissionRuleStore?: {
@@ -427,12 +447,25 @@ export function InteractiveApp({
   diffLoader,
   fileLoader,
   externalEditor = editTuiPrompt,
+  keybindingsConfigRoot,
+  keybindingsFile = ensureTuiKeybindingsFile,
+  keybindingsLoader = loadTuiKeybindings,
+  keybindingsEditor = openTuiEditorFile,
   suspendProcess = suspendTuiProcess,
   clipboardReader = readTuiClipboard,
   permissionRuleStore,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const width = useTerminalWidth(terminalWidth)
+  const keybindingsRoot = useMemo(
+    () =>
+      resolve(
+        keybindingsConfigRoot ??
+          process.env.CLAUDE_CONFIG_DIR ??
+          resolve(homedir(), '.claude'),
+      ),
+    [keybindingsConfigRoot],
+  )
   const sensitiveValues = useMemo(
     () => sensitiveEnvironmentValues(process.env),
     [],
@@ -512,6 +545,9 @@ export function InteractiveApp({
   const [externalEditorRequest, setExternalEditorRequest] = useState<{
     prompt: string
   } | null>(null)
+  const [keybindingsEditing, setKeybindingsEditing] = useState(false)
+  const [keybindings, setKeybindings] = useState(defaultTuiKeybindings)
+  const keySequenceRef = useRef<{ chord: string; at: number } | null>(null)
   const [processSuspendRequested, setProcessSuspendRequested] = useState(false)
   const processSuspendRequestedRef = useRef(false)
   const [editorFooterMessage, setEditorFooterMessage] = useState<{
@@ -761,6 +797,25 @@ export function InteractiveApp({
   const append = (line: TranscriptItem) =>
     setHistory((current) => [...current, line])
 
+  useEffect(() => {
+    let cancelled = false
+    void keybindingsLoader(keybindingsRoot).then(
+      (loaded) => {
+        if (!cancelled) setKeybindings(loaded)
+      },
+      (error: unknown) => {
+        if (!cancelled)
+          append({
+            kind: 'warning',
+            text: error instanceof Error ? error.message : String(error),
+          })
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [keybindingsRoot, keybindingsLoader])
+
   const updateComposerInput = (next: string, cursor?: number) => {
     const editor = createComposerEditor(next, cursor)
     inputRef.current = editor.text
@@ -873,6 +928,45 @@ export function InteractiveApp({
     onTurnChange?.(editing)
     void editing.finally(() => onTurnChange?.(null))
   }, [externalEditorRequest])
+
+  useEffect(() => {
+    if (!keybindingsEditing) return
+    const editing = (async () => {
+      try {
+        const file = await keybindingsFile(keybindingsRoot)
+        await waitUntilRenderFlush()
+        await suspendTerminal(async () => {
+          await keybindingsEditor(file.path, {
+            cwd: display.cwd,
+            ...(signal === undefined ? {} : { signal }),
+          })
+        })
+        append({
+          kind: 'local-result',
+          text: file.created
+            ? `Created ${file.path} with template. Opened in your editor.`
+            : `Opened ${file.path} in your editor.`,
+        })
+        try {
+          setKeybindings(await keybindingsLoader(keybindingsRoot))
+        } catch (error) {
+          append({
+            kind: 'warning',
+            text: error instanceof Error ? error.message : String(error),
+          })
+        }
+      } catch (error) {
+        append({
+          kind: 'warning',
+          text: error instanceof Error ? error.message : String(error),
+        })
+      } finally {
+        setKeybindingsEditing(false)
+      }
+    })()
+    onTurnChange?.(editing)
+    void editing.finally(() => onTurnChange?.(null))
+  }, [keybindingsEditing])
 
   useEffect(() => {
     if (!processSuspendRequested) return
@@ -1688,6 +1782,57 @@ export function InteractiveApp({
     }
     dismissExitConfirmation()
 
+    const keybindingContexts = menuRef.current
+      ? menuRef.current.kind === 'diff'
+        ? ['DiffDialog']
+        : menuRef.current.kind === 'help'
+          ? ['Help', 'Tabs']
+          : menuRef.current.kind === 'permission-dashboard'
+            ? ['Settings', 'Tabs']
+            : menuRef.current.kind === 'model'
+              ? ['ModelPicker', 'Select']
+              : ['Select']
+      : commandPaletteVisible || filePickerVisible
+        ? ['Autocomplete', 'Chat']
+        : permission || planApproval
+          ? ['Confirmation']
+          : selectingSession
+            ? ['Select']
+            : ['Chat']
+    const inputChord = tuiKeyChord(value, key)
+    const pendingSequence = keySequenceRef.current
+    let keybindingAction: string | undefined
+    if (
+      inputChord &&
+      pendingSequence &&
+      Date.now() - pendingSequence.at <= 1_000
+    ) {
+      keybindingAction = resolveTuiKeybinding(
+        keybindings,
+        keybindingContexts,
+        `${pendingSequence.chord} ${inputChord}`,
+      )
+      keySequenceRef.current = null
+    } else {
+      keySequenceRef.current = null
+    }
+    if (!keybindingAction) {
+      keybindingAction = resolveTuiKeybinding(
+        keybindings,
+        keybindingContexts,
+        inputChord,
+      )
+    }
+    if (
+      !keybindingAction &&
+      inputChord &&
+      hasTuiKeybindingPrefix(keybindings, keybindingContexts, inputChord)
+    ) {
+      keySequenceRef.current = { chord: inputChord, at: Date.now() }
+      return
+    }
+    const isKeybinding = (action: string) => keybindingAction === action
+
     if (permission) {
       if (lower === 'y' || value === '1') {
         permission.resolve(true)
@@ -1823,10 +1968,10 @@ export function InteractiveApp({
       return
     }
 
-    if (externalEditorRequest !== null) return
+    if (externalEditorRequest !== null || keybindingsEditing) return
 
     if (clipboardPendingRef.current > 0) {
-      if (controlKey('v')) pasteClipboard()
+      if (isKeybinding('chat:imagePaste')) pasteClipboard()
       return
     }
 
@@ -1837,7 +1982,7 @@ export function InteractiveApp({
       !question &&
       !elicitation &&
       !menuRef.current &&
-      controlKey('g')
+      isKeybinding('chat:externalEditor')
     ) {
       setCommandPaletteOpen(false)
       setFilePickerOpen(false)
@@ -1846,15 +1991,15 @@ export function InteractiveApp({
       return
     }
 
-    if (!busy && controlKey('t')) {
+    if (!busy && isKeybinding('app:toggleTodos')) {
       openTasks()
       return
     }
-    if (!busy && key.meta && lower === 'p') {
+    if (!busy && isKeybinding('chat:modelPicker')) {
       updateMenu({ kind: 'model', selectedIndex: 0 })
       return
     }
-    if (!busy && controlKey('s')) {
+    if (!busy && isKeybinding('chat:stash')) {
       if (inputRef.current.length > 0) {
         stashedInputRef.current = inputRef.current
         clearComposerInput()
@@ -2232,19 +2377,19 @@ export function InteractiveApp({
       setShortcutsVisible((current) => !current)
       return
     }
-    if (controlKey('o') && hasDetailedTranscript) {
+    if (isKeybinding('app:toggleTranscript') && hasDetailedTranscript) {
       setThinkingExpanded((current) => !current)
       return
     }
     if (busy) {
-      if (key.escape || value === '\u001B') turnControllerRef.current?.abort()
+      if (isKeybinding('chat:cancel')) turnControllerRef.current?.abort()
       return
     }
-    if (controlKey('v')) {
+    if (isKeybinding('chat:imagePaste')) {
       pasteClipboard()
       return
     }
-    if (value === '\u001F' || (key.ctrl && value === '_')) {
+    if (isKeybinding('chat:undo')) {
       const previous = undoStackRef.current.at(-1)
       if (previous) {
         undoStackRef.current = undoStackRef.current.slice(0, -1)
@@ -2282,13 +2427,13 @@ export function InteractiveApp({
       }
       if (key.tab) return
     }
-    if (key.escape || value === '\u001B') {
+    if (isKeybinding('chat:cancel')) {
       const now = Date.now()
       if (now - lastEscapeAtRef.current <= 500) clearComposerInput()
       lastEscapeAtRef.current = now
       return
     }
-    if (key.tab && key.shift) {
+    if (isKeybinding('chat:cycleMode')) {
       const currentIndex = permissionOptions.findIndex(
         (option) => option.mode === runtimePreferences.permissionMode,
       )
@@ -2330,8 +2475,14 @@ export function InteractiveApp({
         return
       }
     }
-    if (key.return) {
-      if (key.shift) {
+    const implicitShiftNewline =
+      key.return && key.shift && keybindingAction === undefined
+    if (
+      isKeybinding('chat:submit') ||
+      isKeybinding('chat:newline') ||
+      implicitShiftNewline
+    ) {
+      if (isKeybinding('chat:newline') || implicitShiftNewline) {
         updateComposerEditor(insertComposerText(editor(), '\n'))
         return
       }
@@ -2376,6 +2527,8 @@ export function InteractiveApp({
           kind: 'effort',
           selectedIndex: EFFORT_OPTIONS.indexOf(runtimePreferences.effort),
         })
+      } else if (prompt === '/keybindings') {
+        setKeybindingsEditing(true)
       } else if (prompt === '/permissions') {
         const loading = (async () => {
           setBusy(true)
@@ -2490,12 +2643,16 @@ export function InteractiveApp({
       }
       return
     }
-    if (key.upArrow) {
+    if (isKeybinding('history:previous')) {
       restorePromptHistory('previous')
       return
     }
-    if (key.downArrow) {
+    if (isKeybinding('history:next')) {
       restorePromptHistory('next')
+      return
+    }
+    if (isKeybinding('chat:clearInput')) {
+      clearComposerInput()
       return
     }
     editComposer()
@@ -2526,7 +2683,7 @@ export function InteractiveApp({
             detailedTranscript={thinkingExpanded}
             screenReader={axScreenReader}
           />
-          {externalEditorRequest !== null ? (
+          {externalEditorRequest !== null || keybindingsEditing ? (
             <ExternalEditorWait screenReader={axScreenReader} />
           ) : permission ? (
             <DialogFrame
