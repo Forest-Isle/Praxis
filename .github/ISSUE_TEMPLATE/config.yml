@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Usage questions and support
+    url: https://github.com/Forest-Isle/Praxis/discussions/categories/q-a
+    about: Ask setup, provider, workflow, and compatibility questions in Discussions.
   - name: Security vulnerability
     url: https://github.com/Forest-Isle/Praxis/security/advisories/new
     about: Report vulnerabilities privately; do not open a public issue.

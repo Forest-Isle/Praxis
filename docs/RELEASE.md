@@ -17,7 +17,7 @@ The tarball contains only:
 - compiled `dist/` JavaScript, declarations, and source maps;
 - versioned MCPB manifest schemas required by the runtime;
 - `package.json`;
-- `README.md` and `LICENSE`.
+- `README.md`, `LICENSE`, and `THIRD_PARTY_NOTICES.md`.
 
 Source, tests, fixtures, compatibility probes, local configuration, and project
 documentation are not published. Compressed package size must stay below 1 MiB

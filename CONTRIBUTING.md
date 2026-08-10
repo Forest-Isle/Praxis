@@ -11,6 +11,9 @@ npm ci
 npm run check
 ```
 
+`npm run check` includes formatting, linting, internal documentation links,
+module boundaries, typechecking, unit/integration tests, and a clean build.
+
 Keep changes focused and add tests for observable behavior. Changes affecting
 Claude interoperability must retain Claude Code 2.1.208 and run:
 
@@ -34,6 +37,8 @@ npm audit --omit=dev
   `test:`, `refactor:`, `perf:`, `build:`, `ci:`, or `chore:`.
 - Describe user-visible behavior, compatibility impact, and verification.
 - Update relevant documentation in the same pull request.
+- Keep README user-oriented; place detailed contracts and references under
+  `docs/` and add them to [docs/README.md](docs/README.md).
 - Keep generated `dist/`, release tarballs, credentials, and local Claude data
   out of commits.
 
@@ -44,3 +49,8 @@ package versions or create release tags manually after bootstrap.
 ## Security reports
 
 Do not open public issues for vulnerabilities. Follow [SECURITY.md](SECURITY.md).
+
+Usage questions and setup help belong in
+[GitHub Discussions](https://github.com/Forest-Isle/Praxis/discussions); see
+[SUPPORT.md](SUPPORT.md). Keep the issue tracker for reproducible defects and
+scoped feature requests.
