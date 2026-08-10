@@ -90,6 +90,7 @@ import {
   type TuiEditorOptions,
   type TuiEditorResult,
 } from './tui/external-editor.js'
+import { suspendTuiProcess } from './tui/terminal-suspend.js'
 
 interface InteractiveSessionCommands {
   run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult>
@@ -171,6 +172,7 @@ interface InteractiveAppProps {
     prompt: string,
     options: TuiEditorOptions,
   ) => Promise<TuiEditorResult>
+  suspendProcess?: () => void | Promise<void>
   permissionRuleStore?: {
     load(): Promise<readonly TuiPermissionRule[]>
     add(input: {
@@ -410,6 +412,7 @@ export function InteractiveApp({
   diffLoader,
   fileLoader,
   externalEditor = editTuiPrompt,
+  suspendProcess = suspendTuiProcess,
   permissionRuleStore,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
@@ -487,6 +490,8 @@ export function InteractiveApp({
   const [externalEditorRequest, setExternalEditorRequest] = useState<{
     prompt: string
   } | null>(null)
+  const [processSuspendRequested, setProcessSuspendRequested] = useState(false)
+  const processSuspendRequestedRef = useRef(false)
   const [editorFooterMessage, setEditorFooterMessage] = useState<{
     text: string
     isError: boolean
@@ -793,6 +798,24 @@ export function InteractiveApp({
     onTurnChange?.(editing)
     void editing.finally(() => onTurnChange?.(null))
   }, [externalEditorRequest])
+
+  useEffect(() => {
+    if (!processSuspendRequested) return
+    void (async () => {
+      try {
+        await waitUntilRenderFlush()
+        await suspendTerminal(suspendProcess)
+      } catch (error) {
+        append({
+          kind: 'warning',
+          text: error instanceof Error ? error.message : String(error),
+        })
+      } finally {
+        processSuspendRequestedRef.current = false
+        setProcessSuspendRequested(false)
+      }
+    })()
+  }, [processSuspendRequested])
 
   const updateMenu = (next: InteractiveMenu | null) => {
     menuRef.current = next
@@ -1563,6 +1586,13 @@ export function InteractiveApp({
 
     if (controlKey('c')) {
       armExitConfirmation()
+      return
+    }
+    if (controlKey('z')) {
+      if (!processSuspendRequestedRef.current) {
+        processSuspendRequestedRef.current = true
+        setProcessSuspendRequested(true)
+      }
       return
     }
     dismissExitConfirmation()

@@ -869,3 +869,17 @@ broader interactive TTY parity remains partial.
       propagation, and CLI turn/shutdown coordination without a model service
 - [x] focused process, component, interaction, screen-reader, and
       installed-package PTY coverage
+
+## Stage 97 - interactive shell suspension parity
+
+Status: complete for the Claude Code 2.1.208 `Ctrl+Z`/`fg` job-control
+contract; broader interactive TTY parity remains partial.
+
+- [x] global `Ctrl+Z` recognition in idle, busy, and decision states without
+      cancelling or replacing the active turn, composer, menu, or session
+- [x] ordered terminal flush and Ink suspension before a branded two-line
+      suspend/undo notice and current-process `SIGTSTP`
+- [x] shell `fg`/`SIGCONT` recovery through Ink terminal reclamation and forced
+      full redraw with exact in-memory composer retention
+- [x] focused notice/signal tests, idle and busy interaction tests, and a real
+      installed-package zsh `jobs -l` stopped-state plus `fg` recovery gate

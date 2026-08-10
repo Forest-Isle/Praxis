@@ -524,6 +524,83 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('❯ prompt started in editor')
   })
 
+  it('suspends on Ctrl+Z and restores the composer without a model service', async () => {
+    let serviceCreations = 0
+    const suspendProcess = vi.fn()
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            serviceCreations += 1
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        suspendProcess={suspendProcess}
+      />,
+    )
+
+    app.stdin.write('preserve me')
+    app.stdin.write('\u001a')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(suspendProcess).toHaveBeenCalledOnce()
+    expect(app.lastFrame()).toContain('❯ preserve me')
+    expect(serviceCreations).toBe(0)
+  })
+
+  it('allows Ctrl+Z while a model turn is busy', async () => {
+    let finishTurn:
+      | ((result: {
+          sessionId: string
+          text: string
+          usage: { inputTokens: number; outputTokens: number }
+        }) => void)
+      | undefined
+    const suspendProcess = vi.fn()
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              run: () =>
+                new Promise((resolve) => {
+                  finishTurn = resolve
+                }),
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        suspendProcess={suspendProcess}
+      />,
+    )
+
+    app.stdin.write('busy suspend')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('esc to interrupt')
+    app.stdin.write('\u001a')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(suspendProcess).toHaveBeenCalledOnce()
+
+    finishTurn?.({
+      sessionId: 'session-1',
+      text: 'done',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    await flush()
+  })
+
   it('selects an @ agent mention and submits Claude-compatible syntax', async () => {
     const calls: string[] = []
     const app = render(
@@ -1879,6 +1956,7 @@ describe('InteractiveApp', () => {
 
   it('asks before an ask-permission tool and forwards the decision', async () => {
     let approval: boolean | undefined
+    const suspendProcess = vi.fn()
     const call: ModelToolCall = {
       id: 'call-1',
       name: 'Bash',
@@ -1908,7 +1986,11 @@ describe('InteractiveApp', () => {
       },
     }
     const app = render(
-      <InteractiveApp factory={factory} initialSessions={[]} />,
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        suspendProcess={suspendProcess}
+      />,
     )
 
     await flush()
@@ -1918,6 +2000,12 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Allow Bash')
     expect(app.lastFrame()).toContain('npm test')
+
+    app.stdin.write('\u001a')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(suspendProcess).toHaveBeenCalledOnce()
+    expect(app.lastFrame()).toContain('Allow Bash')
 
     app.stdin.write('1')
     await flush()

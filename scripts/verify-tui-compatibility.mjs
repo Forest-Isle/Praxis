@@ -230,6 +230,30 @@ send "\003"
 expect -re {Press Ctrl-C again to exit}
 send "\003"
 expect eof
+
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) zsh -f
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect -re {[%#] }
+send "export PS1=PRAXIS_SHELL\\>\\ \r"
+expect -re {PRAXIS_SHELL> }
+send "$env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions\r"
+expect -re {bypass permissions on}
+send "suspend seed"
+expect -re {❯.*suspend seed}
+send "\032"
+expect -re {Praxis Code has been suspended.*Run .*fg.*bring Praxis Code back}
+expect -re {ctrl.*z now suspends Praxis Code.*ctrl.*_ undoes input}
+expect -re {PRAXIS_SHELL> }
+send "jobs -l\r"
+expect -re {suspended.*cli.js}
+send "fg\r"
+expect -re {❯.*suspend seed}
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect -re {PRAXIS_SHELL> }
+send "exit\r"
+expect eof
 exit 0
 `
   const result = await execFileAsync('expect', ['-c', probe], {

@@ -26,6 +26,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
   their description and selection inserts Claude's quoted agent mention;
 - `Ctrl+G` suspends Ink, opens `$VISUAL`, `$EDITOR`, or `vi` with the exact
   composer bytes, then restores and redraws the terminal;
+- `Ctrl+Z` releases the terminal, prints the branded suspend/`fg` notice, and
+  stops the shell job; `fg` redraws the TUI with in-memory state intact;
 - tool calls use `⏺`, results use an indented `⎿`, long output keeps three
   lines before an expandable remainder count, and edits retain inline diffs;
 - `/diff` opens a current/per-turn source dashboard with file selection and a
@@ -53,6 +55,7 @@ status-line plugins are not native parity requirements.
 | Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures  |
 | Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures |
 | Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures |
+| Suspend       | stopped shell job plus `fg` recovery     | process, busy-state, and zsh PTY fixtures   |
 | Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures       |
 | Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures     |
 | Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures   |
@@ -76,6 +79,7 @@ keyboard input -------------------> existing callbacks and session service
 `!` command -> direct runtime Bash -> native bash user records -> model turn
 `@` agent -> quoted mention -> ephemeral invocation reminders -> model turn
 Ctrl+G -> terminal suspension -> external editor -> composer replacement/undo
+Ctrl+Z -> terminal release -> SIGTSTP -> shell job -> fg/SIGCONT -> full redraw
 ```
 
 No React or Ink dependency enters core, application, providers, tools, or
@@ -158,6 +162,12 @@ is passed from the CLI composition root and never written to shared JSONL.
   without trimming any leading/trailing whitespace and participate in existing
   `Ctrl+Shift+_` undo; non-zero exits preserve the original composer and show
   the editor's executable name and exit code. Prompt files are always removed.
+- `Ctrl+Z` is global across idle, busy, and decision surfaces. Praxis first
+  flushes the current frame, releases raw mode, bracketed paste, cursor, and
+  keyboard-protocol ownership, prints the observed two-line suspend/undo notice
+  with Praxis branding, then sends `SIGTSTP` to its own process. A shell `fg`
+  supplies `SIGCONT`; Ink reclaims the terminal and forces a full redraw without
+  recreating a session, model service, composer, menu, or active turn.
 - A leading `!` enters the distinct shell composer. Submission executes `Bash`
   through the active tool preparation, permission approval, cancellation, and
   PreToolUse/PostToolUse Hook chain, renders `! command` plus its bounded
@@ -206,7 +216,8 @@ is passed from the CLI composition root and never written to shared JSONL.
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, `Ctrl+T` task access, file and agent `@`
-  selection, `Ctrl+G` terminal suspension/edit/redraw, and control-code undo,
+  selection, `Ctrl+G` terminal suspension/edit/redraw, control-code undo, and a
+  real zsh `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention,
   plus installed-package `!pwd` execution, provider continuation, and native
   transcript tags;
 - full `npm run check`, package regression, and performance budgets;
@@ -224,6 +235,6 @@ TUI” claim. Remaining
 black-box-driven work includes the full built-in command catalog and its
 command-specific dialogs, permission-rule removal and exact denied-history
 behavior, exact multi-read grouping and historical turn attribution,
-suspend/image/keybinding flows, and remaining exact layout behavior. Each
+image/keybinding flows, and remaining exact layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.
