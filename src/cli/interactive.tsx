@@ -35,6 +35,7 @@ import {
   DiffDashboard,
   DialogFrame,
   HelpMenu,
+  PermissionDashboard,
   SelectionMenu,
   SessionPicker,
   Transcript,
@@ -48,6 +49,13 @@ import {
   visiblePatchLines,
   type TuiDiffSnapshot,
 } from './tui/git-diff.js'
+import {
+  addTuiPermissionRule,
+  loadTuiPermissionRules,
+  type TuiPermissionBehavior,
+  type TuiPermissionRule,
+} from './tui/permission-settings.js'
+import type { ClaudeResourceScope } from '../compatibility/claude/shared-resources.js'
 import {
   filterTuiSlashCommands,
   mergeTuiSlashCommands,
@@ -133,6 +141,14 @@ interface InteractiveAppProps {
   slashCommands?: readonly TuiSlashCommand[]
   allowDangerouslySkipPermissions?: boolean
   diffLoader?: () => Promise<TuiDiffSnapshot>
+  permissionRuleStore?: {
+    load(): Promise<readonly TuiPermissionRule[]>
+    add(input: {
+      behavior: TuiPermissionBehavior
+      rule: string
+      scope: ClaudeResourceScope
+    }): Promise<void>
+  }
 }
 
 type PendingPermission = {
@@ -208,10 +224,23 @@ type InteractiveMenu =
       viewingFile: boolean
       scrollOffset: number
     }
+  | {
+      kind: 'permission-dashboard'
+      tabIndex: number
+      selectedIndex: number
+      query: string
+      rules: readonly TuiPermissionRule[]
+    }
+  | { kind: 'permission-rule-input'; behavior: TuiPermissionBehavior }
+  | {
+      kind: 'permission-scope'
+      behavior: TuiPermissionBehavior
+      rule: string
+      selectedIndex: number
+    }
   | { kind: 'model'; selectedIndex: number }
   | { kind: 'model-input' }
   | { kind: 'effort'; selectedIndex: number }
-  | { kind: 'permission'; selectedIndex: number }
 
 type RuntimePreferences = {
   model?: string
@@ -323,6 +352,7 @@ export function InteractiveApp({
   slashCommands = EMPTY_SLASH_COMMANDS,
   allowDangerouslySkipPermissions = false,
   diffLoader,
+  permissionRuleStore,
 }: InteractiveAppProps) {
   const { exit } = useApp()
   const width = useTerminalWidth(terminalWidth)
@@ -333,6 +363,18 @@ export function InteractiveApp({
   const loadDiffSnapshot = useMemo(
     () => diffLoader ?? (() => loadGitDiff(display.cwd)),
     [diffLoader, display.cwd],
+  )
+  const permissionStore = useMemo(
+    () =>
+      permissionRuleStore ?? {
+        load: () => loadTuiPermissionRules(display.cwd),
+        add: (input: {
+          behavior: TuiPermissionBehavior
+          rule: string
+          scope: ClaudeResourceScope
+        }) => addTuiPermissionRule({ cwd: display.cwd, ...input }),
+      },
+    [permissionRuleStore, display.cwd],
   )
   const choices = useMemo(
     () =>
@@ -394,6 +436,8 @@ export function InteractiveApp({
   >([])
   const turnNumberRef = useRef(0)
   const turnMutatedFilesRef = useRef(false)
+  const permissionCallsRef = useRef(new Map<string, string>())
+  const [recentDenied, setRecentDenied] = useState<readonly string[]>([])
   const [exitConfirmation, setExitConfirmation] = useState(false)
   const exitConfirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -685,6 +729,10 @@ export function InteractiveApp({
       case 'tool-call':
         if (['Edit', 'Write', 'NotebookEdit'].includes(event.call.name))
           turnMutatedFilesRef.current = true
+        permissionCallsRef.current.set(
+          event.call.id,
+          describeTool(event.call, sensitiveValues),
+        )
         append({
           kind: 'tool',
           call: redactToolCall(event.call, sensitiveValues),
@@ -692,6 +740,13 @@ export function InteractiveApp({
         })
         break
       case 'permission-decision':
+        if (event.behavior === 'deny') {
+          const denied =
+            permissionCallsRef.current.get(event.callId) ?? event.callId
+          setRecentDenied((current) =>
+            [denied, ...current.filter((item) => item !== denied)].slice(0, 20),
+          )
+        }
         append({
           kind: event.behavior === 'deny' ? 'warning' : 'notice',
           text:
@@ -1496,6 +1551,157 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'permission-rule-input') {
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu(null)
+        } else if (key.return) {
+          const rule = inputRef.current.trim()
+          if (!rule) {
+            append({
+              kind: 'warning',
+              text: 'Enter a permission rule or press Esc.',
+            })
+          } else {
+            clearComposerInput()
+            updateMenu({
+              kind: 'permission-scope',
+              behavior: activeMenu.behavior,
+              rule,
+              selectedIndex: 0,
+            })
+          }
+        } else {
+          editComposer()
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'permission-scope') {
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+          return
+        }
+        if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(2, activeMenu.selectedIndex + (key.upArrow ? -1 : 1)),
+            ),
+          })
+          return
+        }
+        if (key.return) {
+          const scopes = ['local', 'project', 'user'] as const
+          const scope = scopes[activeMenu.selectedIndex]
+          if (!scope) return
+          const addition = (async () => {
+            setBusy(true)
+            try {
+              await permissionStore.add({
+                behavior: activeMenu.behavior,
+                rule: activeMenu.rule,
+                scope,
+              })
+              await retireService()
+              const rules = await permissionStore.load()
+              updateMenu({
+                kind: 'permission-dashboard',
+                tabIndex:
+                  ['allow', 'ask', 'deny'].indexOf(activeMenu.behavior) + 1,
+                selectedIndex: 0,
+                query: '',
+                rules,
+              })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(addition)
+          void addition.finally(() => onTurnChange?.(null))
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'permission-dashboard') {
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+          return
+        }
+        if (key.leftArrow || key.rightArrow) {
+          updateMenu({
+            ...activeMenu,
+            tabIndex: Math.max(
+              0,
+              Math.min(4, activeMenu.tabIndex + (key.leftArrow ? -1 : 1)),
+            ),
+            selectedIndex: 0,
+            query: '',
+          })
+          return
+        }
+        const behavior = (['allow', 'ask', 'deny'] as const)[
+          activeMenu.tabIndex - 1
+        ]
+        const query = activeMenu.query.toLowerCase()
+        const matchingRules = behavior
+          ? activeMenu.rules.filter(
+              (rule) =>
+                rule.behavior === behavior &&
+                (!query ||
+                  rule.rule.toLowerCase().includes(query) ||
+                  rule.scope.includes(query)),
+            )
+          : []
+        const rowCount =
+          activeMenu.tabIndex === 0
+            ? recentDenied.length
+            : activeMenu.tabIndex === 4
+              ? permissionOptions.length
+              : matchingRules.length + 1
+        if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                Math.max(0, rowCount - 1),
+                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+        } else if (key.backspace || key.delete) {
+          updateMenu({
+            ...activeMenu,
+            query: activeMenu.query.slice(0, -1),
+            selectedIndex: 0,
+          })
+        } else if (behavior && !key.ctrl && !key.meta && value && printable) {
+          updateMenu({
+            ...activeMenu,
+            query: activeMenu.query + value,
+            selectedIndex: 0,
+          })
+        } else if (
+          key.return &&
+          behavior &&
+          activeMenu.selectedIndex === matchingRules.length
+        ) {
+          clearComposerInput()
+          updateMenu({ kind: 'permission-rule-input', behavior })
+        } else if (key.return && activeMenu.tabIndex === 4) {
+          const mode = permissionOptions[activeMenu.selectedIndex]?.mode
+          if (mode) {
+            updateMenu(null)
+            changePermissionMode(mode)
+          }
+        }
+        return
+      }
+
       if (activeMenu.kind === 'model-input') {
         if (key.escape) {
           clearComposerInput()
@@ -1523,9 +1729,7 @@ export function InteractiveApp({
       const optionCount =
         activeMenu.kind === 'model'
           ? modelOptions.length
-          : activeMenu.kind === 'effort'
-            ? EFFORT_OPTIONS.length
-            : permissionOptions.length
+          : EFFORT_OPTIONS.length
       const select = (selectedIndex: number) =>
         updateMenu({ ...activeMenu, selectedIndex })
       if (key.upArrow) {
@@ -1566,13 +1770,9 @@ export function InteractiveApp({
         } else {
           updateMenu(null)
         }
-      } else if (activeMenu.kind === 'effort') {
+      } else {
         const selectedEffort = EFFORT_OPTIONS[activeMenu.selectedIndex]
         if (selectedEffort) changeEffort(selectedEffort)
-        updateMenu(null)
-      } else {
-        const selectedMode = permissionOptions[activeMenu.selectedIndex]?.mode
-        if (selectedMode) changePermissionMode(selectedMode)
         updateMenu(null)
       }
       return
@@ -1669,15 +1869,24 @@ export function InteractiveApp({
           selectedIndex: EFFORT_OPTIONS.indexOf(runtimePreferences.effort),
         })
       } else if (prompt === '/permissions') {
-        updateMenu({
-          kind: 'permission',
-          selectedIndex: Math.max(
-            0,
-            permissionOptions.findIndex(
-              (option) => option.mode === runtimePreferences.permissionMode,
-            ),
-          ),
-        })
+        const loading = (async () => {
+          setBusy(true)
+          try {
+            updateMenu({
+              kind: 'permission-dashboard',
+              tabIndex: 0,
+              selectedIndex: 0,
+              query: '',
+              rules: await permissionStore.load(),
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(loading)
+        void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/resume' || prompt === '/sessions') {
         pickerIncludesNewSessionRef.current = false
         setPickerIncludesNewSession(false)
@@ -1861,6 +2070,18 @@ export function InteractiveApp({
               <Text>› {input}</Text>
               <Text dimColor>Enter confirms · Esc cancels</Text>
             </DialogFrame>
+          ) : menu?.kind === 'permission-rule-input' ? (
+            <DialogFrame
+              title="Add a permission rule"
+              screenReader={axScreenReader}
+            >
+              <Text dimColor>
+                Examples: Bash(npm test:*), Read(./src/**),
+                WebFetch(domain:example.com)
+              </Text>
+              <Text>› {input}</Text>
+              <Text dimColor>Enter continues to scope · Esc cancels</Text>
+            </DialogFrame>
           ) : menu ? (
             menu.kind === 'help' ? (
               <HelpMenu
@@ -1878,6 +2099,44 @@ export function InteractiveApp({
                 selectedIndex={menu.selectedIndex}
                 viewingFile={menu.viewingFile}
                 scrollOffset={menu.scrollOffset}
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'permission-dashboard' ? (
+              <PermissionDashboard
+                tabIndex={menu.tabIndex}
+                selectedIndex={menu.selectedIndex}
+                query={menu.query}
+                rules={menu.rules}
+                recentDenied={recentDenied}
+                workspaceModes={permissionOptions.map((option) => ({
+                  label: option.label,
+                  selected: option.mode === runtimePreferences.permissionMode,
+                }))}
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'permission-scope' ? (
+              <SelectionMenu
+                title="Save permission rule"
+                description={`${menu.behavior}: ${menu.rule}`}
+                options={[
+                  {
+                    label: 'Local project',
+                    description: 'Save to .claude/settings.local.json.',
+                  },
+                  {
+                    label: 'Checked-in project',
+                    description: 'Save to .claude/settings.json.',
+                  },
+                  {
+                    label: 'User',
+                    description:
+                      'Save to the Claude config root settings.json.',
+                  },
+                ]}
+                selectedIndex={menu.selectedIndex}
+                footer="↑/↓ select · Enter saves · Esc cancels"
                 width={width}
                 screenReader={axScreenReader}
               />
@@ -1910,21 +2169,7 @@ export function InteractiveApp({
                 width={width}
                 screenReader={axScreenReader}
               />
-            ) : (
-              <SelectionMenu
-                title="Permission mode"
-                description="Changes are kept in the current Claude-compatible session."
-                options={permissionOptions.map((option) => ({
-                  label: option.label,
-                  description: option.description,
-                  selected: option.mode === runtimePreferences.permissionMode,
-                }))}
-                selectedIndex={menu.selectedIndex}
-                footer="↑/↓ select · Enter applies · Esc cancels"
-                width={width}
-                screenReader={axScreenReader}
-              />
-            )
+            ) : null
           ) : (
             <>
               {commandPaletteVisible ? (

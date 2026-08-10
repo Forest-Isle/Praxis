@@ -56,6 +56,10 @@ try {
     join(configRoot, 'commands', 'review.md'),
     '---\ndescription: Review the shared fixture.\n---\nReview $ARGUMENTS\n',
   )
+  await writeFile(
+    join(configRoot, 'settings.json'),
+    `${JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }, null, 2)}\n`,
+  )
   const diffFixture = join(cwd, 'fixture.txt')
   await writeFile(diffFixture, 'before\n')
   await execFileAsync('git', ['init', '-q'], { cwd })
@@ -132,6 +136,15 @@ expect -re {\+after}
 send "\033"
 after 100
 expect -re {Enter to view}
+send "\033"
+after 100
+expect -re {bypass permissions on}
+send "/permissions"
+expect -re {Manage allow and deny tool permission rules}
+send "\r"
+expect -re {Recently denied.*Allow.*Ask.*Deny.*Workspace}
+send "\033\[C"
+expect -re {Bash\(npm test:\*\).*user}
 send "\033"
 after 100
 expect -re {bypass permissions on}

@@ -45,6 +45,7 @@ status-line plugins are not native parity requirements.
 | Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures |
 | Tool          | named call with indented input/result    | structured tool and diff fixtures        |
 | Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures    |
+| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures  |
 | Decision      | bordered, numbered choices               | permission/question/plan/MCP tests       |
 | Resume        | bounded selectable conversation list     | picker interaction and viewport tests    |
 | Accessibility | decoration-free semantic text            | screen-reader fixture                    |
@@ -84,8 +85,9 @@ is passed from the CLI composition root and never written to shared JSONL.
   General, Commands, and Custom commands tabs.
 - `Composer`: prompt, cursor, history, effort, mode, busy state, measured
   context/cost status, and keyboard help.
-- `SelectionMenu`: reusable model, effort, and permission-mode chooser; it
-  does not replace the full Claude Code permission-rule dashboard.
+- `SelectionMenu`: reusable model, effort, and permission-rule scope chooser.
+- `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
+  scoped rule search; rule creation; and workspace permission-mode selection.
 - `DialogFrame`: shared bordered surface used by permission, question, plan,
   recovery, and elicitation decisions.
 - screen-reader branches: semantic text-only rendering through the same state.
@@ -104,10 +106,13 @@ is passed from the CLI composition root and never written to shared JSONL.
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
   turn receives the selected provider controls.
-- `/permissions` selects the active session mode. Once a session exists, Praxis
-  appends the native Claude-compatible `permission-mode` record under the
-  transcript lease before the next turn; it stores no Praxis-only transcript
-  fields. `Shift+Tab` cycles the same local mode set.
+- `/permissions` loads Claude-native permission arrays into Recently denied,
+  Allow, Ask, Deny, and Workspace tabs. Rule search is local; adding a rule
+  chooses `.claude/settings.local.json`, checked-in `.claude/settings.json`, or
+  user `settings.json`, preserves unrelated keys, writes atomically, and retires
+  the active service so the next turn reloads policy. Workspace mode changes
+  still append the native `permission-mode` transcript record. `Shift+Tab`
+  cycles the same local mode set.
 - The composer edits at its real Unicode code-point cursor. It supports arrow
   movement, Meta-word movement, `Ctrl+A/E/B/F/W/U/K`, backspace/delete,
   multiline `Shift+Enter`, and submitted-prompt history. The first `Ctrl+C`
@@ -149,12 +154,12 @@ is passed from the CLI composition root and never written to shared JSONL.
 
 ## Remaining interactive parity work
 
-The Stage TUI-1/2/3/4 controls close the slash presentation, help/shortcut,
+The Stage TUI-1/2/3/4/5 controls close the slash presentation, help/shortcut,
 searchable-resume, thinking, composer, runtime-control, measured-status,
 tool-detail, and current/per-turn diff-navigation seams, but they do not justify
 a blanket “complete Claude Code TUI” claim. Remaining black-box-driven work
 includes the full built-in command catalog and its command-specific dialogs,
-the permission-rule dashboard (rules, tabs, search, and settings editing), exact
-multi-read grouping and historical turn attribution, and remaining exact
-layout/shortcut behavior. Each item needs an observed contract and a focused
-TTY or Ink gate before the matrix can return to a complete status.
+permission-rule removal and exact denied-history behavior, exact multi-read
+grouping and historical turn attribution, and remaining exact layout/shortcut
+behavior. Each item needs an observed contract and a focused TTY or Ink gate
+before the matrix can return to a complete status.

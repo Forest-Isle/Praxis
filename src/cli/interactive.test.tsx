@@ -490,7 +490,16 @@ describe('InteractiveApp', () => {
       },
     }
     const app = render(
-      <InteractiveApp factory={factory} initialSessions={[]} />,
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add() {},
+        }}
+      />,
     )
 
     app.stdin.write('first')
@@ -499,7 +508,13 @@ describe('InteractiveApp', () => {
     app.stdin.write('/permissions')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Permission mode')
+    expect(app.lastFrame()).toContain('Permissions')
+    app.stdin.write('\u001B[C')
+    app.stdin.write('\u001B[C')
+    app.stdin.write('\u001B[C')
+    app.stdin.write('\u001B[C')
+    await flush()
+    expect(app.lastFrame()).toContain('○ Accept edits')
     app.stdin.write('\u001B[B')
     app.stdin.write('\r')
     await flush()
@@ -510,6 +525,60 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(creates).toContainEqual({ permissionMode: 'acceptEdits' })
+  })
+
+  it('adds a scoped permission rule through the dashboard', async () => {
+    const additions: Array<{
+      behavior: string
+      rule: string
+      scope: string
+    }> = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        permissionRuleStore={{
+          async load() {
+            return additions.map((addition) => ({
+              ...addition,
+              behavior: addition.behavior as 'allow',
+              scope: addition.scope as 'project',
+              path: '/fixture/settings.json',
+            }))
+          },
+          async add(input) {
+            additions.push(input)
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/permissions')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Recently denied')
+    app.stdin.write('\u001B[C')
+    await flush()
+    expect(app.lastFrame()).toContain('Add a new rule…')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Add a permission rule')
+    app.stdin.write('Bash(npm test:*)')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Save permission rule')
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(additions).toEqual([
+      { behavior: 'allow', rule: 'Bash(npm test:*)', scope: 'project' },
+    ])
+    expect(app.lastFrame()).toContain('Bash(npm test:*)')
   })
 
   it('starts a truly empty visible conversation for /clear', async () => {

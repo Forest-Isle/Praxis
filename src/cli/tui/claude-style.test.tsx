@@ -9,6 +9,7 @@ import {
   DialogFrame,
   HelpMenu,
   MarkdownText,
+  PermissionDashboard,
   SelectionMenu,
   SessionPicker,
   ShortcutHelp,
@@ -204,6 +205,47 @@ describe('Claude-style TUI components', () => {
     expect(patch.lastFrame()).toContain('-before')
     expect(patch.lastFrame()).toContain('+second line')
     expect(patch.lastFrame()).toContain('Esc to back')
+  })
+
+  it('renders permission tabs, scoped rules, search, and workspace modes', () => {
+    const rules = [
+      {
+        behavior: 'allow' as const,
+        rule: 'Bash(npm test:*)',
+        scope: 'project' as const,
+        path: '/project/.claude/settings.json',
+      },
+    ]
+    const allow = render(
+      <PermissionDashboard
+        tabIndex={1}
+        selectedIndex={0}
+        query="npm"
+        rules={rules}
+        recentDenied={[]}
+        workspaceModes={[{ label: 'Default', selected: true }]}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(allow.lastFrame()).toContain('Recently denied')
+    expect(allow.lastFrame()).toContain('⌕ npm')
+    expect(allow.lastFrame()).toContain('Bash(npm test:*)  project')
+    expect(allow.lastFrame()).toContain('Add a new rule…')
+
+    const workspace = render(
+      <PermissionDashboard
+        tabIndex={4}
+        selectedIndex={0}
+        query=""
+        rules={rules}
+        recentDenied={[]}
+        workspaceModes={[{ label: 'Default', selected: true }]}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(workspace.lastFrame()).toContain('● Default')
   })
 
   it('shows active thinking in full and expands retained thinking on demand', () => {

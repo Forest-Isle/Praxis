@@ -5,6 +5,7 @@ import { Box, Text, useStdout } from 'ink'
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import { composerEditorSegments } from './composer-editor.js'
 import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
+import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'
 
 const BRAND = '#D97757'
@@ -609,6 +610,96 @@ export function DiffDashboard({
       <Text> </Text>
       <Text dimColor>
         ←/→ to switch source · ↑/↓ to select · Enter to view · Esc to close
+      </Text>
+    </Box>
+  )
+}
+
+export function PermissionDashboard({
+  tabIndex,
+  selectedIndex,
+  query,
+  rules,
+  recentDenied,
+  workspaceModes,
+  width,
+  screenReader,
+}: {
+  tabIndex: number
+  selectedIndex: number
+  query: string
+  rules: readonly TuiPermissionRule[]
+  recentDenied: readonly string[]
+  workspaceModes: readonly { label: string; selected: boolean }[]
+  width: number
+  screenReader: boolean
+}) {
+  const tabs = ['Recently denied', 'Allow', 'Ask', 'Deny', 'Workspace'] as const
+  const behavior = (['allow', 'ask', 'deny'] as const)[tabIndex - 1]
+  const normalizedQuery = query.trim().toLowerCase()
+  const matchingRules = behavior
+    ? rules.filter(
+        (rule) =>
+          rule.behavior === behavior &&
+          (!normalizedQuery ||
+            rule.rule.toLowerCase().includes(normalizedQuery) ||
+            rule.scope.includes(normalizedQuery)),
+      )
+    : []
+  const rows =
+    tabIndex === 0
+      ? recentDenied
+      : tabIndex === 4
+        ? workspaceModes.map(
+            (mode) => `${mode.selected ? '●' : '○'} ${mode.label}`,
+          )
+        : [
+            ...matchingRules.map((rule) => `${rule.rule}  ${rule.scope}`),
+            'Add a new rule…',
+          ]
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {!screenReader ? (
+        <Text dimColor>{'─'.repeat(Math.min(100, width))}</Text>
+      ) : null}
+      <Text bold> Permissions</Text>
+      <Text>
+        {'  '}
+        {tabs.map((tab, index) => (
+          <Text key={tab} inverse={index === tabIndex}>
+            {' '}
+            {tab}{' '}
+          </Text>
+        ))}
+      </Text>
+      {tabIndex >= 1 && tabIndex <= 3 ? (
+        <Box
+          borderStyle={screenReader ? undefined : 'round'}
+          paddingX={1}
+          marginY={1}
+        >
+          <Text {...(query ? {} : { dimColor: true })}>
+            ⌕ {query || 'Search rules…'}
+          </Text>
+        </Box>
+      ) : (
+        <Text> </Text>
+      )}
+      {rows.length === 0 ? (
+        <Text dimColor>
+          {tabIndex === 0 ? '  No recently denied tools.' : '  No entries.'}
+        </Text>
+      ) : (
+        rows.map((row, index) => (
+          <Text key={`${index}-${row}`} inverse={index === selectedIndex}>
+            {index === selectedIndex ? '❯ ' : '  '}
+            {row}
+          </Text>
+        ))
+      )}
+      <Text> </Text>
+      <Text dimColor>
+        ←/→ tabs · ↑/↓ select · type to search · Enter to choose · Esc to close
       </Text>
     </Box>
   )
