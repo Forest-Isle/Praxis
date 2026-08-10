@@ -19,3 +19,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Third-party notice: MCPB manifest JSON schemas under
+src/plugins/mcpb-schemas are derived from @anthropic-ai/mcpb.
+Copyright (c) 2025 Anthropic, PBC. Those schemas are licensed under the MIT
+License terms above.

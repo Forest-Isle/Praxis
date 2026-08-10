@@ -45,15 +45,16 @@ package; manual-only versioning was rejected because it can drift from tags.
 
 ## Bootstrap
 
-1. Add a granular automation token with publish access to `praxis-agent` as the
-   repository secret `NPM_TOKEN`. For the unclaimed initial package, use an npm
-   account permitted to create public packages.
+1. For the unclaimed initial package only, create a short-lived granular token
+   on an npm account permitted to create public packages.
 2. Create GitHub environment `npm`. Do not expose secrets to pull requests.
 3. Push `main`, wait for required `CI`, then create the initial `v0.1.0` release.
-4. Run `Publish` with tag `v0.1.0` if the initial release was created manually.
+4. Download and checksum the exact GitHub release tarball, publish it locally
+   with the bootstrap token, then revoke the token.
 5. In npm package settings, add trusted publisher repository
    `Forest-Isle/Praxis`, workflow `publish.yml`, environment `npm`.
-6. Delete `NPM_TOKEN`; rerun Publish only if npm publication did not finish.
+6. Require 2FA and disallow bypass-2FA tokens for the package. No repository
+   `NPM_TOKEN` secret may exist.
 
 ## Error handling and recovery
 
@@ -87,3 +88,5 @@ Claude subscription state, provider credentials, or billable model requests.
 
 Validate workflows with `actionlint`. On GitHub, branch protection requires the
 aggregate `CI` check; publication additionally requires the `npm` environment.
+The installed-package gate audits the consumer dependency graph, not only the
+repository lockfile, so root-only overrides cannot hide downstream advisories.

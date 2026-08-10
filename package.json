@@ -104,30 +104,24 @@
     "provenance": true
   },
   "dependencies": {
-    "@anthropic-ai/mcpb": "2.1.2",
     "@anthropic-ai/tokenizer": "^0.0.4",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "acorn": "^8.18.0",
     "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "cron-parser": "^5.7.0",
     "fflate": "^0.8.3",
     "ink": "^7.1.1",
     "ipaddr.js": "^2.2.0",
     "minimatch": "^10.2.6",
     "pdf-lib": "^1.17.1",
-    "pdf-to-img": "^6.2.0",
+    "pdfjs-dist": "6.2.108",
     "quickjs-emscripten": "^0.32.0",
     "quickjs-emscripten-core": "^0.32.0",
     "react": "^19.2.8",
     "sharp": "^0.35.3",
     "turndown": "^7.2.0",
     "yaml": "^2.9.0"
-  },
-  "overrides": {
-    "tmp": "0.2.7",
-    "pdf-to-img": {
-      "pdfjs-dist": "6.2.108"
-    }
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

@@ -71,8 +71,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/praxis-release/"* --clobber
       - name: Publish npm package
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
@@ -84,10 +82,6 @@ jobs:
           if test -n "$PUBLISHED_VERSION"; then
             echo "registry returned unexpected version: $PUBLISHED_VERSION" >&2
             exit 1
-          fi
-          if test -n "$NPM_TOKEN"; then
-            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$RUNNER_TEMP/praxis.npmrc"
-            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/praxis.npmrc"
           fi
           TARBALL=$(find "$RUNNER_TEMP/praxis-release" -maxdepth 1 -name '*.tgz' -print -quit)
           test -n "$TARBALL"

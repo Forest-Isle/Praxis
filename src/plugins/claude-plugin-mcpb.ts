@@ -13,6 +13,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { closeSync, openSync, writeSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import {
   basename,
@@ -24,7 +25,13 @@ import {
   sep,
 } from 'node:path'
 
+import { Ajv, type ValidateFunction } from 'ajv'
 import { Unzip, UnzipInflate } from 'fflate'
+
+import manifestSchemaV01 from './mcpb-schemas/mcpb-manifest-v0.1.schema.json' with { type: 'json' }
+import manifestSchemaV02 from './mcpb-schemas/mcpb-manifest-v0.2.schema.json' with { type: 'json' }
+import manifestSchemaV03 from './mcpb-schemas/mcpb-manifest-v0.3.schema.json' with { type: 'json' }
+import manifestSchemaV04 from './mcpb-schemas/mcpb-manifest-v0.4.schema.json' with { type: 'json' }
 
 import {
   ExclusiveFileLease,
@@ -38,6 +45,16 @@ const DEFAULT_FILES = 100_000
 const MAX_COMPRESSION_RATIO = 50
 const DEFAULT_TIMEOUT_MS = 120_000
 const MANIFEST_FILE = 'manifest.json'
+const addFormats = createRequire(import.meta.url)('ajv-formats') as (
+  ajv: Ajv,
+) => Ajv
+const manifestAjv = addFormats(new Ajv({ allErrors: true }))
+const manifestValidators: Readonly<Record<string, ValidateFunction>> = {
+  '0.1': manifestAjv.compile(manifestSchemaV01),
+  '0.2': manifestAjv.compile(manifestSchemaV02),
+  '0.3': manifestAjv.compile(manifestSchemaV03),
+  '0.4': manifestAjv.compile(manifestSchemaV04),
+}
 
 export type ClaudePluginMcpbUserValue =
   string | number | boolean | readonly string[]
@@ -188,15 +205,29 @@ function isValueForType(
 async function validateManifest(
   value: unknown,
 ): Promise<ClaudePluginMcpbManifest> {
-  const { vAny } = await import('@anthropic-ai/mcpb/schemas')
-  const parsed = vAny.McpbManifestSchema.safeParse(value)
-  if (!parsed.success) {
-    const detail = parsed.error.issues
-      .map((issue) => `${issue.path.join('.') || 'manifest'}: ${issue.message}`)
+  const version = isRecord(value)
+    ? typeof value.manifest_version === 'string'
+      ? value.manifest_version
+      : value.dxt_version
+    : undefined
+  const validate =
+    typeof version === 'string' ? manifestValidators[version] : undefined
+  if (!validate || !validate(value)) {
+    const detail = validate?.errors
+      ?.map((issue) => {
+        if (
+          issue.keyword === 'additionalProperties' &&
+          typeof issue.params.additionalProperty === 'string'
+        ) {
+          return `Unrecognized key(s) in object: '${issue.params.additionalProperty}'`
+        }
+        const path = issue.instancePath.replace(/^\//u, '').replaceAll('/', '.')
+        return `${path || 'manifest'}: ${issue.message ?? 'is invalid'}`
+      })
       .join('; ')
     throw new Error(`Invalid MCPB manifest: ${detail}`)
   }
-  const manifest = parsed.data
+  const manifest = value as unknown as ClaudePluginMcpbManifest
   const manifestVersion = manifest.manifest_version ?? manifest.dxt_version
   return {
     ...manifest,
@@ -331,22 +362,15 @@ async function serverConfig(
   environment: Readonly<Record<string, string | undefined>>,
   userConfig: Readonly<Record<string, ClaudePluginMcpbUserValue>>,
 ): Promise<ClaudePluginMcpbServerConfig> {
-  const { getMcpConfigForManifest } = await import('@anthropic-ai/mcpb')
-  const home = homedir()
-  const generated = await getMcpConfigForManifest({
-    manifest: manifest as never,
-    extensionPath: extractedPath,
-    systemDirs: {
-      HOME: home,
-      DESKTOP: join(home, 'Desktop'),
-      DOCUMENTS: join(home, 'Documents'),
-      DOWNLOADS: join(home, 'Downloads'),
-    },
-    userConfig: userConfig as never,
-    pathSeparator: sep,
-  })
-  if (generated === undefined || typeof generated.command !== 'string') {
+  const baseConfig = manifest.server?.mcp_config
+  if (baseConfig === undefined || typeof baseConfig.command !== 'string') {
     throw new Error('MCPB manifest did not produce an MCP server config')
+  }
+  const platformConfig = baseConfig.platform_overrides?.[process.platform]
+  const generated = {
+    command: platformConfig?.command || baseConfig.command,
+    args: platformConfig?.args || baseConfig.args || [],
+    env: platformConfig?.env || baseConfig.env || {},
   }
   const command = generated.command
   const args = Array.isArray(generated.args) ? generated.args : []

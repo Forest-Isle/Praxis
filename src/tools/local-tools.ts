@@ -18,7 +18,6 @@ import {
 } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { pdf } from 'pdf-to-img'
 import sharp from 'sharp'
 
 import type {
@@ -41,6 +40,7 @@ import {
 } from '../platform/bounded-process-runner.js'
 import { globFiles } from './glob.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
+import { openPdf } from './pdf.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
@@ -1045,7 +1045,7 @@ export class LocalToolRegistry implements ToolRegistry {
     pagesInput: unknown,
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
-    const document = await pdf(source)
+    const document = await openPdf(source)
     try {
       const pages =
         pagesInput === undefined

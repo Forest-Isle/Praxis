@@ -110,8 +110,8 @@ explicit plugin-origin metadata, manual-server-first signature deduplication,
 and normalized model-visible tool names while preserving raw scoped names for
 status and resource operations.
 Manifest declarations support ordinary JSON plus local or HTTP(S) `.mcpb` and
-`.dxt` bundles. Bundle loading uses the official MCPB schema/config generator,
-sticky remote and change-aware local caches, bounded downloads and ZIP
+`.dxt` bundles. Bundle loading uses vendored official MCPB schemas and local
+compatible config expansion, sticky remote and change-aware local caches, bounded downloads and ZIP
 extraction, traversal/symlink/bomb rejection, executable-bit restoration, and
 per-bundle failure isolation. MCPB user config shares the protected plugin
 option plane; required values, qualified `server.key=value` assignments,
