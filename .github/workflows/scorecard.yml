@@ -8,16 +8,17 @@ on:
     - cron: '41 4 * * 2'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  id-token: write
-  security-events: write
+permissions: read-all
 
 jobs:
   scorecard:
     name: Scorecard analysis
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
