@@ -91,6 +91,12 @@ interface InteractiveSessionCommands {
     prompt: string,
     signal?: AbortSignal,
   ): Promise<SessionRunResult>
+  runShell?(command: string, signal?: AbortSignal): Promise<SessionRunResult>
+  resumeShell?(
+    sessionId: string,
+    command: string,
+    signal?: AbortSignal,
+  ): Promise<SessionRunResult>
   fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
   workflows?(): readonly Record<string, unknown>[]
@@ -537,6 +543,7 @@ export function InteractiveApp({
   const fileReference = filePickerOpen
     ? fileReferenceAtCursor(input, inputCursor)
     : null
+  const shellMode = input.startsWith('!')
   const matchingSlashCommands = useMemo(
     () =>
       commandQuery === null
@@ -567,6 +574,7 @@ export function InteractiveApp({
     !elicitation &&
     !selectingSession &&
     filePickerOpen &&
+    !shellMode &&
     fileReference !== null
   const selectedFileIndex = Math.min(
     fileSelection,
@@ -576,7 +584,8 @@ export function InteractiveApp({
     activeThinking.length > 0 ||
     history.some((item) => item.kind === 'thinking')
   const hasDetailedTranscript =
-    hasThinking || history.some((item) => item.kind === 'tool')
+    hasThinking ||
+    history.some((item) => item.kind === 'tool' || item.kind === 'shell')
   const selectedSlashCommandIndex = Math.min(
     commandSelection,
     Math.max(0, matchingSlashCommands.length - 1),
@@ -874,6 +883,33 @@ export function InteractiveApp({
           text: redactSensitiveText(event.content, sensitiveValues),
           isError: event.isError,
         })
+        break
+      case 'shell-command':
+        append({
+          kind: 'shell',
+          callId: event.callId,
+          command: redactSensitiveText(event.command, sensitiveValues),
+        })
+        break
+      case 'shell-result':
+        append({
+          kind: 'shell-result',
+          callId: event.callId,
+          stdout: redactSensitiveText(event.stdout, sensitiveValues),
+          stderr: redactSensitiveText(event.stderr, sensitiveValues),
+          isError: event.isError,
+        })
+        break
+      case 'shell-cancelled':
+        setHistory((current) =>
+          current.filter(
+            (item) =>
+              !(
+                (item.kind === 'shell' || item.kind === 'shell-result') &&
+                item.callId === event.callId
+              ),
+          ),
+        )
         break
       case 'tool-progress':
         setStatus(`${event.toolName} · ${event.elapsedTimeSeconds}s`)
@@ -1210,7 +1246,7 @@ export function InteractiveApp({
     void loading.finally(() => onTurnChange?.(null))
   }
 
-  const submit = async (prompt: string) => {
+  const submit = async (prompt: string, shellCommand?: string) => {
     const turnNumber = turnNumberRef.current + 1
     turnNumberRef.current = turnNumber
     turnMutatedFilesRef.current = false
@@ -1227,7 +1263,8 @@ export function InteractiveApp({
     setStatus('assembling-context')
     setActiveText('')
     setActiveThinking('')
-    append({ kind: 'user', text: prompt })
+    if (shellCommand === undefined) append({ kind: 'user', text: prompt })
+    else turnMutatedFilesRef.current = true
     let commands: InteractiveSessionCommands | undefined
     try {
       commands = await service()
@@ -1239,9 +1276,26 @@ export function InteractiveApp({
         setSessionId(activeSessionId)
         setPendingFork(false)
       }
-      const result = activeSessionId
-        ? await commands.resume(activeSessionId, prompt, turnSignal)
-        : await commands.run(prompt, turnSignal)
+      const result =
+        shellCommand === undefined
+          ? activeSessionId
+            ? await commands.resume(activeSessionId, prompt, turnSignal)
+            : await commands.run(prompt, turnSignal)
+          : activeSessionId
+            ? commands.resumeShell
+              ? await commands.resumeShell(
+                  activeSessionId,
+                  shellCommand,
+                  turnSignal,
+                )
+              : (() => {
+                  throw new Error('Interactive shell mode is unavailable')
+                })()
+            : commands.runShell
+              ? await commands.runShell(shellCommand, turnSignal)
+              : (() => {
+                  throw new Error('Interactive shell mode is unavailable')
+                })()
       setSessionId(result.sessionId)
       if (
         startedNewSession &&
@@ -1275,6 +1329,7 @@ export function InteractiveApp({
       setStatus('ready')
     } catch (error) {
       if (turnController.signal.aborted && !signal?.aborted) {
+        if (shellCommand !== undefined) updateComposerInput(`!${shellCommand}`)
         append({ kind: 'notice', text: 'Interrupted by user.' })
         setStatus('cancelled')
       } else {
@@ -2078,7 +2133,7 @@ export function InteractiveApp({
       const prompt = inputRef.current.trim()
       clearComposerInput()
       undoStackRef.current = []
-      if (!prompt) return
+      if (!prompt || prompt === '!') return
       if (prompt === '/exit') {
         exit()
       } else if (prompt === '/help' || prompt === '?') {
@@ -2203,6 +2258,14 @@ export function InteractiveApp({
         openTasks()
       } else if (prompt === '/plan') {
         changePermissionMode('plan')
+      } else if (prompt.startsWith('!')) {
+        const command = prompt.slice(1).trim()
+        const turn = submit(`! ${command}`, command)
+        onTurnChange?.(turn)
+        void turn.then(
+          () => onTurnChange?.(null),
+          () => onTurnChange?.(null),
+        )
       } else {
         const turn = submit(prompt)
         onTurnChange?.(turn)
@@ -2475,8 +2538,9 @@ export function InteractiveApp({
                 <Text color="yellow">Press Ctrl-C again to exit</Text>
               ) : null}
               <Composer
-                input={input}
-                cursor={inputCursor}
+                input={shellMode ? input.slice(1) : input}
+                cursor={shellMode ? Math.max(0, inputCursor - 1) : inputCursor}
+                shellMode={shellMode}
                 busy={busy}
                 status={status}
                 display={runtimeDisplay}

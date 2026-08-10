@@ -523,6 +523,41 @@ describe('Claude-style TUI components', () => {
       />,
     )
     expect(cursor.lastFrame()).toContain('❯ abXcd')
+
+    const shell = render(
+      <Composer
+        input="pwd"
+        cursor={3}
+        shellMode
+        busy={false}
+        status="ready"
+        display={display}
+        width={60}
+        screenReader={false}
+      />,
+    )
+    expect(shell.lastFrame()).toContain('! pwd')
+    expect(shell.lastFrame()).toContain('! for shell mode')
+    expect(shell.lastFrame()).not.toContain('❯ pwd')
+
+    const shellTranscript = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        items={[
+          { kind: 'shell', callId: 'shell-1', command: 'pwd' },
+          {
+            kind: 'shell-result',
+            callId: 'shell-1',
+            stdout: '/tmp/project\n',
+            stderr: '',
+            isError: false,
+          },
+        ]}
+      />,
+    )
+    expect(shellTranscript.lastFrame()).toContain('! pwd')
+    expect(shellTranscript.lastFrame()).toContain('⎿ /tmp/project')
   })
 
   it('keeps dialogs and session selection visually bounded', () => {
@@ -578,6 +613,19 @@ describe('Claude-style TUI components', () => {
       />,
     )
     expect(composer.lastFrame()).toBe('Prompt: hello')
+
+    const shellComposer = render(
+      <Composer
+        input="pwd"
+        shellMode
+        busy={false}
+        status="ready"
+        display={display}
+        width={80}
+        screenReader
+      />,
+    )
+    expect(shellComposer.lastFrame()).toBe('Shell command: pwd')
 
     const transcript = render(
       <Transcript

@@ -1083,6 +1083,137 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('line 5')
   })
 
+  it('enters shell mode and routes new and resumed commands through shell turns', async () => {
+    const calls: string[] = []
+    let shellCall = 0
+    const factory: InteractiveServiceFactory = {
+      scheduledPrompts: true,
+      async createService({ eventSink }) {
+        const execute = async (command: string, sessionId: string) => {
+          shellCall += 1
+          const callId = `shell-${shellCall}`
+          eventSink({ type: 'shell-command', callId, command })
+          eventSink({
+            type: 'shell-result',
+            callId,
+            stdout: `/workspace/${command}\n`,
+            stderr: '',
+            isError: false,
+          })
+          return {
+            sessionId,
+            text: `continued ${command}`,
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        }
+        return {
+          async run() {
+            throw new Error('ordinary run is unused')
+          },
+          async resume() {
+            throw new Error('ordinary resume is unused')
+          },
+          async runShell(command) {
+            calls.push(`run-shell:${command}`)
+            return execute(command, 'shell-session')
+          },
+          async resumeShell(sessionId, command) {
+            calls.push(`resume-shell:${sessionId}:${command}`)
+            return execute(command, sessionId)
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        diffLoader={async () => ({ files: [], additions: 0, deletions: 0 })}
+      />,
+    )
+
+    app.stdin.write('!')
+    await flush()
+    expect(app.lastFrame()).toContain('! Enter a shell command')
+    expect(app.lastFrame()).toContain('! for shell mode')
+
+    app.stdin.write('pwd')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('! pwd')
+    expect(app.lastFrame()).toContain('⎿ /workspace/pwd')
+    expect(app.lastFrame()).toContain('continued pwd')
+    expect(app.lastFrame()).not.toContain('❯ !pwd')
+
+    app.stdin.write('!')
+    await flush()
+    app.stdin.write('echo ok')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual([
+      'run-shell:pwd',
+      'resume-shell:shell-session:echo ok',
+    ])
+  })
+
+  it('restores an interrupted shell command to the shell composer', async () => {
+    const factory: InteractiveServiceFactory = {
+      scheduledPrompts: true,
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async runShell(command, signal) {
+            const callId = 'shell-cancel'
+            eventSink({ type: 'shell-command', callId, command })
+            return new Promise((_resolve, reject) => {
+              signal?.addEventListener(
+                'abort',
+                () => {
+                  eventSink({ type: 'shell-cancelled', callId })
+                  reject(new Error('cancelled'))
+                },
+                { once: true },
+              )
+            })
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    app.stdin.write('!')
+    await flush()
+    app.stdin.write('sleep 30')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('! sleep 30')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('! sleep 30')
+    expect(app.lastFrame()).toContain('! for shell mode')
+    expect(app.lastFrame()).toContain('Interrupted by user.')
+  })
+
   it('opens the diff dashboard and drills into the selected file', async () => {
     const snapshot = {
       files: [

@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rm,
   writeFile,
 } from 'node:fs/promises'
@@ -178,6 +179,18 @@ expect -re {Background}
 expect -re {No tasks currently running}
 send "\033"
 after 100
+send "!"
+expect -re {! for shell mode}
+send "pwd"
+expect -re {!.*pwd}
+send "\r"
+expect {
+  -re {⎿.*work} {}
+  timeout { puts stderr "shell result did not render"; exit 1 }
+  eof { puts stderr "Praxis exited before shell result"; exit 1 }
+}
+expect -re {TUI_FAKE_OK}
+expect -re {Context.*3 tokens}
 send "reply briefly"
 expect -re {❯.*reply briefly}
 send "\r"
@@ -204,9 +217,21 @@ exit 0
       TUI_NODE: process.execPath,
       TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
     },
-    timeout: 60_000,
+    timeout: 120_000,
   })
   assert.match(result.stdout, /TUI_FAKE_OK/u)
+  const projectRoot = join(configRoot, 'projects')
+  const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
+    .map(String)
+    .filter((file) => file.endsWith('.jsonl'))
+  assert.equal(transcriptFiles.length, 1)
+  const transcript = await readFile(
+    join(projectRoot, transcriptFiles[0]),
+    'utf8',
+  )
+  assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
+  assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
+  assert.match(transcript, /<bash-stderr><\/bash-stderr>/u)
   console.log('TUI compatibility verification passed')
 } finally {
   await new Promise((resolve) => provider.close(resolve))

@@ -896,6 +896,18 @@ interface SessionCommands {
     images?: readonly ModelImage[],
     documents?: readonly ModelDocument[],
   ): Promise<SessionRunResult>
+  runShell?(
+    command: string,
+    signal?: AbortSignal,
+    sessionId?: string,
+    name?: string,
+  ): Promise<SessionRunResult>
+  resumeShell?(
+    sessionId: string,
+    command: string,
+    signal?: AbortSignal,
+    name?: string,
+  ): Promise<SessionRunResult>
   fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
   setPermissionMode?(
     sessionId: string,
@@ -1592,6 +1604,19 @@ const createDefaultService: CliDependencies['createService'] = async ({
           name ?? cli.name,
           images,
           documents,
+          resumeSessionAt,
+        )
+      },
+      runShell: (command, signal, sessionId, name) =>
+        service.runShell(command, signal, sessionId, name ?? cli.name),
+      resumeShell: (sessionId, command, signal, name) => {
+        const resumeSessionAt = pendingResumeSessionAt
+        pendingResumeSessionAt = undefined
+        return service.resumeShell(
+          sessionId,
+          command,
+          signal,
+          name ?? cli.name,
           resumeSessionAt,
         )
       },

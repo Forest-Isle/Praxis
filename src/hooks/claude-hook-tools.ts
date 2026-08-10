@@ -159,8 +159,8 @@ export class ClaudeHookToolCoordinator
             ? { error: result.content, is_interrupt: false }
             : {
                 tool_response: {
-                  stdout: result.content,
-                  stderr: '',
+                  stdout: result.processOutput?.stdout ?? result.content,
+                  stderr: result.processOutput?.stderr ?? '',
                   interrupted: false,
                   isImage: false,
                   noOutputExpected: false,

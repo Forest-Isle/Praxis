@@ -20,6 +20,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
   rather than requiring users to remember the available slash commands;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
+- entering `!` switches the composer to shell mode; submitting runs the command
+  first, renders an indented result, and then continues the model turn;
 - tool calls use `⏺`, results use an indented `⎿`, long output keeps three
   lines before an expandable remainder count, and edits retain inline diffs;
 - `/diff` opens a current/per-turn source dashboard with file selection and a
@@ -35,23 +37,24 @@ status-line plugins are not native parity requirements.
 
 ## State matrix
 
-| State         | Observable Claude Code shape             | Praxis evidence                           |
-| ------------- | ---------------------------------------- | ----------------------------------------- |
-| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures   |
-| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate            |
-| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests           |
-| Slash command | filterable command name and description  | palette, selection, and PTY fixtures      |
-| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures     |
-| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures  |
-| Tool          | named call with indented input/result    | structured tool and diff fixtures         |
-| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures     |
-| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures   |
-| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures |
-| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures  |
-| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures  |
-| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests        |
-| Resume        | bounded selectable conversation list     | picker interaction and viewport tests     |
-| Accessibility | decoration-free semantic text            | screen-reader fixture                     |
+| State         | Observable Claude Code shape             | Praxis evidence                            |
+| ------------- | ---------------------------------------- | ------------------------------------------ |
+| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures    |
+| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate             |
+| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests            |
+| Slash command | filterable command name and description  | palette, selection, and PTY fixtures       |
+| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures      |
+| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures   |
+| Tool          | named call with indented input/result    | structured tool and diff fixtures          |
+| Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures |
+| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures      |
+| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures    |
+| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures  |
+| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures   |
+| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures   |
+| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests         |
+| Resume        | bounded selectable conversation list     | picker interaction and viewport tests      |
+| Accessibility | decoration-free semantic text            | screen-reader fixture                      |
 
 ## Architecture
 
@@ -64,6 +67,7 @@ shared extensions -> slash catalog -> command palette -> existing session servic
 runtime controls -> service retirement/recreation -> existing session service
 Git worktree ----> read-only diff snapshots ------> diff dashboard
 keyboard input -------------------> existing callbacks and session service
+`!` command -> direct runtime Bash -> native bash user records -> model turn
 ```
 
 No React or Ink dependency enters core, application, providers, tools, or
@@ -76,9 +80,9 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `SessionPicker`: selected-row hierarchy, local search, and bounded session
   identity behind the Claude-compatible `/resume` name (`/sessions` remains a
   hidden compatibility alias).
-- `Transcript`: user/assistant/tool/result/notice/warning and operational
-  lifecycle presentation, with grouped tool/result rendering, compact long
-  output, inline edit replacements, and global detailed expansion.
+- `Transcript`: user/assistant/tool/shell/result/notice/warning and operational
+  lifecycle presentation, with grouped results, compact long output, inline
+  edit replacements, and global detailed expansion.
 - `DiffDashboard`: current and file-mutating-turn snapshot tabs, file selection,
   and bounded patch scrolling. `git-diff` loads worktree state with path-safe
   argument arrays and never writes repository state.
@@ -88,8 +92,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   semantics and inserted into the active `@` composer reference.
 - `ShortcutHelp` and `HelpMenu`: immediate empty-composer shortcut grid plus
   General, Commands, and Custom commands tabs.
-- `Composer`: prompt, cursor, history, effort, mode, busy state, measured
-  context/cost status, and keyboard help.
+- `Composer`: prompt or `!` shell mode, cursor, history, effort, permission
+  mode, busy state, measured context/cost status, and keyboard help.
 - `SelectionMenu`: reusable model, effort, and permission-rule scope chooser.
 - `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
   scoped rule search; rule creation; and workspace permission-mode selection.
@@ -130,6 +134,14 @@ is passed from the CLI composition root and never written to shared JSONL.
   `Ctrl+Shift+_`. Typing `@` opens a filterable path picker; Enter or Tab replaces
   only the active reference. The first `Ctrl+C` clears input and asks for
   confirmation; the second exits.
+- A leading `!` enters the distinct shell composer. Submission executes `Bash`
+  through the active tool preparation, permission approval, cancellation, and
+  PreToolUse/PostToolUse Hook chain, renders `! command` plus its bounded
+  `⎿` output, then continues the provider turn. Successful turns append only
+  Claude-native `<bash-input>`, `<bash-stdout>`, and `<bash-stderr>` user
+  records; no synthetic assistant tool call or Praxis-only transcript field is
+  introduced. Esc cancels the child process, avoids a partial shell record, and
+  restores the command to the shell composer.
 - Existing `/new`, `/clear`, `/resume`, `/workflows`, `/exit`, resume,
   scheduled prompt, cancellation, permission, plan, question, and elicitation
   behavior is unchanged.
@@ -166,25 +178,26 @@ is passed from the CLI composition root and never written to shared JSONL.
 
 - focused Ink render fixtures at wide and narrow widths;
 - interaction tests for prompts, selection, permission, questions, plan, MCP,
-  streaming, tools, cancellation, and screen-reader mode;
+  streaming, tools, direct shell turns, cancellation, and screen-reader mode;
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, `Ctrl+T` task access, `@` selection, and
-  control-code undo;
+  control-code undo, plus installed-package `!pwd` execution, provider
+  continuation, and native transcript tags;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
 
 ## Remaining interactive parity work
 
-The Stage TUI-1/2/3/4/5/6/7 controls close the slash presentation, help/shortcut,
+The Stage TUI-1/2/3/4/5/6/7/8 controls close the slash presentation, help/shortcut,
 searchable-resume, thinking, composer, runtime-control, measured-status,
 tool-detail, current/per-turn diff-navigation, context/status/skill/task panels,
-plan switching, prompt stash, continuation, file-reference, and undo seams, but
-they do not justify a blanket “complete Claude Code TUI” claim. Remaining
+plan switching, prompt stash, continuation, file-reference, undo, and direct
+shell seams, but they do not justify a blanket “complete Claude Code TUI” claim. Remaining
 black-box-driven work includes the full built-in command catalog and its
 command-specific dialogs, permission-rule removal and exact denied-history
 behavior, exact multi-read grouping and historical turn attribution,
-shell/suspend/editor/image/keybinding flows, agent entries in the `@` picker,
+suspend/editor/image/keybinding flows, agent entries in the `@` picker,
 and remaining exact layout behavior. Each item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

@@ -76,6 +76,247 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('runs and resumes native shell turns through tool hooks before the provider', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shell-turn-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const requests: ModelRequest[] = []
+    const events: RuntimeEvent[] = []
+    const hookEvents: string[] = []
+    const postToolResponses: unknown[] = []
+    const provider: ModelProvider = {
+      model: 'fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        yield { type: 'text-delta', delta: `answer-${requests.length}` }
+        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+      },
+    }
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              PreToolUse: [
+                {
+                  matcher: 'Bash',
+                  hooks: [{ type: 'command', command: 'pre' }],
+                },
+              ],
+              PostToolUse: [
+                {
+                  matcher: 'Bash',
+                  hooks: [{ type: 'command', command: 'post' }],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async (_command, input) => {
+        hookEvents.push(input.hook_event_name)
+        if (input.hook_event_name === 'PostToolUse') {
+          postToolResponses.push(input.tool_response)
+        }
+        return input.hook_event_name === 'PreToolUse'
+          ? {
+              stdout: JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  updatedInput: { command: 'printf hook-output' },
+                  permissionDecision: 'allow',
+                },
+              }),
+              stderr: '',
+              exitCode: 0,
+              durationMs: 1,
+            }
+          : { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+      },
+    })
+    const sessionId = '91919191-9191-4191-8191-919191919191'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+      hooks,
+      eventSink: (event) => events.push(event),
+    })
+
+    await expect(
+      service.runShell('printf original', undefined, sessionId),
+    ).resolves.toMatchObject({ text: 'answer-1', sessionId })
+    await expect(
+      service.resumeShell(sessionId, 'printf second'),
+    ).resolves.toMatchObject({ text: 'answer-2', sessionId })
+
+    expect(hookEvents).toEqual([
+      'PreToolUse',
+      'PostToolUse',
+      'PreToolUse',
+      'PostToolUse',
+    ])
+    expect(postToolResponses).toEqual([
+      expect.objectContaining({ stdout: 'hook-output', stderr: '' }),
+      expect.objectContaining({ stdout: 'hook-output', stderr: '' }),
+    ])
+    expect(events.filter((event) => event.type === 'tool-call')).toEqual([])
+    expect(events.filter((event) => event.type === 'tool-result')).toEqual([])
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'shell-result',
+        stdout: 'hook-output',
+        stderr: '',
+        isError: false,
+      }),
+    )
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      '<bash-input>printf original</bash-input>',
+    )
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      '<bash-stdout>hook-output</bash-stdout><bash-stderr></bash-stderr>',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      '<bash-input>printf second</bash-input>',
+    )
+
+    const entries = (
+      await readFile(
+        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+          .sessionFile,
+        'utf8',
+      )
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const bashMessages = entries.filter(
+      (entry) =>
+        entry.type === 'user' &&
+        typeof entry.message?.content === 'string' &&
+        entry.message.content.startsWith('<bash-'),
+    )
+    expect(bashMessages.map((entry) => entry.message.content)).toEqual([
+      '<bash-input>printf original</bash-input>',
+      '<bash-stdout>hook-output</bash-stdout><bash-stderr></bash-stderr>',
+      '<bash-input>printf second</bash-input>',
+      '<bash-stdout>hook-output</bash-stdout><bash-stderr></bash-stderr>',
+    ])
+    expect(
+      entries.some((entry) =>
+        (JSON.stringify(entry.message?.content) ?? '').includes('shell_'),
+      ),
+    ).toBe(false)
+    expect(entries.at(-1)).toMatchObject({
+      type: 'last-prompt',
+      lastPrompt: '! printf second',
+    })
+  })
+
+  it('continues a denied shell turn without executing the command', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shell-denied-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    let executed = false
+    const requests: ModelRequest[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: 'denied safely' }
+        },
+      },
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          executed = true
+          return { content: 'unexpected', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+      approveTool: () => ({ behavior: 'deny', message: 'User denied shell' }),
+    })
+
+    await expect(service.runShell('touch denied')).resolves.toMatchObject({
+      text: 'denied safely',
+    })
+    expect(executed).toBe(false)
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      '<bash-stderr>User denied shell</bash-stderr>',
+    )
+  })
+
+  it('cancels a running shell command without persisting a partial shell turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shell-cancel-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const events: RuntimeEvent[] = []
+    let markCommandStarted: (() => void) | undefined
+    const commandStarted = new Promise<void>((resolve) => {
+      markCommandStarted = resolve
+    })
+    let providerCalled = false
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          providerCalled = true
+          yield { type: 'text-delta', delta: 'unexpected' }
+        },
+      },
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      eventSink: (event) => {
+        events.push(event)
+        if (event.type === 'shell-command') markCommandStarted?.()
+      },
+    })
+    const sessionId = '92929292-9292-4292-8292-929292929292'
+    const controller = new AbortController()
+    const turn = service.runShell('sleep 30', controller.signal, sessionId)
+    await commandStarted
+    controller.abort()
+
+    await expect(turn).rejects.toBeInstanceOf(AgentRunCancelledError)
+    expect(providerCalled).toBe(false)
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'shell-command' }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'shell-cancelled' }),
+    )
+    expect(events.some((event) => event.type === 'shell-result')).toBe(false)
+    const transcript = await readFile(
+      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('<bash-input>')
+    expect(transcript).not.toContain('<bash-stdout>')
+  })
+
   it('persists and restores interactive plan-mode transitions without duplicate tools', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-interactive-plan-'))
     roots.push(root)

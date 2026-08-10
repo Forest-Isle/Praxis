@@ -20,6 +20,48 @@ const mediaFixtureUrl = new URL(
 )
 
 describe('provider to Claude transcript translation', () => {
+  it('writes native Claude shell input and output user records', () => {
+    const entries = translateProviderEvents(
+      [
+        { type: 'bash-input', command: 'pwd' },
+        { type: 'bash-output', stdout: '/tmp/project\n', stderr: '' },
+      ],
+      {
+        sessionId: 'session',
+        parentUuid: null,
+        cwd: '/tmp/project',
+        claudeVersion: '2.1.208',
+        gitBranch: null,
+        createUuid: (() => {
+          const ids = ['input-id', 'output-id']
+          return () => ids.shift() ?? 'unexpected'
+        })(),
+        now: () => '2026-08-10T00:00:00.000Z',
+      },
+    )
+
+    expect(entries).toMatchObject([
+      {
+        type: 'user',
+        parentUuid: null,
+        uuid: 'input-id',
+        message: { role: 'user', content: '<bash-input>pwd</bash-input>' },
+      },
+      {
+        type: 'user',
+        parentUuid: 'input-id',
+        uuid: 'output-id',
+        message: {
+          role: 'user',
+          content:
+            '<bash-stdout>/tmp/project\n</bash-stdout><bash-stderr></bash-stderr>',
+        },
+      },
+    ])
+    expect(entries[0]).not.toHaveProperty('promptId')
+    expect(entries[1]).not.toHaveProperty('permissionMode')
+  })
+
   it('creates native agent-setting metadata and text-block user content', () => {
     expect(createClaudeAgentSettingEntry('session', 'reviewer')).toEqual({
       type: 'agent-setting',

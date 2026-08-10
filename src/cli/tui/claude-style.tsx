@@ -38,6 +38,14 @@ export type TranscriptItem =
       text: string
       isError: boolean
     }
+  | { kind: 'shell'; callId: string; command: string }
+  | {
+      kind: 'shell-result'
+      callId: string
+      stdout: string
+      stderr: string
+      isError: boolean
+    }
 
 export function useTerminalWidth(override?: number): number {
   const { stdout } = useStdout()
@@ -508,6 +516,22 @@ export function Transcript({
       )
       .map((item) => item.call.id),
   )
+  const shellResults = new Map(
+    items
+      .filter(
+        (item): item is Extract<TranscriptItem, { kind: 'shell-result' }> =>
+          item.kind === 'shell-result',
+      )
+      .map((item) => [item.callId, item]),
+  )
+  const pairedShellResults = new Set(
+    items
+      .filter(
+        (item): item is Extract<TranscriptItem, { kind: 'shell' }> =>
+          item.kind === 'shell' && shellResults.has(item.callId),
+      )
+      .map((item) => item.callId),
+  )
   return (
     <Box flexDirection="column">
       {items.map((item, index) => {
@@ -577,6 +601,68 @@ export function Transcript({
                 <ToolResultText text={text} />
               )}
             </Box>
+          )
+        }
+        if (item.kind === 'shell') {
+          const result = shellResults.get(item.callId)
+          const output = result
+            ? [result.stdout, result.stderr]
+                .filter(Boolean)
+                .join(
+                  result.stdout &&
+                    result.stderr &&
+                    !result.stdout.endsWith('\n')
+                    ? '\n'
+                    : '',
+                )
+            : ''
+          const lines = contentLines(output)
+          const visible = detailed || screenReader ? lines : lines.slice(0, 3)
+          const hidden = lines.length - visible.length
+          return (
+            <Box key={index} flexDirection="column" marginTop={1}>
+              <Text>
+                <Text bold>
+                  {screenReader ? 'Shell command: ' : '! '}
+                  {item.command}
+                </Text>
+              </Text>
+              {result ? (
+                <Box marginLeft={2} flexDirection="column">
+                  {lines.length === 0 ? (
+                    <Text dimColor>⎿ </Text>
+                  ) : (
+                    visible.map((line, lineIndex) => (
+                      <Text
+                        key={lineIndex}
+                        {...(result.isError ? { color: 'red' as const } : {})}
+                        dimColor={!result.isError}
+                      >
+                        {lineIndex === 0 ? '⎿ ' : '   '}
+                        {line || ' '}
+                      </Text>
+                    ))
+                  )}
+                  {hidden > 0 ? (
+                    <Text dimColor>
+                      {'   '}… +{hidden} lines (ctrl+o to expand)
+                    </Text>
+                  ) : null}
+                </Box>
+              ) : null}
+            </Box>
+          )
+        }
+        if (item.kind === 'shell-result') {
+          if (pairedShellResults.has(item.callId)) return null
+          const output = [item.stdout, item.stderr].filter(Boolean).join('\n')
+          return (
+            <Text
+              key={index}
+              {...(item.isError ? { color: 'red' as const } : {})}
+            >
+              ⎿ {output}
+            </Text>
           )
         }
         return (
@@ -1367,6 +1453,7 @@ export function Composer({
   hasThinking = false,
   thinkingExpanded = false,
   shortcutsVisible = false,
+  shellMode = false,
 }: {
   input: string
   cursor?: number
@@ -1380,6 +1467,7 @@ export function Composer({
   hasThinking?: boolean
   thinkingExpanded?: boolean
   shortcutsVisible?: boolean
+  shellMode?: boolean
 }) {
   const [spinnerIndex, setSpinnerIndex] = useState(0)
   useEffect(() => {
@@ -1391,7 +1479,15 @@ export function Composer({
     return () => clearInterval(timer)
   }, [busy, screenReader])
   if (screenReader)
-    return <Text>{busy ? `Status: ${status}` : `Prompt: ${input}`}</Text>
+    return (
+      <Text>
+        {busy
+          ? `Status: ${status}`
+          : shellMode
+            ? `Shell command: ${input}`
+            : `Prompt: ${input}`}
+      </Text>
+    )
   const line = '─'.repeat(Math.max(12, Math.min(100, width)))
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -1422,8 +1518,8 @@ export function Composer({
         </Text>
       ) : (
         <Text>
-          <Text color={BRAND} bold>
-            ❯{' '}
+          <Text {...(shellMode ? {} : { color: BRAND })} bold>
+            {shellMode ? '! ' : '❯ '}
           </Text>
           {input ? (
             <ComposerInput
@@ -1431,7 +1527,11 @@ export function Composer({
               input={input}
             />
           ) : (
-            <Text dimColor>Try "review this project"</Text>
+            <Text dimColor>
+              {shellMode
+                ? 'Enter a shell command'
+                : 'Try "review this project"'}
+            </Text>
           )}
         </Text>
       )}
@@ -1441,11 +1541,17 @@ export function Composer({
       ) : (
         <Box width={Math.min(100, width)}>
           <Text dimColor>
-            ⏵⏵ {permissionLabel(display.permissionMode)} ·{' '}
-            {busy ? 'esc to interrupt' : '? for shortcuts'} · ← for agents
-            {hasThinking
-              ? ` · ctrl+o ${thinkingExpanded ? 'collapse' : 'expand'}`
-              : ''}
+            {shellMode ? (
+              '! for shell mode'
+            ) : (
+              <>
+                ⏵⏵ {permissionLabel(display.permissionMode)} ·{' '}
+                {busy ? 'esc to interrupt' : '? for shortcuts'} · ← for agents
+                {hasThinking
+                  ? ` · ctrl+o ${thinkingExpanded ? 'collapse' : 'expand'}`
+                  : ''}
+              </>
+            )}
           </Text>
           <Box flexGrow={1} />
           {display.effort ? (

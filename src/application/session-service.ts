@@ -511,6 +511,26 @@ export class ClaudeSessionService {
     )
   }
 
+  async runShell(
+    command: string,
+    signal?: AbortSignal,
+    sessionId: string = randomUUID(),
+    name?: string,
+  ): Promise<SessionRunResult> {
+    this.worktreeManager?.bindSession(sessionId)
+    return this.executeTurn(
+      sessionId,
+      `! ${command}`,
+      false,
+      signal,
+      name,
+      [],
+      [],
+      undefined,
+      command,
+    )
+  }
+
   async resume(
     sessionId: string,
     prompt: string,
@@ -530,6 +550,27 @@ export class ClaudeSessionService {
       images,
       documents,
       resumeSessionAt,
+    )
+  }
+
+  async resumeShell(
+    sessionId: string,
+    command: string,
+    signal?: AbortSignal,
+    name?: string,
+    resumeSessionAt?: string,
+  ): Promise<SessionRunResult> {
+    this.worktreeManager?.bindSession(sessionId)
+    return this.executeTurn(
+      sessionId,
+      `! ${command}`,
+      true,
+      signal,
+      name,
+      [],
+      [],
+      resumeSessionAt,
+      command,
     )
   }
 
@@ -779,12 +820,16 @@ export class ClaudeSessionService {
     images: readonly ModelImage[] = [],
     documents: readonly ModelDocument[] = [],
     resumeSessionAt?: string,
+    shellCommand?: string,
   ): Promise<SessionRunResult> {
     this.assertWritable()
     if (prompt.length === 0 && images.length === 0 && documents.length === 0)
       throw new Error('Prompt must not be empty')
     if (name !== undefined && name.length === 0) {
       throw new Error('Session name must not be empty')
+    }
+    if (shellCommand !== undefined && shellCommand.trim().length === 0) {
+      throw new Error('Shell command must not be empty')
     }
 
     await this.ensureFileResources(sessionId, signal)
@@ -880,7 +925,8 @@ export class ClaudeSessionService {
           `Cannot enforce --max-budget-usd: no pricing is configured for model ${provider.model ?? 'praxis/provider'}`,
         )
       }
-      let currentPromptId: string | null = null
+      const shellInputUuid = shellCommand === undefined ? null : randomUUID()
+      let currentPromptId: string | null = shellInputUuid
       let lastAssistantUuid: string | null = null
       const fileHistory =
         this.options.fileCheckpointing &&
@@ -1487,13 +1533,18 @@ export class ClaudeSessionService {
             : []),
         ]
 
-        const expansion = this.options.extensions
-          ? await this.options.extensions.expandPromptAsync(
-              prompt,
-              signal,
-              toolResultDirectory,
-            )
-          : { userMessages: [prompt] }
+        const expansion =
+          shellCommand === undefined
+            ? this.options.extensions
+              ? await this.options.extensions.expandPromptAsync(
+                  prompt,
+                  signal,
+                  toolResultDirectory,
+                )
+              : { userMessages: [prompt] }
+            : {
+                userMessages: [`<bash-input>${shellCommand}</bash-input>`],
+              }
         const expandedMessages: readonly ClaudePromptExpansionMessage[] =
           expansion.messages ?? expansion.userMessages.map((text) => ({ text }))
         const attachmentIndex = expansion.messages
@@ -1717,26 +1768,27 @@ export class ClaudeSessionService {
         await compactIfNeeded(pendingUserMessages)
 
         for (const [index, message] of expandedMessages.entries()) {
+          if (shellCommand !== undefined) break
           const messageImages = [
             ...(index === attachmentIndex ? images : []),
             ...(message.images ?? []),
           ]
+          const persistenceEvent =
+            messageImages.length > 0 ||
+            (index === attachmentIndex && documents.length > 0)
+              ? ({
+                  type: 'user-message',
+                  text: message.text,
+                  images: messageImages,
+                  ...(index === attachmentIndex && documents.length > 0
+                    ? { documents }
+                    : {}),
+                } as const)
+              : index === 0
+                ? ({ type: 'user-text', text: message.text } as const)
+                : ({ type: 'user-text-block', text: message.text } as const)
           const [userEntry] = translateProviderEvents(
-            [
-              messageImages.length > 0 ||
-              (index === attachmentIndex && documents.length > 0)
-                ? {
-                    type: 'user-message',
-                    text: message.text,
-                    images: messageImages,
-                    ...(index === attachmentIndex && documents.length > 0
-                      ? { documents }
-                      : {}),
-                  }
-                : index === 0
-                  ? { type: 'user-text', text: message.text }
-                  : { type: 'user-text-block', text: message.text },
-            ],
+            [persistenceEvent],
             this.translationContext(sessionId, snapshot),
           )
           if (!userEntry) throw new Error('Could not translate user prompt')
@@ -1784,6 +1836,87 @@ export class ClaudeSessionService {
               `UserPromptSubmit hook error: ${outcome.blockedReason}`,
             )
           }
+        }
+        let shellUsage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+        if (shellCommand !== undefined) {
+          const call: ModelToolCall = {
+            id: `shell_${randomUUID().replaceAll('-', '')}`,
+            name: 'Bash',
+            input: { command: shellCommand },
+          }
+          this.options.eventSink?.({
+            type: 'shell-command',
+            callId: call.id,
+            command: shellCommand,
+          })
+          let shellResult
+          try {
+            shellResult = await runtime.executeDirectToolCall(call, {
+              cwd: this.activeCwd(),
+              toolResultDirectory,
+              messages: projectClaudeModelMessages(snapshot.entries),
+              observer: {
+                assistantCompleted: async () => undefined,
+                toolCompleted: async () => undefined,
+                followUpUserMessagesCompleted:
+                  observer.followUpUserMessagesCompleted,
+              },
+              ...(this.options.approveTool
+                ? { approveTool: this.options.approveTool }
+                : {}),
+              ...(signal ? { signal } : {}),
+            })
+          } catch (error) {
+            this.options.eventSink?.({
+              type: 'shell-cancelled',
+              callId: call.id,
+            })
+            throw error
+          }
+          shellUsage = shellResult.usage ?? shellUsage
+          const stdout =
+            shellResult.processOutput?.stdout ??
+            (shellResult.isError ? '' : shellResult.content)
+          const stderr =
+            shellResult.processOutput?.stderr ??
+            (shellResult.isError ? shellResult.content : '')
+          const shellUuids = [shellInputUuid ?? randomUUID(), randomUUID()]
+          const [inputEntry, outputEntry] = translateProviderEvents(
+            [
+              { type: 'bash-input', command: shellCommand },
+              { type: 'bash-output', stdout, stderr },
+            ],
+            {
+              ...this.translationContext(sessionId, snapshot),
+              createUuid: () => shellUuids.shift() ?? randomUUID(),
+            },
+          )
+          if (!inputEntry || !outputEntry) {
+            throw new Error('Could not translate shell command result')
+          }
+          const shellAppend = await lease.appendMany(snapshot.tail, [
+            inputEntry,
+            outputEntry,
+          ])
+          if (shellAppend.status === 'conflict') {
+            throw new Error(
+              `Claude transcript append conflict: ${shellAppend.reason}`,
+            )
+          }
+          snapshot = {
+            entries: [...snapshot.entries, inputEntry, outputEntry],
+            tail: shellAppend.tail,
+          }
+          currentTurnUserMessages.push(
+            `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`,
+          )
+          this.options.eventSink?.({
+            type: 'shell-result',
+            callId: call.id,
+            stdout,
+            stderr,
+            isError: shellResult.isError,
+          })
         }
         if (budget) {
           await compactIfNeeded([], currentTurnUserMessages ?? [])
@@ -1908,7 +2041,7 @@ export class ClaudeSessionService {
           }),
         )
         const totalUsage = mergeUsage(
-          mergeUsage(recoveryUsage, compactionUsage),
+          mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
           result.usage,
         )
         return {

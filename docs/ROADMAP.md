@@ -817,3 +817,22 @@ Status: complete for GitHub branch-protection integration.
       same-SHA dispatched CI run, with a linked details URL and non-success
       status for failed or timed-out runs
 - [x] release publication remains a separate retryable repository dispatch
+
+## Stage 94 - interactive direct shell parity
+
+Status: complete for the Claude Code 2.1.208 `!` shell-mode contract; broader
+interactive TTY parity remains partial.
+
+- [x] distinct ruled `!` composer, immediate `! command` / indented `⎿` output,
+      bounded verbose expansion, screen-reader labels, new-session and resume
+      routing, and provider continuation
+- [x] direct Bash execution through the existing preparation, active permission
+      resolver, approval, cancellation, and PreToolUse/PostToolUse Hook chain;
+      no TUI child-process bypass
+- [x] Claude-native append-only `<bash-input>`, `<bash-stdout>`, and
+      `<bash-stderr>` user records with no synthetic tool-use pair or
+      Praxis-specific shared transcript fields
+- [x] cancellation kills the command, commits no partial shell record, removes
+      the transient transcript row, and restores the command to the composer
+- [x] focused runtime, application, translation, local-tool, Ink interaction,
+      component, and installed-package PTY coverage
