@@ -801,3 +801,13 @@ Status: complete for public GitHub-hosted execution.
       deterministic performance sentinels on Linux Node 24 and macOS Node 25
 - [x] full 52-gate live-model suite retained unchanged as an explicit local
       maintainer qualification gate
+
+## Stage 93 - protected release bootstrap
+
+Status: complete for GitHub branch-protection integration.
+
+- [x] Release Please receives only scoped Actions/content/pull-request write
+      permissions from a pinned action
+- [x] version PR creation/update explicitly dispatches `CI` on the exact head
+      branch, avoiding GitHub's `GITHUB_TOKEN` event-recursion suppression
+- [x] release publication remains a separate retryable repository dispatch

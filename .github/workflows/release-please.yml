@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -24,6 +25,15 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      - name: Run CI for release pull request
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        run: |
+          HEAD_BRANCH=$(jq -r '.headBranchName // empty' <<< "$RELEASE_PR")
+          test -n "$HEAD_BRANCH"
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_BRANCH"
       - name: Dispatch release publication
         if: steps.release.outputs.release_created == 'true'
         env:

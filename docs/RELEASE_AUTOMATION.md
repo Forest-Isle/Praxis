@@ -22,7 +22,9 @@ package; manual-only versioning was rejected because it can drift from tags.
    performance sentinels.
 2. Release Please opens or updates one version PR from Conventional Commit
    titles. Changelog files remain intentionally disabled; GitHub release notes
-   are authoritative.
+   are authoritative. Because GitHub suppresses workflows from resources made
+   by `GITHUB_TOKEN`, Release Please explicitly dispatches `CI` on the version
+   branch so required checks cannot deadlock.
 3. Merging the version PR creates `v<package.version>` and a GitHub release.
 4. Release Please sends a `release-created` repository dispatch carrying the
    exact tag.
