@@ -85,6 +85,7 @@ exit 0
     cwd,
     env: {
       ...process.env,
+      CI: 'true',
       PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
       TUI_CLI: cli,
       TUI_CONFIG_ROOT: configRoot,

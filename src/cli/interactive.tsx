@@ -1041,7 +1041,11 @@ export async function runInteractive(options: {
       {...(options.display === undefined ? {} : { display: options.display })}
       {...(options.axScreenReader ? { axScreenReader: true } : {})}
     />,
-    { exitOnCtrlC: false, incrementalRendering: !options.axScreenReader },
+    {
+      exitOnCtrlC: false,
+      incrementalRendering: !options.axScreenReader,
+      interactive: true,
+    },
   )
   await instance.waitUntilExit()
   if (activeTurn) await activeTurn
