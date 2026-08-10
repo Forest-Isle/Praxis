@@ -2,6 +2,7 @@
 
 import { realpathSync } from 'node:fs'
 import { access, copyFile, mkdir, readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -179,7 +180,9 @@ import {
   type ClaudeProjectPurgeSelection,
 } from './application/claude-project-purge.js'
 
-const VERSION = '0.1.0'
+const VERSION = (
+  createRequire(import.meta.url)('../package.json') as { version: string }
+).version
 
 function fileResourceBaseUrl(
   environment: NodeJS.ProcessEnv,

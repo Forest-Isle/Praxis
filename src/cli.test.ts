@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -13,6 +14,10 @@ import {
   type CliDependencies,
   type CliIO,
 } from './cli.js'
+
+const PACKAGE_VERSION = (
+  createRequire(import.meta.url)('../package.json') as { version: string }
+).version
 
 function captureIO() {
   const stdout: string[] = []
@@ -380,7 +385,7 @@ describe('Praxis CLI', () => {
     expect(capture.stdout.join('')).toContain('--max-thinking-tokens <tokens>')
     expect(capture.stdout.join('')).toContain('-d, --debug [filter]')
     expect(capture.stdout.join('')).toContain('--prompt-suggestions [value]')
-    expect(capture.stdout).toContain('0.1.0\n')
+    expect(capture.stdout).toContain(`${PACKAGE_VERSION}\n`)
     expect(capture.stderr).toEqual([])
   })
 
