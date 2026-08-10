@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   CommandPalette,
   Composer,
+  DiffDashboard,
   DialogFrame,
   HelpMenu,
   MarkdownText,
@@ -88,13 +89,121 @@ describe('Claude-style TUI components', () => {
     )
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('❯ inspect')
-    expect(frame).toContain('● Bash')
-    expect(frame).toContain('└ Result')
+    expect(frame).toContain('⏺ Bash(npm test)')
+    expect(frame).toContain('⎿ @@ file')
     expect(frame).toContain('@@ file')
     expect(frame).toContain('-old')
     expect(frame).toContain('+new')
     expect(frame).toContain('⚠ careful')
     expect(frame).toContain('✳ streaming')
+  })
+
+  it('collapses long tool output and renders edit replacements inline', () => {
+    const items = [
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'bash',
+          name: 'Bash',
+          input: { command: 'fixture' },
+        },
+        detail: 'Bash fixture',
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'bash',
+        text: 'one\ntwo\nthree\nfour\nfive',
+        isError: false,
+      },
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'edit',
+          name: 'Edit',
+          input: {
+            file_path: '/tmp/fixture.txt',
+            old_string: 'before\n',
+            new_string: 'after\nsecond line\n',
+          },
+        },
+        detail: 'Edit fixture',
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'edit',
+        text: 'Replaced 1 occurrence(s)',
+        isError: false,
+      },
+    ]
+    const collapsed = render(
+      <Transcript screenReader={false} activeText="" items={items} />,
+    )
+    expect(collapsed.lastFrame()).toContain('… +2 lines (ctrl+o to expand)')
+    expect(collapsed.lastFrame()).not.toContain('five')
+    expect(collapsed.lastFrame()).toContain('Update(/tmp/fixture.txt)')
+    expect(collapsed.lastFrame()).toContain('Added 2 lines, removed 1 line')
+    expect(collapsed.lastFrame()).toContain('1 -before')
+    expect(collapsed.lastFrame()).toContain('2 +second line')
+
+    const detailed = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        detailedTranscript
+        items={items}
+      />,
+    )
+    expect(detailed.lastFrame()).toContain('five')
+    expect(detailed.lastFrame()).not.toContain('… +2 lines')
+  })
+
+  it('renders diff source tabs, file selection, and patch view', () => {
+    const snapshot = {
+      files: [
+        {
+          path: 'fixture.txt',
+          additions: 2,
+          deletions: 1,
+          patch:
+            'diff --git a/fixture.txt b/fixture.txt\n--- a/fixture.txt\n+++ b/fixture.txt\n@@ -1 +1,2 @@\n-before\n+after\n+second line\n',
+        },
+      ],
+      additions: 2,
+      deletions: 1,
+    }
+    const list = render(
+      <DiffDashboard
+        snapshots={[
+          { label: 'Current', snapshot },
+          { label: 'T1', snapshot },
+        ]}
+        sourceIndex={0}
+        selectedIndex={0}
+        viewingFile={false}
+        scrollOffset={0}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(list.lastFrame()).toContain('Uncommitted changes (git diff HEAD)')
+    expect(list.lastFrame()).toContain('Current')
+    expect(list.lastFrame()).toContain('T1')
+    expect(list.lastFrame()).toContain('❯ fixture.txt')
+
+    const patch = render(
+      <DiffDashboard
+        snapshots={[{ label: 'Current', snapshot }]}
+        sourceIndex={0}
+        selectedIndex={0}
+        viewingFile
+        scrollOffset={0}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(patch.lastFrame()).toContain('-before')
+    expect(patch.lastFrame()).toContain('+second line')
+    expect(patch.lastFrame()).toContain('Esc to back')
   })
 
   it('shows active thinking in full and expands retained thinking on demand', () => {

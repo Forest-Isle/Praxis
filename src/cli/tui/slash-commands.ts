@@ -39,6 +39,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'diff',
+    description: 'View uncommitted changes and per-turn diffs',
+    source: 'builtin',
+  },
+  {
     name: 'workflows',
     description: 'Browse running and completed workflows',
     source: 'builtin',

@@ -80,10 +80,11 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 - **Local agent runtime** — Claude-style responsive TUI with a shared-command
   slash palette, tabbed help and shortcut surfaces, searchable resume picker,
-  streaming and expandable thinking, cursor/history composer, per-session
-  model/effort/permission controls, rich transcript, tool, decision, and
-  measured context-budget panels; print mode, structured JSON/JSONL, context
-  compaction, tool loops, and bounded execution.
+  streaming and expandable thinking, globally expandable tool results,
+  cursor/history composer, per-session model/effort/permission controls,
+  navigable current/per-turn Git diff views, rich decision panels, and measured
+  context budgets; print mode, structured JSON/JSONL, context compaction, tool
+  loops, and bounded execution.
 - **Built-in tools** — read, write, edit, glob, search, shell, notebook, PDF,
   image, web, scheduled prompts, workflows, and worktrees.
 - **Permission boundary** — local allow/ask/deny rules, safe and bare modes,

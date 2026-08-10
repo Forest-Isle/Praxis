@@ -364,6 +364,11 @@ describe('InteractiveApp', () => {
       <InteractiveApp factory={factory} initialSessions={[]} />,
     )
 
+    app.stdin.write('discard this')
+    app.stdin.write('\u0015')
+    await flush()
+    expect(app.lastFrame()).not.toContain('discard this')
+
     app.stdin.write('abcd')
     app.stdin.write('\u001B[D')
     app.stdin.write('\u001B[D')
@@ -734,7 +739,7 @@ describe('InteractiveApp', () => {
             eventSink({
               type: 'tool-result',
               callId: 'call-1',
-              content: 'tests passed',
+              content: 'tests passed\nline 2\nline 3\nline 4\nline 5',
               isError: false,
             })
             return {
@@ -761,10 +766,146 @@ describe('InteractiveApp', () => {
     app.stdin.write('run tests')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('● Bash')
+    expect(app.lastFrame()).toContain('⏺ Bash(npm test)')
     expect(app.lastFrame()).toContain('npm test')
-    expect(app.lastFrame()).toContain('└ Result')
-    expect(app.lastFrame()).toContain('tests passed')
+    expect(app.lastFrame()).toContain('⎿ tests passed')
+    expect(app.lastFrame()).toContain('… +2 lines (ctrl+o to expand)')
+    expect(app.lastFrame()).not.toContain('line 5')
+
+    app.stdin.write('\u000f')
+    await flush()
+    expect(app.lastFrame()).toContain('line 5')
+  })
+
+  it('opens the diff dashboard and drills into the selected file', async () => {
+    const snapshot = {
+      files: [
+        {
+          path: 'fixture.txt',
+          additions: 1,
+          deletions: 1,
+          patch:
+            'diff --git a/fixture.txt b/fixture.txt\n--- a/fixture.txt\n+++ b/fixture.txt\n@@ -1 +1 @@\n-before\n+after\n',
+        },
+      ],
+      additions: 1,
+      deletions: 1,
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        diffLoader={async () => snapshot}
+      />,
+    )
+
+    app.stdin.write('/diff')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Uncommitted changes (git diff HEAD)')
+    expect(app.lastFrame()).toContain('❯ fixture.txt')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('-before')
+    expect(app.lastFrame()).toContain('+after')
+    expect(app.lastFrame()).toContain('Esc to back')
+  })
+
+  it('captures file-mutating turns as navigable diff sources', async () => {
+    const turnSnapshot = {
+      files: [
+        {
+          path: 'turn-one.txt',
+          additions: 1,
+          deletions: 1,
+          patch: '@@ -1 +1 @@\n-before\n+after\n',
+        },
+      ],
+      additions: 1,
+      deletions: 1,
+    }
+    const currentSnapshot = {
+      files: [
+        {
+          path: 'current.txt',
+          additions: 1,
+          deletions: 0,
+          patch: '@@ -0,0 +1 @@\n+current\n',
+        },
+      ],
+      additions: 1,
+      deletions: 0,
+    }
+    let loadCount = 0
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ eventSink }) {
+            return {
+              async run() {
+                eventSink({
+                  type: 'tool-call',
+                  call: {
+                    id: 'edit-one',
+                    name: 'Edit',
+                    input: {
+                      file_path: '/tmp/turn-one.txt',
+                      old_string: 'before',
+                      new_string: 'after',
+                    },
+                  },
+                })
+                eventSink({
+                  type: 'tool-result',
+                  callId: 'edit-one',
+                  content: 'Replaced 1 occurrence(s)',
+                  isError: false,
+                })
+                return {
+                  sessionId: 'session-1',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        diffLoader={async () =>
+          loadCount++ === 0 ? turnSnapshot : currentSnapshot
+        }
+      />,
+    )
+
+    app.stdin.write('edit it')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('/diff')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('current.txt')
+    expect(app.lastFrame()).toContain('T1')
+
+    app.stdin.write('\u001B[C')
+    await flush()
+    expect(app.lastFrame()).toContain('turn-one.txt')
+    expect(app.lastFrame()).not.toContain('current.txt')
   })
 
   it('renders permission, MCP, and hook lifecycle feedback', async () => {

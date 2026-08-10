@@ -32,6 +32,7 @@ import {
 import {
   CommandPalette,
   Composer,
+  DiffDashboard,
   DialogFrame,
   HelpMenu,
   SelectionMenu,
@@ -42,6 +43,11 @@ import {
   type TranscriptItem,
   type TuiDisplayMetadata,
 } from './tui/claude-style.js'
+import {
+  loadGitDiff,
+  visiblePatchLines,
+  type TuiDiffSnapshot,
+} from './tui/git-diff.js'
 import {
   filterTuiSlashCommands,
   mergeTuiSlashCommands,
@@ -126,6 +132,7 @@ interface InteractiveAppProps {
   terminalWidth?: number
   slashCommands?: readonly TuiSlashCommand[]
   allowDangerouslySkipPermissions?: boolean
+  diffLoader?: () => Promise<TuiDiffSnapshot>
 }
 
 type PendingPermission = {
@@ -193,6 +200,14 @@ const PERMISSION_OPTIONS: readonly {
 
 type InteractiveMenu =
   | { kind: 'help'; tabIndex: number; selectedIndex: number }
+  | {
+      kind: 'diff'
+      snapshots: readonly { label: string; snapshot: TuiDiffSnapshot }[]
+      sourceIndex: number
+      selectedIndex: number
+      viewingFile: boolean
+      scrollOffset: number
+    }
   | { kind: 'model'; selectedIndex: number }
   | { kind: 'model-input' }
   | { kind: 'effort'; selectedIndex: number }
@@ -254,6 +269,19 @@ function describeTool(
   return `${name} ${describeToolInput(call, sensitiveValues)}`
 }
 
+function redactToolCall(
+  call: ModelToolCall,
+  sensitiveValues: readonly string[],
+): ModelToolCall {
+  return {
+    ...call,
+    name: redactSensitiveText(call.name, sensitiveValues),
+    input: JSON.parse(
+      redactSensitiveText(JSON.stringify(call.input), sensitiveValues),
+    ) as Record<string, unknown>,
+  }
+}
+
 function describeToolInput(
   call: ModelToolCall,
   sensitiveValues: readonly string[],
@@ -294,12 +322,17 @@ export function InteractiveApp({
   terminalWidth,
   slashCommands = EMPTY_SLASH_COMMANDS,
   allowDangerouslySkipPermissions = false,
+  diffLoader,
 }: InteractiveAppProps) {
   const { exit } = useApp()
   const width = useTerminalWidth(terminalWidth)
   const sensitiveValues = useMemo(
     () => sensitiveEnvironmentValues(process.env),
     [],
+  )
+  const loadDiffSnapshot = useMemo(
+    () => diffLoader ?? (() => loadGitDiff(display.cwd)),
+    [diffLoader, display.cwd],
   )
   const choices = useMemo(
     () =>
@@ -356,6 +389,11 @@ export function InteractiveApp({
     display.contextWindowTokens,
   )
   const [history, setHistory] = useState<TranscriptItem[]>([])
+  const [turnDiffs, setTurnDiffs] = useState<
+    readonly { label: string; snapshot: TuiDiffSnapshot }[]
+  >([])
+  const turnNumberRef = useRef(0)
+  const turnMutatedFilesRef = useRef(false)
   const [exitConfirmation, setExitConfirmation] = useState(false)
   const exitConfirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -420,6 +458,8 @@ export function InteractiveApp({
   const hasThinking =
     activeThinking.length > 0 ||
     history.some((item) => item.kind === 'thinking')
+  const hasDetailedTranscript =
+    hasThinking || history.some((item) => item.kind === 'tool')
   const selectedSlashCommandIndex = Math.min(
     commandSelection,
     Math.max(0, matchingSlashCommands.length - 1),
@@ -643,9 +683,11 @@ export function InteractiveApp({
         setUsage(event.usage)
         break
       case 'tool-call':
+        if (['Edit', 'Write', 'NotebookEdit'].includes(event.call.name))
+          turnMutatedFilesRef.current = true
         append({
           kind: 'tool',
-          call: event.call,
+          call: redactToolCall(event.call, sensitiveValues),
           detail: describeToolInput(event.call, sensitiveValues),
         })
         break
@@ -978,6 +1020,9 @@ export function InteractiveApp({
   }
 
   const submit = async (prompt: string) => {
+    const turnNumber = turnNumberRef.current + 1
+    turnNumberRef.current = turnNumber
+    turnMutatedFilesRef.current = false
     scheduledWaitRef.current?.abort()
     appendPromptHistory(prompt)
     const turnController = new AbortController()
@@ -1023,6 +1068,17 @@ export function InteractiveApp({
       setUsage(result.usage)
       setCostUsd(result.costUsd)
       append({ kind: 'assistant', text: result.text })
+      if (turnMutatedFilesRef.current) {
+        try {
+          const snapshot = await loadDiffSnapshot()
+          setTurnDiffs((current) => [
+            ...current.filter((source) => source.label !== `T${turnNumber}`),
+            { label: `T${turnNumber}`, snapshot },
+          ])
+        } catch {
+          // Diff snapshots are a local presentation aid and must not fail a turn.
+        }
+      }
       setActiveText('')
       setActiveThinking('')
       setStatus('ready')
@@ -1126,6 +1182,13 @@ export function InteractiveApp({
 
   useInput((value, key) => {
     const lower = value.toLowerCase()
+    const controlKey = (letter: string) =>
+      (key.ctrl && lower === letter) ||
+      value === String.fromCharCode(letter.charCodeAt(0) - 96)
+    const printable = [...value].every((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint >= 32 && codePoint !== 127
+    })
     const editor = () =>
       createComposerEditor(inputRef.current, inputCursorRef.current)
     const editComposer = () => {
@@ -1145,31 +1208,31 @@ export function InteractiveApp({
         )
         return true
       }
-      if (key.ctrl && lower === 'a') {
+      if (controlKey('a')) {
         updateComposerEditor(createComposerEditor(inputRef.current, 0))
         return true
       }
-      if (key.ctrl && lower === 'e') {
+      if (controlKey('e')) {
         updateComposerEditor(createComposerEditor(inputRef.current))
         return true
       }
-      if (key.ctrl && lower === 'b') {
+      if (controlKey('b')) {
         updateComposerEditor(moveComposerCursor(editor(), -1))
         return true
       }
-      if (key.ctrl && lower === 'f') {
+      if (controlKey('f')) {
         updateComposerEditor(moveComposerCursor(editor(), 1))
         return true
       }
-      if (key.ctrl && lower === 'w') {
+      if (controlKey('w')) {
         updateComposerEditor(deleteComposerWordBackward(editor()))
         return true
       }
-      if (key.ctrl && lower === 'u') {
+      if (controlKey('u')) {
         updateComposerEditor(deleteComposerToStart(editor()))
         return true
       }
-      if (key.ctrl && lower === 'k') {
+      if (controlKey('k')) {
         updateComposerEditor(deleteComposerToEnd(editor()))
         return true
       }
@@ -1181,14 +1244,14 @@ export function InteractiveApp({
         updateComposerEditor(deleteComposerForward(editor()))
         return true
       }
-      if (!key.ctrl && !key.meta && value) {
+      if (!key.ctrl && !key.meta && value && printable) {
         updateComposerEditor(insertComposerText(editor(), value))
         return true
       }
       return false
     }
 
-    if (key.ctrl && lower === 'c') {
+    if (controlKey('c')) {
       armExitConfirmation()
       return
     }
@@ -1320,7 +1383,7 @@ export function InteractiveApp({
         setSessionSearch(sessionSearchRef.current)
         selectedIndexRef.current = 0
         setSelectedIndex(0)
-      } else if (!key.ctrl && !key.meta && value) {
+      } else if (!key.ctrl && !key.meta && value && printable) {
         sessionSearchRef.current += value
         setSessionSearch(sessionSearchRef.current)
         selectedIndexRef.current = 0
@@ -1366,6 +1429,69 @@ export function InteractiveApp({
               activeMenu.selectedIndex + 1,
             ),
           })
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'diff') {
+        const snapshot = activeMenu.snapshots[activeMenu.sourceIndex]?.snapshot
+        const selectedFile = snapshot?.files[activeMenu.selectedIndex]
+        if (key.escape || value === '\u001B') {
+          updateMenu(
+            activeMenu.viewingFile
+              ? { ...activeMenu, viewingFile: false, scrollOffset: 0 }
+              : null,
+          )
+          return
+        }
+        if (key.leftArrow || key.rightArrow) {
+          updateMenu({
+            ...activeMenu,
+            sourceIndex: Math.max(
+              0,
+              Math.min(
+                activeMenu.snapshots.length - 1,
+                activeMenu.sourceIndex + (key.leftArrow ? -1 : 1),
+              ),
+            ),
+            selectedIndex: 0,
+            viewingFile: false,
+            scrollOffset: 0,
+          })
+          return
+        }
+        if (activeMenu.viewingFile) {
+          const maxOffset = Math.max(
+            0,
+            visiblePatchLines(selectedFile?.patch ?? '').length - 18,
+          )
+          if (key.upArrow || key.downArrow) {
+            updateMenu({
+              ...activeMenu,
+              scrollOffset: Math.max(
+                0,
+                Math.min(
+                  maxOffset,
+                  activeMenu.scrollOffset + (key.upArrow ? -1 : 1),
+                ),
+              ),
+            })
+          }
+          return
+        }
+        if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                Math.max(0, (snapshot?.files.length ?? 0) - 1),
+                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+        } else if (key.return && selectedFile) {
+          updateMenu({ ...activeMenu, viewingFile: true, scrollOffset: 0 })
         }
         return
       }
@@ -1456,7 +1582,7 @@ export function InteractiveApp({
       setShortcutsVisible((current) => !current)
       return
     }
-    if (key.ctrl && lower === 'o' && hasThinking) {
+    if (controlKey('o') && hasDetailedTranscript) {
       setThinkingExpanded((current) => !current)
       return
     }
@@ -1560,6 +1686,32 @@ export function InteractiveApp({
         selectedIndexRef.current = 0
         setSelectedIndex(0)
         setSelectingSession(true)
+      } else if (prompt === '/diff') {
+        const inspection = (async () => {
+          setBusy(true)
+          setStatus('loading diff')
+          try {
+            const current = await loadDiffSnapshot()
+            updateMenu({
+              kind: 'diff',
+              snapshots: [
+                { label: 'Current', snapshot: current },
+                ...turnDiffs,
+              ],
+              sourceIndex: 0,
+              selectedIndex: 0,
+              viewingFile: false,
+              scrollOffset: 0,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+            setStatus('ready')
+          }
+        })()
+        onTurnChange?.(inspection)
+        void inspection.finally(() => onTurnChange?.(null))
       } else if (prompt === '/workflows') {
         const turn = (async () => {
           setBusy(true)
@@ -1628,6 +1780,7 @@ export function InteractiveApp({
             activeText={activeText}
             activeThinking={activeThinking}
             thinkingExpanded={thinkingExpanded}
+            detailedTranscript={thinkingExpanded}
             screenReader={axScreenReader}
           />
           {permission ? (
@@ -1718,6 +1871,16 @@ export function InteractiveApp({
                 width={width}
                 screenReader={axScreenReader}
               />
+            ) : menu.kind === 'diff' ? (
+              <DiffDashboard
+                snapshots={menu.snapshots}
+                sourceIndex={menu.sourceIndex}
+                selectedIndex={menu.selectedIndex}
+                viewingFile={menu.viewingFile}
+                scrollOffset={menu.scrollOffset}
+                width={width}
+                screenReader={axScreenReader}
+              />
             ) : menu.kind === 'model' ? (
               <SelectionMenu
                 title="Select model"
@@ -1785,7 +1948,7 @@ export function InteractiveApp({
                 {...(costUsd === undefined ? {} : { costUsd })}
                 width={width}
                 screenReader={axScreenReader}
-                hasThinking={hasThinking}
+                hasThinking={hasDetailedTranscript}
                 thinkingExpanded={thinkingExpanded}
                 shortcutsVisible={shortcutsVisible}
               />

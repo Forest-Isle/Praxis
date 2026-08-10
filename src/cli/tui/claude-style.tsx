@@ -4,6 +4,7 @@ import { Box, Text, useStdout } from 'ink'
 
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import { composerEditorSegments } from './composer-editor.js'
+import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
 import type { TuiSlashCommand } from './slash-commands.js'
 
 const BRAND = '#D97757'
@@ -227,6 +228,104 @@ function ToolResultText({ text }: { text: string }) {
   )
 }
 
+function inputString(call: ModelToolCall, key: string): string {
+  const value = call.input[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function contentLines(text: string): readonly string[] {
+  const lines = text.split('\n')
+  if (lines.at(-1) === '') lines.pop()
+  return lines
+}
+
+function toolHeading(call: ModelToolCall): string {
+  if (call.name === 'Edit') return `Update(${inputString(call, 'file_path')})`
+  if (call.name === 'Read') return `Read(${inputString(call, 'file_path')})`
+  if (call.name === 'Bash') return `Bash(${inputString(call, 'command')})`
+  return call.name
+}
+
+function ToolTranscriptEntry({
+  call,
+  detail,
+  result,
+  detailed,
+}: {
+  call: ModelToolCall
+  detail: string
+  result?: Extract<TranscriptItem, { kind: 'tool-result' }>
+  detailed: boolean
+}) {
+  const resultLines = contentLines(result?.text ?? '')
+  if (call.name === 'Read' && result && !result.isError && !detailed) {
+    return (
+      <Text>
+        {'  '}Read 1 file <Text dimColor>(ctrl+o to expand)</Text>
+      </Text>
+    )
+  }
+  const visible = detailed ? resultLines : resultLines.slice(0, 3)
+  const hidden = resultLines.length - visible.length
+  const errorText =
+    (result?.text.length ?? 0) > 500
+      ? `${result?.text.slice(0, 497)}...`
+      : result?.text
+  const oldLines = contentLines(inputString(call, 'old_string'))
+  const newLines = contentLines(inputString(call, 'new_string'))
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>
+        <Text color={ACCENT}>⏺</Text> <Text bold>{toolHeading(call)}</Text>
+      </Text>
+      {!['Bash', 'Read', 'Edit'].includes(call.name) && detail ? (
+        <Text dimColor> {detail}</Text>
+      ) : null}
+      {result ? (
+        <Box marginLeft={2} flexDirection="column">
+          {result.isError ? (
+            <Text color="red">⎿ Error: {errorText}</Text>
+          ) : call.name === 'Edit' ? (
+            <>
+              <Text dimColor>
+                ⎿ Added {newLines.length} line{newLines.length === 1 ? '' : 's'}
+                , removed {oldLines.length} line
+                {oldLines.length === 1 ? '' : 's'}
+              </Text>
+              {oldLines.map((line, index) => (
+                <Text key={`old-${index}`} color="red">
+                  {'   '}
+                  {index + 1} -{line}
+                </Text>
+              ))}
+              {newLines.map((line, index) => (
+                <Text key={`new-${index}`} color="green">
+                  {'   '}
+                  {index + 1} +{line}
+                </Text>
+              ))}
+            </>
+          ) : (
+            <>
+              {visible.map((line, index) => (
+                <Text key={index} dimColor>
+                  {index === 0 ? '⎿ ' : '   '}
+                  {line || ' '}
+                </Text>
+              ))}
+              {hidden > 0 ? (
+                <Text dimColor>
+                  {'   '}… +{hidden} lines (ctrl+o to expand)
+                </Text>
+              ) : null}
+            </>
+          )}
+        </Box>
+      ) : null}
+    </Box>
+  )
+}
+
 function ThinkingBlock({
   text,
   active,
@@ -293,14 +392,33 @@ export function Transcript({
   activeText,
   activeThinking = '',
   thinkingExpanded = false,
+  detailedTranscript = false,
   screenReader,
 }: {
   items: readonly TranscriptItem[]
   activeText: string
   activeThinking?: string
   thinkingExpanded?: boolean
+  detailedTranscript?: boolean
   screenReader: boolean
 }) {
+  const detailed = thinkingExpanded || detailedTranscript
+  const results = new Map(
+    items
+      .filter(
+        (item): item is Extract<TranscriptItem, { kind: 'tool-result' }> =>
+          item.kind === 'tool-result',
+      )
+      .map((item) => [item.callId, item]),
+  )
+  const pairedResults = new Set(
+    items
+      .filter(
+        (item): item is Extract<TranscriptItem, { kind: 'tool' }> =>
+          item.kind === 'tool' && results.has(item.call.id),
+      )
+      .map((item) => item.call.id),
+  )
   return (
     <Box flexDirection="column">
       {items.map((item, index) => {
@@ -316,8 +434,9 @@ export function Transcript({
         }
         if (item.kind === 'assistant') {
           return (
-            <Box key={index} flexDirection="column" marginTop={1}>
+            <Box key={index} marginTop={1}>
               {screenReader ? <Text>Praxis:</Text> : null}
+              {!screenReader ? <Text color={ACCENT}>⏺ </Text> : null}
               <MarkdownText text={item.text} />
             </Box>
           )
@@ -328,22 +447,25 @@ export function Transcript({
               key={index}
               text={item.text}
               active={false}
-              expanded={thinkingExpanded}
+              expanded={detailed}
               screenReader={screenReader}
             />
           )
         }
         if (item.kind === 'tool') {
+          const result = results.get(item.call.id)
           return (
-            <Box key={index} flexDirection="column" marginTop={1}>
-              <Text>
-                <Text color={ACCENT}>●</Text> <Text bold>{item.call.name}</Text>
-              </Text>
-              <Text dimColor> {item.detail}</Text>
-            </Box>
+            <ToolTranscriptEntry
+              key={index}
+              call={item.call}
+              detail={item.detail}
+              {...(result ? { result } : {})}
+              detailed={detailed || screenReader}
+            />
           )
         }
         if (item.kind === 'tool-result') {
+          if (pairedResults.has(item.callId)) return null
           const text =
             item.text.length > 500 ? `${item.text.slice(0, 497)}...` : item.text
           return (
@@ -374,7 +496,7 @@ export function Transcript({
         <ThinkingBlock
           text={activeThinking}
           active
-          expanded={thinkingExpanded}
+          expanded={detailed}
           screenReader={screenReader}
         />
       ) : activeText ? (
@@ -387,6 +509,107 @@ export function Transcript({
           <MarkdownText text={activeText} />
         </Box>
       ) : null}
+    </Box>
+  )
+}
+
+export function DiffDashboard({
+  snapshots,
+  sourceIndex,
+  selectedIndex,
+  viewingFile,
+  scrollOffset,
+  width,
+  screenReader,
+}: {
+  snapshots: readonly { label: string; snapshot: TuiDiffSnapshot }[]
+  sourceIndex: number
+  selectedIndex: number
+  viewingFile: boolean
+  scrollOffset: number
+  width: number
+  screenReader: boolean
+}) {
+  const source = snapshots[sourceIndex]
+  const snapshot = source?.snapshot ?? { files: [], additions: 0, deletions: 0 }
+  const selected = snapshot.files[selectedIndex]
+  const panelWidth = Math.max(32, Math.min(100, width))
+  const line = '─'.repeat(panelWidth)
+  if (viewingFile && selected) {
+    const lines = visiblePatchLines(selected.patch).slice(
+      scrollOffset,
+      scrollOffset + 18,
+    )
+    return (
+      <Box flexDirection="column">
+        {!screenReader ? <Text dimColor>{line}</Text> : null}
+        <Text bold> Uncommitted changes (git diff HEAD)</Text>
+        <Text>
+          {'  '}
+          {snapshots.map((item, index) => (
+            <Text key={item.label} inverse={index === sourceIndex}>
+              {' '}
+              {item.label}{' '}
+            </Text>
+          ))}
+        </Text>
+        <Text> </Text>
+        <Text bold> {selected.path}</Text>
+        <Text dimColor> {'─'.repeat(Math.max(1, panelWidth - 4))}</Text>
+        {lines.map((patchLine, index) => (
+          <Text
+            key={`${scrollOffset}-${index}`}
+            {...(patchLine.startsWith('+')
+              ? { color: 'green' as const }
+              : patchLine.startsWith('-')
+                ? { color: 'red' as const }
+                : { dimColor: true })}
+          >
+            {'  '}
+            {patchLine}
+          </Text>
+        ))}
+        <Text dimColor> ↑/↓ to scroll · Esc to back</Text>
+      </Box>
+    )
+  }
+  return (
+    <Box flexDirection="column">
+      {!screenReader ? <Text dimColor>{line}</Text> : null}
+      <Text bold> Uncommitted changes (git diff HEAD)</Text>
+      <Text> </Text>
+      <Text>
+        {'  '}
+        {snapshots.map((item, index) => (
+          <Text key={item.label} inverse={index === sourceIndex}>
+            {' '}
+            {item.label}{' '}
+          </Text>
+        ))}
+      </Text>
+      <Text> </Text>
+      <Text>
+        {'  '}
+        {snapshot.files.length} file{snapshot.files.length === 1 ? '' : 's'}{' '}
+        changed <Text color="green">+{snapshot.additions}</Text>{' '}
+        <Text color="red">-{snapshot.deletions}</Text>
+      </Text>
+      <Text> </Text>
+      {snapshot.files.length === 0 ? (
+        <Text dimColor> No uncommitted changes.</Text>
+      ) : (
+        snapshot.files.map((file, index) => (
+          <Text key={file.path} inverse={index === selectedIndex}>
+            {index === selectedIndex ? '❯ ' : '  '}
+            {file.path} <Text color="green">+{file.additions}</Text>{' '}
+            <Text color="red">-{file.deletions}</Text>
+          </Text>
+        ))
+      )}
+      <Text> </Text>
+      <Text dimColor>
+        ←/→ to switch source · ↑/↓ to select · Enter to view · Esc to close
+      </Text>
     </Box>
   )
 }

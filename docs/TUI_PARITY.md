@@ -20,6 +20,10 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
   rather than requiring users to remember the available slash commands;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
+- tool calls use `⏺`, results use an indented `⎿`, long output keeps three
+  lines before an expandable remainder count, and edits retain inline diffs;
+- `/diff` opens a current/per-turn source dashboard with file selection and a
+  scrollable patch view;
 - user, assistant, tool, warning, permission, question, plan, hook/MCP
   lifecycle, and busy states have distinct hierarchy rather than sharing one
   plain text style;
@@ -40,6 +44,7 @@ status-line plugins are not native parity requirements.
 | Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures    |
 | Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures |
 | Tool          | named call with indented input/result    | structured tool and diff fixtures        |
+| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures    |
 | Decision      | bordered, numbered choices               | permission/question/plan/MCP tests       |
 | Resume        | bounded selectable conversation list     | picker interaction and viewport tests    |
 | Accessibility | decoration-free semantic text            | screen-reader fixture                    |
@@ -53,6 +58,7 @@ components under `src/cli/tui` render that state:
 RuntimeEvent -> interactive state -> transcript/dialog/composer components
 shared extensions -> slash catalog -> command palette -> existing session service
 runtime controls -> service retirement/recreation -> existing session service
+Git worktree ----> read-only diff snapshots ------> diff dashboard
 keyboard input -------------------> existing callbacks and session service
 ```
 
@@ -67,8 +73,11 @@ is passed from the CLI composition root and never written to shared JSONL.
   identity behind the Claude-compatible `/resume` name (`/sessions` remains a
   hidden compatibility alias).
 - `Transcript`: user/assistant/tool/result/notice/warning and operational
-  lifecycle presentation, with retained thinking collapsed by default and
-  expandable in place.
+  lifecycle presentation, with grouped tool/result rendering, compact long
+  output, inline edit replacements, and global detailed expansion.
+- `DiffDashboard`: current and file-mutating-turn snapshot tabs, file selection,
+  and bounded patch scrolling. `git-diff` loads worktree state with path-safe
+  argument arrays and never writes repository state.
 - `CommandPalette`: bounded, keyboard-selectable list of built-in controls and
   shared commands, skills, and MCP prompts.
 - `ShortcutHelp` and `HelpMenu`: immediate empty-composer shortcut grid plus
@@ -107,10 +116,18 @@ is passed from the CLI composition root and never written to shared JSONL.
   scheduled prompt, cancellation, permission, plan, question, and elicitation
   behavior is unchanged.
 - Active thinking renders in full as it streams. Retained thinking is compact
-  until `Ctrl+O` expands it; screen-reader output exposes the full text. The
-  renderer redacts values already classified as sensitive before display.
-- Tool calls retain structured name/input long enough to render a tool card.
-- Successful tool results are visible but compact; failures remain prominent.
+  until `Ctrl+O` expands the detailed transcript; the same global toggle expands
+  long tool output. Screen-reader output exposes full text. The renderer redacts
+  sensitive values in both tool headings and result bodies before display.
+- Tool calls retain structured name/input long enough to render Claude-shaped
+  Read, Bash, and Update entries. Successful long results keep three lines and
+  an exact hidden-line count; failures remain prominent; edits show replacement
+  line summaries without adding fields to shared transcripts.
+- `/diff` reads `git diff HEAD` without a model turn. Left/right switches
+  Current and captured file-mutating-turn sources, up/down selects or scrolls,
+  Enter drills into a file, and Esc returns or closes the dashboard.
+- ASCII control codes and Ink control-key metadata are both accepted for
+  composer navigation, while unrelated non-printable bytes are never inserted.
 - Permission policy, MCP elicitation completion, and hook lifecycle events
   remain visible as compact operational feedback.
 - Streaming text is rendered once and replaced by the completed assistant turn.
@@ -125,19 +142,19 @@ is passed from the CLI composition root and never written to shared JSONL.
 - interaction tests for prompts, selection, permission, questions, plan, MCP,
   streaming, tools, cancellation, and screen-reader mode;
 - PTY installed-package capture proving borders, composer, mode footer, bare
-  `?` shortcuts, clean exit, and `/` command-palette discovery;
+  `?` shortcuts, `/` discovery, control-key clearing, and `/diff` drill-down;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
 
 ## Remaining interactive parity work
 
-The Stage TUI-1/2/3 controls close the slash presentation, help/shortcut,
-searchable-resume, thinking, composer, per-session runtime-control, and
-measured-status seams, but they do not justify a blanket “complete Claude Code
-TUI” claim. Remaining black-box-driven work includes the full built-in command
-catalog and its command-specific dialogs, the permission-rule dashboard (rules,
-tabs, search, and settings editing), tool/diff expansion and keyboard
-navigation, and remaining exact layout/shortcut behavior. Each item needs an
-observed contract and a focused TTY or Ink gate before the matrix can return to
-a complete status.
+The Stage TUI-1/2/3/4 controls close the slash presentation, help/shortcut,
+searchable-resume, thinking, composer, runtime-control, measured-status,
+tool-detail, and current/per-turn diff-navigation seams, but they do not justify
+a blanket “complete Claude Code TUI” claim. Remaining black-box-driven work
+includes the full built-in command catalog and its command-specific dialogs,
+the permission-rule dashboard (rules, tabs, search, and settings editing), exact
+multi-read grouping and historical turn attribution, and remaining exact
+layout/shortcut behavior. Each item needs an observed contract and a focused
+TTY or Ink gate before the matrix can return to a complete status.

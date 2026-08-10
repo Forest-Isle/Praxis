@@ -56,6 +56,24 @@ try {
     join(configRoot, 'commands', 'review.md'),
     '---\ndescription: Review the shared fixture.\n---\nReview $ARGUMENTS\n',
   )
+  const diffFixture = join(cwd, 'fixture.txt')
+  await writeFile(diffFixture, 'before\n')
+  await execFileAsync('git', ['init', '-q'], { cwd })
+  await execFileAsync('git', ['add', 'fixture.txt'], { cwd })
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.name=Praxis Fixture',
+      '-c',
+      'user.email=fixture@example.com',
+      'commit',
+      '-qm',
+      'fixture',
+    ],
+    { cwd },
+  )
+  await writeFile(diffFixture, 'after\n')
   await writeFile(claude, "#!/bin/sh\nprintf '2.1.208 (Claude Code)\\n'\n")
   await chmod(claude, 0o755)
   const { stdout: packed } = await execFileAsync(
@@ -100,7 +118,23 @@ expect -re {/clear}
 expect -re {/review}
 expect -re {Review the shared fixture}
 send "\033"
+expect -re {❯ /}
 send "\025"
+expect -re {Try.*review this project}
+send "/diff"
+expect -re {View uncommitted changes}
+send "\r"
+expect -re {Uncommitted changes.*git diff HEAD}
+expect -re {fixture.txt}
+send "\r"
+expect -re {-before}
+expect -re {\+after}
+send "\033"
+after 100
+expect -re {Enter to view}
+send "\033"
+after 100
+expect -re {bypass permissions on}
 send "reply briefly"
 expect -re {❯.*reply briefly}
 send "\r"
