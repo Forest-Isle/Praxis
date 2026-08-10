@@ -1498,6 +1498,22 @@ function ComposerInput({ input, cursor }: { input: string; cursor: number }) {
   )
 }
 
+export function ExternalEditorWait({
+  screenReader,
+}: {
+  screenReader: boolean
+}) {
+  if (screenReader)
+    return <Text>External editor open. Save and close it to continue.</Text>
+  return (
+    <Box flexDirection="column">
+      <Text dimColor>────────────────────────</Text>
+      <Text>Save and close editor to continue...</Text>
+      <Text dimColor>────────────────────────</Text>
+    </Box>
+  )
+}
+
 export function Composer({
   input,
   cursor,
@@ -1512,6 +1528,7 @@ export function Composer({
   thinkingExpanded = false,
   shortcutsVisible = false,
   shellMode = false,
+  footerMessage,
 }: {
   input: string
   cursor?: number
@@ -1526,6 +1543,7 @@ export function Composer({
   thinkingExpanded?: boolean
   shortcutsVisible?: boolean
   shellMode?: boolean
+  footerMessage?: { text: string; isError: boolean }
 }) {
   const [spinnerIndex, setSpinnerIndex] = useState(0)
   useEffect(() => {
@@ -1612,7 +1630,13 @@ export function Composer({
             )}
           </Text>
           <Box flexGrow={1} />
-          {display.effort ? (
+          {footerMessage ? (
+            footerMessage.isError ? (
+              <Text color="red">{footerMessage.text}</Text>
+            ) : (
+              <Text dimColor>{footerMessage.text}</Text>
+            )
+          ) : display.effort ? (
             <Text>
               <Text color={ACCENT}>● {display.effort}</Text>
               <Text dimColor> · /effort</Text>

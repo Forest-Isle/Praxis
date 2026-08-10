@@ -2,7 +2,7 @@ import { Console as NodeConsole } from 'node:console'
 import { setImmediate } from 'node:timers/promises'
 
 import { cleanup, render } from 'ink-testing-library'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ModelToolCall } from '../core/runtime.js'
 import {
@@ -418,6 +418,110 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001F')
     await flush()
     expect(app.lastFrame()).toContain('❯ review @src')
+  })
+
+  it('edits the composer through Ctrl+G without creating a model service', async () => {
+    let serviceCreations = 0
+    let finishEditor:
+      ((result: { content: string; editorName: string }) => void) | undefined
+    const externalEditor = vi.fn(
+      () =>
+        new Promise<{ content: string; editorName: string }>((resolve) => {
+          finishEditor = resolve
+        }),
+    )
+    const turns: Array<Promise<void> | null> = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            serviceCreations += 1
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'dev', cwd: '/workspace', effort: 'high' }}
+        externalEditor={externalEditor}
+        onTurnChange={(turn) => turns.push(turn)}
+      />,
+    )
+
+    app.stdin.write('original prompt')
+    app.stdin.write('\u0007')
+    await flush()
+    expect(app.lastFrame()).toContain('Save and close editor to continue...')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(externalEditor).toHaveBeenCalledWith('original prompt', {
+      cwd: '/workspace',
+    })
+    expect(turns[0]).toBeInstanceOf(Promise)
+
+    finishEditor?.({
+      content: 'edited first line\nedited second line\n\n',
+      editorName: 'Editor-wrapper',
+    })
+    await flush()
+    expect(app.lastFrame()).toContain('edited first line')
+    expect(app.lastFrame()).toContain('edited second line')
+    expect(app.lastFrame()).toContain('ctrl+g to edit in Editor-wrapper')
+    expect(turns.at(-1)).toBeNull()
+
+    app.stdin.write('\u001F')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ original prompt')
+    expect(serviceCreations).toBe(0)
+  })
+
+  it('keeps the composer when the Ctrl+G editor fails', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        externalEditor={async () => {
+          throw new Error('Editor-fail quit unexpectedly (exit code 7)')
+        }}
+      />,
+    )
+
+    app.stdin.write('original prompt')
+    app.stdin.write('\u0007')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('❯ original prompt')
+    expect(app.lastFrame()).toContain(
+      'Editor-fail quit unexpectedly (exit code 7)',
+    )
+  })
+
+  it('opens the Ctrl+G editor from an empty composer', async () => {
+    const externalEditor = vi.fn(async () => ({
+      content: 'prompt started in editor',
+      editorName: 'Vi',
+    }))
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        externalEditor={externalEditor}
+      />,
+    )
+
+    app.stdin.write('\u0007')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(externalEditor).toHaveBeenCalledWith('', {
+      cwd: process.cwd(),
+    })
+    expect(app.lastFrame()).toContain('❯ prompt started in editor')
   })
 
   it('selects an @ agent mention and submits Claude-compatible syntax', async () => {

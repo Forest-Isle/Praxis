@@ -21,6 +21,7 @@ const cwd = join(root, 'work')
 const installRoot = join(root, 'install')
 const binRoot = join(root, 'bin')
 const claude = join(binRoot, 'claude')
+const editor = join(binRoot, 'editor-wrapper')
 let cli
 let port
 const packageJson = JSON.parse(
@@ -86,6 +87,11 @@ try {
   await writeFile(diffFixture, 'after\n')
   await writeFile(claude, "#!/bin/sh\nprintf '2.1.208 (Claude Code)\\n'\n")
   await chmod(claude, 0o755)
+  await writeFile(
+    editor,
+    '#!/bin/sh\nprintf \'edited first line\\nedited second line\\n\\n\' > "$1"\n',
+  )
+  await chmod(editor, 0o755)
   const { stdout: packed } = await execFileAsync(
     'npm',
     ['pack', '--pack-destination', root],
@@ -107,7 +113,7 @@ try {
   const probe = String.raw`
 set timeout 15
 log_user 1
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect {
   -re {Praxis.*Code.*v${expectedVersionPattern}} {}
@@ -190,6 +196,15 @@ expect -re {Background}
 expect -re {No tasks currently running}
 send "\033"
 after 100
+send "seed prompt"
+expect -re {❯.*seed prompt}
+send "\007"
+expect -re {Save and close editor to continue}
+expect -re {edited first line}
+expect -re {edited second line}
+expect -re {ctrl.*g to edit in Editor-wrapper}
+send "\025"
+expect -re {Try.*review this project}
 send "!"
 expect -re {! for shell mode}
 send "pwd"
@@ -225,6 +240,7 @@ exit 0
       PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
       TUI_CLI: cli,
       TUI_CONFIG_ROOT: configRoot,
+      TUI_EDITOR: editor,
       TUI_NODE: process.execPath,
       TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
     },

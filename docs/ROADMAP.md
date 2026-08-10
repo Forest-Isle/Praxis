@@ -852,3 +852,20 @@ broader interactive TTY parity remains partial.
       checks, and never enter the shared append-only JSONL
 - [x] focused catalog, session, picker, Ink interaction, component, and
       installed-package PTY coverage
+
+## Stage 96 - interactive external editor parity
+
+Status: complete for the Claude Code 2.1.208 `Ctrl+G` external-editor contract;
+broader interactive TTY parity remains partial.
+
+- [x] `$VISUAL` before `$EDITOR` with `vi` fallback, quoted executable/argument
+      parsing without a shell, and the prompt Markdown path as the final argument
+- [x] exact composer-byte round trip, including empty input, multiline content,
+      leading/trailing whitespace, and trailing blank lines
+- [x] native Ink terminal suspension and redraw with the observed wait surface;
+      successful replacement joins composer undo while non-zero exits retain the
+      original prompt and expose the editor basename and exit code
+- [x] private temporary directory/file permissions, guaranteed cleanup, abort
+      propagation, and CLI turn/shutdown coordination without a model service
+- [x] focused process, component, interaction, screen-reader, and
+      installed-package PTY coverage

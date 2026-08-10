@@ -34,6 +34,7 @@ import {
   Composer,
   DiffDashboard,
   DialogFrame,
+  ExternalEditorWait,
   HelpMenu,
   ListDashboard,
   MentionPicker,
@@ -84,6 +85,11 @@ import {
   type TuiAgentEntry,
   type TuiFileEntry,
 } from './tui/file-picker.js'
+import {
+  editTuiPrompt,
+  type TuiEditorOptions,
+  type TuiEditorResult,
+} from './tui/external-editor.js'
 
 interface InteractiveSessionCommands {
   run(prompt: string, signal?: AbortSignal): Promise<SessionRunResult>
@@ -161,6 +167,10 @@ interface InteractiveAppProps {
   allowDangerouslySkipPermissions?: boolean
   diffLoader?: () => Promise<TuiDiffSnapshot>
   fileLoader?: () => Promise<readonly TuiFileEntry[]>
+  externalEditor?: (
+    prompt: string,
+    options: TuiEditorOptions,
+  ) => Promise<TuiEditorResult>
   permissionRuleStore?: {
     load(): Promise<readonly TuiPermissionRule[]>
     add(input: {
@@ -399,9 +409,10 @@ export function InteractiveApp({
   allowDangerouslySkipPermissions = false,
   diffLoader,
   fileLoader,
+  externalEditor = editTuiPrompt,
   permissionRuleStore,
 }: InteractiveAppProps) {
-  const { exit } = useApp()
+  const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const width = useTerminalWidth(terminalWidth)
   const sensitiveValues = useMemo(
     () => sensitiveEnvironmentValues(process.env),
@@ -473,6 +484,13 @@ export function InteractiveApp({
     readonly TuiFileEntry[] | null
   >(null)
   const [shortcutsVisible, setShortcutsVisible] = useState(false)
+  const [externalEditorRequest, setExternalEditorRequest] = useState<{
+    prompt: string
+  } | null>(null)
+  const [editorFooterMessage, setEditorFooterMessage] = useState<{
+    text: string
+    isError: boolean
+  }>()
   const [availableSlashCommands, setAvailableSlashCommands] =
     useState(slashCommands)
   const [availableAgents, setAvailableAgents] = useState(agents)
@@ -744,6 +762,37 @@ export function InteractiveApp({
   }
 
   const clearComposerInput = () => updateComposerInput('')
+
+  useEffect(() => {
+    if (externalEditorRequest === null) return
+    const editing = (async () => {
+      try {
+        await waitUntilRenderFlush()
+        let result: TuiEditorResult | undefined
+        await suspendTerminal(async () => {
+          result = await externalEditor(externalEditorRequest.prompt, {
+            cwd: display.cwd,
+            ...(signal === undefined ? {} : { signal }),
+          })
+        })
+        if (!result) throw new Error('External editor returned no content')
+        updateComposerEditor(createComposerEditor(result.content))
+        setEditorFooterMessage({
+          text: `ctrl+g to edit in ${result.editorName}`,
+          isError: false,
+        })
+      } catch (error) {
+        setEditorFooterMessage({
+          text: error instanceof Error ? error.message : String(error),
+          isError: true,
+        })
+      } finally {
+        setExternalEditorRequest(null)
+      }
+    })()
+    onTurnChange?.(editing)
+    void editing.finally(() => onTurnChange?.(null))
+  }, [externalEditorRequest])
 
   const updateMenu = (next: InteractiveMenu | null) => {
     menuRef.current = next
@@ -1653,6 +1702,24 @@ export function InteractiveApp({
       return
     }
 
+    if (externalEditorRequest !== null) return
+
+    if (
+      !busy &&
+      !permission &&
+      !planApproval &&
+      !question &&
+      !elicitation &&
+      !menuRef.current &&
+      controlKey('g')
+    ) {
+      setCommandPaletteOpen(false)
+      setFilePickerOpen(false)
+      setShortcutsVisible(false)
+      setExternalEditorRequest({ prompt: inputRef.current })
+      return
+    }
+
     if (!busy && controlKey('t')) {
       openTasks()
       return
@@ -2327,7 +2394,9 @@ export function InteractiveApp({
             detailedTranscript={thinkingExpanded}
             screenReader={axScreenReader}
           />
-          {permission ? (
+          {externalEditorRequest !== null ? (
+            <ExternalEditorWait screenReader={axScreenReader} />
+          ) : permission ? (
             <DialogFrame
               title={
                 permission.kind === 'recovery'
@@ -2566,6 +2635,9 @@ export function InteractiveApp({
                 hasThinking={hasDetailedTranscript}
                 thinkingExpanded={thinkingExpanded}
                 shortcutsVisible={shortcutsVisible}
+                {...(editorFooterMessage === undefined
+                  ? {}
+                  : { footerMessage: editorFooterMessage })}
               />
             </>
           )}

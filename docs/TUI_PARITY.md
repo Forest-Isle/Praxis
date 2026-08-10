@@ -24,6 +24,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
   first, renders an indented result, and then continues the model turn;
 - entering `@` mixes workspace paths with available agents; agent rows include
   their description and selection inserts Claude's quoted agent mention;
+- `Ctrl+G` suspends Ink, opens `$VISUAL`, `$EDITOR`, or `vi` with the exact
+  composer bytes, then restores and redraws the terminal;
 - tool calls use `⏺`, results use an indented `⎿`, long output keeps three
   lines before an expandable remainder count, and edits retain inline diffs;
 - `/diff` opens a current/per-turn source dashboard with file selection and a
@@ -50,6 +52,7 @@ status-line plugins are not native parity requirements.
 | Tool          | named call with indented input/result    | structured tool and diff fixtures           |
 | Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures  |
 | Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures |
+| Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures |
 | Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures       |
 | Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures     |
 | Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures   |
@@ -72,6 +75,7 @@ Git worktree ----> read-only diff snapshots ------> diff dashboard
 keyboard input -------------------> existing callbacks and session service
 `!` command -> direct runtime Bash -> native bash user records -> model turn
 `@` agent -> quoted mention -> ephemeral invocation reminders -> model turn
+Ctrl+G -> terminal suspension -> external editor -> composer replacement/undo
 ```
 
 No React or Ink dependency enters core, application, providers, tools, or
@@ -99,6 +103,9 @@ is passed from the CLI composition root and never written to shared JSONL.
   General, Commands, and Custom commands tabs.
 - `Composer`: prompt or `!` shell mode, cursor, history, effort, permission
   mode, busy state, measured context/cost status, and keyboard help.
+- `ExternalEditorWait`: terminal-suspension handoff status with a semantic
+  screen-reader branch; `external-editor` owns command parsing and private
+  temporary prompt-file lifecycle.
 - `SelectionMenu`: reusable model, effort, and permission-rule scope chooser.
 - `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
   scoped rule search; rule creation; and workspace permission-mode selection.
@@ -144,6 +151,13 @@ is passed from the CLI composition root and never written to shared JSONL.
   ephemeral invocation and available-agent reminders into the provider request.
   Those reminders participate in context budgets and compaction, remain stable
   through tool-loop reloads, and never enter the shared append-only JSONL.
+- `Ctrl+G` opens `$VISUAL` before `$EDITOR` and otherwise falls back to `vi`.
+  The editor receives a private Markdown prompt file as its final argument.
+  Praxis releases Ink's raw mode, alternate screen, cursor, and input ownership
+  while it runs, then forces a redraw. Successful edits replace the composer
+  without trimming any leading/trailing whitespace and participate in existing
+  `Ctrl+Shift+_` undo; non-zero exits preserve the original composer and show
+  the editor's executable name and exit code. Prompt files are always removed.
 - A leading `!` enters the distinct shell composer. Submission executes `Bash`
   through the active tool preparation, permission approval, cancellation, and
   PreToolUse/PostToolUse Hook chain, renders `! command` plus its bounded
@@ -192,8 +206,9 @@ is passed from the CLI composition root and never written to shared JSONL.
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, `Ctrl+T` task access, file and agent `@`
-  selection, and control-code undo, plus installed-package `!pwd` execution,
-  provider continuation, and native transcript tags;
+  selection, `Ctrl+G` terminal suspension/edit/redraw, and control-code undo,
+  plus installed-package `!pwd` execution, provider continuation, and native
+  transcript tags;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
@@ -209,6 +224,6 @@ TUI” claim. Remaining
 black-box-driven work includes the full built-in command catalog and its
 command-specific dialogs, permission-rule removal and exact denied-history
 behavior, exact multi-read grouping and historical turn attribution,
-suspend/editor/image/keybinding flows, and remaining exact layout behavior. Each
+suspend/image/keybinding flows, and remaining exact layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

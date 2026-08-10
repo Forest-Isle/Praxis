@@ -7,6 +7,7 @@ import {
   Composer,
   DiffDashboard,
   DialogFrame,
+  ExternalEditorWait,
   FilePicker,
   HelpMenu,
   ListDashboard,
@@ -613,6 +614,53 @@ describe('Claude-style TUI components', () => {
     )
     expect(shellTranscript.lastFrame()).toContain('! pwd')
     expect(shellTranscript.lastFrame()).toContain('⎿ /tmp/project')
+  })
+
+  it('renders the external editor wait state and footer outcomes', () => {
+    const wait = render(<ExternalEditorWait screenReader={false} />)
+    expect(wait.lastFrame()).toBe(
+      '────────────────────────\nSave and close editor to continue...\n────────────────────────',
+    )
+    const accessibleWait = render(<ExternalEditorWait screenReader />)
+    expect(accessibleWait.lastFrame()).toBe(
+      'External editor open. Save and close it to continue.',
+    )
+
+    const success = render(
+      <Composer
+        input="edited"
+        busy={false}
+        status="ready"
+        display={display}
+        width={100}
+        screenReader={false}
+        footerMessage={{
+          text: 'ctrl+g to edit in Editor-wrapper',
+          isError: false,
+        }}
+      />,
+    )
+    expect(success.lastFrame()).toContain('ctrl+g to edit in Editor-wrapper')
+    expect(success.lastFrame()).not.toContain('● high · /effort')
+
+    const failure = render(
+      <Composer
+        input="original"
+        busy={false}
+        status="ready"
+        display={display}
+        width={100}
+        screenReader={false}
+        footerMessage={{
+          text: 'Editor-fail quit unexpectedly (exit code 7)',
+          isError: true,
+        }}
+      />,
+    )
+    expect(failure.lastFrame()).toContain(
+      'Editor-fail quit unexpectedly (exit code 7)',
+    )
+    expect(failure.lastFrame()).not.toContain('● high · /effort')
   })
 
   it('keeps dialogs and session selection visually bounded', () => {
