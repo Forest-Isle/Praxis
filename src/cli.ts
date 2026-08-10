@@ -283,6 +283,7 @@ Usage:
   praxis sessions [--json]
   praxis inspect [--json] <session-id>
   praxis export [--json] <session-id>
+  praxis trajectory-contract
   praxis --bg [options] <prompt>
   praxis agents [--json] [--all] [--cwd <path>]
   praxis attach <agent-id>
@@ -3915,6 +3916,27 @@ async function execute(
 ): Promise<number> {
   if (argv[0] === '__background-worker') {
     await runBackgroundWorker(requireValue(argv[1], 'Agent ID'))
+    return 0
+  }
+  if (argv[0] === 'trajectory-contract') {
+    if (argv.length !== 1) {
+      throw new Error('trajectory-contract takes no operands')
+    }
+    writeJson(io, {
+      type: 'trajectory-contract',
+      contractVersion: '1.0',
+      target: 'praxis',
+      targetVersion: VERSION,
+      nativeFormat: 'claude-code-jsonl',
+      discovery: { command: ['sessions', '--json'] },
+      inspection: { command: ['inspect', '--json', '{sessionId}'] },
+      export: {
+        command: ['export', '--json', '{sessionId}'],
+        encoding: 'base64',
+      },
+      supportedRunKinds: ['interactive', 'headless', 'background', 'workflow'],
+      mutationPolicy: 'managed-worktree-only',
+    })
     return 0
   }
   if (argv.length === 0 && io.isTTY && dependencies.runInteractive) {

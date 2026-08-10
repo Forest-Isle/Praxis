@@ -2466,6 +2466,37 @@ describe('Praxis CLI', () => {
     expect(exported.stdout).toEqual(['{"type":"user"}\n'])
   })
 
+  it('publishes a versioned black-box trajectory contract without a provider', async () => {
+    const capture = captureIO()
+    let serviceCreated = false
+
+    await expect(
+      run(['trajectory-contract'], capture.io, {
+        async createService() {
+          serviceCreated = true
+          throw new Error('must not create a service')
+        },
+      }),
+    ).resolves.toBe(0)
+
+    expect(serviceCreated).toBe(false)
+    expect(JSON.parse(capture.stdout.join(''))).toEqual({
+      type: 'trajectory-contract',
+      contractVersion: '1.0',
+      target: 'praxis',
+      targetVersion: PACKAGE_VERSION,
+      nativeFormat: 'claude-code-jsonl',
+      discovery: { command: ['sessions', '--json'] },
+      inspection: { command: ['inspect', '--json', '{sessionId}'] },
+      export: {
+        command: ['export', '--json', '{sessionId}'],
+        encoding: 'base64',
+      },
+      supportedRunKinds: ['interactive', 'headless', 'background', 'workflow'],
+      mutationPolicy: 'managed-worktree-only',
+    })
+  })
+
   it('exports invalid UTF-8 losslessly in plain and JSON modes', async () => {
     const source = Buffer.from([0xff, 0x0a])
     const plain = captureIO()
