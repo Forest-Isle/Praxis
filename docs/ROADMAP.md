@@ -813,4 +813,7 @@ Status: complete for GitHub branch-protection integration.
 - [x] Release Please enables squash auto-merge only for its own version pull
       request; the protected aggregate `CI` check remains required before tag
       creation and publication
+- [x] a read-only PR-associated gate reports only the conclusion of the exact
+      same-SHA dispatched CI run, preserving branch protection for bot-created
+      version pull requests without checking out their code or exposing secrets
 - [x] release publication remains a separate retryable repository dispatch

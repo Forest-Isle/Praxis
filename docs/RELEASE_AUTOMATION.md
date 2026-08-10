@@ -25,7 +25,9 @@ package; manual-only versioning was rejected because it can drift from tags.
    are authoritative. Because GitHub suppresses workflows from resources made
    by `GITHUB_TOKEN`, Release Please explicitly dispatches `CI` on the version
    branch, then enables squash auto-merge for that exact PR. The real aggregate
-   `CI` check remains the branch-protection gate; no workflow bypasses it.
+   `CI` check remains the branch-protection gate; a read-only PR-attached gate
+   waits for that exact dispatched run and reports only its real conclusion.
+   The gate never checks out release-PR code or receives secrets.
 3. After `CI` succeeds, GitHub automatically squash-merges the version PR,
    creating `v<package.version>` and a GitHub release.
 4. Release Please sends a `release-created` repository dispatch carrying the
@@ -38,6 +40,8 @@ package; manual-only versioning was rejected because it can drift from tags.
 
 - `.github/workflows/ci.yml`: stable required `CI` status over all test lanes.
 - `.github/workflows/release-please.yml`: version PR, tag, release, dispatch.
+- `.github/workflows/release-pr-gate.yml`: attaches the exact dispatched CI
+  result to the Release Please PR without granting write permissions.
 - `.github/workflows/publish.yml`: tag validation, regression, artifacts, npm.
 - `scripts/verify-release-ref.mjs`: exact tag/package-version invariant.
 - `scripts/build-release-artifacts.mjs`: deterministic tarball, SBOM, checksums.
