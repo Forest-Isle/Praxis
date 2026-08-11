@@ -1,0 +1,334 @@
+{
+  "tabs": ["Settings", "Status", "Config", "Usage", "Stats"],
+  "settings": [
+    {
+      "nativeKey": "autoCompact",
+      "label": "Auto-compact",
+      "scope": "settings",
+      "path": ["autoCompactEnabled"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "switchModelsOnFlag",
+      "label": "Switch models when a message is flagged",
+      "scope": "settings",
+      "path": ["switchModelsOnFlag"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "tips",
+      "label": "Show tips",
+      "scope": "settings",
+      "path": ["spinnerTipsEnabled"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "reduceMotion",
+      "label": "Reduce motion",
+      "scope": "settings",
+      "path": ["prefersReducedMotion"],
+      "domain": [true, false],
+      "defaultValue": false
+    },
+    {
+      "nativeKey": "thinking",
+      "label": "Thinking mode",
+      "scope": "settings",
+      "path": ["alwaysThinkingEnabled"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "recap",
+      "label": "Session recap",
+      "scope": "settings",
+      "path": ["awaySummaryEnabled"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "checkpoints",
+      "label": "Rewind code (checkpoints)",
+      "scope": "settings",
+      "path": ["fileCheckpointingEnabled"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "workflows",
+      "label": "Dynamic workflows",
+      "scope": "settings",
+      "path": ["enableWorkflows"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "workflowKeywordTriggerEnabled",
+      "label": "Ultracode keyword trigger",
+      "scope": "settings",
+      "path": ["workflowKeywordTriggerEnabled"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "workflowSizeGuideline",
+      "label": "Dynamic workflow size",
+      "scope": "state",
+      "path": ["workflowSizeGuideline"],
+      "domain": ["unrestricted", "small", "medium", "large"],
+      "defaultValue": "unrestricted"
+    },
+    {
+      "nativeKey": "verbose",
+      "label": "Verbose output",
+      "scope": "settings",
+      "path": ["verbose"],
+      "domain": [true, false],
+      "defaultValue": false
+    },
+    {
+      "nativeKey": "progressBar",
+      "label": "Terminal progress bar",
+      "scope": "settings",
+      "path": ["terminalProgressBarEnabled"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "turnDuration",
+      "label": "Show turn duration",
+      "scope": "settings",
+      "path": ["showTurnDuration"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "permissionMode",
+      "label": "Default permission mode",
+      "scope": "settings",
+      "path": ["permissions", "defaultMode"],
+      "domain": ["default", "plan", "acceptEdits", "auto", "dontAsk"],
+      "defaultValue": "default"
+    },
+    {
+      "nativeKey": "worktreeBaseRef",
+      "label": "Worktree base ref",
+      "scope": "settings",
+      "path": ["worktree", "baseRef"],
+      "domain": ["fresh", "head"],
+      "defaultValue": "fresh"
+    },
+    {
+      "nativeKey": "useAutoModeDuringPlan",
+      "label": "Use auto mode during plan",
+      "scope": "settings",
+      "path": ["useAutoModeDuringPlan"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "gitignore",
+      "label": "Respect .gitignore in file picker",
+      "scope": "state",
+      "path": ["respectGitignore"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "copyFullResponse",
+      "label": "Skip the /copy picker",
+      "scope": "state",
+      "path": ["copyFullResponse"],
+      "domain": [true, false],
+      "defaultValue": false
+    },
+    {
+      "nativeKey": "defaultToAgentsView",
+      "label": "Open agents view by default",
+      "scope": "state",
+      "path": ["defaultToAgentsView"],
+      "domain": [true, false],
+      "defaultValue": false
+    },
+    {
+      "nativeKey": "leftArrowOpensAgents",
+      "label": "← opens agents",
+      "scope": "state",
+      "path": ["leftArrowOpensAgents"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "autoUpdatesChannel",
+      "label": "Auto-update channel",
+      "scope": "settings",
+      "path": ["autoUpdatesChannel"],
+      "domain": ["latest", "stable"],
+      "defaultValue": "latest"
+    },
+    {
+      "nativeKey": "theme",
+      "label": "Theme",
+      "scope": "settings",
+      "path": ["theme"],
+      "domain": [
+        "auto",
+        "dark",
+        "light",
+        "light-daltonized",
+        "dark-daltonized",
+        "light-ansi",
+        "dark-ansi"
+      ],
+      "defaultValue": "auto"
+    },
+    {
+      "nativeKey": "notifChannel",
+      "label": "Local notifications",
+      "scope": "settings",
+      "path": ["preferredNotifChannel"],
+      "domain": [
+        "auto",
+        "iterm2",
+        "terminal_bell",
+        "iterm2_with_bell",
+        "kitty",
+        "ghostty",
+        "notifications_disabled"
+      ],
+      "defaultValue": "auto"
+    },
+    {
+      "nativeKey": "outputStyle",
+      "label": "Output style",
+      "scope": "settings",
+      "path": ["outputStyle"],
+      "domain": ["default", "Proactive", "Explanatory", "Learning"],
+      "defaultValue": "default"
+    },
+    {
+      "nativeKey": "language",
+      "label": "Language",
+      "scope": "settings",
+      "path": ["language"],
+      "domain": "language",
+      "defaultValue": "default"
+    },
+    {
+      "nativeKey": "editor",
+      "label": "Editor mode",
+      "scope": "settings",
+      "path": ["editorMode"],
+      "domain": ["normal", "vim"],
+      "defaultValue": "normal"
+    },
+    {
+      "nativeKey": "askUserQuestionTimeout",
+      "label": "Question auto-continue timeout",
+      "scope": "settings",
+      "path": ["askUserQuestionTimeout"],
+      "domain": ["never", "60s", "5m", "10m"],
+      "defaultValue": "never"
+    },
+    {
+      "nativeKey": "externalEditorContext",
+      "label": "Show last response in external editor",
+      "scope": "state",
+      "path": ["externalEditorContext"],
+      "domain": [true, false],
+      "defaultValue": false
+    },
+    {
+      "nativeKey": "prStatus",
+      "label": "Show PR status footer",
+      "scope": "state",
+      "path": ["prStatusFooterEnabled"],
+      "domain": [true, false],
+      "defaultValue": true
+    },
+    {
+      "nativeKey": "model",
+      "label": "Model",
+      "scope": "settings",
+      "path": ["model"],
+      "domain": [
+        "default",
+        "sonnet",
+        "opus",
+        "haiku",
+        "best",
+        "sonnet[1m]",
+        "opus[1m]",
+        "opusplan"
+      ],
+      "defaultValue": "default"
+    }
+  ],
+  "configFooterSearch": "Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear",
+  "configFooterSelection": "Enter/Space to change · / to search · Esc to close",
+  "includedNativeKeys": [
+    "autoCompact",
+    "switchModelsOnFlag",
+    "tips",
+    "reduceMotion",
+    "thinking",
+    "recap",
+    "checkpoints",
+    "workflows",
+    "workflowKeywordTriggerEnabled",
+    "workflowSizeGuideline",
+    "verbose",
+    "progressBar",
+    "turnDuration",
+    "permissionMode",
+    "worktreeBaseRef",
+    "useAutoModeDuringPlan",
+    "gitignore",
+    "copyFullResponse",
+    "defaultToAgentsView",
+    "leftArrowOpensAgents",
+    "autoUpdatesChannel",
+    "theme",
+    "notifChannel",
+    "outputStyle",
+    "language",
+    "editor",
+    "askUserQuestionTimeout",
+    "externalEditorContext",
+    "prStatus",
+    "model"
+  ],
+  "excluded": [
+    {
+      "nativeKey": "autoConnectIde",
+      "label": "Auto-connect to IDE (external terminal)",
+      "reason": "IDE surface is outside the agreed CLI-only product boundary"
+    },
+    {
+      "nativeKey": "chrome",
+      "label": "Claude in Chrome enabled by default",
+      "reason": "Chrome integration is outside the agreed CLI-only product boundary"
+    }
+  ],
+  "statusLabels": [
+    "Version",
+    "Session name",
+    "Session ID",
+    "cwd",
+    "Auth token",
+    "Provider base URL",
+    "Model",
+    "Setting sources"
+  ],
+  "usageLabels": [
+    "Total cost",
+    "Total duration (API)",
+    "Total duration (wall)",
+    "Total code changes",
+    "Usage"
+  ],
+  "emptyStats": "No stats available yet. Start using Praxis Code!"
+}
