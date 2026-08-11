@@ -581,6 +581,20 @@ await writeFile(process.argv[4], JSON.stringify(snapshot))
 set timeout 15
 log_user 1
 set phase "installed memory cancel"
+proc write_shared_snapshot {label output} {
+  global env phase
+  set phase "installed memory cancel $label snapshot"
+  set command [list $env(TUI_NODE) $env(TUI_SNAPSHOT_HELPER) $env(TUI_CANCEL_CONFIG_ROOT) $env(TUI_CANCEL_CWD) $output]
+  if {[catch {exec -- {*}$command 2>@1} result]} {
+    puts stderr "TUI $label snapshot producer failed: $result"
+    exit 1
+  }
+  if {![file isfile $output] || [file size $output] == 0} {
+    puts stderr "TUI $label snapshot producer did not create a non-empty artifact at $output"
+    exit 1
+  }
+  puts "TUI_SNAPSHOT_READY|$label"
+}
 expect_before timeout {
   puts stderr "TUI memory cancel timed out during $phase"
   exit 1
@@ -588,7 +602,7 @@ expect_before timeout {
 spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CANCEL_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --session-id $env(TUI_CANCEL_SESSION_ID) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
-exec $env(TUI_NODE) $env(TUI_SNAPSHOT_HELPER) $env(TUI_CANCEL_CONFIG_ROOT) $env(TUI_CANCEL_CWD) $env(TUI_CANCEL_BEFORE)
+write_shared_snapshot before $env(TUI_CANCEL_BEFORE)
 send "/memory"
 expect -re {Open a memory file in your editor}
 send "\r"
@@ -599,19 +613,19 @@ expect -re {Project memory}
 expect -re {Open auto-memory folder}
 send "\033"
 expect -re {Cancelled memory editing}
-exec $env(TUI_NODE) $env(TUI_SNAPSHOT_HELPER) $env(TUI_CANCEL_CONFIG_ROOT) $env(TUI_CANCEL_CWD) $env(TUI_CANCEL_AFTER)
+write_shared_snapshot after $env(TUI_CANCEL_AFTER)
 send "\003"
 expect -re {Press Ctrl-C again to exit}
 send "\003"
 expect eof
 exit 0
 `
-  await execFileAsync('expect', ['-c', cancelProbe], {
+  const cancelCapture = await execFileAsync('expect', ['-c', cancelProbe], {
     cwd: cancelCwd,
     env: {
       ...process.env,
       CI: 'true',
-      PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
+      PATH: `${binRoot}${delimiter}${dirname(claude)}${delimiter}${process.env.PATH ?? ''}`,
       TUI_CANCEL_AFTER: cancelAfterPath,
       TUI_CANCEL_BEFORE: cancelBeforePath,
       TUI_CANCEL_CONFIG_ROOT: cancelConfigRoot,
@@ -624,10 +638,20 @@ exit 0
     },
     timeout: 60_000,
   })
-  const [cancelBefore, cancelAfter] = await Promise.all(
-    [cancelBeforePath, cancelAfterPath].map(async (path) =>
-      JSON.parse(await readFile(path, 'utf8')),
+  assert.deepEqual(
+    [...cancelCapture.stdout.matchAll(/TUI_SNAPSHOT_READY\|([^\r\n]+)/gu)].map(
+      ([, label]) => label,
     ),
+    ['before', 'after'],
+    `memory cancel snapshot producers did not complete in order:\n${cancelCapture.stdout}\n${cancelCapture.stderr}`,
+  )
+  const [cancelBefore, cancelAfter] = await Promise.all(
+    [cancelBeforePath, cancelAfterPath].map(async (path) => {
+      await access(path)
+      const snapshot = JSON.parse(await readFile(path, 'utf8'))
+      assert.ok(Array.isArray(snapshot), `${path} did not contain a snapshot`)
+      return snapshot
+    }),
   )
   const cancelProjectPrefix = sentinelRecordPath.slice(
     0,
