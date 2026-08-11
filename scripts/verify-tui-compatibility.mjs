@@ -362,6 +362,14 @@ expect -re {Export conversation}
 expect -re {Copy to clipboard}
 send "\r"
 expect -re {Conversation copied to clipboard}
+set phase "rewind menu"
+send "/rewind"
+expect -re {Restore the code and/or conversation}
+send "\r"
+expect -re {Rewind}
+expect -re {current}
+send "\033"
+after 100
 set phase "branch conversation"
 send "/branch"
 expect -re {Create a branch of the current conversation}
@@ -482,6 +490,12 @@ expect {
 }
 expect -re {⎿.*work}
 expect -re {❯.*reply briefly}
+expect -re {TUI_FAKE_OK}
+send "/compact"
+expect -re {Clear conversation history.*summary}
+send "\r"
+expect -re {Compacted.*ctrl\+o.*full summary}
+send "\017"
 expect -re {TUI_FAKE_OK}
 send "\003"
 expect -re {Press Ctrl-C again to exit}

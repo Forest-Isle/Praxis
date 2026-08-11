@@ -13,12 +13,49 @@ export interface ClaudeCompactEntriesOptions {
   cwd: string
   claudeVersion: string
   gitBranch: string | null
+  trigger?: 'auto' | 'manual'
+  summarizeMetadata?: {
+    messagesSummarized: number
+    direction: 'from' | 'up_to'
+  }
+  preservedUuids?: readonly string[]
   createUuid?: () => string
   now?: () => string
 }
 
 export function formatClaudeCompactSummary(summary: string): string {
   return `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n${summary}\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly.`
+}
+
+export function parseClaudeCompactSummary(content: string): string | null {
+  const prefix =
+    'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n'
+  const suffix =
+    '\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly.'
+  if (!content.startsWith(prefix) || !content.endsWith(suffix)) return null
+  return content.slice(prefix.length, -suffix.length)
+}
+
+export function getClaudePreservedMessageUuids(
+  boundary: ClaudeTranscriptEntry | undefined,
+): readonly string[] {
+  const metadata = boundary?.compactMetadata
+  const preservedMessages =
+    typeof metadata === 'object' && metadata !== null
+      ? (metadata as Record<string, unknown>).preservedMessages
+      : undefined
+  if (
+    typeof preservedMessages !== 'object' ||
+    preservedMessages === null ||
+    !Array.isArray((preservedMessages as Record<string, unknown>).uuids)
+  ) {
+    return []
+  }
+  const uuids = (preservedMessages as Record<string, unknown>)
+    .uuids as unknown[]
+  return uuids.every((uuid): uuid is string => typeof uuid === 'string')
+    ? uuids
+    : []
 }
 
 export function createClaudeCompactEntries(
@@ -28,6 +65,8 @@ export function createClaudeCompactEntries(
   const now = options.now ?? (() => new Date().toISOString())
   const boundaryUuid = createUuid()
   const summaryUuid = createUuid()
+  const anchorUuid =
+    options.summarizeMetadata?.direction === 'from' ? boundaryUuid : summaryUuid
   const timestamp = now()
   const common = {
     isSidechain: false,
@@ -42,6 +81,14 @@ export function createClaudeCompactEntries(
   const cumulativeDroppedTokens =
     options.previousCumulativeDroppedTokens +
     Math.max(0, options.preTokens - options.postTokens)
+  const preservedUuids =
+    options.preservedUuids === undefined
+      ? [options.logicalParentUuid]
+      : options.preservedUuids.length > 0
+        ? [...options.preservedUuids]
+        : options.summarizeMetadata?.direction === 'from'
+          ? [boundaryUuid]
+          : [options.logicalParentUuid]
 
   return [
     {
@@ -53,18 +100,21 @@ export function createClaudeCompactEntries(
       level: 'info',
       logicalParentUuid: options.logicalParentUuid,
       compactMetadata: {
-        trigger: 'auto',
+        trigger: options.trigger ?? 'auto',
         preTokens: options.preTokens,
+        ...(options.summarizeMetadata
+          ? { messagesSummarized: options.summarizeMetadata.messagesSummarized }
+          : {}),
         durationMs: options.durationMs,
         preservedSegment: {
-          headUuid: options.logicalParentUuid,
-          anchorUuid: summaryUuid,
-          tailUuid: options.logicalParentUuid,
+          headUuid: preservedUuids[0],
+          anchorUuid,
+          tailUuid: preservedUuids[preservedUuids.length - 1],
         },
         preservedMessages: {
-          anchorUuid: summaryUuid,
-          uuids: [options.logicalParentUuid],
-          allUuids: [options.logicalParentUuid],
+          anchorUuid,
+          uuids: preservedUuids,
+          allUuids: preservedUuids,
         },
         postTokens: options.postTokens,
         cumulativeDroppedTokens,
@@ -79,7 +129,10 @@ export function createClaudeCompactEntries(
       uuid: summaryUuid,
       promptId: summaryUuid,
       isCompactSummary: true,
-      isVisibleInTranscriptOnly: true,
+      ...(options.summarizeMetadata ? {} : { isVisibleInTranscriptOnly: true }),
+      ...(options.summarizeMetadata
+        ? { summarizeMetadata: options.summarizeMetadata }
+        : {}),
       message: {
         role: 'user',
         content: formatClaudeCompactSummary(options.summary),

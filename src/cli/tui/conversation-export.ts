@@ -29,6 +29,8 @@ export function conversationExportText(
       output.push('', ...lines(item.text, '⏺ '))
     else if (item.kind === 'thinking')
       output.push('', ...lines(item.text, '✻ '))
+    else if (item.kind === 'compact')
+      output.push('', '✻ Conversation compacted', ...lines(item.summary, '  '))
     else if (item.kind === 'tool') {
       output.push(
         '',

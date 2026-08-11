@@ -516,11 +516,263 @@ describe('ClaudeSessionService', () => {
     expect(entries.map((entry) => entry.type)).toEqual(
       expect.arrayContaining(['file-history-snapshot', 'file-history-delta']),
     )
+    expect(await service.rewindPoints(result.sessionId)).toEqual([
+      expect.objectContaining({
+        messageId: user.uuid,
+        prompt: 'create it',
+        fileChanges: [expect.stringMatching(/created\.txt$/u)],
+        fileRestoreAvailable: true,
+      }),
+    ])
     await service.rewindFiles(result.sessionId, user.uuid)
     await expect(readFile(filePath, 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     })
     expect(providerTurn).toBe(2)
+  })
+
+  it('manually compacts an existing session into native summary records', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const events: RuntimeEvent[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 100_000,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'original answer' }
+        },
+      },
+      compactor: {
+        async compact(request) {
+          expect(JSON.stringify(request.messages)).toContain('original answer')
+          return {
+            summary: 'durable manual summary',
+            usage: { inputTokens: 12, outputTokens: 4 },
+            durationMs: 25,
+          }
+        },
+      },
+      eventSink: (event) => events.push(event),
+    })
+
+    const run = await service.run('remember this task')
+    const compacted = await service.compact(run.sessionId)
+
+    expect(compacted).toMatchObject({
+      summary: 'durable manual summary',
+      usage: { inputTokens: 12, outputTokens: 4 },
+      preTokens: expect.any(Number),
+    })
+    expect(events).toContainEqual({ type: 'state', state: 'compacting' })
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'compact-boundary',
+        trigger: 'manual',
+      }),
+    )
+    expect(await service.transcript(run.sessionId)).toEqual([
+      { kind: 'compact', summary: 'durable manual summary' },
+    ])
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('"trigger":"manual"')
+    expect(transcript).toContain('"isCompactSummary":true')
+    expect(transcript).toContain('durable manual summary')
+  })
+
+  it('selectively summarizes from a rewind point with native metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-selective-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const summarizedRequests: string[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([
+        'first answer',
+        'second answer',
+        'third answer',
+      ]),
+      compactor: {
+        async compact(request) {
+          summarizedRequests.push(JSON.stringify(request.messages))
+          return {
+            summary: 'selected range summary',
+            usage: { inputTokens: 8, outputTokens: 3 },
+            durationMs: 10,
+          }
+        },
+      },
+    })
+    const first = await service.run('first prompt')
+    await service.resume(first.sessionId, 'second prompt')
+    const points = await service.rewindPoints(first.sessionId)
+    const second = points.find((point) => point.prompt === 'second prompt')
+    if (!second) throw new Error('second rewind point missing')
+
+    const result = await service.compact(first.sessionId, undefined, {
+      messageId: second.messageId,
+      direction: 'from',
+      context: 'focus on the second task',
+    })
+
+    expect(result.messagesSummarized).toBeGreaterThan(0)
+    expect(summarizedRequests[0]).toContain('second prompt')
+    expect(summarizedRequests[0]).not.toContain('first prompt')
+    expect(summarizedRequests[0]).toContain('focus on the second task')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('"trigger":"manual"')
+    expect(transcript).toContain('"direction":"from"')
+    expect(transcript).toContain('"messagesSummarized"')
+    expect(await service.transcript(first.sessionId)).toEqual([
+      { kind: 'user', text: 'first prompt' },
+      { kind: 'assistant', text: 'first answer' },
+      { kind: 'compact', summary: 'selected range summary' },
+    ])
+    await service.resume(first.sessionId, 'third prompt')
+    expect(await service.transcript(first.sessionId)).toEqual([
+      { kind: 'user', text: 'first prompt' },
+      { kind: 'assistant', text: 'first answer' },
+      { kind: 'compact', summary: 'selected range summary' },
+      { kind: 'user', text: 'third prompt' },
+      { kind: 'assistant', text: 'third answer' },
+    ])
+  })
+
+  it('selectively summarizes up to a rewind point and natively replays later messages', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-selective-up-to-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const summarizedRequests: string[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([
+        'first answer',
+        'second answer',
+        'third answer',
+        'fourth answer',
+      ]),
+      compactor: {
+        async compact(request) {
+          summarizedRequests.push(JSON.stringify(request.messages))
+          return {
+            summary: 'earlier range summary',
+            usage: { inputTokens: 8, outputTokens: 3 },
+            durationMs: 10,
+          }
+        },
+      },
+    })
+    const first = await service.run('first prompt')
+    await service.resume(first.sessionId, 'second prompt')
+    const second = (await service.rewindPoints(first.sessionId)).find(
+      (point) => point.prompt === 'second prompt',
+    )
+    if (!second) throw new Error('second rewind point missing')
+
+    await service.compact(first.sessionId, undefined, {
+      messageId: second.messageId,
+      direction: 'to',
+    })
+
+    expect(summarizedRequests[0]).toContain('first prompt')
+    expect(summarizedRequests[0]).not.toContain('second prompt')
+    expect(await service.transcript(first.sessionId)).toEqual([
+      { kind: 'compact', summary: 'earlier range summary' },
+      { kind: 'user', text: 'second prompt' },
+      { kind: 'assistant', text: 'second answer' },
+    ])
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('"direction":"up_to"')
+    expect(transcript).not.toContain('preserved verbatim as model messages')
+
+    const fork = await service.fork(first.sessionId)
+    expect(await service.transcript(fork.sessionId)).toEqual([
+      { kind: 'compact', summary: 'earlier range summary' },
+      { kind: 'user', text: 'second prompt' },
+      { kind: 'assistant', text: 'second answer' },
+    ])
+
+    await service.resume(first.sessionId, 'third prompt')
+    await service.resume(first.sessionId, 'fourth prompt')
+    expect(await service.transcript(first.sessionId)).toEqual([
+      { kind: 'compact', summary: 'earlier range summary' },
+      { kind: 'user', text: 'second prompt' },
+      { kind: 'assistant', text: 'second answer' },
+      { kind: 'user', text: 'third prompt' },
+      { kind: 'assistant', text: 'third answer' },
+      { kind: 'user', text: 'fourth prompt' },
+      { kind: 'assistant', text: 'fourth answer' },
+    ])
+  })
+
+  it('summarizes from the first rewind point without requiring an earlier parent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-selective-first-'))
+    roots.push(root)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['only answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'whole conversation summary',
+            usage: { inputTokens: 4, outputTokens: 2 },
+            durationMs: 5,
+          }
+        },
+      },
+    })
+    const run = await service.run('first prompt')
+    const [first] = await service.rewindPoints(run.sessionId)
+    if (!first) throw new Error('first rewind point missing')
+
+    await expect(
+      service.compact(run.sessionId, undefined, {
+        messageId: first.messageId,
+        direction: 'from',
+      }),
+    ).resolves.toMatchObject({ summary: 'whole conversation summary' })
+    expect(await service.transcript(run.sessionId)).toEqual([
+      { kind: 'compact', summary: 'whole conversation summary' },
+    ])
   })
 
   it('downloads startup files before the first provider turn once per session', async () => {

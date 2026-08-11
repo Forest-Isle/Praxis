@@ -29,6 +29,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'compact',
+    description: 'Clear conversation history but keep a summary in context',
+    source: 'builtin',
+  },
+  {
     name: 'model',
     description: 'Set the AI model for this session',
     source: 'builtin',
@@ -112,6 +117,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
     name: 'rename',
     description: 'Rename the current conversation',
+    source: 'builtin',
+  },
+  {
+    name: 'rewind',
+    description: 'Restore the code and/or conversation to an earlier point',
     source: 'builtin',
   },
   {

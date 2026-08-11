@@ -11,6 +11,9 @@ import { randomUUID } from 'node:crypto'
 import {
   ClaudeSessionService,
   type ForkResult,
+  type ManualCompactResult,
+  type ManualCompactSelection,
+  type RewindPoint,
   type SessionInspection,
   type SessionRunResult,
   type SessionSummary,
@@ -909,12 +912,17 @@ interface SessionCommands {
     signal?: AbortSignal,
     name?: string,
   ): Promise<SessionRunResult>
-  fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
+  fork(
+    sessionId: string,
+    targetSessionId?: string,
+    resumeSessionAt?: string,
+  ): Promise<ForkResult>
   setPermissionMode?(
     sessionId: string,
     mode: ClaudePermissionMode,
   ): Promise<void>
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
+  rewindPoints?(sessionId: string): Promise<RewindPoint[]>
   lifecycle?(
     trigger: 'init' | 'maintenance',
     options?: { sessionStart?: boolean; sessionId?: string },
@@ -923,6 +931,11 @@ interface SessionCommands {
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
   transcript?(sessionId: string): Promise<ClaudeDisplayTranscriptItem[]>
+  compact?(
+    sessionId: string,
+    signal?: AbortSignal,
+    selection?: ManualCompactSelection,
+  ): Promise<ManualCompactResult>
   rename?(sessionId: string, name: string): Promise<void>
   sessionNameSuggestion?(
     sessionId: string,
@@ -1628,8 +1641,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
           resumeSessionAt,
         )
       },
-      fork: (sessionId, targetSessionId) => {
-        const resumeSessionAt = pendingResumeSessionAt
+      fork: (sessionId, targetSessionId, requestedResumeSessionAt) => {
+        const resumeSessionAt =
+          requestedResumeSessionAt ?? pendingResumeSessionAt
         pendingResumeSessionAt = undefined
         return service.fork(sessionId, targetSessionId, resumeSessionAt)
       },
@@ -1637,6 +1651,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         service.setPermissionMode(sessionId, permissionMode),
       rewindFiles: (sessionId, userMessageId) =>
         service.rewindFiles(sessionId, userMessageId),
+      rewindPoints: (sessionId) => service.rewindPoints(sessionId),
       lifecycle: async (trigger, lifecycleOptions = {}) => {
         if (!hooks) return
         const sessionId = lifecycleOptions.sessionId ?? randomUUID()
@@ -1687,6 +1702,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
       export: (sessionId) => service.export(sessionId),
       transcript: (sessionId) =>
         service.transcript(sessionId, pendingResumeSessionAt),
+      compact: (sessionId, signal, selection) =>
+        service.compact(sessionId, signal, selection),
       rename: (sessionId, name) => service.rename(sessionId, name),
       sessionNameSuggestion: (sessionId, signal) =>
         service.sessionNameSuggestion(sessionId, signal),

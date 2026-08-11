@@ -15,6 +15,7 @@ const fixtureUrl = new URL(
 )
 const advancedFixtureUrls = [
   'compact-session.jsonl',
+  'selective-compact-session.jsonl',
   'sidechain-layout/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/subagents/agent-fixture.jsonl',
   'media-error-session.jsonl',
   'interrupted-session.jsonl',

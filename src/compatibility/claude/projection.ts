@@ -10,6 +10,7 @@ import type {
 } from '../../core/runtime.js'
 import type { ClaudeTranscriptEntry } from './schema.js'
 import { selectClaudeActiveTranscript } from './history.js'
+import { parseClaudeCompactSummary } from './compaction.js'
 
 export interface ClaudeTextMessage {
   role: 'user' | 'assistant'
@@ -18,6 +19,7 @@ export interface ClaudeTextMessage {
 
 export type ClaudeDisplayTranscriptItem =
   | { kind: 'user' | 'assistant' | 'thinking'; text: string }
+  | { kind: 'compact'; summary: string }
   | { kind: 'tool'; call: ModelToolCall; detail: string }
   | { kind: 'tool-result'; callId: string; text: string; isError: boolean }
   | { kind: 'shell'; callId: string; command: string }
@@ -33,7 +35,32 @@ function compactedEntries(
   entries: readonly ClaudeTranscriptEntry[],
 ): readonly ClaudeTranscriptEntry[] {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    if (entries[index]?.isCompactSummary === true) return entries.slice(index)
+    const summary = entries[index]
+    if (summary?.isCompactSummary !== true) continue
+    const metadata = summary.summarizeMetadata
+    if (
+      typeof metadata === 'object' &&
+      metadata !== null &&
+      (metadata as Record<string, unknown>).direction === 'from'
+    ) {
+      const boundary = entries.find(
+        (entry) => entry.uuid === summary.parentUuid,
+      )
+      const compactMetadata = boundary?.compactMetadata
+      const segment =
+        typeof compactMetadata === 'object' && compactMetadata !== null
+          ? (compactMetadata as Record<string, unknown>).preservedSegment
+          : undefined
+      const headUuid =
+        typeof segment === 'object' && segment !== null
+          ? (segment as Record<string, unknown>).headUuid
+          : undefined
+      const preservedStart = entries.findIndex(
+        (entry) => entry.uuid === headUuid,
+      )
+      return entries.slice(preservedStart >= 0 ? preservedStart : index)
+    }
+    return entries.slice(index)
   }
   return entries
 }
@@ -180,6 +207,11 @@ export function projectClaudeDisplayTranscript(
     const content = entry.message.content
 
     if (role === 'user') {
+      if (entry.isCompactSummary === true && typeof content === 'string') {
+        const summary = parseClaudeCompactSummary(content)
+        if (summary !== null) items.push({ kind: 'compact', summary })
+        continue
+      }
       const shell = bashEnvelope(content)
       if (shell?.kind === 'input') {
         pendingShell = {

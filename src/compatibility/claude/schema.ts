@@ -707,6 +707,8 @@ function validateCompactBoundary(entry: ClaudeTranscriptEntry): void {
   }
   const segment = metadata.preservedSegment
   const messages = metadata.preservedMessages
+  const preservedUuids =
+    isRecord(messages) && Array.isArray(messages.uuids) ? messages.uuids : []
   if (
     (metadata.trigger !== 'auto' && metadata.trigger !== 'manual') ||
     !isNonNegativeNumber(metadata.preTokens) ||
@@ -714,14 +716,15 @@ function validateCompactBoundary(entry: ClaudeTranscriptEntry): void {
     !isNonNegativeNumber(metadata.durationMs) ||
     !isNonNegativeNumber(metadata.cumulativeDroppedTokens) ||
     !isRecord(segment) ||
-    segment.headUuid !== entry.logicalParentUuid ||
-    segment.tailUuid !== entry.logicalParentUuid ||
+    !isNonEmptyString(segment.headUuid) ||
+    !isNonEmptyString(segment.tailUuid) ||
     !isNonEmptyString(segment.anchorUuid) ||
     !isRecord(messages) ||
     messages.anchorUuid !== segment.anchorUuid ||
-    !Array.isArray(messages.uuids) ||
-    messages.uuids.length === 0 ||
-    messages.uuids.some((value) => !isNonEmptyString(value)) ||
+    preservedUuids.length === 0 ||
+    preservedUuids.some((value) => !isNonEmptyString(value)) ||
+    segment.headUuid !== preservedUuids[0] ||
+    segment.tailUuid !== preservedUuids[preservedUuids.length - 1] ||
     !Array.isArray(messages.allUuids) ||
     messages.allUuids.length === 0 ||
     messages.allUuids.some((value) => !isNonEmptyString(value))
@@ -731,10 +734,16 @@ function validateCompactBoundary(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateCompactSummary(entry: ClaudeTranscriptEntry): void {
+  const summarizeMetadata = entry.summarizeMetadata
+  const isSelectiveSummary =
+    isRecord(summarizeMetadata) &&
+    isNonNegativeNumber(summarizeMetadata.messagesSummarized) &&
+    (summarizeMetadata.direction === 'from' ||
+      summarizeMetadata.direction === 'up_to')
   if (
     entry.type !== 'user' ||
     entry.isCompactSummary !== true ||
-    entry.isVisibleInTranscriptOnly !== true ||
+    (entry.isVisibleInTranscriptOnly !== true && !isSelectiveSummary) ||
     entry.isSidechain !== false ||
     entry.userType !== 'external' ||
     (entry.entrypoint !== 'cli' && entry.entrypoint !== 'sdk-cli') ||

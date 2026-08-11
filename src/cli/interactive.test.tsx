@@ -522,6 +522,288 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Conversation exported to: /workspace/')
   })
 
+  it('manually compacts the active conversation and exposes its summary', async () => {
+    let finishCompact:
+      | ((value: {
+          summary: string
+          usage: { inputTokens: number; outputTokens: number }
+          preTokens: number
+        }) => void)
+      | undefined
+    const compacted = new Promise<{
+      summary: string
+      usage: { inputTokens: number; outputTokens: number }
+      preTokens: number
+    }>((resolve) => {
+      finishCompact = resolve
+    })
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async compact() {
+                return compacted
+              },
+              async transcript() {
+                return [
+                  {
+                    kind: 'compact' as const,
+                    summary: 'durable compact summary',
+                  },
+                ]
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'user', text: 'old task' },
+          { kind: 'assistant', text: 'old answer' },
+        ]}
+        resume={{ sessionId: 'compact-session' }}
+      />,
+    )
+
+    app.stdin.write('/compact')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Compacting conversation…')
+    expect(app.lastFrame()).toContain('▱')
+
+    finishCompact?.({
+      summary: 'durable compact summary',
+      usage: { inputTokens: 12, outputTokens: 4 },
+      preTokens: 40,
+    })
+    await flush()
+    expect(app.lastFrame()).toContain('Conversation compacted')
+    expect(app.lastFrame()).toContain('/compact')
+    expect(app.lastFrame()).toContain('Compacted (ctrl+o to see full summary)')
+    expect(app.lastFrame()).not.toContain('durable compact summary')
+
+    app.stdin.write('\u000F')
+    await flush()
+    expect(app.lastFrame()).toContain('durable compact summary')
+  })
+
+  it('cancels manual compaction from its progress panel', async () => {
+    let aborted = false
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async compact(_sessionId, signal) {
+                await new Promise<void>((_resolve, reject) => {
+                  signal?.addEventListener(
+                    'abort',
+                    () => {
+                      aborted = true
+                      reject(new Error('provider aborted'))
+                    },
+                    { once: true },
+                  )
+                })
+                throw new Error('unreachable')
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[{ kind: 'user', text: 'old task' }]}
+        resume={{ sessionId: 'compact-session' }}
+      />,
+    )
+
+    app.stdin.write('/compact')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Compacting conversation…')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(aborted).toBe(true)
+    expect(app.lastFrame()).not.toContain('Compacting conversation…')
+  })
+
+  it('rewinds code and forks the conversation before a selected message', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork(sessionId, _targetSessionId, resumeSessionAt) {
+                calls.push(`fork:${sessionId}:${resumeSessionAt}`)
+                return {
+                  parentSessionId: sessionId,
+                  sessionId: 'rewound-session',
+                }
+              },
+              async rename(sessionId, name) {
+                calls.push(`rename:${sessionId}:${name}`)
+              },
+              async sessions() {
+                return [
+                  {
+                    sessionId: 'original-session',
+                    name: 'original-title',
+                    lastPrompt: 'change the file',
+                    updatedAt: '2026-08-11T00:00:00.000Z',
+                    status: 'ready' as const,
+                    issue: null,
+                  },
+                ]
+              },
+              async rewindPoints() {
+                return [
+                  {
+                    messageId: 'first-user',
+                    prompt: 'inspect the file',
+                    fileChanges: [],
+                    fileRestoreAvailable: true,
+                  },
+                  {
+                    messageId: 'second-user',
+                    branchMessageId: 'first-assistant',
+                    prompt: 'change the file',
+                    fileChanges: ['/workspace/changed.ts'],
+                    fileRestoreAvailable: true,
+                  },
+                ]
+              },
+              async rewindFiles(sessionId, messageId) {
+                calls.push(`files:${sessionId}:${messageId}`)
+              },
+              async transcript(sessionId) {
+                calls.push(`transcript:${sessionId}`)
+                return [
+                  { kind: 'user' as const, text: 'inspect the file' },
+                  { kind: 'assistant' as const, text: 'inspection complete' },
+                ]
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'user', text: 'change the file' },
+          { kind: 'assistant', text: 'changed' },
+        ]}
+        resume={{ sessionId: 'original-session' }}
+        display={{ version: '0.2.0', cwd: '/workspace' }}
+      />,
+    )
+
+    app.stdin.write('/rewind')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Restore the code and/or conversation')
+    expect(app.lastFrame()).toContain('changed.ts')
+    expect(app.lastFrame()).toContain('(current)')
+
+    app.stdin.write('\u001B[A')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Restore code and conversation')
+    expect(app.lastFrame()).toContain('Summarize from here')
+    expect(app.lastFrame()).toContain('Summarize up to here')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual([
+      'fork:original-session:first-assistant',
+      'rename:rewound-session:original-title (Branch)',
+      'transcript:rewound-session',
+      'files:original-session:second-user',
+    ])
+    expect(app.lastFrame()).toContain('inspection complete')
+    expect(app.lastFrame()).toContain(
+      'Code and conversation restored. Edit the message and submit to continue.',
+    )
+    expect(app.lastFrame()).toContain('change the file')
+  })
+
+  it('keeps long rewind histories inside a bounded scrolling window', async () => {
+    const points = Array.from({ length: 10 }, (_, index) => ({
+      messageId: `user-${index + 1}`,
+      prompt: `prompt ${index + 1}`,
+      fileChanges: [],
+      fileRestoreAvailable: false,
+    }))
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async rewindPoints() {
+                return points
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'long-session' }}
+      />,
+    )
+
+    app.stdin.write('/rewind')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('↑ 4 more above')
+    expect(app.lastFrame()).toContain('prompt 10')
+    expect(app.lastFrame()).not.toContain('prompt 1\n')
+
+    for (let index = 0; index < 7; index += 1) app.stdin.write('\u001B[A')
+    await flush()
+    expect(app.lastFrame()).toContain('prompt 4')
+    expect(app.lastFrame()).toContain('↓ 4 more below')
+    expect(app.lastFrame()).not.toContain('prompt 10')
+  })
+
   it('renames and branches the active conversation without a model turn', async () => {
     const calls: string[] = []
     let currentName = 'original-name'

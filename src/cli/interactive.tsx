@@ -7,6 +7,9 @@ import { Box, Text, render, useApp, useInput } from 'ink'
 
 import type {
   ForkResult,
+  ManualCompactResult,
+  ManualCompactSelection,
+  RewindPoint,
   SessionRunResult,
   SessionSummary,
 } from '../application/session-service.js'
@@ -147,9 +150,20 @@ interface InteractiveSessionCommands {
     command: string,
     signal?: AbortSignal,
   ): Promise<SessionRunResult>
-  fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
+  fork(
+    sessionId: string,
+    targetSessionId?: string,
+    resumeSessionAt?: string,
+  ): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
   transcript?(sessionId: string): Promise<TranscriptItem[]>
+  compact?(
+    sessionId: string,
+    signal?: AbortSignal,
+    selection?: ManualCompactSelection,
+  ): Promise<ManualCompactResult>
+  rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
+  rewindPoints?(sessionId: string): Promise<RewindPoint[]>
   rename?(sessionId: string, name: string): Promise<void>
   sessionNameSuggestion?(
     sessionId: string,
@@ -362,6 +376,24 @@ type InteractiveMenu =
   | { kind: 'effort'; selectedIndex: number }
   | { kind: 'export'; selectedIndex: number }
   | { kind: 'export-filename' }
+  | { kind: 'compact-progress' }
+  | {
+      kind: 'rewind'
+      points: readonly RewindPoint[]
+      selectedIndex: number
+    }
+  | {
+      kind: 'rewind-confirm'
+      points: readonly RewindPoint[]
+      point: RewindPoint
+      selectedIndex: number
+    }
+  | {
+      kind: 'rewind-context'
+      points: readonly RewindPoint[]
+      point: RewindPoint
+      direction: 'from' | 'to'
+    }
   | { kind: 'status'; tabIndex: number }
   | {
       kind: 'list'
@@ -376,6 +408,52 @@ type RuntimePreferences = {
   effort: (typeof EFFORT_OPTIONS)[number]
   permissionMode: ClaudePermissionMode
   additionalDirectories: readonly string[]
+}
+
+type RewindAction =
+  | 'code-and-conversation'
+  | 'conversation'
+  | 'code'
+  | 'summarize-from'
+  | 'summarize-to'
+  | 'cancel'
+
+function rewindActions(point: RewindPoint): readonly {
+  action: RewindAction
+  label: string
+}[] {
+  const shared = [
+    { action: 'summarize-from' as const, label: 'Summarize from here' },
+    { action: 'summarize-to' as const, label: 'Summarize up to here' },
+    { action: 'cancel' as const, label: 'Never mind' },
+  ]
+  return point.fileRestoreAvailable && point.fileChanges.length > 0
+    ? [
+        {
+          action: 'code-and-conversation',
+          label: 'Restore code and conversation',
+        },
+        { action: 'conversation', label: 'Restore conversation' },
+        { action: 'code', label: 'Restore code' },
+        ...shared,
+      ]
+    : [{ action: 'conversation', label: 'Restore conversation' }, ...shared]
+}
+
+function rewindPointWindow(
+  points: readonly RewindPoint[],
+  selectedIndex: number,
+  size = 6,
+): { start: number; end: number } {
+  if (points.length <= size) return { start: 0, end: points.length }
+  if (selectedIndex >= points.length) {
+    return { start: points.length - size, end: points.length }
+  }
+  const start = Math.max(
+    0,
+    Math.min(points.length - size, selectedIndex - Math.floor(size / 2)),
+  )
+  return { start, end: start + size }
 }
 
 function permissionMode(value: string | undefined): ClaudePermissionMode {
@@ -655,6 +733,7 @@ export function InteractiveApp({
   const [menu, setMenu] = useState<InteractiveMenu | null>(null)
   const menuRef = useRef<InteractiveMenu | null>(null)
   const [busy, setBusy] = useState(false)
+  const [compactProgress, setCompactProgress] = useState(0)
   const initialPromptRef = useRef(initialPrompt?.trim() ?? '')
   const [initialPromptPending, setInitialPromptPending] = useState(
     initialPromptRef.current.length > 0,
@@ -773,7 +852,12 @@ export function InteractiveApp({
     history.some((item) => item.kind === 'thinking')
   const hasDetailedTranscript =
     hasThinking ||
-    history.some((item) => item.kind === 'tool' || item.kind === 'shell')
+    history.some(
+      (item) =>
+        item.kind === 'tool' ||
+        item.kind === 'shell' ||
+        item.kind === 'compact',
+    )
   const selectedSlashCommandIndex = Math.min(
     commandSelection,
     Math.max(0, matchingSlashCommands.length - 1),
@@ -1093,6 +1177,17 @@ export function InteractiveApp({
     menuRef.current = next
     setMenu(next)
   }
+
+  useEffect(() => {
+    if (menu?.kind !== 'compact-progress') return
+    const startedAt = Date.now()
+    const timer = setInterval(() => {
+      setCompactProgress(
+        Math.min(99, Math.max(1, Math.floor((Date.now() - startedAt) / 250))),
+      )
+    }, 250)
+    return () => clearInterval(timer)
+  }, [menu?.kind])
 
   const appendPromptHistory = (prompt: string) => {
     if (!prompt) return
@@ -1832,6 +1927,230 @@ export function InteractiveApp({
     })()
     onTurnChange?.(branching)
     void branching.finally(() => onTurnChange?.(null))
+  }
+
+  const compactSession = () => {
+    const compacting = (async () => {
+      if (!sessionId) {
+        append({ kind: 'warning', text: 'No active conversation to compact.' })
+        return
+      }
+      const controller = new AbortController()
+      turnControllerRef.current?.abort()
+      turnControllerRef.current = controller
+      const compactSignal = signal
+        ? AbortSignal.any([signal, controller.signal])
+        : controller.signal
+      setBusy(true)
+      setStatus('compacting conversation')
+      setCompactProgress(0)
+      updateMenu({ kind: 'compact-progress' })
+      try {
+        const commands = await service()
+        if (!commands.compact) {
+          throw new Error('This interactive service cannot compact sessions.')
+        }
+        const result = await commands.compact(sessionId, compactSignal)
+        const projected = await commands.transcript?.(sessionId)
+        setHistory([
+          ...(projected ?? [{ kind: 'compact', summary: result.summary }]),
+          { kind: 'user', text: '/compact' },
+          {
+            kind: 'local-result',
+            text: 'Compacted (ctrl+o to see full summary)',
+          },
+        ])
+        setUsage((current) => ({
+          inputTokens: (current?.inputTokens ?? 0) + result.usage.inputTokens,
+          outputTokens:
+            (current?.outputTokens ?? 0) + result.usage.outputTokens,
+          cacheReadInputTokens:
+            (current?.cacheReadInputTokens ?? 0) +
+            (result.usage.cacheReadInputTokens ?? 0),
+          cacheCreationInputTokens:
+            (current?.cacheCreationInputTokens ?? 0) +
+            (result.usage.cacheCreationInputTokens ?? 0),
+        }))
+      } catch (error) {
+        warn(error)
+      } finally {
+        if (turnControllerRef.current === controller) {
+          turnControllerRef.current = null
+        }
+        updateMenu(null)
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(compacting)
+    void compacting.finally(() => onTurnChange?.(null))
+  }
+
+  const openRewind = () => {
+    const loading = (async () => {
+      if (!sessionId) {
+        append({ kind: 'warning', text: 'No active conversation to rewind.' })
+        return
+      }
+      setBusy(true)
+      setStatus('loading rewind points')
+      try {
+        const commands = await service()
+        if (!commands.rewindPoints) {
+          throw new Error(
+            'This interactive service cannot inspect rewind points.',
+          )
+        }
+        const points = await commands.rewindPoints(sessionId)
+        if (points.length === 0) {
+          append({
+            kind: 'warning',
+            text: 'No conversation checkpoints found.',
+          })
+          return
+        }
+        updateMenu({
+          kind: 'rewind',
+          points,
+          selectedIndex: points.length,
+        })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(loading)
+    void loading.finally(() => onTurnChange?.(null))
+  }
+
+  const applyRewind = (
+    point: RewindPoint,
+    action: RewindAction,
+    summarizationContext?: string,
+  ) => {
+    if (action === 'cancel') {
+      updateMenu(null)
+      return
+    }
+    const restoring = (async () => {
+      if (!sessionId) return
+      setBusy(true)
+      setStatus(action.startsWith('summarize') ? 'summarizing' : 'rewinding')
+      try {
+        const commands = await service()
+        if (action === 'summarize-from' || action === 'summarize-to') {
+          if (!commands.compact) {
+            throw new Error(
+              'This interactive service cannot summarize sessions.',
+            )
+          }
+          const direction = action === 'summarize-from' ? 'from' : 'to'
+          const controller = new AbortController()
+          turnControllerRef.current?.abort()
+          turnControllerRef.current = controller
+          const compactSignal = signal
+            ? AbortSignal.any([signal, controller.signal])
+            : controller.signal
+          setCompactProgress(0)
+          updateMenu({ kind: 'compact-progress' })
+          const result = await commands
+            .compact(sessionId, compactSignal, {
+              messageId: point.messageId,
+              direction,
+              ...(summarizationContext?.trim()
+                ? { context: summarizationContext.trim() }
+                : {}),
+            })
+            .finally(() => {
+              if (turnControllerRef.current === controller) {
+                turnControllerRef.current = null
+              }
+            })
+          const projected = await commands.transcript?.(sessionId)
+          setHistory(
+            projected ?? [{ kind: 'compact', summary: result.summary }],
+          )
+          if (action === 'summarize-from') updateComposerInput(point.prompt)
+          append({ kind: 'assistant', text: 'Summarized conversation' })
+          append({
+            kind: 'local-result',
+            text: `Summarized ${result.messagesSummarized ?? 0} messages ${action === 'summarize-from' ? 'from' : 'up to'} this point\n  (ctrl+o to expand history)`,
+          })
+          setUsage((current) => ({
+            inputTokens: (current?.inputTokens ?? 0) + result.usage.inputTokens,
+            outputTokens:
+              (current?.outputTokens ?? 0) + result.usage.outputTokens,
+            cacheReadInputTokens:
+              (current?.cacheReadInputTokens ?? 0) +
+              (result.usage.cacheReadInputTokens ?? 0),
+            cacheCreationInputTokens:
+              (current?.cacheCreationInputTokens ?? 0) +
+              (result.usage.cacheCreationInputTokens ?? 0),
+          }))
+          return
+        }
+
+        const restoreFiles =
+          action === 'code' || action === 'code-and-conversation'
+        const restoreConversation =
+          action === 'conversation' || action === 'code-and-conversation'
+        let restoredConversation:
+          { sessionId: string; history: TranscriptItem[] } | undefined
+        if (restoreConversation) {
+          if (point.branchMessageId) {
+            const originalSessionId = sessionId
+            const source = (await commands.sessions()).find(
+              (candidate) => candidate.sessionId === originalSessionId,
+            )
+            const fork = await commands.fork(
+              originalSessionId,
+              undefined,
+              point.branchMessageId,
+            )
+            if (source?.name && commands.rename) {
+              await commands.rename(fork.sessionId, `${source.name} (Branch)`)
+            }
+            restoredConversation = {
+              sessionId: fork.sessionId,
+              history: (await commands.transcript?.(fork.sessionId)) ?? [],
+            }
+          } else {
+            restoredConversation = { sessionId: '', history: [] }
+          }
+        }
+        if (restoreFiles) {
+          if (!commands.rewindFiles) {
+            throw new Error('File rewinding is not enabled.')
+          }
+          await commands.rewindFiles(sessionId, point.messageId)
+        }
+        if (restoredConversation) {
+          setSessionId(restoredConversation.sessionId || null)
+          setPendingFork(false)
+          setHistory(restoredConversation.history)
+          updateComposerInput(point.prompt)
+        }
+        append({
+          kind: 'local-result',
+          text:
+            action === 'code'
+              ? 'Code restored. The conversation was unchanged.'
+              : restoreFiles
+                ? 'Code and conversation restored. Edit the message and submit to continue.'
+                : 'Conversation restored. Edit the message and submit to continue.',
+        })
+      } catch (error) {
+        warn(error)
+      } finally {
+        updateMenu(null)
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(restoring)
+    void restoring.finally(() => onTurnChange?.(null))
   }
 
   const submit = async (
@@ -2862,6 +3181,110 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'rewind') {
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+        } else if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                activeMenu.points.length,
+                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+        } else if (key.return) {
+          const point = activeMenu.points[activeMenu.selectedIndex]
+          if (!point) {
+            updateMenu(null)
+          } else {
+            updateMenu({
+              kind: 'rewind-confirm',
+              points: activeMenu.points,
+              point,
+              selectedIndex: 0,
+            })
+          }
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'rewind-confirm') {
+        const actions = rewindActions(activeMenu.point)
+        if (key.escape || value === '\u001B') {
+          updateMenu({
+            kind: 'rewind',
+            points: activeMenu.points,
+            selectedIndex: Math.max(
+              0,
+              activeMenu.points.findIndex(
+                (point) => point.messageId === activeMenu.point.messageId,
+              ),
+            ),
+          })
+        } else if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                actions.length - 1,
+                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+        } else if (key.return) {
+          const selected = actions[activeMenu.selectedIndex]
+          if (
+            selected?.action === 'summarize-from' ||
+            selected?.action === 'summarize-to'
+          ) {
+            clearComposerInput()
+            updateMenu({
+              kind: 'rewind-context',
+              points: activeMenu.points,
+              point: activeMenu.point,
+              direction: selected.action === 'summarize-from' ? 'from' : 'to',
+            })
+          } else if (selected) {
+            applyRewind(activeMenu.point, selected.action)
+          }
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'rewind-context') {
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu({
+            kind: 'rewind-confirm',
+            points: activeMenu.points,
+            point: activeMenu.point,
+            selectedIndex:
+              activeMenu.direction === 'from'
+                ? rewindActions(activeMenu.point).findIndex(
+                    (option) => option.action === 'summarize-from',
+                  )
+                : rewindActions(activeMenu.point).findIndex(
+                    (option) => option.action === 'summarize-to',
+                  ),
+          })
+        } else if (key.return) {
+          const context = inputRef.current
+          clearComposerInput()
+          applyRewind(
+            activeMenu.point,
+            activeMenu.direction === 'from' ? 'summarize-from' : 'summarize-to',
+            context,
+          )
+        } else {
+          editComposer()
+        }
+        return
+      }
+
       if (activeMenu.kind === 'model-input') {
         if (key.escape) {
           clearComposerInput()
@@ -2909,6 +3332,13 @@ export function InteractiveApp({
           exportConversation(
             activeMenu.selectedIndex === 0 ? 'clipboard' : 'file',
           )
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'compact-progress') {
+        if (key.escape || value === '\u001B' || isKeybinding('chat:cancel')) {
+          turnControllerRef.current?.abort()
         }
         return
       }
@@ -3133,6 +3563,10 @@ export function InteractiveApp({
       } else if (prompt === '/branch') {
         append({ kind: 'user', text: prompt })
         branchSession()
+      } else if (prompt === '/compact') {
+        compactSession()
+      } else if (prompt === '/rewind') {
+        openRewind()
       } else if (prompt === '/export') {
         append({ kind: 'user', text: prompt })
         updateMenu({ kind: 'export', selectedIndex: 0 })
@@ -3395,6 +3829,124 @@ export function InteractiveApp({
             <DialogFrame title="Enter filename:" screenReader={axScreenReader}>
               <Text>&gt; {input}</Text>
               <Text dimColor>Enter to save · Esc to go back</Text>
+            </DialogFrame>
+          ) : menu?.kind === 'compact-progress' ? (
+            <Box flexDirection="column">
+              <Text>✻ Compacting conversation…</Text>
+              <Text>
+                {'▰'.repeat(Math.floor(compactProgress / 2))}
+                {'▱'.repeat(50 - Math.floor(compactProgress / 2))}{' '}
+                {compactProgress}%
+              </Text>
+            </Box>
+          ) : menu?.kind === 'rewind' ? (
+            <Box flexDirection="column">
+              <Text bold> Rewind</Text>
+              <Text> </Text>
+              <Text>
+                {' '}
+                Restore the code and/or conversation to the point before…
+              </Text>
+              <Text> </Text>
+              {(() => {
+                const window = rewindPointWindow(
+                  menu.points,
+                  menu.selectedIndex,
+                )
+                return (
+                  <>
+                    {window.start > 0 ? (
+                      <Text dimColor> ↑ {window.start} more above</Text>
+                    ) : null}
+                    {menu.points
+                      .slice(window.start, window.end)
+                      .map((point, offset) => {
+                        const index = window.start + offset
+                        return (
+                          <Box
+                            key={point.messageId}
+                            flexDirection="column"
+                            marginBottom={1}
+                          >
+                            <Text inverse={menu.selectedIndex === index}>
+                              {menu.selectedIndex === index ? ' ❯ ' : '   '}
+                              {point.prompt.replace(/\s+/gu, ' ').slice(0, 72)}
+                            </Text>
+                            <Text dimColor>
+                              {'     '}
+                              {point.fileChanges.length > 0
+                                ? point.fileChanges
+                                    .map((path) =>
+                                      path.startsWith(`${display.cwd}/`)
+                                        ? path.slice(display.cwd.length + 1)
+                                        : path,
+                                    )
+                                    .join(', ')
+                                : point.fileRestoreAvailable
+                                  ? 'No code changes'
+                                  : '⚠ No code restore'}
+                            </Text>
+                          </Box>
+                        )
+                      })}
+                    {window.end < menu.points.length ? (
+                      <Text dimColor>
+                        {' '}
+                        ↓ {menu.points.length - window.end} more below
+                      </Text>
+                    ) : null}
+                  </>
+                )
+              })()}
+              <Text inverse={menu.selectedIndex === menu.points.length}>
+                {menu.selectedIndex === menu.points.length ? ' ❯ ' : '   '}
+                (current)
+              </Text>
+              <Text> </Text>
+              <Text dimColor> Enter to continue · Esc to cancel</Text>
+            </Box>
+          ) : menu?.kind === 'rewind-confirm' ? (
+            <DialogFrame
+              title="Confirm restore point"
+              screenReader={axScreenReader}
+            >
+              <Text>│ {menu.point.prompt}</Text>
+              <Text> </Text>
+              <Text>The conversation will be forked.</Text>
+              <Text>
+                The code will{' '}
+                {menu.point.fileChanges.length > 0
+                  ? `restore ${menu.point.fileChanges.join(', ')}.`
+                  : 'be unchanged.'}
+              </Text>
+              <Text> </Text>
+              {rewindActions(menu.point).map((option, index) => (
+                <Text
+                  key={option.action}
+                  inverse={menu.selectedIndex === index}
+                >
+                  {menu.selectedIndex === index ? '❯ ' : '  '}
+                  {index + 1}. {option.label}
+                </Text>
+              ))}
+              <Text> </Text>
+              <Text color="yellow">
+                ⚠ Rewinding does not affect files edited manually or via bash.
+              </Text>
+            </DialogFrame>
+          ) : menu?.kind === 'rewind-context' ? (
+            <DialogFrame
+              title={`Summarize ${menu.direction === 'from' ? 'from' : 'up to'} here`}
+              screenReader={axScreenReader}
+            >
+              <Text>
+                {menu.direction === 'from'
+                  ? 'Messages after this point will be summarized.'
+                  : 'Messages up to this point will be summarized.'}
+              </Text>
+              <Text> </Text>
+              <Text>add context (optional): {input}</Text>
+              <Text dimColor>Enter to summarize · Esc to go back</Text>
             </DialogFrame>
           ) : menu?.kind === 'permission-rule-input' ? (
             <Box flexDirection="column">

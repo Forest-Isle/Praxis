@@ -1,5 +1,9 @@
 import { getClaudeContentBlocks } from './tool-links.js'
-import { selectClaudeTranscriptAtMessage } from './history.js'
+import { getClaudePreservedMessageUuids } from './compaction.js'
+import {
+  selectClaudeActiveTranscript,
+  selectClaudeTranscriptAtMessage,
+} from './history.js'
 import {
   copyClaudeEntryWithSessionId,
   isClaudeForkableEntryType,
@@ -83,14 +87,22 @@ function validateNativeHistory(
         typeof metadata === 'object' && metadata !== null
           ? (metadata as Record<string, unknown>).preservedSegment
           : undefined
+      const preservedUuids = getClaudePreservedMessageUuids(entry)
+      const segment =
+        typeof preservedSegment === 'object' && preservedSegment !== null
+          ? (preservedSegment as Record<string, unknown>)
+          : {}
+      const segmentMatchesLogicalTail =
+        segment.headUuid === logicalTailUuid &&
+        segment.tailUuid === logicalTailUuid
+      const segmentMatchesPreserved =
+        segment.headUuid === preservedUuids[0] &&
+        segment.tailUuid === preservedUuids[preservedUuids.length - 1]
       if (
         typeof preservedSegment !== 'object' ||
         preservedSegment === null ||
         entry.logicalParentUuid !== logicalTailUuid ||
-        (preservedSegment as Record<string, unknown>).headUuid !==
-          logicalTailUuid ||
-        (preservedSegment as Record<string, unknown>).tailUuid !==
-          logicalTailUuid
+        (!segmentMatchesLogicalTail && !segmentMatchesPreserved)
       ) {
         throw new Error('Claude compact boundary has invalid logical parent')
       }
@@ -180,9 +192,21 @@ export function createClaudeNativeFork({
   let lastPrompt: ClaudeTranscriptEntry | undefined
   let nativeLastPrompt: ClaudeTranscriptEntry | undefined
 
+  const hasSelectiveSummary = source.some((entry) => {
+    if (entry.isCompactSummary !== true) return false
+    const metadata = entry.summarizeMetadata
+    return (
+      typeof metadata === 'object' &&
+      metadata !== null &&
+      ((metadata as Record<string, unknown>).direction === 'from' ||
+        (metadata as Record<string, unknown>).direction === 'up_to')
+    )
+  })
   const activeSource =
     resumeSessionAt === undefined
-      ? source
+      ? hasSelectiveSummary
+        ? selectClaudeActiveTranscript(source)
+        : source
       : selectClaudeTranscriptAtMessage(source, resumeSessionAt)
   for (const entry of activeSource) {
     if (TRANSIENT_ENTRY_TYPES.has(entry.type)) {

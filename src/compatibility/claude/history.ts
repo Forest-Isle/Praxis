@@ -1,4 +1,5 @@
 import type { ClaudeTranscriptEntry } from './schema.js'
+import { getClaudePreservedMessageUuids } from './compaction.js'
 
 function entryUuid(entry: ClaudeTranscriptEntry): string | null {
   return typeof entry.uuid === 'string' ? entry.uuid : null
@@ -7,6 +8,27 @@ function entryUuid(entry: ClaudeTranscriptEntry): string | null {
 function latestLeafUuid(
   entries: readonly ClaudeTranscriptEntry[],
 ): string | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const summary = entries[index]
+    if (
+      summary?.isCompactSummary !== true ||
+      typeof summary.uuid !== 'string'
+    ) {
+      continue
+    }
+    const boundary = entries.find((entry) => entry.uuid === summary.parentUuid)
+    const uuids = new Set(getClaudePreservedMessageUuids(boundary))
+    const hasNewDescendant = entries
+      .slice(index + 1)
+      .some(
+        (entry) =>
+          typeof entry.uuid === 'string' &&
+          !uuids.has(entry.uuid) &&
+          entry.isSidechain !== true,
+      )
+    if (!hasNewDescendant) return summary.uuid
+    break
+  }
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]
     if (!entry || entry.isSidechain === true) continue
@@ -73,6 +95,39 @@ function selectAncestry(
   })
 }
 
+function expandPreservedMessages(
+  entries: readonly ClaudeTranscriptEntry[],
+  active: readonly ClaudeTranscriptEntry[],
+): ClaudeTranscriptEntry[] {
+  const byUuid = new Map(
+    entries.flatMap((entry) =>
+      typeof entry.uuid === 'string' ? [[entry.uuid, entry] as const] : [],
+    ),
+  )
+  const included = new Set(
+    active.flatMap((entry) =>
+      typeof entry.uuid === 'string' ? [entry.uuid] : [],
+    ),
+  )
+  const expanded: ClaudeTranscriptEntry[] = []
+  for (const entry of active) {
+    expanded.push(entry)
+    if (entry.isCompactSummary !== true) continue
+    const boundary = byUuid.get(
+      typeof entry.parentUuid === 'string' ? entry.parentUuid : '',
+    )
+    const uuids = getClaudePreservedMessageUuids(boundary)
+    for (const uuid of uuids) {
+      if (typeof uuid !== 'string' || included.has(uuid)) continue
+      const preserved = byUuid.get(uuid)
+      if (!preserved || preserved.isSidechain === true) continue
+      expanded.push(preserved)
+      included.add(uuid)
+    }
+  }
+  return expanded
+}
+
 export function selectClaudeActiveTranscript(
   entries: readonly ClaudeTranscriptEntry[],
 ): ClaudeTranscriptEntry[] {
@@ -85,7 +140,7 @@ export function selectClaudeActiveTranscript(
   ) {
     return [...entries]
   }
-  return selectAncestry(entries, leafUuid)
+  return expandPreservedMessages(entries, selectAncestry(entries, leafUuid))
 }
 
 export function selectClaudeTranscriptAtMessage(

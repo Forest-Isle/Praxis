@@ -9,8 +9,118 @@ import {
   projectClaudeModelMessages,
   projectClaudeTextMessages,
 } from './projection.js'
+import { createClaudeCompactEntries } from './compaction.js'
 
 describe('Claude transcript projection', () => {
+  it('renders native compact summaries as expandable transcript markers', () => {
+    const compact = createClaudeCompactEntries({
+      sessionId: 'compact-session',
+      logicalParentUuid: 'assistant-before',
+      summary: 'durable summary',
+      preTokens: 100,
+      postTokens: 20,
+      previousCumulativeDroppedTokens: 0,
+      durationMs: 10,
+      cwd: '/workspace',
+      claudeVersion: '2.1.208',
+      gitBranch: null,
+      createUuid: (() => {
+        const uuids = ['boundary', 'summary']
+        return () => uuids.shift() ?? 'fallback'
+      })(),
+    })
+
+    expect(
+      projectClaudeDisplayTranscript([
+        {
+          type: 'assistant',
+          uuid: 'assistant-before',
+          parentUuid: null,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'discarded answer' }],
+          },
+        },
+        ...compact,
+      ]),
+    ).toEqual([{ kind: 'compact', summary: 'durable summary' }])
+  })
+
+  it('replays messages preserved after a native up-to summary', () => {
+    const compact = createClaudeCompactEntries({
+      sessionId: 'compact-session',
+      logicalParentUuid: 'assistant-before',
+      summary: 'summary before the selected prompt',
+      preTokens: 100,
+      postTokens: 40,
+      previousCumulativeDroppedTokens: 0,
+      durationMs: 10,
+      cwd: '/workspace',
+      claudeVersion: '2.1.208',
+      gitBranch: null,
+      summarizeMetadata: { messagesSummarized: 2, direction: 'up_to' },
+      preservedUuids: ['user-preserved', 'assistant-preserved'],
+      createUuid: (() => {
+        const uuids = ['boundary', 'summary']
+        return () => uuids.shift() ?? 'fallback'
+      })(),
+    })
+    const entries = [
+      {
+        type: 'assistant',
+        uuid: 'assistant-before',
+        parentUuid: null,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'discarded answer' }],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'user-preserved',
+        parentUuid: 'assistant-before',
+        message: { role: 'user', content: 'selected prompt remains' },
+      },
+      {
+        type: 'assistant',
+        uuid: 'assistant-preserved',
+        parentUuid: 'user-preserved',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'later answer remains' }],
+        },
+      },
+      ...compact,
+    ]
+
+    expect(projectClaudeDisplayTranscript(entries)).toEqual([
+      { kind: 'compact', summary: 'summary before the selected prompt' },
+      { kind: 'user', text: 'selected prompt remains' },
+      { kind: 'assistant', text: 'later answer remains' },
+    ])
+    expect(projectClaudeModelMessages(entries)).toEqual([
+      expect.objectContaining({ role: 'user' }),
+      { role: 'user', content: 'selected prompt remains' },
+      { role: 'assistant', content: 'later answer remains' },
+    ])
+    const [discarded, preservedUser, preservedAssistant] = entries
+    if (!discarded || !preservedUser || !preservedAssistant) {
+      throw new Error('projection fixture is incomplete')
+    }
+    expect(
+      projectClaudeDisplayTranscript([
+        discarded,
+        ...compact,
+        preservedUser,
+        preservedAssistant,
+      ]),
+    ).toEqual([
+      { kind: 'compact', summary: 'summary before the selected prompt' },
+      { kind: 'user', text: 'selected prompt remains' },
+      { kind: 'assistant', text: 'later answer remains' },
+    ])
+  })
+
   it('projects active display history with thinking, tools, results, and shell turns', () => {
     const entries = [
       {

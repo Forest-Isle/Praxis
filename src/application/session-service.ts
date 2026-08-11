@@ -19,7 +19,10 @@ import {
   type ClaudeFileResourceConfig,
 } from '../compatibility/claude/file-resources.js'
 import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
-import { selectClaudeTranscriptAtMessage } from '../compatibility/claude/history.js'
+import {
+  selectClaudeActiveTranscript,
+  selectClaudeTranscriptAtMessage,
+} from '../compatibility/claude/history.js'
 import { ClaudeFileHistory } from '../compatibility/claude/file-history.js'
 import { getClaudePrLink } from '../compatibility/claude/pr-links.js'
 import {
@@ -60,7 +63,10 @@ import {
 import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
 import type { Compactor } from '../core/compaction.js'
-import { ContextBudget } from '../core/context-budget.js'
+import {
+  ContextBudget,
+  estimateModelRequestTokens,
+} from '../core/context-budget.js'
 import {
   injectFirstUserMessageContext,
   type ContextAssembler,
@@ -195,6 +201,28 @@ export interface SessionInspection extends SessionSummary {
 export interface ForkResult {
   sessionId: string
   parentSessionId: string
+}
+
+export interface ManualCompactResult {
+  summary: string
+  usage: ModelUsage
+  preTokens: number
+  messagesSummarized?: number
+}
+
+export interface ManualCompactSelection {
+  messageId: string
+  direction: 'from' | 'to'
+  context?: string
+}
+
+export interface RewindPoint {
+  messageId: string
+  prompt: string
+  timestamp?: string
+  branchMessageId?: string
+  fileChanges: readonly string[]
+  fileRestoreAvailable: boolean
 }
 
 const emptyToolRegistry: ToolRegistry = {
@@ -818,6 +846,146 @@ export class ClaudeSessionService {
     }
   }
 
+  async compact(
+    sessionId: string,
+    signal?: AbortSignal,
+    selection?: ManualCompactSelection,
+  ): Promise<ManualCompactResult> {
+    this.assertWritable()
+    const provider = this.provider()
+    const result = await this.turnStore(sessionId).withLease(async (lease) => {
+      const snapshot = await lease.load()
+      if (snapshot.entries.length === 0) {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      const activeEntries = selectClaudeActiveTranscript(snapshot.entries)
+      const allMessages = projectClaudeModelMessages(activeEntries)
+      let selectedEntries = activeEntries
+      let logicalParentUuid = this.lastMessageUuid(activeEntries)
+      let preservedEntries: ClaudeTranscriptEntry[] = []
+      if (selection) {
+        const targetIndex = activeEntries.findIndex(
+          (entry) => entry.uuid === selection.messageId,
+        )
+        if (targetIndex < 0) {
+          throw new Error(
+            `No rewind point found with message.uuid of: ${selection.messageId}`,
+          )
+        }
+        if (selection.direction === 'from') {
+          selectedEntries = activeEntries.slice(targetIndex)
+          preservedEntries = activeEntries.slice(0, targetIndex)
+          logicalParentUuid = this.lastMessageUuid(preservedEntries)
+          if (!logicalParentUuid) logicalParentUuid = selection.messageId
+        } else {
+          selectedEntries = activeEntries.slice(0, targetIndex)
+          preservedEntries = activeEntries.slice(targetIndex)
+          const target = activeEntries[targetIndex]
+          logicalParentUuid =
+            typeof target?.parentUuid === 'string'
+              ? target.parentUuid
+              : this.lastMessageUuid(selectedEntries)
+        }
+      }
+      const selectedMessages = projectClaudeModelMessages(selectedEntries)
+      const messages: ModelMessage[] = [
+        ...selectedMessages,
+        ...(selection?.context
+          ? [
+              {
+                role: 'user' as const,
+                content: `Additional summarization context: ${selection.context}`,
+              },
+            ]
+          : []),
+      ]
+      if (!logicalParentUuid || selectedMessages.length === 0) {
+        throw new Error('Cannot compact an empty Claude transcript')
+      }
+      if (findUnresolvedClaudeToolCalls(snapshot.entries).length > 0) {
+        throw new Error(
+          'Cannot compact a Claude session with unresolved tool calls',
+        )
+      }
+      this.options.eventSink?.({ type: 'state', state: 'compacting' })
+      const contextWindowTokens =
+        this.contextBudget(provider)?.contextWindowTokens ??
+        provider.capabilities.contextWindowTokens ??
+        200_000
+      const compacted = await (
+        this.options.compactor ?? new ModelCompactor(provider)
+      ).compact({
+        messages,
+        targetTokens: Math.min(
+          8192,
+          Math.max(1, Math.floor(contextWindowTokens / 4)),
+        ),
+        contextWindowTokens,
+        ...(signal ? { signal } : {}),
+      })
+      if (signal?.aborted) throw new AgentRunCancelledError()
+      const preTokens = estimateModelRequestTokens(allMessages)
+      const summary = compacted.summary
+      const preservedMessages = projectClaudeModelMessages(preservedEntries)
+      const boundaryUuid = randomUUID()
+      const summaryUuid = randomUUID()
+      const uuids = [boundaryUuid, summaryUuid]
+      const entries = createClaudeCompactEntries({
+        sessionId,
+        logicalParentUuid,
+        summary,
+        preTokens,
+        postTokens: estimateModelRequestTokens([
+          { role: 'user', content: formatClaudeCompactSummary(summary) },
+          ...preservedMessages,
+        ]),
+        previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
+          snapshot.entries,
+        ),
+        durationMs: compacted.durationMs,
+        cwd: this.activeCwd(),
+        claudeVersion: this.options.claudeVersion,
+        gitBranch: null,
+        trigger: 'manual',
+        ...(selection
+          ? {
+              summarizeMetadata: {
+                messagesSummarized: selectedMessages.length,
+                direction:
+                  selection.direction === 'to' ? 'up_to' : selection.direction,
+              },
+              preservedUuids: preservedEntries.flatMap((entry) =>
+                typeof entry.uuid === 'string' ? [entry.uuid] : [],
+              ),
+            }
+          : {}),
+        createUuid: () => uuids.shift() ?? randomUUID(),
+      })
+      const appendResult = await lease.appendMany(snapshot.tail, entries)
+      if (appendResult.status === 'conflict') {
+        throw new Error(
+          `Claude transcript append conflict: ${appendResult.reason}`,
+        )
+      }
+      this.options.eventSink?.({
+        type: 'compact-boundary',
+        trigger: 'manual',
+        preTokens,
+        uuid: boundaryUuid,
+      })
+      return {
+        summary,
+        usage: compacted.usage,
+        preTokens,
+        ...(selection ? { messagesSummarized: selectedMessages.length } : {}),
+      }
+    })
+    if (result.status === 'conflict') {
+      throw new Error(`Claude transcript compact conflict: ${result.reason}`)
+    }
+    return result.value
+  }
+
   async fork(
     parentSessionId: string,
     sessionId: string = randomUUID(),
@@ -867,6 +1035,85 @@ export class ClaudeSessionService {
     if (result.status === 'conflict') {
       throw new Error(`Claude file rewind conflict: ${result.reason}`)
     }
+  }
+
+  async rewindPoints(sessionId: string): Promise<RewindPoint[]> {
+    const result = await this.turnStore(sessionId).withLease((lease) =>
+      lease.load(),
+    )
+    if (result.status === 'conflict') {
+      throw new Error(`Claude transcript rewind conflict: ${result.reason}`)
+    }
+    if (result.value.entries.length === 0) {
+      throw new Error(`Claude session not found: ${sessionId}`)
+    }
+    const active = selectClaudeActiveTranscript(result.value.entries)
+    const snapshots = new Set(
+      active
+        .filter(
+          (entry) =>
+            entry.type === 'file-history-snapshot' &&
+            typeof entry.messageId === 'string',
+        )
+        .map((entry) => entry.messageId as string),
+    )
+    const changes = new Map<string, Set<string>>()
+    for (const entry of active) {
+      if (
+        entry.type !== 'file-history-delta' ||
+        typeof entry.snapshotMessageId !== 'string' ||
+        typeof entry.trackingPath !== 'string'
+      ) {
+        continue
+      }
+      const paths = changes.get(entry.snapshotMessageId) ?? new Set<string>()
+      paths.add(entry.trackingPath)
+      changes.set(entry.snapshotMessageId, paths)
+    }
+    const points: RewindPoint[] = []
+    let branchMessageId: string | undefined
+    for (const entry of active) {
+      if (
+        (entry.type === 'user' || entry.type === 'assistant') &&
+        typeof entry.uuid === 'string'
+      ) {
+        const message = entry.message
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          !Array.isArray(message)
+        ) {
+          const role = (message as Record<string, unknown>).role
+          const content = (message as Record<string, unknown>).content
+          if (
+            entry.type === 'user' &&
+            role === 'user' &&
+            typeof content === 'string' &&
+            entry.isCompactSummary !== true &&
+            entry.isMeta !== true &&
+            typeof entry.sourceToolAssistantUUID !== 'string' &&
+            !content.startsWith('<bash-input>') &&
+            !content.startsWith('<local-command-') &&
+            !content.startsWith('<command-name>')
+          ) {
+            points.push({
+              messageId: entry.uuid,
+              prompt: content,
+              ...(typeof entry.timestamp === 'string'
+                ? { timestamp: entry.timestamp }
+                : {}),
+              ...(branchMessageId === undefined ? {} : { branchMessageId }),
+              fileChanges: [...(changes.get(entry.uuid) ?? [])],
+              fileRestoreAvailable: snapshots.has(entry.uuid),
+            })
+          }
+          if (role === 'user' || role === 'assistant') {
+            branchMessageId = entry.uuid
+          }
+        }
+      }
+    }
+    return points
   }
 
   async setPermissionMode(

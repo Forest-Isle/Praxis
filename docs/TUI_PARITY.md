@@ -20,7 +20,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
   rather than requiring users to remember the available slash commands;
 - applicable local commands include direct `/add-dir`, response `/copy [N]`,
   native `/branch` and `/rename`, full-conversation `/export`, `/config`,
-  `/usage`, `/mcp`, `/skill`, and live plugin/skill reload entries;
+  `/usage`, `/mcp`, `/skill`, provider-backed `/compact`, native `/rewind`,
+  and live plugin/skill reload entries;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
 - entering `!` switches the composer to shell mode; submitting runs the command
@@ -53,30 +54,32 @@ status-line plugins are not native parity requirements.
 
 ## State matrix
 
-| State         | Observable Claude Code shape             | Praxis evidence                                |
-| ------------- | ---------------------------------------- | ---------------------------------------------- |
-| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures        |
-| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate                 |
-| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests                |
-| Slash command | filterable command name and description  | expanded catalog, selection, and PTY fixtures  |
-| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures          |
-| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures       |
-| Tool          | named call with indented input/result    | structured tool and diff fixtures              |
-| Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures     |
-| Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures    |
-| Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures    |
-| Keybindings   | shared template and editor round trip    | black-box, parser, interaction, and PTY gates  |
-| Clipboard     | cursor text/image paste with markers     | parser, interaction, image, and PTY fixtures   |
-| Suspend       | stopped shell job plus `fg` recovery     | process, busy-state, and zsh PTY fixtures      |
-| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures          |
-| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures        |
-| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures      |
-| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures       |
-| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures       |
-| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests             |
-| Resume        | selectable list plus active history      | projection, picker, interaction, and Ink tests |
-| Export        | clipboard/file method and filename flow  | formatter, interaction, and PTY fixtures       |
-| Accessibility | decoration-free semantic text            | screen-reader fixture                          |
+| State         | Observable Claude Code shape             | Praxis evidence                                 |
+| ------------- | ---------------------------------------- | ----------------------------------------------- |
+| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures         |
+| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate                  |
+| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests                 |
+| Slash command | filterable command name and description  | expanded catalog, selection, and PTY fixtures   |
+| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures           |
+| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures        |
+| Tool          | named call with indented input/result    | structured tool and diff fixtures               |
+| Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures      |
+| Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures     |
+| Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures     |
+| Keybindings   | shared template and editor round trip    | black-box, parser, interaction, and PTY gates   |
+| Clipboard     | cursor text/image paste with markers     | parser, interaction, image, and PTY fixtures    |
+| Suspend       | stopped shell job plus `fg` recovery     | process, busy-state, and zsh PTY fixtures       |
+| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures           |
+| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures         |
+| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures       |
+| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures        |
+| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures        |
+| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests              |
+| Resume        | selectable list plus active history      | projection, picker, interaction, and Ink tests  |
+| Export        | clipboard/file method and filename flow  | formatter, interaction, and PTY fixtures        |
+| Compact       | progress, marker, expandable summary     | service, projection, interaction, and PTY gates |
+| Rewind        | bounded checkpoints and restore actions  | native JSONL/file-history and interaction gates |
+| Accessibility | decoration-free semantic text            | screen-reader fixture                           |
 
 ## Architecture
 
@@ -170,6 +173,16 @@ is passed from the CLI composition root and never written to shared JSONL.
   observed clipboard/file chooser. Clipboard export contains the complete
   terminal-style conversation; file export adds a timestamped editable filename
   prompt and writes under the current working directory without changing JSONL.
+- `/compact` runs the configured provider compactor with an interruptible
+  progress panel, appends only native `compact_boundary` and compact-summary
+  records, merges measured usage, and exposes the durable summary through
+  `Ctrl+O`. `/rewind` opens a bounded, scrolling user-message checkpoint list.
+  Its confirmation surface can restore code, fork conversation history, or do
+  both; conversation forks are created before file restoration so a failed fork
+  cannot partially rewind the workspace. Selective `from` and `up_to`
+  summarization uses Claude-native `summarizeMetadata` and
+  `preservedSegment`/`preservedMessages` UUID replay rather than private JSONL
+  fields or serialized messages inside the summary.
 - `/model` retains the current model, restores the invocation default, or accepts
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
@@ -282,6 +295,9 @@ is passed from the CLI composition root and never written to shared JSONL.
   installed-package `!pwd` execution, provider continuation, direct `/add-dir`
   cancellation, `/copy` response output, `/rename`, `/branch`, complete
   `/export` clipboard output, and native transcript tags;
+  installed-package `/compact` completion and `/rewind` menu gates, interaction
+  cancellation coverage, plus native selective-summary projection and
+  preserved-message replay;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
@@ -295,7 +311,7 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the remaining applicable built-in command catalog
-(`/background`, `/btw`, `/cd`, `/compact`, `/hooks`, `/memory`, `/rewind`, and
+(`/background`, `/btw`, `/cd`, `/hooks`, `/memory`, and
 presentation controls), exact denied-history
 behavior, and remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a

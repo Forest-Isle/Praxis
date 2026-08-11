@@ -26,6 +26,7 @@ export type TranscriptItem =
   | { kind: 'user' | 'assistant' | 'notice' | 'warning'; text: string }
   | { kind: 'local-result'; text: string }
   | { kind: 'thinking'; text: string }
+  | { kind: 'compact'; summary: string }
   | {
       kind: 'context'
       usedTokens: number
@@ -615,6 +616,22 @@ export function Transcript({
               expanded={detailed}
               screenReader={screenReader}
             />
+          )
+        }
+        if (item.kind === 'compact') {
+          return (
+            <Box key={index} flexDirection="column" marginTop={1}>
+              <Text color={ACCENT} italic>
+                {screenReader
+                  ? 'Conversation compacted'
+                  : '✻ Conversation compacted (ctrl+o for history)'}
+              </Text>
+              {detailed ? (
+                <Box marginLeft={screenReader ? 0 : 2}>
+                  <MarkdownText text={item.summary} />
+                </Box>
+              ) : null}
+            </Box>
           )
         }
         if (item.kind === 'context') {
