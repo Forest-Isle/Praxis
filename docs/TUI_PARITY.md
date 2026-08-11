@@ -157,6 +157,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   turn reloads instructions without adding shared transcript fields.
 - `ListDashboard`: shared presentation for `.claude` skills and local
   background task/workflow state.
+- `HookDashboard`: read-only 2.1.208 event catalog with bounded event, matcher,
+  and individual-hook views projected from fresh shared settings.
 - `BtwPanel`: session-local side-question history with bounded answer scrolling,
   clipboard copy, history pruning, cancellation, and native background-Agent
   handoff.
@@ -183,6 +185,13 @@ is passed from the CLI composition root and never written to shared JSONL.
   `/config` and `/usage` open their matching status tabs; `/mcp` lists current
   server status; `/skill` aliases the shared skill list; `/reload-skills` and
   `/reload-plugins` rebuild the active extension-backed service in place.
+- `/hooks` opens the observed read-only event catalog. Enter drills from an
+  event into its scoped matchers and then configured command, prompt, agent, or
+  HTTP hooks; Esc returns one level at a time. Counts, matcher scope,
+  status-message labels, and source labels come from active
+  user/project/local/plugin settings. Each open uses a fresh local projection
+  for the current cwd and needs no provider key or model. The surface never
+  rewrites shared settings.
 - `/rename [name]` appends Claude-native title records; without a name it asks
   the active provider for a short kebab-case title. `/branch` forks the active
   native transcript, applies the observed ` (Branch)` title, switches the live
@@ -330,11 +339,12 @@ is passed from the CLI composition root and never written to shared JSONL.
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, `Ctrl+T` task access, exact permission rule
-  deletion and Workspace add/remove surfaces, and `/memory` discovery,
-  loading/final hierarchy, imported-file `$EDITOR` lifecycle, auto-memory
-  folder-launch sentinel, next-turn provider reload, and recursive shared-tree
-  path/type/content no-write snapshot around cancellation with exact runtime
-  transcript/lock exclusion and sibling-JSONL mutation detection,
+  deletion and Workspace add/remove surfaces, providerless `/hooks`
+  scope coverage plus installed event/matcher/detail navigation, and `/memory`
+  discovery, loading/final hierarchy, imported-file `$EDITOR` lifecycle,
+  auto-memory folder-launch sentinel, next-turn provider reload, and recursive
+  shared-tree path/type/content no-write snapshot around cancellation with exact
+  runtime transcript/lock exclusion and sibling-JSONL mutation detection,
   `Ctrl+G` terminal suspension/edit/redraw, `/keybindings` shared template/editor
   creation, installed-package `Ctrl+V` text paste, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus

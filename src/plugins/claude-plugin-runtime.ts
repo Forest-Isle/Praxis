@@ -902,6 +902,9 @@ async function loadPlugin(
     userConfig,
   )
   const pluginResourceMetadata = {
+    plugin: true as const,
+    pluginName: manifest.name,
+    pluginSource: source,
     environment: pluginEnvironment,
     ...(sensitiveValues.length === 0 ? {} : { sensitiveValues }),
   }
@@ -1102,7 +1105,6 @@ async function loadPlugin(
       mcp.push({
         path: mcpPath,
         scope,
-        plugin: true,
         value: expandPluginMcpResource(
           mcpValue,
           manifest.name,
@@ -1186,7 +1188,6 @@ async function loadPlugin(
           mcp.push({
             path: specPath,
             scope,
-            plugin: true,
             value: expandPluginMcpResource(
               value,
               manifest.name,
@@ -1206,7 +1207,6 @@ async function loadPlugin(
         mcp.push({
           path: join(canonical, '.claude-plugin', `plugin-mcp-${index}.json`),
           scope,
-          plugin: true,
           value: expandPluginMcpResource(
             { mcpServers: spec },
             manifest.name,

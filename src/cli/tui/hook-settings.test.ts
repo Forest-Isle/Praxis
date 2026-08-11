@@ -1,28 +1,99 @@
+import { readFile } from 'node:fs/promises'
+
 import { describe, expect, it } from 'vitest'
 
-import { projectTuiHooks, TUI_HOOK_EVENTS } from './hook-settings.js'
+import {
+  projectTuiHooks,
+  TUI_HOOK_EVENTS,
+  TUI_HOOK_MENU,
+} from './hook-settings.js'
 
 describe('TUI hook settings projection', () => {
-  it('projects all observed 2.1.208 events in menu order', () => {
-    expect(TUI_HOOK_EVENTS.map((event) => event.name)).toEqual([
-      'PreToolUse',
-      'PostToolUse',
-      'PostToolUseFailure',
-      'PostToolBatch',
-      'PermissionDenied',
-      'Notification',
-      'UserPromptSubmit',
-      'UserPromptExpansion',
-      'SessionStart',
-      'Stop',
-      'StopFailure',
-      'SubagentStart',
-      'SubagentStop',
-      'PreCompact',
-      'PostCompact',
-      'SessionEnd',
-      'PermissionRequest',
-    ])
+  it('matches the fixed Claude Code 2.1.208 event and detail fixture', async () => {
+    const fixture = JSON.parse(
+      await readFile(
+        new URL(
+          '../../../test/fixtures/claude-code/2.1.208/hooks-tui.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as {
+      topLevel: typeof TUI_HOOK_MENU
+      events: [string, string][]
+      observedDetails: Record<string, string[]>
+    }
+
+    expect(TUI_HOOK_MENU).toEqual(fixture.topLevel)
+    expect(
+      TUI_HOOK_EVENTS.map(({ name, description }) => [name, description]),
+    ).toEqual(fixture.events)
+    expect(
+      Object.fromEntries(
+        TUI_HOOK_EVENTS.filter((event) => event.detail.length > 0).map(
+          (event) => [event.name, event.detail],
+        ),
+      ),
+    ).toEqual(fixture.observedDetails)
+  })
+
+  it('matches observed scopes and hook types from the 2.1.208 fixture', async () => {
+    const fixture = JSON.parse(
+      await readFile(
+        new URL(
+          '../../../test/fixtures/claude-code/2.1.208/hooks-tui.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as {
+      scopes: [string, string][]
+      hookTypes: string[]
+    }
+    const resources = fixture.scopes.map(([scope], index) => ({
+      path: `/fixture/${scope.toLowerCase()}.json`,
+      scope:
+        scope === 'Project'
+          ? ('project' as const)
+          : scope === 'Local'
+            ? ('local' as const)
+            : ('user' as const),
+      ...(scope === 'Plugin'
+        ? {
+            plugin: true as const,
+            pluginName: 'hooks-fixture',
+            pluginSource: 'hooks-fixture@inline',
+          }
+        : {}),
+      value: {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: `fixture-${index}`,
+              hooks: [
+                {
+                  type: fixture.hookTypes[index],
+                  command: 'fixture command',
+                  prompt: 'fixture prompt',
+                  url: 'https://fixture.test/hook',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    }))
+
+    const projected = projectTuiHooks(resources)
+    expect(
+      projected.events[0]?.matchers.map((matcher) => [
+        matcher.scope,
+        matcher.scopeLabel,
+      ]),
+    ).toEqual(fixture.scopes)
+    expect(
+      projected.events[0]?.matchers.map((matcher) => matcher.hooks[0]?.type),
+    ).toEqual(fixture.hookTypes)
   })
 
   it('counts hook types and preserves matcher, scope, and display details', () => {

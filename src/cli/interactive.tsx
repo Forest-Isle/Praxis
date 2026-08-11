@@ -209,7 +209,7 @@ interface InteractiveSessionCommands {
     signal?: AbortSignal,
   ): Promise<string | null>
   workflows?(): readonly Record<string, unknown>[]
-  hookConfiguration?(): TuiHookConfiguration
+  hookConfiguration?(): Promise<TuiHookConfiguration>
   slashCommands?(): readonly TuiSlashCommand[]
   agentDefinitions?(): readonly TuiAgentEntry[]
   runtimeInfo?(): CliRuntimeInfo
@@ -4314,10 +4314,24 @@ export function InteractiveApp({
         const loading = (async () => {
           setBusy(true)
           setStatus('loading hooks')
+          let localService: InteractiveSessionCommands | undefined
           try {
-            const configuration = (await service()).hookConfiguration?.()
-            if (!configuration)
+            const preferences = runtimePreferencesRef.current
+            localService = await factory.createService({
+              eventSink: handleEvent,
+              requireProvider: false,
+              ...(preferences.model === undefined
+                ? {}
+                : { model: preferences.model }),
+              effort: preferences.effort,
+              permissionMode: preferences.permissionMode,
+              additionalDirectories: preferences.additionalDirectories,
+              cwd: runtimeCwdRef.current,
+              ...(signal ? { signal } : {}),
+            })
+            if (!localService.hookConfiguration)
               throw new Error('Hook configuration is unavailable.')
+            const configuration = await localService.hookConfiguration()
             updateMenu({
               kind: 'hooks',
               configuration,
@@ -4329,6 +4343,11 @@ export function InteractiveApp({
           } catch (error) {
             warn(error)
           } finally {
+            try {
+              await localService?.close?.()
+            } catch (error) {
+              warn(error)
+            }
             setBusy(false)
             setStatus('ready')
           }

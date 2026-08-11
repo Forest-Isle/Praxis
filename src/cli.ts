@@ -981,7 +981,7 @@ interface SessionCommands {
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
   slashCommands?(): readonly TuiSlashCommand[]
-  hookConfiguration?(): TuiHookConfiguration
+  hookConfiguration?(): Promise<TuiHookConfiguration>
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
   agentDefinitions?(): readonly { name: string; description: string }[]
@@ -1226,7 +1226,40 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       : {}),
   }
-  if (!provider && !exposeToolRegistry) return new ClaudeSessionService(options)
+  if (!provider && !exposeToolRegistry) {
+    const service = new ClaudeSessionService(options)
+    if (!interactive) return service
+    return Object.assign(service, {
+      hookConfiguration: async () => {
+        const [settings, pluginResources] = await Promise.all([
+          loadClaudeSettings({
+            configRoot,
+            cwd,
+            ...(cli.bare
+              ? { settingSources: [] }
+              : cli.settingSources === undefined
+                ? {}
+                : { settingSources: cli.settingSources }),
+          }),
+          loadClaudePlugins({
+            configRoot,
+            cwd,
+            pluginDirectories: cli.pluginDirectories,
+            pluginUrls: cli.pluginUrls,
+            strictPluginDirectories:
+              cli.pluginDirectories.length + cli.pluginUrls.length > 0,
+            loadInstalled: !cli.safeMode && !cli.bare,
+            environment: runtimeEnvironment,
+          }),
+        ])
+        return projectTuiHooks([
+          ...settings,
+          ...pluginResources.settings,
+          ...(cli.additionalSettings ? [cli.additionalSettings] : []),
+        ])
+      },
+    })
+  }
   const toolProvider: ModelProvider = provider ?? {
     model: 'praxis/provider',
     capabilities: {
@@ -1764,7 +1797,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
           description: definition.description,
           source: definition.kind,
         })),
-      hookConfiguration: () => projectTuiHooks(settings),
+      hookConfiguration: async () => projectTuiHooks(settings),
       agentDefinitions: () => extensions.agentDefinitions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),

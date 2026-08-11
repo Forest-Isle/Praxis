@@ -407,6 +407,62 @@ exit 0
     'installed /memory cancel changed the recursive shared tree',
   )
 
+  const providerlessProbe = String.raw`
+set timeout 15
+log_user 1
+set phase "providerless startup"
+expect_before timeout {
+  puts stderr "Providerless hooks probe timed out during $phase"
+  exit 1
+}
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect -re {Praxis.*Code.*v${expectedVersionPattern}}
+set phase "providerless hooks"
+send "/hooks\r"
+expect -re {1 hooks configured}
+expect -re {This menu is read-only}
+expect -re {PreToolUse.*\(1\)}
+send "\r"
+expect -re {PreToolUse - Matchers}
+expect -re {\[User\].*Bash\|Write.*1 hook}
+send "\r"
+expect -re {PreToolUse - Matcher: Bash\|Write}
+expect -re {\[command\].*Checking fixture tool.*User Settings}
+send "\033"
+expect -re {PreToolUse - Matchers}
+send "\033"
+expect -re {1 hooks configured}
+send "\033"
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+  const settingsBeforeProviderlessProbe = await readFile(
+    join(configRoot, 'settings.json'),
+  )
+  const providerlessEnvironment = { ...process.env }
+  delete providerlessEnvironment.PRAXIS_API_KEY
+  delete providerlessEnvironment.PRAXIS_MODEL
+  await execFileAsync('expect', ['-c', providerlessProbe], {
+    cwd,
+    env: {
+      ...providerlessEnvironment,
+      CI: 'true',
+      PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
+      TUI_CLI: cli,
+      TUI_CONFIG_ROOT: configRoot,
+      TUI_NODE: process.execPath,
+    },
+    timeout: 60_000,
+  })
+  assert.deepEqual(
+    await readFile(join(configRoot, 'settings.json')),
+    settingsBeforeProviderlessProbe,
+  )
+
   const probe = String.raw`
 set timeout 15
 log_user 1

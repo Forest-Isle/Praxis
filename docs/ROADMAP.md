@@ -995,3 +995,4 @@ interactive TTY parity remains partial.
       `/reload-plugins` commands without a competing configuration store
 - [x] focused projection/component/Ink tests plus pinned Claude 2.1.208 and
       installed-package PTY comparison with tree-wide no-write verification
+

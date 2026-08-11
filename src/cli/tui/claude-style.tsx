@@ -6,7 +6,10 @@ import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import { composerEditorSegments } from './composer-editor.js'
 import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
 import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
-import type { TuiHookConfiguration } from './hook-settings.js'
+import {
+  TUI_HOOK_MENU,
+  type TuiHookConfiguration,
+} from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'
@@ -1249,7 +1252,7 @@ export function HookDashboard({
       : depth === 'matchers'
         ? matcherIndex
         : hookIndex
-  const maxVisible = depth === 'events' ? 5 : 7
+  const maxVisible = depth === 'events' ? TUI_HOOK_MENU.visibleRows : 7
   const start = selectedWindow(rows.length, selectedIndex, maxVisible)
   const visible = rows.slice(start, start + maxVisible)
   const line = '─'.repeat(Math.max(12, Math.min(100, width)))
@@ -1260,7 +1263,7 @@ export function HookDashboard({
       <Text bold>
         {' '}
         {depth === 'events'
-          ? 'Hooks'
+          ? TUI_HOOK_MENU.title
           : depth === 'matchers'
             ? `${event?.name ?? 'Hooks'} - Matchers`
             : `${event?.name ?? 'Hooks'} - Matcher: ${matcher?.matcher ?? '(all)'}`}
@@ -1270,8 +1273,9 @@ export function HookDashboard({
           <Text> {configuration.hookCount} hooks configured</Text>
           <Text> </Text>
           <Text>
-            {' ℹ '}This menu is read-only. To add or modify hooks, edit
-            settings.json directly or ask Claude.
+            {' '}
+            {' ℹ '}
+            {TUI_HOOK_MENU.readOnlyNotice}
           </Text>
           <Text dimColor> Learn more</Text>
           <Text> </Text>

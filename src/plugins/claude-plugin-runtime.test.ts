@@ -220,6 +220,9 @@ describe('Claude plugin runtime', () => {
     expect(resources.settings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          plugin: true,
+          pluginName: 'fixture',
+          pluginSource: 'inline',
           value: expect.objectContaining({ hooks: expect.any(Object) }),
         }),
       ]),

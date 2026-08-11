@@ -29,11 +29,12 @@ export interface TuiHookConfiguration {
   hookCount: number
 }
 
-const COMMAND_EXIT_HELP = [
-  'Exit code 0 - stdout/stderr not shown',
-  'Exit code 2 - show stderr to model and block the action',
-  'Other exit codes - show stderr to user only but continue',
-] as const
+export const TUI_HOOK_MENU = {
+  title: 'Hooks',
+  readOnlyNotice:
+    'This menu is read-only. To add or modify hooks, edit settings.json directly or ask Claude.',
+  visibleRows: 5,
+} as const
 
 export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
   {
@@ -50,124 +51,96 @@ export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
     name: 'PostToolUse',
     description: 'After tool execution',
     detail: [
-      'Input includes the tool input and successful result.',
-      ...COMMAND_EXIT_HELP,
+      'Input to command is JSON with fields "inputs" (tool call arguments) and "response" (tool call response).',
+      'Exit code 0 - stdout shown in transcript mode (ctrl+o)',
+      'Exit code 2 - show stderr to model immediately',
+      'Other exit code - show stderr to user only',
     ],
   },
   {
     name: 'PostToolUseFailure',
     description: 'After tool execution fails',
-    detail: [
-      'Input includes the tool input and failure details.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'PostToolBatch',
     description: 'After a batch of tool calls resolves',
-    detail: [
-      'Input includes the completed batch of tool calls.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'PermissionDenied',
     description: 'After auto mode classifier denies a tool call',
-    detail: [
-      'Input includes the denied tool call and classifier decision.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'Notification',
     description: 'When notifications are sent',
     detail: [
-      'Input includes the notification type and message.',
-      ...COMMAND_EXIT_HELP,
+      'Input to command is JSON with notification message and type.',
+      'Exit code 0 - stdout/stderr not shown',
+      'Other exit codes - show stderr to user only',
     ],
   },
   {
     name: 'UserPromptSubmit',
     description: 'When the user submits a prompt',
-    detail: ['Input includes the submitted prompt.', ...COMMAND_EXIT_HELP],
+    detail: [
+      'Input to command is JSON with original user prompt text.',
+      'Exit code 0 - stdout shown to Claude',
+      'Exit code 2 - block processing, erase original prompt, and show stderr to user only',
+      'Other exit codes - show stderr to user only',
+    ],
   },
   {
     name: 'UserPromptExpansion',
     description: 'After a user-typed slash command expands into a prompt',
-    detail: [
-      'Input includes the typed command and expanded prompt.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'SessionStart',
     description: 'When a new session is started',
-    detail: [
-      'Matchers select startup, resume, clear, or compact sources.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'Stop',
     description: 'Right before Claude concludes its response',
-    detail: [
-      'Input includes the final response and stop-hook state.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'StopFailure',
     description: 'When the turn ends due to an API error',
-    detail: [
-      'Input includes the failed turn and API error.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'SubagentStart',
     description: 'When a subagent (Agent tool call) is started',
-    detail: [
-      'Input includes the subagent type and invocation.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'SubagentStop',
     description:
       'Right before a subagent (Agent tool call) concludes its response',
-    detail: [
-      'Input includes the completed subagent response.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'PreCompact',
     description: 'Before conversation compaction',
-    detail: [
-      'Matchers select manual or automatic compaction.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'PostCompact',
     description: 'After conversation compaction',
-    detail: [
-      'Input includes the compacted session state.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
   {
     name: 'SessionEnd',
     description: 'When a session is ending',
-    detail: ['Matchers select the session end reason.', ...COMMAND_EXIT_HELP],
+    detail: [],
   },
   {
     name: 'PermissionRequest',
     description: 'When a permission dialog is displayed',
-    detail: [
-      'Input includes the requested tool call and permission context.',
-      ...COMMAND_EXIT_HELP,
-    ],
+    detail: [],
   },
 ]
 
@@ -179,7 +152,11 @@ function scope(resource: ClaudeJsonResource): {
   short: string
   long: string
 } {
-  if (resource.plugin) return { short: 'Plugin', long: 'Plugin Settings' }
+  if (resource.plugin)
+    return {
+      short: 'Plugin',
+      long: `Plugin Hooks (${resource.pluginSource ?? resource.pluginName ?? 'plugin'})`,
+    }
   if (resource.scope === 'project')
     return { short: 'Project', long: 'Project Settings' }
   if (resource.scope === 'local')
