@@ -96,6 +96,7 @@ const NON_TAIL_ENTRY_TYPES = new Set([
   'file-history-snapshot',
   'permission-mode',
   'pr-link',
+  'relocated',
   'worktree-state',
 ])
 
@@ -441,9 +442,11 @@ export class ClaudeTranscriptStore {
         if (entry.leafUuid !== logicalTailUuid) {
           throw new Error('Entry leafUuid does not match transcript tail')
         }
-      } else if (entry.type === 'system') {
+      } else if (
+        entry.type === 'system' &&
+        entry.subtype === 'compact_boundary'
+      ) {
         if (
-          entry.subtype !== 'compact_boundary' ||
           entry.parentUuid !== null ||
           !history.some(
             (candidate) => candidate.uuid === entry.logicalParentUuid,

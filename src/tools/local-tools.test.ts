@@ -330,6 +330,25 @@ describe('LocalToolRegistry', () => {
     await expect(registry.execute(shell, context)).resolves.toEqual({
       content: 'shell-ok',
       isError: false,
+      processOutput: {
+        stdout: 'shell-ok',
+        stderr: '',
+        exitCode: 0,
+      },
+    })
+
+    const failedShell = await registry.prepare(
+      {
+        id: 'failed-shell',
+        name: 'Bash',
+        input: { command: 'printf out; printf err >&2; exit 3' },
+      },
+      context,
+    )
+    await expect(registry.execute(failedShell, context)).resolves.toEqual({
+      content: 'out\nerr',
+      isError: true,
+      processOutput: { stdout: 'out', stderr: 'err', exitCode: 3 },
     })
   })
 
@@ -864,7 +883,7 @@ describe('LocalToolRegistry', () => {
       },
       { cwd },
     )
-    await expect(registry.execute(timeout, { cwd })).resolves.toEqual({
+    await expect(registry.execute(timeout, { cwd })).resolves.toMatchObject({
       content: 'Command timed out after 20ms',
       isError: true,
     })
@@ -913,7 +932,7 @@ describe('LocalToolRegistry', () => {
         },
         { cwd },
       )
-      await expect(registry.execute(shell, { cwd })).resolves.toEqual({
+      await expect(registry.execute(shell, { cwd })).resolves.toMatchObject({
         content: `${JSON.stringify(Object.keys(credentials).map(() => 'missing'))}:[REDACTED]`,
         isError: false,
       })
@@ -964,7 +983,7 @@ describe('LocalToolRegistry', () => {
       { cwd },
     )
 
-    await expect(registry.execute(shell, { cwd })).resolves.toEqual({
+    await expect(registry.execute(shell, { cwd })).resolves.toMatchObject({
       content: 'abcd\n[output truncated]',
       isError: false,
     })

@@ -169,6 +169,25 @@ describe('ClaudeInteractiveToolManager', () => {
     expect(manager.contextMessage(sessionId)).toContain('Plan mode')
   })
 
+  it('updates a session permission mode outside a model tool transition', async () => {
+    const { configRoot, manager } = await fixture()
+    const planPath = join(configRoot, 'plans', `praxis-${sessionId}.md`)
+
+    await manager.setMode(sessionId, 'plan')
+
+    expect(manager.contextMessage(sessionId)).toContain('Plan mode')
+    await expect(
+      manager.permissions(sessionId).resolve({
+        id: 'plan-write',
+        name: 'Write',
+        input: { file_path: planPath, content: '# Plan' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+
+    await manager.setMode(sessionId, 'acceptEdits')
+    expect(manager.contextMessage(sessionId)).toBeNull()
+  })
+
   it('enters without approval and stays in plan mode when exit is declined', async () => {
     const { manager, registry } = await fixture({ approve: false })
     await expect(execute(registry, 'EnterPlanMode', {})).resolves.toMatchObject(

@@ -1341,6 +1341,11 @@ export class LocalToolRegistry implements ToolRegistry {
       return {
         content: `Command timed out after ${timeout}ms`,
         isError: true,
+        processOutput: {
+          stdout: result.stdout,
+          stderr: result.stderr || `Command timed out after ${timeout}ms`,
+          exitCode: result.code,
+        },
       }
     }
     const content = joinedProcessOutput(result)
@@ -1349,6 +1354,13 @@ export class LocalToolRegistry implements ToolRegistry {
         content ||
         (result.code === 0 ? '' : `Command exited with code ${result.code}`),
       isError: result.code !== 0,
+      processOutput: {
+        stdout: result.stdout,
+        stderr:
+          result.stderr ||
+          (result.code === 0 ? '' : `Command exited with code ${result.code}`),
+        exitCode: result.code,
+      },
     }
   }
 }

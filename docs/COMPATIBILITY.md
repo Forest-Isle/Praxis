@@ -202,6 +202,16 @@ session imports its validated history into memory, continues there, and leaves
 the source bytes and lock directory unchanged. Foreground Agent is disabled in
 this mode because its Claude-compatible sidechain store is disk-backed.
 
+Interactive `/cd <path>` changes the runtime cwd without creating a competing
+session namespace. For a persisted active session, Praxis appends Claude's
+native `relocated` record, moves the same append-only JSONL to the destination
+Claude project root, then appends the native `system/local_command` pair and
+cwd-change reminder there. The session ID and existing bytes remain unchanged;
+staged publication keeps the source byte-identical if migration fails, and
+target collisions fail closed. Subsequent tools, hooks, instructions, memory
+discovery, permissions, exports, diffs, and service recreation use the
+canonical destination cwd.
+
 Notebook `Read` projects `.ipynb` cells as Claude-compatible `<cell id="...">`
 text, using `cell-N` for older cells without native IDs. `NotebookEdit` accepts
 an absolute canonical path and replaces, inserts, or deletes one cell only

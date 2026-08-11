@@ -11,10 +11,14 @@ import { randomUUID } from 'node:crypto'
 import {
   ClaudeSessionService,
   type ForkResult,
+  type ManualCompactResult,
+  type ManualCompactSelection,
+  type RewindPoint,
   type SessionInspection,
   type SessionRunResult,
   type SessionSummary,
 } from './application/session-service.js'
+import type { ClaudeDisplayTranscriptItem } from './compatibility/claude/projection.js'
 import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
@@ -49,6 +53,7 @@ import type {
   InteractiveResumeOptions,
   InteractiveServiceFactory,
 } from './cli/interactive.js'
+import type { TuiSlashCommand } from './cli/tui/slash-commands.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
 import { createCliDebugSink } from './cli/debug.js'
 import {
@@ -895,8 +900,31 @@ interface SessionCommands {
     images?: readonly ModelImage[],
     documents?: readonly ModelDocument[],
   ): Promise<SessionRunResult>
-  fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
+  runShell?(
+    command: string,
+    signal?: AbortSignal,
+    sessionId?: string,
+    name?: string,
+  ): Promise<SessionRunResult>
+  resumeShell?(
+    sessionId: string,
+    command: string,
+    signal?: AbortSignal,
+    name?: string,
+  ): Promise<SessionRunResult>
+  fork(
+    sessionId: string,
+    targetSessionId?: string,
+    resumeSessionAt?: string,
+  ): Promise<ForkResult>
+  setPermissionMode?(
+    sessionId: string,
+    mode: ClaudePermissionMode,
+  ): Promise<void>
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
+  rewindPoints?(sessionId: string): Promise<RewindPoint[]>
+  changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
+  recordCdUsage?(sessionId: string): Promise<void>
   lifecycle?(
     trigger: 'init' | 'maintenance',
     options?: { sessionStart?: boolean; sessionId?: string },
@@ -904,11 +932,24 @@ interface SessionCommands {
   sessions(): Promise<SessionSummary[]>
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
+  transcript?(sessionId: string): Promise<ClaudeDisplayTranscriptItem[]>
+  compact?(
+    sessionId: string,
+    signal?: AbortSignal,
+    selection?: ManualCompactSelection,
+  ): Promise<ManualCompactResult>
+  rename?(sessionId: string, name: string): Promise<void>
+  sessionNameSuggestion?(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null>
   nextScheduledPrompt?(
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
+  slashCommands?(): readonly TuiSlashCommand[]
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
+  agentDefinitions?(): readonly { name: string; description: string }[]
   promptSuggestion?(
     sessionId: string,
     signal?: AbortSignal,
@@ -943,6 +984,9 @@ export interface CliDependencies extends InteractiveServiceFactory {
       originalCall?: ModelToolCall,
     ) => PermissionApproval | Promise<PermissionApproval>
     agent?: string
+    model?: string
+    effort?: CliControls['effort']
+    permissionMode?: ClaudePermissionMode
     controls?: CliControls
     interactive?: boolean
     sessionKind?: 'bg'
@@ -997,6 +1041,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
   approveRecovery,
   approveTool,
   agent,
+  model: interactiveModel,
+  effort: interactiveEffort,
+  permissionMode: interactivePermissionMode,
   controls = DEFAULT_CLI_CONTROLS,
   interactive = false,
   sessionKind,
@@ -1023,7 +1070,17 @@ const createDefaultService: CliDependencies['createService'] = async ({
     requestedConfigRoot || configuredRoot
       ? join(configRoot, '.claude.json')
       : resolve(homedir(), '.claude.json')
-  const cli = await resolveCliControls(controls, cwd)
+  const cli = await resolveCliControls(
+    {
+      ...controls,
+      ...(interactiveModel === undefined ? {} : { model: interactiveModel }),
+      ...(interactiveEffort === undefined ? {} : { effort: interactiveEffort }),
+      ...(interactivePermissionMode === undefined
+        ? {}
+        : { permissionMode: interactivePermissionMode }),
+    },
+    cwd,
+  )
   const debug =
     cli.debug !== undefined || cli.debugFile !== undefined
       ? createCliDebugSink(eventSink, {
@@ -1524,6 +1581,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const runtimeInfo: CliRuntimeInfo = {
       cwd: workspace.cwd(),
       model: provider?.model ?? runtimeEnvironment.PRAXIS_MODEL ?? 'unknown',
+      ...(provider?.capabilities.contextWindowTokens === undefined
+        ? {}
+        : { contextWindowTokens: provider.capabilities.contextWindowTokens }),
       tools: toolNames,
       mcpServers: mcpTools.serverStatuses(),
       permissionMode: cli.dangerouslySkipPermissions
@@ -1570,13 +1630,32 @@ const createDefaultService: CliDependencies['createService'] = async ({
           resumeSessionAt,
         )
       },
-      fork: (sessionId, targetSessionId) => {
+      runShell: (command, signal, sessionId, name) =>
+        service.runShell(command, signal, sessionId, name ?? cli.name),
+      resumeShell: (sessionId, command, signal, name) => {
         const resumeSessionAt = pendingResumeSessionAt
+        pendingResumeSessionAt = undefined
+        return service.resumeShell(
+          sessionId,
+          command,
+          signal,
+          name ?? cli.name,
+          resumeSessionAt,
+        )
+      },
+      fork: (sessionId, targetSessionId, requestedResumeSessionAt) => {
+        const resumeSessionAt =
+          requestedResumeSessionAt ?? pendingResumeSessionAt
         pendingResumeSessionAt = undefined
         return service.fork(sessionId, targetSessionId, resumeSessionAt)
       },
+      setPermissionMode: (sessionId, permissionMode) =>
+        service.setPermissionMode(sessionId, permissionMode),
       rewindFiles: (sessionId, userMessageId) =>
         service.rewindFiles(sessionId, userMessageId),
+      rewindPoints: (sessionId) => service.rewindPoints(sessionId),
+      changeCwd: (sessionId, cwd) => service.changeCwd(sessionId, cwd),
+      recordCdUsage: (sessionId) => service.recordCdUsage(sessionId),
       lifecycle: async (trigger, lifecycleOptions = {}) => {
         if (!hooks) return
         const sessionId = lifecycleOptions.sessionId ?? randomUUID()
@@ -1616,8 +1695,22 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       },
       sessions: () => service.sessions(),
+      slashCommands: () =>
+        extensions.slashCommandDefinitions().map((definition) => ({
+          name: definition.name,
+          description: definition.description,
+          source: definition.kind,
+        })),
+      agentDefinitions: () => extensions.agentDefinitions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
+      transcript: (sessionId) =>
+        service.transcript(sessionId, pendingResumeSessionAt),
+      compact: (sessionId, signal, selection) =>
+        service.compact(sessionId, signal, selection),
+      rename: (sessionId, name) => service.rename(sessionId, name),
+      sessionNameSuggestion: (sessionId, signal) =>
+        service.sessionNameSuggestion(sessionId, signal),
       nextScheduledPrompt: (signal) => service.nextScheduledPrompt(signal),
       close: async () => {
         let failure: unknown
@@ -1850,13 +1943,22 @@ const defaultDependencies: CliDependencies = {
     signal,
   }) => {
     const { runInteractive } = await import('./cli/interactive.js')
+    const interactiveControls = controls ?? DEFAULT_CLI_CONTROLS
+    const initialAdditionalDirectories = interactiveControls.addDirectories.map(
+      (directory) => realpathSync(resolve(process.cwd(), directory)),
+    )
     return runInteractive({
       factory: {
-        createService: (options) =>
+        createService: ({ additionalDirectories, cwd, ...options }) =>
           createDefaultService({
             ...options,
+            ...(cwd === undefined ? {} : { cwd }),
             ...(agent === undefined ? {} : { agent }),
-            ...(controls === undefined ? {} : { controls }),
+            controls: {
+              ...interactiveControls,
+              addDirectories:
+                additionalDirectories ?? interactiveControls.addDirectories,
+            },
             interactive: true,
           }),
         scheduledPrompts: true,
@@ -1864,6 +1966,10 @@ const defaultDependencies: CliDependencies = {
       ...(signal ? { signal } : {}),
       ...(initialPrompt === undefined ? {} : { initialPrompt }),
       ...(controls?.axScreenReader ? { axScreenReader: true } : {}),
+      ...(controls?.allowDangerouslySkipPermissions
+        ? { allowDangerouslySkipPermissions: true }
+        : {}),
+      additionalDirectories: initialAdditionalDirectories,
       display: {
         version: VERSION,
         cwd: process.cwd(),

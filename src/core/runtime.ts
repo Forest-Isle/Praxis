@@ -172,6 +172,15 @@ export type RuntimeEvent =
       content: string
       isError: boolean
     }
+  | { type: 'shell-command'; callId: string; command: string }
+  | {
+      type: 'shell-result'
+      callId: string
+      stdout: string
+      stderr: string
+      isError: boolean
+    }
+  | { type: 'shell-cancelled'; callId: string }
   | { type: 'warning'; message: string }
   | {
       type: 'compact-boundary'
@@ -263,6 +272,11 @@ export interface ToolExecutionResult {
   nativeToolUseResult?: Record<string, unknown>
   nativeMcpMeta?: Record<string, unknown>
   durationApiMs?: number
+  processOutput?: {
+    stdout: string
+    stderr: string
+    exitCode: number
+  }
 }
 
 export interface ToolExecutionContext {
@@ -827,10 +841,35 @@ export class AgentRuntime {
     return results
   }
 
+  async executeDirectToolCall(
+    call: ModelToolCall,
+    request: AgentToolRecoveryRequest,
+  ): Promise<ToolExecutionResult> {
+    if (request.signal?.aborted) return this.cancel()
+    const maxToolInputBytes = this.options.maxToolInputBytes ?? 1024 * 1024
+    if (Buffer.byteLength(JSON.stringify(call.input)) > maxToolInputBytes) {
+      throw new Error(`Direct tool input exceeded ${maxToolInputBytes} bytes`)
+    }
+    const result = await this.completeToolCall(
+      call,
+      request,
+      request.messages ?? [],
+      false,
+    )
+    const followUpUserMessages = result.followUpUserMessages ?? []
+    if (followUpUserMessages.length > 0) {
+      await request.observer?.followUpUserMessagesCompleted?.(
+        followUpUserMessages,
+      )
+    }
+    return result
+  }
+
   private async completeToolCall(
     call: ModelToolCall,
     request: AgentToolRecoveryRequest,
     messages: readonly ModelMessage[] = request.messages ?? [],
+    emitPresentation = true,
   ): Promise<ToolExecutionResult> {
     const startedAt = performance.now()
     const emitProgress = () =>
@@ -843,8 +882,10 @@ export class AgentRuntime {
           Math.round(((performance.now() - startedAt) / 1000) * 1000) / 1000,
         ),
       })
-    const progressTimer = setInterval(emitProgress, 1000)
-    progressTimer.unref()
+    const progressTimer = emitPresentation
+      ? setInterval(emitProgress, 1000)
+      : undefined
+    progressTimer?.unref()
     try {
       const executed = await this.executeTool(call, request, messages)
       const unsupportedImages =
@@ -867,16 +908,18 @@ export class AgentRuntime {
           : executed
       this.emit({ type: 'state', state: 'persisting-results' })
       await request.observer?.toolCompleted(call, result)
-      emitProgress()
-      this.emit({
-        type: 'tool-result',
-        callId: call.id,
-        content: result.content,
-        isError: result.isError,
-      })
+      if (emitPresentation) {
+        emitProgress()
+        this.emit({
+          type: 'tool-result',
+          callId: call.id,
+          content: result.content,
+          isError: result.isError,
+        })
+      }
       return result
     } finally {
-      clearInterval(progressTimer)
+      if (progressTimer) clearInterval(progressTimer)
     }
   }
 

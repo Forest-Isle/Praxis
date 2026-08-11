@@ -17,6 +17,8 @@ import type {
 export type ProviderPersistenceEvent =
   | { type: 'user-text'; text: string }
   | { type: 'user-text-block'; text: string }
+  | { type: 'bash-input'; command: string }
+  | { type: 'bash-output'; stdout: string; stderr: string }
   | {
       type: 'user-message'
       text: string
@@ -372,6 +374,28 @@ export function translateProviderEvents(
           message: {
             role: 'user',
             content: [{ type: 'text', text: event.text }],
+          },
+        }
+        break
+
+      case 'bash-input':
+        entry = {
+          ...common,
+          type: 'user',
+          message: {
+            role: 'user',
+            content: `<bash-input>${event.command}</bash-input>`,
+          },
+        }
+        break
+
+      case 'bash-output':
+        entry = {
+          ...common,
+          type: 'user',
+          message: {
+            role: 'user',
+            content: `<bash-stdout>${event.stdout}</bash-stdout><bash-stderr>${event.stderr}</bash-stderr>`,
           },
         }
         break

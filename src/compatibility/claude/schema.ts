@@ -24,6 +24,7 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'last-prompt',
   'permission-mode',
   'pr-link',
+  'relocated',
   'system',
   'user',
   'worktree-state',
@@ -53,6 +54,10 @@ const FORKABLE_SYSTEM_SUBTYPES = new Set([
   'local_command',
   'stop_hook_summary',
   'turn_duration',
+])
+const APPENDABLE_SYSTEM_SUBTYPES = new Set([
+  'compact_boundary',
+  'local_command',
 ])
 const FORKABLE_ATTACHMENT_TYPES = new Set([
   'agent_listing_delta',
@@ -707,6 +712,8 @@ function validateCompactBoundary(entry: ClaudeTranscriptEntry): void {
   }
   const segment = metadata.preservedSegment
   const messages = metadata.preservedMessages
+  const preservedUuids =
+    isRecord(messages) && Array.isArray(messages.uuids) ? messages.uuids : []
   if (
     (metadata.trigger !== 'auto' && metadata.trigger !== 'manual') ||
     !isNonNegativeNumber(metadata.preTokens) ||
@@ -714,14 +721,15 @@ function validateCompactBoundary(entry: ClaudeTranscriptEntry): void {
     !isNonNegativeNumber(metadata.durationMs) ||
     !isNonNegativeNumber(metadata.cumulativeDroppedTokens) ||
     !isRecord(segment) ||
-    segment.headUuid !== entry.logicalParentUuid ||
-    segment.tailUuid !== entry.logicalParentUuid ||
+    !isNonEmptyString(segment.headUuid) ||
+    !isNonEmptyString(segment.tailUuid) ||
     !isNonEmptyString(segment.anchorUuid) ||
     !isRecord(messages) ||
     messages.anchorUuid !== segment.anchorUuid ||
-    !Array.isArray(messages.uuids) ||
-    messages.uuids.length === 0 ||
-    messages.uuids.some((value) => !isNonEmptyString(value)) ||
+    preservedUuids.length === 0 ||
+    preservedUuids.some((value) => !isNonEmptyString(value)) ||
+    segment.headUuid !== preservedUuids[0] ||
+    segment.tailUuid !== preservedUuids[preservedUuids.length - 1] ||
     !Array.isArray(messages.allUuids) ||
     messages.allUuids.length === 0 ||
     messages.allUuids.some((value) => !isNonEmptyString(value))
@@ -731,10 +739,16 @@ function validateCompactBoundary(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateCompactSummary(entry: ClaudeTranscriptEntry): void {
+  const summarizeMetadata = entry.summarizeMetadata
+  const isSelectiveSummary =
+    isRecord(summarizeMetadata) &&
+    isNonNegativeNumber(summarizeMetadata.messagesSummarized) &&
+    (summarizeMetadata.direction === 'from' ||
+      summarizeMetadata.direction === 'up_to')
   if (
     entry.type !== 'user' ||
     entry.isCompactSummary !== true ||
-    entry.isVisibleInTranscriptOnly !== true ||
+    (entry.isVisibleInTranscriptOnly !== true && !isSelectiveSummary) ||
     entry.isSidechain !== false ||
     entry.userType !== 'external' ||
     (entry.entrypoint !== 'cli' && entry.entrypoint !== 'sdk-cli') ||
@@ -750,6 +764,15 @@ function validateCompactSummary(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'relocated') {
+    if (
+      !isNonEmptyString(entry.sessionId) ||
+      !isNonEmptyString(entry.relocatedCwd)
+    ) {
+      throw new Error('Claude relocated entry has invalid metadata')
+    }
+    return
+  }
   if (entry.type === 'file-history-snapshot') {
     if (
       !isNonEmptyString(entry.messageId) ||
@@ -885,7 +908,14 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
     throw new Error('Claude transcript entry has invalid parentUuid')
   }
   if (entry.type === 'system') {
-    validateCompactBoundary(entry)
+    if (!APPENDABLE_SYSTEM_SUBTYPES.has(String(entry.subtype))) {
+      throw new Error('Claude system entry has unsupported subtype')
+    }
+    if (entry.subtype === 'compact_boundary') {
+      validateCompactBoundary(entry)
+    } else if (!isNonEmptyString(entry.content)) {
+      throw new Error('Claude local command entry has invalid content')
+    }
     return
   }
   if (entry.isCompactSummary === true) {

@@ -4,22 +4,32 @@ import {
   chmod,
   mkdtemp,
   mkdir,
+  realpath,
   readFile,
+  readdir,
   rm,
   writeFile,
 } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { basename, delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-tui-compat-'))
 const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
+const movedCwd = join(root, 'moved-work')
+const sharedRoot = join(root, 'shared-access')
 const installRoot = join(root, 'install')
 const binRoot = join(root, 'bin')
 const claude = join(binRoot, 'claude')
+const editor = join(binRoot, 'editor-wrapper')
+const osascript = join(binRoot, 'osascript')
+const pbpaste = join(binRoot, 'pbpaste')
+const pbcopy = join(binRoot, 'pbcopy')
+const clipboardOutput = join(root, 'clipboard-output.txt')
+const wlPaste = join(binRoot, 'wl-paste')
 let cli
 let port
 const packageJson = JSON.parse(
@@ -46,13 +56,65 @@ const provider = createServer(async (request, response) => {
 
 try {
   await Promise.all([
-    mkdir(configRoot),
+    mkdir(configRoot, { recursive: true }),
+    mkdir(join(configRoot, 'commands'), { recursive: true }),
+    mkdir(join(configRoot, 'agents'), { recursive: true }),
     mkdir(cwd),
+    mkdir(movedCwd),
+    mkdir(sharedRoot),
     mkdir(installRoot),
     mkdir(binRoot),
   ])
+  await writeFile(
+    join(configRoot, 'commands', 'review.md'),
+    '---\ndescription: Review the shared fixture.\n---\nReview $ARGUMENTS\n',
+  )
+  await writeFile(
+    join(configRoot, 'agents', 'reviewer.md'),
+    '---\nname: reviewer\ndescription: Reviews the shared fixture.\n---\nReview the requested fixture.\n',
+  )
+  await writeFile(
+    join(configRoot, 'settings.json'),
+    `${JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }, null, 2)}\n`,
+  )
+  const diffFixture = join(cwd, 'fixture.txt')
+  await writeFile(diffFixture, 'before\n')
+  await execFileAsync('git', ['init', '-q'], { cwd })
+  await execFileAsync('git', ['add', 'fixture.txt'], { cwd })
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.name=Praxis Fixture',
+      '-c',
+      'user.email=fixture@example.com',
+      'commit',
+      '-qm',
+      'fixture',
+    ],
+    { cwd },
+  )
+  await writeFile(diffFixture, 'after\n')
   await writeFile(claude, "#!/bin/sh\nprintf '2.1.208 (Claude Code)\\n'\n")
   await chmod(claude, 0o755)
+  await writeFile(
+    editor,
+    '#!/bin/sh\ncase "$1" in *keybindings.json) exit 0 ;; esac\nprintf \'edited first line\\nedited second line\\n\\n\' > "$1"\n',
+  )
+  await chmod(editor, 0o755)
+  await writeFile(osascript, '#!/bin/sh\nexit 1\n')
+  await writeFile(pbpaste, "#!/bin/sh\nprintf 'INSTALLED_CLIPBOARD'\n")
+  await writeFile(pbcopy, '#!/bin/sh\ncat > "$TUI_CLIPBOARD_OUTPUT"\n')
+  await writeFile(
+    wlPaste,
+    '#!/bin/sh\ncase "$*" in *image/png*) exit 1 ;; *) printf \'INSTALLED_CLIPBOARD\' ;; esac\n',
+  )
+  await Promise.all([
+    chmod(osascript, 0o755),
+    chmod(pbpaste, 0o755),
+    chmod(pbcopy, 0o755),
+    chmod(wlPaste, 0o755),
+  ])
   const { stdout: packed } = await execFileAsync(
     'npm',
     ['pack', '--pack-destination', root],
@@ -74,7 +136,12 @@ try {
   const probe = String.raw`
 set timeout 15
 log_user 1
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+set phase "startup"
+expect_before timeout {
+  puts stderr "TUI compatibility timed out during $phase"
+  exit 1
+}
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions --add-dir $env(TUI_SHARED_ROOT)
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect {
   -re {Praxis.*Code.*v${expectedVersionPattern}} {}
@@ -85,33 +152,432 @@ expect -re {Welcome back!}
 expect -re {Tips for getting started}
 expect -re {Try.*review this project}
 expect -re {bypass permissions on}
+set phase "shortcut help"
+send "?"
+expect -re {! for shell mode}
+expect -re {ctrl.*o for verbose output}
+send "?"
+expect -re {bypass permissions on.*\? for shortcuts}
+set phase "slash palette"
+send "/"
+expect -re {/clear}
+send "rev"
+expect -re {/review}
+expect -re {Review the shared fixture}
+expect -re {❯[^\r\n]*\/rev}
+send "\033"
+expect {
+  -re {Review the shared fixture} { puts stderr "slash palette remained open after Escape"; exit 1 }
+  -re {❯[^\r\n]*\/rev} {}
+}
+send "\025"
+expect -re {Try.*review this project}
+set phase "add-dir command"
+send "/add-dir"
+expect -re {Add a new working directory}
+send "\r"
+expect -re {Add directory to workspace}
+expect -re {Tab to complete.*Enter to add}
+send "\033"
+after 100
+expect -re {Did not add a working directory}
+set phase "diff dialog"
+send "/diff"
+expect -re {View uncommitted changes}
+send "\r"
+expect -re {Uncommitted changes.*git diff HEAD}
+expect -re {fixture.txt}
+send "\r"
+expect -re {-before}
+expect -re {\+after}
+send "\033"
+after 100
+expect -re {Enter to view}
+send "\033"
+after 100
+expect -re {bypass permissions on}
+set phase "permissions dialog"
+send "/permissions"
+expect -re {Manage allow and deny tool permission rules}
+send "\r"
+expect -re {Recently denied.*Allow.*Ask.*Deny.*Workspace}
+expect -re {Praxis Code won't ask before using allowed tools}
+expect -re {1\. Add a new rule}
+expect -re {2\. Bash\(npm test:\*\)}
+send "\033\[B"
+after 100
+send "\033\[B"
+after 100
+send "\r"
+expect -re {Delete allowed tool}
+expect -re {From user settings}
+send "\r"
+expect -re {1\. Add a new rule}
+send "\033\[C"
+after 100
+send "\033\[C"
+after 100
+send "\033\[C"
+expect -re {Original working directory}
+expect -re {shared-access}
+send "\033\[B"
+after 100
+send "\r"
+expect -re {Remove directory from workspace}
+expect -re {shared-access}
+send "\r"
+expect -re {Praxis Code won't ask before using allowed tools}
+send "\033\[C"
+after 100
+send "\033\[C"
+after 100
+send "\033\[C"
+expect -re {Original working directory}
+send "\033\[B"
+after 100
+send "\r"
+expect -re {Add directory to workspace}
+expect -re {Tab to complete.*Enter to add}
+send "\033"
+after 100
+expect -re {Praxis Code won't ask before using allowed tools}
+send "\033"
+after 100
+expect -re {bypass permissions on}
+set phase "file and agent mentions"
+send "@fix"
+expect -re {\+ fixture.txt}
+send "\r"
+expect -re {❯ @fixture.txt}
+send "\037"
+expect -re {❯ @fix}
+send "\025"
+expect -re {Try.*review this project}
+send "@rev"
+expect -re {reviewer.*\(agent\)}
+send "\r"
+expect -re {❯.*reviewer.*agent}
+send "\025"
+expect -re {Try.*review this project}
+set phase "context and status dialogs"
+send "/context"
+expect -re {Visualize current context usage}
+send "\r"
+set phase "context dialog"
+expect -re {Context Usage}
+expect -re {Auto-compact window}
+expect -re {Try.*review this project}
+after 100
+set phase "status dialog"
+send "/status"
+after 100
+send "\r"
+expect -re {Settings.*Status.*Config.*Usage.*Stats}
+expect -re {fixture-model}
+send "\033"
+expect -re {Try.*review this project}
+after 100
+set phase "skills dialog"
+send "/skills"
+after 100
+send "\r"
+expect -re {Skills}
+expect -re {No skills found}
+send "\033"
+expect -re {Try.*review this project}
+after 100
+set phase "background tasks dialog"
+send "\024"
+expect -re {Background}
+expect -re {No tasks currently running}
+send "\033"
+expect -re {Try.*review this project}
+after 100
+set phase "external editor"
+send "seed prompt"
+expect -re {❯.*seed prompt}
+send "\007"
+expect -re {Save and close editor to continue}
+expect -re {edited first line}
+expect -re {edited second line}
+expect -re {ctrl.*g to edit in Editor-wrapper}
+send "\025"
+expect -re {Try.*review this project}
+after 100
+set phase "keybindings editor"
+send "/keybindings"
+after 100
+send "\r"
+expect -re {Created.*keybindings.json.*with}
+expect -re {template.*Opened.*editor}
+send "\025"
+expect -re {Try.*review this project}
+after 100
+set phase "clipboard paste"
+send "clipboard:"
+after 100
+send "\026"
+expect -re {clipboard:INSTALLED_CLIPBOARD}
+send "\025"
+expect -re {Try.*review this project}
+after 100
+set phase "shell mode"
+send "!"
+expect -re {! for shell mode}
+send "pwd"
+expect -re {!.*pwd}
+after 100
+send "\r"
+expect {
+  -re {⎿.*work} {}
+  timeout { puts stderr "shell result did not render"; exit 1 }
+  eof { puts stderr "Praxis exited before shell result"; exit 1 }
+}
+expect -re {TUI_FAKE_OK}
+expect -re {Context.*3 tokens}
+expect -re {Try.*review this project}
+after 100
+set phase "model turn"
 send "reply briefly"
 expect -re {❯.*reply briefly}
+after 100
 send "\r"
+expect -re {awaiting-model}
 expect {
   -re {TUI_FAKE_OK} {}
   timeout { puts stderr "assistant response did not render"; exit 1 }
   eof { puts stderr "Praxis exited before assistant response"; exit 1 }
 }
 expect -re {Context.*3 tokens}
+expect -re {Try.*review this project}
+after 100
+set phase "change working directory"
+send "/cd"
+after 300
+send "\r"
+expect -re {Usage: /cd <path>}
+send "/cd $env(TUI_MOVED_ROOT)"
+after 300
+send "\r"
+expect -re {Moved to}
+expect -re {moved-work}
+expect -re {Try.*review this project}
+after 300
+set phase "shell mode after cd"
+send "!"
+expect -re {! for shell mode}
+send "pwd"
+after 100
+send "\r"
+expect -re {⎿.*moved-work}
+expect -re {TUI_FAKE_OK}
+expect -re {Try.*review this project}
+after 300
+set phase "rename session"
+send "/rename installed-title"
+after 300
+send "\r"
+expect -re {Session renamed to: installed-title}
+after 300
+set phase "copy response"
+send "/copy"
+expect -re {Copy Praxis.*last response}
+after 100
+send "\r"
+expect -re {Copied last response to clipboard}
+set phase "export conversation"
+send "/export"
+expect -re {Export the current conversation}
+after 100
+send "\r"
+expect -re {Export conversation}
+expect -re {Copy to clipboard}
+send "\r"
+expect -re {Conversation copied to clipboard}
+set phase "rewind menu"
+send "/rewind"
+expect -re {Restore the code and/or conversation}
+after 100
+send "\r"
+expect -re {Rewind}
+expect -re {current}
+send "\033"
+after 100
+set phase "branch conversation"
+send "/branch"
+expect -re {Create a branch of the current conversation}
+after 100
+send "\r"
+expect -re {Branched conversation.*new branch}
+set phase "first TUI exit"
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+
+set phase "suspend and resume"
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) zsh -f
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect -re {[%#] }
+send "export PS1=PRAXIS_SHELL\\>\\ \r"
+expect -re {PRAXIS_SHELL> }
+send "$env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions\r"
+expect -re {bypass permissions on}
+send "suspend seed"
+expect -re {❯.*suspend seed}
+send "\032"
+expect -re {Praxis Code has been suspended.*Run .*fg.*bring Praxis Code back}
+expect -re {ctrl.*z now suspends Praxis Code.*ctrl.*_ undoes input}
+expect -re {PRAXIS_SHELL> }
+send "jobs -l\r"
+expect -re {suspended.*dangerously-skip-permissions}
+after 200
+set phase "foreground resume"
+send "fg\r"
+expect -re {❯.*suspend seed}
+after 100
+set phase "resumed TUI exit"
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect -re {PRAXIS_SHELL> }
+after 100
+set phase "shell exit"
+send "exit\r"
+expect eof
+exit 0
+`
+  let result
+  try {
+    result = await execFileAsync('expect', ['-c', probe], {
+      cwd,
+      env: {
+        ...process.env,
+        CI: 'true',
+        PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
+        TUI_CLI: cli,
+        TUI_CLIPBOARD_OUTPUT: clipboardOutput,
+        TUI_CONFIG_ROOT: configRoot,
+        TUI_EDITOR: editor,
+        TUI_MOVED_ROOT: movedCwd,
+        TUI_NODE: process.execPath,
+        TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+        TUI_SHARED_ROOT: sharedRoot,
+      },
+      timeout: 180_000,
+    })
+  } catch (error) {
+    const stdout =
+      error && typeof error === 'object' && 'stdout' in error
+        ? String(error.stdout)
+        : ''
+    const stderr =
+      error && typeof error === 'object' && 'stderr' in error
+        ? String(error.stderr).trim()
+        : ''
+    if (stdout) {
+      console.error(stdout.slice(-8_000))
+    }
+    throw new Error(
+      `TUI compatibility probe failed${stderr ? `: ${stderr}` : ''}`,
+    )
+  }
+  assert.match(result.stdout, /TUI_FAKE_OK/u)
+  const projectRoot = join(configRoot, 'projects')
+  const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
+    .map(String)
+    .filter((file) => file.endsWith('.jsonl'))
+  assert.equal(transcriptFiles.length, 2)
+  const transcripts = await Promise.all(
+    transcriptFiles.map(async (file) => ({
+      file,
+      content: await readFile(join(projectRoot, file), 'utf8'),
+    })),
+  )
+  const originalTranscript = transcripts.find(
+    ({ content }) =>
+      content.includes('"customTitle":"installed-title"') &&
+      !content.includes('installed-title (Branch)'),
+  )
+  const branchTranscript = transcripts.find(({ content }) =>
+    content.includes('installed-title (Branch)'),
+  )
+  assert.ok(originalTranscript)
+  assert.ok(branchTranscript)
+  const transcript = originalTranscript.content
+  const canonicalMovedCwd = await realpath(movedCwd)
+  assert.match(
+    transcript,
+    new RegExp(
+      `"type":"relocated","sessionId":"[^"]+","relocatedCwd":"${canonicalMovedCwd.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}"`,
+      'u',
+    ),
+  )
+  assert.match(transcript, /<command-name>\/cd<\/command-name>/u)
+  assert.match(
+    transcript,
+    /<local-command-stdout>Usage: \/cd <path><\/local-command-stdout>/u,
+  )
+  assert.match(transcript, /<local-command-stdout>Moved to /u)
+  assert.match(transcript, /The session's working directory has changed to /u)
+  assert.ok(
+    transcript.includes(`<bash-stdout>${canonicalMovedCwd}\\n</bash-stdout>`),
+  )
+  assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
+  assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
+  assert.match(transcript, /<bash-stderr><\/bash-stderr>/u)
+  const clipboard = await readFile(clipboardOutput, 'utf8')
+  assert.match(clipboard, /Praxis Code v/u)
+  assert.match(clipboard, /❯ reply briefly/u)
+  assert.match(clipboard, /⏺ TUI_FAKE_OK/u)
+  assert.match(clipboard, /❯ \/export/u)
+  const resumeProbe = String.raw`
+set timeout 15
+log_user 1
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --resume $env(TUI_SESSION_ID) --dangerously-skip-permissions
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect {
+  -re {!.*pwd} {}
+  timeout { puts stderr "resumed shell history did not render"; exit 1 }
+  eof { puts stderr "Praxis exited before resumed shell history"; exit 1 }
+}
+expect -re {⎿.*work}
+expect -re {❯.*reply briefly}
+expect -re {TUI_FAKE_OK}
+send "/compact"
+expect -re {Clear conversation history.*summary}
+send "\r"
+expect -re {Compacted.*ctrl\+o.*full summary}
+send "\017"
+expect -re {TUI_FAKE_OK}
+send "\003"
+expect -re {Press Ctrl-C again to exit}
 send "\003"
 expect eof
 exit 0
 `
-  const result = await execFileAsync('expect', ['-c', probe], {
-    cwd,
+  await execFileAsync('expect', ['-c', resumeProbe], {
+    cwd: movedCwd,
     env: {
       ...process.env,
       CI: 'true',
-      PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
       TUI_CLI: cli,
       TUI_CONFIG_ROOT: configRoot,
       TUI_NODE: process.execPath,
       TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+      TUI_SESSION_ID: basename(branchTranscript.file, '.jsonl'),
     },
-    timeout: 30_000,
+    timeout: 60_000,
   })
-  assert.match(result.stdout, /TUI_FAKE_OK/u)
+  assert.match(
+    await readFile(join(configRoot, 'keybindings.json'), 'utf8'),
+    /"ctrl\+v": "chat:imagePaste"/u,
+  )
+  assert.deepEqual(
+    JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8'))
+      .permissions.allow,
+    [],
+  )
   console.log('TUI compatibility verification passed')
 } finally {
   await new Promise((resolve) => provider.close(resolve))

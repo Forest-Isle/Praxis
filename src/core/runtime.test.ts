@@ -1014,6 +1014,54 @@ describe('AgentRuntime', () => {
     expect(followUps).toEqual([['SKILL_CONTEXT']])
   })
 
+  it('executes a direct tool through permission checks without tool presentation events', async () => {
+    const events: RuntimeEvent[] = []
+    const completed: string[] = []
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield* []
+      }),
+      (event) => events.push(event),
+      {
+        tools: {
+          definitions: () => [],
+          async prepare(call) {
+            return { ...call, input: { command: 'prepared' } }
+          },
+          async execute(call) {
+            return {
+              content: String(call.input.command),
+              isError: false,
+            }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+
+    const result = await runtime.executeDirectToolCall(
+      { id: 'shell-direct', name: 'Bash', input: { command: 'original' } },
+      {
+        observer: {
+          async assistantCompleted() {},
+          async toolCompleted(call) {
+            completed.push(call.id)
+          },
+        },
+      },
+    )
+
+    expect(result).toEqual({ content: 'prepared', isError: false })
+    expect(completed).toEqual(['shell-direct'])
+    expect(events).toContainEqual({
+      type: 'permission-decision',
+      callId: 'shell-direct',
+      behavior: 'allow',
+    })
+    expect(events.some((event) => event.type === 'tool-call')).toBe(false)
+    expect(events.some((event) => event.type === 'tool-result')).toBe(false)
+  })
+
   it('approves a recovered tool after preparation and before execution', async () => {
     const approvals: ModelToolCall[] = []
     let executed = false

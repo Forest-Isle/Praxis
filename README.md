@@ -78,13 +78,27 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 ## What Praxis provides
 
-- **Local agent runtime** — Claude-style responsive TUI with rich transcript,
-  tool, decision, thinking, and context-budget panels; print mode, structured
-  JSON/JSONL, context compaction, tool loops, and bounded execution.
+- **Local agent runtime** — Claude-style responsive TUI with a shared-command
+  slash palette, tabbed help and shortcut surfaces, searchable resume picker,
+  restored active-branch conversation history, streaming and expandable
+  thinking, grouped multi-file reads, globally expandable tool results,
+  command-specific `/add-dir`, `/copy`, `/branch`, `/rename`, `/export`,
+  provider-backed `/compact`, native `/rewind`, runtime `/cd`, `/config`,
+  `/usage`, `/mcp`, and live extension-reload controls,
+  cursor/history composer, per-session model/effort/permission controls,
+  context/status/skill/task dashboards, prompt stash and continuation shortcuts,
+  filterable `@` file and agent references, composer undo, `Ctrl+G` external
+  editing, shared `/keybindings` creation/editing and supported-action remapping,
+  `Ctrl+V` text/image clipboard paste, `Ctrl+Z` shell suspension and `fg`
+  recovery, permission-gated `!` shell turns, navigable current/per-turn Git
+  diff views, rich decision panels, and measured context budgets; print mode,
+  structured JSON/JSONL, context compaction, tool loops, and bounded execution.
 - **Built-in tools** — read, write, edit, glob, search, shell, notebook, PDF,
   image, web, scheduled prompts, workflows, and worktrees.
 - **Permission boundary** — local allow/ask/deny rules, safe and bare modes,
-  path confinement, credential redaction, and sanitized child processes.
+  searchable scoped-rule creation/removal, local/project/user atomic settings
+  writes, interactive workspace-directory add/remove controls, path confinement,
+  credential redaction, and sanitized child processes.
 - **Durable local work** — resumable sessions, full-history forks, file
   checkpoints, tasks, foreground/background subagents, and top-level agents.
 - **Claude-compatible ecosystem** — shared instructions, memory, skills,

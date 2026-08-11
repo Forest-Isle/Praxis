@@ -3,10 +3,21 @@ import { Text } from 'ink'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  CommandPalette,
   Composer,
+  DiffDashboard,
   DialogFrame,
+  ExternalEditorWait,
+  FilePicker,
+  HelpMenu,
+  ListDashboard,
   MarkdownText,
+  MentionPicker,
+  PermissionDashboard,
+  SelectionMenu,
   SessionPicker,
+  ShortcutHelp,
+  StatusDashboard,
   Transcript,
   WelcomePanel,
 } from './claude-style.js'
@@ -30,7 +41,7 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('Tips for getting started')
     expect(frame).toContain('test-model · high effort')
     expect(frame).toContain('/Users/test/dev/Praxis')
-    expect(frame.split('\n')[0]?.length).toBeLessThanOrEqual(80)
+    expect(frame.split('\n')[0]?.length).toBeLessThanOrEqual(100)
   })
 
   it('collapses welcome columns on a narrow terminal', () => {
@@ -84,13 +95,527 @@ describe('Claude-style TUI components', () => {
     )
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('❯ inspect')
-    expect(frame).toContain('● Bash')
-    expect(frame).toContain('└ Result')
+    expect(frame).toContain('⏺ Bash(npm test)')
+    expect(frame).toContain('⎿ @@ file')
     expect(frame).toContain('@@ file')
     expect(frame).toContain('-old')
     expect(frame).toContain('+new')
     expect(frame).toContain('⚠ careful')
     expect(frame).toContain('✳ streaming')
+  })
+
+  it('collapses long tool output and renders edit replacements inline', () => {
+    const items = [
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'bash',
+          name: 'Bash',
+          input: { command: 'fixture' },
+        },
+        detail: 'Bash fixture',
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'bash',
+        text: 'one\ntwo\nthree\nfour\nfive',
+        isError: false,
+      },
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'edit',
+          name: 'Edit',
+          input: {
+            file_path: '/tmp/fixture.txt',
+            old_string: 'before\n',
+            new_string: 'after\nsecond line\n',
+          },
+        },
+        detail: 'Edit fixture',
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'edit',
+        text: 'Replaced 1 occurrence(s)',
+        isError: false,
+      },
+    ]
+    const collapsed = render(
+      <Transcript screenReader={false} activeText="" items={items} />,
+    )
+    expect(collapsed.lastFrame()).toContain('… +2 lines (ctrl+o to expand)')
+    expect(collapsed.lastFrame()).not.toContain('five')
+    expect(collapsed.lastFrame()).toContain('Update(/tmp/fixture.txt)')
+    expect(collapsed.lastFrame()).toContain('Added 2 lines, removed 1 line')
+    expect(collapsed.lastFrame()).toContain('1 -before')
+    expect(collapsed.lastFrame()).toContain('2 +second line')
+
+    const detailed = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        detailedTranscript
+        items={items}
+      />,
+    )
+    expect(detailed.lastFrame()).toContain('five')
+    expect(detailed.lastFrame()).not.toContain('… +2 lines')
+  })
+
+  it('groups adjacent successful reads and expands every file', () => {
+    const items = [
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'read-1',
+          name: 'Read',
+          input: { file_path: '/tmp/one.ts' },
+        },
+        detail: '',
+      },
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'read-2',
+          name: 'Read',
+          input: { file_path: '/tmp/two.ts' },
+        },
+        detail: '',
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'read-1',
+        text: 'one',
+        isError: false,
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'read-2',
+        text: 'two',
+        isError: false,
+      },
+      { kind: 'assistant' as const, text: 'Between groups.' },
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'read-3',
+          name: 'Read',
+          input: { file_path: '/tmp/three.ts' },
+        },
+        detail: '',
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'read-3',
+        text: 'Wasted call — file unchanged since your last Read. Refer to that earlier tool_result instead.',
+        isError: false,
+      },
+    ]
+    const collapsed = render(
+      <Transcript screenReader={false} activeText="" items={items} />,
+    )
+    expect(collapsed.lastFrame()).toContain('Read 2 files (ctrl+o to expand)')
+    expect(collapsed.lastFrame()).toContain('Read 1 file (ctrl+o to expand)')
+    expect(collapsed.lastFrame()).not.toContain('/tmp/one.ts')
+
+    const expanded = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        detailedTranscript
+        items={items}
+      />,
+    )
+    expect(expanded.lastFrame()).toContain('Read(/tmp/one.ts)')
+    expect(expanded.lastFrame()).toContain('Read(/tmp/two.ts)')
+    expect(expanded.lastFrame()).toContain('Read(/tmp/three.ts)')
+    expect(expanded.lastFrame()).toContain('Unchanged since last read')
+  })
+
+  it('renders diff source tabs, file selection, and patch view', () => {
+    const snapshot = {
+      files: [
+        {
+          path: 'fixture.txt',
+          additions: 2,
+          deletions: 1,
+          patch:
+            'diff --git a/fixture.txt b/fixture.txt\n--- a/fixture.txt\n+++ b/fixture.txt\n@@ -1 +1,2 @@\n-before\n+after\n+second line\n',
+        },
+      ],
+      additions: 2,
+      deletions: 1,
+    }
+    const list = render(
+      <DiffDashboard
+        snapshots={[
+          { label: 'Current', snapshot },
+          { label: 'T1', snapshot },
+        ]}
+        sourceIndex={0}
+        selectedIndex={0}
+        viewingFile={false}
+        scrollOffset={0}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(list.lastFrame()).toContain('Uncommitted changes (git diff HEAD)')
+    expect(list.lastFrame()).toContain('Current')
+    expect(list.lastFrame()).toContain('T1')
+    expect(list.lastFrame()).toContain('❯ fixture.txt')
+
+    const patch = render(
+      <DiffDashboard
+        snapshots={[{ label: 'Current', snapshot }]}
+        sourceIndex={0}
+        selectedIndex={0}
+        viewingFile
+        scrollOffset={0}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(patch.lastFrame()).toContain('-before')
+    expect(patch.lastFrame()).toContain('+second line')
+    expect(patch.lastFrame()).toContain('Esc to back')
+  })
+
+  it('renders permission tabs, scoped rules, search, and workspace modes', () => {
+    const rules = [
+      {
+        behavior: 'allow' as const,
+        rule: 'Bash(npm test:*)',
+        scope: 'project' as const,
+        path: '/project/.claude/settings.json',
+      },
+    ]
+    const allow = render(
+      <PermissionDashboard
+        tabIndex={1}
+        selectedIndex={0}
+        query="npm"
+        rules={rules}
+        recentDenied={[]}
+        workspaceDirectories={[
+          { path: '/project', original: true },
+          { path: '/shared', original: false },
+        ]}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(allow.lastFrame()).toContain('Recently denied')
+    expect(allow.lastFrame()).toContain('⌕ npm')
+    expect(allow.lastFrame()).toContain(
+      "Praxis Code won't ask before using allowed tools.",
+    )
+    expect(allow.lastFrame()).toContain('1. Add a new rule…')
+    expect(allow.lastFrame()).toContain('2. Bash(npm test:*)')
+
+    const workspace = render(
+      <PermissionDashboard
+        tabIndex={4}
+        selectedIndex={0}
+        query=""
+        rules={rules}
+        recentDenied={[]}
+        workspaceDirectories={[
+          { path: '/project', original: true },
+          { path: '/shared', original: false },
+        ]}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(workspace.lastFrame()).toContain(
+      '/project (Original working directory)',
+    )
+    expect(workspace.lastFrame()).toContain('/shared')
+    expect(workspace.lastFrame()).toContain('1. /shared')
+    expect(workspace.lastFrame()).toContain('2. Add directory…')
+  })
+
+  it('shows active thinking in full and expands retained thinking on demand', () => {
+    const reasoning = `Start ${'detail '.repeat(40)}reasoning tail stays visible`
+    const collapsed = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        items={[{ kind: 'thinking', text: reasoning }]}
+      />,
+    )
+    expect(collapsed.lastFrame()).toContain('Thought for a moment')
+    expect(collapsed.lastFrame()).not.toContain('reasoning tail stays visible')
+
+    const expanded = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        thinkingExpanded
+        items={[{ kind: 'thinking', text: reasoning }]}
+      />,
+    )
+    expect(expanded.lastFrame()).toContain('reasoning tail stays visible')
+
+    const active = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        activeThinking={reasoning}
+        items={[]}
+      />,
+    )
+    expect(active.lastFrame()).toContain('Thinking…')
+    expect(active.lastFrame()).toContain('reasoning tail stays visible')
+  })
+
+  it('renders context usage and local status dashboards', () => {
+    const context = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        items={[
+          {
+            kind: 'context',
+            usedTokens: 1_500,
+            contextWindowTokens: 200_000,
+            skills: [{ name: 'review', tokens: 290 }],
+          },
+        ]}
+      />,
+    )
+    expect(context.lastFrame()).toContain('Context Usage')
+    expect(context.lastFrame()).toContain('1,500/200,000 tokens')
+    expect(context.lastFrame()).toContain('Autocompact buffer: 33,000 tokens')
+    expect(context.lastFrame()).toContain('review: ~290 tokens')
+
+    const accessibleContext = render(
+      <Transcript
+        screenReader
+        activeText=""
+        items={[
+          {
+            kind: 'context',
+            usedTokens: 1_500,
+            contextWindowTokens: 200_000,
+            skills: [{ name: 'review', tokens: 290 }],
+          },
+        ]}
+      />,
+    )
+    expect(accessibleContext.lastFrame()).toContain('1,500 of 200,000 tokens')
+    expect(accessibleContext.lastFrame()).not.toContain('⛶')
+
+    const status = render(
+      <StatusDashboard
+        tabIndex={1}
+        version="0.2.0"
+        sessionId="session-1"
+        display={display}
+        usage={{ inputTokens: 12, outputTokens: 3 }}
+        costUsd={0.01}
+        turnCount={2}
+        toolCount={1}
+        commandCount={14}
+        detailedTranscript={false}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(status.lastFrame()).toContain(
+      'Settings  Status  Config  Usage  Stats',
+    )
+    expect(status.lastFrame()).toContain('Version:')
+    expect(status.lastFrame()).toContain('session-1')
+    expect(status.lastFrame()).toContain('test-model')
+  })
+
+  it('renders empty and populated local list dashboards', () => {
+    const empty = render(
+      <ListDashboard
+        title="Skills"
+        rows={[]}
+        emptyText={
+          'No skills found\nCreate skills in .claude/skills/ or ~/.claude/skills/'
+        }
+        selectedIndex={0}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(empty.lastFrame()).toContain('No skills found')
+    expect(empty.lastFrame()).toContain('.claude/skills/')
+
+    const populated = render(
+      <ListDashboard
+        title="Background"
+        rows={[{ label: 'w1 [running] Review repository' }]}
+        emptyText="No tasks currently running"
+        selectedIndex={0}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(populated.lastFrame()).toContain('❯ w1 [running] Review repository')
+  })
+
+  it('renders a bounded slash command palette with descriptions', () => {
+    const app = render(
+      <CommandPalette
+        commands={[
+          {
+            name: 'review',
+            description: 'Review the current change.',
+            source: 'command',
+          },
+          {
+            name: 'check',
+            description: 'Check the workspace.',
+            source: 'skill',
+          },
+        ]}
+        selectedIndex={1}
+        width={70}
+        screenReader={false}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('/review')
+    expect(frame).toContain('Review the current change.')
+    expect(frame).toContain('/check')
+    expect(frame).not.toContain('╭')
+  })
+
+  it('renders a Claude-shaped file picker with an accessible selection', () => {
+    const visual = render(
+      <FilePicker
+        entries={[
+          { path: 'alpha.ts', directory: false },
+          { path: 'src/', directory: true },
+        ]}
+        selectedIndex={1}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(visual.lastFrame()).toContain('+ alpha.ts')
+    expect(visual.lastFrame()).toContain('+ src/')
+
+    const accessible = render(
+      <FilePicker
+        entries={[{ path: 'src/agent.ts', directory: false }]}
+        selectedIndex={0}
+        width={80}
+        screenReader
+      />,
+    )
+    expect(accessible.lastFrame()).toContain('Selected: src/agent.ts')
+  })
+
+  it('renders Claude-shaped agent entries in the mention picker', () => {
+    const visual = render(
+      <MentionPicker
+        entries={[
+          {
+            kind: 'agent',
+            name: 'reviewer',
+            description: 'Reviews code for subtle regressions.',
+          },
+        ]}
+        selectedIndex={0}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(visual.lastFrame()).toContain(
+      '* reviewer (agent) – Reviews code for subtle regressions.',
+    )
+
+    const narrow = render(
+      <MentionPicker
+        entries={[
+          {
+            kind: 'agent',
+            name: 'reviewer',
+            description:
+              'Reviews code for subtle regressions across the repository.',
+          },
+        ]}
+        selectedIndex={0}
+        width={32}
+        screenReader={false}
+      />,
+    )
+    expect(narrow.lastFrame()?.split('\n').filter(Boolean)).toHaveLength(1)
+    expect(narrow.lastFrame()).toContain('…')
+
+    const accessible = render(
+      <MentionPicker
+        entries={[
+          {
+            kind: 'agent',
+            name: 'reviewer',
+            description: 'Reviews code for subtle regressions.',
+          },
+        ]}
+        selectedIndex={0}
+        width={80}
+        screenReader
+      />,
+    )
+    expect(accessible.lastFrame()).toContain('Selected agent: reviewer')
+  })
+
+  it('renders the shortcut grid and tabbed help surface', () => {
+    const shortcuts = render(<ShortcutHelp width={100} />)
+    expect(shortcuts.lastFrame()).toContain('! for shell mode')
+    expect(shortcuts.lastFrame()).toContain('ctrl + o for verbose output')
+    expect(shortcuts.lastFrame()).toContain('/keybindings to customize')
+
+    const help = render(
+      <HelpMenu
+        tabIndex={1}
+        selectedIndex={0}
+        builtinCommands={[
+          {
+            name: 'resume',
+            description: 'Resume a previous conversation',
+            source: 'builtin',
+          },
+        ]}
+        customCommands={[]}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(help.lastFrame()).toContain(
+      'Help  General  Commands  Custom commands',
+    )
+    expect(help.lastFrame()).toContain('Browse default commands')
+    expect(help.lastFrame()).toContain('/resume')
+  })
+
+  it('renders an accessible selected runtime menu', () => {
+    const app = render(
+      <SelectionMenu
+        title="Select effort"
+        description="Choose reasoning effort."
+        options={[
+          { label: 'low', description: 'Fast', selected: false },
+          { label: 'high', description: 'Thorough', selected: true },
+        ]}
+        selectedIndex={1}
+        footer="Enter applies · Esc cancels"
+        width={70}
+        screenReader={false}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Select effort')
+    expect(frame).toContain('❯ 2. high ✔')
+    expect(frame).toContain('Enter applies · Esc cancels')
   })
 
   it('renders composer effort, prompt, mode, and busy states', () => {
@@ -99,16 +624,19 @@ describe('Claude-style TUI components', () => {
         input=""
         busy={false}
         status="ready"
-        display={display}
+        display={{ ...display, contextWindowTokens: 200 }}
         usage={{ inputTokens: 2, outputTokens: 1 }}
-        width={60}
+        costUsd={0.001}
+        width={100}
         screenReader={false}
       />,
     )
-    expect(idle.lastFrame()).toContain('◉ high · /effort')
+    expect(idle.lastFrame()).toContain('● high · /effort')
     expect(idle.lastFrame()).toContain('❯ Try "review this project"')
     expect(idle.lastFrame()).toContain('permissions default')
-    expect(idle.lastFrame()).toContain('Context · 3 tokens')
+    expect(idle.lastFrame()).toContain(
+      'Context · 3 tokens / 200 (2%) · $0.001000',
+    )
 
     const busy = render(
       <Composer
@@ -122,6 +650,101 @@ describe('Claude-style TUI components', () => {
     )
     expect(busy.lastFrame()).toContain('✳ streaming…')
     expect(busy.lastFrame()).toContain('esc to interrupt')
+
+    const cursor = render(
+      <Composer
+        input="abXcd"
+        cursor={2}
+        busy={false}
+        status="ready"
+        display={display}
+        width={60}
+        screenReader={false}
+      />,
+    )
+    expect(cursor.lastFrame()).toContain('❯ abXcd')
+
+    const shell = render(
+      <Composer
+        input="pwd"
+        cursor={3}
+        shellMode
+        busy={false}
+        status="ready"
+        display={display}
+        width={60}
+        screenReader={false}
+      />,
+    )
+    expect(shell.lastFrame()).toContain('! pwd')
+    expect(shell.lastFrame()).toContain('! for shell mode')
+    expect(shell.lastFrame()).not.toContain('❯ pwd')
+
+    const shellTranscript = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        items={[
+          { kind: 'shell', callId: 'shell-1', command: 'pwd' },
+          {
+            kind: 'shell-result',
+            callId: 'shell-1',
+            stdout: '/tmp/project\n',
+            stderr: '',
+            isError: false,
+          },
+        ]}
+      />,
+    )
+    expect(shellTranscript.lastFrame()).toContain('! pwd')
+    expect(shellTranscript.lastFrame()).toContain('⎿ /tmp/project')
+  })
+
+  it('renders the external editor wait state and footer outcomes', () => {
+    const wait = render(<ExternalEditorWait screenReader={false} />)
+    expect(wait.lastFrame()).toBe(
+      '────────────────────────\nSave and close editor to continue...\n────────────────────────',
+    )
+    const accessibleWait = render(<ExternalEditorWait screenReader />)
+    expect(accessibleWait.lastFrame()).toBe(
+      'External editor open. Save and close it to continue.',
+    )
+
+    const success = render(
+      <Composer
+        input="edited"
+        busy={false}
+        status="ready"
+        display={display}
+        width={100}
+        screenReader={false}
+        footerMessage={{
+          text: 'ctrl+g to edit in Editor-wrapper',
+          isError: false,
+        }}
+      />,
+    )
+    expect(success.lastFrame()).toContain('ctrl+g to edit in Editor-wrapper')
+    expect(success.lastFrame()).not.toContain('● high · /effort')
+
+    const failure = render(
+      <Composer
+        input="original"
+        busy={false}
+        status="ready"
+        display={display}
+        width={100}
+        screenReader={false}
+        footerMessage={{
+          text: 'Editor-fail quit unexpectedly (exit code 7)',
+          isError: true,
+        }}
+      />,
+    )
+    expect(failure.lastFrame()).toContain(
+      'Editor-fail quit unexpectedly (exit code 7)',
+    )
+    expect(failure.lastFrame()).not.toContain('● high · /effort')
   })
 
   it('keeps dialogs and session selection visually bounded', () => {
@@ -177,6 +800,19 @@ describe('Claude-style TUI components', () => {
       />,
     )
     expect(composer.lastFrame()).toBe('Prompt: hello')
+
+    const shellComposer = render(
+      <Composer
+        input="pwd"
+        shellMode
+        busy={false}
+        status="ready"
+        display={display}
+        width={80}
+        screenReader
+      />,
+    )
+    expect(shellComposer.lastFrame()).toBe('Shell command: pwd')
 
     const transcript = render(
       <Transcript

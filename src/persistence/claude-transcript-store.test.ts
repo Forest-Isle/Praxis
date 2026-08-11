@@ -225,6 +225,36 @@ describe('ClaudeTranscriptStore', () => {
     )
   })
 
+  it('appends a local command as a normal tail-advancing system entry', async () => {
+    const { sessionFile, store } = await createStore()
+    const snapshot = await store.load()
+    const entry = {
+      type: 'system',
+      subtype: 'local_command',
+      content: '<command-name>/cd</command-name>',
+      isMeta: false,
+      level: 'info',
+      parentUuid: snapshot.tail.lastUuid,
+      isSidechain: false,
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: '/tmp/praxis-fixture',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      version: '2.1.208',
+      gitBranch: null,
+      timestamp: '2026-08-04T00:00:00.000Z',
+      uuid: 'local-command',
+    }
+
+    await expect(store.append(snapshot.tail, entry)).resolves.toMatchObject({
+      status: 'appended',
+      tail: { lastUuid: entry.uuid },
+    })
+    await expect(readFile(sessionFile, 'utf8')).resolves.toContain(
+      `${JSON.stringify(entry)}\n`,
+    )
+  })
+
   it('creates a fork transcript exclusively without linearizing native entries', async () => {
     const source = await createStore()
     const snapshot = await source.store.load()

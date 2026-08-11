@@ -1,5 +1,6 @@
 import {
   appendFile,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -33,6 +34,7 @@ import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
+import { WorkspaceContext } from './session-worktree.js'
 
 const roots: string[] = []
 
@@ -76,6 +78,247 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('runs and resumes native shell turns through tool hooks before the provider', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shell-turn-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const requests: ModelRequest[] = []
+    const events: RuntimeEvent[] = []
+    const hookEvents: string[] = []
+    const postToolResponses: unknown[] = []
+    const provider: ModelProvider = {
+      model: 'fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        yield { type: 'text-delta', delta: `answer-${requests.length}` }
+        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+      },
+    }
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              PreToolUse: [
+                {
+                  matcher: 'Bash',
+                  hooks: [{ type: 'command', command: 'pre' }],
+                },
+              ],
+              PostToolUse: [
+                {
+                  matcher: 'Bash',
+                  hooks: [{ type: 'command', command: 'post' }],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async (_command, input) => {
+        hookEvents.push(input.hook_event_name)
+        if (input.hook_event_name === 'PostToolUse') {
+          postToolResponses.push(input.tool_response)
+        }
+        return input.hook_event_name === 'PreToolUse'
+          ? {
+              stdout: JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  updatedInput: { command: 'printf hook-output' },
+                  permissionDecision: 'allow',
+                },
+              }),
+              stderr: '',
+              exitCode: 0,
+              durationMs: 1,
+            }
+          : { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+      },
+    })
+    const sessionId = '91919191-9191-4191-8191-919191919191'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+      hooks,
+      eventSink: (event) => events.push(event),
+    })
+
+    await expect(
+      service.runShell('printf original', undefined, sessionId),
+    ).resolves.toMatchObject({ text: 'answer-1', sessionId })
+    await expect(
+      service.resumeShell(sessionId, 'printf second'),
+    ).resolves.toMatchObject({ text: 'answer-2', sessionId })
+
+    expect(hookEvents).toEqual([
+      'PreToolUse',
+      'PostToolUse',
+      'PreToolUse',
+      'PostToolUse',
+    ])
+    expect(postToolResponses).toEqual([
+      expect.objectContaining({ stdout: 'hook-output', stderr: '' }),
+      expect.objectContaining({ stdout: 'hook-output', stderr: '' }),
+    ])
+    expect(events.filter((event) => event.type === 'tool-call')).toEqual([])
+    expect(events.filter((event) => event.type === 'tool-result')).toEqual([])
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'shell-result',
+        stdout: 'hook-output',
+        stderr: '',
+        isError: false,
+      }),
+    )
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      '<bash-input>printf original</bash-input>',
+    )
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      '<bash-stdout>hook-output</bash-stdout><bash-stderr></bash-stderr>',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      '<bash-input>printf second</bash-input>',
+    )
+
+    const entries = (
+      await readFile(
+        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+          .sessionFile,
+        'utf8',
+      )
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const bashMessages = entries.filter(
+      (entry) =>
+        entry.type === 'user' &&
+        typeof entry.message?.content === 'string' &&
+        entry.message.content.startsWith('<bash-'),
+    )
+    expect(bashMessages.map((entry) => entry.message.content)).toEqual([
+      '<bash-input>printf original</bash-input>',
+      '<bash-stdout>hook-output</bash-stdout><bash-stderr></bash-stderr>',
+      '<bash-input>printf second</bash-input>',
+      '<bash-stdout>hook-output</bash-stdout><bash-stderr></bash-stderr>',
+    ])
+    expect(
+      entries.some((entry) =>
+        (JSON.stringify(entry.message?.content) ?? '').includes('shell_'),
+      ),
+    ).toBe(false)
+    expect(entries.at(-1)).toMatchObject({
+      type: 'last-prompt',
+      lastPrompt: '! printf second',
+    })
+  })
+
+  it('continues a denied shell turn without executing the command', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shell-denied-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    let executed = false
+    const requests: ModelRequest[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: 'denied safely' }
+        },
+      },
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          executed = true
+          return { content: 'unexpected', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+      approveTool: () => ({ behavior: 'deny', message: 'User denied shell' }),
+    })
+
+    await expect(service.runShell('touch denied')).resolves.toMatchObject({
+      text: 'denied safely',
+    })
+    expect(executed).toBe(false)
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      '<bash-stderr>User denied shell</bash-stderr>',
+    )
+  })
+
+  it('cancels a running shell command without persisting a partial shell turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shell-cancel-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const events: RuntimeEvent[] = []
+    let markCommandStarted: (() => void) | undefined
+    const commandStarted = new Promise<void>((resolve) => {
+      markCommandStarted = resolve
+    })
+    let providerCalled = false
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          providerCalled = true
+          yield { type: 'text-delta', delta: 'unexpected' }
+        },
+      },
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      eventSink: (event) => {
+        events.push(event)
+        if (event.type === 'shell-command') markCommandStarted?.()
+      },
+    })
+    const sessionId = '92929292-9292-4292-8292-929292929292'
+    const controller = new AbortController()
+    const turn = service.runShell('sleep 30', controller.signal, sessionId)
+    await commandStarted
+    controller.abort()
+
+    await expect(turn).rejects.toBeInstanceOf(AgentRunCancelledError)
+    expect(providerCalled).toBe(false)
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'shell-command' }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'shell-cancelled' }),
+    )
+    expect(events.some((event) => event.type === 'shell-result')).toBe(false)
+    const transcript = await readFile(
+      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('<bash-input>')
+    expect(transcript).not.toContain('<bash-stdout>')
+  })
+
   it('persists and restores interactive plan-mode transitions without duplicate tools', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-interactive-plan-'))
     roots.push(root)
@@ -190,6 +433,31 @@ describe('ClaudeSessionService', () => {
     expect(modes).toEqual(['plan', 'default'])
   })
 
+  it('appends an explicit Claude permission mode for an existing session', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const sessionId = '87878787-8787-4787-8787-878787878787'
+
+    await service.run('start', undefined, sessionId)
+    await service.setPermissionMode(sessionId, 'acceptEdits')
+
+    const transcript = await readFile(
+      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
+      'utf8',
+    )
+    const modes = transcript
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.type === 'permission-mode')
+    expect(modes).toEqual([
+      {
+        type: 'permission-mode',
+        permissionMode: 'acceptEdits',
+        sessionId,
+      },
+    ])
+  })
+
   it('persists native file checkpoints and rewinds without a provider call', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-rewind-'))
     roots.push(root)
@@ -250,11 +518,485 @@ describe('ClaudeSessionService', () => {
     expect(entries.map((entry) => entry.type)).toEqual(
       expect.arrayContaining(['file-history-snapshot', 'file-history-delta']),
     )
+    expect(await service.rewindPoints(result.sessionId)).toEqual([
+      expect.objectContaining({
+        messageId: user.uuid,
+        prompt: 'create it',
+        fileChanges: [expect.stringMatching(/created\.txt$/u)],
+        fileRestoreAvailable: true,
+      }),
+    ])
     await service.rewindFiles(result.sessionId, user.uuid)
     await expect(readFile(filePath, 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     })
     expect(providerTurn).toBe(2)
+  })
+
+  it('manually compacts an existing session into native summary records', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const events: RuntimeEvent[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 100_000,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'original answer' }
+        },
+      },
+      compactor: {
+        async compact(request) {
+          expect(JSON.stringify(request.messages)).toContain('original answer')
+          return {
+            summary: 'durable manual summary',
+            usage: { inputTokens: 12, outputTokens: 4 },
+            durationMs: 25,
+          }
+        },
+      },
+      eventSink: (event) => events.push(event),
+    })
+
+    const run = await service.run('remember this task')
+    const compacted = await service.compact(run.sessionId)
+
+    expect(compacted).toMatchObject({
+      summary: 'durable manual summary',
+      usage: { inputTokens: 12, outputTokens: 4 },
+      preTokens: expect.any(Number),
+    })
+    expect(events).toContainEqual({ type: 'state', state: 'compacting' })
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'compact-boundary',
+        trigger: 'manual',
+      }),
+    )
+    expect(await service.transcript(run.sessionId)).toEqual([
+      { kind: 'compact', summary: 'durable manual summary' },
+    ])
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('"trigger":"manual"')
+    expect(transcript).toContain('"isCompactSummary":true')
+    expect(transcript).toContain('durable manual summary')
+  })
+
+  it('relocates an active session and continues it from the new cwd', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const originalCwd = join(root, 'original')
+    const relocatedCwd = join(root, 'relocated')
+    await mkdir(originalCwd)
+    await mkdir(relocatedCwd)
+    const canonicalRelocatedCwd = await realpath(relocatedCwd)
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      workspace: new WorkspaceContext(originalCwd),
+      provider: queuedProvider(['before move', 'after move']),
+    })
+    const run = await service.run('start here')
+    const original = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: originalCwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const relocated = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: canonicalRelocatedCwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+
+    await expect(service.changeCwd(run.sessionId, relocatedCwd)).resolves.toBe(
+      canonicalRelocatedCwd,
+    )
+    await expect(readFile(original)).rejects.toMatchObject({ code: 'ENOENT' })
+    const moved = await readFile(relocated, 'utf8')
+    expect(moved).toContain(
+      `"type":"relocated","sessionId":"${run.sessionId}","relocatedCwd":"${canonicalRelocatedCwd}"`,
+    )
+    expect(moved).toContain('<command-name>/cd</command-name>')
+    expect(moved).toContain(
+      `<command-args>${canonicalRelocatedCwd}</command-args>`,
+    )
+    expect(moved).toContain(
+      `<local-command-stdout>Moved to ${canonicalRelocatedCwd}</local-command-stdout>`,
+    )
+    expect(moved).toContain(
+      `The session's working directory has changed to ${canonicalRelocatedCwd} (via /cd).`,
+    )
+
+    await service.resume(run.sessionId, 'continue here')
+    const continued = await readFile(relocated, 'utf8')
+    expect(continued).toContain(`"cwd":"${canonicalRelocatedCwd}"`)
+    expect(await service.sessions()).toEqual([
+      expect.objectContaining({ sessionId: run.sessionId }),
+    ])
+  })
+
+  it('changes cwd without a session and resolves relative symlink paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-empty-'))
+    roots.push(root)
+    const originalCwd = join(root, 'original')
+    const targetCwd = join(root, 'target')
+    const targetLink = join(originalCwd, 'next')
+    await mkdir(originalCwd)
+    await mkdir(targetCwd)
+    await symlink(targetCwd, targetLink)
+    const canonicalTarget = await realpath(targetCwd)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['created after move']),
+    })
+
+    await expect(service.changeCwd(undefined, 'next')).resolves.toBe(
+      canonicalTarget,
+    )
+    const run = await service.run('start in target')
+    const targetSession = resolveClaudePaths({
+      configDir: join(root, 'config'),
+      cwd: canonicalTarget,
+      sessionId: run.sessionId,
+    }).sessionFile
+    await expect(readFile(targetSession, 'utf8')).resolves.toContain(
+      `"cwd":"${canonicalTarget}"`,
+    )
+  })
+
+  it('fails closed when the relocation target transcript already exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-conflict-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const originalCwd = join(root, 'original')
+    const targetCwd = join(root, 'target')
+    await mkdir(originalCwd)
+    await mkdir(targetCwd)
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      workspace: new WorkspaceContext(originalCwd),
+      provider: queuedProvider(['before move']),
+    })
+    const run = await service.run('start here')
+    const source = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: originalCwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const target = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: await realpath(targetCwd),
+      sessionId: run.sessionId,
+    }).sessionFile
+    await mkdir(join(target, '..'), { recursive: true })
+    await writeFile(target, 'existing target\n')
+    const sourceBefore = await readFile(source, 'utf8')
+
+    await expect(service.changeCwd(run.sessionId, targetCwd)).rejects.toThrow(
+      'already exists at relocation target',
+    )
+    await expect(readFile(source, 'utf8')).resolves.toBe(sourceBefore)
+    await expect(readFile(target, 'utf8')).resolves.toBe('existing target\n')
+  })
+
+  it('leaves the source unchanged when publishing a staged relocation fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-rollback-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const originalCwd = join(root, 'original')
+    const targetCwd = join(root, 'target')
+    await mkdir(originalCwd)
+    await mkdir(targetCwd)
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      workspace: new WorkspaceContext(originalCwd),
+      provider: queuedProvider(['before move']),
+    })
+    const run = await service.run('start here')
+    const sourcePaths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: originalCwd,
+      sessionId: run.sessionId,
+    })
+    const targetPaths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: await realpath(targetCwd),
+      sessionId: run.sessionId,
+    })
+    const sourceBefore = await readFile(sourcePaths.sessionFile, 'utf8')
+
+    await chmod(sourcePaths.projectRoot, 0o555)
+    try {
+      await expect(
+        service.changeCwd(run.sessionId, targetCwd),
+      ).rejects.toThrow()
+    } finally {
+      await chmod(sourcePaths.projectRoot, 0o755)
+    }
+    await expect(readFile(sourcePaths.sessionFile, 'utf8')).resolves.toBe(
+      sourceBefore,
+    )
+    await expect(readFile(targetPaths.sessionFile)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(readdir(targetPaths.projectRoot)).resolves.toEqual([])
+  })
+
+  it('records native /cd usage output without changing cwd', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-usage-'))
+    roots.push(root)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['before usage']),
+    })
+    const run = await service.run('start here')
+
+    await service.recordCdUsage(run.sessionId)
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: join(root, 'config'),
+        cwd: root,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('<command-args></command-args>')
+    expect(transcript).toContain(
+      '<local-command-stdout>Usage: /cd <path></local-command-stdout>',
+    )
+  })
+
+  it('rejects a non-directory cwd without changing the active workspace', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-file-'))
+    roots.push(root)
+    const file = join(root, 'not-a-directory')
+    await writeFile(file, 'file')
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: root,
+      claudeVersion: '2.1.208',
+      workspace: new WorkspaceContext(root),
+      provider: queuedProvider(['still original']),
+    })
+
+    await expect(service.changeCwd(undefined, file)).rejects.toThrow(
+      `Not a directory: ${file}`,
+    )
+    const run = await service.run('start here')
+    const originalSession = resolveClaudePaths({
+      configDir: join(root, 'config'),
+      cwd: root,
+      sessionId: run.sessionId,
+    }).sessionFile
+    await expect(readFile(originalSession, 'utf8')).resolves.toContain(
+      `"cwd":"${root}"`,
+    )
+  })
+
+  it('selectively summarizes from a rewind point with native metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-selective-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const summarizedRequests: string[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([
+        'first answer',
+        'second answer',
+        'third answer',
+      ]),
+      compactor: {
+        async compact(request) {
+          summarizedRequests.push(JSON.stringify(request.messages))
+          return {
+            summary: 'selected range summary',
+            usage: { inputTokens: 8, outputTokens: 3 },
+            durationMs: 10,
+          }
+        },
+      },
+    })
+    const first = await service.run('first prompt')
+    await service.resume(first.sessionId, 'second prompt')
+    const points = await service.rewindPoints(first.sessionId)
+    const second = points.find((point) => point.prompt === 'second prompt')
+    if (!second) throw new Error('second rewind point missing')
+
+    const result = await service.compact(first.sessionId, undefined, {
+      messageId: second.messageId,
+      direction: 'from',
+      context: 'focus on the second task',
+    })
+
+    expect(result.messagesSummarized).toBeGreaterThan(0)
+    expect(summarizedRequests[0]).toContain('second prompt')
+    expect(summarizedRequests[0]).not.toContain('first prompt')
+    expect(summarizedRequests[0]).toContain('focus on the second task')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('"trigger":"manual"')
+    expect(transcript).toContain('"direction":"from"')
+    expect(transcript).toContain('"messagesSummarized"')
+    expect(await service.transcript(first.sessionId)).toEqual([
+      { kind: 'user', text: 'first prompt' },
+      { kind: 'assistant', text: 'first answer' },
+      { kind: 'compact', summary: 'selected range summary' },
+    ])
+    await service.resume(first.sessionId, 'third prompt')
+    expect(await service.transcript(first.sessionId)).toEqual([
+      { kind: 'user', text: 'first prompt' },
+      { kind: 'assistant', text: 'first answer' },
+      { kind: 'compact', summary: 'selected range summary' },
+      { kind: 'user', text: 'third prompt' },
+      { kind: 'assistant', text: 'third answer' },
+    ])
+  })
+
+  it('selectively summarizes up to a rewind point and natively replays later messages', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-selective-up-to-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const summarizedRequests: string[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([
+        'first answer',
+        'second answer',
+        'third answer',
+        'fourth answer',
+      ]),
+      compactor: {
+        async compact(request) {
+          summarizedRequests.push(JSON.stringify(request.messages))
+          return {
+            summary: 'earlier range summary',
+            usage: { inputTokens: 8, outputTokens: 3 },
+            durationMs: 10,
+          }
+        },
+      },
+    })
+    const first = await service.run('first prompt')
+    await service.resume(first.sessionId, 'second prompt')
+    const second = (await service.rewindPoints(first.sessionId)).find(
+      (point) => point.prompt === 'second prompt',
+    )
+    if (!second) throw new Error('second rewind point missing')
+
+    await service.compact(first.sessionId, undefined, {
+      messageId: second.messageId,
+      direction: 'to',
+    })
+
+    expect(summarizedRequests[0]).toContain('first prompt')
+    expect(summarizedRequests[0]).not.toContain('second prompt')
+    expect(await service.transcript(first.sessionId)).toEqual([
+      { kind: 'compact', summary: 'earlier range summary' },
+      { kind: 'user', text: 'second prompt' },
+      { kind: 'assistant', text: 'second answer' },
+    ])
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('"direction":"up_to"')
+    expect(transcript).not.toContain('preserved verbatim as model messages')
+
+    const fork = await service.fork(first.sessionId)
+    expect(await service.transcript(fork.sessionId)).toEqual([
+      { kind: 'compact', summary: 'earlier range summary' },
+      { kind: 'user', text: 'second prompt' },
+      { kind: 'assistant', text: 'second answer' },
+    ])
+
+    await service.resume(first.sessionId, 'third prompt')
+    await service.resume(first.sessionId, 'fourth prompt')
+    expect(await service.transcript(first.sessionId)).toEqual([
+      { kind: 'compact', summary: 'earlier range summary' },
+      { kind: 'user', text: 'second prompt' },
+      { kind: 'assistant', text: 'second answer' },
+      { kind: 'user', text: 'third prompt' },
+      { kind: 'assistant', text: 'third answer' },
+      { kind: 'user', text: 'fourth prompt' },
+      { kind: 'assistant', text: 'fourth answer' },
+    ])
+  })
+
+  it('summarizes from the first rewind point without requiring an earlier parent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-selective-first-'))
+    roots.push(root)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['only answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'whole conversation summary',
+            usage: { inputTokens: 4, outputTokens: 2 },
+            durationMs: 5,
+          }
+        },
+      },
+    })
+    const run = await service.run('first prompt')
+    const [first] = await service.rewindPoints(run.sessionId)
+    if (!first) throw new Error('first rewind point missing')
+
+    await expect(
+      service.compact(run.sessionId, undefined, {
+        messageId: first.messageId,
+        direction: 'from',
+      }),
+    ).resolves.toMatchObject({ summary: 'whole conversation summary' })
+    expect(await service.transcript(run.sessionId)).toEqual([
+      { kind: 'compact', summary: 'whole conversation summary' },
+    ])
   })
 
   it('downloads startup files before the first provider turn once per session', async () => {
@@ -2004,6 +2746,14 @@ describe('ClaudeSessionService', () => {
       }),
     ])
 
+    await service.rename(first.sessionId, 'renamed-session')
+    await expect(service.sessions()).resolves.toEqual([
+      expect.objectContaining({
+        sessionId: first.sessionId,
+        name: 'renamed-session',
+      }),
+    ])
+
     const forked = await service.fork(first.sessionId)
     expect(forked.sessionId).not.toBe(first.sessionId)
     expect(forked.parentSessionId).toBe(first.sessionId)
@@ -2017,6 +2767,33 @@ describe('ClaudeSessionService', () => {
     const source = await readFile(forkPaths.sessionFile, 'utf8')
     expect(source).toContain(`"sessionId":"${forked.sessionId}"`)
     expect(source).not.toContain(`"sessionId":"${first.sessionId}"`)
+    expect(source).toContain('"customTitle":"renamed-session"')
+  })
+
+  it('generates a provider-backed kebab-case session name without transcript mutation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-name-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const provider = queuedProvider(['first answer', 'review-auth-flow'])
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+    })
+    const result = await service.run('review authentication')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    const before = await readFile(paths.sessionFile, 'utf8')
+
+    await expect(service.sessionNameSuggestion(result.sessionId)).resolves.toBe(
+      'review-auth-flow',
+    )
+    expect(await readFile(paths.sessionFile, 'utf8')).toBe(before)
   })
 
   it('resumes and forks at an active user message using native transcript branches', async () => {
@@ -2075,6 +2852,19 @@ describe('ClaudeSessionService', () => {
     ) {
       throw new Error('Could not locate resume-at transcript fixtures')
     }
+
+    const targetedHistory = await service.transcript(
+      first.sessionId,
+      target.uuid,
+    )
+    expect(targetedHistory).toContainEqual({
+      kind: 'user',
+      text: 'second prompt',
+    })
+    expect(targetedHistory).not.toContainEqual({
+      kind: 'user',
+      text: 'abandoned third prompt',
+    })
 
     await service.resume(
       first.sessionId,
@@ -2240,6 +3030,10 @@ describe('ClaudeSessionService', () => {
     await expect(service.export(first.sessionId)).resolves.toEqual(
       Buffer.from(source),
     )
+    await expect(service.transcript(first.sessionId)).resolves.toEqual([
+      { kind: 'user', text: 'inspect me' },
+      { kind: 'assistant', text: 'first answer' },
+    ])
     expect(await readFile(sessionFile, 'utf8')).toBe(source)
   })
 
@@ -2542,6 +3336,105 @@ describe('ClaudeSessionService', () => {
     expect(entries[2]?.message.content).toEqual([
       { type: 'text', text: 'COMMAND [alpha beta] ZERO=[alpha]' },
     ])
+  })
+
+  it('injects selected @ agent reminders without persisting them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-agent-mention-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'reviewer.md'),
+          scope: 'user',
+          content:
+            '---\nname: reviewer\ndescription: Review work.\n---\nAGENT_BODY',
+        },
+      ],
+    })
+    let turn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_read_mention',
+              name: 'Read',
+              input: { file_path: 'README.md' },
+            },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'done' }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read a file',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return { content: '# Fixture', isError: false }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      extensions,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const result = await service.run('@"reviewer (agent)" inspect this')
+
+    expect(requests[0]?.messages).toEqual([
+      {
+        role: 'user',
+        content:
+          '<system-reminder>\nThe user has expressed a desire to invoke the agent "reviewer". Please invoke the agent appropriately, passing in the required context to it.\n</system-reminder>',
+      },
+      {
+        role: 'user',
+        content:
+          '<system-reminder>\nAvailable agent types for the Agent tool:\n- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.\n- reviewer: Review work.\n</system-reminder>',
+      },
+      { role: 'user', content: '@"reviewer (agent)" inspect this' },
+    ])
+    expect(requests[1]?.messages.slice(0, 3)).toEqual(requests[0]?.messages)
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'call_read_mention',
+      content: '# Fixture',
+      isError: false,
+    })
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: result.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('@\\"reviewer (agent)\\" inspect this')
+    expect(transcript).not.toContain('expressed a desire to invoke')
+    expect(transcript).not.toContain('Available agent types')
   })
 
   it('routes MCP prompt rich content and user attachments through the expanded message', async () => {

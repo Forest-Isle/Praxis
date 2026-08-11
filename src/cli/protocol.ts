@@ -214,6 +214,7 @@ export type StreamJsonMessage =
 export interface CliRuntimeInfo {
   cwd: string
   model: string
+  contextWindowTokens?: number
   tools: readonly string[]
   mcpServers: readonly { name: string; status: string }[]
   permissionMode: string

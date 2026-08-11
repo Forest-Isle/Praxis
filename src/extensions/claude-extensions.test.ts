@@ -79,6 +79,23 @@ describe('ClaudeExtensionCatalog', () => {
       '/unknown value',
     ])
     expect(catalog.agent('reviewer')?.body).toBe('AGENT_BODY')
+    expect(catalog.agentDefinitions()).toEqual([
+      {
+        name: 'general-purpose',
+        description:
+          'General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.',
+      },
+      { name: 'reviewer', description: 'Review work.' },
+    ])
+    expect(
+      catalog.agentMentionMessages('Ask @"reviewer (agent)" to inspect this'),
+    ).toEqual([
+      '<system-reminder>\nThe user has expressed a desire to invoke the agent "reviewer". Please invoke the agent appropriately, passing in the required context to it.\n</system-reminder>',
+      '<system-reminder>\nAvailable agent types for the Agent tool:\n- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.\n- reviewer: Review work.\n</system-reminder>',
+    ])
+    expect(
+      catalog.agentMentionMessages('Read @"reviewer.md" as a file'),
+    ).toEqual([])
   })
 
   it('keeps malformed bodies and gives a colliding skill precedence', () => {
@@ -255,6 +272,57 @@ describe('ClaudeExtensionCatalog', () => {
     await expect(
       catalog.expandPromptAsync('/occupied:prompt (MCP)'),
     ).resolves.toEqual({ userMessages: ['/occupied:prompt (MCP)'] })
+  })
+
+  it('exposes every user-invocable slash command with palette metadata', () => {
+    const catalog = new ClaudeExtensionCatalog({
+      agents: [],
+      commands: [
+        {
+          path: '/config/commands/review.md',
+          scope: 'user',
+          content: '---\ndescription: Review local changes.\n---\nREVIEW',
+        },
+      ],
+      skills: [
+        {
+          path: '/config/skills/check/SKILL.md',
+          scope: 'user',
+          content:
+            '---\nname: check\ndescription: Check the workspace.\ndisable-model-invocation: true\n---\nCHECK',
+        },
+      ],
+    })
+    catalog.setMcpPrompts([
+      {
+        name: 'mcp__server__lookup',
+        userFacingName: 'server:lookup (MCP)',
+        description: 'Look up a shared resource.',
+        argumentNames: [],
+        invoke: async () => ({ text: '', contentBlocks: [], images: [] }),
+      },
+    ])
+
+    expect(catalog.slashCommandDefinitions()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'loop', kind: 'command' }),
+        {
+          name: 'review',
+          description: 'Review local changes.',
+          kind: 'command',
+        },
+        {
+          name: 'check',
+          description: 'Check the workspace.',
+          kind: 'skill',
+        },
+        {
+          name: 'server:lookup (MCP)',
+          description: 'Look up a shared resource.',
+          kind: 'mcp',
+        },
+      ]),
+    )
   })
 
   it('does not expose MCP prompts when slash commands are disabled', async () => {

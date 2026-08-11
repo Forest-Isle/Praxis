@@ -817,3 +817,122 @@ Status: complete for GitHub branch-protection integration.
       same-SHA dispatched CI run, with a linked details URL and non-success
       status for failed or timed-out runs
 - [x] release publication remains a separate retryable repository dispatch
+
+## Stage 94 - interactive direct shell parity
+
+Status: complete for the Claude Code 2.1.208 `!` shell-mode contract; broader
+interactive TTY parity remains partial.
+
+- [x] distinct ruled `!` composer, immediate `! command` / indented `⎿` output,
+      bounded verbose expansion, screen-reader labels, new-session and resume
+      routing, and provider continuation
+- [x] direct Bash execution through the existing preparation, active permission
+      resolver, approval, cancellation, and PreToolUse/PostToolUse Hook chain;
+      no TUI child-process bypass
+- [x] Claude-native append-only `<bash-input>`, `<bash-stdout>`, and
+      `<bash-stderr>` user records with no synthetic tool-use pair or
+      Praxis-specific shared transcript fields
+- [x] cancellation kills the command, commits no partial shell record, removes
+      the transient transcript row, and restores the command to the composer
+- [x] focused runtime, application, translation, local-tool, Ink interaction,
+      component, and installed-package PTY coverage
+
+## Stage 95 - interactive agent mention parity
+
+Status: complete for the Claude Code 2.1.208 `@` agent-selection contract;
+broader interactive TTY parity remains partial.
+
+- [x] mixed workspace file and shared agent discovery in the existing `@`
+      picker, including described `* name (agent)` rows, bounded truncation,
+      keyboard selection, and screen-reader labels
+- [x] Claude-compatible `@"name (agent)"` composer insertion without a
+      Praxis-specific mention syntax or competing agent registry
+- [x] provider-only invocation and available-agent reminders that retain the
+      original prompt, survive tool-loop reloads, participate in context-budget
+      checks, and never enter the shared append-only JSONL
+- [x] focused catalog, session, picker, Ink interaction, component, and
+      installed-package PTY coverage
+
+## Stage 96 - interactive external editor parity
+
+Status: complete for the Claude Code 2.1.208 `Ctrl+G` external-editor contract;
+broader interactive TTY parity remains partial.
+
+- [x] `$VISUAL` before `$EDITOR` with `vi` fallback, quoted executable/argument
+      parsing without a shell, and the prompt Markdown path as the final argument
+- [x] exact composer-byte round trip, including empty input, multiline content,
+      leading/trailing whitespace, and trailing blank lines
+- [x] native Ink terminal suspension and redraw with the observed wait surface;
+      successful replacement joins composer undo while non-zero exits retain the
+      original prompt and expose the editor basename and exit code
+- [x] private temporary directory/file permissions, guaranteed cleanup, abort
+      propagation, and CLI turn/shutdown coordination without a model service
+- [x] focused process, component, interaction, screen-reader, and
+      installed-package PTY coverage
+
+## Stage 97 - interactive shell suspension parity
+
+Status: complete for the Claude Code 2.1.208 `Ctrl+Z`/`fg` job-control
+contract; broader interactive TTY parity remains partial.
+
+- [x] global `Ctrl+Z` recognition in idle, busy, and decision states without
+      cancelling or replacing the active turn, composer, menu, or session
+- [x] ordered terminal flush and Ink suspension before a branded two-line
+      suspend/undo notice and current-process `SIGTSTP`
+- [x] shell `fg`/`SIGCONT` recovery through Ink terminal reclamation and forced
+      full redraw with exact in-memory composer retention
+- [x] focused notice/signal tests, idle and busy interaction tests, and a real
+      installed-package zsh `jobs -l` stopped-state plus `fg` recovery gate
+
+## Stage 98 - interactive clipboard and image-paste parity
+
+Status: complete for the Claude Code 2.1.208 `Ctrl+V` text/image clipboard
+contract; broader interactive TTY parity remains partial.
+
+- [x] observed `Pasting…` transition and real-cursor text insertion through
+      native macOS, Linux Wayland/X11, and Windows text clipboard adapters
+- [x] monotonic `[Image #N]` markers with adjacent-image spacing, atomic cursor
+      movement and deletion, external-editor visibility, and composer undo
+- [x] marker-ordered image collection for new and resumed turns through the
+      existing `ModelImage`, provider, and Claude-native append-only JSONL path
+      without a competing attachment format
+- [x] bounded clipboard payloads, strict macOS PNG decoding, command argument
+      arrays without a shell, and isolated reader injection for tests
+- [x] focused parser/editor/Ink interaction coverage plus installed-package PTY
+      text-paste verification; existing image/provider/transcript gates retained
+
+## Stage 99 - shared keybindings editor parity
+
+Status: complete for the Claude Code 2.1.208 `/keybindings` shared-file and
+supported-action reload contract; broader interactive TTY parity remains
+partial.
+
+- [x] black-box-confirmed `Open your keyboard shortcuts file` catalog entry,
+      created-versus-existing result text, and direct external-editor lifecycle
+- [x] byte-for-byte Claude Code 2.1.208 `keybindings.json` template under the
+      existing `CLAUDE_CONFIG_DIR`/`~/.claude` data plane with create-once,
+      private-mode, no-overwrite behavior
+- [x] bounded parser with default merging, explicit `null` unbinding, Chat and
+      Global action rebinding, Ink chord normalization, and timed two-stroke
+      sequences including default `Ctrl+X Ctrl+E`
+- [x] live reload after editor close with invalid-file diagnostics and retention
+      of the last valid in-memory map
+- [x] focused file/parser/editor/interaction tests, exact live-template compare,
+      and installed-package PTY creation/content gate
+
+## Stage 100 - permission dashboard mutation parity
+
+Status: complete for the Claude Code 2.1.208 permission-rule create/delete and
+workspace-directory add/remove contract; exact denied-history behavior and
+broader interactive TTY parity remain partial.
+
+- [x] black-box-confirmed default Allow tab, tab descriptions, search focus,
+      numbered add/rule ordering, scoped save choices, and selected-row footer
+- [x] allowed/ask/denied deletion confirmations with observed titles, Bash
+      prefix descriptions, source-scope labels, Yes/No flow, and atomic shared
+      settings rewrites that retain Claude's empty permission arrays
+- [x] Workspace presentation for the immutable original cwd plus numbered
+      `--add-dir` roots, path-completing directory input, canonical directory
+      validation, and session-local add/remove runtime reloads
+- [x] focused settings/component/Ink tests plus installed-package PTY deletion,
+      CLI `--add-dir`, Workspace removal, and add-directory-dialog gates

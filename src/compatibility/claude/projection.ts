@@ -10,17 +10,57 @@ import type {
 } from '../../core/runtime.js'
 import type { ClaudeTranscriptEntry } from './schema.js'
 import { selectClaudeActiveTranscript } from './history.js'
+import { parseClaudeCompactSummary } from './compaction.js'
 
 export interface ClaudeTextMessage {
   role: 'user' | 'assistant'
   content: string
 }
 
+export type ClaudeDisplayTranscriptItem =
+  | { kind: 'user' | 'assistant' | 'thinking'; text: string }
+  | { kind: 'compact'; summary: string }
+  | { kind: 'tool'; call: ModelToolCall; detail: string }
+  | { kind: 'tool-result'; callId: string; text: string; isError: boolean }
+  | { kind: 'shell'; callId: string; command: string }
+  | {
+      kind: 'shell-result'
+      callId: string
+      stdout: string
+      stderr: string
+      isError: boolean
+    }
+
 function compactedEntries(
   entries: readonly ClaudeTranscriptEntry[],
 ): readonly ClaudeTranscriptEntry[] {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    if (entries[index]?.isCompactSummary === true) return entries.slice(index)
+    const summary = entries[index]
+    if (summary?.isCompactSummary !== true) continue
+    const metadata = summary.summarizeMetadata
+    if (
+      typeof metadata === 'object' &&
+      metadata !== null &&
+      (metadata as Record<string, unknown>).direction === 'from'
+    ) {
+      const boundary = entries.find(
+        (entry) => entry.uuid === summary.parentUuid,
+      )
+      const compactMetadata = boundary?.compactMetadata
+      const segment =
+        typeof compactMetadata === 'object' && compactMetadata !== null
+          ? (compactMetadata as Record<string, unknown>).preservedSegment
+          : undefined
+      const headUuid =
+        typeof segment === 'object' && segment !== null
+          ? (segment as Record<string, unknown>).headUuid
+          : undefined
+      const preservedStart = entries.findIndex(
+        (entry) => entry.uuid === headUuid,
+      )
+      return entries.slice(preservedStart >= 0 ? preservedStart : index)
+    }
+    return entries.slice(index)
   }
   return entries
 }
@@ -120,6 +160,127 @@ function projectToolResultContent(content: unknown): {
     images,
     documents,
   }
+}
+
+function textBlocks(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter(
+      (block): block is Record<string, unknown> =>
+        isRecord(block) &&
+        block.type === 'text' &&
+        typeof block.text === 'string',
+    )
+    .map((block) => block.text as string)
+    .join('')
+}
+
+function bashEnvelope(
+  content: unknown,
+):
+  | { kind: 'input'; command: string }
+  | { kind: 'output'; stdout: string; stderr: string }
+  | null {
+  if (typeof content !== 'string') return null
+  const input = /^<bash-input>([\s\S]*)<\/bash-input>$/u.exec(content)
+  if (input) return { kind: 'input', command: input[1] ?? '' }
+  const output =
+    /^<bash-stdout>([\s\S]*)<\/bash-stdout><bash-stderr>([\s\S]*)<\/bash-stderr>$/u.exec(
+      content,
+    )
+  return output
+    ? { kind: 'output', stdout: output[1] ?? '', stderr: output[2] ?? '' }
+    : null
+}
+
+/** Projects the active Claude JSONL branch into read-only CLI display items. */
+export function projectClaudeDisplayTranscript(
+  entries: readonly ClaudeTranscriptEntry[],
+): ClaudeDisplayTranscriptItem[] {
+  const items: ClaudeDisplayTranscriptItem[] = []
+  let pendingShell: { callId: string; command: string } | null = null
+
+  for (const entry of compactedEntries(selectClaudeActiveTranscript(entries))) {
+    if (!isRecord(entry.message)) continue
+    const role = entry.message.role
+    const content = entry.message.content
+
+    if (role === 'user') {
+      if (entry.isCompactSummary === true && typeof content === 'string') {
+        const summary = parseClaudeCompactSummary(content)
+        if (summary !== null) items.push({ kind: 'compact', summary })
+        continue
+      }
+      const shell = bashEnvelope(content)
+      if (shell?.kind === 'input') {
+        pendingShell = {
+          callId:
+            typeof entry.uuid === 'string'
+              ? entry.uuid
+              : `shell-${items.length}`,
+          command: shell.command,
+        }
+        items.push({ kind: 'shell', ...pendingShell })
+        continue
+      }
+      if (shell?.kind === 'output' && pendingShell) {
+        items.push({
+          kind: 'shell-result',
+          callId: pendingShell.callId,
+          stdout: shell.stdout,
+          stderr: shell.stderr,
+          isError: shell.stderr.length > 0,
+        })
+        pendingShell = null
+        continue
+      }
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (!isRecord(block) || block.type !== 'tool_result') continue
+          if (typeof block.tool_use_id !== 'string') continue
+          const projected = projectToolResultContent(block.content)
+          items.push({
+            kind: 'tool-result',
+            callId: block.tool_use_id,
+            text: projected?.content ?? '[structured tool result omitted]',
+            isError: block.is_error === true,
+          })
+        }
+      }
+      if (typeof entry.sourceToolAssistantUUID === 'string') continue
+      const text = textBlocks(content)
+      if (text) items.push({ kind: 'user', text })
+      continue
+    }
+
+    if (role !== 'assistant' || !Array.isArray(content)) continue
+    for (const block of content) {
+      if (!isRecord(block)) continue
+      if (block.type === 'thinking' && typeof block.thinking === 'string') {
+        if (block.thinking)
+          items.push({ kind: 'thinking', text: block.thinking })
+        continue
+      }
+      if (block.type === 'text' && typeof block.text === 'string') {
+        if (block.text) items.push({ kind: 'assistant', text: block.text })
+        continue
+      }
+      if (
+        block.type === 'tool_use' &&
+        typeof block.id === 'string' &&
+        typeof block.name === 'string' &&
+        isRecord(block.input)
+      ) {
+        items.push({
+          kind: 'tool',
+          call: { id: block.id, name: block.name, input: block.input },
+          detail: '',
+        })
+      }
+    }
+  }
+  return items
 }
 
 function projectNestedMemory(entry: ClaudeTranscriptEntry): string | null {
