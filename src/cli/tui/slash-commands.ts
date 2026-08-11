@@ -8,6 +8,11 @@ export interface TuiSlashCommand {
 
 export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
+    name: 'add-dir',
+    description: 'Add a new working directory',
+    source: 'builtin',
+  },
+  {
     name: 'help',
     description: 'Show help and available commands',
     source: 'builtin',
@@ -54,6 +59,17 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'config',
+    description: 'Open settings',
+    source: 'builtin',
+  },
+  {
+    name: 'copy',
+    description:
+      "Copy Praxis's last response to clipboard (or /copy N for the Nth-latest)",
+    source: 'builtin',
+  },
+  {
     name: 'status',
     description: 'Show runtime status, configuration, usage, and statistics',
     source: 'builtin',
@@ -61,6 +77,31 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
     name: 'skills',
     description: 'List available skills',
+    source: 'builtin',
+  },
+  {
+    name: 'skill',
+    description: 'List available skills',
+    source: 'builtin',
+  },
+  {
+    name: 'mcp',
+    description: 'Manage MCP servers',
+    source: 'builtin',
+  },
+  {
+    name: 'reload-plugins',
+    description: 'Activate pending plugin changes in the current session',
+    source: 'builtin',
+  },
+  {
+    name: 'reload-skills',
+    description: 'Pick up skills added or changed on disk during this session',
+    source: 'builtin',
+  },
+  {
+    name: 'usage',
+    description: 'Show session cost, model usage, and activity stats',
     source: 'builtin',
   },
   {

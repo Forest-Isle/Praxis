@@ -25,6 +25,8 @@ const claude = join(binRoot, 'claude')
 const editor = join(binRoot, 'editor-wrapper')
 const osascript = join(binRoot, 'osascript')
 const pbpaste = join(binRoot, 'pbpaste')
+const pbcopy = join(binRoot, 'pbcopy')
+const clipboardOutput = join(root, 'clipboard-output.txt')
 const wlPaste = join(binRoot, 'wl-paste')
 let cli
 let port
@@ -99,6 +101,7 @@ try {
   await chmod(editor, 0o755)
   await writeFile(osascript, '#!/bin/sh\nexit 1\n')
   await writeFile(pbpaste, "#!/bin/sh\nprintf 'INSTALLED_CLIPBOARD'\n")
+  await writeFile(pbcopy, '#!/bin/sh\ncat > "$TUI_CLIPBOARD_OUTPUT"\n')
   await writeFile(
     wlPaste,
     '#!/bin/sh\ncase "$*" in *image/png*) exit 1 ;; *) printf \'INSTALLED_CLIPBOARD\' ;; esac\n',
@@ -106,6 +109,7 @@ try {
   await Promise.all([
     chmod(osascript, 0o755),
     chmod(pbpaste, 0o755),
+    chmod(pbcopy, 0o755),
     chmod(wlPaste, 0o755),
   ])
   const { stdout: packed } = await execFileAsync(
@@ -161,6 +165,15 @@ send "\033"
 expect -re {❯ /rev}
 send "\025"
 expect -re {Try.*review this project}
+set phase "add-dir command"
+send "/add-dir"
+expect -re {Add a new working directory}
+send "\r"
+expect -re {Add directory to workspace}
+expect -re {Tab to complete.*Enter to add}
+send "\033"
+after 100
+expect -re {Did not add a working directory}
 set phase "diff dialog"
 send "/diff"
 expect -re {View uncommitted changes}
@@ -322,6 +335,7 @@ send "reply briefly"
 expect -re {❯.*reply briefly}
 after 100
 send "\r"
+expect -re {awaiting-model}
 expect {
   -re {TUI_FAKE_OK} {}
   timeout { puts stderr "assistant response did not render"; exit 1 }
@@ -330,6 +344,11 @@ expect {
 expect -re {Context.*3 tokens}
 expect -re {Try.*review this project}
 after 100
+set phase "copy response"
+send "/copy"
+expect -re {Copy Praxis.*last response}
+send "\r"
+expect -re {Copied last response to clipboard}
 set phase "first TUI exit"
 send "\003"
 expect -re {Press Ctrl-C again to exit}
@@ -377,6 +396,7 @@ exit 0
         CI: 'true',
         PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
         TUI_CLI: cli,
+        TUI_CLIPBOARD_OUTPUT: clipboardOutput,
         TUI_CONFIG_ROOT: configRoot,
         TUI_EDITOR: editor,
         TUI_NODE: process.execPath,
@@ -414,6 +434,7 @@ exit 0
   assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
   assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
   assert.match(transcript, /<bash-stderr><\/bash-stderr>/u)
+  assert.equal(await readFile(clipboardOutput, 'utf8'), 'TUI_FAKE_OK')
   const resumeProbe = String.raw`
 set timeout 15
 log_user 1

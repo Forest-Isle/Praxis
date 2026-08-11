@@ -18,6 +18,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
 - composer uses full-width horizontal rules and a `❯` prompt;
 - entering `/` opens an unboxed, named, described, filterable command list
   rather than requiring users to remember the available slash commands;
+- applicable local commands include direct `/add-dir`, response `/copy [N]`,
+  `/config`, `/usage`, `/mcp`, `/skill`, and live plugin/skill reload entries;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
 - entering `!` switches the composer to shell mode; submitting runs the command
@@ -55,7 +57,7 @@ status-line plugins are not native parity requirements.
 | Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures        |
 | Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate                 |
 | Streaming     | animated-status hierarchy above composer | runtime-event interaction tests                |
-| Slash command | filterable command name and description  | palette, selection, and PTY fixtures           |
+| Slash command | filterable command name and description  | expanded catalog, selection, and PTY fixtures  |
 | Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures          |
 | Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures       |
 | Tool          | named call with indented input/result    | structured tool and diff fixtures              |
@@ -150,6 +152,12 @@ is passed from the CLI composition root and never written to shared JSONL.
   selected active JSONL branch. `--resume-session-at` truncates that display at
   the same selected message used by runtime continuation. The old `/sessions`
   spelling remains accepted but is not advertised.
+- `/add-dir` opens the observed path/completion surface directly and returns a
+  command result on add or cancellation. `/copy [N]` writes the selected prior
+  assistant response through the native OS clipboard without a model turn.
+  `/config` and `/usage` open their matching status tabs; `/mcp` lists current
+  server status; `/skill` aliases the shared skill list; `/reload-skills` and
+  `/reload-plugins` rebuild the active extension-backed service in place.
 - `/model` retains the current model, restores the invocation default, or accepts
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
@@ -259,8 +267,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   creation, installed-package `Ctrl+V` text paste,
   control-code undo, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus
-  installed-package `!pwd` execution, provider continuation, and native
-  transcript tags;
+  installed-package `!pwd` execution, provider continuation, direct `/add-dir`
+  cancellation, `/copy` clipboard output, and native transcript tags;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
@@ -273,8 +281,9 @@ tool-detail, current/per-turn diff-navigation, context/status/skill/task panels,
 plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
-black-box-driven work includes the full built-in command catalog and its
-command-specific dialogs, exact denied-history behavior, and remaining exact
-command-specific dialogs and layout behavior. Each
+black-box-driven work includes the remaining applicable built-in command catalog
+(`/background`, `/branch`, `/btw`, `/cd`, `/compact`, `/export`, `/hooks`,
+`/memory`, `/rename`, `/rewind`, and presentation controls), exact denied-history
+behavior, and remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

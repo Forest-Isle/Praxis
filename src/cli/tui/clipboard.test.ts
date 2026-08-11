@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   createTuiClipboardReader,
+  createTuiClipboardWriter,
   parseMacPngClipboard,
   type TuiClipboardCommandRunner,
+  type TuiClipboardWriteCommandRunner,
 } from './clipboard.js'
 
 describe('TUI clipboard', () => {
@@ -77,5 +79,28 @@ describe('TUI clipboard', () => {
         },
       })(),
     ).rejects.toThrow('Clipboard command timed out')
+  })
+
+  it('writes text through native clipboard commands with Linux fallback', async () => {
+    const calls: string[] = []
+    const runner = vi.fn<TuiClipboardWriteCommandRunner>(
+      async (command, args, input) => {
+        calls.push(`${command}:${args.join(' ')}:${input}`)
+        if (command === 'wl-copy') throw new Error('unavailable')
+      },
+    )
+    await expect(
+      createTuiClipboardWriter({ platform: 'linux', runner })('answer'),
+    ).resolves.toBeUndefined()
+    expect(calls).toEqual([
+      'wl-copy:--type text/plain;charset=utf-8:answer',
+      'xclip:-selection clipboard -in:answer',
+    ])
+  })
+
+  it('fails clearly when the platform has no clipboard writer', async () => {
+    await expect(
+      createTuiClipboardWriter({ platform: 'aix' })('answer'),
+    ).rejects.toThrow('Clipboard is unavailable')
   })
 })

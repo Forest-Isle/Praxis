@@ -308,6 +308,141 @@ describe('InteractiveApp', () => {
     expect(serviceCreations).toBe(1)
   })
 
+  it('opens command-specific config, usage, MCP, skill, and add-dir surfaces', async () => {
+    let creations = 0
+    let closes = 0
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        creations += 1
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          runtimeInfo() {
+            return {
+              cwd: '/tmp/praxis',
+              model: 'fixture-model',
+              tools: [],
+              mcpServers: [{ name: 'filesystem', status: 'connected' }],
+              permissionMode: 'default',
+              slashCommands: [],
+              agents: [],
+              skills: [],
+              plugins: [],
+              claudeCodeVersion: '2.1.208',
+            }
+          },
+          async close() {
+            closes += 1
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        slashCommands={[
+          {
+            name: 'review',
+            description: 'Review the current change.',
+            source: 'skill',
+          },
+        ]}
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add() {},
+        }}
+      />,
+    )
+
+    app.stdin.write('/config')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Config')
+    expect(app.lastFrame()).toContain('Available commands:')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+
+    app.stdin.write('/usage')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Input tokens:')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+
+    app.stdin.write('/skill')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Review the current change.')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+
+    app.stdin.write('/mcp')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('MCP servers')
+    expect(app.lastFrame()).toContain('filesystem')
+    expect(app.lastFrame()).toContain('connected')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+
+    app.stdin.write('/reload-skills')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Skills reloaded for this session.')
+    expect(creations).toBe(2)
+    expect(closes).toBe(1)
+
+    app.stdin.write('/add-dir')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Add directory to workspace')
+    expect(app.lastFrame()).toContain('Tab to complete')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Did not add a working directory.')
+  })
+
+  it('copies the selected prior assistant response without a model turn', async () => {
+    const clipboardWriter = vi.fn(async () => undefined)
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'assistant', text: 'older answer' },
+          { kind: 'assistant', text: 'latest answer' },
+        ]}
+        clipboardWriter={clipboardWriter}
+      />,
+    )
+
+    app.stdin.write('/copy 2')
+    app.stdin.write('\r')
+    await flush()
+    expect(clipboardWriter).toHaveBeenCalledWith('older answer')
+    expect(app.lastFrame()).toContain(
+      'Copied 2nd-latest response to clipboard.',
+    )
+  })
+
   it('keeps Shift+Enter as a multiline composer shortcut', async () => {
     const calls: string[] = []
     const app = render(
@@ -1118,7 +1253,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('/')
     await flush()
-    expect(app.lastFrame()).toContain('/review')
+    expect(app.lastFrame()).toContain('/add-dir')
     expect(app.lastFrame()).not.toContain('╭─ Commands')
 
     app.stdin.write('rev')

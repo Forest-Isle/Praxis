@@ -94,7 +94,11 @@ import {
   type TuiEditorResult,
 } from './tui/external-editor.js'
 import { suspendTuiProcess } from './tui/terminal-suspend.js'
-import { readTuiClipboard, type TuiClipboardContent } from './tui/clipboard.js'
+import {
+  readTuiClipboard,
+  writeTuiClipboard,
+  type TuiClipboardContent,
+} from './tui/clipboard.js'
 import {
   composerImageIds,
   deleteComposerImageBackward,
@@ -217,6 +221,7 @@ interface InteractiveAppProps {
   ) => Promise<{ editorName: string }>
   suspendProcess?: () => void | Promise<void>
   clipboardReader?: () => Promise<TuiClipboardContent>
+  clipboardWriter?: (text: string) => Promise<void>
   permissionRuleStore?: {
     load(): Promise<readonly TuiPermissionRule[]>
     add(input: {
@@ -332,6 +337,7 @@ type InteractiveMenu =
   | {
       kind: 'workspace-directory-input'
       rules: readonly TuiPermissionRule[]
+      returnToPermissions?: boolean
     }
   | {
       kind: 'workspace-directory-delete'
@@ -481,6 +487,21 @@ function workflowRows(
   }))
 }
 
+function ordinal(value: number): string {
+  const remainder100 = value % 100
+  if (remainder100 >= 11 && remainder100 <= 13) return `${value}th`
+  switch (value % 10) {
+    case 1:
+      return `${value}st`
+    case 2:
+      return `${value}nd`
+    case 3:
+      return `${value}rd`
+    default:
+      return `${value}th`
+  }
+}
+
 export function InteractiveApp({
   factory,
   initialSessions,
@@ -508,6 +529,7 @@ export function InteractiveApp({
   keybindingsEditor = openTuiEditorFile,
   suspendProcess = suspendTuiProcess,
   clipboardReader = readTuiClipboard,
+  clipboardWriter = writeTuiClipboard,
   permissionRuleStore,
   workspaceDirectoryResolver = resolveTuiWorkspaceDirectory,
   workspaceDirectoryCompleter = completeTuiWorkspaceDirectory,
@@ -1592,6 +1614,100 @@ export function InteractiveApp({
     void loading.finally(() => onTurnChange?.(null))
   }
 
+  const openWorkspaceDirectoryInput = () => {
+    const loading = (async () => {
+      setBusy(true)
+      try {
+        updateMenu({
+          kind: 'workspace-directory-input',
+          rules: await permissionStore.load(),
+          returnToPermissions: false,
+        })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+      }
+    })()
+    onTurnChange?.(loading)
+    void loading.finally(() => onTurnChange?.(null))
+  }
+
+  const copyResponse = (position: number) => {
+    const response = [...history]
+      .reverse()
+      .filter(
+        (item): item is TranscriptItem & { kind: 'assistant'; text: string } =>
+          item.kind === 'assistant',
+      )[position - 1]
+    if (!response) {
+      append({
+        kind: 'warning',
+        text: `No ${position === 1 ? '' : `${ordinal(position)}-latest `}response to copy.`,
+      })
+      return
+    }
+    const copying = clipboardWriter(response.text).then(
+      () =>
+        append({
+          kind: 'local-result',
+          text: `Copied ${position === 1 ? 'last' : `${ordinal(position)}-latest`} response to clipboard.`,
+        }),
+      (error: unknown) => warn(error),
+    )
+    onTurnChange?.(copying)
+    void copying.finally(() => onTurnChange?.(null))
+  }
+
+  const reloadExtensions = (kind: 'plugins' | 'skills') => {
+    const loading = (async () => {
+      setBusy(true)
+      setStatus(`reloading ${kind}`)
+      try {
+        await retireService()
+        await service()
+        append({
+          kind: 'local-result',
+          text: `${kind === 'plugins' ? 'Plugin changes activated' : 'Skills reloaded'} for this session.`,
+        })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(loading)
+    void loading.finally(() => onTurnChange?.(null))
+  }
+
+  const openMcpServers = () => {
+    const loading = (async () => {
+      setBusy(true)
+      setStatus('loading MCP servers')
+      try {
+        const servers = (await service()).runtimeInfo?.().mcpServers ?? []
+        updateMenu({
+          kind: 'list',
+          title: 'MCP servers',
+          rows: servers.map((server) => ({
+            label: server.name,
+            description: server.status,
+          })),
+          emptyText: 'No MCP servers configured',
+          selectedIndex: 0,
+        })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(loading)
+    void loading.finally(() => onTurnChange?.(null))
+  }
+
   const submit = async (
     prompt: string,
     shellCommand?: string,
@@ -2241,13 +2357,21 @@ export function InteractiveApp({
       if (activeMenu.kind === 'workspace-directory-input') {
         if (key.escape || value === '\u001B') {
           clearComposerInput()
-          updateMenu({
-            kind: 'permission-dashboard',
-            tabIndex: 1,
-            selectedIndex: -1,
-            query: '',
-            rules: activeMenu.rules,
-          })
+          if (activeMenu.returnToPermissions === false) {
+            updateMenu(null)
+            append({
+              kind: 'local-result',
+              text: 'Did not add a working directory.',
+            })
+          } else {
+            updateMenu({
+              kind: 'permission-dashboard',
+              tabIndex: 1,
+              selectedIndex: -1,
+              query: '',
+              rules: activeMenu.rules,
+            })
+          }
         } else if (key.tab) {
           const completion = (async () => {
             try {
@@ -2282,13 +2406,21 @@ export function InteractiveApp({
                 await retireService()
               }
               const rules = await permissionStore.load()
-              updateMenu({
-                kind: 'permission-dashboard',
-                tabIndex: 1,
-                selectedIndex: -1,
-                query: '',
-                rules,
-              })
+              if (activeMenu.returnToPermissions === false) {
+                updateMenu(null)
+                append({
+                  kind: 'local-result',
+                  text: `Added ${path} as a working directory.`,
+                })
+              } else {
+                updateMenu({
+                  kind: 'permission-dashboard',
+                  tabIndex: 1,
+                  selectedIndex: -1,
+                  query: '',
+                  rules,
+                })
+              }
             } catch (error) {
               warn(error)
             } finally {
@@ -2806,6 +2938,7 @@ export function InteractiveApp({
       undoStackRef.current = []
       composerImagesRef.current.clear()
       if (!prompt || prompt === '!') return
+      const copyCommand = /^\/copy(?:\s+(\d+))?$/u.exec(prompt)
       if (prompt === '/exit') {
         exit()
       } else if (prompt === '/help' || prompt === '?') {
@@ -2836,6 +2969,8 @@ export function InteractiveApp({
         })
       } else if (prompt === '/keybindings') {
         setKeybindingsEditing(true)
+      } else if (prompt === '/add-dir') {
+        openWorkspaceDirectoryInput()
       } else if (prompt === '/permissions') {
         const loading = (async () => {
           setBusy(true)
@@ -2914,7 +3049,11 @@ export function InteractiveApp({
         ])
       } else if (prompt === '/status') {
         updateMenu({ kind: 'status', tabIndex: 1 })
-      } else if (prompt === '/skills') {
+      } else if (prompt === '/config') {
+        updateMenu({ kind: 'status', tabIndex: 2 })
+      } else if (prompt === '/usage') {
+        updateMenu({ kind: 'status', tabIndex: 3 })
+      } else if (prompt === '/skills' || prompt === '/skill') {
         updateMenu({
           kind: 'list',
           title: 'Skills',
@@ -2930,6 +3069,19 @@ export function InteractiveApp({
         })
       } else if (prompt === '/tasks' || prompt === '/workflows') {
         openTasks()
+      } else if (prompt === '/mcp') {
+        openMcpServers()
+      } else if (prompt === '/reload-plugins') {
+        reloadExtensions('plugins')
+      } else if (prompt === '/reload-skills') {
+        reloadExtensions('skills')
+      } else if (copyCommand) {
+        const ordinal = Number(copyCommand[1] ?? 1)
+        if (!Number.isSafeInteger(ordinal) || ordinal < 1) {
+          append({ kind: 'warning', text: 'Usage: /copy [positive number]' })
+        } else {
+          copyResponse(ordinal)
+        }
       } else if (prompt === '/plan') {
         changePermissionMode('plan')
       } else if (prompt.startsWith('!')) {

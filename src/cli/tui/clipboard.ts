@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 
 import type { ModelImage } from '../../core/runtime.js'
 
@@ -16,6 +16,12 @@ export type TuiClipboardCommandRunner = (
   maxBuffer: number,
 ) => Promise<Buffer>
 
+export type TuiClipboardWriteCommandRunner = (
+  command: string,
+  args: readonly string[],
+  input: string,
+) => Promise<void>
+
 const runClipboardCommand: TuiClipboardCommandRunner = (
   command,
   args,
@@ -31,6 +37,36 @@ const runClipboardCommand: TuiClipboardCommandRunner = (
         else resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout))
       },
     )
+  })
+
+const runClipboardWriteCommand: TuiClipboardWriteCommandRunner = (
+  command,
+  args,
+  input,
+) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(command, [...args], {
+      stdio: ['pipe', 'ignore', 'ignore'],
+      shell: false,
+    })
+    const timeout = setTimeout(() => {
+      child.kill()
+      reject(new Error('Clipboard command timed out'))
+    }, 5_000)
+    child.once('error', (error) => {
+      clearTimeout(timeout)
+      reject(error)
+    })
+    child.once('exit', (code) => {
+      clearTimeout(timeout)
+      if (code === 0) resolve()
+      else reject(new Error(`Clipboard command exited with status ${code}`))
+    })
+    child.stdin.once('error', (error) => {
+      clearTimeout(timeout)
+      reject(error)
+    })
+    child.stdin.end(input)
   })
 
 async function optionalCommand(
@@ -167,3 +203,44 @@ export function createTuiClipboardReader(
 }
 
 export const readTuiClipboard = createTuiClipboardReader()
+
+export function createTuiClipboardWriter(
+  options: {
+    platform?: NodeJS.Platform
+    runner?: TuiClipboardWriteCommandRunner
+  } = {},
+): (text: string) => Promise<void> {
+  const platform = options.platform ?? process.platform
+  const runner = options.runner ?? runClipboardWriteCommand
+
+  return async (text) => {
+    const commands: readonly [string, readonly string[]][] =
+      platform === 'darwin'
+        ? [['pbcopy', []]]
+        : platform === 'linux'
+          ? [
+              ['wl-copy', ['--type', 'text/plain;charset=utf-8']],
+              ['xclip', ['-selection', 'clipboard', '-in']],
+            ]
+          : platform === 'win32'
+            ? [
+                [
+                  'powershell.exe',
+                  ['-NoProfile', '-Command', '$input | Set-Clipboard'],
+                ],
+              ]
+            : []
+    let lastError: unknown
+    for (const [command, args] of commands) {
+      try {
+        await runner(command, args, text)
+        return
+      } catch (error) {
+        lastError = error
+      }
+    }
+    throw new Error('Clipboard is unavailable', { cause: lastError })
+  }
+}
+
+export const writeTuiClipboard = createTuiClipboardWriter()
