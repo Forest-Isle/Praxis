@@ -599,6 +599,151 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('durable compact summary')
   })
 
+  it('shows /cd usage without changing cwd', async () => {
+    const changeCwd = vi.fn()
+    const recordCdUsage = vi.fn()
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              changeCwd,
+              recordCdUsage,
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+      />,
+    )
+
+    app.stdin.write('/cd')
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('Usage: /cd <path>')
+    expect(changeCwd).not.toHaveBeenCalled()
+    expect(recordCdUsage).toHaveBeenCalledWith('active-session')
+  })
+
+  it('changes cwd and preserves it when recreating the interactive service', async () => {
+    const creations: Array<string | undefined> = []
+    const changes: Array<[string | undefined, string]> = []
+    const resumes: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push(options.cwd)
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume(_sessionId, prompt) {
+            resumes.push(prompt)
+            return {
+              sessionId: 'active-session',
+              text: 'continued',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async changeCwd(sessionId, cwd) {
+            changes.push([sessionId, cwd])
+            return '/canonical/next'
+          },
+          async close() {},
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+        display={{ version: 'test', cwd: '/workspace' }}
+      />,
+    )
+
+    app.stdin.write('/cd ../next')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Moved to /canonical/next')
+    expect(changes).toEqual([['active-session', '../next']])
+
+    app.stdin.write('continue')
+    app.stdin.write('\r')
+    await flush()
+    expect(creations).toEqual(['/workspace', '/canonical/next'])
+    expect(resumes).toEqual(['continue'])
+  })
+
+  it('keeps the previous cwd and service when /cd fails', async () => {
+    const creations: Array<string | undefined> = []
+    const resumes: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push(options.cwd)
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume(_sessionId, prompt) {
+            resumes.push(prompt)
+            return {
+              sessionId: 'active-session',
+              text: 'continued',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async changeCwd() {
+            throw new Error('Directory does not exist')
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+        display={{ version: 'test', cwd: '/workspace' }}
+      />,
+    )
+
+    app.stdin.write('/cd missing')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Directory does not exist')
+
+    app.stdin.write('continue')
+    app.stdin.write('\r')
+    await flush()
+    expect(creations).toEqual(['/workspace'])
+    expect(resumes).toEqual(['continue'])
+  })
+
   it('cancels manual compaction from its progress panel', async () => {
     let aborted = false
     const app = render(

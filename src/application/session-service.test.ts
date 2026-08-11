@@ -1,5 +1,6 @@
 import {
   appendFile,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -33,6 +34,7 @@ import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
+import { WorkspaceContext } from './session-worktree.js'
 
 const roots: string[] = []
 
@@ -595,6 +597,228 @@ describe('ClaudeSessionService', () => {
     expect(transcript).toContain('"trigger":"manual"')
     expect(transcript).toContain('"isCompactSummary":true')
     expect(transcript).toContain('durable manual summary')
+  })
+
+  it('relocates an active session and continues it from the new cwd', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const originalCwd = join(root, 'original')
+    const relocatedCwd = join(root, 'relocated')
+    await mkdir(originalCwd)
+    await mkdir(relocatedCwd)
+    const canonicalRelocatedCwd = await realpath(relocatedCwd)
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      workspace: new WorkspaceContext(originalCwd),
+      provider: queuedProvider(['before move', 'after move']),
+    })
+    const run = await service.run('start here')
+    const original = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: originalCwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const relocated = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: canonicalRelocatedCwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+
+    await expect(service.changeCwd(run.sessionId, relocatedCwd)).resolves.toBe(
+      canonicalRelocatedCwd,
+    )
+    await expect(readFile(original)).rejects.toMatchObject({ code: 'ENOENT' })
+    const moved = await readFile(relocated, 'utf8')
+    expect(moved).toContain(
+      `"type":"relocated","sessionId":"${run.sessionId}","relocatedCwd":"${canonicalRelocatedCwd}"`,
+    )
+    expect(moved).toContain('<command-name>/cd</command-name>')
+    expect(moved).toContain(
+      `<command-args>${canonicalRelocatedCwd}</command-args>`,
+    )
+    expect(moved).toContain(
+      `<local-command-stdout>Moved to ${canonicalRelocatedCwd}</local-command-stdout>`,
+    )
+    expect(moved).toContain(
+      `The session's working directory has changed to ${canonicalRelocatedCwd} (via /cd).`,
+    )
+
+    await service.resume(run.sessionId, 'continue here')
+    const continued = await readFile(relocated, 'utf8')
+    expect(continued).toContain(`"cwd":"${canonicalRelocatedCwd}"`)
+    expect(await service.sessions()).toEqual([
+      expect.objectContaining({ sessionId: run.sessionId }),
+    ])
+  })
+
+  it('changes cwd without a session and resolves relative symlink paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-empty-'))
+    roots.push(root)
+    const originalCwd = join(root, 'original')
+    const targetCwd = join(root, 'target')
+    const targetLink = join(originalCwd, 'next')
+    await mkdir(originalCwd)
+    await mkdir(targetCwd)
+    await symlink(targetCwd, targetLink)
+    const canonicalTarget = await realpath(targetCwd)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['created after move']),
+    })
+
+    await expect(service.changeCwd(undefined, 'next')).resolves.toBe(
+      canonicalTarget,
+    )
+    const run = await service.run('start in target')
+    const targetSession = resolveClaudePaths({
+      configDir: join(root, 'config'),
+      cwd: canonicalTarget,
+      sessionId: run.sessionId,
+    }).sessionFile
+    await expect(readFile(targetSession, 'utf8')).resolves.toContain(
+      `"cwd":"${canonicalTarget}"`,
+    )
+  })
+
+  it('fails closed when the relocation target transcript already exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-conflict-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const originalCwd = join(root, 'original')
+    const targetCwd = join(root, 'target')
+    await mkdir(originalCwd)
+    await mkdir(targetCwd)
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      workspace: new WorkspaceContext(originalCwd),
+      provider: queuedProvider(['before move']),
+    })
+    const run = await service.run('start here')
+    const source = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: originalCwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const target = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: await realpath(targetCwd),
+      sessionId: run.sessionId,
+    }).sessionFile
+    await mkdir(join(target, '..'), { recursive: true })
+    await writeFile(target, 'existing target\n')
+    const sourceBefore = await readFile(source, 'utf8')
+
+    await expect(service.changeCwd(run.sessionId, targetCwd)).rejects.toThrow(
+      'already exists at relocation target',
+    )
+    await expect(readFile(source, 'utf8')).resolves.toBe(sourceBefore)
+    await expect(readFile(target, 'utf8')).resolves.toBe('existing target\n')
+  })
+
+  it('leaves the source unchanged when publishing a staged relocation fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-rollback-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const originalCwd = join(root, 'original')
+    const targetCwd = join(root, 'target')
+    await mkdir(originalCwd)
+    await mkdir(targetCwd)
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      workspace: new WorkspaceContext(originalCwd),
+      provider: queuedProvider(['before move']),
+    })
+    const run = await service.run('start here')
+    const sourcePaths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: originalCwd,
+      sessionId: run.sessionId,
+    })
+    const targetPaths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: await realpath(targetCwd),
+      sessionId: run.sessionId,
+    })
+    const sourceBefore = await readFile(sourcePaths.sessionFile, 'utf8')
+
+    await chmod(sourcePaths.projectRoot, 0o555)
+    try {
+      await expect(
+        service.changeCwd(run.sessionId, targetCwd),
+      ).rejects.toThrow()
+    } finally {
+      await chmod(sourcePaths.projectRoot, 0o755)
+    }
+    await expect(readFile(sourcePaths.sessionFile, 'utf8')).resolves.toBe(
+      sourceBefore,
+    )
+    await expect(readFile(targetPaths.sessionFile)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(readdir(targetPaths.projectRoot)).resolves.toEqual([])
+  })
+
+  it('records native /cd usage output without changing cwd', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-usage-'))
+    roots.push(root)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['before usage']),
+    })
+    const run = await service.run('start here')
+
+    await service.recordCdUsage(run.sessionId)
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: join(root, 'config'),
+        cwd: root,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('<command-args></command-args>')
+    expect(transcript).toContain(
+      '<local-command-stdout>Usage: /cd <path></local-command-stdout>',
+    )
+  })
+
+  it('rejects a non-directory cwd without changing the active workspace', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-file-'))
+    roots.push(root)
+    const file = join(root, 'not-a-directory')
+    await writeFile(file, 'file')
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: root,
+      claudeVersion: '2.1.208',
+      workspace: new WorkspaceContext(root),
+      provider: queuedProvider(['still original']),
+    })
+
+    await expect(service.changeCwd(undefined, file)).rejects.toThrow(
+      `Not a directory: ${file}`,
+    )
+    const run = await service.run('start here')
+    const originalSession = resolveClaudePaths({
+      configDir: join(root, 'config'),
+      cwd: root,
+      sessionId: run.sessionId,
+    }).sessionFile
+    await expect(readFile(originalSession, 'utf8')).resolves.toContain(
+      `"cwd":"${root}"`,
+    )
   })
 
   it('selectively summarizes from a rewind point with native metadata', async () => {

@@ -21,7 +21,7 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
 - applicable local commands include direct `/add-dir`, response `/copy [N]`,
   native `/branch` and `/rename`, full-conversation `/export`, `/config`,
   `/usage`, `/mcp`, `/skill`, provider-backed `/compact`, native `/rewind`,
-  and live plugin/skill reload entries;
+  runtime `/cd`, and live plugin/skill reload entries;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
 - entering `!` switches the composer to shell mode; submitting runs the command
@@ -79,6 +79,7 @@ status-line plugins are not native parity requirements.
 | Export        | clipboard/file method and filename flow  | formatter, interaction, and PTY fixtures        |
 | Compact       | progress, marker, expandable summary     | service, projection, interaction, and PTY gates |
 | Rewind        | bounded checkpoints and restore actions  | native JSONL/file-history and interaction gates |
+| Cwd           | local result plus relocated session      | service, interaction, and installed PTY gates   |
 | Accessibility | decoration-free semantic text            | screen-reader fixture                           |
 
 ## Architecture
@@ -91,6 +92,7 @@ RuntimeEvent -> interactive state -> transcript/dialog/composer components
 shared JSONL -> active-chain display projection -> restored transcript state
 shared extensions -> slash catalog -> command palette -> existing session service
 runtime controls -> service retirement/recreation -> existing session service
+/cd -> canonical cwd -> native session relocation -> recreated runtime service
 Git worktree ----> read-only diff snapshots ------> diff dashboard
 keyboard input -------------------> existing callbacks and session service
 `!` command -> direct runtime Bash -> native bash user records -> model turn
@@ -183,6 +185,13 @@ is passed from the CLI composition root and never written to shared JSONL.
   summarization uses Claude-native `summarizeMetadata` and
   `preservedSegment`/`preservedMessages` UUID replay rather than private JSONL
   fields or serialized messages inside the summary.
+- `/cd <path>` canonicalizes absolute, relative, home, and symlinked directory
+  inputs, updates every cwd-sensitive TUI surface, and recreates the runtime
+  service at the new directory. An active session moves to the corresponding
+  shared project root under an exclusive lease and appends only Claude-native
+  `relocated`, `system/local_command`, and cwd-change reminder records. Bare
+  `/cd` persists the observed native usage pair; target collisions and invalid
+  paths fail without changing the active cwd.
 - `/model` retains the current model, restores the invocation default, or accepts
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
@@ -297,7 +306,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   `/export` clipboard output, and native transcript tags;
   installed-package `/compact` completion and `/rewind` menu gates, interaction
   cancellation coverage, plus native selective-summary projection and
-  preserved-message replay;
+  preserved-message replay, and installed-package `/cd` relocation plus
+  post-change `!pwd` execution;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
@@ -311,7 +321,7 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the remaining applicable built-in command catalog
-(`/background`, `/btw`, `/cd`, `/hooks`, `/memory`, and
+(`/background`, `/btw`, `/hooks`, `/memory`, and
 presentation controls), exact denied-history
 behavior, and remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a

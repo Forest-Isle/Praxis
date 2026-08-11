@@ -11,6 +11,8 @@ paths, timestamps, token counts, and human text with deterministic values.
 - `compact-session.jsonl`: manual `compact_boundary` and compact-summary pair.
 - `selective-compact-session.jsonl`: observed `from` and `up_to` manual
   summary metadata with native preserved UUID segments.
+- `cd-records.jsonl`: exact `/cd` excerpt with `relocated`, paired
+  `system/local_command` records, and the cwd-change system reminder.
 - `sidechain-layout/`: valid main session plus native
   `<session-id>/subagents/agent-*.jsonl` entries with `isSidechain`, `agentId`,
   and attribution metadata.

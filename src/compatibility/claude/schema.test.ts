@@ -13,6 +13,10 @@ const fixtureUrl = new URL(
   '../../../test/fixtures/claude-code/2.1.208/basic-session.jsonl',
   import.meta.url,
 )
+const cdFixtureUrl = new URL(
+  '../../../test/fixtures/claude-code/2.1.208/cd-records.jsonl',
+  import.meta.url,
+)
 const advancedFixtureUrls = [
   'compact-session.jsonl',
   'selective-compact-session.jsonl',
@@ -28,6 +32,16 @@ const advancedFixtureUrls = [
 )
 
 describe('ClaudeSchemaAdapter', () => {
+  it('accepts the captured Claude 2.1.208 /cd relocation records', async () => {
+    const source = await readFile(cdFixtureUrl, 'utf8')
+    const lines = source.trimEnd().split('\n')
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+
+    expect(
+      lines.map((line) => adapter.serializeForAppend(adapter.parse(line))),
+    ).toEqual(lines)
+  })
+
   it('round-trips Claude Code 2.1.208 entries without losing unknown fields', async () => {
     const source = await readFile(fixtureUrl, 'utf8')
     const lines = source.trimEnd().split('\n')
@@ -774,6 +788,37 @@ describe('ClaudeSchemaAdapter', () => {
         attachment: { type: 'future-attachment' },
       }),
     ).toThrow('unsupported attachment')
+  })
+
+  it('writes native local commands but rejects unknown system subtypes', () => {
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+    const localCommand = {
+      type: 'system',
+      subtype: 'local_command',
+      content: '<command-name>/cd</command-name>',
+      isMeta: false,
+      level: 'info',
+      parentUuid: 'parent',
+      isSidechain: false,
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: '/tmp/praxis-fixture',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      version: '2.1.208',
+      gitBranch: null,
+      timestamp: '2026-08-04T00:00:00.000Z',
+      uuid: 'local-command',
+    }
+
+    expect(adapter.serializeForAppend(localCommand)).toBe(
+      JSON.stringify(localCommand),
+    )
+    expect(() =>
+      adapter.serializeForAppend({
+        ...localCommand,
+        subtype: 'future-system-event',
+      }),
+    ).toThrow('unsupported subtype')
   })
 })
 

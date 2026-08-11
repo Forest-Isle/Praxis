@@ -61,8 +61,10 @@ application boundary. `StreamJsonOutput` projects provider-neutral
 result records; it never changes session state. Incremental stream input accepts
 bounded UTF-8 JSONL user text records. One headless invocation owns one service
 and MCP connection set across all streamed turns, then closes it exactly once.
-The interactive TUI keeps one service for its mounted lifetime so session-only
-scheduled prompts survive between turns, then closes it exactly once. Unknown
+The interactive TUI keeps one service while runtime controls and cwd remain
+stable. Model, effort, permission, extension, workspace, and `/cd` changes
+retire it before creating a replacement with the updated options; ordinary
+turns retain one service so session-only scheduled prompts survive. Unknown
 provider cost and API-only duration values stay `null` until provider ports
 expose verified metering.
 

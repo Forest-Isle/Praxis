@@ -21,6 +21,7 @@ const TRANSIENT_ENTRY_TYPES = new Set([
   'file-history-delta',
   'file-history-snapshot',
   'queue-operation',
+  'relocated',
 ])
 
 function advancesLogicalTail(entry: ClaudeTranscriptEntry): boolean {

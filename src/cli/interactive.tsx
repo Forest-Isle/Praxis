@@ -164,6 +164,8 @@ interface InteractiveSessionCommands {
   ): Promise<ManualCompactResult>
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
+  changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
+  recordCdUsage?(sessionId: string): Promise<void>
   rename?(sessionId: string, name: string): Promise<void>
   sessionNameSuggestion?(
     sessionId: string,
@@ -200,6 +202,7 @@ export interface InteractiveServiceFactory {
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
     permissionMode?: ClaudePermissionMode
     additionalDirectories?: readonly string[]
+    cwd?: string
     signal?: AbortSignal
   }): Promise<InteractiveSessionCommands>
 }
@@ -642,26 +645,28 @@ export function InteractiveApp({
     () => sensitiveEnvironmentValues(process.env),
     [],
   )
+  const [runtimeCwd, setRuntimeCwd] = useState(display.cwd)
+  const runtimeCwdRef = useRef(display.cwd)
   const loadDiffSnapshot = useMemo(
-    () => diffLoader ?? (() => loadGitDiff(display.cwd)),
-    [diffLoader, display.cwd],
+    () => diffLoader ?? (() => loadGitDiff(runtimeCwd)),
+    [diffLoader, runtimeCwd],
   )
   const loadFiles = useMemo(
-    () => fileLoader ?? (() => loadTuiFileEntries(display.cwd)),
-    [fileLoader, display.cwd],
+    () => fileLoader ?? (() => loadTuiFileEntries(runtimeCwd)),
+    [fileLoader, runtimeCwd],
   )
   const permissionStore = useMemo(
     () =>
       permissionRuleStore ?? {
-        load: () => loadTuiPermissionRules(display.cwd),
+        load: () => loadTuiPermissionRules(runtimeCwd),
         add: (input: {
           behavior: TuiPermissionBehavior
           rule: string
           scope: ClaudeResourceScope
-        }) => addTuiPermissionRule({ cwd: display.cwd, ...input }),
+        }) => addTuiPermissionRule({ cwd: runtimeCwd, ...input }),
         remove: removeTuiPermissionRule,
       },
-    [permissionRuleStore, display.cwd],
+    [permissionRuleStore, runtimeCwd],
   )
   const choices = useMemo(
     () =>
@@ -864,6 +869,7 @@ export function InteractiveApp({
   )
   const runtimeDisplay: TuiDisplayMetadata = {
     ...display,
+    cwd: runtimeCwd,
     ...(runtimePreferences.model === undefined
       ? {}
       : { model: runtimePreferences.model }),
@@ -872,11 +878,11 @@ export function InteractiveApp({
     ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
   }
   const workspaceDirectories = [
-    display.cwd,
+    runtimeCwd,
     ...runtimePreferences.additionalDirectories.filter(
-      (path) => path !== display.cwd,
+      (path) => path !== runtimeCwd,
     ),
-  ].map((path) => ({ path, original: path === display.cwd }))
+  ].map((path) => ({ path, original: path === runtimeCwd }))
   const permissionOptions = useMemo(
     () => [
       ...PERMISSION_OPTIONS,
@@ -1093,7 +1099,7 @@ export function InteractiveApp({
         let result: TuiEditorResult | undefined
         await suspendTerminal(async () => {
           result = await externalEditor(externalEditorRequest.prompt, {
-            cwd: display.cwd,
+            cwd: runtimeCwdRef.current,
             ...(signal === undefined ? {} : { signal }),
           })
         })
@@ -1124,7 +1130,7 @@ export function InteractiveApp({
         await waitUntilRenderFlush()
         await suspendTerminal(async () => {
           await keybindingsEditor(file.path, {
-            cwd: display.cwd,
+            cwd: runtimeCwdRef.current,
             ...(signal === undefined ? {} : { signal }),
           })
         })
@@ -1583,6 +1589,7 @@ export function InteractiveApp({
           effort: preferences.effort,
           permissionMode: preferences.permissionMode,
           additionalDirectories: preferences.additionalDirectories,
+          cwd: runtimeCwdRef.current,
           ...(signal ? { signal } : {}),
         })
       })()
@@ -1793,7 +1800,7 @@ export function InteractiveApp({
   const saveConversation = (filename: string) => {
     let path: string
     try {
-      path = conversationExportPath(display.cwd, filename)
+      path = conversationExportPath(runtimeCwdRef.current, filename)
     } catch (error) {
       warn(error)
       return
@@ -1861,6 +1868,49 @@ export function InteractiveApp({
     })()
     onTurnChange?.(loading)
     void loading.finally(() => onTurnChange?.(null))
+  }
+
+  const changeWorkingDirectory = (requestedCwd: string) => {
+    const changing = (async () => {
+      setBusy(true)
+      setStatus('changing directory')
+      try {
+        const commands = await service()
+        if (!commands.changeCwd) {
+          throw new Error(
+            'This interactive service cannot change working directories.',
+          )
+        }
+        const cwd = await commands.changeCwd(
+          sessionId ?? undefined,
+          requestedCwd,
+        )
+        runtimeCwdRef.current = cwd
+        setRuntimeCwd(cwd)
+        await retireService()
+        append({ kind: 'local-result', text: `Moved to ${cwd}` })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(changing)
+    void changing.finally(() => onTurnChange?.(null))
+  }
+
+  const showCdUsage = () => {
+    const showing = (async () => {
+      try {
+        if (sessionId) await (await service()).recordCdUsage?.(sessionId)
+        append({ kind: 'local-result', text: 'Usage: /cd <path>' })
+      } catch (error) {
+        warn(error)
+      }
+    })()
+    onTurnChange?.(showing)
+    void showing.finally(() => onTurnChange?.(null))
   }
 
   const renameSession = (requestedName?: string) => {
@@ -2823,7 +2873,7 @@ export function InteractiveApp({
               updateComposerInput(
                 await workspaceDirectoryCompleter(
                   inputRef.current,
-                  display.cwd,
+                  runtimeCwdRef.current,
                 ),
               )
             } catch (error) {
@@ -2838,10 +2888,10 @@ export function InteractiveApp({
             try {
               const path = await workspaceDirectoryResolver(
                 inputRef.current,
-                display.cwd,
+                runtimeCwdRef.current,
               )
               clearComposerInput()
-              if (path !== display.cwd) {
+              if (path !== runtimeCwdRef.current) {
                 updateRuntimePreferences((current) => ({
                   ...current,
                   additionalDirectories: [
@@ -3528,6 +3578,7 @@ export function InteractiveApp({
       if (!prompt || prompt === '!') return
       const copyCommand = /^\/copy(?:\s+(\d+))?$/u.exec(prompt)
       const renameCommand = /^\/rename(?:\s+(.+))?$/u.exec(prompt)
+      const cdCommand = /^\/cd(?:\s+(.+))?$/u.exec(prompt)
       if (prompt === '/exit') {
         exit()
       } else if (prompt === '/help' || prompt === '?') {
@@ -3560,6 +3611,14 @@ export function InteractiveApp({
         setKeybindingsEditing(true)
       } else if (prompt === '/add-dir') {
         openWorkspaceDirectoryInput()
+      } else if (cdCommand) {
+        append({ kind: 'user', text: prompt })
+        const requestedCwd = cdCommand[1]?.trim()
+        if (!requestedCwd) {
+          showCdUsage()
+        } else {
+          changeWorkingDirectory(requestedCwd)
+        }
       } else if (prompt === '/branch') {
         append({ kind: 'user', text: prompt })
         branchSession()
@@ -3877,8 +3936,8 @@ export function InteractiveApp({
                               {point.fileChanges.length > 0
                                 ? point.fileChanges
                                     .map((path) =>
-                                      path.startsWith(`${display.cwd}/`)
-                                        ? path.slice(display.cwd.length + 1)
+                                      path.startsWith(`${runtimeCwd}/`)
+                                        ? path.slice(runtimeCwd.length + 1)
                                         : path,
                                     )
                                     .join(', ')

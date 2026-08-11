@@ -1,5 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, readdir, stat } from 'node:fs/promises'
+import {
+  copyFile,
+  link,
+  lstat,
+  mkdir,
+  readdir,
+  realpath,
+  stat,
+  unlink,
+} from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { basename, extname, isAbsolute, join, relative } from 'node:path'
 
 import type { ClaudeConditionalRuleResolver } from '../compatibility/claude/context.js'
@@ -291,8 +301,10 @@ export class ClaudeSessionService {
   private readonly sessionCwds = new Map<string, string>()
   private readonly hostedSubagents = new Set<ClaudeSubagentExecutor>()
   private readonly downloadedFileResourceSessions = new Set<string>()
+  private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
+    this.runtimeCwd = options.workspace?.cwd() ?? options.cwd
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
     this.scheduledPrompts =
       options.tools && (options.scheduledToolNames?.length ?? 0) > 0
@@ -843,6 +855,191 @@ export class ClaudeSessionService {
     })
     if (result.status === 'conflict') {
       throw new Error(`Claude transcript rename conflict: ${result.reason}`)
+    }
+  }
+
+  async changeCwd(
+    sessionId: string | undefined,
+    requestedCwd: string,
+  ): Promise<string> {
+    this.assertWritable()
+    const previousCwd = this.activeCwd()
+    const expandedCwd =
+      requestedCwd === '~'
+        ? homedir()
+        : requestedCwd.startsWith('~/')
+          ? join(homedir(), requestedCwd.slice(2))
+          : requestedCwd
+    const cwd = await realpath(
+      isAbsolute(expandedCwd) ? expandedCwd : join(previousCwd, expandedCwd),
+    )
+    if (!(await stat(cwd)).isDirectory()) {
+      throw new Error(`Not a directory: ${requestedCwd}`)
+    }
+    if (sessionId && this.options.sessionPersistence !== false) {
+      const sourcePaths = resolveClaudePaths({
+        configDir: this.options.configRoot,
+        cwd: this.sessionCwds.get(sessionId) ?? previousCwd,
+        sessionId,
+      })
+      const targetPaths = resolveClaudePaths({
+        configDir: this.options.configRoot,
+        cwd,
+        sessionId,
+      })
+      if (sourcePaths.sessionFile !== targetPaths.sessionFile) {
+        try {
+          await lstat(targetPaths.sessionFile)
+          throw new Error(
+            `Claude transcript already exists at relocation target: ${targetPaths.sessionFile}`,
+          )
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        }
+        const sourceStore = this.store(sessionId)
+        const relocated = await sourceStore.withLease(async (lease) => {
+          const snapshot = await lease.load()
+          if (snapshot.entries.length === 0) {
+            throw new Error(`Claude session not found: ${sessionId}`)
+          }
+          await mkdir(targetPaths.projectRoot, { recursive: true })
+          const relocationId = randomUUID()
+          const stagingFile = join(
+            targetPaths.projectRoot,
+            `.${sessionId}.${relocationId}.relocating`,
+          )
+          const stagingStore = new ClaudeTranscriptStore({
+            sessionFile: stagingFile,
+            lockFile: join(
+              targetPaths.praxisRoot,
+              'locks',
+              `${sessionId}.${relocationId}.lock`,
+            ),
+            schema: this.schema,
+          })
+          let publishedIdentity: { dev: number; ino: number } | undefined
+          try {
+            await copyFile(sourcePaths.sessionFile, stagingFile)
+            const staged = await stagingStore.withLease((stagingLease) =>
+              stagingLease.appendMany(snapshot.tail, [
+                {
+                  type: 'relocated',
+                  sessionId,
+                  relocatedCwd: cwd,
+                },
+                ...this.cdCommandEntries(
+                  sessionId,
+                  cwd,
+                  this.logicalTailUuid(snapshot.tail),
+                ),
+              ]),
+            )
+            if (staged.status === 'conflict') {
+              throw new Error(
+                `Claude transcript relocation conflict: ${staged.reason}`,
+              )
+            }
+            if (staged.value.status === 'conflict') {
+              throw new Error(
+                `Claude transcript relocation conflict: ${staged.value.reason}`,
+              )
+            }
+            const stagingMetadata = await lstat(stagingFile)
+            await link(stagingFile, targetPaths.sessionFile)
+            publishedIdentity = {
+              dev: stagingMetadata.dev,
+              ino: stagingMetadata.ino,
+            }
+            await unlink(stagingFile)
+            await unlink(sourcePaths.sessionFile)
+          } catch (error) {
+            await unlink(stagingFile).catch(() => undefined)
+            if (publishedIdentity) {
+              const targetMetadata = await lstat(targetPaths.sessionFile).catch(
+                () => undefined,
+              )
+              if (
+                targetMetadata?.dev === publishedIdentity.dev &&
+                targetMetadata.ino === publishedIdentity.ino
+              ) {
+                await unlink(targetPaths.sessionFile).catch(() => undefined)
+              }
+            }
+            throw error
+          }
+        })
+        if (relocated.status === 'conflict') {
+          throw new Error(
+            `Claude transcript relocation conflict: ${relocated.reason}`,
+          )
+        }
+      } else {
+        await this.appendCdCommand(sessionId, cwd)
+      }
+      this.sessionCwds.set(sessionId, cwd)
+      this.runtimeCwd = cwd
+      this.options.workspace?.setCwd(cwd)
+      return cwd
+    }
+    this.runtimeCwd = cwd
+    this.options.workspace?.setCwd(cwd)
+    if (sessionId) this.sessionCwds.set(sessionId, cwd)
+    return cwd
+  }
+
+  async recordCdUsage(sessionId: string): Promise<void> {
+    this.assertWritable()
+    const result = await this.turnStore(sessionId).withLease(async (lease) => {
+      const snapshot = await lease.load()
+      if (snapshot.entries.length === 0) {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      const promptId = randomUUID()
+      const firstUuid = randomUUID()
+      const timestamp = new Date().toISOString()
+      const common = {
+        isSidechain: false,
+        promptId,
+        timestamp,
+        userType: 'external',
+        entrypoint: 'cli',
+        cwd: this.activeCwd(),
+        sessionId,
+        version: this.options.claudeVersion,
+        gitBranch: null,
+      }
+      const appendResult = await lease.appendMany(snapshot.tail, [
+        {
+          ...common,
+          parentUuid: this.logicalTailUuid(snapshot.tail),
+          type: 'user',
+          message: {
+            role: 'user',
+            content:
+              '<command-name>/cd</command-name>\n            <command-message>cd</command-message>\n            <command-args></command-args>',
+          },
+          uuid: firstUuid,
+        },
+        {
+          ...common,
+          parentUuid: firstUuid,
+          type: 'user',
+          message: {
+            role: 'user',
+            content:
+              '<local-command-stdout>Usage: /cd <path></local-command-stdout>',
+          },
+          uuid: randomUUID(),
+        },
+      ])
+      if (appendResult.status === 'conflict') {
+        throw new Error(
+          `Claude cd usage append conflict: ${appendResult.reason}`,
+        )
+      }
+    })
+    if (result.status === 'conflict') {
+      throw new Error(`Claude cd usage conflict: ${result.reason}`)
     }
   }
 
@@ -2700,7 +2897,7 @@ export class ClaudeSessionService {
   }
 
   private activeCwd(): string {
-    return this.options.workspace?.cwd() ?? this.options.cwd
+    return this.options.workspace?.cwd() ?? this.runtimeCwd
   }
 
   private restoreWorktree(entries: readonly ClaudeTranscriptEntry[]): void {
@@ -2716,9 +2913,88 @@ export class ClaudeSessionService {
   private paths(sessionId: string) {
     return resolveClaudePaths({
       configDir: this.options.configRoot,
-      cwd: this.sessionCwds.get(sessionId) ?? this.options.cwd,
+      cwd: this.sessionCwds.get(sessionId) ?? this.activeCwd(),
       sessionId,
     })
+  }
+
+  private async appendCdCommand(sessionId: string, cwd: string): Promise<void> {
+    const result = await this.store(sessionId).withLease(async (lease) => {
+      const snapshot = await lease.load()
+      if (snapshot.entries.length === 0) {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      const appendResult = await lease.appendMany(
+        snapshot.tail,
+        this.cdCommandEntries(
+          sessionId,
+          cwd,
+          this.logicalTailUuid(snapshot.tail),
+        ),
+      )
+      if (appendResult.status === 'conflict') {
+        throw new Error(
+          `Claude local command append conflict: ${appendResult.reason}`,
+        )
+      }
+    })
+    if (result.status === 'conflict') {
+      throw new Error(`Claude local command conflict: ${result.reason}`)
+    }
+  }
+
+  private cdCommandEntries(
+    sessionId: string,
+    cwd: string,
+    parentUuid: string | null,
+  ): ClaudeTranscriptEntry[] {
+    const firstUuid = randomUUID()
+    const secondUuid = randomUUID()
+    const timestamp = new Date().toISOString()
+    const common = {
+      isSidechain: false,
+      timestamp,
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd,
+      sessionId,
+      version: this.options.claudeVersion,
+      gitBranch: null,
+    }
+    return [
+      {
+        ...common,
+        type: 'system',
+        subtype: 'local_command',
+        isMeta: false,
+        level: 'info',
+        parentUuid,
+        uuid: firstUuid,
+        content: `<command-name>/cd</command-name>\n            <command-message>cd</command-message>\n            <command-args>${cwd}</command-args>`,
+      },
+      {
+        ...common,
+        type: 'system',
+        subtype: 'local_command',
+        isMeta: false,
+        level: 'info',
+        parentUuid: firstUuid,
+        uuid: secondUuid,
+        content: `<local-command-stdout>Moved to ${cwd}</local-command-stdout>`,
+      },
+      {
+        ...common,
+        parentUuid: secondUuid,
+        promptId: randomUUID(),
+        type: 'user',
+        message: {
+          role: 'user',
+          content: `<system-reminder>\nThe session's working directory has changed to ${cwd} (via /cd). The environment block at the start of this conversation still names the previous directory — that information is stale. All tool calls and relative paths now resolve from ${cwd}.\n</system-reminder>`,
+        },
+        isMeta: true,
+        uuid: randomUUID(),
+      },
+    ]
   }
 
   private store(sessionId: string): ClaudeTranscriptStore {

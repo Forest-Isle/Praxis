@@ -4,6 +4,7 @@ import {
   chmod,
   mkdtemp,
   mkdir,
+  realpath,
   readFile,
   readdir,
   rm,
@@ -18,6 +19,7 @@ const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-tui-compat-'))
 const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
+const movedCwd = join(root, 'moved-work')
 const sharedRoot = join(root, 'shared-access')
 const installRoot = join(root, 'install')
 const binRoot = join(root, 'bin')
@@ -58,6 +60,7 @@ try {
     mkdir(join(configRoot, 'commands'), { recursive: true }),
     mkdir(join(configRoot, 'agents'), { recursive: true }),
     mkdir(cwd),
+    mkdir(movedCwd),
     mkdir(sharedRoot),
     mkdir(installRoot),
     mkdir(binRoot),
@@ -344,6 +347,19 @@ expect {
 expect -re {Context.*3 tokens}
 expect -re {Try.*review this project}
 after 100
+set phase "change working directory"
+send "/cd"
+send "\r"
+expect -re {Usage: /cd <path>}
+send "/cd $env(TUI_MOVED_ROOT)"
+send "\r"
+expect -re {Moved to .*moved-work}
+set phase "shell mode after cd"
+send "!pwd"
+send "\r"
+expect -re {⎿.*moved-work}
+expect -re {TUI_FAKE_OK}
+after 100
 set phase "rename session"
 send "/rename installed-title"
 after 100
@@ -425,6 +441,7 @@ exit 0
         TUI_CLIPBOARD_OUTPUT: clipboardOutput,
         TUI_CONFIG_ROOT: configRoot,
         TUI_EDITOR: editor,
+        TUI_MOVED_ROOT: movedCwd,
         TUI_NODE: process.execPath,
         TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
         TUI_SHARED_ROOT: sharedRoot,
@@ -470,6 +487,24 @@ exit 0
   assert.ok(originalTranscript)
   assert.ok(branchTranscript)
   const transcript = originalTranscript.content
+  const canonicalMovedCwd = await realpath(movedCwd)
+  assert.match(
+    transcript,
+    new RegExp(
+      `"type":"relocated","sessionId":"[^"]+","relocatedCwd":"${canonicalMovedCwd.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}"`,
+      'u',
+    ),
+  )
+  assert.match(transcript, /<command-name>\/cd<\/command-name>/u)
+  assert.match(
+    transcript,
+    /<local-command-stdout>Usage: \/cd <path><\/local-command-stdout>/u,
+  )
+  assert.match(transcript, /<local-command-stdout>Moved to /u)
+  assert.match(transcript, /The session's working directory has changed to /u)
+  assert.ok(
+    transcript.includes(`<bash-stdout>${canonicalMovedCwd}\n</bash-stdout>`),
+  )
   assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
   assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
   assert.match(transcript, /<bash-stderr><\/bash-stderr>/u)

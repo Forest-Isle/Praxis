@@ -923,6 +923,8 @@ interface SessionCommands {
   ): Promise<void>
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
+  changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
+  recordCdUsage?(sessionId: string): Promise<void>
   lifecycle?(
     trigger: 'init' | 'maintenance',
     options?: { sessionStart?: boolean; sessionId?: string },
@@ -1652,6 +1654,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
       rewindFiles: (sessionId, userMessageId) =>
         service.rewindFiles(sessionId, userMessageId),
       rewindPoints: (sessionId) => service.rewindPoints(sessionId),
+      changeCwd: (sessionId, cwd) => service.changeCwd(sessionId, cwd),
+      recordCdUsage: (sessionId) => service.recordCdUsage(sessionId),
       lifecycle: async (trigger, lifecycleOptions = {}) => {
         if (!hooks) return
         const sessionId = lifecycleOptions.sessionId ?? randomUUID()
@@ -1945,9 +1949,10 @@ const defaultDependencies: CliDependencies = {
     )
     return runInteractive({
       factory: {
-        createService: ({ additionalDirectories, ...options }) =>
+        createService: ({ additionalDirectories, cwd, ...options }) =>
           createDefaultService({
             ...options,
+            ...(cwd === undefined ? {} : { cwd }),
             ...(agent === undefined ? {} : { agent }),
             controls: {
               ...interactiveControls,

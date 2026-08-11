@@ -18,6 +18,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'cd',
+    description: 'Change the current working directory',
+    source: 'builtin',
+  },
+  {
     name: 'help',
     description: 'Show help and available commands',
     source: 'builtin',

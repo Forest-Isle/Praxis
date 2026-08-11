@@ -24,6 +24,7 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'last-prompt',
   'permission-mode',
   'pr-link',
+  'relocated',
   'system',
   'user',
   'worktree-state',
@@ -53,6 +54,10 @@ const FORKABLE_SYSTEM_SUBTYPES = new Set([
   'local_command',
   'stop_hook_summary',
   'turn_duration',
+])
+const APPENDABLE_SYSTEM_SUBTYPES = new Set([
+  'compact_boundary',
+  'local_command',
 ])
 const FORKABLE_ATTACHMENT_TYPES = new Set([
   'agent_listing_delta',
@@ -759,6 +764,15 @@ function validateCompactSummary(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'relocated') {
+    if (
+      !isNonEmptyString(entry.sessionId) ||
+      !isNonEmptyString(entry.relocatedCwd)
+    ) {
+      throw new Error('Claude relocated entry has invalid metadata')
+    }
+    return
+  }
   if (entry.type === 'file-history-snapshot') {
     if (
       !isNonEmptyString(entry.messageId) ||
@@ -894,7 +908,14 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
     throw new Error('Claude transcript entry has invalid parentUuid')
   }
   if (entry.type === 'system') {
-    validateCompactBoundary(entry)
+    if (!APPENDABLE_SYSTEM_SUBTYPES.has(String(entry.subtype))) {
+      throw new Error('Claude system entry has unsupported subtype')
+    }
+    if (entry.subtype === 'compact_boundary') {
+      validateCompactBoundary(entry)
+    } else if (!isNonEmptyString(entry.content)) {
+      throw new Error('Claude local command entry has invalid content')
+    }
     return
   }
   if (entry.isCompactSummary === true) {
