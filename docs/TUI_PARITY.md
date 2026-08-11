@@ -339,7 +339,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   streaming, tools, direct shell turns, cancellation, and screen-reader mode;
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
-  context/status/skill dashboards, `Ctrl+T` task access, exact permission rule
+  context/status/skill dashboards, built-in `/theme` selection and shared
+  settings persistence, `Ctrl+T` task access, exact permission rule
   deletion and Workspace add/remove surfaces, providerless `/hooks`
   scope coverage plus installed event/matcher/detail navigation, and `/memory`
   discovery, loading/final hierarchy, imported-file `$EDITOR` lifecycle,
@@ -375,8 +376,10 @@ tool-detail, current/per-turn diff-navigation, context/status/skill/task panels,
 plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
-black-box-driven work includes the remaining applicable built-in command catalog
-(presentation controls), exact denied-history behavior,
-and remaining exact command-specific dialogs and layout behavior. Each
-item needs an observed contract and a
-focused TTY or Ink gate before the matrix can return to a complete status.
+black-box-driven work includes custom-theme creation/editing,
+`/terminal-setup`, `/tui` default/fullscreen renderer switching, exact
+denied-history selection and lifetime behavior, and remaining exact
+command-specific dialogs and layout behavior. `/statusline` remains excluded as
+a user-provided status-line plugin surface; 2.1.208 exposes neither `/vim` nor
+`/output-style`. Each included item needs an observed contract and a focused TTY
+or Ink gate before the matrix can return to a complete status.

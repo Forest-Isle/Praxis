@@ -56,6 +56,7 @@ import {
   SelectionMenu,
   SessionPicker,
   StatusDashboard,
+  ThemePicker,
   Transcript,
   WelcomePanel,
   useTerminalWidth,
@@ -144,6 +145,12 @@ import {
   defaultConversationExportFilename,
   writeConversationExport,
 } from './tui/conversation-export.js'
+import {
+  loadTuiTheme,
+  saveTuiTheme,
+  TUI_THEMES,
+  type TuiTheme,
+} from './tui/theme-settings.js'
 
 interface InteractiveSessionCommands {
   run(
@@ -325,6 +332,10 @@ interface InteractiveAppProps {
     }): Promise<void>
     remove?(rule: TuiPermissionRule): Promise<void>
   }
+  themeStore?: {
+    load(): Promise<TuiTheme>
+    save(theme: TuiTheme): Promise<void>
+  }
   workspaceDirectoryResolver?: typeof resolveTuiWorkspaceDirectory
   workspaceDirectoryCompleter?: typeof completeTuiWorkspaceDirectory
 }
@@ -442,6 +453,7 @@ type InteractiveMenu =
   | { kind: 'model'; selectedIndex: number }
   | { kind: 'model-input' }
   | { kind: 'effort'; selectedIndex: number }
+  | { kind: 'theme'; selectedIndex: number; currentTheme: TuiTheme }
   | { kind: 'export'; selectedIndex: number }
   | { kind: 'export-filename' }
   | { kind: 'compact-progress' }
@@ -716,6 +728,7 @@ export function InteractiveApp({
   sideQuestionClipboardWriter = writeTuiOsc52Clipboard,
   exportWriter = writeConversationExport,
   permissionRuleStore,
+  themeStore,
   workspaceDirectoryResolver = resolveTuiWorkspaceDirectory,
   workspaceDirectoryCompleter = completeTuiWorkspaceDirectory,
 }: InteractiveAppProps) {
@@ -756,6 +769,10 @@ export function InteractiveApp({
         remove: removeTuiPermissionRule,
       },
     [permissionRuleStore, runtimeCwd],
+  )
+  const presentationThemeStore = useMemo(
+    () => themeStore ?? { load: loadTuiTheme, save: saveTuiTheme },
+    [themeStore],
   )
   const choices = useMemo(
     () =>
@@ -4025,6 +4042,43 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'theme') {
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+        } else if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                TUI_THEMES.length - 1,
+                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+        } else if (/^[1-7]$/u.test(value)) {
+          updateMenu({ ...activeMenu, selectedIndex: Number(value) - 1 })
+        } else if (key.return) {
+          const selected = TUI_THEMES[activeMenu.selectedIndex]
+          if (!selected) return
+          const saving = (async () => {
+            setBusy(true)
+            try {
+              await presentationThemeStore.save(selected)
+              updateMenu(null)
+              append({ kind: 'local-result', text: `Theme set to ${selected}` })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(saving)
+          void saving.finally(() => onTurnChange?.(null))
+        }
+        return
+      }
+
       if (activeMenu.kind === 'compact-progress') {
         if (key.escape || value === '\u001B' || isKeybinding('chat:cancel')) {
           turnControllerRef.current?.abort()
@@ -4247,6 +4301,24 @@ export function InteractiveApp({
           kind: 'effort',
           selectedIndex: EFFORT_OPTIONS.indexOf(runtimePreferences.effort),
         })
+      } else if (prompt === '/theme') {
+        const loading = (async () => {
+          setBusy(true)
+          try {
+            const currentTheme = await presentationThemeStore.load()
+            updateMenu({
+              kind: 'theme',
+              currentTheme,
+              selectedIndex: Math.max(0, TUI_THEMES.indexOf(currentTheme)),
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(loading)
+        void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/keybindings') {
         setKeybindingsEditing(true)
       } else if (prompt === '/memory') {
@@ -4967,6 +5039,13 @@ export function InteractiveApp({
                 }))}
                 selectedIndex={menu.selectedIndex}
                 footer="↑/↓ select · Enter applies to this session · Esc cancels"
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'theme' ? (
+              <ThemePicker
+                currentTheme={menu.currentTheme}
+                selectedIndex={menu.selectedIndex}
                 width={width}
                 screenReader={axScreenReader}
               />

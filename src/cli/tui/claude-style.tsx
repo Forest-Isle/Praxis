@@ -10,6 +10,7 @@ import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'
+import type { TuiTheme } from './theme-settings.js'
 
 const BRAND = '#D97757'
 const ACCENT = '#B8A1FF'
@@ -1004,6 +1005,69 @@ export function PermissionDashboard({
           ? '↑/↓ navigate · Enter to select · ←/→ to switch · Esc to cancel'
           : '←/→ to switch · ↓ to select · Esc to cancel'}
       </Text>
+    </Box>
+  )
+}
+
+const THEME_OPTIONS: readonly { theme: TuiTheme; label: string }[] = [
+  { theme: 'auto', label: 'Auto (match terminal)' },
+  { theme: 'dark', label: 'Dark mode' },
+  { theme: 'light', label: 'Light mode' },
+  { theme: 'dark-daltonized', label: 'Dark mode (colorblind-friendly)' },
+  { theme: 'light-daltonized', label: 'Light mode (colorblind-friendly)' },
+  { theme: 'dark-ansi', label: 'Dark mode (ANSI colors only)' },
+  { theme: 'light-ansi', label: 'Light mode (ANSI colors only)' },
+]
+
+export function ThemePicker({
+  currentTheme,
+  selectedIndex,
+  width,
+  screenReader,
+}: {
+  currentTheme: TuiTheme
+  selectedIndex: number
+  width: number
+  screenReader: boolean
+}) {
+  const previewTheme = THEME_OPTIONS[selectedIndex]?.theme ?? currentTheme
+  const previewColor = previewTheme.includes('daltonized')
+    ? 'blue'
+    : previewTheme.includes('ansi')
+      ? 'cyan'
+      : ACCENT
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {!screenReader ? <Text>{'▔'.repeat(Math.min(100, width))}</Text> : null}
+      <Text bold> Theme</Text>
+      <Text> </Text>
+      <Text> Choose the text style that looks best with your terminal</Text>
+      <Text> </Text>
+      {THEME_OPTIONS.map((option, index) => (
+        <Text key={option.theme} inverse={index === selectedIndex}>
+          {index === selectedIndex ? ' ❯ ' : '   '}
+          {index + 1}. {option.label}
+          {option.theme === currentTheme ? ' ✔' : ''}
+        </Text>
+      ))}
+      <Text> </Text>
+      {!screenReader ? (
+        <>
+          <Text dimColor>
+            {' '}
+            {'╌'.repeat(Math.max(1, Math.min(96, width - 3)))}
+          </Text>
+          <Text color={previewColor}> function greet() {'{'}</Text>
+          <Text color="red"> - console.log(&quot;Hello, World!&quot;);</Text>
+          <Text color="green"> + console.log(&quot;Hello, Praxis!&quot;);</Text>
+          <Text color={previewColor}> {'}'}</Text>
+          <Text dimColor>
+            {' '}
+            {'╌'.repeat(Math.max(1, Math.min(96, width - 3)))}
+          </Text>
+        </>
+      ) : null}
+      <Text dimColor> Enter to select · Esc to cancel</Text>
     </Box>
   )
 }

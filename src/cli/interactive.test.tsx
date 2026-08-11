@@ -20,6 +20,41 @@ const flush = async () => {
 }
 
 describe('InteractiveApp', () => {
+  it('loads and persists a shared presentation theme without a model turn', async () => {
+    const saved: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        themeStore={{
+          async load() {
+            return 'dark'
+          },
+          async save(theme) {
+            saved.push(theme)
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Choose the text style')
+    expect(app.lastFrame()).toContain('2. Dark mode ✔')
+
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(saved).toEqual(['light'])
+    expect(app.lastFrame()).toContain('Theme set to light')
+    expect(app.lastFrame()).toContain('? for shortcuts')
+  })
+
   it('uses native session names in the session picker', async () => {
     const app = render(
       <InteractiveApp

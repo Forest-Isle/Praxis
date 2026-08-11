@@ -273,6 +273,7 @@ try {
     join(configRoot, 'settings.json'),
     `${JSON.stringify(
       {
+        theme: 'dark',
         permissions: { allow: ['Bash(npm test:*)'] },
         enabledPlugins: { 'hooks-fixture@inline': true },
         hooks: {
@@ -1391,6 +1392,10 @@ exit 0
         },
       ],
     },
+  )
+  assert.equal(
+    JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')).theme,
+    'light',
   )
   console.log('TUI compatibility verification passed')
 } finally {

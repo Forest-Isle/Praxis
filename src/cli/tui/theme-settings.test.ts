@@ -1,0 +1,55 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, expect, it } from 'vitest'
+
+import { loadTuiTheme, saveTuiTheme } from './theme-settings.js'
+
+const roots: string[] = []
+
+afterEach(async () => {
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  )
+})
+
+it('loads the shared Claude theme and defaults unknown values to auto', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-tui-theme-'))
+  roots.push(root)
+  await writeFile(join(root, 'settings.json'), '{"theme":"dark-ansi"}\n')
+
+  await expect(loadTuiTheme(root)).resolves.toBe('dark-ansi')
+  await writeFile(join(root, 'settings.json'), '{"theme":"custom"}\n')
+  await expect(loadTuiTheme(root)).resolves.toBe('auto')
+})
+
+it('atomically saves a theme while preserving unrelated shared settings', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-tui-theme-'))
+  roots.push(root)
+  await writeFile(
+    join(root, 'settings.json'),
+    '{"theme":"dark","permissions":{"allow":["Read"]}}\n',
+  )
+
+  await saveTuiTheme('light-daltonized', root)
+
+  expect(
+    JSON.parse(await readFile(join(root, 'settings.json'), 'utf8')),
+  ).toEqual({
+    theme: 'light-daltonized',
+    permissions: { allow: ['Read'] },
+  })
+})
+
+it('rejects malformed shared settings instead of replacing them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-tui-theme-'))
+  roots.push(root)
+  const path = join(root, 'settings.json')
+  await writeFile(path, '[]\n')
+
+  await expect(saveTuiTheme('dark', root)).rejects.toThrow(
+    'JSON root must be an object',
+  )
+  await expect(readFile(path, 'utf8')).resolves.toBe('[]\n')
+})

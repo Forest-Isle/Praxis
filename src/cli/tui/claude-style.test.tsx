@@ -20,6 +20,7 @@ import {
   SessionPicker,
   ShortcutHelp,
   StatusDashboard,
+  ThemePicker,
   Transcript,
   WelcomePanel,
 } from './claude-style.js'
@@ -389,6 +390,26 @@ describe('Claude-style TUI components', () => {
     expect(workspace.lastFrame()).toContain('/shared')
     expect(workspace.lastFrame()).toContain('1. /shared')
     expect(workspace.lastFrame()).toContain('2. Add directory…')
+  })
+
+  it('renders the observed built-in theme choices and active profile', () => {
+    const app = render(
+      <ThemePicker
+        currentTheme="dark"
+        selectedIndex={1}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Theme')
+    expect(frame).toContain(
+      'Choose the text style that looks best with your terminal',
+    )
+    expect(frame).toContain('2. Dark mode ✔')
+    expect(frame).toContain('4. Dark mode (colorblind-friendly)')
+    expect(frame).toContain('6. Dark mode (ANSI colors only)')
+    expect(frame).toContain('Enter to select · Esc to cancel')
   })
 
   it('shows active thinking in full and expands retained thinking on demand', () => {
