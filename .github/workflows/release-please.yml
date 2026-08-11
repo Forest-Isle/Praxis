@@ -7,6 +7,7 @@ on:
 
 permissions:
   actions: write
+  checks: write
   contents: write
   pull-requests: write
 
@@ -42,6 +43,8 @@ jobs:
           test -n "$HEAD_SHA"
           WORKFLOWS=(ci.yml codeql.yml dependency-review.yml)
           declare -A PREVIOUS_RUN_IDS
+          declare -A COMPLETED_RUN_IDS
+          declare -A COMPLETED_RUN_URLS
           for WORKFLOW in "${WORKFLOWS[@]}"; do
             PREVIOUS_RUN_IDS[$WORKFLOW]=$(gh run list \
               --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" \
@@ -73,7 +76,7 @@ jobs:
               RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" \
                 --workflow "$WORKFLOW" --branch "$HEAD_BRANCH" \
                 --event workflow_dispatch --limit 20 \
-                --json databaseId,headSha,status,conclusion)
+                --json databaseId,headSha,status,conclusion,url)
               RUN=$(jq -c --arg sha "$HEAD_SHA" \
                 --argjson previous "$PREVIOUS_RUN_ID" \
                 '[.[] | select(.headSha == $sha and .databaseId > $previous)] | max_by(.databaseId) // empty' \
@@ -88,6 +91,9 @@ jobs:
                   --json conclusion --jq '.conclusion')
                 if test "$CONCLUSION" != "success"; then
                   FAILED_WORKFLOWS+=("$WORKFLOW:$CONCLUSION")
+                else
+                  COMPLETED_RUN_IDS[$WORKFLOW]=$RUN_ID
+                  COMPLETED_RUN_URLS[$WORKFLOW]=$(jq -r '.url' <<< "$RUN")
                 fi
                 break
               fi
@@ -103,6 +109,28 @@ jobs:
               "${FAILED_WORKFLOWS[*]}" >&2
             exit 1
           }
+          CURRENT_PR=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json headRefName,headRefOid,state)
+          test "$(jq -r '.state' <<< "$CURRENT_PR")" = "OPEN"
+          test "$(jq -r '.headRefName' <<< "$CURRENT_PR")" = "$HEAD_BRANCH"
+          test "$(jq -r '.headRefOid' <<< "$CURRENT_PR")" = "$HEAD_SHA"
+          for WORKFLOW in ci.yml dependency-review.yml; do
+            case "$WORKFLOW" in
+              ci.yml) CHECK_NAME=CI ;;
+              dependency-review.yml) CHECK_NAME='Dependency review' ;;
+            esac
+            RUN_ID=${COMPLETED_RUN_IDS[$WORKFLOW]}
+            RUN_URL=${COMPLETED_RUN_URLS[$WORKFLOW]}
+            test -n "$RUN_ID"
+            test -n "$RUN_URL"
+            jq -n --arg name "$CHECK_NAME" --arg sha "$HEAD_SHA" \
+              --arg url "$RUN_URL" --arg run_id "$RUN_ID" \
+              '{name:$name,head_sha:$sha,status:"completed",conclusion:"success",
+                details_url:$url,
+                output:{title:("Verified by dispatched workflow run " + $run_id),
+                  summary:"The required workflow completed successfully for this exact release head."}}' |
+              gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input -
+          done
       - name: Dispatch release publication
         if: steps.release.outputs.release_created == 'true'
         env:

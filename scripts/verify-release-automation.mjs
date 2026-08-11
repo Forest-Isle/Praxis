@@ -7,6 +7,13 @@ const releasePath = '.github/workflows/release-please.yml'
 const dependencyPath = '.github/workflows/dependency-review.yml'
 const releaseSource = await readFile(releasePath, 'utf8')
 const dependency = parse(await readFile(dependencyPath, 'utf8'))
+const release = parse(releaseSource)
+
+assert.equal(
+  release.permissions?.checks,
+  'write',
+  'Release Please must be able to publish protected check runs',
+)
 
 assert.ok(
   dependency.on?.workflow_dispatch !== undefined,
@@ -40,6 +47,17 @@ assert.match(releaseSource, /\.databaseId > \$previous/u)
 assert.match(releaseSource, /gh run watch "\$RUN_ID"[\s\S]*--exit-status/u)
 assert.match(releaseSource, /FAILED_WORKFLOWS\+=/u)
 assert.match(releaseSource, /test "\$\{#FAILED_WORKFLOWS\[@\]\}" -eq 0/u)
+assert.match(releaseSource, /--json headRefName,headRefOid,state/u)
+assert.match(releaseSource, /\.headRefOid[^\n]*\$HEAD_SHA/u)
+assert.match(releaseSource, /ci\.yml\) CHECK_NAME=CI/u)
+assert.match(
+  releaseSource,
+  /dependency-review\.yml\) CHECK_NAME='Dependency review'/u,
+)
+assert.match(releaseSource, /repos\/\$GITHUB_REPOSITORY\/check-runs/u)
+assert.match(releaseSource, /head_sha:\$sha/u)
+assert.match(releaseSource, /conclusion:"success"/u)
+assert.match(releaseSource, /details_url:\$url/u)
 assert.match(releaseSource, /-f base_ref=main/u)
 assert.match(releaseSource, /-f head_ref="\$HEAD_BRANCH"/u)
 assert.doesNotMatch(releaseSource, /contexts\/[^\s"']+/u)
