@@ -1460,6 +1460,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : undefined
     const service = new ClaudeSessionService({
       ...options,
+      trajectoryRunKind:
+        sessionKind === 'bg'
+          ? 'background'
+          : interactive
+            ? 'interactive'
+            : 'headless',
       provider: hostedToolProvider,
       ...(providerForModel ? { providerForModel } : {}),
       tools: filteredTools,
@@ -3936,6 +3942,8 @@ async function execute(
       },
       supportedRunKinds: ['interactive', 'headless', 'background', 'workflow'],
       mutationPolicy: 'managed-worktree-only',
+      healthCommand: ['doctor', '--json'],
+      preparationCommands: [['npm', 'ci', '--ignore-scripts']],
       validationCommands: {
         focused: [],
         full: [
@@ -4652,11 +4660,18 @@ async function execute(
       const sessionId = requireValue(args[1], 'Session ID')
       const transcript = await service.export(sessionId)
       if (outputFormat !== 'text') {
+        const session = await service.inspect(sessionId)
         writeJson(io, {
           type: 'session-export',
           sessionId,
           encoding: 'base64',
           transcript: transcript.toString('base64'),
+          ...(session.runKind === undefined
+            ? {}
+            : { runKind: session.runKind }),
+          ...(session.targetCommit === undefined
+            ? {}
+            : { targetCommit: session.targetCommit }),
         })
       } else io.stdout(transcript)
       return 0

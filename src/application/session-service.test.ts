@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process'
 import {
   appendFile,
   mkdir,
@@ -11,6 +12,7 @@ import {
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -35,6 +37,7 @@ import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
 
 const roots: string[] = []
+const execFileAsync = promisify(execFile)
 
 function queuedProvider(responses: string[]): ModelProvider {
   return {
@@ -642,6 +645,56 @@ describe('ClaudeSessionService', () => {
         entrypoint: 'cli',
       }),
     ])
+  })
+
+  it('publishes immutable trajectory provenance without changing the transcript format', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-trajectory-provenance-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'cdcdcdcd-1111-4111-8111-111111111111'
+    await mkdir(cwd)
+    await writeFile(join(cwd, 'value.txt'), 'first\n')
+    await execFileAsync('git', ['init'], { cwd })
+    await execFileAsync('git', ['config', 'user.name', 'Fixture'], { cwd })
+    await execFileAsync(
+      'git',
+      ['config', 'user.email', 'fixture@example.com'],
+      {
+        cwd,
+      },
+    )
+    await execFileAsync('git', ['add', '-A'], { cwd })
+    await execFileAsync('git', ['commit', '-m', 'first'], { cwd })
+    const targetCommit = (
+      await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd })
+    ).stdout.trim()
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['answer']),
+      trajectoryRunKind: 'headless',
+    })
+
+    await service.run('prompt', undefined, sessionId)
+    await writeFile(join(cwd, 'value.txt'), 'second\n')
+    await execFileAsync('git', ['add', '-A'], { cwd })
+    await execFileAsync('git', ['commit', '-m', 'second'], { cwd })
+
+    await expect(service.sessions()).resolves.toEqual([
+      expect.objectContaining({
+        sessionId,
+        runKind: 'headless',
+        targetCommit,
+      }),
+    ])
+    await expect(service.inspect(sessionId)).resolves.toEqual(
+      expect.objectContaining({ runKind: 'headless', targetCommit }),
+    )
+    const transcript = await service.export(sessionId)
+    expect(transcript.toString()).not.toContain('targetCommit')
+    expect(transcript.toString()).not.toContain('trajectoryRunKind')
   })
 
   it('allows foreground subagents when session persistence is disabled', () => {

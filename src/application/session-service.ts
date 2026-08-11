@@ -99,6 +99,11 @@ import type {
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
 import { generateToolUseSummary } from './tool-use-summary.js'
 import {
+  captureTrajectoryProvenance,
+  readTrajectoryProvenance,
+  type TrajectoryRunKind,
+} from './trajectory-provenance.js'
+import {
   ClaudeUserMessageToolRegistry,
   CLAUDE_USER_MESSAGE_PROMPT,
   type UserMessage,
@@ -145,6 +150,7 @@ export interface ClaudeSessionServiceOptions {
   collectMetrics?: boolean
   sessionPersistence?: boolean
   sessionKind?: 'bg'
+  trajectoryRunKind?: TrajectoryRunKind
   workspace?: WorkspaceContext
   initialWorktree?: boolean
   initialWorktreeName?: string
@@ -174,6 +180,8 @@ export interface SessionSummary {
   updatedAt: string
   status: SessionStatus
   issue: TranscriptParseIssue | null
+  runKind?: TrajectoryRunKind
+  targetCommit?: string | null
   prNumber?: number
   prUrl?: string
   prRepository?: string
@@ -613,6 +621,10 @@ export class ClaudeSessionService {
             if (!(await lstat(sessionFile)).isFile()) return null
             const name = this.sessionName(recovery.entries)
             const prLink = getClaudePrLink(recovery.entries, sessionId)
+            const trajectory = await readTrajectoryProvenance(
+              this.options.configRoot,
+              sessionId,
+            )
             return {
               sessionId,
               ...(name === null ? {} : { name }),
@@ -623,6 +635,7 @@ export class ClaudeSessionService {
                 recovery.entries.length,
               ),
               issue: recovery.issue,
+              ...(trajectory ?? {}),
               ...(prLink
                 ? {
                     prNumber: prLink.prNumber,
@@ -658,12 +671,17 @@ export class ClaudeSessionService {
     }
     const recovery = await this.store(sessionId).loadReadOnly()
     const prLink = getClaudePrLink(recovery.entries, sessionId)
+    const trajectory = await readTrajectoryProvenance(
+      this.options.configRoot,
+      sessionId,
+    )
     return {
       sessionId,
       lastPrompt: getClaudeLastPrompt(recovery.entries),
       updatedAt: metadata.mtime.toISOString(),
       status: this.sessionStatus(recovery.issue, recovery.entries.length),
       issue: recovery.issue,
+      ...(trajectory ?? {}),
       claudeVersion: this.options.claudeVersion,
       writeMode: this.schema.writeMode,
       entryCount: recovery.entries.length,
@@ -785,6 +803,17 @@ export class ClaudeSessionService {
         if (initialization.status === 'conflict') {
           throw new Error(`Session ID ${sessionId} is already in use`)
         }
+      }
+      if (
+        this.options.sessionPersistence !== false &&
+        this.options.trajectoryRunKind
+      ) {
+        await captureTrajectoryProvenance(
+          this.options.configRoot,
+          sessionId,
+          this.activeCwd(),
+          this.options.trajectoryRunKind,
+        )
       }
       let snapshot = await lease.load()
       if (

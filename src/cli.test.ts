@@ -81,6 +81,8 @@ function dependencies(
               updatedAt: '2026-08-03T00:00:00.000Z',
               status: 'ready' as const,
               issue: null,
+              runKind: 'headless' as const,
+              targetCommit: 'a'.repeat(40),
             },
           ]
         },
@@ -96,6 +98,8 @@ function dependencies(
             byteLength: 128,
             newlineTerminated: true,
             issue: null,
+            runKind: 'headless' as const,
+            targetCommit: 'a'.repeat(40),
           }
         },
         async export() {
@@ -2494,6 +2498,8 @@ describe('Praxis CLI', () => {
       },
       supportedRunKinds: ['interactive', 'headless', 'background', 'workflow'],
       mutationPolicy: 'managed-worktree-only',
+      healthCommand: ['doctor', '--json'],
+      preparationCommands: [['npm', 'ci', '--ignore-scripts']],
       validationCommands: {
         focused: [],
         full: [
@@ -2531,6 +2537,8 @@ describe('Praxis CLI', () => {
       sessionId,
       encoding: 'base64',
       transcript: source.toString('base64'),
+      runKind: 'headless',
+      targetCommit: 'a'.repeat(40),
     })
   })
 

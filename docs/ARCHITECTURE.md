@@ -112,6 +112,9 @@ Praxis defaults to the same configuration root as Claude Code:
 `CLAUDE_CONFIG_DIR`, falling back to `~/.claude`. It shares:
 
 - workspace session JSONL files and UUID/parent UUID chains;
+- private trajectory provenance sidecars under
+  `praxis/trajectory-metadata/<session-id>.json`, which hold `runKind` and the
+  starting target commit without changing shared Claude Code transcripts;
 - `CLAUDE.md`, `.claude/CLAUDE.md`, and `.claude/rules` instructions;
 - global and project skills, commands, and agent definitions;
 - auto memory under the Claude project memory directory;

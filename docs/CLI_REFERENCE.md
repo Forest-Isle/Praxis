@@ -26,6 +26,7 @@ praxis --resume <session-id> --fork-session "Try another approach"
 praxis sessions --json
 praxis inspect --json <session-id>
 praxis export <session-id> > session.jsonl
+praxis trajectory-contract
 
 # Restrict context and tools
 praxis -p --safe-mode "Inspect without shared customizations"
@@ -54,6 +55,11 @@ praxis plugin marketplace list
 praxis doctor
 praxis update
 ```
+
+`trajectory-contract` prints the versioned black-box contract used by external
+trajectory evaluators. JSON `sessions`, `inspect`, and `export` responses expose
+`runKind` and `targetCommit` when capture provenance is available; transcript
+JSONL remains Claude Code-compatible and is not extended with Praxis fields.
 
 Shell placeholders such as `<session-id>` and `<model-id>` must be replaced;
 they are documentation notation, not literal arguments.
