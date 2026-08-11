@@ -1006,8 +1006,10 @@ contract; broader presentation and denied-history parity remain partial.
       selected-profile marker, cancellation, and result shape
 - [x] Claude-native user `settings.json` theme values with bounded parsing,
       per-key mutation against the latest file under an exclusive lease,
-      atomic compare-before-commit writes, and preservation of concurrent or
-      unrelated shared settings
+      atomic replacement with a final pre-rename fingerprint check and bounded
+      conflict retry, and preservation of untouched raw or unrelated settings;
+      the final syscall window is not an OS-level compare-and-swap against
+      non-cooperating writers
 - [x] startup application of the selected semantic palette, exact syntax/diff
       preview colors for every built-in profile, immediate picker recoloring,
       restart persistence, and persisted `Ctrl+T` syntax highlighting toggles

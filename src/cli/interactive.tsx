@@ -508,6 +508,11 @@ type InteractiveMenu =
       selectedIndex: number
     }
 
+function selectionPrefix(selected: boolean, screenReader: boolean): string {
+  if (selected) return screenReader ? 'Selected: ' : '❯ '
+  return screenReader ? '' : '  '
+}
+
 type RuntimePreferences = {
   model?: string
   effort: (typeof EFFORT_OPTIONS)[number]
@@ -2939,9 +2944,11 @@ export function InteractiveApp({
           ? ['Help', 'Tabs']
           : menuRef.current.kind === 'permission-dashboard'
             ? ['Settings', 'Tabs']
-            : menuRef.current.kind === 'model'
-              ? ['ModelPicker', 'Select']
-              : ['Select']
+            : menuRef.current.kind === 'theme'
+              ? ['ThemePicker', 'Select']
+              : menuRef.current.kind === 'model'
+                ? ['ModelPicker', 'Select']
+                : ['Select']
       : commandPaletteVisible || filePickerVisible
         ? ['Autocomplete', 'Chat']
         : permission || planApproval
@@ -4685,7 +4692,7 @@ export function InteractiveApp({
                 <Text bold>
                   {describeTool(permission.call, sensitiveValues)}
                 </Text>
-                <Text>❯ 1. Yes</Text>
+                <Text>{selectionPrefix(true, axScreenReader)}1. Yes</Text>
                 <Text> 2. No</Text>
                 <Text dimColor>Enter/Esc declines · y/n quick response</Text>
               </DialogFrame>
@@ -4700,7 +4707,10 @@ export function InteractiveApp({
                     <Text>{planApproval.request.plan}</Text>
                   </Box>
                 ) : null}
-                <Text>❯ 1. Yes, implement the plan</Text>
+                <Text>
+                  {selectionPrefix(true, axScreenReader)}1. Yes, implement the
+                  plan
+                </Text>
                 <Text> 2. No, keep planning</Text>
               </DialogFrame>
             ) : question ? (
@@ -4715,7 +4725,6 @@ export function InteractiveApp({
                       flexDirection="column"
                     >
                       <Text>
-                        {index === 0 ? '❯ ' : '  '}
                         {index + 1}. {option.label} — {option.description}
                       </Text>
                       {option.preview ? (
@@ -4724,7 +4733,10 @@ export function InteractiveApp({
                     </Box>
                   ),
                 )}
-                <Text>› {input}</Text>
+                <Text>
+                  {axScreenReader ? 'Current answer: ' : '› '}
+                  {input || (axScreenReader ? '(empty)' : '')}
+                </Text>
                 <Text dimColor>
                   {question.questions[question.index]?.multiSelect
                     ? 'Enter comma-separated option numbers or custom text · Esc cancels'
@@ -4877,7 +4889,7 @@ export function InteractiveApp({
                   </Text>
                 ))}
                 <Text> </Text>
-                <Text color="yellow">
+                <Text color={activePalette.warning}>
                   ⚠ Rewinding does not affect files edited manually or via bash.
                 </Text>
               </DialogFrame>
@@ -4952,11 +4964,13 @@ export function InteractiveApp({
                   Are you sure you want to delete this permission rule?
                 </Text>
                 <Text> </Text>
-                <Text inverse={menu.selectedIndex === 0}>
-                  {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
+                <Text inverse={!axScreenReader && menu.selectedIndex === 0}>
+                  {selectionPrefix(menu.selectedIndex === 0, axScreenReader)}
+                  1. Yes
                 </Text>
-                <Text inverse={menu.selectedIndex === 1}>
-                  {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
+                <Text inverse={!axScreenReader && menu.selectedIndex === 1}>
+                  {selectionPrefix(menu.selectedIndex === 1, axScreenReader)}
+                  2. No
                 </Text>
                 <Text dimColor>Esc to cancel</Text>
               </DialogFrame>
@@ -4970,11 +4984,13 @@ export function InteractiveApp({
                   directory.
                 </Text>
                 <Text> </Text>
-                <Text inverse={menu.selectedIndex === 0}>
-                  {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
+                <Text inverse={!axScreenReader && menu.selectedIndex === 0}>
+                  {selectionPrefix(menu.selectedIndex === 0, axScreenReader)}
+                  1. Yes
                 </Text>
-                <Text inverse={menu.selectedIndex === 1}>
-                  {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
+                <Text inverse={!axScreenReader && menu.selectedIndex === 1}>
+                  {selectionPrefix(menu.selectedIndex === 1, axScreenReader)}
+                  2. No
                 </Text>
                 <Text dimColor>Enter to confirm · Esc to cancel</Text>
               </Box>
@@ -5162,7 +5178,9 @@ export function InteractiveApp({
                   />
                 ) : null}
                 {exitConfirmation ? (
-                  <Text color="yellow">Press Ctrl-C again to exit</Text>
+                  <Text color={activePalette.warning}>
+                    Press Ctrl-C again to exit
+                  </Text>
                 ) : null}
                 <Composer
                   input={shellMode ? input.slice(1) : input}

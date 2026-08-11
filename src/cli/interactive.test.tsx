@@ -235,7 +235,10 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(app.lastFrame()).toContain('Selected: Light mode')
-    expect(app.lastFrame()).toContain('2. Dark mode ✔')
+    expect(app.lastFrame()).toContain('2. Dark mode (current)')
+    expect(app.lastFrame()).toContain('3. Light mode (focused)')
+    expect(app.lastFrame()).not.toContain('❯')
+    expect(app.lastFrame()).not.toContain('✔')
   })
 
   it('surfaces theme load and save failures without changing the active profile', async () => {
@@ -3390,6 +3393,7 @@ describe('InteractiveApp', () => {
           },
         }}
         initialSessions={[]}
+        axScreenReader
         permissionRuleStore={{
           async load() {
             return rules
@@ -3419,6 +3423,13 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Delete allowed tool?')
     expect(app.lastFrame()).toContain('Any Bash command starting with npm test')
     expect(app.lastFrame()).toContain('From project local settings')
+    expect(app.lastFrame()).toContain('Selected: 1. Yes')
+    expect(app.lastFrame()).not.toContain('❯')
+    app.stdin.write('\u001B[B')
+    await flush()
+    expect(app.lastFrame()).toContain('Selected: 2. No')
+    app.stdin.write('\u001B[A')
+    await flush()
     app.stdin.write('\r')
     await flush()
     await flush()
@@ -4508,6 +4519,7 @@ describe('InteractiveApp', () => {
         factory={factory}
         initialSessions={[]}
         suspendProcess={suspendProcess}
+        axScreenReader
       />,
     )
 
@@ -4518,6 +4530,8 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Allow Bash')
     expect(app.lastFrame()).toContain('npm test')
+    expect(app.lastFrame()).toContain('Selected: 1. Yes')
+    expect(app.lastFrame()).not.toContain('❯')
 
     app.stdin.write('\u001a')
     await new Promise((resolve) => setTimeout(resolve, 75))
@@ -4525,7 +4539,7 @@ describe('InteractiveApp', () => {
     expect(suspendProcess).toHaveBeenCalledOnce()
     expect(app.lastFrame()).toContain('Allow Bash')
 
-    app.stdin.write('1')
+    app.stdin.write('y')
     await flush()
     expect(approval).toBe(true)
     expect(app.lastFrame()).toContain('done')
@@ -4576,14 +4590,18 @@ describe('InteractiveApp', () => {
       },
     }
     const app = render(
-      <InteractiveApp factory={factory} initialSessions={[]} />,
+      <InteractiveApp factory={factory} initialSessions={[]} axScreenReader />,
     )
     await flush()
     app.stdin.write('start')
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Runtime: Which runtime?')
+    expect(app.lastFrame()).toContain('Current answer: (empty)')
+    expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('Bun, with npm')
+    await flush()
+    expect(app.lastFrame()).toContain('Current answer: Bun, with npm')
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Checks: Which checks?')
@@ -4681,7 +4699,7 @@ describe('InteractiveApp', () => {
       },
     }
     const app = render(
-      <InteractiveApp factory={factory} initialSessions={[]} />,
+      <InteractiveApp factory={factory} initialSessions={[]} axScreenReader />,
     )
     await flush()
     app.stdin.write('start')
@@ -4689,6 +4707,8 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Approve this plan')
     expect(app.lastFrame()).toContain('1. Implement.')
+    expect(app.lastFrame()).toContain('Selected: 1. Yes, implement the plan')
+    expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('y')
     await flush()
     expect(approval).toBe(true)

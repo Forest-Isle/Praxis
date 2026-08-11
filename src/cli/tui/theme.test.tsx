@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   TUI_THEMES,
   TuiThemeProvider,
+  terminalColorCapability,
   tuiPalette,
   tuiSyntaxStyle,
   useTuiPalette,
@@ -110,5 +111,58 @@ describe('TUI semantic theme palettes', () => {
     expect(
       tuiPalette('light-daltonized', true).syntaxHighlightingDisabled,
     ).toBe(true)
+  })
+
+  it('resolves auto colors against explicit terminal capabilities', () => {
+    const linux256 = { TERM: 'xterm-256color' }
+    expect(terminalColorCapability(linux256)).toBe('ansi256')
+    expect(tuiPalette('auto', false, linux256).syntax).toMatchObject({
+      keyword: 'ansi256(81)',
+      identifier: 'ansi256(148)',
+      removedBackground: 'ansi256(52)',
+      addedBackground: 'ansi256(22)',
+      addedHighlight: 'ansi256(28)',
+    })
+
+    const truecolor = { TERM: 'xterm-256color', COLORTERM: 'truecolor' }
+    expect(terminalColorCapability(truecolor)).toBe('truecolor')
+    expect(tuiPalette('auto', false, truecolor).syntax.keyword).toBe('#5fd7ff')
+  })
+
+  it('uses only the exact ANSI-16 palette on basic-color terminals', () => {
+    const expected = {
+      profile: 'auto',
+      dark: true,
+      ansiOnly: false,
+      syntaxHighlightingDisabled: false,
+      brand: 'redBright',
+      accent: 'whiteBright',
+      info: 'cyanBright',
+      link: 'cyanBright',
+      error: 'redBright',
+      success: 'greenBright',
+      warning: 'yellowBright',
+      muted: 'white',
+      selectionText: 'black',
+      syntaxTheme: 'Monokai Extended',
+      syntax: {
+        text: 'whiteBright',
+        keyword: 'cyanBright',
+        identifier: 'yellowBright',
+        string: 'whiteBright',
+        removedBackground: 'black',
+        addedBackground: 'black',
+        addedHighlight: 'green',
+      },
+    }
+    const environments = [
+      { TERM: 'xterm' },
+      { TERM: 'dumb' },
+      { TERM: 'xterm-256color', FORCE_COLOR: '1' },
+    ]
+    for (const environment of environments) {
+      expect(terminalColorCapability(environment)).toBe('ansi16')
+      expect(tuiPalette('auto', false, environment)).toEqual(expected)
+    }
   })
 })

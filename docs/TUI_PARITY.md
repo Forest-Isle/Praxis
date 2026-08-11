@@ -247,7 +247,11 @@ is passed from the CLI composition root and never written to shared JSONL.
   `theme` value to shared user `settings.json`, preserves unrelated settings,
   and is restored before the next interactive render. `Ctrl+T` toggles and
   persists Claude's native `syntaxHighlightingDisabled` setting without leaving
-  the picker or invoking a model turn.
+  the picker or invoking a model turn. Per-key writes preserve untouched raw
+  values and serialize cooperating Praxis processes with an advisory lease. A
+  changed final pre-rename fingerprint triggers a bounded reread/merge/retry;
+  atomic rename prevents partial files but is not an OS-level compare-and-swap,
+  so a non-cooperating writer can still win the syscall window after that check.
 - `/permissions` loads Claude-native permission arrays into Recently denied,
   Allow, Ask, Deny, and Workspace tabs, opening on Allow like 2.1.208. Rule
   search is local; adding a rule chooses `.claude/settings.local.json`,

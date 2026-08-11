@@ -49,6 +49,18 @@ const pbcopy = join(binRoot, 'pbcopy')
 const clipboardOutput = join(root, 'clipboard-output.txt')
 const editorOutput = join(root, 'editor-output.txt')
 const folderOutput = join(root, 'folder-output.txt')
+const enabledDiffCapture = join(root, 'diff-enabled.raw')
+const disabledDiffCapture = join(root, 'diff-disabled.raw')
+const enabledRuntimeCapture = join(root, 'runtime-enabled.raw')
+const restartedEnabledRuntimeCapture = join(
+  root,
+  'runtime-restarted-enabled.raw',
+)
+const disabledRuntimeCapture = join(root, 'runtime-disabled.raw')
+const restartedDisabledRuntimeCapture = join(
+  root,
+  'runtime-restarted-disabled.raw',
+)
 const wlPaste = join(binRoot, 'wl-paste')
 const wlCopy = join(binRoot, 'wl-copy')
 const open = join(binRoot, 'open')
@@ -88,12 +100,131 @@ async function pinnedClaudeExecutable() {
 }
 
 const pinnedClaude = await pinnedClaudeExecutable()
+const ansiSequencePattern = new RegExp(
+  String.raw`\u001B\[[0-?]*[ -/]*[@-~]`,
+  'gu',
+)
+const ansi256ColorPattern = new RegExp(
+  String.raw`\u001B\[(38|48);5;(\d+)m`,
+  'u',
+)
+const extendedColorPattern = new RegExp(
+  String.raw`\u001B\[(?:38|48);(?:2|5);`,
+  'u',
+)
 
-function assertAnsiColor(output, ansi256, rgb, label) {
-  assert.ok(
-    output.includes(ansi256) || output.includes(rgb),
-    `${label} ANSI color was not rendered`,
+const TERMINAL_ENVIRONMENT_KEYS = [
+  'TERM',
+  'COLORTERM',
+  'FORCE_COLOR',
+  'NO_COLOR',
+  'TERM_PROGRAM',
+  'TERM_PROGRAM_VERSION',
+  'WT_SESSION',
+]
+const PROFILE_TERMINAL_ENVIRONMENT = {
+  TERM: 'xterm-256color',
+  COLORTERM: undefined,
+  FORCE_COLOR: undefined,
+  NO_COLOR: undefined,
+  TERM_PROGRAM: undefined,
+  TERM_PROGRAM_VERSION: undefined,
+  WT_SESSION: undefined,
+}
+
+function normalizedTerminalEnvironment(environment, terminalEnvironment) {
+  const normalized = { ...environment }
+  for (const name of TERMINAL_ENVIRONMENT_KEYS) delete normalized[name]
+  for (const [name, value] of Object.entries(terminalEnvironment)) {
+    if (value !== undefined) normalized[name] = value
+  }
+  return normalized
+}
+
+function terminalEnvironmentSnapshot(environment) {
+  return Object.fromEntries(
+    TERMINAL_ENVIRONMENT_KEYS.map((name) => [name, environment[name]]),
   )
+}
+
+function profileTerminalEnvironment(profile) {
+  return profile === 'auto'
+    ? PROFILE_TERMINAL_ENVIRONMENT
+    : { ...PROFILE_TERMINAL_ENVIRONMENT, COLORTERM: 'truecolor' }
+}
+
+function assertAnsiStyled(output, payload, ansiCodes, label) {
+  const text = payload.replace(/^[+-]/u, '')
+  let index = output.indexOf(text)
+  let styled = false
+  while (index >= 0) {
+    const lineStart = Math.max(
+      output.lastIndexOf('\n', index),
+      output.lastIndexOf('\r', index),
+    )
+    const prefix = output.slice(lineStart + 1, index)
+    if (ansiCodes.some((ansi) => prefix.includes(ansi))) {
+      styled = true
+      break
+    }
+    index = output.indexOf(text, index + text.length)
+  }
+  assert.ok(
+    styled,
+    `${label} did not style ${JSON.stringify(payload)} with the expected ANSI: ${JSON.stringify(
+      output.match(
+        new RegExp(
+          `.{0,100}${text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}.{0,100}`,
+          'gu',
+        ),
+      ),
+    )}; tail=${JSON.stringify(
+      output.replace(ansiSequencePattern, '').slice(-4_000),
+    )}`,
+  )
+}
+
+function assertNotAnsiStyled(output, payload, ansiCodes, label) {
+  const text = payload.replace(/^[+-]/u, '')
+  let index = output.indexOf(text)
+  let styled = false
+  while (index >= 0) {
+    const lineStart = Math.max(
+      output.lastIndexOf('\n', index),
+      output.lastIndexOf('\r', index),
+    )
+    const prefix = output.slice(lineStart + 1, index)
+    if (ansiCodes.some((ansi) => prefix.includes(ansi))) {
+      styled = true
+      break
+    }
+    index = output.indexOf(text, index + text.length)
+  }
+  assert.ok(!styled, `${label} unexpectedly styled ${JSON.stringify(payload)}`)
+}
+
+const ANSI_256_RGB = new Map([
+  [17, [0, 0, 95]],
+  [22, [0, 95, 0]],
+  [24, [0, 95, 135]],
+  [28, [0, 135, 0]],
+  [52, [95, 0, 0]],
+  [81, [95, 215, 255]],
+  [97, [135, 95, 175]],
+  [125, [175, 0, 95]],
+  [148, [175, 215, 0]],
+  [153, [175, 215, 255]],
+  [157, [175, 255, 175]],
+  [194, [215, 255, 215]],
+  [195, [215, 255, 255]],
+  [224, [255, 215, 215]],
+])
+
+function praxisAnsiForClaude(reference) {
+  return reference.replace(ansi256ColorPattern, (match, plane, index) => {
+    const rgb = ANSI_256_RGB.get(Number(index))
+    return rgb ? `\u001B[${plane};2;${rgb.join(';')}m` : match
+  })
 }
 
 function shellQuote(value) {
@@ -255,8 +386,9 @@ const provider = createServer(async (request, response) => {
     requestBody += chunk
   }
   let latestText = ''
+  let payload
   try {
-    const payload = JSON.parse(requestBody)
+    payload = JSON.parse(requestBody)
     providerRequests.push(payload)
     const latestContent = payload.messages?.at(-1)?.content
     latestText =
@@ -266,13 +398,72 @@ const provider = createServer(async (request, response) => {
   } catch {
     // Invalid provider requests are exercised by the adapter tests.
   }
+  const messages = Array.isArray(payload?.messages) ? payload.messages : []
+  const latestUserIndex = messages.findLastIndex(
+    (message) => message?.role === 'user',
+  )
+  const latestUserText = JSON.stringify(
+    messages[latestUserIndex]?.content ?? '',
+  )
+  const toolResultCount = messages
+    .slice(latestUserIndex + 1)
+    .filter((message) => message?.role === 'tool').length
+  const surfaceMode = latestUserText.includes('reply briefly')
+    ? 'ENABLED'
+    : latestUserText.includes('disabled surface probe')
+      ? 'DISABLED'
+      : null
+  if (surfaceMode && toolResultCount < 2) {
+    const toolCall =
+      toolResultCount === 0
+        ? {
+            index: 0,
+            id: `call_${surfaceMode.toLowerCase()}_tool_diff`,
+            type: 'function',
+            function: {
+              name: 'Bash',
+              arguments: JSON.stringify({
+                command: `printf '@@ ${surfaceMode}_TOOL_RESULT\\n-${surfaceMode}_TOOL_OLD\\n+${surfaceMode}_TOOL_NEW\\n'`,
+              }),
+            },
+          }
+        : {
+            index: 0,
+            id: `call_${surfaceMode.toLowerCase()}_edit`,
+            type: 'function',
+            function: {
+              name: 'Edit',
+              arguments: JSON.stringify({
+                file_path: join(
+                  surfaceMode === 'ENABLED' ? cwd : movedCwd,
+                  'edit-fixture.txt',
+                ),
+                old_string:
+                  surfaceMode === 'ENABLED'
+                    ? 'EDIT_ENABLED_OLD'
+                    : 'EDIT_DISABLED_OLD',
+                new_string:
+                  surfaceMode === 'ENABLED'
+                    ? 'EDIT_ENABLED_NEW'
+                    : 'EDIT_DISABLED_NEW',
+              }),
+            },
+          }
+    response.writeHead(200, { 'content-type': 'text/event-stream' })
+    response.end(
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [toolCall] }, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`,
+    )
+    return
+  }
   const content = latestText.includes('Reply with SIDE only.')
     ? 'SIDE'
-    : latestText.includes('reply briefly')
-      ? 'TUI_MODEL_OK\n\n```ts\nfunction greet() { return "hello" }\n```'
-      : latestText.includes('memory reload probe')
-        ? 'MEMORY_RELOAD_OK'
-        : 'TUI_FAKE_OK\n\n```ts\nfunction greet() { return "hello" }\n```'
+    : surfaceMode === 'ENABLED'
+      ? 'TUI_MODEL_OK\n\n```ts\nfunction runtimeEnabledSentinel() { return "enabled-runtime-string" }\n```'
+      : surfaceMode === 'DISABLED'
+        ? 'TUI_DISABLED_OK\n\n```ts\nfunction runtimeDisabledSentinel() { return "disabled-runtime-string" }\n```'
+        : latestText.includes('memory reload probe')
+          ? 'MEMORY_RELOAD_OK'
+          : 'TUI_FAKE_OK\n\n```ts\nfunction defaultRuntimeSentinel() { return "default-runtime-string" }\n```'
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
     `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
@@ -285,6 +476,7 @@ try {
   assert.match(claudeVersion, /^2\.1\.208\b/u)
   await Promise.all([
     mkdir(configRoot, { recursive: true }),
+    mkdir(join(configRoot, 'plans'), { recursive: true }),
     mkdir(join(configRoot, 'commands'), { recursive: true }),
     mkdir(join(configRoot, 'agents'), { recursive: true }),
     mkdir(cwd, { recursive: true }),
@@ -348,6 +540,27 @@ try {
       '\u001B[92m',
     ],
   }
+  const realClaudeThemeCaptures = new Map()
+  const realClaudeThemeEnvironments = new Map()
+  const cleanAutoProfileEnvironment = normalizedTerminalEnvironment(
+    process.env,
+    PROFILE_TERMINAL_ENVIRONMENT,
+  )
+  const contaminatedProfileEnvironment = normalizedTerminalEnvironment(
+    {
+      ...process.env,
+      TERM: 'xterm-direct',
+      COLORTERM: 'truecolor',
+      FORCE_COLOR: '3',
+      TERM_PROGRAM: 'iTerm.app',
+    },
+    PROFILE_TERMINAL_ENVIRONMENT,
+  )
+  assert.deepEqual(
+    terminalEnvironmentSnapshot(contaminatedProfileEnvironment),
+    terminalEnvironmentSnapshot(cleanAutoProfileEnvironment),
+    'profile terminal normalization leaked host truecolor signals',
+  )
   const realClaudeRoot = join(root, 'real-claude')
   const realClaudeCwd = join(realClaudeRoot, 'work')
   const realClaudeTmuxSocket = join(realClaudeRoot, 'tmux.sock')
@@ -371,6 +584,19 @@ try {
     throw new Error(`Claude 2.1.208 ${session} timed out during ${stage}`)
   }
   for (const [profile, expectedAnsi] of Object.entries(claudeThemeAnsi)) {
+    const terminalEnvironment = profileTerminalEnvironment(profile)
+    const claudeProfileEnvironment = normalizedTerminalEnvironment(
+      process.env,
+      terminalEnvironment,
+    )
+    const claudeTerminalArguments = ['env']
+    for (const [name, value] of Object.entries(terminalEnvironment)) {
+      if (value === undefined) claudeTerminalArguments.push('-u', name)
+    }
+    for (const [name, value] of Object.entries(terminalEnvironment)) {
+      if (value !== undefined) claudeTerminalArguments.push(`${name}=${value}`)
+    }
+    realClaudeThemeEnvironments.set(profile, claudeProfileEnvironment)
     const profileConfig = join(realClaudeRoot, profile)
     await mkdir(profileConfig, { recursive: true })
     await writeFile(
@@ -422,9 +648,10 @@ try {
         'DISABLE_AUTOUPDATER=1',
         '-e',
         `CLAUDE_CONFIG_DIR=${profileConfig}`,
+        ...claudeTerminalArguments,
         pinnedClaude,
       ],
-      { timeout: 15_000 },
+      { env: claudeProfileEnvironment, timeout: 15_000 },
     )
     try {
       await execFileAsync('tmux', [
@@ -472,6 +699,7 @@ try {
       ).catch(() => {})
     }
     const stdout = await readFile(capturePath, 'utf8')
+    realClaudeThemeCaptures.set(profile, stdout)
     for (const ansi of expectedAnsi) {
       assert.ok(
         stdout.includes(ansi),
@@ -655,9 +883,13 @@ try {
   ])
   for (const workRoot of [cwd, movedCwd]) {
     const diffFixture = join(workRoot, 'fixture.txt')
-    await writeFile(diffFixture, 'before\n')
+    const diffPhase = workRoot === cwd ? 'ENABLED' : 'RESTART_ENABLED'
+    await writeFile(diffFixture, `DIFF_${diffPhase}_BEFORE\n`)
+    await writeFile(join(workRoot, '.gitignore'), 'edit-fixture.txt\n')
     await execFileAsync('git', ['init', '-q'], { cwd: workRoot })
-    await execFileAsync('git', ['add', 'fixture.txt'], { cwd: workRoot })
+    await execFileAsync('git', ['add', 'fixture.txt', '.gitignore'], {
+      cwd: workRoot,
+    })
     await execFileAsync(
       'git',
       [
@@ -671,8 +903,12 @@ try {
       ],
       { cwd: workRoot },
     )
-    await writeFile(diffFixture, 'after\n')
+    await writeFile(diffFixture, `DIFF_${diffPhase}_AFTER\n`)
   }
+  await Promise.all([
+    writeFile(join(cwd, 'edit-fixture.txt'), 'EDIT_ENABLED_OLD\n'),
+    writeFile(join(movedCwd, 'edit-fixture.txt'), 'EDIT_DISABLED_OLD\n'),
+  ])
   await writeFile(
     editor,
     `#!/bin/sh
@@ -744,6 +980,228 @@ await writeFile(process.argv[4], JSON.stringify(snapshot))
   port = provider.address().port
   const tuiProbeEnvironment = { ...process.env, FORCE_COLOR: '3' }
   delete tuiProbeEnvironment.NO_COLOR
+
+  for (const [profile, expectedAnsi] of Object.entries(claudeThemeAnsi)) {
+    const praxisProfileEnvironment = normalizedTerminalEnvironment(
+      process.env,
+      profileTerminalEnvironment(profile),
+    )
+    const claudeProfileEnvironment = realClaudeThemeEnvironments.get(profile)
+    assert.ok(
+      claudeProfileEnvironment,
+      `missing Claude ${profile} terminal environment`,
+    )
+    assert.deepEqual(
+      terminalEnvironmentSnapshot(praxisProfileEnvironment),
+      terminalEnvironmentSnapshot(claudeProfileEnvironment),
+      `Claude and Praxis ${profile} terminal environments diverged`,
+    )
+    const profileConfig = join(root, 'praxis-themes', profile)
+    await mkdir(profileConfig, { recursive: true })
+    await writeFile(
+      join(profileConfig, 'settings.json'),
+      `${JSON.stringify({ theme: profile })}\n`,
+    )
+    const profileProbe = String.raw`
+set timeout 15
+log_user 1
+spawn -noecho env COLUMNS=100 LINES=32 CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect -re {Praxis.*Code.*v${expectedVersionPattern}}
+expect -re {Try.*review this project}
+send "/theme"
+expect -re {Change the theme}
+send "\r"
+expect -re {Choose the text style that looks best with your terminal}
+after 200
+send "\033"
+after 100
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+    const { stdout: praxisOutput } = await execFileAsync(
+      'expect',
+      ['-c', profileProbe],
+      {
+        cwd,
+        env: {
+          ...praxisProfileEnvironment,
+          TUI_CLI: cli,
+          TUI_NODE: process.execPath,
+          TUI_PROFILE_CONFIG: profileConfig,
+          TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+        },
+        timeout: 60_000,
+      },
+    )
+    const claudeOutput = realClaudeThemeCaptures.get(profile)
+    assert.ok(claudeOutput, `missing Claude ${profile} reference capture`)
+    for (const reference of expectedAnsi) {
+      const claudeAnsi = reference.replace('Claude', '')
+      const praxisAnsi =
+        profile === 'auto' ? claudeAnsi : praxisAnsiForClaude(claudeAnsi)
+      assert.ok(
+        claudeOutput.includes(claudeAnsi),
+        `Claude 2.1.208 ${profile} missed reference ANSI ${JSON.stringify(claudeAnsi)}`,
+      )
+      assert.ok(
+        praxisOutput.includes(praxisAnsi),
+        `Praxis ${profile} diverged from Claude color ${JSON.stringify(claudeAnsi)} as ${JSON.stringify(praxisAnsi)}: ${JSON.stringify(praxisOutput.match(/.{0,40}function.{0,40}/gu))}`,
+      )
+    }
+    console.log(`Praxis ${profile} ANSI matched Claude 2.1.208`)
+  }
+
+  const linuxLikeAutoEnvironment = normalizedTerminalEnvironment(
+    process.env,
+    PROFILE_TERMINAL_ENVIRONMENT,
+  )
+  const linuxLikeAutoProbe = String.raw`
+set timeout 15
+log_user 1
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect -re {Praxis.*Code.*v${expectedVersionPattern}}
+expect -re {Try.*review this project}
+send "/theme"
+expect -re {Change the theme}
+send "\r"
+expect -re {Choose the text style that looks best with your terminal}
+after 200
+send "\033"
+after 100
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+  const { stdout: linuxLikeAutoOutput } = await execFileAsync(
+    'expect',
+    ['-c', linuxLikeAutoProbe],
+    {
+      cwd,
+      env: {
+        ...linuxLikeAutoEnvironment,
+        TERM: 'xterm-256color',
+        TUI_CLI: cli,
+        TUI_NODE: process.execPath,
+        TUI_PROFILE_CONFIG: join(root, 'praxis-themes', 'auto'),
+        TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+      },
+      timeout: 60_000,
+    },
+  )
+  for (const reference of claudeThemeAnsi.auto) {
+    const exactAnsi = reference.endsWith('Claude')
+      ? reference.slice(0, -'Claude'.length)
+      : reference
+    assert.ok(
+      linuxLikeAutoOutput.includes(exactAnsi),
+      `Praxis auto Linux-like 256-color output missed exact Claude ANSI ${JSON.stringify(exactAnsi)}`,
+    )
+  }
+  assert.ok(linuxLikeAutoOutput.includes('Claude'))
+  assert.ok(
+    !linuxLikeAutoOutput.includes('\u001B[38;2;95;215;255mfunction'),
+    'Praxis auto Linux-like 256-color output emitted truecolor syntax',
+  )
+  console.log('Praxis auto Linux-like 256-color ANSI matched Claude 2.1.208')
+
+  const linuxLikeTruecolorEnvironment = normalizedTerminalEnvironment(
+    process.env,
+    { ...PROFILE_TERMINAL_ENVIRONMENT, COLORTERM: 'truecolor' },
+  )
+  const { stdout: linuxLikeTruecolorOutput } = await execFileAsync(
+    'expect',
+    ['-c', linuxLikeAutoProbe],
+    {
+      cwd,
+      env: {
+        ...linuxLikeTruecolorEnvironment,
+        TUI_CLI: cli,
+        TUI_NODE: process.execPath,
+        TUI_PROFILE_CONFIG: join(root, 'praxis-themes', 'auto'),
+        TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+      },
+      timeout: 60_000,
+    },
+  )
+  for (const exactAnsi of [
+    '\u001B[38;2;95;215;255mfunction',
+    '\u001B[38;2;175;215;0mgreet',
+    '\u001B[48;2;95;0;0m',
+    '\u001B[48;2;0;95;0m',
+    '\u001B[48;2;0;135;0m',
+  ]) {
+    assert.ok(
+      linuxLikeTruecolorOutput.includes(exactAnsi),
+      `Praxis auto Linux-like truecolor output missed exact ANSI ${JSON.stringify(exactAnsi)}`,
+    )
+  }
+  console.log('Praxis auto Linux-like truecolor output used exact RGB colors')
+
+  const linuxLikeAnsi16Probe = String.raw`
+set timeout 15
+log_user 1
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect -re {Praxis.*Code.*v${expectedVersionPattern}}
+expect -re {Try.*review this project}
+send "/theme"
+expect -re {Change the theme}
+send "\r"
+expect -re {Choose the text style that looks best with your terminal}
+after 200
+send "\033"
+after 100
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+  const { stdout: linuxLikeAnsi16Output } = await execFileAsync(
+    'expect',
+    ['-c', linuxLikeAnsi16Probe],
+    {
+      cwd,
+      env: {
+        ...linuxLikeAutoEnvironment,
+        TERM: 'xterm',
+        TUI_CLI: cli,
+        TUI_NODE: process.execPath,
+        TUI_PROFILE_CONFIG: join(root, 'praxis-themes', 'auto'),
+        TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+      },
+      timeout: 60_000,
+    },
+  )
+  for (const exactAnsi of [
+    '\u001B[96mfunction',
+    '\u001B[93mgreet',
+    '\u001B[40m',
+  ]) {
+    assert.ok(
+      linuxLikeAnsi16Output.includes(exactAnsi),
+      `Praxis auto Linux-like ANSI-16 output missed exact ANSI ${JSON.stringify(exactAnsi)}`,
+    )
+  }
+  assertAnsiStyled(
+    linuxLikeAnsi16Output,
+    'Praxis',
+    ['\u001B[42m'],
+    'Praxis auto Linux-like ANSI-16 added highlight',
+  )
+  assert.doesNotMatch(
+    linuxLikeAnsi16Output,
+    extendedColorPattern,
+    'Praxis auto Linux-like ANSI-16 output emitted an extended color',
+  )
+  console.log('Praxis auto Linux-like ANSI-16 output used only basic colors')
 
   const cancelConfigRoot = join(root, 'cancel-config')
   const cancelCwd = join(root, 'cancel-work')
@@ -990,6 +1448,12 @@ exit 0
 
   const probe = String.raw`
 set timeout 15
+proc capture {path data} {
+  set handle [open $path a]
+  fconfigure $handle -translation binary
+  puts -nonewline $handle $data
+  close $handle
+}
 log_user 1
 set phase "startup"
 expect_before timeout {
@@ -1051,8 +1515,8 @@ send "\r"
 expect -re {Uncommitted changes.*git diff HEAD}
 expect -re {fixture.txt}
 send "\r"
-expect -re {-before}
-expect -re {\+after}
+expect -re {-DIFF_ENABLED_BEFORE}
+expect -re {\+DIFF_ENABLED_AFTER}
 send "\033"
 after 100
 expect -re {Enter to view}
@@ -1141,8 +1605,8 @@ after 100
 send "\r"
 expect -re {Uncommitted changes.*git diff HEAD}
 send "\r"
-expect -re {-before}
-expect -re {\+after}
+expect -re {-DIFF_ENABLED_BEFORE}
+expect -re {\+DIFF_ENABLED_AFTER}
 send "\033"
 after 100
 send "\033"
@@ -1226,15 +1690,45 @@ expect -re {Context.*3 tokens}
 expect -re {Try.*review this project}
 after 100
 set phase "model turn"
+puts "ANSI_ENABLED_BEGIN"
 send "reply briefly"
 expect -re {❯.*reply briefly}
 after 100
 send "\r"
+expect -re {\r\n(     [^\r\n]*-ENABLED_TOOL_OLD[^\r\n]*)}
+capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*\+ENABLED_TOOL_NEW[^\r\n]*)}
+capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*EDIT_ENABLED_OLD[^\r\n]*)}
+capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*EDIT_ENABLED_NEW[^\r\n]*)}
+capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect {
   -re {TUI_MODEL_OK} {}
   timeout { puts stderr "assistant response did not render"; exit 1 }
   eof { puts stderr "Praxis exited before assistant response"; exit 1 }
 }
+expect -re {([^\r\n]*runtimeEnabledSentinel)}
+capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {([^\r\n]*enabled-runtime-string")}
+capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {Try.*review this project}
+set phase "enabled runtime diff"
+send "/diff"
+after 100
+send "\r"
+expect -re {Uncommitted changes.*git diff HEAD}
+send "\r"
+expect -re {([^\r\n]*-DIFF_ENABLED_BEFORE)}
+capture $env(TUI_ENABLED_DIFF_CAPTURE) "$expect_out(0,string)"
+expect -re {([^\r\n]*\+DIFF_ENABLED_AFTER)}
+capture $env(TUI_ENABLED_DIFF_CAPTURE) "$expect_out(0,string)"
+send "\033"
+after 100
+send "\033"
+expect -re {Try.*review this project}
+after 300
+puts "ANSI_ENABLED_END"
 # Ink may include the restored empty composer in the same repaint that emitted
 # the response. Continuing with /cd below proves the composer is interactive
 # without depending on which fragment expect consumes from that repaint.
@@ -1467,6 +1961,8 @@ exit 0
         TUI_CONFIG_ROOT: configRoot,
         TUI_EDITOR: editor,
         TUI_EDITOR_OUTPUT: editorOutput,
+        TUI_ENABLED_DIFF_CAPTURE: enabledDiffCapture,
+        TUI_ENABLED_RUNTIME_CAPTURE: enabledRuntimeCapture,
         TUI_FOLDER_OUTPUT: folderOutput,
         TUI_MOVED_ROOT: movedCwd,
         TUI_NODE: process.execPath,
@@ -1495,6 +1991,48 @@ exit 0
     )
   }
   assert.match(result.stdout, /TUI_FAKE_OK/u)
+  const lightRemovedAnsi = ['\u001B[48;5;224m', '\u001B[48;2;255;215;215m']
+  const lightAddedAnsi = ['\u001B[48;5;194m', '\u001B[48;2;215;255;215m']
+  const enabledRuntimeOutput = await readFile(enabledRuntimeCapture, 'utf8')
+  const enabledDiffOutput = await readFile(enabledDiffCapture, 'utf8')
+  assertAnsiStyled(
+    enabledRuntimeOutput,
+    'function',
+    ['\u001B[38;5;125m', '\u001B[38;2;175;0;95m'],
+    'enabled transcript keyword',
+  )
+  assertAnsiStyled(
+    enabledRuntimeOutput,
+    'runtimeEnabledSentinel',
+    ['\u001B[38;5;97m', '\u001B[38;2;135;95;175m'],
+    'enabled transcript identifier',
+  )
+  assertAnsiStyled(
+    enabledRuntimeOutput,
+    '"enabled-runtime-string"',
+    ['\u001B[38;5;24m', '\u001B[38;2;0;95;135m'],
+    'enabled transcript string',
+  )
+  for (const [payload, ansiCodes, label] of [
+    ['-ENABLED_TOOL_OLD', lightRemovedAnsi, 'enabled tool-result removal'],
+    ['+ENABLED_TOOL_NEW', lightAddedAnsi, 'enabled tool-result addition'],
+    ['-EDIT_ENABLED_OLD', lightRemovedAnsi, 'enabled Edit removal'],
+    ['+EDIT_ENABLED_NEW', lightAddedAnsi, 'enabled Edit addition'],
+  ]) {
+    assertAnsiStyled(enabledRuntimeOutput, payload, ansiCodes, label)
+  }
+  assertAnsiStyled(
+    enabledDiffOutput,
+    '-DIFF_ENABLED_BEFORE',
+    lightRemovedAnsi,
+    'enabled /diff removal',
+  )
+  assertAnsiStyled(
+    enabledDiffOutput,
+    '+DIFF_ENABLED_AFTER',
+    lightAddedAnsi,
+    'enabled /diff addition',
+  )
   assert.equal(
     await readFile(join(configRoot, 'CLAUDE.md'), 'utf8'),
     '# Shared user memory\n@imported.md\n',
@@ -1528,48 +2066,6 @@ exit 0
   assert.deepEqual(
     hookNavigationContract(result.stdout),
     observedClaudeContract,
-  )
-  assertAnsiColor(
-    result.stdout,
-    '\u001B[48;5;52m',
-    '\u001B[48;2;95;0;0m',
-    'dark removed diff',
-  )
-  assertAnsiColor(
-    result.stdout,
-    '\u001B[48;5;22m',
-    '\u001B[48;2;0;95;0m',
-    'dark added diff',
-  )
-  assertAnsiColor(
-    result.stdout,
-    '\u001B[48;5;224m',
-    '\u001B[48;2;255;215;215m',
-    'light removed diff',
-  )
-  assertAnsiColor(
-    result.stdout,
-    '\u001B[48;5;194m',
-    '\u001B[48;2;215;255;215m',
-    'light added diff',
-  )
-  assertAnsiColor(
-    result.stdout,
-    '\u001B[38;5;125mfunction',
-    '\u001B[38;2;175;0;95mfunction',
-    'light code keyword',
-  )
-  assertAnsiColor(
-    result.stdout,
-    '\u001B[38;5;97mgreet',
-    '\u001B[38;2;135;95;175mgreet',
-    'light code identifier',
-  )
-  assertAnsiColor(
-    result.stdout,
-    '\u001B[38;5;24m"hello"',
-    '\u001B[38;2;0;95;135m"hello"',
-    'light code string',
   )
   const projectRoot = join(configRoot, 'projects')
   const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
@@ -1634,48 +2130,283 @@ exit 0
   assert.match(clipboard, /❯ \/export/u)
   const resumeProbe = String.raw`
 set timeout 15
+proc capture {path data} {
+  set handle [open $path a]
+  fconfigure $handle -translation binary
+  puts -nonewline $handle $data
+  close $handle
+}
+proc assert_style {row label expected first second} {
+  set styled [expr {[string first $first $row] >= 0 || [string first $second $row] >= 0}]
+  if {$styled != $expected} {
+    puts stderr "$label ANSI style mismatch"
+    exit 1
+  }
+}
 log_user 1
 spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --resume $env(TUI_SESSION_ID) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
+puts "ANSI_RESTART_ENABLED_BEGIN"
+expect -re {\r\n(     [^\r\n]*-ENABLED_TOOL_OLD[^\r\n]*)}
+capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*\+ENABLED_TOOL_NEW[^\r\n]*)}
+capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*EDIT_ENABLED_OLD[^\r\n]*)}
+capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*EDIT_ENABLED_NEW[^\r\n]*)}
+capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect {
-  -re {!.*pwd} {}
-  timeout { puts stderr "resumed shell history did not render"; exit 1 }
-  eof { puts stderr "Praxis exited before resumed shell history"; exit 1 }
+  -re {([^\r\n]*runtimeEnabledSentinel)} {}
+  timeout { puts stderr "enabled transcript history did not render after restart"; exit 1 }
+  eof { puts stderr "Praxis exited before enabled restart history"; exit 1 }
 }
-expect -re {⎿.*work}
-expect -re {❯.*reply briefly}
-expect -re {TUI_FAKE_OK}
-send "/theme"
-after 100
-send "\r"
-expect -re {3\. Light mode.*✔}
-expect -re {Syntax theme: GitHub.*ctrl\+t to disable}
-send "\033"
-after 100
+capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {([^\r\n]*enabled-runtime-string")}
+capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {Try.*review this project}
 send "/diff"
 after 100
 send "\r"
 expect -re {Uncommitted changes.*git diff HEAD}
 send "\r"
-expect -re {-before}
-expect -re {\+after}
+expect -re {([^\r\n]*-DIFF_RESTART_ENABLED_BEFORE)} {
+  assert_style $expect_out(0,string) "restarted enabled /diff removal" 1 $env(TUI_LIGHT_REMOVED_256) $env(TUI_LIGHT_REMOVED_RGB)
+}
+expect -re {([^\r\n]*\+DIFF_RESTART_ENABLED_AFTER)} {
+  assert_style $expect_out(0,string) "restarted enabled /diff addition" 1 $env(TUI_LIGHT_ADDED_256) $env(TUI_LIGHT_ADDED_RGB)
+}
 send "\033"
 after 100
 send "\033"
-after 100
-send "/compact"
-expect -re {Clear conversation history.*summary}
+expect -re {Try.*review this project}
+after 300
+puts "ANSI_RESTART_ENABLED_END"
+send "/theme"
+expect -re {Change the theme}
 send "\r"
-expect -re {Compacted.*ctrl\+o.*full summary}
-send "\017"
-expect -re {TUI_FAKE_OK}
+expect -re {3\. Light mode.*✔}
+expect -re {Syntax theme: GitHub.*ctrl\+t to disable}
+send "\024"
+expect -re {Syntax highlighting disabled.*ctrl\+t to enable}
+send "\033"
+expect -re {Try.*review this project}
+exec $env(TUI_NODE) -e {require('node:fs').writeFileSync(process.argv[1], process.argv[2])} $env(TUI_DIFF_FILE) "DIFF_DISABLED_BEFORE\n"
+exec git -C $env(TUI_MOVED_ROOT) add fixture.txt
+exec git -C $env(TUI_MOVED_ROOT) -c user.name=PraxisFixture -c user.email=fixture@example.com commit -qm disabled-baseline
+exec $env(TUI_NODE) -e {require('node:fs').writeFileSync(process.argv[1], process.argv[2])} $env(TUI_DIFF_FILE) "DIFF_DISABLED_AFTER\n"
+puts "ANSI_DISABLED_BEGIN"
+send "disabled surface probe"
+after 100
+send "\r"
+expect -re {\r\n(     [^\r\n]*-DISABLED_TOOL_OLD[^\r\n]*)}
+capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*\+DISABLED_TOOL_NEW[^\r\n]*)}
+capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*EDIT_DISABLED_OLD[^\r\n]*)}
+capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*EDIT_DISABLED_NEW[^\r\n]*)}
+capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {TUI_DISABLED_OK}
+expect -re {([^\r\n]*runtimeDisabledSentinel)}
+capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {([^\r\n]*disabled-runtime-string")}
+capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {Try.*review this project}
+send "/diff"
+after 100
+send "\r"
+expect -re {Uncommitted changes.*git diff HEAD}
+send "\r"
+expect -re {([^\r\n]*-DIFF_DISABLED_BEFORE)}
+capture $env(TUI_DISABLED_DIFF_CAPTURE) "$expect_out(0,string)"
+expect -re {([^\r\n]*\+DIFF_DISABLED_AFTER)}
+capture $env(TUI_DISABLED_DIFF_CAPTURE) "$expect_out(0,string)"
+send "\033"
+after 100
+send "\033"
+expect -re {Try.*review this project}
+after 300
+puts "ANSI_DISABLED_END"
 send "\003"
 expect -re {Press Ctrl-C again to exit}
 send "\003"
 expect eof
 exit 0
 `
-  const resumeResult = await execFileAsync('expect', ['-c', resumeProbe], {
+  await execFileAsync('expect', ['-c', resumeProbe], {
+    cwd: movedCwd,
+    env: {
+      ...tuiProbeEnvironment,
+      CI: 'true',
+      PATH: `${binRoot}${delimiter}${dirname(pinnedClaude)}${delimiter}${process.env.PATH ?? ''}`,
+      TUI_CLI: cli,
+      TUI_CONFIG_ROOT: configRoot,
+      TUI_DIFF_FILE: join(movedCwd, 'fixture.txt'),
+      TUI_DISABLED_DIFF_CAPTURE: disabledDiffCapture,
+      TUI_DISABLED_RUNTIME_CAPTURE: disabledRuntimeCapture,
+      TUI_MOVED_ROOT: movedCwd,
+      TUI_NODE: process.execPath,
+      TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+      TUI_RESTART_ENABLED_RUNTIME_CAPTURE: restartedEnabledRuntimeCapture,
+      TUI_LIGHT_ADDED_256: lightAddedAnsi[0],
+      TUI_LIGHT_ADDED_RGB: lightAddedAnsi[1],
+      TUI_LIGHT_REMOVED_256: lightRemovedAnsi[0],
+      TUI_LIGHT_REMOVED_RGB: lightRemovedAnsi[1],
+      TUI_SESSION_ID: basename(branchTranscript.file, '.jsonl'),
+    },
+    timeout: 120_000,
+  })
+  const restartedEnabledRuntimeOutput = await readFile(
+    restartedEnabledRuntimeCapture,
+    'utf8',
+  )
+  const disabledRuntimeOutput = await readFile(disabledRuntimeCapture, 'utf8')
+  const disabledDiffOutput = await readFile(disabledDiffCapture, 'utf8')
+  assertAnsiStyled(
+    restartedEnabledRuntimeOutput,
+    'runtimeEnabledSentinel',
+    ['\u001B[38;5;97m', '\u001B[38;2;135;95;175m'],
+    'restarted enabled transcript',
+  )
+  for (const [payload, ansiCodes, label] of [
+    [
+      '-ENABLED_TOOL_OLD',
+      lightRemovedAnsi,
+      'restarted enabled tool-result removal',
+    ],
+    [
+      '+ENABLED_TOOL_NEW',
+      lightAddedAnsi,
+      'restarted enabled tool-result addition',
+    ],
+    ['-EDIT_ENABLED_OLD', lightRemovedAnsi, 'restarted enabled Edit removal'],
+    ['+EDIT_ENABLED_NEW', lightAddedAnsi, 'restarted enabled Edit addition'],
+  ]) {
+    assertAnsiStyled(restartedEnabledRuntimeOutput, payload, ansiCodes, label)
+  }
+  for (const [payload, ansiCodes, label] of [
+    [
+      'runtimeDisabledSentinel',
+      ['\u001B[38;5;97m', '\u001B[38;2;135;95;175m'],
+      'disabled transcript identifier',
+    ],
+    [
+      '"disabled-runtime-string"',
+      ['\u001B[38;5;24m', '\u001B[38;2;0;95;135m'],
+      'disabled transcript string',
+    ],
+  ]) {
+    assert.ok(
+      disabledRuntimeOutput.includes(payload),
+      `${label} payload did not render`,
+    )
+    assertNotAnsiStyled(disabledRuntimeOutput, payload, ansiCodes, label)
+  }
+  for (const [payload, ansiCodes, label] of [
+    ['-DISABLED_TOOL_OLD', lightRemovedAnsi, 'disabled tool-result removal'],
+    ['+DISABLED_TOOL_NEW', lightAddedAnsi, 'disabled tool-result addition'],
+    ['-EDIT_DISABLED_OLD', lightRemovedAnsi, 'disabled Edit removal'],
+    ['+EDIT_DISABLED_NEW', lightAddedAnsi, 'disabled Edit addition'],
+  ]) {
+    assert.ok(
+      disabledRuntimeOutput.includes(payload.replace(/^[+-]/u, '')),
+      `${label} payload did not render`,
+    )
+    assertNotAnsiStyled(disabledRuntimeOutput, payload, ansiCodes, label)
+  }
+  for (const [payload, ansiCodes, label] of [
+    ['-DIFF_DISABLED_BEFORE', lightRemovedAnsi, 'disabled /diff removal'],
+    ['+DIFF_DISABLED_AFTER', lightAddedAnsi, 'disabled /diff addition'],
+  ]) {
+    assert.ok(
+      disabledDiffOutput.includes(payload.replace(/^[+-]/u, '')),
+      `${label} payload did not render`,
+    )
+    assertNotAnsiStyled(disabledDiffOutput, payload, ansiCodes, label)
+  }
+  const movedDiffFixture = join(movedCwd, 'fixture.txt')
+  await writeFile(movedDiffFixture, 'DIFF_RESTART_DISABLED_BEFORE\n')
+  await execFileAsync('git', ['add', 'fixture.txt'], { cwd: movedCwd })
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.name=Praxis Fixture',
+      '-c',
+      'user.email=fixture@example.com',
+      'commit',
+      '-qm',
+      'disabled restart baseline',
+    ],
+    { cwd: movedCwd },
+  )
+  await writeFile(movedDiffFixture, 'DIFF_RESTART_DISABLED_AFTER\n')
+  const disabledRestartProbe = String.raw`
+set timeout 15
+proc capture {path data} {
+  set handle [open $path a]
+  fconfigure $handle -translation binary
+  puts -nonewline $handle $data
+  close $handle
+}
+log_user 1
+proc assert_style {row label expected first second} {
+  set styled [expr {[string first $first $row] >= 0 || [string first $second $row] >= 0}]
+  if {$styled != $expected} {
+    puts stderr "$label ANSI style mismatch"
+    exit 1
+  }
+}
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --resume $env(TUI_SESSION_ID) --dangerously-skip-permissions
+stty rows 32 columns 100 < $spawn_out(slave,name)
+puts "ANSI_RESTART_DISABLED_BEGIN"
+expect -re {\r\n(     [^\r\n]*-DISABLED_TOOL_OLD[^\r\n]*)}
+capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*\+DISABLED_TOOL_NEW[^\r\n]*)}
+capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*EDIT_DISABLED_OLD[^\r\n]*)}
+capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {\r\n(     [^\r\n]*EDIT_DISABLED_NEW[^\r\n]*)}
+capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect {
+  -re {([^\r\n]*runtimeDisabledSentinel)} {}
+  timeout { puts stderr "disabled transcript history did not render after restart"; exit 1 }
+  eof { puts stderr "Praxis exited before disabled restart history"; exit 1 }
+}
+capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {([^\r\n]*disabled-runtime-string")}
+capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
+expect -re {Try.*review this project}
+send "/diff"
+after 100
+send "\r"
+expect -re {Uncommitted changes.*git diff HEAD}
+send "\r"
+expect -re {([^\r\n]*-DIFF_RESTART_DISABLED_BEFORE)} {
+  assert_style $expect_out(0,string) "restarted disabled /diff removal" 0 $env(TUI_LIGHT_REMOVED_256) $env(TUI_LIGHT_REMOVED_RGB)
+}
+expect -re {([^\r\n]*\+DIFF_RESTART_DISABLED_AFTER)} {
+  assert_style $expect_out(0,string) "restarted disabled /diff addition" 0 $env(TUI_LIGHT_ADDED_256) $env(TUI_LIGHT_ADDED_RGB)
+}
+send "\033"
+after 100
+send "\033"
+expect -re {Try.*review this project}
+after 300
+puts "ANSI_RESTART_DISABLED_END"
+send "/compact"
+expect -re {Clear conversation history.*summary}
+send "\r"
+expect -re {Compacted.*ctrl\+o.*full summary}
+send "\017"
+expect -re {TUI_DISABLED_OK}
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+  await execFileAsync('expect', ['-c', disabledRestartProbe], {
     cwd: movedCwd,
     env: {
       ...tuiProbeEnvironment,
@@ -1686,40 +2417,67 @@ exit 0
       TUI_NODE: process.execPath,
       TUI_PLUGIN_ROOT: pluginRoot,
       TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+      TUI_RESTART_DISABLED_RUNTIME_CAPTURE: restartedDisabledRuntimeCapture,
+      TUI_LIGHT_ADDED_256: lightAddedAnsi[0],
+      TUI_LIGHT_ADDED_RGB: lightAddedAnsi[1],
+      TUI_LIGHT_REMOVED_256: lightRemovedAnsi[0],
+      TUI_LIGHT_REMOVED_RGB: lightRemovedAnsi[1],
       TUI_SESSION_ID: basename(branchTranscript.file, '.jsonl'),
     },
     timeout: 120_000,
   })
-  assertAnsiColor(
-    resumeResult.stdout,
-    '\u001B[38;5;125mfunction',
-    '\u001B[38;2;175;0;95mfunction',
-    'restarted light code keyword',
+  const restartedDisabledRuntimeOutput = await readFile(
+    restartedDisabledRuntimeCapture,
+    'utf8',
   )
-  assertAnsiColor(
-    resumeResult.stdout,
-    '\u001B[38;5;97mgreet',
-    '\u001B[38;2;135;95;175mgreet',
-    'restarted light code identifier',
-  )
-  assertAnsiColor(
-    resumeResult.stdout,
-    '\u001B[38;5;24m"hello"',
-    '\u001B[38;2;0;95;135m"hello"',
-    'restarted light code string',
-  )
-  assertAnsiColor(
-    resumeResult.stdout,
-    '\u001B[48;5;224m',
-    '\u001B[48;2;255;215;215m',
-    'restarted light removed diff',
-  )
-  assertAnsiColor(
-    resumeResult.stdout,
-    '\u001B[48;5;194m',
-    '\u001B[48;2;215;255;215m',
-    'restarted light added diff',
-  )
+  for (const [payload, ansiCodes, label] of [
+    [
+      'runtimeDisabledSentinel',
+      ['\u001B[38;5;97m', '\u001B[38;2;135;95;175m'],
+      'restarted disabled transcript identifier',
+    ],
+    [
+      '"disabled-runtime-string"',
+      ['\u001B[38;5;24m', '\u001B[38;2;0;95;135m'],
+      'restarted disabled transcript string',
+    ],
+  ]) {
+    assert.ok(
+      restartedDisabledRuntimeOutput.includes(payload),
+      `${label} payload did not render`,
+    )
+    assertNotAnsiStyled(
+      restartedDisabledRuntimeOutput,
+      payload,
+      ansiCodes,
+      label,
+    )
+  }
+  for (const [payload, ansiCodes, label] of [
+    [
+      '-DISABLED_TOOL_OLD',
+      lightRemovedAnsi,
+      'restarted disabled tool-result removal',
+    ],
+    [
+      '+DISABLED_TOOL_NEW',
+      lightAddedAnsi,
+      'restarted disabled tool-result addition',
+    ],
+    ['-EDIT_DISABLED_OLD', lightRemovedAnsi, 'restarted disabled Edit removal'],
+    ['+EDIT_DISABLED_NEW', lightAddedAnsi, 'restarted disabled Edit addition'],
+  ]) {
+    assert.ok(
+      restartedDisabledRuntimeOutput.includes(payload.replace(/^[+-]/u, '')),
+      `${label} payload did not render`,
+    )
+    assertNotAnsiStyled(
+      restartedDisabledRuntimeOutput,
+      payload,
+      ansiCodes,
+      label,
+    )
+  }
   assert.match(
     await readFile(join(configRoot, 'keybindings.json'), 'utf8'),
     /"ctrl\+v": "chat:imagePaste"/u,
@@ -1759,7 +2517,7 @@ exit 0
   assert.equal(
     JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8'))
       .syntaxHighlightingDisabled,
-    false,
+    true,
   )
   console.log('TUI compatibility verification passed')
 } finally {

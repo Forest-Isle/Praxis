@@ -105,6 +105,11 @@ function permissionLabel(mode?: string): string {
   }
 }
 
+function selectionPrefix(selected: boolean, screenReader: boolean): string {
+  if (selected) return screenReader ? 'Selected: ' : '❯ '
+  return screenReader ? '' : '  '
+}
+
 export function WelcomePanel({
   display,
   width,
@@ -297,6 +302,7 @@ function SyntaxCodeLine({
                 : /^[A-Za-z_$][\w$]*$/u.test(token)
                   ? 'identifier'
                   : 'text'
+          if (kind === 'text') return token
           return (
             <Text key={index} {...tuiSyntaxStyle(palette, kind)}>
               {token}
@@ -308,15 +314,31 @@ function SyntaxCodeLine({
   )
 }
 
-function ToolResultText({ text }: { text: string }) {
+function ToolResultText({
+  text,
+  prefix = '',
+}: {
+  text: string
+  prefix?: string
+}) {
   const palette = useTuiPalette()
   return (
     <Box flexDirection="column">
       {text.split('\n').map((line, index) =>
         line.startsWith('+') && !line.startsWith('+++') ? (
-          <SyntaxCodeLine key={index} text={line} change="added" />
+          <SyntaxCodeLine
+            key={index}
+            prefix={index === 0 ? prefix : prefix ? '   ' : ''}
+            text={line}
+            change="added"
+          />
         ) : line.startsWith('-') && !line.startsWith('---') ? (
-          <SyntaxCodeLine key={index} text={line} change="removed" />
+          <SyntaxCodeLine
+            key={index}
+            prefix={index === 0 ? prefix : prefix ? '   ' : ''}
+            text={line}
+            change="removed"
+          />
         ) : (
           <Text
             key={index}
@@ -324,6 +346,7 @@ function ToolResultText({ text }: { text: string }) {
               ? { color: palette.info }
               : { dimColor: true })}
           >
+            {index === 0 ? prefix : prefix ? '   ' : ''}
             {line || ' '}
           </Text>
         ),
@@ -377,6 +400,11 @@ function ToolTranscriptEntry({
   }
   const visible = detailed ? resultLines : resultLines.slice(0, 3)
   const hidden = resultLines.length - visible.length
+  const resultIsDiff =
+    resultLines.some(
+      (line) => line.startsWith('+') && !line.startsWith('+++'),
+    ) &&
+    resultLines.some((line) => line.startsWith('-') && !line.startsWith('---'))
   const errorText =
     displayResult.length > 500
       ? `${displayResult.slice(0, 497)}...`
@@ -420,6 +448,8 @@ function ToolTranscriptEntry({
                 />
               ))}
             </>
+          ) : resultIsDiff ? (
+            <ToolResultText text={visible.join('\n')} prefix="⎿ " />
           ) : (
             <>
               {visible.map((line, index) => (
@@ -900,15 +930,20 @@ export function DiffDashboard({
         <Text>
           {'  '}
           {snapshots.map((item, index) => (
-            <Text key={item.label} inverse={index === sourceIndex}>
-              {' '}
+            <Text
+              key={item.label}
+              inverse={!screenReader && index === sourceIndex}
+            >
+              {screenReader && index === sourceIndex ? 'Current source: ' : ' '}
               {item.label}{' '}
             </Text>
           ))}
         </Text>
         <Text> </Text>
         <Text bold> {selected.path}</Text>
-        <Text dimColor> {'─'.repeat(Math.max(1, panelWidth - 4))}</Text>
+        {!screenReader ? (
+          <Text dimColor> {'─'.repeat(Math.max(1, panelWidth - 4))}</Text>
+        ) : null}
         {lines.map((patchLine, index) =>
           patchLine.startsWith('+') && !patchLine.startsWith('+++') ? (
             <SyntaxCodeLine
@@ -943,8 +978,11 @@ export function DiffDashboard({
       <Text>
         {'  '}
         {snapshots.map((item, index) => (
-          <Text key={item.label} inverse={index === sourceIndex}>
-            {' '}
+          <Text
+            key={item.label}
+            inverse={!screenReader && index === sourceIndex}
+          >
+            {screenReader && index === sourceIndex ? 'Current source: ' : ' '}
             {item.label}{' '}
           </Text>
         ))}
@@ -961,10 +999,18 @@ export function DiffDashboard({
         <Text dimColor> No uncommitted changes.</Text>
       ) : (
         snapshot.files.map((file, index) => (
-          <Text key={file.path} inverse={index === selectedIndex}>
-            {index === selectedIndex ? '❯ ' : '  '}
-            {file.path} <Text color={palette.success}>+{file.additions}</Text>{' '}
-            <Text color={palette.error}>-{file.deletions}</Text>
+          <Text
+            key={file.path}
+            inverse={!screenReader && index === selectedIndex}
+          >
+            {selectionPrefix(index === selectedIndex, screenReader)}
+            {file.path}{' '}
+            <Text {...(!screenReader ? { color: palette.success } : {})}>
+              +{file.additions}
+            </Text>{' '}
+            <Text {...(!screenReader ? { color: palette.error } : {})}>
+              -{file.deletions}
+            </Text>
           </Text>
         ))
       )}
@@ -1036,8 +1082,8 @@ export function PermissionDashboard({
       <Text>
         {'  '}
         {tabs.map((tab, index) => (
-          <Text key={tab} inverse={index === tabIndex}>
-            {' '}
+          <Text key={tab} inverse={!screenReader && index === tabIndex}>
+            {screenReader && index === tabIndex ? 'Current tab: ' : ' '}
             {tab}{' '}
           </Text>
         ))}
@@ -1051,7 +1097,8 @@ export function PermissionDashboard({
           marginY={1}
         >
           <Text {...(query ? {} : { dimColor: true })}>
-            ⌕ {query || 'Search…'}
+            {screenReader ? 'Search: ' : '⌕ '}
+            {query || 'Search…'}
           </Text>
         </Box>
       ) : (
@@ -1059,8 +1106,11 @@ export function PermissionDashboard({
       )}
       {tabIndex >= 1 && tabIndex <= 3 ? (
         ['Add a new rule…', ...rows].map((row, index) => (
-          <Text key={`${index}-${row}`} inverse={index === selectedIndex}>
-            {index === selectedIndex ? '❯ ' : '  '}
+          <Text
+            key={`${index}-${row}`}
+            inverse={!screenReader && index === selectedIndex}
+          >
+            {selectionPrefix(index === selectedIndex, screenReader)}
             {index + 1}. {row}
           </Text>
         ))
@@ -1073,20 +1123,33 @@ export function PermissionDashboard({
             </Text>
           ) : null}
           {additionalWorkspaces.map((directory, index) => (
-            <Text key={directory.path} inverse={selectedIndex === index}>
-              {selectedIndex === index ? '❯ ' : '  '}
+            <Text
+              key={directory.path}
+              inverse={!screenReader && selectedIndex === index}
+            >
+              {selectionPrefix(selectedIndex === index, screenReader)}
               {index + 1}. {directory.path}
             </Text>
           ))}
-          <Text inverse={selectedIndex === additionalWorkspaces.length}>
-            {selectedIndex === additionalWorkspaces.length ? '❯ ' : '  '}
+          <Text
+            inverse={
+              !screenReader && selectedIndex === additionalWorkspaces.length
+            }
+          >
+            {selectionPrefix(
+              selectedIndex === additionalWorkspaces.length,
+              screenReader,
+            )}
             {additionalWorkspaces.length + 1}. Add directory…
           </Text>
         </>
       ) : rows.length > 0 ? (
         rows.map((row, index) => (
-          <Text key={`${index}-${row}`} inverse={index === selectedIndex}>
-            {index === selectedIndex ? '❯ ' : '  '}
+          <Text
+            key={`${index}-${row}`}
+            inverse={!screenReader && index === selectedIndex}
+          >
+            {selectionPrefix(index === selectedIndex, screenReader)}
             {index + 1}. {row}
           </Text>
         ))
@@ -1136,13 +1199,21 @@ export function ThemePicker({
       <Text> </Text>
       <Text> Choose the text style that looks best with your terminal</Text>
       <Text> </Text>
-      {THEME_OPTIONS.map((option, index) => (
-        <Text key={option.theme} inverse={index === selectedIndex}>
-          {index === selectedIndex ? ' ❯ ' : '   '}
-          {index + 1}. {option.label}
-          {option.theme === currentTheme ? ' ✔' : ''}
-        </Text>
-      ))}
+      {THEME_OPTIONS.map((option, index) =>
+        screenReader ? (
+          <Text key={option.theme}>
+            {index + 1}. {option.label}
+            {option.theme === currentTheme ? ' (current)' : ''}
+            {index === selectedIndex ? ' (focused)' : ''}
+          </Text>
+        ) : (
+          <Text key={option.theme} inverse={index === selectedIndex}>
+            {index === selectedIndex ? ' ❯ ' : '   '}
+            {index + 1}. {option.label}
+            {option.theme === currentTheme ? ' ✔' : ''}
+          </Text>
+        ),
+      )}
       <Text> </Text>
       {screenReader ? (
         <Text>Selected: {THEME_OPTIONS[selectedIndex]?.label}</Text>
@@ -1378,11 +1449,12 @@ export function MemoryDashboard({
   width: number
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   const panelWidth = Math.min(100, width)
   return (
     <Box flexDirection="column" width={panelWidth}>
       {!screenReader ? (
-        <Text color="cyan">{'─'.repeat(panelWidth)}</Text>
+        <Text color={palette.accent}>{'─'.repeat(panelWidth)}</Text>
       ) : null}
       <Text bold> Memory</Text>
       <Text> </Text>
@@ -2097,6 +2169,7 @@ export function SelectionMenu({
     ),
   )
   const visible = options.slice(start, start + maxVisible)
+  const current = options.find((option) => option.selected)
   return (
     <Box
       borderStyle={screenReader ? undefined : 'round'}
@@ -2108,6 +2181,7 @@ export function SelectionMenu({
     >
       <Text bold>{title}</Text>
       {description ? <Text dimColor>{description}</Text> : null}
+      {screenReader && current ? <Text>Current: {current.label}</Text> : null}
       {visible.map((option, visibleIndex) => {
         const index = start + visibleIndex
         const selected = index === selectedIndex
@@ -2117,10 +2191,14 @@ export function SelectionMenu({
             flexDirection="column"
             marginTop={1}
           >
-            <Text {...(selected ? { color: palette.brand, bold: true } : {})}>
-              {selected ? '❯ ' : '  '}
+            <Text
+              {...(!screenReader && selected
+                ? { color: palette.brand, bold: true }
+                : {})}
+            >
+              {selectionPrefix(selected, screenReader)}
               {index + 1}. {option.label}
-              {option.selected ? ' ✔' : ''}
+              {!screenReader && option.selected ? ' ✔' : ''}
             </Text>
             {option.description ? (
               <Text dimColor> {option.description}</Text>

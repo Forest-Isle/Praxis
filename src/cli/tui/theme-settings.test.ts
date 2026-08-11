@@ -49,8 +49,49 @@ it('atomically saves a theme while preserving unrelated shared settings', async 
     JSON.parse(await readFile(join(root, 'settings.json'), 'utf8')),
   ).toEqual({
     theme: 'light-daltonized',
-    syntaxHighlightingDisabled: false,
     permissions: { allow: ['Read'] },
+  })
+})
+
+it('preserves a future syntax setting when only the theme changes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-tui-theme-'))
+  roots.push(root)
+  const path = join(root, 'settings.json')
+  await writeFile(
+    path,
+    '{"theme":"dark","syntaxHighlightingDisabled":"future-value"}\n',
+  )
+
+  await expect(saveTuiThemeSettings({ theme: 'light' }, root)).resolves.toEqual(
+    {
+      theme: 'light',
+      syntaxHighlightingDisabled: false,
+    },
+  )
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+    theme: 'light',
+    syntaxHighlightingDisabled: 'future-value',
+  })
+})
+
+it('preserves a future theme when only the syntax setting changes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-tui-theme-'))
+  roots.push(root)
+  const path = join(root, 'settings.json')
+  await writeFile(
+    path,
+    '{"theme":"future-custom","syntaxHighlightingDisabled":false}\n',
+  )
+
+  await expect(
+    saveTuiThemeSettings({ syntaxHighlightingDisabled: true }, root),
+  ).resolves.toEqual({
+    theme: 'auto',
+    syntaxHighlightingDisabled: true,
+  })
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+    theme: 'future-custom',
+    syntaxHighlightingDisabled: true,
   })
 })
 
@@ -72,6 +113,40 @@ it('merges concurrent per-key updates from shared clients', async () => {
   await expect(loadTuiThemeSettings(root)).resolves.toEqual({
     theme: 'light',
     syntaxHighlightingDisabled: true,
+  })
+})
+
+it('reconciles a non-cooperating writer after pre-commit validation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-tui-theme-'))
+  roots.push(root)
+  const path = join(root, 'settings.json')
+  await writeFile(
+    path,
+    '{"theme":"dark","syntaxHighlightingDisabled":false,"existing":true}\n',
+  )
+  let injected = false
+
+  await expect(
+    saveTuiThemeSettings({ theme: 'light' }, root, {
+      async afterValidation() {
+        if (injected) return
+        injected = true
+        await writeFile(
+          path,
+          '{"theme":"dark","syntaxHighlightingDisabled":true,"existing":true,"external":"preserved"}\n',
+        )
+      },
+    }),
+  ).resolves.toEqual({
+    theme: 'light',
+    syntaxHighlightingDisabled: true,
+  })
+
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+    theme: 'light',
+    syntaxHighlightingDisabled: true,
+    existing: true,
+    external: 'preserved',
   })
 })
 

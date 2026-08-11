@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -24,31 +25,38 @@ function configRootPath(): string {
 
 async function readSettings(path: string): Promise<{
   value: Record<string, unknown>
-  source?: string
+  fingerprint: string
 }> {
   try {
     const source = await readFile(path, 'utf8')
     const value: unknown = JSON.parse(source)
     if (!isRecord(value))
       throw new Error(`JSON root must be an object: ${path}`)
-    return { value, source }
+    return { value, fingerprint: fingerprint(source) }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { value: {} }
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      return { value: {}, fingerprint: fingerprint() }
     if (error instanceof SyntaxError)
       throw new Error(`Invalid JSON: ${path}`, { cause: error })
     throw error
   }
 }
 
-async function sourceUnchanged(
+function fingerprint(source?: string): string {
+  return source === undefined
+    ? 'missing'
+    : createHash('sha256').update(source).digest('hex')
+}
+
+async function fingerprintUnchanged(
   path: string,
-  source: string | undefined,
+  expected: string,
 ): Promise<boolean> {
   try {
-    return (await readFile(path, 'utf8')) === source
+    return fingerprint(await readFile(path, 'utf8')) === expected
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT')
-      return source === undefined
+      return expected === fingerprint()
     throw error
   }
 }
@@ -75,6 +83,7 @@ export async function loadTuiThemeSettings(
 export async function saveTuiThemeSettings(
   update: Partial<TuiThemeSettings>,
   configRoot = configRootPath(),
+  hooks: { afterValidation?: () => Promise<void> } = {},
 ): Promise<TuiThemeSettings> {
   const path = join(configRoot, 'settings.json')
   const lease = new ExclusiveFileLease(
@@ -89,20 +98,24 @@ export async function saveTuiThemeSettings(
   if (!handle) throw new Error(`Settings write lock timed out: ${path}`)
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const { value, source } = await readSettings(path)
+      const { value, fingerprint: expectedFingerprint } =
+        await readSettings(path)
       const next = { ...settingsFromRecord(value), ...update }
+      const persisted = { ...value }
+      if (update.theme !== undefined) persisted.theme = update.theme
+      if (update.syntaxHighlightingDisabled !== undefined)
+        persisted.syntaxHighlightingDisabled = update.syntaxHighlightingDisabled
       const committed = await writeFileAtomically(
         path,
-        `${JSON.stringify(
-          {
-            ...value,
-            theme: next.theme,
-            syntaxHighlightingDisabled: next.syntaxHighlightingDisabled,
+        `${JSON.stringify(persisted, null, 2)}\n`,
+        {
+          beforeCommit: async () => {
+            if (!(await fingerprintUnchanged(path, expectedFingerprint)))
+              return false
+            await hooks.afterValidation?.()
+            return fingerprintUnchanged(path, expectedFingerprint)
           },
-          null,
-          2,
-        )}\n`,
-        { beforeCommit: () => sourceUnchanged(path, source) },
+        },
       )
       if (committed) return next
     }
