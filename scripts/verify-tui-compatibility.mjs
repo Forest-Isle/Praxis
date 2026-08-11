@@ -18,6 +18,7 @@ import {
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, sep } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 
 import { resolveClaudeProjectMemoryDirectory } from '../dist/compatibility/claude/shared-resources.js'
@@ -94,6 +95,12 @@ function assertAnsiColor(output, ansi256, rgb, label) {
     `${label} ANSI color was not rendered`,
   )
 }
+
+function shellQuote(value) {
+  if (value.includes('\0')) throw new Error('Shell path must not contain NUL')
+  return `'${value.replaceAll("'", `'"'"'`)}'`
+}
+
 const packageJson = JSON.parse(
   await readFile(join(process.cwd(), 'package.json'), 'utf8'),
 )
@@ -359,7 +366,7 @@ try {
       } catch {
         throw new Error(`Claude 2.1.208 ${session} exited during ${stage}`)
       }
-      await new Promise((resolve) => setTimeout(resolve, 100))
+      await delay(100)
     }
     throw new Error(`Claude 2.1.208 ${session} timed out during ${stage}`)
   }
@@ -427,7 +434,7 @@ try {
         '-O',
         '-t',
         session,
-        `cat > ${capturePath}`,
+        `cat > ${shellQuote(capturePath)}`,
       ])
       await waitForRealClaudeScreen(
         session,
@@ -456,7 +463,7 @@ try {
         /Choose the text style that looks best with your terminal/u,
         'theme preview',
       )
-      await new Promise((resolve) => setTimeout(resolve, 250))
+      await delay(250)
     } finally {
       await execFileAsync(
         'tmux',
