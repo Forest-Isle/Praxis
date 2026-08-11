@@ -48,6 +48,7 @@ import {
   DialogFrame,
   ExternalEditorWait,
   HelpMenu,
+  HookDashboard,
   ListDashboard,
   MemoryDashboard,
   MentionPicker,
@@ -81,6 +82,7 @@ import {
   type TuiPermissionRule,
 } from './tui/permission-settings.js'
 import type { ClaudeResourceScope } from '../compatibility/claude/shared-resources.js'
+import type { TuiHookConfiguration } from './tui/hook-settings.js'
 import {
   filterTuiSlashCommands,
   mergeTuiSlashCommands,
@@ -207,6 +209,7 @@ interface InteractiveSessionCommands {
     signal?: AbortSignal,
   ): Promise<string | null>
   workflows?(): readonly Record<string, unknown>[]
+  hookConfiguration?(): Promise<TuiHookConfiguration>
   slashCommands?(): readonly TuiSlashCommand[]
   agentDefinitions?(): readonly TuiAgentEntry[]
   runtimeInfo?(): CliRuntimeInfo
@@ -225,6 +228,7 @@ export interface InteractiveServiceFactory {
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
+    hooksOnly?: boolean
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
     approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
     onElicitation?: (
@@ -468,6 +472,14 @@ type InteractiveMenu =
       entries: TuiMemoryFiles['entries']
       selectedIndex: number
       openedIndex: number | null
+    }
+  | {
+      kind: 'hooks'
+      configuration: TuiHookConfiguration
+      depth: 'events' | 'matchers' | 'hooks' | 'detail'
+      eventIndex: number
+      matcherIndex: number
+      hookIndex: number
     }
   | {
       kind: 'list'
@@ -3738,6 +3750,108 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'hooks') {
+        const event = activeMenu.configuration.events[activeMenu.eventIndex]
+        const matcher = event?.matchers[activeMenu.matcherIndex]
+        const length =
+          activeMenu.depth === 'events'
+            ? activeMenu.configuration.events.length
+            : activeMenu.depth === 'matchers'
+              ? (event?.matchers.length ?? 0)
+              : activeMenu.depth === 'hooks'
+                ? (matcher?.hooks.length ?? 0)
+                : 0
+        if (key.escape || value === '\u001B') {
+          updateMenu(
+            activeMenu.depth === 'detail'
+              ? { ...activeMenu, depth: 'hooks' }
+              : activeMenu.depth === 'hooks'
+                ? { ...activeMenu, depth: 'matchers', hookIndex: 0 }
+                : activeMenu.depth === 'matchers'
+                  ? {
+                      ...activeMenu,
+                      depth: 'events',
+                      matcherIndex: 0,
+                      hookIndex: 0,
+                    }
+                  : null,
+          )
+          return
+        }
+        const numericIndex = /^[1-9]$/u.test(value) ? Number(value) - 1 : null
+        if (numericIndex !== null) {
+          if (numericIndex >= length) return
+          if (activeMenu.depth === 'events') {
+            updateMenu({
+              ...activeMenu,
+              eventIndex: numericIndex,
+              matcherIndex: 0,
+              hookIndex: 0,
+            })
+          } else if (activeMenu.depth === 'matchers') {
+            updateMenu({
+              ...activeMenu,
+              matcherIndex: numericIndex,
+              hookIndex: 0,
+            })
+          } else if (activeMenu.depth === 'hooks') {
+            updateMenu({ ...activeMenu, hookIndex: numericIndex })
+          }
+          return
+        }
+        if (key.upArrow || key.downArrow) {
+          if (length === 0) return
+          const delta = key.upArrow ? -1 : 1
+          if (activeMenu.depth === 'events') {
+            updateMenu({
+              ...activeMenu,
+              eventIndex: Math.max(
+                0,
+                Math.min(length - 1, activeMenu.eventIndex + delta),
+              ),
+              matcherIndex: 0,
+              hookIndex: 0,
+            })
+          } else if (activeMenu.depth === 'matchers') {
+            updateMenu({
+              ...activeMenu,
+              matcherIndex: Math.max(
+                0,
+                Math.min(length - 1, activeMenu.matcherIndex + delta),
+              ),
+              hookIndex: 0,
+            })
+          } else if (activeMenu.depth === 'hooks') {
+            updateMenu({
+              ...activeMenu,
+              hookIndex: Math.max(
+                0,
+                Math.min(length - 1, activeMenu.hookIndex + delta),
+              ),
+            })
+          }
+          return
+        }
+        if (key.return) {
+          if (activeMenu.depth === 'events') {
+            updateMenu({
+              ...activeMenu,
+              depth: 'matchers',
+              matcherIndex: 0,
+              hookIndex: 0,
+            })
+          } else if (activeMenu.depth === 'matchers' && matcher) {
+            updateMenu({ ...activeMenu, depth: 'hooks', hookIndex: 0 })
+          } else if (
+            activeMenu.depth === 'hooks' &&
+            matcher?.hooks[activeMenu.hookIndex]
+          ) {
+            updateMenu({ ...activeMenu, depth: 'detail' })
+          }
+        }
+        return
+      }
+
       if (activeMenu.kind === 'list') {
         if (key.escape || value === '\u001B') {
           updateMenu(null)
@@ -4223,6 +4337,51 @@ export function InteractiveApp({
             warn(error)
           } finally {
             setBusy(false)
+          }
+        })()
+        onTurnChange?.(loading)
+        void loading.finally(() => onTurnChange?.(null))
+      } else if (prompt === '/hooks') {
+        const loading = (async () => {
+          setBusy(true)
+          setStatus('loading hooks')
+          let localService: InteractiveSessionCommands | undefined
+          try {
+            const preferences = runtimePreferencesRef.current
+            localService = await factory.createService({
+              eventSink: handleEvent,
+              requireProvider: false,
+              hooksOnly: true,
+              ...(preferences.model === undefined
+                ? {}
+                : { model: preferences.model }),
+              effort: preferences.effort,
+              permissionMode: preferences.permissionMode,
+              additionalDirectories: preferences.additionalDirectories,
+              cwd: runtimeCwdRef.current,
+              ...(signal ? { signal } : {}),
+            })
+            if (!localService.hookConfiguration)
+              throw new Error('Hook configuration is unavailable.')
+            const configuration = await localService.hookConfiguration()
+            updateMenu({
+              kind: 'hooks',
+              configuration,
+              depth: 'events',
+              eventIndex: 0,
+              matcherIndex: 0,
+              hookIndex: 0,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            try {
+              await localService?.close?.()
+            } catch (error) {
+              warn(error)
+            }
+            setBusy(false)
+            setStatus('ready')
           }
         })()
         onTurnChange?.(loading)
@@ -4760,6 +4919,16 @@ export function InteractiveApp({
                 selectedIndex={menu.selectedIndex}
                 openedIndex={menu.openedIndex}
                 loading={menu.loading}
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'hooks' ? (
+              <HookDashboard
+                configuration={menu.configuration}
+                depth={menu.depth}
+                eventIndex={menu.eventIndex}
+                matcherIndex={menu.matcherIndex}
+                hookIndex={menu.hookIndex}
                 width={width}
                 screenReader={axScreenReader}
               />

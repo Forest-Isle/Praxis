@@ -20,7 +20,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
   rather than requiring users to remember the available slash commands;
 - applicable local commands include direct `/add-dir`, response `/copy [N]`,
   native `/branch` and `/rename`, full-conversation `/export`, `/config`,
-  `/usage`, `/mcp`, `/skill`, provider-backed `/compact`, native `/rewind`,
+  `/usage`, `/mcp`, `/skill`, read-only shared `/hooks`, provider-backed
+  `/compact`, native `/rewind`,
   runtime `/cd`, transcript-free `/btw` side questions, persistent
   `/background` terminal handoff, and live plugin/skill reload entries;
 - permission mode, shortcut hint, and model effort share the footer row;
@@ -83,6 +84,7 @@ status-line plugins are not native parity requirements.
 | Cwd           | local result plus relocated session      | service, interaction, and installed PTY gates   |
 | Side question | local history panel and Agent handoff    | black-box, service, Ink, and JSONL fixtures     |
 | Background    | blocked job handoff and terminal restore | black-box, manager, Ink, and PTY gate           |
+| Hooks         | read-only event/matcher/hook browser     | live Claude, projection, Ink, and PTY gates     |
 | Accessibility | decoration-free semantic text            | screen-reader fixture                           |
 
 ## Architecture
@@ -155,6 +157,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   turn reloads instructions without adding shared transcript fields.
 - `ListDashboard`: shared presentation for `.claude` skills and local
   background task/workflow state.
+- `HookDashboard`: read-only 2.1.208 event catalog with bounded event, matcher,
+  and individual-hook views projected from fresh shared settings.
 - `BtwPanel`: session-local side-question history with bounded answer scrolling,
   clipboard copy, history pruning, cancellation, and native background-Agent
   handoff.
@@ -181,6 +185,14 @@ is passed from the CLI composition root and never written to shared JSONL.
   `/config` and `/usage` open their matching status tabs; `/mcp` lists current
   server status; `/skill` aliases the shared skill list; `/reload-skills` and
   `/reload-plugins` rebuild the active extension-backed service in place.
+- `/hooks` opens the observed read-only event catalog. Arrow keys or 1-based
+  numeric selection choose an event, scoped matcher, and configured command,
+  prompt, agent, or HTTP hook; Enter drills through those layers into hook
+  details, and Esc returns one level at a time. Counts, matcher scope,
+  status-message labels, and source labels come from active
+  user/project/local/plugin settings. Each open uses a fresh local projection
+  for the current cwd and needs no provider key or model. The surface never
+  rewrites shared settings.
 - `/rename [name]` appends Claude-native title records; without a name it asks
   the active provider for a short kebab-case title. `/branch` forks the active
   native transcript, applies the observed ` (Branch)` title, switches the live
@@ -328,11 +340,12 @@ is passed from the CLI composition root and never written to shared JSONL.
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, `Ctrl+T` task access, exact permission rule
-  deletion and Workspace add/remove surfaces, and `/memory` discovery,
-  loading/final hierarchy, imported-file `$EDITOR` lifecycle, auto-memory
-  folder-launch sentinel, next-turn provider reload, and recursive shared-tree
-  path/type/content no-write snapshot around cancellation with exact runtime
-  transcript/lock exclusion and sibling-JSONL mutation detection,
+  deletion and Workspace add/remove surfaces, providerless `/hooks`
+  scope coverage plus installed event/matcher/detail navigation, and `/memory`
+  discovery, loading/final hierarchy, imported-file `$EDITOR` lifecycle,
+  auto-memory folder-launch sentinel, next-turn provider reload, and recursive
+  shared-tree path/type/content no-write snapshot around cancellation with exact
+  runtime transcript/lock exclusion and sibling-JSONL mutation detection,
   `Ctrl+G` terminal suspension/edit/redraw, `/keybindings` shared template/editor
   creation, installed-package `Ctrl+V` text paste, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus
@@ -363,7 +376,7 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the remaining applicable built-in command catalog
-(`/hooks` and presentation controls), exact denied-history behavior,
+(presentation controls), exact denied-history behavior,
 and remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

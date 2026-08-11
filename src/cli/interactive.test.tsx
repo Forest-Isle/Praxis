@@ -10,6 +10,7 @@ import {
   type InteractiveServiceFactory,
   runInteractive,
 } from './interactive.js'
+import { projectTuiHooks } from './tui/hook-settings.js'
 
 afterEach(() => cleanup())
 
@@ -414,6 +415,280 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(app.lastFrame()).toContain('Did not add a working directory.')
+  })
+
+  it('navigates the read-only hooks event, matcher, and hook menus', async () => {
+    const settings = {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash|Write',
+            hooks: [
+              {
+                type: 'command',
+                command: 'echo check',
+                statusMessage: 'Checking tool',
+              },
+              { type: 'prompt', prompt: 'Is this safe?' },
+              { type: 'agent', prompt: 'Review this call' },
+            ],
+          },
+          {
+            hooks: [{ type: 'http', url: 'https://example.test/hook' }],
+          },
+        ],
+      },
+    }
+    const original = JSON.stringify(settings)
+    const creations: Array<{
+      requireProvider: boolean
+      hooksOnly?: boolean
+      cwd?: string
+    }> = []
+    let closes = 0
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push({
+          requireProvider: options.requireProvider,
+          ...(options.hooksOnly === undefined
+            ? {}
+            : { hooksOnly: options.hooksOnly }),
+          ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        })
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async hookConfiguration() {
+            return projectTuiHooks([
+              {
+                path: '/shared/.claude/settings.json',
+                scope: 'user',
+                value: settings,
+              },
+            ])
+          },
+          async close() {
+            closes += 1
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+      />,
+    )
+
+    app.stdin.write('/hooks')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('4 hooks configured')
+    expect(app.lastFrame()).toContain('PreToolUse (4)')
+    expect(app.lastFrame()).toContain('This menu is read-only')
+
+    app.stdin.write('0')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 1. PreToolUse (4)')
+    app.stdin.write('1')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 1. PreToolUse (4)')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('PreToolUse - Matchers')
+    expect(app.lastFrame()).toContain('[User] (all) 1 hook')
+    expect(app.lastFrame()).toContain('[User] Bash|Write 3 hooks')
+
+    app.stdin.write('9')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 1. [User] (all) 1 hook')
+    app.stdin.write('2')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 2. [User] Bash|Write 3 hooks')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('PreToolUse - Matcher: Bash|Write')
+    expect(app.lastFrame()).toContain('[command] Checking tool')
+    expect(app.lastFrame()).toContain('[prompt] Is this safe?')
+    expect(app.lastFrame()).toContain('[agent] Review this call')
+    expect(app.lastFrame()).toContain('User Settings')
+
+    app.stdin.write('9')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 1. [command] Checking tool')
+    app.stdin.write('3')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 3. [agent] Review this call')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Hook details')
+    expect(app.lastFrame()).toContain('Type: agent')
+    expect(app.lastFrame()).toContain('Review this call')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('PreToolUse - Matcher: Bash|Write')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('PreToolUse - Matchers')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Hooks')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).not.toContain('This menu is read-only')
+    expect(JSON.stringify(settings)).toBe(original)
+    expect(creations).toEqual([
+      {
+        requireProvider: false,
+        hooksOnly: true,
+        cwd: '/fixture/workspace',
+      },
+    ])
+    expect(closes).toBe(1)
+  })
+
+  it('reloads provider-free hook projections after cwd and plugin changes', async () => {
+    const creations: Array<{
+      requireProvider: boolean
+      hooksOnly?: boolean
+      cwd?: string
+    }> = []
+    let hookGeneration = 0
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push({
+          requireProvider: options.requireProvider,
+          ...(options.hooksOnly === undefined
+            ? {}
+            : { hooksOnly: options.hooksOnly }),
+          ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        })
+        if (!options.requireProvider) {
+          hookGeneration += 1
+          const count = hookGeneration
+          return {
+            async run() {
+              throw new Error('unused')
+            },
+            async resume() {
+              throw new Error('unused')
+            },
+            async fork() {
+              throw new Error('unused')
+            },
+            async sessions() {
+              return []
+            },
+            async hookConfiguration() {
+              return projectTuiHooks([
+                {
+                  path: `/fixture/hooks-${count}.json`,
+                  scope: 'project',
+                  value: {
+                    hooks: {
+                      PreToolUse: [
+                        {
+                          hooks: Array.from({ length: count }, (_, index) => ({
+                            type: 'command',
+                            command: `generation-${count}-${index}`,
+                          })),
+                        },
+                      ],
+                    },
+                  },
+                },
+              ])
+            },
+          }
+        }
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async changeCwd() {
+            return '/fixture/next'
+          },
+          async close() {},
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/fixture/initial' }}
+      />,
+    )
+
+    app.stdin.write('/hooks')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('1 hooks configured')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+
+    app.stdin.write('/cd next')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Moved to /fixture/next')
+    app.stdin.write('/hooks')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('2 hooks configured')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+
+    app.stdin.write('/reload-plugins')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Plugin changes activated')
+    app.stdin.write('/hooks')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('3 hooks configured')
+
+    expect(creations.filter((creation) => !creation.requireProvider)).toEqual([
+      {
+        requireProvider: false,
+        hooksOnly: true,
+        cwd: '/fixture/initial',
+      },
+      {
+        requireProvider: false,
+        hooksOnly: true,
+        cwd: '/fixture/next',
+      },
+      {
+        requireProvider: false,
+        hooksOnly: true,
+        cwd: '/fixture/next',
+      },
+    ])
   })
 
   it('copies the selected prior assistant response without a model turn', async () => {

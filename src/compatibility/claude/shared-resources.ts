@@ -21,6 +21,8 @@ export interface ClaudeJsonResource {
   scope: ClaudeResourceScope
   value: unknown
   plugin?: true
+  pluginName?: string
+  pluginSource?: string
   environment?: Readonly<Record<string, string>>
   sensitiveValues?: readonly string[]
 }

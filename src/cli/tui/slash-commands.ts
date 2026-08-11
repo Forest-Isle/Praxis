@@ -39,6 +39,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'hooks',
+    description: 'View hook configurations',
+    source: 'builtin',
+  },
+  {
     name: 'clear',
     description:
       'Start a new session with empty context; previous session stays on disk (resumable with /resume)',

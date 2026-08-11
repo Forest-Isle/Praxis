@@ -861,6 +861,7 @@ async function loadPlugin(
   configRoot?: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
   configId?: string,
+  readOnlyHooks = false,
 ): Promise<{
   record: ClaudePluginRecord
   resources: Omit<ClaudePluginResources, 'plugins'>
@@ -893,7 +894,7 @@ async function loadPlugin(
     )
     .filter((value) => value.length > 0)
   const pluginData = claudePluginDataPath(configRoot ?? canonical, source)
-  if (configRoot !== undefined) {
+  if (configRoot !== undefined && !readOnlyHooks) {
     await mkdir(pluginData, { recursive: true })
   }
   const pluginEnvironment = pluginOptionEnvironment(
@@ -902,6 +903,9 @@ async function loadPlugin(
     userConfig,
   )
   const pluginResourceMetadata = {
+    plugin: true as const,
+    pluginName: manifest.name,
+    pluginSource: source,
     environment: pluginEnvironment,
     ...(sensitiveValues.length === 0 ? {} : { sensitiveValues }),
   }
@@ -928,58 +932,64 @@ async function loadPlugin(
   const agentsRoots = pathList(manifest.agents, 'agents').map((path) =>
     safePluginPath(canonical, path),
   )
-  const [commandFiles, skillFiles, agentFiles, lsp] = await Promise.all([
-    componentFiles(canonical, commandPaths, 'commands', 'commands'),
-    skillsDirectoryLayout
-      ? skillsDirectoryFiles(canonical)
-      : componentFiles(canonical, manifest.skills, 'skills', 'skills'),
-    componentFiles(canonical, manifest.agents, 'agents', 'agents'),
-    loadLspServers(
-      canonical,
-      manifest,
-      source,
-      configRoot,
-      environment,
-      manifest.userConfig === undefined ? undefined : userConfig,
-      sensitiveValues,
-    ),
-  ])
-  const [commands, skills, agents] = await Promise.all([
-    loadTextResources(
-      commandFiles,
-      canonical,
-      commandsRoots,
-      manifest.name,
-      scope,
-      'commands',
-      pluginData,
-      userConfig,
-      manifest.userConfig,
-    ),
-    loadTextResources(
-      skillFiles,
-      canonical,
-      skillsRoots,
-      manifest.name,
-      scope,
-      'skills',
-      pluginData,
-      userConfig,
-      manifest.userConfig,
-    ),
-    loadTextResources(
-      agentFiles,
-      canonical,
-      agentsRoots,
-      manifest.name,
-      scope,
-      'agents',
-      pluginData,
-      userConfig,
-      manifest.userConfig,
-    ),
-  ])
-  if (commandDefinitions) {
+  const [commands, skills, agents, lsp] = readOnlyHooks
+    ? [[], [], [], []]
+    : await (async () => {
+        const [commandFiles, skillFiles, agentFiles, loadedLsp] =
+          await Promise.all([
+            componentFiles(canonical, commandPaths, 'commands', 'commands'),
+            skillsDirectoryLayout
+              ? skillsDirectoryFiles(canonical)
+              : componentFiles(canonical, manifest.skills, 'skills', 'skills'),
+            componentFiles(canonical, manifest.agents, 'agents', 'agents'),
+            loadLspServers(
+              canonical,
+              manifest,
+              source,
+              configRoot,
+              environment,
+              manifest.userConfig === undefined ? undefined : userConfig,
+              sensitiveValues,
+            ),
+          ])
+        const loadedText = await Promise.all([
+          loadTextResources(
+            commandFiles,
+            canonical,
+            commandsRoots,
+            manifest.name,
+            scope,
+            'commands',
+            pluginData,
+            userConfig,
+            manifest.userConfig,
+          ),
+          loadTextResources(
+            skillFiles,
+            canonical,
+            skillsRoots,
+            manifest.name,
+            scope,
+            'skills',
+            pluginData,
+            userConfig,
+            manifest.userConfig,
+          ),
+          loadTextResources(
+            agentFiles,
+            canonical,
+            agentsRoots,
+            manifest.name,
+            scope,
+            'agents',
+            pluginData,
+            userConfig,
+            manifest.userConfig,
+          ),
+        ])
+        return [...loadedText, loadedLsp] as const
+      })()
+  if (commandDefinitions && !readOnlyHooks) {
     for (const [commandName, definition] of Object.entries(
       commandDefinitions,
     )) {
@@ -1023,18 +1033,22 @@ async function loadPlugin(
     }
   }
   const settings: ClaudeJsonResource[] = []
+  const loadedHookPaths = new Set<string>()
   const normalizeHooks = (value: unknown): unknown =>
     isRecord(value) && 'hooks' in value ? value : { hooks: value }
   const addHooksFile = async (
     hooksPath: string,
     required = false,
   ): Promise<void> => {
+    if (loadedHookPaths.has(hooksPath)) return
     try {
+      const value = JSON.parse(await readFile(hooksPath, 'utf8'))
+      loadedHookPaths.add(hooksPath)
       settings.push({
         path: hooksPath,
         scope,
         value: expandRuntimeValue(
-          normalizeHooks(JSON.parse(await readFile(hooksPath, 'utf8'))),
+          normalizeHooks(value),
           canonical,
           pluginData,
           environment,
@@ -1086,6 +1100,24 @@ async function loadPlugin(
       }
     }
   }
+  if (readOnlyHooks) {
+    return {
+      record: {
+        name: manifest.name,
+        path: canonical,
+        source,
+        enabled,
+        ...(manifest.version === undefined
+          ? {}
+          : { version: manifest.version }),
+        ...(manifest.description === undefined
+          ? {}
+          : { description: manifest.description }),
+        errors: [],
+      },
+      resources: { commands, skills, agents, settings, mcp: [], lsp },
+    }
+  }
   const mcpPath = join(canonical, '.mcp.json')
   let mcpValue: unknown
   const mcpErrors: string[] = []
@@ -1102,7 +1134,6 @@ async function loadPlugin(
       mcp.push({
         path: mcpPath,
         scope,
-        plugin: true,
         value: expandPluginMcpResource(
           mcpValue,
           manifest.name,
@@ -1186,7 +1217,6 @@ async function loadPlugin(
           mcp.push({
             path: specPath,
             scope,
-            plugin: true,
             value: expandPluginMcpResource(
               value,
               manifest.name,
@@ -1206,7 +1236,6 @@ async function loadPlugin(
         mcp.push({
           path: join(canonical, '.claude-plugin', `plugin-mcp-${index}.json`),
           scope,
-          plugin: true,
           value: expandPluginMcpResource(
             { mcpServers: spec },
             manifest.name,
@@ -1303,6 +1332,7 @@ export async function loadClaudePlugins(options: {
   strictPluginDirectories?: boolean
   pluginUrls?: readonly string[]
   loadInstalled?: boolean
+  readOnlyHooks?: boolean
   environment?: Readonly<Record<string, string | undefined>>
 }): Promise<ClaudePluginResources> {
   const registry =
@@ -1396,6 +1426,7 @@ export async function loadClaudePlugins(options: {
             options.configRoot,
             options.environment ?? process.env,
             candidate.configId,
+            options.readOnlyHooks,
           )
         } catch (error) {
           if (

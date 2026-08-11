@@ -220,6 +220,9 @@ describe('Claude plugin runtime', () => {
     expect(resources.settings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          plugin: true,
+          pluginName: 'fixture',
+          pluginSource: 'inline',
           value: expect.objectContaining({ hooks: expect.any(Object) }),
         }),
       ]),
@@ -697,6 +700,49 @@ describe('Claude plugin runtime', () => {
         }),
       ]),
     )
+  })
+
+  it('loads only hook resources without creating plugin operational state', async () => {
+    const { root } = await pluginFixture()
+    const configRoot = join(root, 'read-only-config')
+
+    const resources = await loadClaudePlugins({
+      configRoot,
+      cwd: root,
+      pluginDirectories: [join(root, 'plugin')],
+      strictPluginDirectories: true,
+      readOnlyHooks: true,
+      environment: { RUNTIME_VALUE: 'runtime-value' },
+    })
+
+    expect(resources.settings).toHaveLength(2)
+    expect(resources.commands).toEqual([])
+    expect(resources.skills).toEqual([])
+    expect(resources.agents).toEqual([])
+    expect(resources.mcp).toEqual([])
+    expect(resources.lsp).toEqual([])
+    await expect(access(configRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('does not load the conventional hooks file twice when the manifest names it', async () => {
+    const { root } = await pluginFixture()
+    await writeFile(
+      join(root, 'plugin', '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'fixture',
+        hooks: './hooks/hooks.json',
+      }),
+    )
+
+    const resources = await loadClaudePlugins({
+      configRoot: join(root, 'empty-config'),
+      cwd: root,
+      pluginDirectories: [join(root, 'plugin')],
+      strictPluginDirectories: true,
+      readOnlyHooks: true,
+    })
+
+    expect(resources.settings).toHaveLength(1)
   })
 
   it('fails a configured plugin closed when an LSP user option is missing', async () => {

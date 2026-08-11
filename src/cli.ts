@@ -58,6 +58,10 @@ import type {
   InteractiveServiceFactory,
 } from './cli/interactive.js'
 import type { TuiSlashCommand } from './cli/tui/slash-commands.js'
+import {
+  projectTuiHooks,
+  type TuiHookConfiguration,
+} from './cli/tui/hook-settings.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
 import { createCliDebugSink } from './cli/debug.js'
 import {
@@ -977,6 +981,7 @@ interface SessionCommands {
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
   slashCommands?(): readonly TuiSlashCommand[]
+  hookConfiguration?(): Promise<TuiHookConfiguration>
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
   agentDefinitions?(): readonly { name: string; description: string }[]
@@ -1012,6 +1017,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
+    hooksOnly?: boolean
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
     approveTool?: (
       call: ModelToolCall,
@@ -1072,6 +1078,7 @@ const consoleIO: CliIO = {
 const createDefaultService: CliDependencies['createService'] = async ({
   eventSink,
   requireProvider,
+  hooksOnly = false,
   approveRecovery,
   approveTool,
   agent,
@@ -1152,7 +1159,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
     )
   }
-  if (apiKey && model) {
+  if (!hooksOnly && apiKey && model) {
     if (!providerEnvironment) {
       throw new Error('Provider environment is unavailable')
     }
@@ -1221,7 +1228,44 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       : {}),
   }
-  if (!provider && !exposeToolRegistry) return new ClaudeSessionService(options)
+  const hookConfiguration = async () => {
+    const [settings, pluginResources] = await Promise.all([
+      loadClaudeSettings({
+        configRoot,
+        cwd,
+        ...(cli.bare
+          ? { settingSources: [] }
+          : cli.settingSources === undefined
+            ? {}
+            : { settingSources: cli.settingSources }),
+      }),
+      loadClaudePlugins({
+        configRoot,
+        cwd,
+        pluginDirectories: cli.pluginDirectories,
+        pluginUrls: cli.pluginUrls,
+        strictPluginDirectories:
+          cli.pluginDirectories.length + cli.pluginUrls.length > 0,
+        loadInstalled: !cli.safeMode && !cli.bare,
+        readOnlyHooks: true,
+        environment: runtimeEnvironment,
+      }),
+    ])
+    return projectTuiHooks([
+      ...settings,
+      ...pluginResources.settings,
+      ...(cli.additionalSettings ? [cli.additionalSettings] : []),
+    ])
+  }
+  if (hooksOnly) {
+    const service = new ClaudeSessionService(options)
+    return Object.assign(service, { hookConfiguration })
+  }
+  if (!provider && !exposeToolRegistry) {
+    const service = new ClaudeSessionService(options)
+    if (!interactive) return service
+    return Object.assign(service, { hookConfiguration })
+  }
   const toolProvider: ModelProvider = provider ?? {
     model: 'praxis/provider',
     capabilities: {
@@ -1759,6 +1803,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
           description: definition.description,
           source: definition.kind,
         })),
+      hookConfiguration: async () => projectTuiHooks(settings),
       agentDefinitions: () => extensions.agentDefinitions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
@@ -2019,7 +2064,10 @@ const defaultDependencies: CliDependencies = {
             },
             interactive: true,
           }),
-        scheduledPrompts: true,
+        scheduledPrompts: Boolean(
+          process.env.PRAXIS_API_KEY &&
+          (interactiveControls.model ?? process.env.PRAXIS_MODEL),
+        ),
       },
       ...(signal ? { signal } : {}),
       ...(initialPrompt === undefined ? {} : { initialPrompt }),
