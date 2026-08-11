@@ -331,7 +331,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   deletion and Workspace add/remove surfaces, and `/memory` discovery,
   loading/final hierarchy, imported-file `$EDITOR` lifecycle, auto-memory
   folder-launch sentinel, next-turn provider reload, and recursive shared-tree
-  path/type/content no-write snapshot around cancellation,
+  path/type/content no-write snapshot around cancellation with exact runtime
+  transcript/lock exclusion and sibling-JSONL mutation detection,
   `Ctrl+G` terminal suspension/edit/redraw, `/keybindings` shared template/editor
   creation, installed-package `Ctrl+V` text paste, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus

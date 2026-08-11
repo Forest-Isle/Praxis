@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import {
   chmod,
   lstat,
@@ -14,8 +15,10 @@ import {
 } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { basename, delimiter, join, sep } from 'node:path'
+import { basename, delimiter, dirname, join, sep } from 'node:path'
 import { promisify } from 'node:util'
+
+import { resolveClaudeProjectMemoryDirectory } from '../dist/compatibility/claude/shared-resources.js'
 
 const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-tui-compat-'))
@@ -55,15 +58,6 @@ const expectedVersionPattern = packageJson.version.replace(
   '\\$&',
 )
 
-function includeSharedSnapshotPath(rootName, path) {
-  if (rootName !== 'config') return true
-  // Input history and session transcripts are runtime artifacts. Everything
-  // else, including auto-memory and every directory node, stays in scope.
-  if (path === 'history.jsonl') return false
-  if (/^projects\/[^/]+\/[^/]+\.jsonl(?:\.lock)?$/u.test(path)) return false
-  return true
-}
-
 async function snapshotSharedTrees(roots) {
   const snapshot = []
   const walk = async (rootName, directory, prefix = '') => {
@@ -78,9 +72,6 @@ async function snapshotSharedTrees(roots) {
     for (const entry of entries) {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name
       const absolute = join(directory, entry.name)
-      if (!includeSharedSnapshotPath(rootName, path)) {
-        continue
-      }
       if (entry.isDirectory()) {
         snapshot.push({ path: `${rootName}/${path}`, type: 'directory' })
         await walk(rootName, absolute, path)
@@ -219,8 +210,6 @@ printf 'edited first line\\nedited second line\\n\\n' > "$1"
       `import { lstat, readFile, readdir, readlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-${includeSharedSnapshotPath.toString()}
-
 ${snapshotSharedTrees.toString()}
 
 const snapshot = await snapshotSharedTrees({
@@ -264,10 +253,18 @@ await writeFile(process.argv[4], JSON.stringify(snapshot))
 
   const cancelConfigRoot = join(root, 'cancel-config')
   const cancelCwd = join(root, 'cancel-work')
+  const cancelSessionId = randomUUID()
   await Promise.all([
     mkdir(join(cancelConfigRoot, 'rules', 'nested'), { recursive: true }),
     mkdir(join(cancelCwd, '.claude', 'rules'), { recursive: true }),
   ])
+  const cancelMemoryDirectory = await resolveClaudeProjectMemoryDirectory({
+    configRoot: cancelConfigRoot,
+    cwd: cancelCwd,
+  })
+  const cancelProjectDirectory = dirname(cancelMemoryDirectory)
+  const cancelSentinel = join(cancelProjectDirectory, 'snapshot-sentinel.jsonl')
+  await mkdir(cancelProjectDirectory, { recursive: true })
   await Promise.all([
     writeFile(
       join(cancelConfigRoot, 'CLAUDE.md'),
@@ -288,7 +285,32 @@ await writeFile(process.argv[4], JSON.stringify(snapshot))
       join(cancelCwd, '.claude', 'rules', 'project.md'),
       '# Cancel nested project rule\n',
     ),
+    writeFile(cancelSentinel, '{"sentinel":"unchanged"}\n'),
   ])
+  const sentinelBefore = await snapshotSharedTrees({
+    config: cancelConfigRoot,
+    project: cancelCwd,
+  })
+  await writeFile(cancelSentinel, '{"sentinel":"mutated"}\n')
+  const sentinelMutated = await snapshotSharedTrees({
+    config: cancelConfigRoot,
+    project: cancelCwd,
+  })
+  const sentinelBeforeRecord = sentinelBefore.find(({ path }) =>
+    path.endsWith('/snapshot-sentinel.jsonl'),
+  )
+  const sentinelMutatedRecord = sentinelMutated.find(({ path }) =>
+    path.endsWith('/snapshot-sentinel.jsonl'),
+  )
+  assert.ok(sentinelBeforeRecord)
+  assert.ok(sentinelMutatedRecord)
+  const sentinelRecordPath = sentinelBeforeRecord.path
+  assert.notDeepEqual(
+    sentinelMutatedRecord,
+    sentinelBeforeRecord,
+    'shared-tree snapshot did not detect a sibling JSONL mutation',
+  )
+  await writeFile(cancelSentinel, '{"sentinel":"unchanged"}\n')
   const cancelBeforePath = join(root, 'cancel-before.json')
   const cancelAfterPath = join(root, 'cancel-after.json')
   const cancelProbe = String.raw`
@@ -299,7 +321,7 @@ expect_before timeout {
   puts stderr "TUI memory cancel timed out during $phase"
   exit 1
 }
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CANCEL_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CANCEL_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --session-id $env(TUI_CANCEL_SESSION_ID) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
 exec $env(TUI_NODE) $env(TUI_SNAPSHOT_HELPER) $env(TUI_CANCEL_CONFIG_ROOT) $env(TUI_CANCEL_CWD) $env(TUI_CANCEL_BEFORE)
@@ -330,6 +352,7 @@ exit 0
       TUI_CANCEL_BEFORE: cancelBeforePath,
       TUI_CANCEL_CONFIG_ROOT: cancelConfigRoot,
       TUI_CANCEL_CWD: cancelCwd,
+      TUI_CANCEL_SESSION_ID: cancelSessionId,
       TUI_CLI: cli,
       TUI_NODE: process.execPath,
       TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
@@ -342,9 +365,25 @@ exit 0
       JSON.parse(await readFile(path, 'utf8')),
     ),
   )
+  const cancelProjectPrefix = sentinelRecordPath.slice(
+    0,
+    -'snapshot-sentinel.jsonl'.length,
+  )
+  const sessionTranscriptPath = `${cancelProjectPrefix}${cancelSessionId}.jsonl`
+  const runtimeArtifacts = new Set([
+    'config/history.jsonl',
+    sessionTranscriptPath,
+    `${sessionTranscriptPath}.lock`,
+  ])
+  const sharedSnapshot = (snapshot) =>
+    snapshot.filter(({ path }) => !runtimeArtifacts.has(path))
+  assert.ok(
+    cancelAfter.some(({ path }) => path === sentinelRecordPath),
+    'sibling JSONL sentinel was not covered by the cancel snapshot',
+  )
   assert.deepEqual(
-    cancelAfter,
-    cancelBefore,
+    sharedSnapshot(cancelAfter),
+    sharedSnapshot(cancelBefore),
     'installed /memory cancel changed the recursive shared tree',
   )
 

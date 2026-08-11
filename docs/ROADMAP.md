@@ -974,6 +974,7 @@ interactive TTY parity remains partial.
 - [x] focused catalog/component/screen-reader/editor/folder interaction tests;
       installed PTY imported-file `$EDITOR` lifecycle, platform folder-launch
       sentinel, next-turn provider reload, and recursive path/type/content
-      no-write snapshot around cancel; pinned 2.1.208 import fixture and live
-      provider-request gate; existing 200-line `MEMORY.md` context and standard
-      Read/Write/Edit gates retained
+      no-write snapshot around cancel with exact runtime transcript/lock
+      exclusion and sibling-JSONL mutation sentinel; pinned 2.1.208 import
+      fixture and live provider-request gate; existing 200-line `MEMORY.md`
+      context and standard Read/Write/Edit gates retained
