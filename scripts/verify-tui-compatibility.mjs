@@ -62,7 +62,9 @@ const provider = createServer(async (request, response) => {
   }
   const content = latestText.includes('Reply with SIDE only.')
     ? 'SIDE'
-    : 'TUI_FAKE_OK'
+    : latestText.includes('reply briefly')
+      ? 'TUI_MODEL_OK'
+      : 'TUI_FAKE_OK'
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
     `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
@@ -344,7 +346,7 @@ after 100
 send "\r"
 expect -re {awaiting-model}
 expect {
-  -re {TUI_FAKE_OK} {}
+  -re {TUI_MODEL_OK} {}
   timeout { puts stderr "assistant response did not render"; exit 1 }
   eof { puts stderr "Praxis exited before assistant response"; exit 1 }
 }
