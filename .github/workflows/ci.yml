@@ -32,7 +32,15 @@ jobs:
         run: npm ci
       - name: Run quality gates
         run: npm run check
+      - name: Install pinned Claude baseline for TUI
+        run: npm install --prefix /tmp/praxis-claude-pin-21208 @anthropic-ai/claude-code@2.1.208
+      - name: Verify pinned Claude baseline for TUI
+        env:
+          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
+        run: test "$("$PRAXIS_CLAUDE_BINARY" --version | awk '{print $1}')" = "2.1.208"
       - name: Verify interactive TUI
+        env:
+          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
         run: npm run test:tui-compat
       - name: Audit production dependencies
         run: npm audit --omit=dev
