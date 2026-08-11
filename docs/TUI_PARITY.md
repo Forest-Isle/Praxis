@@ -343,15 +343,18 @@ is passed from the CLI composition root and never written to shared JSONL.
 ## Verification
 
 - focused Ink render fixtures at wide and narrow widths, including exact
-  built-in syntax/diff preview palettes and the decoration-free screen-reader
-  branch;
+  built-in syntax/diff preview palettes, persisted normal-render syntax state,
+  and explicit focused-selection announcements in the decoration-free
+  screen-reader branch;
 - interaction tests for prompts, selection, permission, questions, plan, MCP,
   streaming, tools, direct shell turns, cancellation, and screen-reader mode;
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, built-in `/theme` selection, `Ctrl+T` syntax
-  toggling, immediate profile application, cancellation, restart persistence,
-  and shared settings persistence, `Ctrl+T` task access, exact permission rule
+  toggling, immediate profile application to transcript code and diffs,
+  cancellation, restart persistence, and shared settings persistence; plus real
+  fixed Claude Code 2.1.208 `/theme` ANSI captures for every built-in profile,
+  `Ctrl+T` task access, exact permission rule
   deletion and Workspace add/remove surfaces, providerless `/hooks`
   scope coverage plus installed event/matcher/detail navigation, and `/memory`
   discovery, loading/final hierarchy, imported-file `$EDITOR` lifecycle,

@@ -2,6 +2,7 @@ import { cleanup, render } from 'ink-testing-library'
 import { Text } from 'ink'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { TuiThemeProvider } from './theme.js'
 import {
   CommandPalette,
   Composer,
@@ -119,6 +120,77 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('│ note')
     expect(frame).toContain('╭─ ts')
     expect(frame).toContain('│ const ok = true')
+  })
+
+  it('renders transcript code and diff surfaces under persisted syntax settings', () => {
+    const runtimeSurfaces = (
+      <>
+        <Transcript
+          screenReader={false}
+          activeText=""
+          items={[
+            {
+              kind: 'assistant',
+              text: '```ts\nfunction greet() { return "hello" }\n```',
+            },
+            {
+              kind: 'tool-result',
+              callId: 'diff',
+              text: '@@ fixture\n-function oldName() {}\n+function newName() {}',
+              isError: false,
+            },
+          ]}
+        />
+        <DiffDashboard
+          snapshots={[
+            {
+              label: 'Current',
+              snapshot: {
+                additions: 1,
+                deletions: 1,
+                files: [
+                  {
+                    path: 'fixture.ts',
+                    additions: 1,
+                    deletions: 1,
+                    patch:
+                      '@@ fixture\n-function oldName() {}\n+function newName() {}',
+                  },
+                ],
+              },
+            },
+          ]}
+          sourceIndex={0}
+          selectedIndex={0}
+          viewingFile
+          scrollOffset={0}
+          width={100}
+          screenReader={false}
+        />
+      </>
+    )
+    const enabled = render(
+      <TuiThemeProvider
+        settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+      >
+        {runtimeSurfaces}
+      </TuiThemeProvider>,
+    )
+    const enabledFrame = enabled.lastFrame() ?? ''
+    expect(enabledFrame).toContain('│ function greet() { return "hello" }')
+    expect(enabledFrame).toContain('-function oldName() {}')
+    expect(enabledFrame).toContain('+function newName() {}')
+
+    const disabled = render(
+      <TuiThemeProvider
+        settings={{ theme: 'dark', syntaxHighlightingDisabled: true }}
+      >
+        {runtimeSurfaces}
+      </TuiThemeProvider>,
+    )
+    expect(disabled.lastFrame()).toContain(
+      '│ function greet() { return "hello" }',
+    )
   })
 
   it('gives user, assistant, tool, result, and warning distinct shapes', () => {
@@ -431,6 +503,7 @@ describe('Claude-style TUI components', () => {
     )
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('7. Light mode (ANSI colors only) ✔')
+    expect(frame).toContain('Selected: Light mode (ANSI colors only)')
     expect(frame).toContain('Syntax highlighting disabled (ctrl+t to enable)')
     expect(frame).not.toContain('function greet')
     expect(frame).not.toContain('╌')

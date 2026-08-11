@@ -6,6 +6,7 @@ import {
   TUI_THEMES,
   TuiThemeProvider,
   tuiPalette,
+  tuiSyntaxStyle,
   useTuiPalette,
 } from './theme.js'
 
@@ -77,6 +78,16 @@ describe('TUI semantic theme palettes', () => {
     })
   })
 
+  it('disables every runtime syntax and diff decoration from persisted state', () => {
+    expect(tuiSyntaxStyle(tuiPalette('dark'), 'keyword', 'added')).toEqual({
+      color: '#5fd7ff',
+      backgroundColor: '#005f00',
+    })
+    expect(
+      tuiSyntaxStyle(tuiPalette('dark', true), 'keyword', 'added'),
+    ).toEqual({})
+  })
+
   it('resolves auto against the terminal background and provides palette context', () => {
     process.env.COLORFGBG = '15;0'
     expect(tuiPalette('auto').dark).toBe(true)
@@ -84,12 +95,20 @@ describe('TUI semantic theme palettes', () => {
     expect(tuiPalette('auto').dark).toBe(false)
 
     const app = render(
-      <TuiThemeProvider theme="light-daltonized">
+      <TuiThemeProvider
+        settings={{
+          theme: 'light-daltonized',
+          syntaxHighlightingDisabled: true,
+        }}
+      >
         <PaletteProbe />
       </TuiThemeProvider>,
     )
     expect(app.lastFrame()).toBe(
       'light-daltonized|#005f87|GitHub|#af005f|#d7ffff',
     )
+    expect(
+      tuiPalette('light-daltonized', true).syntaxHighlightingDisabled,
+    ).toBe(true)
   })
 })

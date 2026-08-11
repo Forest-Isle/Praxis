@@ -38,17 +38,40 @@ it('atomically saves a theme while preserving unrelated shared settings', async 
     '{"theme":"dark","permissions":{"allow":["Read"]}}\n',
   )
 
-  await saveTuiThemeSettings(
-    { theme: 'light-daltonized', syntaxHighlightingDisabled: true },
-    root,
-  )
+  await expect(
+    saveTuiThemeSettings({ theme: 'light-daltonized' }, root),
+  ).resolves.toEqual({
+    theme: 'light-daltonized',
+    syntaxHighlightingDisabled: false,
+  })
 
   expect(
     JSON.parse(await readFile(join(root, 'settings.json'), 'utf8')),
   ).toEqual({
     theme: 'light-daltonized',
-    syntaxHighlightingDisabled: true,
+    syntaxHighlightingDisabled: false,
     permissions: { allow: ['Read'] },
+  })
+})
+
+it('merges concurrent per-key updates from shared clients', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-tui-theme-'))
+  roots.push(root)
+  await writeFile(
+    join(root, 'settings.json'),
+    '{"theme":"dark","syntaxHighlightingDisabled":false}\n',
+  )
+
+  const [themeCommit, syntaxCommit] = await Promise.all([
+    saveTuiThemeSettings({ theme: 'light' }, root),
+    saveTuiThemeSettings({ syntaxHighlightingDisabled: true }, root),
+  ])
+
+  expect(themeCommit.theme).toBe('light')
+  expect(syntaxCommit.syntaxHighlightingDisabled).toBe(true)
+  await expect(loadTuiThemeSettings(root)).resolves.toEqual({
+    theme: 'light',
+    syntaxHighlightingDisabled: true,
   })
 })
 
@@ -58,11 +81,8 @@ it('rejects malformed shared settings instead of replacing them', async () => {
   const path = join(root, 'settings.json')
   await writeFile(path, '[]\n')
 
-  await expect(
-    saveTuiThemeSettings(
-      { theme: 'dark', syntaxHighlightingDisabled: false },
-      root,
-    ),
-  ).rejects.toThrow('JSON root must be an object')
+  await expect(saveTuiThemeSettings({ theme: 'dark' }, root)).rejects.toThrow(
+    'JSON root must be an object',
+  )
   await expect(readFile(path, 'utf8')).resolves.toBe('[]\n')
 })

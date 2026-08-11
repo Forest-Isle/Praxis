@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { constants } from 'node:fs'
 import {
   access,
   chmod,
@@ -58,6 +59,41 @@ const importedAfter = 'IMPORTED_TUI_CONTEXT_AFTER'
 const providerRequests = []
 let cli
 let port
+
+async function pinnedClaudeExecutable() {
+  const candidates = [
+    process.env.PRAXIS_CLAUDE_2_1_208,
+    '/tmp/praxis-claude-pin-21208/node_modules/.bin/claude',
+    ...(process.env.PATH ?? '')
+      .split(delimiter)
+      .filter(Boolean)
+      .map((directory) => join(directory, 'claude')),
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK)
+      const { stdout } = await execFileAsync(candidate, ['--version'], {
+        env: { ...process.env, DISABLE_AUTOUPDATER: '1' },
+        timeout: 15_000,
+      })
+      if (/^2\.1\.208\b/u.test(stdout.trim())) return candidate
+    } catch {
+      // Continue until the exact pinned executable is found.
+    }
+  }
+  throw new Error(
+    'Claude Code 2.1.208 is required; set PRAXIS_CLAUDE_2_1_208 to its executable',
+  )
+}
+
+const pinnedClaude = await pinnedClaudeExecutable()
+
+function assertAnsiColor(output, ansi256, rgb, label) {
+  assert.ok(
+    output.includes(ansi256) || output.includes(rgb),
+    `${label} ANSI color was not rendered`,
+  )
+}
 const packageJson = JSON.parse(
   await readFile(join(process.cwd(), 'package.json'), 'utf8'),
 )
@@ -226,10 +262,10 @@ const provider = createServer(async (request, response) => {
   const content = latestText.includes('Reply with SIDE only.')
     ? 'SIDE'
     : latestText.includes('reply briefly')
-      ? 'TUI_MODEL_OK'
+      ? 'TUI_MODEL_OK\n\n```ts\nfunction greet() { return "hello" }\n```'
       : latestText.includes('memory reload probe')
         ? 'MEMORY_RELOAD_OK'
-        : 'TUI_FAKE_OK'
+        : 'TUI_FAKE_OK\n\n```ts\nfunction greet() { return "hello" }\n```'
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
     `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
@@ -255,6 +291,188 @@ try {
     mkdir(join(movedCwd, '.claude'), { recursive: true }),
   ])
   const canonicalCwd = await realpath(cwd)
+
+  const claudeThemeAnsi = {
+    auto: [
+      '\u001B[38;5;81mfunction',
+      '\u001B[38;5;148mgreet',
+      '\u001B[48;5;52m',
+      '\u001B[48;5;22m',
+      '\u001B[48;5;28mClaude',
+    ],
+    dark: [
+      '\u001B[38;5;81mfunction',
+      '\u001B[38;5;148mgreet',
+      '\u001B[48;5;52m',
+      '\u001B[48;5;22m',
+      '\u001B[48;5;28mClaude',
+    ],
+    light: [
+      '\u001B[38;5;125mfunction',
+      '\u001B[38;5;97mgreet',
+      '\u001B[48;5;224m',
+      '\u001B[48;5;194m',
+      '\u001B[48;5;157mClaude',
+    ],
+    'dark-daltonized': [
+      '\u001B[38;5;81mfunction',
+      '\u001B[38;5;148mgreet',
+      '\u001B[48;5;52m',
+      '\u001B[48;5;17m',
+      '\u001B[48;5;24mClaude',
+    ],
+    'light-daltonized': [
+      '\u001B[38;5;125mfunction',
+      '\u001B[38;5;97mgreet',
+      '\u001B[48;5;224m',
+      '\u001B[48;5;195m',
+      '\u001B[48;5;153mClaude',
+    ],
+    'dark-ansi': [
+      '\u001B[96mfunction',
+      '\u001B[93mgreet',
+      '\u001B[37m',
+      '\u001B[92m',
+    ],
+    'light-ansi': [
+      '\u001B[96mfunction',
+      '\u001B[93mgreet',
+      '\u001B[30m',
+      '\u001B[92m',
+    ],
+  }
+  const realClaudeRoot = join(root, 'real-claude')
+  const realClaudeCwd = join(realClaudeRoot, 'work')
+  const realClaudeTmuxSocket = join(realClaudeRoot, 'tmux.sock')
+  await mkdir(realClaudeCwd, { recursive: true })
+  const canonicalRealClaudeCwd = await realpath(realClaudeCwd)
+  async function waitForRealClaudeScreen(session, pattern, stage) {
+    const deadline = Date.now() + 20_000
+    while (Date.now() < deadline) {
+      try {
+        const { stdout } = await execFileAsync(
+          'tmux',
+          ['-S', realClaudeTmuxSocket, 'capture-pane', '-p', '-t', session],
+          { maxBuffer: 1024 * 1024 },
+        )
+        if (pattern.test(stdout)) return
+      } catch {
+        throw new Error(`Claude 2.1.208 ${session} exited during ${stage}`)
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    throw new Error(`Claude 2.1.208 ${session} timed out during ${stage}`)
+  }
+  for (const [profile, expectedAnsi] of Object.entries(claudeThemeAnsi)) {
+    const profileConfig = join(realClaudeRoot, profile)
+    await mkdir(profileConfig, { recursive: true })
+    await writeFile(
+      join(profileConfig, '.claude.json'),
+      `${JSON.stringify({
+        hasCompletedOnboarding: true,
+        installMethod: 'global',
+        autoUpdates: false,
+        hasSeenTasksHint: true,
+        projects: {
+          [canonicalRealClaudeCwd]: {
+            allowedTools: [],
+            disabledMcpjsonServers: [],
+            enabledMcpjsonServers: [],
+            hasClaudeMdExternalIncludesApproved: false,
+            hasClaudeMdExternalIncludesWarningShown: false,
+            hasTrustDialogAccepted: true,
+            mcpContextUris: [],
+            mcpServers: {},
+            projectOnboardingSeenCount: 1,
+          },
+        },
+      })}\n`,
+    )
+    await writeFile(
+      join(profileConfig, 'settings.json'),
+      `${JSON.stringify({ theme: profile })}\n`,
+    )
+    const capturePath = join(profileConfig, 'capture.raw')
+    const session = `claude-${profile}`
+    await execFileAsync(
+      'tmux',
+      [
+        '-f',
+        '/dev/null',
+        '-S',
+        realClaudeTmuxSocket,
+        'new-session',
+        '-d',
+        '-s',
+        session,
+        '-x',
+        '100',
+        '-y',
+        '32',
+        '-c',
+        canonicalRealClaudeCwd,
+        '-e',
+        'DISABLE_AUTOUPDATER=1',
+        '-e',
+        `CLAUDE_CONFIG_DIR=${profileConfig}`,
+        pinnedClaude,
+      ],
+      { timeout: 15_000 },
+    )
+    try {
+      await execFileAsync('tmux', [
+        '-S',
+        realClaudeTmuxSocket,
+        'pipe-pane',
+        '-O',
+        '-t',
+        session,
+        `cat > ${capturePath}`,
+      ])
+      await waitForRealClaudeScreen(
+        session,
+        /Claude Code v2\.1\.208/u,
+        'startup',
+      )
+      await execFileAsync('tmux', [
+        '-S',
+        realClaudeTmuxSocket,
+        'send-keys',
+        '-t',
+        session,
+        '-l',
+        '/theme',
+      ])
+      await execFileAsync('tmux', [
+        '-S',
+        realClaudeTmuxSocket,
+        'send-keys',
+        '-t',
+        session,
+        'Enter',
+      ])
+      await waitForRealClaudeScreen(
+        session,
+        /Choose the text style that looks best with your terminal/u,
+        'theme preview',
+      )
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    } finally {
+      await execFileAsync(
+        'tmux',
+        ['-S', realClaudeTmuxSocket, 'kill-session', '-t', session],
+        { timeout: 5_000 },
+      ).catch(() => {})
+    }
+    const stdout = await readFile(capturePath, 'utf8')
+    for (const ansi of expectedAnsi) {
+      assert.ok(
+        stdout.includes(ansi),
+        `Claude 2.1.208 ${profile} preview missed ${JSON.stringify(ansi)}`,
+      )
+    }
+    console.log(`Claude 2.1.208 ${profile} ANSI profile passed`)
+  }
   await writeFile(
     join(configRoot, 'commands', 'review.md'),
     '---\ndescription: Review the shared fixture.\n---\nReview $ARGUMENTS\n',
@@ -428,24 +646,26 @@ try {
       `import { writeFile } from 'node:fs/promises'\nconst path = process.argv[2]\nawait writeFile(path, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '04-plugin', hooks: [{ type: 'http', url: 'https://fixture.test/plugin-reloaded' }] }] } }) + '\\n')\n`,
     ),
   ])
-  const diffFixture = join(cwd, 'fixture.txt')
-  await writeFile(diffFixture, 'before\n')
-  await execFileAsync('git', ['init', '-q'], { cwd })
-  await execFileAsync('git', ['add', 'fixture.txt'], { cwd })
-  await execFileAsync(
-    'git',
-    [
-      '-c',
-      'user.name=Praxis Fixture',
-      '-c',
-      'user.email=fixture@example.com',
-      'commit',
-      '-qm',
-      'fixture',
-    ],
-    { cwd },
-  )
-  await writeFile(diffFixture, 'after\n')
+  for (const workRoot of [cwd, movedCwd]) {
+    const diffFixture = join(workRoot, 'fixture.txt')
+    await writeFile(diffFixture, 'before\n')
+    await execFileAsync('git', ['init', '-q'], { cwd: workRoot })
+    await execFileAsync('git', ['add', 'fixture.txt'], { cwd: workRoot })
+    await execFileAsync(
+      'git',
+      [
+        '-c',
+        'user.name=Praxis Fixture',
+        '-c',
+        'user.email=fixture@example.com',
+        'commit',
+        '-qm',
+        'fixture',
+      ],
+      { cwd: workRoot },
+    )
+    await writeFile(diffFixture, 'after\n')
+  }
   await writeFile(
     editor,
     `#!/bin/sh
@@ -515,6 +735,8 @@ await writeFile(process.argv[4], JSON.stringify(snapshot))
     provider.listen(0, '127.0.0.1', resolve)
   })
   port = provider.address().port
+  const tuiProbeEnvironment = { ...process.env, FORCE_COLOR: '3' }
+  delete tuiProbeEnvironment.NO_COLOR
 
   const cancelConfigRoot = join(root, 'cancel-config')
   const cancelCwd = join(root, 'cancel-work')
@@ -906,6 +1128,18 @@ expect -re {Syntax theme: GitHub.*ctrl\+t to disable}
 send "\r"
 expect -re {Theme set to light}
 expect -re {bypass permissions on}
+set phase "light diff after theme selection"
+send "/diff"
+after 100
+send "\r"
+expect -re {Uncommitted changes.*git diff HEAD}
+send "\r"
+expect -re {-before}
+expect -re {\+after}
+send "\033"
+after 100
+send "\033"
+after 100
 set phase "context and status dialogs"
 send "/context"
 expect -re {Visualize current context usage}
@@ -980,7 +1214,7 @@ expect {
   timeout { puts stderr "shell result did not render"; exit 1 }
   eof { puts stderr "Praxis exited before shell result"; exit 1 }
 }
-expect -re {TUI_FAKE_OK}
+expect -re {⏺.*TUI_FAKE_OK}
 expect -re {Context.*3 tokens}
 expect -re {Try.*review this project}
 after 100
@@ -1084,7 +1318,7 @@ send "pwd"
 after 100
 send "\r"
 expect -re {⎿.*moved-work}
-expect -re {TUI_FAKE_OK}
+expect -re {⏺.*TUI_FAKE_OK}
 expect -re {Try.*review this project}
 after 300
 set phase "rename session"
@@ -1218,9 +1452,9 @@ exit 0
     result = await execFileAsync('expect', ['-c', probe], {
       cwd,
       env: {
-        ...process.env,
+        ...tuiProbeEnvironment,
         CI: 'true',
-        PATH: `${binRoot}${delimiter}${dirname(claude)}${delimiter}${process.env.PATH ?? ''}`,
+        PATH: `${binRoot}${delimiter}${dirname(pinnedClaude)}${delimiter}${process.env.PATH ?? ''}`,
         TUI_CLI: cli,
         TUI_CLIPBOARD_OUTPUT: clipboardOutput,
         TUI_CONFIG_ROOT: configRoot,
@@ -1287,6 +1521,48 @@ exit 0
   assert.deepEqual(
     hookNavigationContract(result.stdout),
     observedClaudeContract,
+  )
+  assertAnsiColor(
+    result.stdout,
+    '\u001B[48;5;52m',
+    '\u001B[48;2;95;0;0m',
+    'dark removed diff',
+  )
+  assertAnsiColor(
+    result.stdout,
+    '\u001B[48;5;22m',
+    '\u001B[48;2;0;95;0m',
+    'dark added diff',
+  )
+  assertAnsiColor(
+    result.stdout,
+    '\u001B[48;5;224m',
+    '\u001B[48;2;255;215;215m',
+    'light removed diff',
+  )
+  assertAnsiColor(
+    result.stdout,
+    '\u001B[48;5;194m',
+    '\u001B[48;2;215;255;215m',
+    'light added diff',
+  )
+  assertAnsiColor(
+    result.stdout,
+    '\u001B[38;5;125mfunction',
+    '\u001B[38;2;175;0;95mfunction',
+    'light code keyword',
+  )
+  assertAnsiColor(
+    result.stdout,
+    '\u001B[38;5;97mgreet',
+    '\u001B[38;2;135;95;175mgreet',
+    'light code identifier',
+  )
+  assertAnsiColor(
+    result.stdout,
+    '\u001B[38;5;24m"hello"',
+    '\u001B[38;2;0;95;135m"hello"',
+    'light code string',
   )
   const projectRoot = join(configRoot, 'projects')
   const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
@@ -1369,6 +1645,17 @@ expect -re {3\. Light mode.*✔}
 expect -re {Syntax theme: GitHub.*ctrl\+t to disable}
 send "\033"
 after 100
+send "/diff"
+after 100
+send "\r"
+expect -re {Uncommitted changes.*git diff HEAD}
+send "\r"
+expect -re {-before}
+expect -re {\+after}
+send "\033"
+after 100
+send "\033"
+after 100
 send "/compact"
 expect -re {Clear conversation history.*summary}
 send "\r"
@@ -1381,12 +1668,12 @@ send "\003"
 expect eof
 exit 0
 `
-  await execFileAsync('expect', ['-c', resumeProbe], {
+  const resumeResult = await execFileAsync('expect', ['-c', resumeProbe], {
     cwd: movedCwd,
     env: {
-      ...process.env,
+      ...tuiProbeEnvironment,
       CI: 'true',
-      PATH: `${binRoot}${delimiter}${dirname(claude)}${delimiter}${process.env.PATH ?? ''}`,
+      PATH: `${binRoot}${delimiter}${dirname(pinnedClaude)}${delimiter}${process.env.PATH ?? ''}`,
       TUI_CLI: cli,
       TUI_CONFIG_ROOT: configRoot,
       TUI_NODE: process.execPath,
@@ -1394,8 +1681,38 @@ exit 0
       TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
       TUI_SESSION_ID: basename(branchTranscript.file, '.jsonl'),
     },
-    timeout: 60_000,
+    timeout: 120_000,
   })
+  assertAnsiColor(
+    resumeResult.stdout,
+    '\u001B[38;5;125mfunction',
+    '\u001B[38;2;175;0;95mfunction',
+    'restarted light code keyword',
+  )
+  assertAnsiColor(
+    resumeResult.stdout,
+    '\u001B[38;5;97mgreet',
+    '\u001B[38;2;135;95;175mgreet',
+    'restarted light code identifier',
+  )
+  assertAnsiColor(
+    resumeResult.stdout,
+    '\u001B[38;5;24m"hello"',
+    '\u001B[38;2;0;95;135m"hello"',
+    'restarted light code string',
+  )
+  assertAnsiColor(
+    resumeResult.stdout,
+    '\u001B[48;5;224m',
+    '\u001B[48;2;255;215;215m',
+    'restarted light removed diff',
+  )
+  assertAnsiColor(
+    resumeResult.stdout,
+    '\u001B[48;5;194m',
+    '\u001B[48;2;215;255;215m',
+    'restarted light added diff',
+  )
   assert.match(
     await readFile(join(configRoot, 'keybindings.json'), 'utf8'),
     /"ctrl\+v": "chat:imagePaste"/u,
@@ -1440,5 +1757,10 @@ exit 0
   console.log('TUI compatibility verification passed')
 } finally {
   await new Promise((resolve) => provider.close(resolve))
-  await rm(root, { recursive: true, force: true })
+  await rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  })
 }

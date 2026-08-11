@@ -146,11 +146,16 @@ import {
   writeConversationExport,
 } from './tui/conversation-export.js'
 import {
-  loadTuiTheme,
-  saveTuiTheme,
-  TUI_THEMES,
-  type TuiTheme,
+  loadTuiThemeSettings,
+  saveTuiThemeSettings,
 } from './tui/theme-settings.js'
+import {
+  DEFAULT_TUI_THEME_SETTINGS,
+  TUI_THEMES,
+  TuiThemeProvider,
+  tuiPalette,
+  type TuiThemeSettings,
+} from './tui/theme.js'
 
 interface InteractiveSessionCommands {
   run(
@@ -333,9 +338,11 @@ interface InteractiveAppProps {
     remove?(rule: TuiPermissionRule): Promise<void>
   }
   themeStore?: {
-    load(): Promise<TuiTheme>
-    save(theme: TuiTheme): Promise<void>
+    load(): Promise<TuiThemeSettings>
+    save(update: Partial<TuiThemeSettings>): Promise<TuiThemeSettings>
   }
+  initialThemeSettings?: TuiThemeSettings
+  initialThemeLoadError?: string
   workspaceDirectoryResolver?: typeof resolveTuiWorkspaceDirectory
   workspaceDirectoryCompleter?: typeof completeTuiWorkspaceDirectory
 }
@@ -453,7 +460,7 @@ type InteractiveMenu =
   | { kind: 'model'; selectedIndex: number }
   | { kind: 'model-input' }
   | { kind: 'effort'; selectedIndex: number }
-  | { kind: 'theme'; selectedIndex: number; currentTheme: TuiTheme }
+  | { kind: 'theme'; selectedIndex: number }
   | { kind: 'export'; selectedIndex: number }
   | { kind: 'export-filename' }
   | { kind: 'compact-progress' }
@@ -729,6 +736,8 @@ export function InteractiveApp({
   exportWriter = writeConversationExport,
   permissionRuleStore,
   themeStore,
+  initialThemeSettings,
+  initialThemeLoadError,
   workspaceDirectoryResolver = resolveTuiWorkspaceDirectory,
   workspaceDirectoryCompleter = completeTuiWorkspaceDirectory,
 }: InteractiveAppProps) {
@@ -771,8 +780,19 @@ export function InteractiveApp({
     [permissionRuleStore, runtimeCwd],
   )
   const presentationThemeStore = useMemo(
-    () => themeStore ?? { load: loadTuiTheme, save: saveTuiTheme },
+    () =>
+      themeStore ?? {
+        load: loadTuiThemeSettings,
+        save: saveTuiThemeSettings,
+      },
     [themeStore],
+  )
+  const [themeSettings, setThemeSettings] = useState<TuiThemeSettings>(
+    initialThemeSettings ?? DEFAULT_TUI_THEME_SETTINGS,
+  )
+  const activePalette = tuiPalette(
+    themeSettings.theme,
+    themeSettings.syntaxHighlightingDisabled,
   )
   const choices = useMemo(
     () =>
@@ -1111,6 +1131,32 @@ export function InteractiveApp({
 
   const append = (line: TranscriptItem) =>
     setHistory((current) => [...current, line])
+
+  useEffect(() => {
+    if (initialThemeSettings !== undefined) {
+      if (initialThemeLoadError)
+        append({ kind: 'warning', text: initialThemeLoadError })
+      return
+    }
+    let cancelled = false
+    void presentationThemeStore.load().then(
+      (loaded) => {
+        if (!cancelled) setThemeSettings(loaded)
+      },
+      (error: unknown) => {
+        if (!cancelled)
+          append({
+            kind: 'warning',
+            text: `Unable to load theme settings: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          })
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [initialThemeLoadError, initialThemeSettings, presentationThemeStore])
 
   useEffect(() => {
     let cancelled = false
@@ -4045,6 +4091,24 @@ export function InteractiveApp({
       if (activeMenu.kind === 'theme') {
         if (key.escape || value === '\u001B') {
           updateMenu(null)
+        } else if (isKeybinding('theme:toggleSyntaxHighlighting')) {
+          const syntaxHighlightingDisabled =
+            !themeSettings.syntaxHighlightingDisabled
+          const saving = (async () => {
+            setBusy(true)
+            try {
+              const committed = await presentationThemeStore.save({
+                syntaxHighlightingDisabled,
+              })
+              setThemeSettings(committed)
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(saving)
+          void saving.finally(() => onTurnChange?.(null))
         } else if (key.upArrow || key.downArrow) {
           updateMenu({
             ...activeMenu,
@@ -4064,7 +4128,10 @@ export function InteractiveApp({
           const saving = (async () => {
             setBusy(true)
             try {
-              await presentationThemeStore.save(selected)
+              const committed = await presentationThemeStore.save({
+                theme: selected,
+              })
+              setThemeSettings(committed)
               updateMenu(null)
               append({ kind: 'local-result', text: `Theme set to ${selected}` })
             } catch (error) {
@@ -4302,23 +4369,10 @@ export function InteractiveApp({
           selectedIndex: EFFORT_OPTIONS.indexOf(runtimePreferences.effort),
         })
       } else if (prompt === '/theme') {
-        const loading = (async () => {
-          setBusy(true)
-          try {
-            const currentTheme = await presentationThemeStore.load()
-            updateMenu({
-              kind: 'theme',
-              currentTheme,
-              selectedIndex: Math.max(0, TUI_THEMES.indexOf(currentTheme)),
-            })
-          } catch (error) {
-            warn(error)
-          } finally {
-            setBusy(false)
-          }
-        })()
-        onTurnChange?.(loading)
-        void loading.finally(() => onTurnChange?.(null))
+        updateMenu({
+          kind: 'theme',
+          selectedIndex: Math.max(0, TUI_THEMES.indexOf(themeSettings.theme)),
+        })
       } else if (prompt === '/keybindings') {
         setKeybindingsEditing(true)
       } else if (prompt === '/memory') {
@@ -4590,532 +4644,553 @@ export function InteractiveApp({
   })
 
   return (
-    <Box flexDirection="column">
-      {selectingSession ? (
-        <SessionPicker
-          sessions={filteredPickerChoices}
-          selectedIndex={selectedIndex}
-          screenReader={axScreenReader}
-          query={sessionSearch}
-        />
-      ) : (
-        <>
-          {!axScreenReader && history.length === 0 && !sessionId ? (
-            <WelcomePanel display={runtimeDisplay} width={width} />
-          ) : null}
-          {sessionId ? (
-            <Text dimColor>Session {sessionId.slice(0, 8)}</Text>
-          ) : null}
-          <Transcript
-            items={history}
-            activeText={activeText}
-            activeThinking={activeThinking}
-            thinkingExpanded={thinkingExpanded}
-            detailedTranscript={thinkingExpanded}
+    <TuiThemeProvider settings={themeSettings}>
+      <Box flexDirection="column">
+        {selectingSession ? (
+          <SessionPicker
+            sessions={filteredPickerChoices}
+            selectedIndex={selectedIndex}
             screenReader={axScreenReader}
+            query={sessionSearch}
           />
-          {externalEditorRequest !== null ||
-          keybindingsEditing ||
-          memoryEditorRequest !== null ? (
-            <ExternalEditorWait screenReader={axScreenReader} />
-          ) : permission ? (
-            <DialogFrame
-              title={
-                permission.kind === 'recovery'
-                  ? `Retry interrupted ${permission.call.name}?`
-                  : `Allow ${permission.call.name}?`
-              }
-              screenReader={axScreenReader}
-            >
-              <Text bold>{describeTool(permission.call, sensitiveValues)}</Text>
-              <Text>❯ 1. Yes</Text>
-              <Text> 2. No</Text>
-              <Text dimColor>Enter/Esc declines · y/n quick response</Text>
-            </DialogFrame>
-          ) : planApproval ? (
-            <DialogFrame
-              title="Approve this plan and begin implementation?"
-              screenReader={axScreenReader}
-            >
-              <Text dimColor>{planApproval.request.planPath}</Text>
-              {planApproval.request.plan ? (
-                <Box marginY={1}>
-                  <Text>{planApproval.request.plan}</Text>
-                </Box>
-              ) : null}
-              <Text>❯ 1. Yes, implement the plan</Text>
-              <Text> 2. No, keep planning</Text>
-            </DialogFrame>
-          ) : question ? (
-            <DialogFrame
-              title={`${question.questions[question.index]?.header}: ${question.questions[question.index]?.question}`}
-              screenReader={axScreenReader}
-            >
-              {question.questions[question.index]?.options.map(
-                (option, index) => (
-                  <Box key={`${index}-${option.label}`} flexDirection="column">
-                    <Text>
-                      {index === 0 ? '❯ ' : '  '}
-                      {index + 1}. {option.label} — {option.description}
-                    </Text>
-                    {option.preview ? (
-                      <Text dimColor>{option.preview}</Text>
-                    ) : null}
-                  </Box>
-                ),
-              )}
-              <Text>› {input}</Text>
-              <Text dimColor>
-                {question.questions[question.index]?.multiSelect
-                  ? 'Enter comma-separated option numbers or custom text · Esc cancels'
-                  : 'Enter one option number or custom text · Esc cancels'}
-              </Text>
-            </DialogFrame>
-          ) : elicitation ? (
-            <DialogFrame
-              title={`MCP elicitation (${elicitation.request.serverName})`}
-              screenReader={axScreenReader}
-            >
-              <Text>{elicitation.request.message}</Text>
-              {elicitation.request.url ? (
-                <Text>{elicitation.request.url}</Text>
-              ) : null}
-              {elicitation.request.requestedSchema ? (
-                <Text dimColor>
-                  {JSON.stringify(elicitation.request.requestedSchema)}
-                </Text>
-              ) : null}
-              <Text>› {input}</Text>
-              <Text dimColor>Enter JSON object to accept · Esc to cancel</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'model-input' ? (
-            <DialogFrame title="Enter model ID" screenReader={axScreenReader}>
-              <Text dimColor>
-                Enter a model ID supported by the configured provider.
-              </Text>
-              <Text>› {input}</Text>
-              <Text dimColor>Enter confirms · Esc cancels</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'export-filename' ? (
-            <DialogFrame title="Enter filename:" screenReader={axScreenReader}>
-              <Text>&gt; {input}</Text>
-              <Text dimColor>Enter to save · Esc to go back</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'compact-progress' ? (
-            <Box flexDirection="column">
-              <Text>✻ Compacting conversation…</Text>
-              <Text>
-                {'▰'.repeat(Math.floor(compactProgress / 2))}
-                {'▱'.repeat(50 - Math.floor(compactProgress / 2))}{' '}
-                {compactProgress}%
-              </Text>
-            </Box>
-          ) : menu?.kind === 'btw' ? (
-            <BtwPanel
-              entries={btwHistory}
-              selectedIndex={menu.selectedIndex}
-              scrollOffset={menu.scrollOffset}
-              copied={btwCopied}
-              width={width}
+        ) : (
+          <>
+            {!axScreenReader && history.length === 0 && !sessionId ? (
+              <WelcomePanel display={runtimeDisplay} width={width} />
+            ) : null}
+            {sessionId ? (
+              <Text dimColor>Session {sessionId.slice(0, 8)}</Text>
+            ) : null}
+            <Transcript
+              items={history}
+              activeText={activeText}
+              activeThinking={activeThinking}
+              thinkingExpanded={thinkingExpanded}
+              detailedTranscript={thinkingExpanded}
               screenReader={axScreenReader}
             />
-          ) : menu?.kind === 'rewind' ? (
-            <Box flexDirection="column">
-              <Text bold> Rewind</Text>
-              <Text> </Text>
-              <Text>
-                {' '}
-                Restore the code and/or conversation to the point before…
-              </Text>
-              <Text> </Text>
-              {(() => {
-                const window = rewindPointWindow(
-                  menu.points,
-                  menu.selectedIndex,
-                )
-                return (
-                  <>
-                    {window.start > 0 ? (
-                      <Text dimColor> ↑ {window.start} more above</Text>
-                    ) : null}
-                    {menu.points
-                      .slice(window.start, window.end)
-                      .map((point, offset) => {
-                        const index = window.start + offset
-                        return (
-                          <Box
-                            key={point.messageId}
-                            flexDirection="column"
-                            marginBottom={1}
-                          >
-                            <Text inverse={menu.selectedIndex === index}>
-                              {menu.selectedIndex === index ? ' ❯ ' : '   '}
-                              {point.prompt.replace(/\s+/gu, ' ').slice(0, 72)}
-                            </Text>
-                            <Text dimColor>
-                              {'     '}
-                              {point.fileChanges.length > 0
-                                ? point.fileChanges
-                                    .map((path) =>
-                                      path.startsWith(`${runtimeCwd}/`)
-                                        ? path.slice(runtimeCwd.length + 1)
-                                        : path,
-                                    )
-                                    .join(', ')
-                                : point.fileRestoreAvailable
-                                  ? 'No code changes'
-                                  : '⚠ No code restore'}
-                            </Text>
-                          </Box>
-                        )
-                      })}
-                    {window.end < menu.points.length ? (
-                      <Text dimColor>
-                        {' '}
-                        ↓ {menu.points.length - window.end} more below
-                      </Text>
-                    ) : null}
-                  </>
-                )
-              })()}
-              <Text inverse={menu.selectedIndex === menu.points.length}>
-                {menu.selectedIndex === menu.points.length ? ' ❯ ' : '   '}
-                (current)
-              </Text>
-              <Text> </Text>
-              <Text dimColor> Enter to continue · Esc to cancel</Text>
-            </Box>
-          ) : menu?.kind === 'rewind-confirm' ? (
-            <DialogFrame
-              title="Confirm restore point"
-              screenReader={axScreenReader}
-            >
-              <Text>│ {menu.point.prompt}</Text>
-              <Text> </Text>
-              <Text>The conversation will be forked.</Text>
-              <Text>
-                The code will{' '}
-                {menu.point.fileChanges.length > 0
-                  ? `restore ${menu.point.fileChanges.join(', ')}.`
-                  : 'be unchanged.'}
-              </Text>
-              <Text> </Text>
-              {rewindActions(menu.point).map((option, index) => (
-                <Text
-                  key={option.action}
-                  inverse={menu.selectedIndex === index}
-                >
-                  {menu.selectedIndex === index ? '❯ ' : '  '}
-                  {index + 1}. {option.label}
-                </Text>
-              ))}
-              <Text> </Text>
-              <Text color="yellow">
-                ⚠ Rewinding does not affect files edited manually or via bash.
-              </Text>
-            </DialogFrame>
-          ) : menu?.kind === 'rewind-context' ? (
-            <DialogFrame
-              title={`Summarize ${menu.direction === 'from' ? 'from' : 'up to'} here`}
-              screenReader={axScreenReader}
-            >
-              <Text>
-                {menu.direction === 'from'
-                  ? 'Messages after this point will be summarized.'
-                  : 'Messages up to this point will be summarized.'}
-              </Text>
-              <Text> </Text>
-              <Text>add context (optional): {input}</Text>
-              <Text dimColor>Enter to summarize · Esc to go back</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'permission-rule-input' ? (
-            <Box flexDirection="column">
-              <Text bold>Add {menu.behavior} permission rule</Text>
-              <Text>
-                Permission rules are a tool name, optionally followed by a
-                specifier in parentheses.
-              </Text>
-              <Text>e.g., WebFetch or Bash(ls *)</Text>
-              <Text> </Text>
-              <Box
-                borderStyle={axScreenReader ? undefined : 'round'}
-                paddingX={axScreenReader ? 0 : 1}
-              >
-                <Text {...(input ? {} : { dimColor: true })}>
-                  {input || 'Enter permission rule…'}
-                </Text>
-              </Box>
-              <Text dimColor>Enter to submit · Esc to cancel</Text>
-            </Box>
-          ) : menu?.kind === 'workspace-directory-input' ? (
-            <Box flexDirection="column">
-              <Text bold>Add directory to workspace</Text>
-              <Text>
-                Praxis Code will be able to read files in this directory and
-                make edits when auto-accept edits is on.
-              </Text>
-              <Text> </Text>
-              <Text>Enter the path to the directory:</Text>
-              <Box
-                borderStyle={axScreenReader ? undefined : 'round'}
-                paddingX={axScreenReader ? 0 : 1}
-              >
-                <Text {...(input ? {} : { dimColor: true })}>
-                  {input || 'Directory path…'}
-                </Text>
-              </Box>
-              <Text dimColor>
-                Tab to complete · Enter to add · Esc to cancel
-              </Text>
-            </Box>
-          ) : menu?.kind === 'permission-delete' ? (
-            <DialogFrame
-              title={permissionDeleteTitle(menu.rule.behavior)}
-              screenReader={axScreenReader}
-            >
-              <Text>{menu.rule.rule}</Text>
-              {permissionRuleDescription(menu.rule.rule) ? (
-                <Text dimColor>
-                  {permissionRuleDescription(menu.rule.rule)}
-                </Text>
-              ) : null}
-              <Text dimColor>{permissionScopeLabel(menu.rule.scope)}</Text>
-              <Text> </Text>
-              <Text>Are you sure you want to delete this permission rule?</Text>
-              <Text> </Text>
-              <Text inverse={menu.selectedIndex === 0}>
-                {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
-              </Text>
-              <Text inverse={menu.selectedIndex === 1}>
-                {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
-              </Text>
-              <Text dimColor>Esc to cancel</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'workspace-directory-delete' ? (
-            <Box flexDirection="column">
-              <Text bold>Remove directory from workspace?</Text>
-              <Text> {menu.path}</Text>
-              <Text> </Text>
-              <Text>
-                Praxis Code will no longer have access to files in this
-                directory.
-              </Text>
-              <Text> </Text>
-              <Text inverse={menu.selectedIndex === 0}>
-                {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
-              </Text>
-              <Text inverse={menu.selectedIndex === 1}>
-                {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
-              </Text>
-              <Text dimColor>Enter to confirm · Esc to cancel</Text>
-            </Box>
-          ) : menu ? (
-            menu.kind === 'help' ? (
-              <HelpMenu
-                tabIndex={menu.tabIndex}
-                selectedIndex={menu.selectedIndex}
-                builtinCommands={builtinSlashCommands}
-                customCommands={customSlashCommands}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'diff' ? (
-              <DiffDashboard
-                snapshots={menu.snapshots}
-                sourceIndex={menu.sourceIndex}
-                selectedIndex={menu.selectedIndex}
-                viewingFile={menu.viewingFile}
-                scrollOffset={menu.scrollOffset}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'permission-dashboard' ? (
-              <PermissionDashboard
-                tabIndex={menu.tabIndex}
-                selectedIndex={menu.selectedIndex}
-                query={menu.query}
-                rules={menu.rules}
-                recentDenied={recentDenied}
-                workspaceDirectories={workspaceDirectories}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'permission-scope' ? (
-              <SelectionMenu
-                title="Where should this rule be saved?"
-                description={`${menu.rule}${
-                  permissionRuleDescription(menu.rule)
-                    ? ` · ${permissionRuleDescription(menu.rule)}`
-                    : ''
-                }`}
-                options={[
-                  {
-                    label: 'Project settings (local)',
-                    description: 'Saved in .claude/settings.local.json',
-                  },
-                  {
-                    label: 'Project settings',
-                    description: 'Checked in at .claude/settings.json',
-                  },
-                  {
-                    label: 'User settings',
-                    description: 'Saved in at ~/.claude/settings.json',
-                  },
-                ]}
-                selectedIndex={menu.selectedIndex}
-                footer="Enter to confirm · Esc to cancel"
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'status' ? (
-              <StatusDashboard
-                tabIndex={menu.tabIndex}
-                version={runtimeDisplay.version}
-                sessionId={sessionId}
-                display={runtimeDisplay}
-                {...(usage === undefined ? {} : { usage })}
-                {...(costUsd === undefined ? {} : { costUsd })}
-                turnCount={turnNumberRef.current}
-                toolCount={
-                  history.filter((item) => item.kind === 'tool').length
+            {externalEditorRequest !== null ||
+            keybindingsEditing ||
+            memoryEditorRequest !== null ? (
+              <ExternalEditorWait screenReader={axScreenReader} />
+            ) : permission ? (
+              <DialogFrame
+                title={
+                  permission.kind === 'recovery'
+                    ? `Retry interrupted ${permission.call.name}?`
+                    : `Allow ${permission.call.name}?`
                 }
-                commandCount={allSlashCommands.length}
-                detailedTranscript={thinkingExpanded}
-                width={width}
                 screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'memory' ? (
-              <MemoryDashboard
-                autoMemoryEnabled={menu.autoMemoryEnabled}
-                entries={menu.entries}
+              >
+                <Text bold>
+                  {describeTool(permission.call, sensitiveValues)}
+                </Text>
+                <Text>❯ 1. Yes</Text>
+                <Text> 2. No</Text>
+                <Text dimColor>Enter/Esc declines · y/n quick response</Text>
+              </DialogFrame>
+            ) : planApproval ? (
+              <DialogFrame
+                title="Approve this plan and begin implementation?"
+                screenReader={axScreenReader}
+              >
+                <Text dimColor>{planApproval.request.planPath}</Text>
+                {planApproval.request.plan ? (
+                  <Box marginY={1}>
+                    <Text>{planApproval.request.plan}</Text>
+                  </Box>
+                ) : null}
+                <Text>❯ 1. Yes, implement the plan</Text>
+                <Text> 2. No, keep planning</Text>
+              </DialogFrame>
+            ) : question ? (
+              <DialogFrame
+                title={`${question.questions[question.index]?.header}: ${question.questions[question.index]?.question}`}
+                screenReader={axScreenReader}
+              >
+                {question.questions[question.index]?.options.map(
+                  (option, index) => (
+                    <Box
+                      key={`${index}-${option.label}`}
+                      flexDirection="column"
+                    >
+                      <Text>
+                        {index === 0 ? '❯ ' : '  '}
+                        {index + 1}. {option.label} — {option.description}
+                      </Text>
+                      {option.preview ? (
+                        <Text dimColor>{option.preview}</Text>
+                      ) : null}
+                    </Box>
+                  ),
+                )}
+                <Text>› {input}</Text>
+                <Text dimColor>
+                  {question.questions[question.index]?.multiSelect
+                    ? 'Enter comma-separated option numbers or custom text · Esc cancels'
+                    : 'Enter one option number or custom text · Esc cancels'}
+                </Text>
+              </DialogFrame>
+            ) : elicitation ? (
+              <DialogFrame
+                title={`MCP elicitation (${elicitation.request.serverName})`}
+                screenReader={axScreenReader}
+              >
+                <Text>{elicitation.request.message}</Text>
+                {elicitation.request.url ? (
+                  <Text>{elicitation.request.url}</Text>
+                ) : null}
+                {elicitation.request.requestedSchema ? (
+                  <Text dimColor>
+                    {JSON.stringify(elicitation.request.requestedSchema)}
+                  </Text>
+                ) : null}
+                <Text>› {input}</Text>
+                <Text dimColor>
+                  Enter JSON object to accept · Esc to cancel
+                </Text>
+              </DialogFrame>
+            ) : menu?.kind === 'model-input' ? (
+              <DialogFrame title="Enter model ID" screenReader={axScreenReader}>
+                <Text dimColor>
+                  Enter a model ID supported by the configured provider.
+                </Text>
+                <Text>› {input}</Text>
+                <Text dimColor>Enter confirms · Esc cancels</Text>
+              </DialogFrame>
+            ) : menu?.kind === 'export-filename' ? (
+              <DialogFrame
+                title="Enter filename:"
+                screenReader={axScreenReader}
+              >
+                <Text>&gt; {input}</Text>
+                <Text dimColor>Enter to save · Esc to go back</Text>
+              </DialogFrame>
+            ) : menu?.kind === 'compact-progress' ? (
+              <Box flexDirection="column">
+                <Text>✻ Compacting conversation…</Text>
+                <Text>
+                  {'▰'.repeat(Math.floor(compactProgress / 2))}
+                  {'▱'.repeat(50 - Math.floor(compactProgress / 2))}{' '}
+                  {compactProgress}%
+                </Text>
+              </Box>
+            ) : menu?.kind === 'btw' ? (
+              <BtwPanel
+                entries={btwHistory}
                 selectedIndex={menu.selectedIndex}
-                openedIndex={menu.openedIndex}
-                loading={menu.loading}
+                scrollOffset={menu.scrollOffset}
+                copied={btwCopied}
                 width={width}
                 screenReader={axScreenReader}
               />
-            ) : menu.kind === 'hooks' ? (
-              <HookDashboard
-                configuration={menu.configuration}
-                depth={menu.depth}
-                eventIndex={menu.eventIndex}
-                matcherIndex={menu.matcherIndex}
-                hookIndex={menu.hookIndex}
-                width={width}
+            ) : menu?.kind === 'rewind' ? (
+              <Box flexDirection="column">
+                <Text bold> Rewind</Text>
+                <Text> </Text>
+                <Text>
+                  {' '}
+                  Restore the code and/or conversation to the point before…
+                </Text>
+                <Text> </Text>
+                {(() => {
+                  const window = rewindPointWindow(
+                    menu.points,
+                    menu.selectedIndex,
+                  )
+                  return (
+                    <>
+                      {window.start > 0 ? (
+                        <Text dimColor> ↑ {window.start} more above</Text>
+                      ) : null}
+                      {menu.points
+                        .slice(window.start, window.end)
+                        .map((point, offset) => {
+                          const index = window.start + offset
+                          return (
+                            <Box
+                              key={point.messageId}
+                              flexDirection="column"
+                              marginBottom={1}
+                            >
+                              <Text inverse={menu.selectedIndex === index}>
+                                {menu.selectedIndex === index ? ' ❯ ' : '   '}
+                                {point.prompt
+                                  .replace(/\s+/gu, ' ')
+                                  .slice(0, 72)}
+                              </Text>
+                              <Text dimColor>
+                                {'     '}
+                                {point.fileChanges.length > 0
+                                  ? point.fileChanges
+                                      .map((path) =>
+                                        path.startsWith(`${runtimeCwd}/`)
+                                          ? path.slice(runtimeCwd.length + 1)
+                                          : path,
+                                      )
+                                      .join(', ')
+                                  : point.fileRestoreAvailable
+                                    ? 'No code changes'
+                                    : '⚠ No code restore'}
+                              </Text>
+                            </Box>
+                          )
+                        })}
+                      {window.end < menu.points.length ? (
+                        <Text dimColor>
+                          {' '}
+                          ↓ {menu.points.length - window.end} more below
+                        </Text>
+                      ) : null}
+                    </>
+                  )
+                })()}
+                <Text inverse={menu.selectedIndex === menu.points.length}>
+                  {menu.selectedIndex === menu.points.length ? ' ❯ ' : '   '}
+                  (current)
+                </Text>
+                <Text> </Text>
+                <Text dimColor> Enter to continue · Esc to cancel</Text>
+              </Box>
+            ) : menu?.kind === 'rewind-confirm' ? (
+              <DialogFrame
+                title="Confirm restore point"
                 screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'list' ? (
-              <ListDashboard
-                title={menu.title}
-                rows={menu.rows}
-                emptyText={menu.emptyText}
-                selectedIndex={menu.selectedIndex}
-                width={width}
+              >
+                <Text>│ {menu.point.prompt}</Text>
+                <Text> </Text>
+                <Text>The conversation will be forked.</Text>
+                <Text>
+                  The code will{' '}
+                  {menu.point.fileChanges.length > 0
+                    ? `restore ${menu.point.fileChanges.join(', ')}.`
+                    : 'be unchanged.'}
+                </Text>
+                <Text> </Text>
+                {rewindActions(menu.point).map((option, index) => (
+                  <Text
+                    key={option.action}
+                    inverse={menu.selectedIndex === index}
+                  >
+                    {menu.selectedIndex === index ? '❯ ' : '  '}
+                    {index + 1}. {option.label}
+                  </Text>
+                ))}
+                <Text> </Text>
+                <Text color="yellow">
+                  ⚠ Rewinding does not affect files edited manually or via bash.
+                </Text>
+              </DialogFrame>
+            ) : menu?.kind === 'rewind-context' ? (
+              <DialogFrame
+                title={`Summarize ${menu.direction === 'from' ? 'from' : 'up to'} here`}
                 screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'model' ? (
-              <SelectionMenu
-                title="Select model"
-                description={`Effort: ${runtimePreferences.effort}`}
-                options={modelOptions}
-                selectedIndex={menu.selectedIndex}
-                footer="↑/↓ select · ←/→ effort · Enter applies to this session · Esc cancels"
-                width={width}
+              >
+                <Text>
+                  {menu.direction === 'from'
+                    ? 'Messages after this point will be summarized.'
+                    : 'Messages up to this point will be summarized.'}
+                </Text>
+                <Text> </Text>
+                <Text>add context (optional): {input}</Text>
+                <Text dimColor>Enter to summarize · Esc to go back</Text>
+              </DialogFrame>
+            ) : menu?.kind === 'permission-rule-input' ? (
+              <Box flexDirection="column">
+                <Text bold>Add {menu.behavior} permission rule</Text>
+                <Text>
+                  Permission rules are a tool name, optionally followed by a
+                  specifier in parentheses.
+                </Text>
+                <Text>e.g., WebFetch or Bash(ls *)</Text>
+                <Text> </Text>
+                <Box
+                  borderStyle={axScreenReader ? undefined : 'round'}
+                  paddingX={axScreenReader ? 0 : 1}
+                >
+                  <Text {...(input ? {} : { dimColor: true })}>
+                    {input || 'Enter permission rule…'}
+                  </Text>
+                </Box>
+                <Text dimColor>Enter to submit · Esc to cancel</Text>
+              </Box>
+            ) : menu?.kind === 'workspace-directory-input' ? (
+              <Box flexDirection="column">
+                <Text bold>Add directory to workspace</Text>
+                <Text>
+                  Praxis Code will be able to read files in this directory and
+                  make edits when auto-accept edits is on.
+                </Text>
+                <Text> </Text>
+                <Text>Enter the path to the directory:</Text>
+                <Box
+                  borderStyle={axScreenReader ? undefined : 'round'}
+                  paddingX={axScreenReader ? 0 : 1}
+                >
+                  <Text {...(input ? {} : { dimColor: true })}>
+                    {input || 'Directory path…'}
+                  </Text>
+                </Box>
+                <Text dimColor>
+                  Tab to complete · Enter to add · Esc to cancel
+                </Text>
+              </Box>
+            ) : menu?.kind === 'permission-delete' ? (
+              <DialogFrame
+                title={permissionDeleteTitle(menu.rule.behavior)}
                 screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'effort' ? (
-              <SelectionMenu
-                title="Select effort"
-                description="Controls how much reasoning effort the provider should use."
-                options={EFFORT_OPTIONS.map((option) => ({
-                  label: option,
-                  description:
-                    option === 'low'
-                      ? 'Fastest and least deliberative.'
-                      : option === 'max'
-                        ? 'Highest available reasoning effort.'
-                        : 'Use this effort for the next session turns.',
-                  selected: option === runtimePreferences.effort,
-                }))}
-                selectedIndex={menu.selectedIndex}
-                footer="↑/↓ select · Enter applies to this session · Esc cancels"
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'theme' ? (
-              <ThemePicker
-                currentTheme={menu.currentTheme}
-                selectedIndex={menu.selectedIndex}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'export' ? (
-              <SelectionMenu
-                title="Export conversation"
-                description="Select export method"
-                options={[
-                  {
-                    label: 'Copy to clipboard',
-                    description:
-                      'Copy the conversation to your system clipboard',
-                  },
-                  {
-                    label: 'Save to file',
-                    description:
-                      'Save the conversation to a file in the current directory',
-                  },
-                ]}
-                selectedIndex={menu.selectedIndex}
-                footer="Esc to cancel"
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : null
-          ) : (
-            <>
-              {commandPaletteVisible ? (
-                <CommandPalette
-                  commands={matchingSlashCommands}
-                  selectedIndex={selectedSlashCommandIndex}
+              >
+                <Text>{menu.rule.rule}</Text>
+                {permissionRuleDescription(menu.rule.rule) ? (
+                  <Text dimColor>
+                    {permissionRuleDescription(menu.rule.rule)}
+                  </Text>
+                ) : null}
+                <Text dimColor>{permissionScopeLabel(menu.rule.scope)}</Text>
+                <Text> </Text>
+                <Text>
+                  Are you sure you want to delete this permission rule?
+                </Text>
+                <Text> </Text>
+                <Text inverse={menu.selectedIndex === 0}>
+                  {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
+                </Text>
+                <Text inverse={menu.selectedIndex === 1}>
+                  {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
+                </Text>
+                <Text dimColor>Esc to cancel</Text>
+              </DialogFrame>
+            ) : menu?.kind === 'workspace-directory-delete' ? (
+              <Box flexDirection="column">
+                <Text bold>Remove directory from workspace?</Text>
+                <Text> {menu.path}</Text>
+                <Text> </Text>
+                <Text>
+                  Praxis Code will no longer have access to files in this
+                  directory.
+                </Text>
+                <Text> </Text>
+                <Text inverse={menu.selectedIndex === 0}>
+                  {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
+                </Text>
+                <Text inverse={menu.selectedIndex === 1}>
+                  {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
+                </Text>
+                <Text dimColor>Enter to confirm · Esc to cancel</Text>
+              </Box>
+            ) : menu ? (
+              menu.kind === 'help' ? (
+                <HelpMenu
+                  tabIndex={menu.tabIndex}
+                  selectedIndex={menu.selectedIndex}
+                  builtinCommands={builtinSlashCommands}
+                  customCommands={customSlashCommands}
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : null}
-              {filePickerVisible ? (
-                <MentionPicker
-                  entries={matchingMentionEntries}
-                  selectedIndex={selectedFileIndex}
+              ) : menu.kind === 'diff' ? (
+                <DiffDashboard
+                  snapshots={menu.snapshots}
+                  sourceIndex={menu.sourceIndex}
+                  selectedIndex={menu.selectedIndex}
+                  viewingFile={menu.viewingFile}
+                  scrollOffset={menu.scrollOffset}
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : null}
-              {exitConfirmation ? (
-                <Text color="yellow">Press Ctrl-C again to exit</Text>
-              ) : null}
-              <Composer
-                input={shellMode ? input.slice(1) : input}
-                cursor={shellMode ? Math.max(0, inputCursor - 1) : inputCursor}
-                shellMode={shellMode}
-                busy={busy}
-                clipboardBusy={clipboardBusy}
-                status={status}
-                display={runtimeDisplay}
-                {...(usage === undefined ? {} : { usage })}
-                {...(costUsd === undefined ? {} : { costUsd })}
-                width={width}
-                screenReader={axScreenReader}
-                hasThinking={hasDetailedTranscript}
-                thinkingExpanded={thinkingExpanded}
-                shortcutsVisible={shortcutsVisible}
-                {...(editorFooterMessage === undefined
-                  ? {}
-                  : { footerMessage: editorFooterMessage })}
-              />
-            </>
-          )}
-        </>
-      )}
-    </Box>
+              ) : menu.kind === 'permission-dashboard' ? (
+                <PermissionDashboard
+                  tabIndex={menu.tabIndex}
+                  selectedIndex={menu.selectedIndex}
+                  query={menu.query}
+                  rules={menu.rules}
+                  recentDenied={recentDenied}
+                  workspaceDirectories={workspaceDirectories}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'permission-scope' ? (
+                <SelectionMenu
+                  title="Where should this rule be saved?"
+                  description={`${menu.rule}${
+                    permissionRuleDescription(menu.rule)
+                      ? ` · ${permissionRuleDescription(menu.rule)}`
+                      : ''
+                  }`}
+                  options={[
+                    {
+                      label: 'Project settings (local)',
+                      description: 'Saved in .claude/settings.local.json',
+                    },
+                    {
+                      label: 'Project settings',
+                      description: 'Checked in at .claude/settings.json',
+                    },
+                    {
+                      label: 'User settings',
+                      description: 'Saved in at ~/.claude/settings.json',
+                    },
+                  ]}
+                  selectedIndex={menu.selectedIndex}
+                  footer="Enter to confirm · Esc to cancel"
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'status' ? (
+                <StatusDashboard
+                  tabIndex={menu.tabIndex}
+                  version={runtimeDisplay.version}
+                  sessionId={sessionId}
+                  display={runtimeDisplay}
+                  {...(usage === undefined ? {} : { usage })}
+                  {...(costUsd === undefined ? {} : { costUsd })}
+                  turnCount={turnNumberRef.current}
+                  toolCount={
+                    history.filter((item) => item.kind === 'tool').length
+                  }
+                  commandCount={allSlashCommands.length}
+                  detailedTranscript={thinkingExpanded}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'memory' ? (
+                <MemoryDashboard
+                  autoMemoryEnabled={menu.autoMemoryEnabled}
+                  entries={menu.entries}
+                  selectedIndex={menu.selectedIndex}
+                  openedIndex={menu.openedIndex}
+                  loading={menu.loading}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'hooks' ? (
+                <HookDashboard
+                  configuration={menu.configuration}
+                  depth={menu.depth}
+                  eventIndex={menu.eventIndex}
+                  matcherIndex={menu.matcherIndex}
+                  hookIndex={menu.hookIndex}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'list' ? (
+                <ListDashboard
+                  title={menu.title}
+                  rows={menu.rows}
+                  emptyText={menu.emptyText}
+                  selectedIndex={menu.selectedIndex}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'model' ? (
+                <SelectionMenu
+                  title="Select model"
+                  description={`Effort: ${runtimePreferences.effort}`}
+                  options={modelOptions}
+                  selectedIndex={menu.selectedIndex}
+                  footer="↑/↓ select · ←/→ effort · Enter applies to this session · Esc cancels"
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'effort' ? (
+                <SelectionMenu
+                  title="Select effort"
+                  description="Controls how much reasoning effort the provider should use."
+                  options={EFFORT_OPTIONS.map((option) => ({
+                    label: option,
+                    description:
+                      option === 'low'
+                        ? 'Fastest and least deliberative.'
+                        : option === 'max'
+                          ? 'Highest available reasoning effort.'
+                          : 'Use this effort for the next session turns.',
+                    selected: option === runtimePreferences.effort,
+                  }))}
+                  selectedIndex={menu.selectedIndex}
+                  footer="↑/↓ select · Enter applies to this session · Esc cancels"
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'theme' ? (
+                <ThemePicker
+                  currentTheme={themeSettings.theme}
+                  selectedIndex={menu.selectedIndex}
+                  syntaxHighlightingDisabled={
+                    themeSettings.syntaxHighlightingDisabled
+                  }
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'export' ? (
+                <SelectionMenu
+                  title="Export conversation"
+                  description="Select export method"
+                  options={[
+                    {
+                      label: 'Copy to clipboard',
+                      description:
+                        'Copy the conversation to your system clipboard',
+                    },
+                    {
+                      label: 'Save to file',
+                      description:
+                        'Save the conversation to a file in the current directory',
+                    },
+                  ]}
+                  selectedIndex={menu.selectedIndex}
+                  footer="Esc to cancel"
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : null
+            ) : (
+              <>
+                {commandPaletteVisible ? (
+                  <CommandPalette
+                    commands={matchingSlashCommands}
+                    selectedIndex={selectedSlashCommandIndex}
+                    width={width}
+                    screenReader={axScreenReader}
+                  />
+                ) : null}
+                {filePickerVisible ? (
+                  <MentionPicker
+                    entries={matchingMentionEntries}
+                    selectedIndex={selectedFileIndex}
+                    width={width}
+                    screenReader={axScreenReader}
+                  />
+                ) : null}
+                {exitConfirmation ? (
+                  <Text color="yellow">Press Ctrl-C again to exit</Text>
+                ) : null}
+                <Composer
+                  input={shellMode ? input.slice(1) : input}
+                  cursor={
+                    shellMode ? Math.max(0, inputCursor - 1) : inputCursor
+                  }
+                  shellMode={shellMode}
+                  busy={busy}
+                  clipboardBusy={clipboardBusy}
+                  status={status}
+                  display={runtimeDisplay}
+                  {...(usage === undefined ? {} : { usage })}
+                  {...(costUsd === undefined ? {} : { costUsd })}
+                  width={width}
+                  screenReader={axScreenReader}
+                  hasThinking={hasDetailedTranscript}
+                  thinkingExpanded={thinkingExpanded}
+                  shortcutsVisible={shortcutsVisible}
+                  {...(editorFooterMessage === undefined
+                    ? {}
+                    : { footerMessage: editorFooterMessage })}
+                />
+              </>
+            )}
+          </>
+        )}
+      </Box>
+    </TuiThemeProvider>
   )
 }
 
@@ -5195,6 +5270,15 @@ export async function runInteractive(options: {
     throw error
   }
   await listing.close?.()
+  let initialThemeSettings = DEFAULT_TUI_THEME_SETTINGS
+  let initialThemeLoadError: string | undefined
+  try {
+    initialThemeSettings = await loadTuiThemeSettings()
+  } catch (error) {
+    initialThemeLoadError = `Unable to load theme settings: ${
+      error instanceof Error ? error.message : String(error)
+    }`
+  }
   let activeTurn: Promise<void> | null = null
   let cleanup: Promise<void> | null = null
   let backgrounded: InteractiveBackgroundResult | undefined
@@ -5205,6 +5289,10 @@ export async function runInteractive(options: {
       slashCommands={initialSlashCommands}
       agents={initialAgents}
       initialHistory={initialHistory}
+      initialThemeSettings={initialThemeSettings}
+      {...(initialThemeLoadError === undefined
+        ? {}
+        : { initialThemeLoadError })}
       {...(options.initialPrompt === undefined
         ? {}
         : { initialPrompt: options.initialPrompt })}

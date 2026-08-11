@@ -21,10 +21,7 @@ const flush = async () => {
 
 describe('InteractiveApp', () => {
   it('loads and persists a shared presentation theme without a model turn', async () => {
-    const saved: Array<{
-      theme: string
-      syntaxHighlightingDisabled: boolean
-    }> = []
+    const saved: unknown[] = []
     const app = render(
       <InteractiveApp
         factory={{
@@ -41,8 +38,13 @@ describe('InteractiveApp', () => {
           async load() {
             throw new Error('unused')
           },
-          async save(settings) {
-            saved.push(settings)
+          async save(update) {
+            saved.push(update)
+            return {
+              theme: update.theme ?? 'dark',
+              syntaxHighlightingDisabled:
+                update.syntaxHighlightingDisabled ?? false,
+            }
           },
         }}
       />,
@@ -58,9 +60,7 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(saved).toEqual([
-      { theme: 'light', syntaxHighlightingDisabled: false },
-    ])
+    expect(saved).toEqual([{ theme: 'light' }])
     expect(app.lastFrame()).toContain('Theme set to light')
     expect(app.lastFrame()).toContain('? for shortcuts')
 
@@ -89,8 +89,13 @@ describe('InteractiveApp', () => {
           async load() {
             throw new Error('unused')
           },
-          async save(settings) {
-            saved.push(settings)
+          async save(update) {
+            saved.push(update)
+            return {
+              theme: update.theme ?? 'dark-daltonized',
+              syntaxHighlightingDisabled:
+                update.syntaxHighlightingDisabled ?? false,
+            }
           },
         }}
       />,
@@ -104,16 +109,17 @@ describe('InteractiveApp', () => {
     )
     app.stdin.write('\u0014')
     await flush()
-    expect(saved).toEqual([
-      { theme: 'dark-daltonized', syntaxHighlightingDisabled: true },
-    ])
+    expect(saved).toEqual([{ syntaxHighlightingDisabled: true }])
     expect(app.lastFrame()).toContain(
       'Syntax highlighting disabled (ctrl+t to enable)',
     )
   })
 
   it('cancels theme selection without writing shared settings', async () => {
-    const save = vi.fn(async () => undefined)
+    const save = vi.fn(async () => ({
+      theme: 'dark' as const,
+      syntaxHighlightingDisabled: false,
+    }))
     const app = render(
       <InteractiveApp
         factory={{
@@ -167,8 +173,13 @@ describe('InteractiveApp', () => {
           async load() {
             throw new Error('unused')
           },
-          async save(settings) {
-            saved.push(settings.theme)
+          async save(update) {
+            if (update.theme) saved.push(update.theme)
+            return {
+              theme: update.theme ?? 'auto',
+              syntaxHighlightingDisabled:
+                update.syntaxHighlightingDisabled ?? false,
+            }
           },
         }}
       />,
@@ -185,6 +196,46 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(saved).toEqual(['light-ansi'])
+  })
+
+  it('announces the focused screen-reader theme while navigating', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        axScreenReader
+        initialThemeSettings={{
+          theme: 'dark',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async save(update) {
+            return {
+              theme: update.theme ?? 'dark',
+              syntaxHighlightingDisabled:
+                update.syntaxHighlightingDisabled ?? false,
+            }
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Selected: Dark mode')
+    app.stdin.write('\u001B[B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Selected: Light mode')
+    expect(app.lastFrame()).toContain('2. Dark mode ✔')
   })
 
   it('surfaces theme load and save failures without changing the active profile', async () => {

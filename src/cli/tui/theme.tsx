@@ -31,6 +31,7 @@ export interface TuiPalette {
   profile: TuiTheme
   dark: boolean
   ansiOnly: boolean
+  syntaxHighlightingDisabled: boolean
   brand: string
   accent: string
   info: string
@@ -42,6 +43,26 @@ export interface TuiPalette {
   selectionText: string
   syntaxTheme: 'Monokai Extended' | 'GitHub' | 'ansi'
   syntax: TuiSyntaxPalette
+}
+
+export type TuiSyntaxToken = 'text' | 'keyword' | 'identifier' | 'string'
+
+export function tuiSyntaxStyle(
+  palette: TuiPalette,
+  token: TuiSyntaxToken,
+  change?: 'added' | 'removed',
+): { color?: string; backgroundColor?: string } {
+  if (palette.syntaxHighlightingDisabled) return {}
+  const backgroundColor =
+    change === 'added'
+      ? palette.syntax.addedBackground
+      : change === 'removed'
+        ? palette.syntax.removedBackground
+        : undefined
+  return {
+    color: palette.syntax[token],
+    ...(backgroundColor === undefined ? {} : { backgroundColor }),
+  }
 }
 
 export const DEFAULT_TUI_THEME_SETTINGS: TuiThemeSettings = {
@@ -74,7 +95,10 @@ function automaticDark(): boolean {
   return background === undefined || Number(background) < 8
 }
 
-export function tuiPalette(profile: TuiTheme): TuiPalette {
+export function tuiPalette(
+  profile: TuiTheme,
+  syntaxHighlightingDisabled = false,
+): TuiPalette {
   const dark =
     profile === 'auto'
       ? automaticDark()
@@ -113,6 +137,7 @@ export function tuiPalette(profile: TuiTheme): TuiPalette {
     profile,
     dark,
     ansiOnly,
+    syntaxHighlightingDisabled,
     brand: ansiOnly ? 'redBright' : '#D97757',
     accent: ansiOnly
       ? 'magentaBright'
@@ -138,14 +163,16 @@ export function tuiPalette(profile: TuiTheme): TuiPalette {
 const TuiPaletteContext = createContext<TuiPalette>(tuiPalette('auto'))
 
 export function TuiThemeProvider({
-  theme,
+  settings,
   children,
 }: {
-  theme: TuiTheme
+  settings: TuiThemeSettings
   children: ReactNode
 }) {
   return (
-    <TuiPaletteContext.Provider value={tuiPalette(theme)}>
+    <TuiPaletteContext.Provider
+      value={tuiPalette(settings.theme, settings.syntaxHighlightingDisabled)}
+    >
       {children}
     </TuiPaletteContext.Provider>
   )

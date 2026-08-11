@@ -10,7 +10,13 @@ import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'
-import { tuiPalette, useTuiPalette, type TuiTheme } from './theme.js'
+import {
+  tuiPalette,
+  tuiSyntaxStyle,
+  useTuiPalette,
+  type TuiSyntaxToken,
+  type TuiTheme,
+} from './theme.js'
 const SPINNER = ['✳', '✢', '✣', '✤', '✥'] as const
 
 export interface TuiDisplayMetadata {
@@ -235,24 +241,93 @@ function MarkdownLine({ line }: { line: string }) {
   return line ? <InlineText text={line} /> : <Text> </Text>
 }
 
+const CODE_KEYWORDS = new Set([
+  'async',
+  'await',
+  'class',
+  'const',
+  'else',
+  'export',
+  'false',
+  'from',
+  'function',
+  'if',
+  'import',
+  'let',
+  'new',
+  'null',
+  'return',
+  'true',
+  'undefined',
+  'var',
+])
+
+const CODE_TOKEN_PATTERN =
+  /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:async|await|class|const|else|export|false|from|function|if|import|let|new|null|return|true|undefined|var)\b|\b[A-Za-z_$][\w$]*(?=\s*\())/gu
+
+function SyntaxCodeLine({
+  text,
+  prefix = '',
+  change,
+}: {
+  text: string
+  prefix?: string
+  change?: 'added' | 'removed'
+}) {
+  const palette = useTuiPalette()
+  if (palette.syntaxHighlightingDisabled) {
+    return (
+      <Text>
+        {prefix}
+        {text || ' '}
+      </Text>
+    )
+  }
+  const lineStyle = tuiSyntaxStyle(palette, 'text', change)
+  return (
+    <Text>
+      {prefix}
+      <Text {...lineStyle}>
+        {text.split(CODE_TOKEN_PATTERN).map((token, index) => {
+          const kind: TuiSyntaxToken =
+            token.startsWith('"') || token.startsWith("'")
+              ? 'string'
+              : CODE_KEYWORDS.has(token)
+                ? 'keyword'
+                : /^[A-Za-z_$][\w$]*$/u.test(token)
+                  ? 'identifier'
+                  : 'text'
+          return (
+            <Text key={index} {...tuiSyntaxStyle(palette, kind)}>
+              {token}
+            </Text>
+          )
+        })}
+      </Text>
+    </Text>
+  )
+}
+
 function ToolResultText({ text }: { text: string }) {
   const palette = useTuiPalette()
   return (
     <Box flexDirection="column">
-      {text.split('\n').map((line, index) => (
-        <Text
-          key={index}
-          {...(line.startsWith('+') && !line.startsWith('+++')
-            ? { color: palette.success }
-            : line.startsWith('-') && !line.startsWith('---')
-              ? { color: palette.error }
-              : line.startsWith('@@')
-                ? { color: palette.info }
-                : { dimColor: true })}
-        >
-          {line || ' '}
-        </Text>
-      ))}
+      {text.split('\n').map((line, index) =>
+        line.startsWith('+') && !line.startsWith('+++') ? (
+          <SyntaxCodeLine key={index} text={line} change="added" />
+        ) : line.startsWith('-') && !line.startsWith('---') ? (
+          <SyntaxCodeLine key={index} text={line} change="removed" />
+        ) : (
+          <Text
+            key={index}
+            {...(line.startsWith('@@')
+              ? { color: palette.info }
+              : { dimColor: true })}
+          >
+            {line || ' '}
+          </Text>
+        ),
+      )}
     </Box>
   )
 }
@@ -329,16 +404,20 @@ function ToolTranscriptEntry({
                 {oldLines.length === 1 ? '' : 's'}
               </Text>
               {oldLines.map((line, index) => (
-                <Text key={`old-${index}`} color={palette.error}>
-                  {'   '}
-                  {index + 1} -{line}
-                </Text>
+                <SyntaxCodeLine
+                  key={`old-${index}`}
+                  prefix={`   ${index + 1} -`}
+                  text={line}
+                  change="removed"
+                />
               ))}
               {newLines.map((line, index) => (
-                <Text key={`new-${index}`} color={palette.success}>
-                  {'   '}
-                  {index + 1} +{line}
-                </Text>
+                <SyntaxCodeLine
+                  key={`new-${index}`}
+                  prefix={`   ${index + 1} +`}
+                  text={line}
+                  change="added"
+                />
               ))}
             </>
           ) : (
@@ -480,7 +559,6 @@ function ContextUsageBlock({
 }
 
 export function MarkdownText({ text }: { text: string }) {
-  const palette = useTuiPalette()
   const lines = text.split('\n')
   let code = false
   return (
@@ -495,9 +573,7 @@ export function MarkdownText({ text }: { text: string }) {
           )
         }
         return code ? (
-          <Text key={index} color={palette.info}>
-            │ {line}
-          </Text>
+          <SyntaxCodeLine key={index} prefix="│ " text={line} />
         ) : (
           <MarkdownLine key={index} line={line} />
         )
@@ -833,19 +909,28 @@ export function DiffDashboard({
         <Text> </Text>
         <Text bold> {selected.path}</Text>
         <Text dimColor> {'─'.repeat(Math.max(1, panelWidth - 4))}</Text>
-        {lines.map((patchLine, index) => (
-          <Text
-            key={`${scrollOffset}-${index}`}
-            {...(patchLine.startsWith('+')
-              ? { color: palette.success }
-              : patchLine.startsWith('-')
-                ? { color: palette.error }
-                : { dimColor: true })}
-          >
-            {'  '}
-            {patchLine}
-          </Text>
-        ))}
+        {lines.map((patchLine, index) =>
+          patchLine.startsWith('+') && !patchLine.startsWith('+++') ? (
+            <SyntaxCodeLine
+              key={`${scrollOffset}-${index}`}
+              prefix="  "
+              text={patchLine}
+              change="added"
+            />
+          ) : patchLine.startsWith('-') && !patchLine.startsWith('---') ? (
+            <SyntaxCodeLine
+              key={`${scrollOffset}-${index}`}
+              prefix="  "
+              text={patchLine}
+              change="removed"
+            />
+          ) : (
+            <Text key={`${scrollOffset}-${index}`} dimColor>
+              {'  '}
+              {patchLine}
+            </Text>
+          ),
+        )}
         <Text dimColor> ↑/↓ to scroll · Esc to back</Text>
       </Box>
     )
@@ -1040,7 +1125,7 @@ export function ThemePicker({
   screenReader: boolean
 }) {
   const previewTheme = THEME_OPTIONS[selectedIndex]?.theme ?? currentTheme
-  const preview = tuiPalette(previewTheme)
+  const preview = tuiPalette(previewTheme, syntaxHighlightingDisabled)
   const syntax = preview.syntax
   const syntaxColor = (color: string) =>
     syntaxHighlightingDisabled ? {} : { color }
@@ -1059,6 +1144,9 @@ export function ThemePicker({
         </Text>
       ))}
       <Text> </Text>
+      {screenReader ? (
+        <Text>Selected: {THEME_OPTIONS[selectedIndex]?.label}</Text>
+      ) : null}
       {!screenReader ? (
         <>
           <Text dimColor>

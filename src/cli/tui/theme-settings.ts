@@ -1,8 +1,13 @@
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout } from 'node:timers/promises'
 
 import { writeFileAtomically } from '../../platform/atomic-write.js'
+import {
+  ExclusiveFileLease,
+  type ExclusiveFileLeaseHandle,
+} from '../../platform/exclusive-file-lease.js'
 import {
   DEFAULT_TUI_THEME_SETTINGS,
   TUI_THEMES,
@@ -48,10 +53,7 @@ async function sourceUnchanged(
   }
 }
 
-export async function loadTuiThemeSettings(
-  configRoot = configRootPath(),
-): Promise<TuiThemeSettings> {
-  const { value } = await readSettings(join(configRoot, 'settings.json'))
+function settingsFromRecord(value: Record<string, unknown>): TuiThemeSettings {
   return {
     theme: TUI_THEMES.includes(value.theme as TuiThemeSettings['theme'])
       ? (value.theme as TuiThemeSettings['theme'])
@@ -63,27 +65,49 @@ export async function loadTuiThemeSettings(
   }
 }
 
-export async function saveTuiThemeSettings(
-  next: TuiThemeSettings,
+export async function loadTuiThemeSettings(
   configRoot = configRootPath(),
-): Promise<void> {
+): Promise<TuiThemeSettings> {
+  const { value } = await readSettings(join(configRoot, 'settings.json'))
+  return settingsFromRecord(value)
+}
+
+export async function saveTuiThemeSettings(
+  update: Partial<TuiThemeSettings>,
+  configRoot = configRootPath(),
+): Promise<TuiThemeSettings> {
   const path = join(configRoot, 'settings.json')
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const { value, source } = await readSettings(path)
-    const committed = await writeFileAtomically(
-      path,
-      `${JSON.stringify(
-        {
-          ...value,
-          theme: next.theme,
-          syntaxHighlightingDisabled: next.syntaxHighlightingDisabled,
-        },
-        null,
-        2,
-      )}\n`,
-      { beforeCommit: () => sourceUnchanged(path, source) },
-    )
-    if (committed) return
+  const lease = new ExclusiveFileLease(
+    join(configRoot, '.praxis-settings.lock'),
+  )
+  let handle: ExclusiveFileLeaseHandle | null = null
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    handle = await lease.tryAcquire()
+    if (handle) break
+    await setTimeout(5)
   }
-  throw new Error(`Settings changed concurrently: ${path}`)
+  if (!handle) throw new Error(`Settings write lock timed out: ${path}`)
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { value, source } = await readSettings(path)
+      const next = { ...settingsFromRecord(value), ...update }
+      const committed = await writeFileAtomically(
+        path,
+        `${JSON.stringify(
+          {
+            ...value,
+            theme: next.theme,
+            syntaxHighlightingDisabled: next.syntaxHighlightingDisabled,
+          },
+          null,
+          2,
+        )}\n`,
+        { beforeCommit: () => sourceUnchanged(path, source) },
+      )
+      if (committed) return next
+    }
+    throw new Error(`Settings changed concurrently: ${path}`)
+  } finally {
+    await handle.release()
+  }
 }
