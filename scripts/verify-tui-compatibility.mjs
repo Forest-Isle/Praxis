@@ -120,33 +120,90 @@ async function sharedTreeSnapshot() {
   })
 }
 
-function terminalContract(output) {
-  const oscSequence = new RegExp(
-    // eslint-disable-next-line no-control-regex -- PTY captures require ANSI stripping.
-    '\\u001B\\][^\\u0007]*(?:\\u0007|\\u001B\\\\)',
-    'gu',
+function hookNavigationContract(output) {
+  return [...output.matchAll(/HOOK_TRACE\|([^\r\n]+)/gu)].map(
+    ([, entry]) => entry,
   )
-  const ansiSequence = new RegExp(
-    // eslint-disable-next-line no-control-regex -- PTY captures require ANSI stripping.
-    '\\u001B(?:\\[[0-?]*[ -/]*[@-~]|\\([A-Z0-9]|[=>])',
-    'giu',
-  )
-  const text = output
-    .replaceAll(oscSequence, ' ')
-    .replaceAll(ansiSequence, ' ')
-    .replaceAll(/\s+/gu, '')
-  return {
-    hookCount: /4hooksconfigured?/u.test(text),
-    user: /\[User\].*01-user/u.test(text),
-    project: /\[Project\].*02-project/u.test(text),
-    local: /\[Local\].*03-local/u.test(text),
-    plugin: /\[Plugin\].*04-plugin/u.test(text),
-    command: /\[command\].*Usercommand/u.test(text),
-    prompt: /\[prompt\].*Projectprompt/u.test(text),
-    agent: /\[agent\].*Localagent/u.test(text),
-    http: /\[http\].*https:\/\/fixture\.test\/plugin/u.test(text),
-  }
 }
+
+const expectedHookNavigation = [
+  'event:PostToolUse',
+  'event:PreToolUse',
+  'matcher:Local:03-local:2',
+  'matcher:Project:02-project:1',
+  'matcher:User:01-user:1',
+  'matcher:Plugin:04-plugin:1',
+  'hook:Project:prompt:Project prompt',
+  'hook:Local:agent:Local agent',
+  'hook:Local:command:Local command',
+  'hook:User:command:User command',
+  'hook:Plugin:http:https://fixture.test/plugin',
+]
+
+const hookNavigationTrace = String.raw`
+set phase "hooks command palette"
+send "/hooks"
+expect -re {View hook configurations}
+send "\r"
+expect -re {6 hooks configured}
+expect -re {PreToolUse[^\r\n]*\(5\)}
+expect -re {PostToolUse[^\r\n]*\(1\)}
+send "2"
+after 100
+send "\r"
+expect -re {\[User\][^\r\n]*05-user-post[^\r\n]*1 hook}
+puts "HOOK_TRACE|event:PostToolUse"
+send "\033"
+after 200
+send "1"
+after 100
+send "\r"
+puts "HOOK_TRACE|event:PreToolUse"
+expect -re {\[Local\][^\r\n]*03-local[^\r\n]*2 hooks}
+puts "HOOK_TRACE|matcher:Local:03-local:2"
+expect -re {\[Project\][^\r\n]*02-project[^\r\n]*1 hook}
+puts "HOOK_TRACE|matcher:Project:02-project:1"
+expect -re {\[User\][^\r\n]*01-user[^\r\n]*1 hook}
+puts "HOOK_TRACE|matcher:User:01-user:1"
+expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
+puts "HOOK_TRACE|matcher:Plugin:04-plugin:1"
+send "2"
+after 100
+send "\r"
+expect -re {\[prompt\][^\r\n]*Project prompt}
+puts "HOOK_TRACE|hook:Project:prompt:Project prompt"
+send "\033"
+after 200
+send "1"
+after 100
+send "\r"
+expect -re {\[agent\][^\r\n]*Local agent}
+puts "HOOK_TRACE|hook:Local:agent:Local agent"
+expect -re {\[command\][^\r\n]*Local command}
+send "2"
+after 100
+send "\r"
+expect -re {Hook details}
+expect -re {Type: command}
+expect -re {Local command}
+puts "HOOK_TRACE|hook:Local:command:Local command"
+send "\033"
+after 200
+send "\033"
+after 200
+send "3"
+after 100
+send "\r"
+expect -re {\[command\][^\r\n]*User command}
+puts "HOOK_TRACE|hook:User:command:User command"
+send "\033"
+after 200
+send "4"
+after 100
+send "\r"
+expect -re {\[http\][^\r\n]*https://fixture.test/plugin}
+puts "HOOK_TRACE|hook:Plugin:http:https://fixture.test/plugin"
+`
 
 const provider = createServer(async (request, response) => {
   let requestBody = ''
@@ -231,6 +288,12 @@ try {
               ],
             },
           ],
+          PostToolUse: [
+            {
+              matcher: '05-user-post',
+              hooks: [{ type: 'command', command: 'printf post-hook' }],
+            },
+          ],
         },
       },
       null,
@@ -283,7 +346,10 @@ try {
           PreToolUse: [
             {
               matcher: '03-local',
-              hooks: [{ type: 'agent', prompt: 'Local agent' }],
+              hooks: [
+                { type: 'agent', prompt: 'Local agent' },
+                { type: 'command', command: 'Local command' },
+              ],
             },
           ],
         },
@@ -309,7 +375,10 @@ try {
           PreToolUse: [
             {
               matcher: '03-local',
-              hooks: [{ type: 'agent', prompt: 'Moved local agent' }],
+              hooks: [
+                { type: 'agent', prompt: 'Moved local agent' },
+                { type: 'command', command: 'Moved local command' },
+              ],
             },
           ],
         },
@@ -598,29 +667,8 @@ expect {
 }
 set phase "Claude hooks menu"
 after 300
-send "/hooks\r"
-after 1000
-send "1\r"
-expect -re {\[Local\].*03-local}
-after 300
-send "1\r"
-expect -re {\[agent\].*Local agent}
-send "\033"
-after 100
-send "2\r"
-expect -re {\[prompt\].*Project prompt}
-send "\033"
-after 100
-send "3\r"
-expect -re {\[command\].*User command}
-send "\033"
-after 100
-send "4\r"
-expect -re {\[http\].*https://fixture.test/plugin}
-send "\003"
-after 100
-send "\003"
-expect eof
+${hookNavigationTrace}
+exec kill -KILL [exp_pid]
 exit 0
 `
   const claudeHooksCapture = await execFileAsync(
@@ -638,18 +686,10 @@ exit 0
       timeout: 90_000,
     },
   )
-  const observedClaudeContract = terminalContract(claudeHooksCapture.stdout)
-  assert.deepEqual(observedClaudeContract, {
-    hookCount: true,
-    user: true,
-    project: true,
-    local: true,
-    plugin: true,
-    command: true,
-    prompt: true,
-    agent: true,
-    http: true,
-  })
+  const observedClaudeContract = hookNavigationContract(
+    claudeHooksCapture.stdout,
+  )
+  assert.deepEqual(observedClaudeContract, expectedHookNavigation)
 
   const providerlessProbe = String.raw`
 set timeout 15
@@ -663,19 +703,7 @@ spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$en
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
 expect -re {shortcuts}
-set phase "providerless hooks"
-send "/hooks"
-expect -re {View hook configurations}
-send "\r"
-expect -re {4 hooks configured}
-expect -re {This menu is read-only}
-expect -re {PreToolUse.*\(4\)}
-send "\r"
-expect -re {PreToolUse - Matchers}
-expect -re {\[User\][^\r\n]*01-user[^\r\n]*1 hook}
-expect -re {\[Project\][^\r\n]*02-project[^\r\n]*1 hook}
-expect -re {\[Local\][^\r\n]*03-local[^\r\n]*1 hook}
-expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
+${hookNavigationTrace}
 exec kill -KILL [exp_pid]
 exit 0
 `
@@ -700,10 +728,10 @@ exit 0
       timeout: 60_000,
     },
   )
-  const providerlessContract = terminalContract(providerlessCapture.stdout)
-  for (const key of ['hookCount', 'user', 'project', 'local', 'plugin']) {
-    assert.equal(providerlessContract[key], observedClaudeContract[key])
-  }
+  const providerlessContract = hookNavigationContract(
+    providerlessCapture.stdout,
+  )
+  assert.deepEqual(providerlessContract, observedClaudeContract)
   assert.deepEqual(await sharedTreeSnapshot(), treesBeforeProviderlessProbe)
 
   const probe = String.raw`
@@ -746,47 +774,11 @@ expect {
 send "\025"
 expect -re {Try.*review this project}
 set phase "hooks dialog"
-send "/hooks"
-expect -re {View hook configurations}
-send "\r"
-expect -re {4 hooks configured}
-expect -re {This menu is read-only}
-expect -re {PreToolUse.*\(4\)}
-send "\r"
-expect -re {PreToolUse - Matchers}
-expect -re {\[User\][^\r\n]*01-user[^\r\n]*1 hook}
-expect -re {\[Project\][^\r\n]*02-project[^\r\n]*1 hook}
-expect -re {\[Local\][^\r\n]*03-local[^\r\n]*1 hook}
-expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
-expect -re {Enter to confirm}
-send "\r"
-expect -re {\[command\].*User command.*User Settings}
-expect -re {Esc to go back}
-after 300
+${hookNavigationTrace}
 send "\033"
-after 100
-send "\033\[B\r"
-expect -re {\[prompt\].*Project prompt.*Project Settings}
-expect -re {Esc to go back}
-after 300
+after 200
 send "\033"
-after 100
-send "\033\[B\r"
-expect -re {\[agent\].*Local agent.*Local Settings}
-expect -re {Esc to go back}
-after 300
-send "\033"
-after 100
-send "\033\[B\r"
-expect -re {\[http\].*https://fixture.test/plugin.*Plugin Hooks}
-expect -re {Esc to go back}
-after 300
-send "\033"
-expect -re {PreToolUse - Matchers}
-after 100
-send "\033"
-expect -re {4 hooks configured}
-after 100
+after 200
 send "\033"
 expect -re {Try.*review this project}
 set phase "add-dir command"
@@ -969,25 +961,32 @@ set phase "hooks after cwd change"
 send "/hooks"
 expect -re {View hook configurations}
 send "\r"
-expect -re {4 hooks configured}
+expect -re {6 hooks configured}
+send "1"
+after 100
 send "\r"
 expect -re {\[Project\][^\r\n]*02-project[^\r\n]*1 hook}
 expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
-send "\033\[B\r"
-expect -re {\[prompt\].*Moved project prompt.*Project Settings}
-expect -re {Esc to go back}
-after 300
-send "\033"
+send "2"
 after 100
-send "\033\[B\r"
-expect -re {\[agent\].*Moved local agent.*Local Settings}
+send "\r"
+expect -re {\[prompt\][^\r\n]*Moved project prompt[^\r\n]*Project Settings}
 expect -re {Esc to go back}
 after 300
 send "\033"
+after 200
+send "\033\[A"
+after 100
+send "\r"
+expect -re {\[agent\][^\r\n]*Moved local agent[^\r\n]*Local Settings}
+expect -re {Esc to go back}
+after 300
+send "\033"
+after 200
 expect -re {PreToolUse - Matchers}
 after 100
 send "\033"
-expect -re {4 hooks configured}
+expect -re {6 hooks configured}
 after 100
 send "\033"
 expect -re {Try.*review this project}
@@ -1000,20 +999,27 @@ expect -re {Plugin changes activated for this session}
 send "/hooks"
 expect -re {View hook configurations}
 send "\r"
-expect -re {4 hooks configured}
+expect -re {6 hooks configured}
+send "1"
+after 100
 send "\r"
 expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
 send "\033\[B"
+after 100
 send "\033\[B"
-send "\033\[B\r"
-expect -re {\[http\].*https://fixture.test/plugin-reloaded.*Plugin Hooks}
+after 100
+send "\033\[B"
+after 100
+send "\r"
+expect -re {\[http\][^\r\n]*https://fixture.test/plugin-reloaded[^\r\n]*Plugin Hooks}
 expect -re {Esc to go back}
 after 300
 send "\033"
+after 200
 expect -re {PreToolUse - Matchers}
 after 100
 send "\033"
-expect -re {4 hooks configured}
+expect -re {6 hooks configured}
 after 100
 send "\033"
 expect -re {Try.*review this project}
@@ -1225,7 +1231,10 @@ exit 0
   const memoryReloadSource = JSON.stringify(memoryReloadRequest)
   assert.match(memoryReloadSource, new RegExp(importedAfter, 'u'))
   assert.doesNotMatch(memoryReloadSource, new RegExp(importedBefore, 'u'))
-  assert.deepEqual(terminalContract(result.stdout), observedClaudeContract)
+  assert.deepEqual(
+    hookNavigationContract(result.stdout),
+    observedClaudeContract,
+  )
   const projectRoot = join(configRoot, 'projects')
   const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
     .map(String)
@@ -1349,6 +1358,12 @@ exit 0
               statusMessage: 'User command',
             },
           ],
+        },
+      ],
+      PostToolUse: [
+        {
+          matcher: '05-user-post',
+          hooks: [{ type: 'command', command: 'printf post-hook' }],
         },
       ],
     },

@@ -83,6 +83,7 @@ describe('TUI hook settings projection', () => {
         },
       },
     }))
+    resources.reverse()
 
     const projected = projectTuiHooks(resources)
     expect(

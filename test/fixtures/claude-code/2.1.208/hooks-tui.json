@@ -56,12 +56,12 @@
     ]
   },
   "scopes": [
-    ["User", "User Settings"],
-    ["Project", "Project Settings"],
     ["Local", "Local Settings"],
+    ["Project", "Project Settings"],
+    ["User", "User Settings"],
     ["Plugin", "Plugin Hooks (hooks-fixture@inline)"]
   ],
-  "hookTypes": ["command", "prompt", "agent", "http"],
+  "hookTypes": ["agent", "prompt", "command", "http"],
   "navigation": [
     "event-enter-opens-matchers",
     "matcher-enter-opens-hooks",

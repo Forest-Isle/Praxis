@@ -108,9 +108,9 @@ describe('TUI hook settings integration', () => {
     expect(
       first.events[0]?.matchers.map((matcher) => matcher.scopeLabel),
     ).toEqual([
-      'User Settings',
-      'Project Settings',
       'Local Settings',
+      'Project Settings',
+      'User Settings',
       'Plugin Hooks (hooks-fixture@inline)',
     ])
 

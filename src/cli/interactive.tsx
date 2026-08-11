@@ -476,7 +476,7 @@ type InteractiveMenu =
   | {
       kind: 'hooks'
       configuration: TuiHookConfiguration
-      depth: 'events' | 'matchers' | 'hooks'
+      depth: 'events' | 'matchers' | 'hooks' | 'detail'
       eventIndex: number
       matcherIndex: number
       hookIndex: number
@@ -3753,28 +3753,53 @@ export function InteractiveApp({
       if (activeMenu.kind === 'hooks') {
         const event = activeMenu.configuration.events[activeMenu.eventIndex]
         const matcher = event?.matchers[activeMenu.matcherIndex]
+        const length =
+          activeMenu.depth === 'events'
+            ? activeMenu.configuration.events.length
+            : activeMenu.depth === 'matchers'
+              ? (event?.matchers.length ?? 0)
+              : activeMenu.depth === 'hooks'
+                ? (matcher?.hooks.length ?? 0)
+                : 0
         if (key.escape || value === '\u001B') {
           updateMenu(
-            activeMenu.depth === 'hooks'
-              ? { ...activeMenu, depth: 'matchers', hookIndex: 0 }
-              : activeMenu.depth === 'matchers'
-                ? {
-                    ...activeMenu,
-                    depth: 'events',
-                    matcherIndex: 0,
-                    hookIndex: 0,
-                  }
-                : null,
+            activeMenu.depth === 'detail'
+              ? { ...activeMenu, depth: 'hooks' }
+              : activeMenu.depth === 'hooks'
+                ? { ...activeMenu, depth: 'matchers', hookIndex: 0 }
+                : activeMenu.depth === 'matchers'
+                  ? {
+                      ...activeMenu,
+                      depth: 'events',
+                      matcherIndex: 0,
+                      hookIndex: 0,
+                    }
+                  : null,
           )
           return
         }
+        const numericIndex = /^[1-9]$/u.test(value) ? Number(value) - 1 : null
+        if (numericIndex !== null) {
+          if (numericIndex >= length) return
+          if (activeMenu.depth === 'events') {
+            updateMenu({
+              ...activeMenu,
+              eventIndex: numericIndex,
+              matcherIndex: 0,
+              hookIndex: 0,
+            })
+          } else if (activeMenu.depth === 'matchers') {
+            updateMenu({
+              ...activeMenu,
+              matcherIndex: numericIndex,
+              hookIndex: 0,
+            })
+          } else if (activeMenu.depth === 'hooks') {
+            updateMenu({ ...activeMenu, hookIndex: numericIndex })
+          }
+          return
+        }
         if (key.upArrow || key.downArrow) {
-          const length =
-            activeMenu.depth === 'events'
-              ? activeMenu.configuration.events.length
-              : activeMenu.depth === 'matchers'
-                ? (event?.matchers.length ?? 0)
-                : (matcher?.hooks.length ?? 0)
           if (length === 0) return
           const delta = key.upArrow ? -1 : 1
           if (activeMenu.depth === 'events') {
@@ -3796,7 +3821,7 @@ export function InteractiveApp({
               ),
               hookIndex: 0,
             })
-          } else {
+          } else if (activeMenu.depth === 'hooks') {
             updateMenu({
               ...activeMenu,
               hookIndex: Math.max(
@@ -3817,6 +3842,11 @@ export function InteractiveApp({
             })
           } else if (activeMenu.depth === 'matchers' && matcher) {
             updateMenu({ ...activeMenu, depth: 'hooks', hookIndex: 0 })
+          } else if (
+            activeMenu.depth === 'hooks' &&
+            matcher?.hooks[activeMenu.hookIndex]
+          ) {
+            updateMenu({ ...activeMenu, depth: 'detail' })
           }
         }
         return

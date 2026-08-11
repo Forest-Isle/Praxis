@@ -430,6 +430,7 @@ describe('InteractiveApp', () => {
                 statusMessage: 'Checking tool',
               },
               { type: 'prompt', prompt: 'Is this safe?' },
+              { type: 'agent', prompt: 'Review this call' },
             ],
           },
           {
@@ -493,24 +494,52 @@ describe('InteractiveApp', () => {
     app.stdin.write('/hooks')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('3 hooks configured')
-    expect(app.lastFrame()).toContain('PreToolUse (3)')
+    expect(app.lastFrame()).toContain('4 hooks configured')
+    expect(app.lastFrame()).toContain('PreToolUse (4)')
     expect(app.lastFrame()).toContain('This menu is read-only')
 
+    app.stdin.write('0')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 1. PreToolUse (4)')
+    app.stdin.write('1')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 1. PreToolUse (4)')
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('PreToolUse - Matchers')
     expect(app.lastFrame()).toContain('[User] (all) 1 hook')
-    expect(app.lastFrame()).toContain('[User] Bash|Write 2 hooks')
+    expect(app.lastFrame()).toContain('[User] Bash|Write 3 hooks')
 
-    app.stdin.write('\u001B[B')
+    app.stdin.write('9')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 1. [User] (all) 1 hook')
+    app.stdin.write('2')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 2. [User] Bash|Write 3 hooks')
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('PreToolUse - Matcher: Bash|Write')
     expect(app.lastFrame()).toContain('[command] Checking tool')
     expect(app.lastFrame()).toContain('[prompt] Is this safe?')
+    expect(app.lastFrame()).toContain('[agent] Review this call')
     expect(app.lastFrame()).toContain('User Settings')
 
+    app.stdin.write('9')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 1. [command] Checking tool')
+    app.stdin.write('3')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 3. [agent] Review this call')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Hook details')
+    expect(app.lastFrame()).toContain('Type: agent')
+    expect(app.lastFrame()).toContain('Review this call')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('PreToolUse - Matcher: Bash|Write')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()

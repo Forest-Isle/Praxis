@@ -185,9 +185,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   `/config` and `/usage` open their matching status tabs; `/mcp` lists current
   server status; `/skill` aliases the shared skill list; `/reload-skills` and
   `/reload-plugins` rebuild the active extension-backed service in place.
-- `/hooks` opens the observed read-only event catalog. Enter drills from an
-  event into its scoped matchers and then configured command, prompt, agent, or
-  HTTP hooks; Esc returns one level at a time. Counts, matcher scope,
+- `/hooks` opens the observed read-only event catalog. Arrow keys or 1-based
+  numeric selection choose an event, scoped matcher, and configured command,
+  prompt, agent, or HTTP hook; Enter drills through those layers into hook
+  details, and Esc returns one level at a time. Counts, matcher scope,
   status-message labels, and source labels come from active
   user/project/local/plugin settings. Each open uses a fresh local projection
   for the current cwd and needs no provider key or model. The surface never

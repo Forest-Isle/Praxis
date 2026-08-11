@@ -175,6 +175,13 @@ function hookLabel(hook: Record<string, unknown>, type: string): string {
   return type
 }
 
+const HOOK_SCOPE_ORDER: Record<string, number> = {
+  Local: 0,
+  Project: 1,
+  User: 2,
+  Plugin: 3,
+}
+
 export function projectTuiHooks(
   settings: readonly ClaudeJsonResource[],
 ): TuiHookConfiguration {
@@ -217,6 +224,10 @@ export function projectTuiHooks(
       }
     }
     matchers.sort((left, right) => {
+      const scopeOrder =
+        (HOOK_SCOPE_ORDER[left.scope] ?? Number.MAX_SAFE_INTEGER) -
+        (HOOK_SCOPE_ORDER[right.scope] ?? Number.MAX_SAFE_INTEGER)
+      if (scopeOrder !== 0) return scopeOrder
       if (left.matcher === '(all)' && right.matcher !== '(all)') return -1
       if (right.matcher === '(all)' && left.matcher !== '(all)') return 1
       return left.matcher.localeCompare(right.matcher)

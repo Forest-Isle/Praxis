@@ -561,6 +561,22 @@ describe('Claude-style TUI components', () => {
     expect(hooks.lastFrame()).toContain('PreToolUse - Matcher: Bash')
     expect(hooks.lastFrame()).toContain('Selected: 1. [command] echo inspect')
     expect(hooks.lastFrame()).not.toContain('────')
+
+    const detail = render(
+      <HookDashboard
+        configuration={configuration}
+        depth="detail"
+        eventIndex={0}
+        matcherIndex={0}
+        hookIndex={0}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(detail.lastFrame()).toContain('Hook details')
+    expect(detail.lastFrame()).toContain('Event: PreToolUse')
+    expect(detail.lastFrame()).toContain('Type: command')
+    expect(detail.lastFrame()).toContain('echo inspect')
   })
 
   it('renders a bounded slash command palette with descriptions', () => {

@@ -1228,7 +1228,7 @@ export function HookDashboard({
   screenReader,
 }: {
   configuration: TuiHookConfiguration
-  depth: 'events' | 'matchers' | 'hooks'
+  depth: 'events' | 'matchers' | 'hooks' | 'detail'
   eventIndex: number
   matcherIndex: number
   hookIndex: number
@@ -1237,6 +1237,25 @@ export function HookDashboard({
 }) {
   const event = configuration.events[eventIndex]
   const matcher = event?.matchers[matcherIndex]
+  const hook = matcher?.hooks[hookIndex]
+  if (depth === 'detail') {
+    return (
+      <Box flexDirection="column" width={Math.min(100, width)}>
+        {!screenReader ? (
+          <Text dimColor>{'─'.repeat(Math.max(12, Math.min(100, width)))}</Text>
+        ) : null}
+        <Text bold> Hook details</Text>
+        <Text> Event: {event?.name ?? 'Hooks'}</Text>
+        <Text> Matcher: {matcher?.matcher ?? '(all)'}</Text>
+        <Text> Type: {hook?.type ?? 'command'}</Text>
+        <Text> Source: {hook?.scopeLabel ?? 'Settings'}</Text>
+        <Text> </Text>
+        <Text> {hook?.label ?? ''}</Text>
+        <Text> </Text>
+        <Text dimColor>Esc to go back</Text>
+      </Box>
+    )
+  }
   const rows =
     depth === 'events'
       ? configuration.events
