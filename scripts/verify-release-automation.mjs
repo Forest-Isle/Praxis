@@ -12,6 +12,16 @@ assert.ok(
   dependency.on?.workflow_dispatch !== undefined,
   'Dependency review must support release-branch dispatch',
 )
+assert.equal(
+  dependency.on.workflow_dispatch.inputs?.base_ref?.required,
+  true,
+  'Dispatched dependency review must require a base ref',
+)
+assert.equal(
+  dependency.on.workflow_dispatch.inputs?.head_ref?.required,
+  true,
+  'Dispatched dependency review must require a head ref',
+)
 
 for (const workflow of ['ci.yml', 'codeql.yml', 'dependency-review.yml']) {
   assert.match(
@@ -30,6 +40,8 @@ assert.match(releaseSource, /\.databaseId > \$previous/u)
 assert.match(releaseSource, /gh run watch "\$RUN_ID"[\s\S]*--exit-status/u)
 assert.match(releaseSource, /FAILED_WORKFLOWS\+=/u)
 assert.match(releaseSource, /test "\$\{#FAILED_WORKFLOWS\[@\]\}" -eq 0/u)
+assert.match(releaseSource, /-f base_ref=main/u)
+assert.match(releaseSource, /-f head_ref="\$HEAD_BRANCH"/u)
 assert.doesNotMatch(releaseSource, /contexts\/[^\s"']+/u)
 
 console.log(
