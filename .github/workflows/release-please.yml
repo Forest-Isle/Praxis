@@ -9,7 +9,6 @@ permissions:
   actions: write
   contents: write
   pull-requests: write
-  statuses: write
 
 concurrency:
   group: release-please
@@ -26,7 +25,7 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      - name: Run CI, bridge its result, and enable automatic merge
+      - name: Run protected checks and enable automatic merge
         if: steps.release.outputs.prs_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -41,14 +40,17 @@ jobs:
           test "$(jq -r '.headRefName' <<< "$PR_DETAILS")" = "$HEAD_BRANCH"
           HEAD_SHA=$(jq -r '.headRefOid // empty' <<< "$PR_DETAILS")
           test -n "$HEAD_SHA"
-          PREVIOUS_RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
-            --branch "$HEAD_BRANCH" --event workflow_dispatch --limit 20 \
-            --json databaseId,headSha | jq -r --arg sha "$HEAD_SHA" \
-            '[.[] | select(.headSha == $sha)] | max_by(.databaseId).databaseId // 0')
-          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
-            -f state=pending -f context=CI \
-            -f description="Release CI is running"
-          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_BRANCH"
+          WORKFLOWS=(ci.yml codeql.yml dependency-review.yml)
+          declare -A PREVIOUS_RUN_IDS
+          for WORKFLOW in "${WORKFLOWS[@]}"; do
+            PREVIOUS_RUN_IDS[$WORKFLOW]=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" \
+              --branch "$HEAD_BRANCH" --event workflow_dispatch --limit 20 \
+              --json databaseId,headSha | jq -r --arg sha "$HEAD_SHA" \
+              '[.[] | select(.headSha == $sha)] | max_by(.databaseId).databaseId // 0')
+            gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" \
+              --ref "$HEAD_BRANCH"
+          done
           AUTO_MERGE=$(jq -r \
             'if .state != "OPEN" then .state elif .autoMergeRequest == null then "disabled" else "enabled" end' \
             <<< "$PR_DETAILS")
@@ -57,40 +59,44 @@ jobs:
           else
             test "$AUTO_MERGE" = "enabled"
           fi
-          DEADLINE=$((SECONDS + 2400))
-          while true; do
-            RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
-              --branch "$HEAD_BRANCH" --event workflow_dispatch --limit 20 \
-              --json databaseId,headSha,status,conclusion)
-            RUN=$(jq -c --arg sha "$HEAD_SHA" --argjson previous "$PREVIOUS_RUN_ID" \
-              '[.[] | select(.headSha == $sha and .databaseId > $previous)] | max_by(.databaseId) // empty' \
-              <<< "$RUNS")
-            if test -n "$RUN"; then
-              RUN_ID=$(jq -r '.databaseId' <<< "$RUN")
-              if test "$(jq -r '.status' <<< "$RUN")" != "completed"; then
-                gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status || true
+          FAILED_WORKFLOWS=()
+          for WORKFLOW in "${WORKFLOWS[@]}"; do
+            DEADLINE=$((SECONDS + 2400))
+            PREVIOUS_RUN_ID=${PREVIOUS_RUN_IDS[$WORKFLOW]}
+            while true; do
+              RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" \
+                --workflow "$WORKFLOW" --branch "$HEAD_BRANCH" \
+                --event workflow_dispatch --limit 20 \
+                --json databaseId,headSha,status,conclusion)
+              RUN=$(jq -c --arg sha "$HEAD_SHA" \
+                --argjson previous "$PREVIOUS_RUN_ID" \
+                '[.[] | select(.headSha == $sha and .databaseId > $previous)] | max_by(.databaseId) // empty' \
+                <<< "$RUNS")
+              if test -n "$RUN"; then
+                RUN_ID=$(jq -r '.databaseId' <<< "$RUN")
+                if test "$(jq -r '.status' <<< "$RUN")" != "completed"; then
+                  gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+                    --exit-status || true
+                fi
+                CONCLUSION=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+                  --json conclusion --jq '.conclusion')
+                if test "$CONCLUSION" != "success"; then
+                  FAILED_WORKFLOWS+=("$WORKFLOW:$CONCLUSION")
+                fi
+                break
               fi
-              RUN_DETAILS=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
-                --json conclusion,url)
-              RUN_URL=$(jq -r '.url' <<< "$RUN_DETAILS")
-              if test "$(jq -r '.conclusion' <<< "$RUN_DETAILS")" = "success"; then
-                STATUS=success
-              else
-                STATUS=failure
+              if test "$SECONDS" -ge "$DEADLINE"; then
+                FAILED_WORKFLOWS+=("$WORKFLOW:timeout")
+                break
               fi
-              break
-            fi
-            if test "$SECONDS" -ge "$DEADLINE"; then
-              RUN_URL="https://github.com/$GITHUB_REPOSITORY/actions/workflows/ci.yml"
-              STATUS=error
-              break
-            fi
-            sleep 5
+              sleep 5
+            done
           done
-          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
-            -f state="$STATUS" -f context=CI \
-            -f description="Release CI $STATUS" -f target_url="$RUN_URL"
-          test "$STATUS" = success
+          test "${#FAILED_WORKFLOWS[@]}" -eq 0 || {
+            printf 'Release required workflows failed: %s\n' \
+              "${FAILED_WORKFLOWS[*]}" >&2
+            exit 1
+          }
       - name: Dispatch release publication
         if: steps.release.outputs.release_created == 'true'
         env:

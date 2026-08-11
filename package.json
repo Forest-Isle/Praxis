@@ -29,7 +29,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run format:check && npm run lint && npm run test:docs && npm run check:boundaries && npm run typecheck && npm test && npm run build",
+    "check": "npm run format:check && npm run lint && npm run test:docs && npm run verify:release-automation && npm run check:boundaries && npm run typecheck && npm test && npm run build",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "dev": "tsx src/cli.ts",
     "format": "prettier --write .",
@@ -97,7 +97,8 @@
     "test:web-compat": "npm run build && node scripts/verify-web-compatibility.mjs",
     "test:workflow-compat": "npm run build && node scripts/verify-workflow-compatibility.mjs",
     "test:worktree-compat": "npm run build && node scripts/verify-worktree-compatibility.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:release-automation": "node scripts/verify-release-automation.mjs"
   },
   "engines": {
     "node": ">=24"
