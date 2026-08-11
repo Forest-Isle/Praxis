@@ -112,6 +112,11 @@ const extendedColorPattern = new RegExp(
   String.raw`\u001B\[(?:38|48);(?:2|5);`,
   'u',
 )
+const sgrStartPattern = new RegExp(String.raw`^\u001B\[(\d+)`, 'u')
+const themeAnsiReferencePattern = new RegExp(
+  String.raw`^(\u001B\[[0-9;]+m)(.*)$`,
+  'su',
+)
 
 const TERMINAL_ENVIRONMENT_KEYS = [
   'TERM',
@@ -122,6 +127,7 @@ const TERMINAL_ENVIRONMENT_KEYS = [
   'TERM_PROGRAM_VERSION',
   'WT_SESSION',
 ]
+const CAPTURE_HOST_FLAG_KEYS = ['CI', 'GITHUB_ACTIONS']
 const PROFILE_TERMINAL_ENVIRONMENT = {
   TERM: 'xterm-256color',
   COLORTERM: undefined,
@@ -135,6 +141,7 @@ const PROFILE_TERMINAL_ENVIRONMENT = {
 function normalizedTerminalEnvironment(environment, terminalEnvironment) {
   const normalized = { ...environment }
   for (const name of TERMINAL_ENVIRONMENT_KEYS) delete normalized[name]
+  for (const name of CAPTURE_HOST_FLAG_KEYS) delete normalized[name]
   for (const [name, value] of Object.entries(terminalEnvironment)) {
     if (value !== undefined) normalized[name] = value
   }
@@ -143,7 +150,10 @@ function normalizedTerminalEnvironment(environment, terminalEnvironment) {
 
 function terminalEnvironmentSnapshot(environment) {
   return Object.fromEntries(
-    TERMINAL_ENVIRONMENT_KEYS.map((name) => [name, environment[name]]),
+    [...TERMINAL_ENVIRONMENT_KEYS, ...CAPTURE_HOST_FLAG_KEYS].map((name) => [
+      name,
+      environment[name],
+    ]),
   )
 }
 
@@ -152,6 +162,69 @@ function profileTerminalEnvironment(profile) {
     ? PROFILE_TERMINAL_ENVIRONMENT
     : { ...PROFILE_TERMINAL_ENVIRONMENT, COLORTERM: 'truecolor' }
 }
+
+function sgrPlane(sequence) {
+  const code = Number(sgrStartPattern.exec(sequence)?.[1])
+  if ((code >= 30 && code <= 39) || (code >= 90 && code <= 97))
+    return 'foreground'
+  if ((code >= 40 && code <= 49) || (code >= 100 && code <= 107))
+    return 'background'
+  return undefined
+}
+
+function activeSgrAt(output, index, plane) {
+  let foreground
+  let background
+  const sgrPattern = new RegExp(String.raw`\u001B\[[0-9;]*m`, 'gu')
+  for (const match of output.slice(0, index).matchAll(sgrPattern)) {
+    const sequence = match[0]
+    if (sequence === '\u001B[0m') {
+      foreground = undefined
+      background = undefined
+      continue
+    }
+    const sequencePlane = sgrPlane(sequence)
+    if (sequencePlane === 'foreground') {
+      foreground = sequence === '\u001B[39m' ? undefined : sequence
+    } else if (sequencePlane === 'background') {
+      background = sequence === '\u001B[49m' ? undefined : sequence
+    }
+  }
+  return plane === 'foreground' ? foreground : background
+}
+
+function assertThemeAnsiContext(output, ansi, token, label) {
+  if (!token) {
+    assert.ok(
+      output.includes(ansi),
+      `${label} missed exact ANSI ${JSON.stringify(ansi)}`,
+    )
+    return
+  }
+  const plane = sgrPlane(ansi)
+  assert.ok(plane, `${label} used unsupported ANSI ${JSON.stringify(ansi)}`)
+  let index = output.indexOf(token)
+  while (index >= 0) {
+    if (activeSgrAt(output, index, plane) === ansi) return
+    index = output.indexOf(token, index + token.length)
+  }
+  assert.fail(
+    `${label} did not apply ${JSON.stringify(ansi)} to ${JSON.stringify(token)}: ${JSON.stringify(output.match(new RegExp(`.{0,40}${token}.{0,40}`, 'gu')))}`,
+  )
+}
+
+const LINUX_CI_ANSI_CONTEXT_FIXTURE =
+  '\u001B[1G 1 \u001B[38;5;81m\u001B[1mfunction\u001B[22m\u001B[39m greet() {\u001B[K'
+assert.equal(
+  LINUX_CI_ANSI_CONTEXT_FIXTURE.includes('\u001B[38;5;81mfunction'),
+  false,
+)
+assertThemeAnsiContext(
+  LINUX_CI_ANSI_CONTEXT_FIXTURE,
+  '\u001B[38;5;81m',
+  'function',
+  'Linux CI raw capture regression',
+)
 
 function assertAnsiStyled(output, payload, ansiCodes, label) {
   const text = payload.replace(/^[+-]/u, '')
@@ -552,7 +625,10 @@ try {
       TERM: 'xterm-direct',
       COLORTERM: 'truecolor',
       FORCE_COLOR: '3',
+      NO_COLOR: '1',
       TERM_PROGRAM: 'iTerm.app',
+      CI: 'true',
+      GITHUB_ACTIONS: 'true',
     },
     PROFILE_TERMINAL_ENVIRONMENT,
   )
@@ -561,6 +637,13 @@ try {
     terminalEnvironmentSnapshot(cleanAutoProfileEnvironment),
     'profile terminal normalization leaked host truecolor signals',
   )
+  for (const name of ['CI', 'GITHUB_ACTIONS', 'NO_COLOR', 'FORCE_COLOR']) {
+    assert.equal(
+      contaminatedProfileEnvironment[name],
+      undefined,
+      `profile terminal normalization retained ${name}`,
+    )
+  }
   const realClaudeRoot = join(root, 'real-claude')
   const realClaudeCwd = join(realClaudeRoot, 'work')
   const realClaudeTmuxSocket = join(realClaudeRoot, 'tmux.sock')
@@ -1013,6 +1096,7 @@ send "/theme"
 expect -re {Change the theme}
 send "\r"
 expect -re {Choose the text style that looks best with your terminal}
+expect -re {function}
 after 200
 send "\033"
 after 100
@@ -1040,16 +1124,24 @@ exit 0
     const claudeOutput = realClaudeThemeCaptures.get(profile)
     assert.ok(claudeOutput, `missing Claude ${profile} reference capture`)
     for (const reference of expectedAnsi) {
-      const claudeAnsi = reference.replace('Claude', '')
+      const referenceMatch = themeAnsiReferencePattern.exec(reference)
+      assert.ok(referenceMatch, `invalid theme ANSI reference ${reference}`)
+      const claudeAnsi = referenceMatch[1]
+      const claudeToken = referenceMatch[2]
       const praxisAnsi =
         profile === 'auto' ? claudeAnsi : praxisAnsiForClaude(claudeAnsi)
-      assert.ok(
-        claudeOutput.includes(claudeAnsi),
-        `Claude 2.1.208 ${profile} missed reference ANSI ${JSON.stringify(claudeAnsi)}`,
+      const praxisToken = claudeToken === 'Claude' ? 'Praxis' : claudeToken
+      assertThemeAnsiContext(
+        claudeOutput,
+        claudeAnsi,
+        claudeToken,
+        `Claude 2.1.208 ${profile}`,
       )
-      assert.ok(
-        praxisOutput.includes(praxisAnsi),
-        `Praxis ${profile} diverged from Claude color ${JSON.stringify(claudeAnsi)} as ${JSON.stringify(praxisAnsi)}: ${JSON.stringify(praxisOutput.match(/.{0,40}function.{0,40}/gu))}`,
+      assertThemeAnsiContext(
+        praxisOutput,
+        praxisAnsi,
+        praxisToken,
+        `Praxis ${profile}`,
       )
     }
     console.log(`Praxis ${profile} ANSI matched Claude 2.1.208`)
