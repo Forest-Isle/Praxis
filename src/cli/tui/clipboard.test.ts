@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  createTuiOsc52ClipboardWriter,
   createTuiClipboardReader,
   createTuiClipboardWriter,
   parseMacPngClipboard,
@@ -102,5 +103,23 @@ describe('TUI clipboard', () => {
     await expect(
       createTuiClipboardWriter({ platform: 'aix' })('answer'),
     ).rejects.toThrow('Clipboard is unavailable')
+  })
+
+  it('writes bounded UTF-8 text through OSC 52', async () => {
+    const sequences: string[] = []
+    const writer = createTuiOsc52ClipboardWriter((sequence) =>
+      sequences.push(sequence),
+    )
+
+    await expect(writer('SIDE ✓')).resolves.toBeUndefined()
+    expect(sequences).toEqual([
+      `\u001B]52;c;${Buffer.from('SIDE ✓').toString('base64')}\u0007`,
+    ])
+
+    sequences.length = 0
+    await expect(writer('a'.repeat(8 * 1024 * 1024 + 1))).rejects.toThrow(
+      'exceeds the supported size limit',
+    )
+    expect(sequences).toEqual([])
   })
 })

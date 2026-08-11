@@ -96,6 +96,7 @@ const NON_TAIL_ENTRY_TYPES = new Set([
   'file-history-snapshot',
   'permission-mode',
   'pr-link',
+  'queue-operation',
   'relocated',
   'worktree-state',
 ])
@@ -217,12 +218,18 @@ function validateLastPromptLeaf(
       break
     }
   }
-  if (leaf?.type !== 'assistant') {
+  const isNativeLocalCommandLeaf =
+    leaf?.type === 'system' &&
+    leaf.subtype === 'local_command' &&
+    typeof leaf.content === 'string' &&
+    leaf.content.startsWith('<local-command-stdout>') &&
+    entry.lastPrompt === undefined
+  if (leaf?.type !== 'assistant' && !isNativeLocalCommandLeaf) {
     throw new Error(
       'Claude last-prompt must reference the final assistant leaf',
     )
   }
-  if (leaf.sessionId !== entry.sessionId) {
+  if (leaf?.sessionId !== entry.sessionId) {
     throw new Error(
       'Claude last-prompt and leaf must belong to the same session',
     )

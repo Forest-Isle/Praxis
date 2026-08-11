@@ -23,6 +23,8 @@ const advancedFixtureUrls = [
   'sidechain-layout/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/subagents/agent-fixture.jsonl',
   'media-error-session.jsonl',
   'interrupted-session.jsonl',
+  'btw-records.jsonl',
+  'btw-fresh-records.jsonl',
 ].map(
   (name) =>
     new URL(
@@ -139,8 +141,8 @@ describe('ClaudeSchemaAdapter', () => {
     expect(adapter.serializeForFork(nativeLastPrompt)).toBe(
       JSON.stringify(nativeLastPrompt),
     )
-    expect(() => adapter.serializeForAppend(nativeLastPrompt)).toThrow(
-      'invalid metadata',
+    expect(adapter.serializeForAppend(nativeLastPrompt)).toBe(
+      JSON.stringify(nativeLastPrompt),
     )
     expect(adapter.serializeForFork(adapter.parse(userLine ?? ''))).toBe(
       userLine,

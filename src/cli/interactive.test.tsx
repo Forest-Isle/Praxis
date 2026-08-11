@@ -638,6 +638,315 @@ describe('InteractiveApp', () => {
     expect(recordCdUsage).toHaveBeenCalledWith('active-session')
   })
 
+  it('shows native /btw usage without starting a model turn', async () => {
+    const recordBtwUsage = vi.fn(async () => 'active-session')
+    const answerSideQuestion = vi.fn()
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              recordBtwUsage,
+              answerSideQuestion,
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+      />,
+    )
+
+    app.stdin.write('/btw')
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('Usage: /btw <your question>')
+    expect(recordBtwUsage).toHaveBeenCalledWith('active-session', 'default')
+    expect(answerSideQuestion).not.toHaveBeenCalled()
+  })
+
+  it('streams /btw answers and manages history, copy, and clear locally', async () => {
+    const clipboardWriter = vi.fn(async () => undefined)
+    const questions: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async answerSideQuestion(_sessionId, question, _signal, onDelta) {
+                questions.push(question)
+                const answer = question === 'first?' ? 'FIRST' : 'SECOND'
+                onDelta?.(answer.slice(0, 2))
+                onDelta?.(answer.slice(2))
+                return {
+                  sessionId: 'active-session',
+                  text: answer,
+                  usage: { inputTokens: 2, outputTokens: 1 },
+                }
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+        sideQuestionClipboardWriter={clipboardWriter}
+      />,
+    )
+
+    app.stdin.write('/btw first?')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('/btw first?')
+    expect(app.lastFrame()).toContain('FIRST')
+    expect(app.lastFrame()).toContain('c to copy')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    app.stdin.write('/btw second?')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('/btw first?')
+    expect(app.lastFrame()).toContain('/btw second?')
+    expect(app.lastFrame()).toContain('SECOND')
+    expect(app.lastFrame()).toContain('←/→ to switch')
+
+    app.stdin.write('\u001B[D')
+    await flush()
+    expect(app.lastFrame()).toContain('FIRST')
+    app.stdin.write('c')
+    await flush()
+    expect(clipboardWriter).toHaveBeenCalledWith('FIRST')
+    expect(app.lastFrame()).toContain('Copied to clipboard')
+
+    app.stdin.write('x')
+    await flush()
+    expect(app.lastFrame()).toContain('/btw first?')
+    expect(app.lastFrame()).not.toContain('/btw second?')
+    expect(questions).toEqual(['first?', 'second?'])
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    app.stdin.write('/usage')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toMatch(/Input tokens:\s+4/u)
+    expect(app.lastFrame()).toMatch(/Output tokens:\s+2/u)
+  })
+
+  it('keeps a fresh /btw session for later fork and accumulates its cost', async () => {
+    const forkSideQuestion = vi.fn(async () => ({
+      agentId: 'a123456789abcdef',
+      name: 'fresh-question',
+    }))
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async answerSideQuestion() {
+                return {
+                  sessionId: 'fresh-session',
+                  text: 'ANSWER',
+                  usage: { inputTokens: 2, outputTokens: 1 },
+                  costUsd: 0.000321,
+                }
+              },
+              forkSideQuestion,
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('/btw fresh question')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('f')
+    app.stdin.write('f')
+    await flush()
+
+    expect(forkSideQuestion).toHaveBeenCalledWith(
+      'fresh-session',
+      'fresh question',
+    )
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    app.stdin.write('/usage')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('$0.0003')
+  })
+
+  it('aborts an in-flight /btw answer when its panel closes', async () => {
+    let aborted = false
+    let calls = 0
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async answerSideQuestion(_sessionId, _question, signal, onDelta) {
+                calls += 1
+                if (calls > 1) {
+                  onDelta?.('NEXT')
+                  return {
+                    sessionId: 'active-session',
+                    text: 'NEXT',
+                    usage: { inputTokens: 1, outputTokens: 1 },
+                  }
+                }
+                await new Promise<void>((resolve) =>
+                  signal?.addEventListener(
+                    'abort',
+                    () => {
+                      aborted = true
+                      resolve()
+                    },
+                    { once: true },
+                  ),
+                )
+                return {
+                  sessionId: 'active-session',
+                  text: '',
+                  usage: { inputTokens: 0, outputTokens: 0 },
+                }
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+      />,
+    )
+
+    app.stdin.write('/btw wait')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Answering…')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(aborted).toBe(true)
+    expect(app.lastFrame()).not.toContain('/btw wait')
+
+    app.stdin.write('/btw next')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('NEXT')
+    app.stdin.write('\u001B[D')
+    await flush()
+    expect(app.lastFrame()).toContain('Cancelled')
+  })
+
+  it('forks a completed /btw answer through the native Agent command', async () => {
+    const forkSideQuestion = vi.fn(async () => ({
+      agentId: 'a123456789abcdef',
+      name: 'reply-with-third',
+    }))
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async answerSideQuestion(
+                _sessionId,
+                _question,
+                _signal,
+                onDelta,
+              ) {
+                onDelta?.('THIRD')
+                return {
+                  sessionId: 'active-session',
+                  text: 'THIRD',
+                  usage: { inputTokens: 2, outputTokens: 1 },
+                }
+              },
+              forkSideQuestion,
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+      />,
+    )
+
+    app.stdin.write('/btw Reply with THIRD only.')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('f')
+    app.stdin.write('f')
+    await flush()
+
+    expect(forkSideQuestion).toHaveBeenCalledWith(
+      'active-session',
+      'Reply with THIRD only.',
+    )
+    expect(forkSideQuestion).toHaveBeenCalledOnce()
+    expect(app.lastFrame()).toContain('⑂ forked reply-with-third (cdef)')
+    expect(app.lastFrame()).not.toContain('f to fork')
+  })
+
   it('changes cwd and preserves it when recreating the interactive service', async () => {
     const creations: Array<string | undefined> = []
     const changes: Array<[string | undefined, string]> = []

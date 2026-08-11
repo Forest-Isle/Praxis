@@ -12,6 +12,8 @@ import type {
   RewindPoint,
   SessionRunResult,
   SessionSummary,
+  SideQuestionForkResult,
+  SideQuestionResult,
 } from '../application/session-service.js'
 import type {
   ModelImage,
@@ -20,6 +22,7 @@ import type {
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
+import { AgentRunCancelledError } from '../core/runtime.js'
 import type {
   CliElicitationRequest,
   CliElicitationResult,
@@ -38,6 +41,7 @@ import {
 } from '../platform/sensitive-data.js'
 import {
   CommandPalette,
+  BtwPanel,
   Composer,
   DiffDashboard,
   DialogFrame,
@@ -53,6 +57,7 @@ import {
   WelcomePanel,
   useTerminalWidth,
   type TranscriptItem,
+  type TuiBtwEntry,
   type TuiDisplayMetadata,
 } from './tui/claude-style.js'
 import {
@@ -100,6 +105,7 @@ import { suspendTuiProcess } from './tui/terminal-suspend.js'
 import {
   readTuiClipboard,
   writeTuiClipboard,
+  writeTuiOsc52Clipboard,
   type TuiClipboardContent,
 } from './tui/clipboard.js'
 import {
@@ -166,6 +172,22 @@ interface InteractiveSessionCommands {
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
   changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
   recordCdUsage?(sessionId: string): Promise<void>
+  answerSideQuestion?(
+    sessionId: string | undefined,
+    question: string,
+    signal?: AbortSignal,
+    onDelta?: (delta: string) => void,
+    permissionMode?: ClaudePermissionMode,
+  ): Promise<SideQuestionResult>
+  recordBtwUsage?(
+    sessionId: string | undefined,
+    permissionMode?: ClaudePermissionMode,
+  ): Promise<string>
+  forkSideQuestion?(
+    sessionId: string,
+    question: string,
+    signal?: AbortSignal,
+  ): Promise<SideQuestionForkResult>
   rename?(sessionId: string, name: string): Promise<void>
   sessionNameSuggestion?(
     sessionId: string,
@@ -250,6 +272,7 @@ interface InteractiveAppProps {
   suspendProcess?: () => void | Promise<void>
   clipboardReader?: () => Promise<TuiClipboardContent>
   clipboardWriter?: (text: string) => Promise<void>
+  sideQuestionClipboardWriter?: (text: string) => Promise<void>
   exportWriter?: (path: string, text: string) => Promise<void>
   permissionRuleStore?: {
     load(): Promise<readonly TuiPermissionRule[]>
@@ -380,6 +403,7 @@ type InteractiveMenu =
   | { kind: 'export'; selectedIndex: number }
   | { kind: 'export-filename' }
   | { kind: 'compact-progress' }
+  | { kind: 'btw'; selectedIndex: number; scrollOffset: number }
   | {
       kind: 'rewind'
       points: readonly RewindPoint[]
@@ -625,6 +649,7 @@ export function InteractiveApp({
   suspendProcess = suspendTuiProcess,
   clipboardReader = readTuiClipboard,
   clipboardWriter = writeTuiClipboard,
+  sideQuestionClipboardWriter = writeTuiOsc52Clipboard,
   exportWriter = writeConversationExport,
   permissionRuleStore,
   workspaceDirectoryResolver = resolveTuiWorkspaceDirectory,
@@ -735,6 +760,12 @@ export function InteractiveApp({
   const [availableSlashCommands, setAvailableSlashCommands] =
     useState(slashCommands)
   const [availableAgents, setAvailableAgents] = useState(agents)
+  const [btwHistory, setBtwHistory] = useState<TuiBtwEntry[]>([])
+  const btwHistoryRef = useRef<TuiBtwEntry[]>([])
+  const btwIdRef = useRef(0)
+  const btwControllerRef = useRef<AbortController | null>(null)
+  const [btwCopied, setBtwCopied] = useState(false)
+  const btwCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [menu, setMenu] = useState<InteractiveMenu | null>(null)
   const menuRef = useRef<InteractiveMenu | null>(null)
   const [busy, setBusy] = useState(false)
@@ -978,8 +1009,10 @@ export function InteractiveApp({
       planApprovalRef.current?.resolve(false)
       if (exitConfirmationTimerRef.current)
         clearTimeout(exitConfirmationTimerRef.current)
+      if (btwCopiedTimerRef.current) clearTimeout(btwCopiedTimerRef.current)
       scheduledWaitRef.current?.abort()
       turnControllerRef.current?.abort()
+      btwControllerRef.current?.abort()
       const closing = serviceRef.current?.close?.() ?? Promise.resolve()
       if (onCleanupRef.current) onCleanupRef.current(closing)
       else void closing.catch(() => undefined)
@@ -1182,6 +1215,14 @@ export function InteractiveApp({
   const updateMenu = (next: InteractiveMenu | null) => {
     menuRef.current = next
     setMenu(next)
+  }
+
+  const updateBtwHistory = (
+    updater: (entries: TuiBtwEntry[]) => TuiBtwEntry[],
+  ) => {
+    const next = updater(btwHistoryRef.current)
+    btwHistoryRef.current = next
+    setBtwHistory(next)
   }
 
   useEffect(() => {
@@ -1911,6 +1952,162 @@ export function InteractiveApp({
     })()
     onTurnChange?.(showing)
     void showing.finally(() => onTurnChange?.(null))
+  }
+
+  const showBtwUsage = () => {
+    appendPromptHistory('/btw')
+    const showing = (async () => {
+      try {
+        const activeSessionId = await (
+          await service()
+        ).recordBtwUsage?.(
+          sessionId ?? undefined,
+          runtimePreferencesRef.current.permissionMode,
+        )
+        if (activeSessionId) setSessionId(activeSessionId)
+        append({ kind: 'user', text: '/btw' })
+        append({ kind: 'local-result', text: 'Usage: /btw <your question>' })
+      } catch (error) {
+        warn(error)
+      }
+    })()
+    onTurnChange?.(showing)
+    void showing.finally(() => onTurnChange?.(null))
+  }
+
+  const askSideQuestion = (question: string) => {
+    const id = btwIdRef.current + 1
+    btwIdRef.current = id
+    appendPromptHistory(`/btw ${question}`)
+    const entry: TuiBtwEntry = {
+      id,
+      question,
+      answer: '',
+      status: 'answering',
+    }
+    updateBtwHistory((entries) => [...entries, entry])
+    updateMenu({
+      kind: 'btw',
+      selectedIndex: btwHistoryRef.current.length - 1,
+      scrollOffset: 0,
+    })
+    setBtwCopied(false)
+    const controller = new AbortController()
+    btwControllerRef.current?.abort()
+    btwControllerRef.current = controller
+    const sideSignal = signal
+      ? AbortSignal.any([signal, controller.signal])
+      : controller.signal
+    const answering = (async () => {
+      try {
+        const commands = await service()
+        if (!commands.answerSideQuestion) {
+          throw new Error('Side questions are unavailable.')
+        }
+        const result = await commands.answerSideQuestion(
+          sessionId ?? undefined,
+          question,
+          sideSignal,
+          (delta) =>
+            updateBtwHistory((entries) =>
+              entries.map((item) =>
+                item.id === id
+                  ? { ...item, answer: item.answer + delta }
+                  : item,
+              ),
+            ),
+          runtimePreferencesRef.current.permissionMode,
+        )
+        if (result.sessionId) setSessionId(result.sessionId)
+        updateBtwHistory((entries) =>
+          entries.map((item) =>
+            item.id === id ? { ...item, status: 'complete' } : item,
+          ),
+        )
+        if (sideSignal.aborted) throw new AgentRunCancelledError()
+        setUsage((current) => ({
+          inputTokens: (current?.inputTokens ?? 0) + result.usage.inputTokens,
+          outputTokens:
+            (current?.outputTokens ?? 0) + result.usage.outputTokens,
+          cacheReadInputTokens:
+            (current?.cacheReadInputTokens ?? 0) +
+            (result.usage.cacheReadInputTokens ?? 0),
+          cacheCreationInputTokens:
+            (current?.cacheCreationInputTokens ?? 0) +
+            (result.usage.cacheCreationInputTokens ?? 0),
+        }))
+        if (result.costUsd !== undefined) {
+          const sideCostUsd = result.costUsd
+          setCostUsd((current) => (current ?? 0) + sideCostUsd)
+        }
+      } catch (error) {
+        updateBtwHistory((entries) =>
+          entries.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  status: 'error',
+                  error: sideSignal.aborted
+                    ? 'Cancelled'
+                    : error instanceof Error
+                      ? error.message
+                      : String(error),
+                }
+              : item,
+          ),
+        )
+      } finally {
+        if (btwControllerRef.current === controller) {
+          btwControllerRef.current = null
+        }
+      }
+    })()
+    onTurnChange?.(answering)
+    void answering.finally(() => onTurnChange?.(null))
+  }
+
+  const forkSideQuestion = (entry: TuiBtwEntry) => {
+    updateBtwHistory((entries) =>
+      entries.map((item) =>
+        item.id === entry.id ? { ...item, status: 'forking' } : item,
+      ),
+    )
+    const forking = (async () => {
+      try {
+        if (!sessionId) {
+          throw new Error(
+            'Start a conversation before forking a side question.',
+          )
+        }
+        const commands = await service()
+        if (!commands.forkSideQuestion) {
+          throw new Error('Side-question forking is unavailable.')
+        }
+        const result = await commands.forkSideQuestion(
+          sessionId,
+          entry.question,
+        )
+        updateMenu(null)
+        append({
+          kind: 'local-result',
+          text: `⑂ forked ${result.name} (${result.agentId.slice(-4)})`,
+        })
+      } catch (error) {
+        updateBtwHistory((entries) =>
+          entries.map((item) =>
+            item.id === entry.id
+              ? {
+                  ...item,
+                  status: 'error',
+                  error: error instanceof Error ? error.message : String(error),
+                }
+              : item,
+          ),
+        )
+      }
+    })()
+    onTurnChange?.(forking)
+    void forking.finally(() => onTurnChange?.(null))
   }
 
   const renameSession = (requestedName?: string) => {
@@ -2714,6 +2911,92 @@ export function InteractiveApp({
 
     const activeMenu = menuRef.current
     if (activeMenu) {
+      if (activeMenu.kind === 'btw') {
+        const selected = btwHistoryRef.current[activeMenu.selectedIndex]
+        if (key.escape || value === '\u001B') {
+          btwControllerRef.current?.abort()
+          btwControllerRef.current = null
+          updateMenu(null)
+          return
+        }
+        if (key.leftArrow || key.rightArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                btwHistoryRef.current.length - 1,
+                activeMenu.selectedIndex + (key.leftArrow ? -1 : 1),
+              ),
+            ),
+            scrollOffset: 0,
+          })
+          setBtwCopied(false)
+          return
+        }
+        if (key.upArrow || key.downArrow) {
+          const maxOffset = Math.max(
+            0,
+            (selected?.answer.split('\n').length ?? 0) - 16,
+          )
+          updateMenu({
+            ...activeMenu,
+            scrollOffset: Math.max(
+              0,
+              Math.min(
+                maxOffset,
+                activeMenu.scrollOffset + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+          return
+        }
+        if (lower === 'x' && btwHistoryRef.current.length > 1 && selected) {
+          updateBtwHistory(() => [selected])
+          updateMenu({ kind: 'btw', selectedIndex: 0, scrollOffset: 0 })
+          setBtwCopied(false)
+          return
+        }
+        if (lower === 'c' && selected?.status === 'complete') {
+          const copying = sideQuestionClipboardWriter(selected.answer).then(
+            () => {
+              if (!componentMountedRef.current) return
+              setBtwCopied(true)
+              if (btwCopiedTimerRef.current) {
+                clearTimeout(btwCopiedTimerRef.current)
+              }
+              btwCopiedTimerRef.current = setTimeout(() => {
+                if (componentMountedRef.current) setBtwCopied(false)
+                btwCopiedTimerRef.current = null
+              }, 1500)
+              btwCopiedTimerRef.current.unref?.()
+            },
+            (error: unknown) =>
+              updateBtwHistory((entries) =>
+                entries.map((item) =>
+                  item.id === selected.id
+                    ? {
+                        ...item,
+                        status: 'error',
+                        error:
+                          error instanceof Error
+                            ? error.message
+                            : String(error),
+                      }
+                    : item,
+                ),
+              ),
+          )
+          onTurnChange?.(copying)
+          void copying.finally(() => onTurnChange?.(null))
+          return
+        }
+        if (lower === 'f' && selected?.status === 'complete') {
+          forkSideQuestion(selected)
+        }
+        return
+      }
+
       if (activeMenu.kind === 'help') {
         if (key.escape) {
           updateMenu(null)
@@ -3579,6 +3862,7 @@ export function InteractiveApp({
       const copyCommand = /^\/copy(?:\s+(\d+))?$/u.exec(prompt)
       const renameCommand = /^\/rename(?:\s+(.+))?$/u.exec(prompt)
       const cdCommand = /^\/cd(?:\s+(.+))?$/u.exec(prompt)
+      const btwCommand = /^\/btw(?:\s+([\s\S]+))?$/u.exec(prompt)
       if (prompt === '/exit') {
         exit()
       } else if (prompt === '/help' || prompt === '?') {
@@ -3611,6 +3895,10 @@ export function InteractiveApp({
         setKeybindingsEditing(true)
       } else if (prompt === '/add-dir') {
         openWorkspaceDirectoryInput()
+      } else if (btwCommand) {
+        const sideQuestion = btwCommand[1]?.trim()
+        if (sideQuestion) askSideQuestion(sideQuestion)
+        else showBtwUsage()
       } else if (cdCommand) {
         append({ kind: 'user', text: prompt })
         const requestedCwd = cdCommand[1]?.trim()
@@ -3898,6 +4186,15 @@ export function InteractiveApp({
                 {compactProgress}%
               </Text>
             </Box>
+          ) : menu?.kind === 'btw' ? (
+            <BtwPanel
+              entries={btwHistory}
+              selectedIndex={menu.selectedIndex}
+              scrollOffset={menu.scrollOffset}
+              copied={btwCopied}
+              width={width}
+              screenReader={axScreenReader}
+            />
           ) : menu?.kind === 'rewind' ? (
             <Box flexDirection="column">
               <Text bold> Rewind</Text>

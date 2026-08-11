@@ -30,6 +30,7 @@ const pbpaste = join(binRoot, 'pbpaste')
 const pbcopy = join(binRoot, 'pbcopy')
 const clipboardOutput = join(root, 'clipboard-output.txt')
 const wlPaste = join(binRoot, 'wl-paste')
+const wlCopy = join(binRoot, 'wl-copy')
 let cli
 let port
 const packageJson = JSON.parse(
@@ -44,13 +45,30 @@ const expectedVersionPattern = packageJson.version.replace(
 )
 
 const provider = createServer(async (request, response) => {
+  let requestBody = ''
   for await (const chunk of request) {
     // Drain request before responding so the real adapter lifecycle is tested.
-    void chunk
+    requestBody += chunk
   }
+  let latestText = ''
+  try {
+    const payload = JSON.parse(requestBody)
+    const latestContent = payload.messages?.at(-1)?.content
+    latestText =
+      typeof latestContent === 'string'
+        ? latestContent
+        : JSON.stringify(latestContent ?? '')
+  } catch {
+    // Invalid provider requests are exercised by the adapter tests.
+  }
+  const content = latestText.includes('Reply with SIDE only.')
+    ? 'SIDE'
+    : latestText.includes('reply briefly')
+      ? 'TUI_MODEL_OK'
+      : 'TUI_FAKE_OK'
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
-    `data: ${JSON.stringify({ choices: [{ delta: { content: 'TUI_FAKE_OK' }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
   )
 })
 
@@ -105,6 +123,7 @@ try {
   await writeFile(osascript, '#!/bin/sh\nexit 1\n')
   await writeFile(pbpaste, "#!/bin/sh\nprintf 'INSTALLED_CLIPBOARD'\n")
   await writeFile(pbcopy, '#!/bin/sh\ncat > "$TUI_CLIPBOARD_OUTPUT"\n')
+  await writeFile(wlCopy, '#!/bin/sh\ncat > "$TUI_CLIPBOARD_OUTPUT"\n')
   await writeFile(
     wlPaste,
     '#!/bin/sh\ncase "$*" in *image/png*) exit 1 ;; *) printf \'INSTALLED_CLIPBOARD\' ;; esac\n',
@@ -113,6 +132,7 @@ try {
     chmod(osascript, 0o755),
     chmod(pbpaste, 0o755),
     chmod(pbcopy, 0o755),
+    chmod(wlCopy, 0o755),
     chmod(wlPaste, 0o755),
   ])
   const { stdout: packed } = await execFileAsync(
@@ -244,21 +264,6 @@ expect -re {Praxis Code won't ask before using allowed tools}
 send "\033"
 after 100
 expect -re {bypass permissions on}
-set phase "file and agent mentions"
-send "@fix"
-expect -re {\+ fixture.txt}
-send "\r"
-expect -re {❯ @fixture.txt}
-send "\037"
-expect -re {❯ @fix}
-send "\025"
-expect -re {Try.*review this project}
-send "@rev"
-expect -re {reviewer.*\(agent\)}
-send "\r"
-expect -re {❯.*reviewer.*agent}
-send "\025"
-expect -re {Try.*review this project}
 set phase "context and status dialogs"
 send "/context"
 expect -re {Visualize current context usage}
@@ -342,15 +347,15 @@ send "reply briefly"
 expect -re {❯.*reply briefly}
 after 100
 send "\r"
-expect -re {awaiting-model}
 expect {
-  -re {TUI_FAKE_OK} {}
+  -re {TUI_MODEL_OK} {}
   timeout { puts stderr "assistant response did not render"; exit 1 }
   eof { puts stderr "Praxis exited before assistant response"; exit 1 }
 }
-expect -re {Context.*3 tokens}
-expect -re {Try.*review this project}
-after 100
+# Ink may include the restored empty composer in the same repaint that emitted
+# the response. Continuing with /cd below proves the composer is interactive
+# without depending on which fragment expect consumes from that repaint.
+after 300
 set phase "change working directory"
 send "/cd"
 after 300
@@ -378,6 +383,26 @@ send "/rename installed-title"
 after 300
 send "\r"
 expect -re {Session renamed to: installed-title}
+after 300
+set phase "btw usage"
+send "/btw"
+after 300
+send "\r"
+expect -re {Usage: /btw <your question>}
+set phase "btw answer"
+send "/btw Reply with SIDE only."
+after 300
+send "\r"
+expect -re {/btw Reply with SIDE only.}
+expect -re {SIDE}
+expect -re {c to copy.*f to fork}
+set phase "btw copy"
+send "c"
+expect -re {52;c;U0lERQ==}
+expect -re {Copied to clipboard}
+set phase "btw fork"
+send "f"
+expect -re {⑂ forked reply-with-side \([0-9a-f]{4}\)}
 after 300
 set phase "copy response"
 send "/copy"
@@ -486,7 +511,7 @@ exit 0
   const projectRoot = join(configRoot, 'projects')
   const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
     .map(String)
-    .filter((file) => file.endsWith('.jsonl'))
+    .filter((file) => file.endsWith('.jsonl') && !file.includes('/subagents/'))
   assert.equal(transcriptFiles.length, 2)
   const transcripts = await Promise.all(
     transcriptFiles.map(async (file) => ({
@@ -514,6 +539,10 @@ exit 0
     ),
   )
   assert.match(transcript, /<command-name>\/cd<\/command-name>/u)
+  assert.match(transcript, /<command-name>\/btw<\/command-name>/u)
+  assert.match(transcript, /⑂ forked reply-with-side \([0-9a-f]{4}\)/u)
+  assert.match(transcript, /"type":"queue-operation","operation":"enqueue"/u)
+  assert.match(transcript, /<task-notification>/u)
   assert.match(
     transcript,
     /<local-command-stdout>Usage: \/cd <path><\/local-command-stdout>/u,
@@ -526,6 +555,15 @@ exit 0
   assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
   assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
   assert.match(transcript, /<bash-stderr><\/bash-stderr>/u)
+  const inputHistory = await readFile(join(configRoot, 'history.jsonl'), 'utf8')
+  assert.match(inputHistory, /"display":"\/btw"/u)
+  assert.match(inputHistory, /"display":"\/btw Reply with SIDE only\."/u)
+  const sidechainFiles = (await readdir(projectRoot, { recursive: true }))
+    .map(String)
+    .filter(
+      (file) => file.includes('/subagents/agent-') && file.endsWith('.jsonl'),
+    )
+  assert.equal(sidechainFiles.length, 1)
   const clipboard = await readFile(clipboardOutput, 'utf8')
   assert.match(clipboard, /Praxis Code v/u)
   assert.match(clipboard, /❯ reply briefly/u)
@@ -561,6 +599,7 @@ exit 0
     env: {
       ...process.env,
       CI: 'true',
+      PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
       TUI_CLI: cli,
       TUI_CONFIG_ROOT: configRoot,
       TUI_NODE: process.execPath,

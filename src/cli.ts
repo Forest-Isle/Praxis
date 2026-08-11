@@ -17,6 +17,8 @@ import {
   type SessionInspection,
   type SessionRunResult,
   type SessionSummary,
+  type SideQuestionForkResult,
+  type SideQuestionResult,
 } from './application/session-service.js'
 import type { ClaudeDisplayTranscriptItem } from './compatibility/claude/projection.js'
 import {
@@ -925,6 +927,22 @@ interface SessionCommands {
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
   changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
   recordCdUsage?(sessionId: string): Promise<void>
+  answerSideQuestion?(
+    sessionId: string | undefined,
+    question: string,
+    signal?: AbortSignal,
+    onDelta?: (delta: string) => void,
+    permissionMode?: ClaudePermissionMode,
+  ): Promise<SideQuestionResult>
+  recordBtwUsage?(
+    sessionId: string | undefined,
+    permissionMode?: ClaudePermissionMode,
+  ): Promise<string>
+  forkSideQuestion?(
+    sessionId: string,
+    question: string,
+    signal?: AbortSignal,
+  ): Promise<SideQuestionForkResult>
   lifecycle?(
     trigger: 'init' | 'maintenance',
     options?: { sessionStart?: boolean; sessionId?: string },
@@ -1656,6 +1674,24 @@ const createDefaultService: CliDependencies['createService'] = async ({
       rewindPoints: (sessionId) => service.rewindPoints(sessionId),
       changeCwd: (sessionId, cwd) => service.changeCwd(sessionId, cwd),
       recordCdUsage: (sessionId) => service.recordCdUsage(sessionId),
+      answerSideQuestion: (
+        sessionId,
+        question,
+        sideSignal,
+        onDelta,
+        permissionMode,
+      ) =>
+        service.answerSideQuestion(
+          sessionId,
+          question,
+          sideSignal,
+          onDelta,
+          permissionMode,
+        ),
+      recordBtwUsage: (sessionId, permissionMode) =>
+        service.recordBtwUsage(sessionId, permissionMode),
+      forkSideQuestion: (sessionId, question, sideSignal) =>
+        service.forkSideQuestion(sessionId, question, sideSignal),
       lifecycle: async (trigger, lifecycleOptions = {}) => {
         if (!hooks) return
         const sessionId = lifecycleOptions.sessionId ?? randomUUID()

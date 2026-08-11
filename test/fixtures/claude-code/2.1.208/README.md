@@ -13,6 +13,10 @@ paths, timestamps, token counts, and human text with deterministic values.
   summary metadata with native preserved UUID segments.
 - `cd-records.jsonl`: exact `/cd` excerpt with `relocated`, paired
   `system/local_command` records, and the cwd-change system reminder.
+- `btw-records.jsonl`: bare usage, fork handoff, queue operations, and the
+  native background task notification produced by `/btw`.
+- `btw-fresh-records.jsonl`: fresh-TUI session initialization, bare `/btw`
+  usage pair, and its native `last-prompt` metadata tail.
 - `sidechain-layout/`: valid main session plus native
   `<session-id>/subagents/agent-*.jsonl` entries with `isSidechain`, `agentId`,
   and attribution metadata.

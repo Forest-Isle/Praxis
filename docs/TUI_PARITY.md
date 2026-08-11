@@ -21,7 +21,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
 - applicable local commands include direct `/add-dir`, response `/copy [N]`,
   native `/branch` and `/rename`, full-conversation `/export`, `/config`,
   `/usage`, `/mcp`, `/skill`, provider-backed `/compact`, native `/rewind`,
-  runtime `/cd`, and live plugin/skill reload entries;
+  runtime `/cd`, transcript-free `/btw` side questions, and live plugin/skill
+  reload entries;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
 - entering `!` switches the composer to shell mode; submitting runs the command
@@ -80,6 +81,7 @@ status-line plugins are not native parity requirements.
 | Compact       | progress, marker, expandable summary     | service, projection, interaction, and PTY gates |
 | Rewind        | bounded checkpoints and restore actions  | native JSONL/file-history and interaction gates |
 | Cwd           | local result plus relocated session      | service, interaction, and installed PTY gates   |
+| Side question | local history panel and Agent handoff    | black-box, service, Ink, and JSONL fixtures     |
 | Accessibility | decoration-free semantic text            | screen-reader fixture                           |
 
 ## Architecture
@@ -93,6 +95,7 @@ shared JSONL -> active-chain display projection -> restored transcript state
 shared extensions -> slash catalog -> command palette -> existing session service
 runtime controls -> service retirement/recreation -> existing session service
 /cd -> canonical cwd -> native session relocation -> recreated runtime service
+/btw -> contextual provider call -> local panel -> optional native Agent sidechain
 Git worktree ----> read-only diff snapshots ------> diff dashboard
 keyboard input -------------------> existing callbacks and session service
 `!` command -> direct runtime Bash -> native bash user records -> model turn
@@ -145,6 +148,9 @@ is passed from the CLI composition root and never written to shared JSONL.
   the current local runtime state.
 - `ListDashboard`: shared presentation for `.claude` skills and local
   background task/workflow state.
+- `BtwPanel`: session-local side-question history with bounded answer scrolling,
+  clipboard copy, history pruning, cancellation, and native background-Agent
+  handoff.
 - `DialogFrame`: shared bordered surface used by permission, question, plan,
   recovery, and elicitation decisions.
 - screen-reader branches: semantic text-only rendering through the same state.
@@ -192,6 +198,14 @@ is passed from the CLI composition root and never written to shared JSONL.
   `relocated`, `system/local_command`, and cwd-change reminder records. Bare
   `/cd` persists the observed native usage pair; target collisions and invalid
   paths fail without changing the active cwd.
+- `/btw <question>` asks the active provider with the current conversation
+  context but no tools and never appends the answer or question to the main
+  conversation JSONL. The command remains in shared `history.jsonl`; its local
+  panel supports answer scrolling, left/right history selection, OSC 52 copy,
+  and pruning. Esc cancels an in-flight answer. Pressing `f` on a completed answer
+  launches the existing native background Agent path, appends the observed
+  `system/local_command` pair, persists the Agent sidechain, and records native
+  queue operations plus the task notification in the main transcript.
 - `/model` retains the current model, restores the invocation default, or accepts
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
@@ -295,11 +309,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   streaming, tools, direct shell turns, cancellation, and screen-reader mode;
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
-  context/status/skill dashboards, `Ctrl+T` task access, file and agent `@`
-  selection, exact permission rule deletion and Workspace add/remove surfaces,
+  context/status/skill dashboards, `Ctrl+T` task access, exact permission rule
+  deletion and Workspace add/remove surfaces,
   `Ctrl+G` terminal suspension/edit/redraw, `/keybindings` shared template/editor
-  creation, installed-package `Ctrl+V` text paste,
-  control-code undo, and a real zsh
+  creation, installed-package `Ctrl+V` text paste, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus
   installed-package `!pwd` execution, provider continuation, direct `/add-dir`
   cancellation, `/copy` response output, `/rename`, `/branch`, complete
@@ -307,7 +320,9 @@ is passed from the CLI composition root and never written to shared JSONL.
   installed-package `/compact` completion and `/rewind` menu gates, interaction
   cancellation coverage, plus native selective-summary projection and
   preserved-message replay, and installed-package `/cd` relocation plus
-  post-change `!pwd` execution;
+  post-change `!pwd` execution; `/btw` usage, streaming/history/copy/cancel/fork
+  interaction coverage, native sidechain and queue-notification persistence,
+  and captured 2.1.208 JSONL records;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
@@ -321,7 +336,7 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the remaining applicable built-in command catalog
-(`/background`, `/btw`, `/hooks`, `/memory`, and
+(`/background`, `/hooks`, `/memory`, and
 presentation controls), exact denied-history
 behavior, and remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a

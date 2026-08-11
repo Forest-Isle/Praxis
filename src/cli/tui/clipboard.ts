@@ -244,3 +244,21 @@ export function createTuiClipboardWriter(
 }
 
 export const writeTuiClipboard = createTuiClipboardWriter()
+
+export type TuiOsc52Writer = (sequence: string) => void
+
+export function createTuiOsc52ClipboardWriter(
+  writer: TuiOsc52Writer = (sequence) => {
+    process.stdout.write(sequence)
+  },
+): (text: string) => Promise<void> {
+  return async (text) => {
+    const content = Buffer.from(text, 'utf8')
+    if (content.length > MAX_TEXT_BYTES) {
+      throw new Error('Clipboard text exceeds the supported size limit')
+    }
+    writer(`\u001B]52;c;${content.toString('base64')}\u0007`)
+  }
+}
+
+export const writeTuiOsc52Clipboard = createTuiOsc52ClipboardWriter()

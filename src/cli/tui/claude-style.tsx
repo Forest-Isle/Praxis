@@ -49,6 +49,14 @@ export type TranscriptItem =
       isError: boolean
     }
 
+export interface TuiBtwEntry {
+  id: number
+  question: string
+  answer: string
+  status: 'answering' | 'complete' | 'forking' | 'error'
+  error?: string
+}
+
 export function useTerminalWidth(override?: number): number {
   const { stdout } = useStdout()
   const [width, setWidth] = useState(override ?? stdout.columns ?? 80)
@@ -1141,6 +1149,89 @@ export function ListDashboard({
       )}
       <Text> </Text>
       <Text dimColor>↑/↓ to select · Esc to close</Text>
+    </Box>
+  )
+}
+
+export function BtwPanel({
+  entries,
+  selectedIndex,
+  scrollOffset,
+  copied,
+  width,
+  screenReader,
+}: {
+  entries: readonly TuiBtwEntry[]
+  selectedIndex: number
+  scrollOffset: number
+  copied: boolean
+  width: number
+  screenReader: boolean
+}) {
+  const selected = entries[selectedIndex]
+  const lines = selected?.answer.split('\n') ?? []
+  const visibleLines = lines.slice(scrollOffset, scrollOffset + 16)
+  const hasHistory = entries.length > 1
+  const complete = selected?.status === 'complete'
+  const footer = hasHistory
+    ? [
+        '←/→ to switch',
+        ...(complete
+          ? [copied ? 'Copied to clipboard' : 'c to copy', 'f to fork']
+          : []),
+        'x to clear history',
+        'Esc to close',
+      ].join(' · ')
+    : [
+        '↑/↓ to scroll',
+        ...(complete
+          ? [copied ? 'Copied to clipboard' : 'c to copy', 'f to fork']
+          : []),
+        'Esc to close',
+      ].join(' · ')
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {!screenReader ? (
+        <Text dimColor>{'─'.repeat(Math.min(100, width))}</Text>
+      ) : null}
+      {entries.map((entry, index) => (
+        <Text key={entry.id} dimColor={index !== selectedIndex}>
+          {'  '}/btw {entry.question}
+        </Text>
+      ))}
+      <Text> </Text>
+      {selected?.status === 'answering' ? (
+        <Box flexDirection="column">
+          <Text> {'  '}· Answering…</Text>
+          {selected.answer
+            ? visibleLines.map((line, index) => (
+                <Text key={`${scrollOffset + index}-${line}`}>
+                  {' '}
+                  {'  '}
+                  {line || ' '}
+                </Text>
+              ))
+            : null}
+        </Box>
+      ) : selected?.status === 'forking' ? (
+        <Text> {'  '}· Forking…</Text>
+      ) : selected?.status === 'error' ? (
+        <Text color="red">
+          {' '}
+          {'  '}
+          {selected.error ?? 'Side question failed'}
+        </Text>
+      ) : (
+        visibleLines.map((line, index) => (
+          <Text key={`${scrollOffset + index}-${line}`}>
+            {' '}
+            {'  '}
+            {line || ' '}
+          </Text>
+        ))
+      )}
+      <Text> </Text>
+      <Text dimColor> {footer}</Text>
     </Box>
   )
 }
