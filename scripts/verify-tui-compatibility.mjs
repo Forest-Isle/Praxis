@@ -30,6 +30,7 @@ const pbpaste = join(binRoot, 'pbpaste')
 const pbcopy = join(binRoot, 'pbcopy')
 const clipboardOutput = join(root, 'clipboard-output.txt')
 const wlPaste = join(binRoot, 'wl-paste')
+const wlCopy = join(binRoot, 'wl-copy')
 let cli
 let port
 const packageJson = JSON.parse(
@@ -122,6 +123,7 @@ try {
   await writeFile(osascript, '#!/bin/sh\nexit 1\n')
   await writeFile(pbpaste, "#!/bin/sh\nprintf 'INSTALLED_CLIPBOARD'\n")
   await writeFile(pbcopy, '#!/bin/sh\ncat > "$TUI_CLIPBOARD_OUTPUT"\n')
+  await writeFile(wlCopy, '#!/bin/sh\ncat > "$TUI_CLIPBOARD_OUTPUT"\n')
   await writeFile(
     wlPaste,
     '#!/bin/sh\ncase "$*" in *image/png*) exit 1 ;; *) printf \'INSTALLED_CLIPBOARD\' ;; esac\n',
@@ -130,6 +132,7 @@ try {
     chmod(osascript, 0o755),
     chmod(pbpaste, 0o755),
     chmod(pbcopy, 0o755),
+    chmod(wlCopy, 0o755),
     chmod(wlPaste, 0o755),
   ])
   const { stdout: packed } = await execFileAsync(
