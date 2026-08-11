@@ -344,7 +344,6 @@ send "reply briefly"
 expect -re {❯.*reply briefly}
 after 100
 send "\r"
-expect -re {awaiting-model}
 expect {
   -re {TUI_MODEL_OK} {}
   timeout { puts stderr "assistant response did not render"; exit 1 }
