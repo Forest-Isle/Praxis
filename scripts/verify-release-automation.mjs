@@ -63,6 +63,13 @@ assert.match(
   /statuses\/\$HEAD_SHA[\s\S]*state=success[\s\S]*context="\$CHECK_NAME"/u,
 )
 assert.match(releaseSource, /target_url="\$RUN_URL"/u)
+assert.match(releaseSource, /PR_STATE=.*gh pr view[\s\S]*\.state/u)
+assert.match(releaseSource, /test "\$PR_STATE" = "OPEN"/u)
+assert.match(releaseSource, /MERGE_DEADLINE=\$\(\(SECONDS \+ 300\)\)/u)
+assert.match(
+  releaseSource,
+  /gh workflow run release-please\.yml[\s\S]*--ref main/u,
+)
 assert.match(releaseSource, /-f base_ref=main/u)
 assert.match(releaseSource, /-f head_ref="\$HEAD_BRANCH"/u)
 assert.doesNotMatch(releaseSource, /contexts\/[^\s"']+/u)

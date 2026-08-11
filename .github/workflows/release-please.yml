@@ -133,6 +133,22 @@ jobs:
               -f description="Verified by dispatched workflow run $RUN_ID" \
               -f target_url="$RUN_URL"
           done
+          MERGE_DEADLINE=$((SECONDS + 300))
+          while true; do
+            PR_STATE=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --json state --jq '.state')
+            if test "$PR_STATE" = "MERGED"; then
+              break
+            fi
+            test "$PR_STATE" = "OPEN"
+            if test "$SECONDS" -ge "$MERGE_DEADLINE"; then
+              printf 'Release pull request did not auto-merge before timeout\n' >&2
+              exit 1
+            fi
+            sleep 3
+          done
+          gh workflow run release-please.yml --repo "$GITHUB_REPOSITORY" \
+            --ref main
       - name: Dispatch release publication
         if: steps.release.outputs.release_created == 'true'
         env:
