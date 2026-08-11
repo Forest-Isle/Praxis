@@ -599,6 +599,7 @@ exit 0
     env: {
       ...process.env,
       CI: 'true',
+      PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
       TUI_CLI: cli,
       TUI_CONFIG_ROOT: configRoot,
       TUI_NODE: process.execPath,
