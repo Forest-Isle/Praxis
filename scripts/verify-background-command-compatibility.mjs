@@ -110,6 +110,14 @@ function assertBackgrounding(output) {
   )
 }
 
+function backgroundJobId(output) {
+  const escape = String.fromCharCode(27)
+  return new RegExp(
+    `backgrounded · (?:${escape}\\[[0-9;?]*[ -/]*[@-~])*([0-9a-f]{8})`,
+    'u',
+  ).exec(output)?.[1]
+}
+
 function waitForExit(child, label, timeoutMs = 30_000) {
   return new Promise((resolve, reject) => {
     let output = ''
@@ -300,7 +308,7 @@ try {
     'Claude /background',
   )
   assertBackgrounding(output)
-  claudeJobId = /backgrounded · ([0-9a-f]{8})/u.exec(output)?.[1]
+  claudeJobId = backgroundJobId(output)
   assert.ok(claudeJobId, output.slice(-4000))
 
   const state = await waitForJobState(claudeJobId)
@@ -348,7 +356,7 @@ try {
     'Praxis /background',
   )
   assertBackgrounding(praxisOutput)
-  praxisJobId = /backgrounded · ([0-9a-f]{8})/u.exec(praxisOutput)?.[1]
+  praxisJobId = backgroundJobId(praxisOutput)
   assert.ok(praxisJobId, praxisOutput.slice(-4000))
   const praxisState = await waitForJobState(praxisJobId)
   assert.equal(praxisState.sessionId.slice(0, 8), praxisJobId)
