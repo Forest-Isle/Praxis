@@ -34,6 +34,9 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
   stops the shell job; `fg` redraws the TUI with in-memory state intact;
 - tool calls use `⏺`, results use an indented `⎿`, long output keeps three
   lines before an expandable remainder count, and edits retain inline diffs;
+- resumed sessions project the active Claude transcript branch into the TUI;
+  consecutive successful reads collapse to `Read N files` and `Ctrl+O`
+  restores each file/result pair without changing shared JSONL;
 - `/diff` opens a current/per-turn source dashboard with file selection and a
   scrollable patch view;
 - user, assistant, tool, warning, permission, question, plan, hook/MCP
@@ -47,29 +50,29 @@ status-line plugins are not native parity requirements.
 
 ## State matrix
 
-| State         | Observable Claude Code shape             | Praxis evidence                               |
-| ------------- | ---------------------------------------- | --------------------------------------------- |
-| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures       |
-| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate                |
-| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests               |
-| Slash command | filterable command name and description  | palette, selection, and PTY fixtures          |
-| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures         |
-| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures      |
-| Tool          | named call with indented input/result    | structured tool and diff fixtures             |
-| Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures    |
-| Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures   |
-| Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures   |
-| Keybindings   | shared template and editor round trip    | black-box, parser, interaction, and PTY gates |
-| Clipboard     | cursor text/image paste with markers     | parser, interaction, image, and PTY fixtures  |
-| Suspend       | stopped shell job plus `fg` recovery     | process, busy-state, and zsh PTY fixtures     |
-| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures         |
-| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures       |
-| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures     |
-| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures      |
-| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures      |
-| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests            |
-| Resume        | bounded selectable conversation list     | picker interaction and viewport tests         |
-| Accessibility | decoration-free semantic text            | screen-reader fixture                         |
+| State         | Observable Claude Code shape             | Praxis evidence                                |
+| ------------- | ---------------------------------------- | ---------------------------------------------- |
+| Launch        | bordered identity/help card              | wide and narrow `WelcomePanel` fixtures        |
+| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate                 |
+| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests                |
+| Slash command | filterable command name and description  | palette, selection, and PTY fixtures           |
+| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures          |
+| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures       |
+| Tool          | named call with indented input/result    | structured tool and diff fixtures              |
+| Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures     |
+| Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures    |
+| Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures    |
+| Keybindings   | shared template and editor round trip    | black-box, parser, interaction, and PTY gates  |
+| Clipboard     | cursor text/image paste with markers     | parser, interaction, image, and PTY fixtures   |
+| Suspend       | stopped shell job plus `fg` recovery     | process, busy-state, and zsh PTY fixtures      |
+| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures          |
+| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures        |
+| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures      |
+| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures       |
+| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures       |
+| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests             |
+| Resume        | selectable list plus active history      | projection, picker, interaction, and Ink tests |
+| Accessibility | decoration-free semantic text            | screen-reader fixture                          |
 
 ## Architecture
 
@@ -78,6 +81,7 @@ components under `src/cli/tui` render that state:
 
 ```text
 RuntimeEvent -> interactive state -> transcript/dialog/composer components
+shared JSONL -> active-chain display projection -> restored transcript state
 shared extensions -> slash catalog -> command palette -> existing session service
 runtime controls -> service retirement/recreation -> existing session service
 Git worktree ----> read-only diff snapshots ------> diff dashboard
@@ -142,7 +146,10 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `?` toggles the shortcut grid only when the normal composer is empty.
   `/help` opens the same shortcuts with separate built-in and shared-command
   tabs. `/resume` filters native session names, prompts, and IDs without a model
-  turn; the old `/sessions` spelling remains accepted but is not advertised.
+  turn, then restores user/assistant/thinking/tool/result/shell history from the
+  selected active JSONL branch. `--resume-session-at` truncates that display at
+  the same selected message used by runtime continuation. The old `/sessions`
+  spelling remains accepted but is not advertised.
 - `/model` retains the current model, restores the invocation default, or accepts
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
@@ -267,8 +274,7 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the full built-in command catalog and its
-command-specific dialogs, exact denied-history behavior, exact multi-read
-grouping and historical turn attribution,
-remaining exact command-specific dialogs and layout behavior. Each
+command-specific dialogs, exact denied-history behavior, and remaining exact
+command-specific dialogs and layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

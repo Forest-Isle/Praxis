@@ -5,11 +5,114 @@ import { describe, expect, it } from 'vitest'
 import {
   getClaudeAgentSetting,
   getClaudeLastPrompt,
+  projectClaudeDisplayTranscript,
   projectClaudeModelMessages,
   projectClaudeTextMessages,
 } from './projection.js'
 
 describe('Claude transcript projection', () => {
+  it('projects active display history with thinking, tools, results, and shell turns', () => {
+    const entries = [
+      {
+        type: 'user',
+        uuid: 'user-1',
+        parentUuid: null,
+        promptSource: 'typed',
+        message: { role: 'user', content: 'inspect two files' },
+      },
+      {
+        type: 'assistant',
+        uuid: 'assistant-1',
+        parentUuid: 'user-1',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'thinking',
+              thinking: 'I should inspect both.',
+              signature: 'sig',
+            },
+            {
+              type: 'tool_use',
+              id: 'read-1',
+              name: 'Read',
+              input: { file_path: '/tmp/one.ts' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'result-1',
+        parentUuid: 'assistant-1',
+        sourceToolAssistantUUID: 'assistant-1',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'read-1',
+              content: [{ type: 'text', text: 'line one' }],
+            },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        uuid: 'assistant-2',
+        parentUuid: 'result-1',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Done.' }],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'shell-in',
+        parentUuid: 'assistant-2',
+        message: { role: 'user', content: '<bash-input>pwd</bash-input>' },
+      },
+      {
+        type: 'user',
+        uuid: 'shell-out',
+        parentUuid: 'shell-in',
+        message: {
+          role: 'user',
+          content: '<bash-stdout>/tmp</bash-stdout><bash-stderr></bash-stderr>',
+        },
+      },
+    ]
+
+    expect(projectClaudeDisplayTranscript(entries)).toEqual([
+      { kind: 'user', text: 'inspect two files' },
+      { kind: 'thinking', text: 'I should inspect both.' },
+      {
+        kind: 'tool',
+        call: {
+          id: 'read-1',
+          name: 'Read',
+          input: { file_path: '/tmp/one.ts' },
+        },
+        detail: '',
+      },
+      {
+        kind: 'tool-result',
+        callId: 'read-1',
+        text: 'line one',
+        isError: false,
+      },
+      { kind: 'assistant', text: 'Done.' },
+      { kind: 'shell', callId: 'shell-in', command: 'pwd' },
+      {
+        kind: 'shell-result',
+        callId: 'shell-in',
+        stdout: '/tmp',
+        stderr: '',
+        isError: false,
+      },
+    ])
+  })
+
   it('projects only user and assistant text without leaking protocol metadata', () => {
     const entries = [
       { type: 'user', message: { role: 'user', content: 'hello' } },

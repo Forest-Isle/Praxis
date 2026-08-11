@@ -11,7 +11,7 @@ import {
 } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { basename, delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -414,6 +414,38 @@ exit 0
   assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
   assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
   assert.match(transcript, /<bash-stderr><\/bash-stderr>/u)
+  const resumeProbe = String.raw`
+set timeout 15
+log_user 1
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --resume $env(TUI_SESSION_ID) --dangerously-skip-permissions
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect {
+  -re {!.*pwd} {}
+  timeout { puts stderr "resumed shell history did not render"; exit 1 }
+  eof { puts stderr "Praxis exited before resumed shell history"; exit 1 }
+}
+expect -re {⎿.*work}
+expect -re {❯.*reply briefly}
+expect -re {TUI_FAKE_OK}
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+  await execFileAsync('expect', ['-c', resumeProbe], {
+    cwd,
+    env: {
+      ...process.env,
+      CI: 'true',
+      TUI_CLI: cli,
+      TUI_CONFIG_ROOT: configRoot,
+      TUI_NODE: process.execPath,
+      TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+      TUI_SESSION_ID: basename(transcriptFiles[0], '.jsonl'),
+    },
+    timeout: 60_000,
+  })
   assert.match(
     await readFile(join(configRoot, 'keybindings.json'), 'utf8'),
     /"ctrl\+v": "chat:imagePaste"/u,

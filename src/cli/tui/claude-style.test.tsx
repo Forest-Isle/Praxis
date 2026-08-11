@@ -163,6 +163,76 @@ describe('Claude-style TUI components', () => {
     expect(detailed.lastFrame()).not.toContain('… +2 lines')
   })
 
+  it('groups adjacent successful reads and expands every file', () => {
+    const items = [
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'read-1',
+          name: 'Read',
+          input: { file_path: '/tmp/one.ts' },
+        },
+        detail: '',
+      },
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'read-2',
+          name: 'Read',
+          input: { file_path: '/tmp/two.ts' },
+        },
+        detail: '',
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'read-1',
+        text: 'one',
+        isError: false,
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'read-2',
+        text: 'two',
+        isError: false,
+      },
+      { kind: 'assistant' as const, text: 'Between groups.' },
+      {
+        kind: 'tool' as const,
+        call: {
+          id: 'read-3',
+          name: 'Read',
+          input: { file_path: '/tmp/three.ts' },
+        },
+        detail: '',
+      },
+      {
+        kind: 'tool-result' as const,
+        callId: 'read-3',
+        text: 'Wasted call — file unchanged since your last Read. Refer to that earlier tool_result instead.',
+        isError: false,
+      },
+    ]
+    const collapsed = render(
+      <Transcript screenReader={false} activeText="" items={items} />,
+    )
+    expect(collapsed.lastFrame()).toContain('Read 2 files (ctrl+o to expand)')
+    expect(collapsed.lastFrame()).toContain('Read 1 file (ctrl+o to expand)')
+    expect(collapsed.lastFrame()).not.toContain('/tmp/one.ts')
+
+    const expanded = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        detailedTranscript
+        items={items}
+      />,
+    )
+    expect(expanded.lastFrame()).toContain('Read(/tmp/one.ts)')
+    expect(expanded.lastFrame()).toContain('Read(/tmp/two.ts)')
+    expect(expanded.lastFrame()).toContain('Read(/tmp/three.ts)')
+    expect(expanded.lastFrame()).toContain('Unchanged since last read')
+  })
+
   it('renders diff source tabs, file selection, and patch view', () => {
     const snapshot = {
       files: [

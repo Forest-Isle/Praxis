@@ -80,7 +80,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 - **Local agent runtime** — Claude-style responsive TUI with a shared-command
   slash palette, tabbed help and shortcut surfaces, searchable resume picker,
-  streaming and expandable thinking, globally expandable tool results,
+  restored active-branch conversation history, streaming and expandable
+  thinking, grouped multi-file reads, globally expandable tool results,
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external

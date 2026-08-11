@@ -15,6 +15,7 @@ import {
   type SessionRunResult,
   type SessionSummary,
 } from './application/session-service.js'
+import type { ClaudeDisplayTranscriptItem } from './compatibility/claude/projection.js'
 import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
@@ -921,6 +922,7 @@ interface SessionCommands {
   sessions(): Promise<SessionSummary[]>
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
+  transcript?(sessionId: string): Promise<ClaudeDisplayTranscriptItem[]>
   nextScheduledPrompt?(
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
@@ -1678,6 +1680,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
       agentDefinitions: () => extensions.agentDefinitions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
+      transcript: (sessionId) =>
+        service.transcript(sessionId, pendingResumeSessionAt),
       nextScheduledPrompt: (signal) => service.nextScheduledPrompt(signal),
       close: async () => {
         let failure: unknown

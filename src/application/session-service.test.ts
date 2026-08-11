@@ -2342,6 +2342,19 @@ describe('ClaudeSessionService', () => {
       throw new Error('Could not locate resume-at transcript fixtures')
     }
 
+    const targetedHistory = await service.transcript(
+      first.sessionId,
+      target.uuid,
+    )
+    expect(targetedHistory).toContainEqual({
+      kind: 'user',
+      text: 'second prompt',
+    })
+    expect(targetedHistory).not.toContainEqual({
+      kind: 'user',
+      text: 'abandoned third prompt',
+    })
+
     await service.resume(
       first.sessionId,
       'branch prompt',
@@ -2506,6 +2519,10 @@ describe('ClaudeSessionService', () => {
     await expect(service.export(first.sessionId)).resolves.toEqual(
       Buffer.from(source),
     )
+    await expect(service.transcript(first.sessionId)).resolves.toEqual([
+      { kind: 'user', text: 'inspect me' },
+      { kind: 'assistant', text: 'first answer' },
+    ])
     expect(await readFile(sessionFile, 'utf8')).toBe(source)
   })
 

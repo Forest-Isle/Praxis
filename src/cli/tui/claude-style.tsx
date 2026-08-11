@@ -274,7 +274,12 @@ function ToolTranscriptEntry({
   result?: Extract<TranscriptItem, { kind: 'tool-result' }>
   detailed: boolean
 }) {
-  const resultLines = contentLines(result?.text ?? '')
+  const displayResult =
+    call.name === 'Read' &&
+    result?.text.startsWith('Wasted call — file unchanged since your last Read')
+      ? 'Unchanged since last read'
+      : (result?.text ?? '')
+  const resultLines = contentLines(displayResult)
   if (call.name === 'Read' && result && !result.isError && !detailed) {
     return (
       <Text>
@@ -285,9 +290,9 @@ function ToolTranscriptEntry({
   const visible = detailed ? resultLines : resultLines.slice(0, 3)
   const hidden = resultLines.length - visible.length
   const errorText =
-    (result?.text.length ?? 0) > 500
-      ? `${result?.text.slice(0, 497)}...`
-      : result?.text
+    displayResult.length > 500
+      ? `${displayResult.slice(0, 497)}...`
+      : displayResult
   const oldLines = contentLines(inputString(call, 'old_string'))
   const newLines = contentLines(inputString(call, 'new_string'))
   return (
@@ -533,9 +538,55 @@ export function Transcript({
       )
       .map((item) => item.callId),
   )
+  const readGroupStarts = new Map<number, number>()
+  const groupedReadTools = new Set<number>()
+  if (!detailed && !screenReader) {
+    for (let index = 0; index < items.length; index += 1) {
+      const first = items[index]
+      if (first?.kind !== 'tool' || first.call.name !== 'Read') continue
+      let cursor = index
+      const memberIndexes: number[] = []
+      const memberCallIds = new Set<string>()
+      while (cursor < items.length) {
+        const candidate = items[cursor]
+        if (candidate?.kind === 'tool' && candidate.call.name === 'Read') {
+          const result = results.get(candidate.call.id)
+          if (!result || result.isError) break
+          memberIndexes.push(cursor)
+          memberCallIds.add(candidate.call.id)
+          cursor += 1
+          continue
+        }
+        if (
+          candidate?.kind === 'tool-result' &&
+          memberCallIds.has(candidate.callId)
+        ) {
+          cursor += 1
+          continue
+        }
+        break
+      }
+      if (memberIndexes.length === 0) continue
+      readGroupStarts.set(index, memberIndexes.length)
+      for (const memberIndex of memberIndexes.slice(1)) {
+        groupedReadTools.add(memberIndex)
+      }
+      index = cursor - 1
+    }
+  }
   return (
     <Box flexDirection="column">
       {items.map((item, index) => {
+        const readCount = readGroupStarts.get(index)
+        if (readCount !== undefined) {
+          return (
+            <Text key={index}>
+              {'  '}Read {readCount} file{readCount === 1 ? '' : 's'}{' '}
+              <Text dimColor>(ctrl+o to expand)</Text>
+            </Text>
+          )
+        }
+        if (groupedReadTools.has(index)) return null
         if (item.kind === 'user') {
           return (
             <Box key={index} marginTop={index === 0 ? 0 : 1}>

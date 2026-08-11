@@ -139,6 +139,7 @@ interface InteractiveSessionCommands {
   ): Promise<SessionRunResult>
   fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
+  transcript?(sessionId: string): Promise<TranscriptItem[]>
   workflows?(): readonly Record<string, unknown>[]
   slashCommands?(): readonly TuiSlashCommand[]
   agentDefinitions?(): readonly TuiAgentEntry[]
@@ -187,6 +188,7 @@ interface InteractiveAppProps {
   factory: InteractiveServiceFactory
   initialSessions: readonly SessionSummary[]
   initialPrompt?: string
+  initialHistory?: readonly TranscriptItem[]
   signal?: AbortSignal
   onCancel?: () => void
   onTurnChange?: (turn: Promise<void> | null) => void
@@ -483,6 +485,7 @@ export function InteractiveApp({
   factory,
   initialSessions,
   initialPrompt,
+  initialHistory = [],
   signal,
   onCancel,
   onTurnChange,
@@ -628,7 +631,8 @@ export function InteractiveApp({
   const [contextWindowTokens, setContextWindowTokens] = useState(
     display.contextWindowTokens,
   )
-  const [history, setHistory] = useState<TranscriptItem[]>([])
+  const [history, setHistory] = useState<TranscriptItem[]>([...initialHistory])
+  const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
   >([])
@@ -1482,6 +1486,29 @@ export function InteractiveApp({
     }
   }
 
+  const openSession = (nextSessionId: string | null) => {
+    setSessionId(nextSessionId)
+    const loadId = sessionLoadRef.current + 1
+    sessionLoadRef.current = loadId
+    if (nextSessionId === null) {
+      setHistory([])
+      return
+    }
+    const loading = (async () => {
+      try {
+        const commands = await service()
+        const transcript = await commands.transcript?.(nextSessionId)
+        if (sessionLoadRef.current === loadId) {
+          setHistory(transcript ? [...transcript] : [])
+        }
+      } catch (error) {
+        if (sessionLoadRef.current === loadId) warn(error)
+      }
+    })()
+    onTurnChange?.(loading)
+    void loading.finally(() => onTurnChange?.(null))
+  }
+
   const changeModel = (model: string | undefined) => {
     updateRuntimePreferences((current) => {
       if (model !== undefined) return { ...current, model }
@@ -2014,7 +2041,7 @@ export function InteractiveApp({
           sessionSearchRef.current,
         )[selectedIndexRef.current]
         if (selected === undefined) return
-        setSessionId(selected?.sessionId ?? null)
+        openSession(selected?.sessionId ?? null)
         if (!selected) setPendingFork(false)
         setSelectingSession(false)
       } else if (key.backspace || key.delete) {
@@ -3332,7 +3359,6 @@ export async function runInteractive(options: {
     }
     throw error
   }
-  await listing.close?.()
   const canonicalResumeSession =
     options.resume?.sessionId === undefined
       ? undefined
@@ -3344,6 +3370,21 @@ export async function runInteractive(options: {
   const resume = canonicalResumeSession
     ? { ...options.resume, sessionId: canonicalResumeSession.sessionId }
     : options.resume
+  let initialHistory: readonly TranscriptItem[] = []
+  try {
+    initialHistory =
+      resume?.sessionId === undefined || listing.transcript === undefined
+        ? []
+        : await listing.transcript(resume.sessionId)
+  } catch (error) {
+    try {
+      await listing.close?.()
+    } catch {
+      // Preserve the transcript-loading failure as the primary error.
+    }
+    throw error
+  }
+  await listing.close?.()
   let activeTurn: Promise<void> | null = null
   let cleanup: Promise<void> | null = null
   const instance = render(
@@ -3352,6 +3393,7 @@ export async function runInteractive(options: {
       initialSessions={initialSessions}
       slashCommands={initialSlashCommands}
       agents={initialAgents}
+      initialHistory={initialHistory}
       {...(options.initialPrompt === undefined
         ? {}
         : { initialPrompt: options.initialPrompt })}

@@ -16,6 +16,19 @@ export interface ClaudeTextMessage {
   content: string
 }
 
+export type ClaudeDisplayTranscriptItem =
+  | { kind: 'user' | 'assistant' | 'thinking'; text: string }
+  | { kind: 'tool'; call: ModelToolCall; detail: string }
+  | { kind: 'tool-result'; callId: string; text: string; isError: boolean }
+  | { kind: 'shell'; callId: string; command: string }
+  | {
+      kind: 'shell-result'
+      callId: string
+      stdout: string
+      stderr: string
+      isError: boolean
+    }
+
 function compactedEntries(
   entries: readonly ClaudeTranscriptEntry[],
 ): readonly ClaudeTranscriptEntry[] {
@@ -120,6 +133,122 @@ function projectToolResultContent(content: unknown): {
     images,
     documents,
   }
+}
+
+function textBlocks(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter(
+      (block): block is Record<string, unknown> =>
+        isRecord(block) &&
+        block.type === 'text' &&
+        typeof block.text === 'string',
+    )
+    .map((block) => block.text as string)
+    .join('')
+}
+
+function bashEnvelope(
+  content: unknown,
+):
+  | { kind: 'input'; command: string }
+  | { kind: 'output'; stdout: string; stderr: string }
+  | null {
+  if (typeof content !== 'string') return null
+  const input = /^<bash-input>([\s\S]*)<\/bash-input>$/u.exec(content)
+  if (input) return { kind: 'input', command: input[1] ?? '' }
+  const output =
+    /^<bash-stdout>([\s\S]*)<\/bash-stdout><bash-stderr>([\s\S]*)<\/bash-stderr>$/u.exec(
+      content,
+    )
+  return output
+    ? { kind: 'output', stdout: output[1] ?? '', stderr: output[2] ?? '' }
+    : null
+}
+
+/** Projects the active Claude JSONL branch into read-only CLI display items. */
+export function projectClaudeDisplayTranscript(
+  entries: readonly ClaudeTranscriptEntry[],
+): ClaudeDisplayTranscriptItem[] {
+  const items: ClaudeDisplayTranscriptItem[] = []
+  let pendingShell: { callId: string; command: string } | null = null
+
+  for (const entry of compactedEntries(selectClaudeActiveTranscript(entries))) {
+    if (!isRecord(entry.message)) continue
+    const role = entry.message.role
+    const content = entry.message.content
+
+    if (role === 'user') {
+      const shell = bashEnvelope(content)
+      if (shell?.kind === 'input') {
+        pendingShell = {
+          callId:
+            typeof entry.uuid === 'string'
+              ? entry.uuid
+              : `shell-${items.length}`,
+          command: shell.command,
+        }
+        items.push({ kind: 'shell', ...pendingShell })
+        continue
+      }
+      if (shell?.kind === 'output' && pendingShell) {
+        items.push({
+          kind: 'shell-result',
+          callId: pendingShell.callId,
+          stdout: shell.stdout,
+          stderr: shell.stderr,
+          isError: shell.stderr.length > 0,
+        })
+        pendingShell = null
+        continue
+      }
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (!isRecord(block) || block.type !== 'tool_result') continue
+          if (typeof block.tool_use_id !== 'string') continue
+          const projected = projectToolResultContent(block.content)
+          items.push({
+            kind: 'tool-result',
+            callId: block.tool_use_id,
+            text: projected?.content ?? '[structured tool result omitted]',
+            isError: block.is_error === true,
+          })
+        }
+      }
+      if (typeof entry.sourceToolAssistantUUID === 'string') continue
+      const text = textBlocks(content)
+      if (text) items.push({ kind: 'user', text })
+      continue
+    }
+
+    if (role !== 'assistant' || !Array.isArray(content)) continue
+    for (const block of content) {
+      if (!isRecord(block)) continue
+      if (block.type === 'thinking' && typeof block.thinking === 'string') {
+        if (block.thinking)
+          items.push({ kind: 'thinking', text: block.thinking })
+        continue
+      }
+      if (block.type === 'text' && typeof block.text === 'string') {
+        if (block.text) items.push({ kind: 'assistant', text: block.text })
+        continue
+      }
+      if (
+        block.type === 'tool_use' &&
+        typeof block.id === 'string' &&
+        typeof block.name === 'string' &&
+        isRecord(block.input)
+      ) {
+        items.push({
+          kind: 'tool',
+          call: { id: block.id, name: block.name, input: block.input },
+          detail: '',
+        })
+      }
+    }
+  }
+  return items
 }
 
 function projectNestedMemory(entry: ClaudeTranscriptEntry): string | null {

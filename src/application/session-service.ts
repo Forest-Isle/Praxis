@@ -23,8 +23,10 @@ import { selectClaudeTranscriptAtMessage } from '../compatibility/claude/history
 import { ClaudeFileHistory } from '../compatibility/claude/file-history.js'
 import { getClaudePrLink } from '../compatibility/claude/pr-links.js'
 import {
+  type ClaudeDisplayTranscriptItem,
   getClaudeAgentSetting,
   getClaudeLastPrompt,
+  projectClaudeDisplayTranscript,
   projectClaudeModelMessages,
 } from '../compatibility/claude/projection.js'
 import {
@@ -725,6 +727,28 @@ export class ClaudeSessionService {
     this.assertSessionPersistence()
     try {
       return await this.store(sessionId).exportReadOnly()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      throw error
+    }
+  }
+
+  async transcript(
+    sessionId: string,
+    resumeSessionAt?: string,
+  ): Promise<ClaudeDisplayTranscriptItem[]> {
+    try {
+      const recovery = await this.store(sessionId).loadReadOnly()
+      if (recovery.entries.length === 0) {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      const entries =
+        resumeSessionAt === undefined
+          ? recovery.entries
+          : selectClaudeTranscriptAtMessage(recovery.entries, resumeSessionAt)
+      return projectClaudeDisplayTranscript(entries)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         throw new Error(`Claude session not found: ${sessionId}`)

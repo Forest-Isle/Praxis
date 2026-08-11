@@ -3210,6 +3210,72 @@ describe('InteractiveApp', () => {
 })
 
 describe('runInteractive', () => {
+  it('loads resumed transcript history before rendering', async () => {
+    let transcriptSession = ''
+    let closed = 0
+    const controller = new AbortController()
+    controller.abort()
+    const consoleConstructor = Object.getOwnPropertyDescriptor(
+      console,
+      'Console',
+    )
+    Object.defineProperty(console, 'Console', {
+      configurable: true,
+      value: NodeConsole,
+    })
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return [
+              {
+                sessionId: 'session-1',
+                lastPrompt: 'inspect',
+                updatedAt: '2026-08-11T00:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+            ]
+          },
+          async transcript(sessionId: string) {
+            transcriptSession = sessionId
+            return [{ kind: 'assistant' as const, text: 'restored answer' }]
+          },
+          async close() {
+            closed += 1
+          },
+        }
+      },
+    }
+
+    try {
+      await expect(
+        runInteractive({
+          factory,
+          signal: controller.signal,
+          resume: { sessionId: 'SESSION-1' },
+        }),
+      ).resolves.toBe(130)
+      expect(transcriptSession).toBe('session-1')
+      expect(closed).toBe(1)
+    } finally {
+      if (consoleConstructor) {
+        Object.defineProperty(console, 'Console', consoleConstructor)
+      } else {
+        Reflect.deleteProperty(console, 'Console')
+      }
+    }
+  })
+
   it('closes the listing service after loading sessions', async () => {
     let closed = 0
     const controller = new AbortController()
