@@ -7,9 +7,9 @@ on:
 
 permissions:
   actions: write
-  checks: write
   contents: write
   pull-requests: write
+  statuses: write
 
 concurrency:
   group: release-please
@@ -45,6 +45,11 @@ jobs:
           declare -A PREVIOUS_RUN_IDS
           declare -A COMPLETED_RUN_IDS
           declare -A COMPLETED_RUN_URLS
+          for CHECK_NAME in CI 'Dependency review'; do
+            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+              -f state=pending -f context="$CHECK_NAME" \
+              -f description="Verified release workflow is running"
+          done
           for WORKFLOW in "${WORKFLOWS[@]}"; do
             PREVIOUS_RUN_IDS[$WORKFLOW]=$(gh run list \
               --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" \
@@ -123,13 +128,10 @@ jobs:
             RUN_URL=${COMPLETED_RUN_URLS[$WORKFLOW]}
             test -n "$RUN_ID"
             test -n "$RUN_URL"
-            jq -n --arg name "$CHECK_NAME" --arg sha "$HEAD_SHA" \
-              --arg url "$RUN_URL" --arg run_id "$RUN_ID" \
-              '{name:$name,head_sha:$sha,status:"completed",conclusion:"success",
-                details_url:$url,
-                output:{title:("Verified by dispatched workflow run " + $run_id),
-                  summary:"The required workflow completed successfully for this exact release head."}}' |
-              gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input -
+            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+              -f state=success -f context="$CHECK_NAME" \
+              -f description="Verified by dispatched workflow run $RUN_ID" \
+              -f target_url="$RUN_URL"
           done
       - name: Dispatch release publication
         if: steps.release.outputs.release_created == 'true'
