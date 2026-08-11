@@ -6,12 +6,13 @@ import { writeFileAtomically } from '../platform/atomic-write.js'
 import { ExclusiveFileLease } from '../platform/exclusive-file-lease.js'
 
 export type ClaudeJobLifecycleState = 'working' | 'stopped' | 'failed'
-export type ClaudeJobTempo = 'active' | 'idle'
+export type ClaudeJobTempo = 'active' | 'blocked' | 'idle'
 
 export interface ClaudeJobState {
   state: ClaudeJobLifecycleState
   detail: string
   tempo: ClaudeJobTempo
+  needs?: string
   inFlight?: { tasks: number; queued: number; kinds: string[] } | undefined
   tokens: number
   output: null
@@ -41,10 +42,19 @@ export interface ClaudeJobTimelineEntry {
   text: string
 }
 
+export interface ClaudeJobSourceCheckpoint {
+  resumeSessionAt: string
+  entryCount: number
+}
+
 export interface ClaudeJobDispatch {
   version: 1
   argv: string[]
   resume: boolean
+  deferInitialTurn?: boolean
+  handoffComplete?: boolean
+  sourceSessionId?: string
+  sourceCheckpoint?: ClaudeJobSourceCheckpoint
 }
 
 const JOB_ID_PATTERN = /^[0-9a-f]{8}$/u
@@ -77,7 +87,8 @@ function parseState(source: string, filePath: string): ClaudeJobState {
   if (
     !['working', 'stopped', 'failed'].includes(String(state.state)) ||
     typeof state.detail !== 'string' ||
-    !['active', 'idle'].includes(String(state.tempo)) ||
+    !['active', 'blocked', 'idle'].includes(String(state.tempo)) ||
+    (state.needs !== undefined && typeof state.needs !== 'string') ||
     !Number.isSafeInteger(state.tokens) ||
     Number(state.tokens) < 0 ||
     state.output !== null ||
@@ -128,7 +139,20 @@ function parseDispatch(source: string, filePath: string): ClaudeJobDispatch {
     !isRecord(value) ||
     value.version !== 1 ||
     !stringArray(value.argv) ||
-    typeof value.resume !== 'boolean'
+    typeof value.resume !== 'boolean' ||
+    (value.deferInitialTurn !== undefined &&
+      typeof value.deferInitialTurn !== 'boolean') ||
+    (value.handoffComplete !== undefined &&
+      typeof value.handoffComplete !== 'boolean') ||
+    (value.sourceSessionId !== undefined &&
+      (typeof value.sourceSessionId !== 'string' ||
+        !SESSION_ID_PATTERN.test(value.sourceSessionId))) ||
+    (value.sourceCheckpoint !== undefined &&
+      (!isRecord(value.sourceCheckpoint) ||
+        typeof value.sourceCheckpoint.resumeSessionAt !== 'string' ||
+        !SESSION_ID_PATTERN.test(value.sourceCheckpoint.resumeSessionAt) ||
+        !Number.isSafeInteger(value.sourceCheckpoint.entryCount) ||
+        Number(value.sourceCheckpoint.entryCount) <= 0))
   ) {
     throw new Error(`Invalid Praxis job dispatch: ${filePath}`)
   }
@@ -195,6 +219,20 @@ export class ClaudeJobStore {
       }
       throw error
     }
+  }
+
+  async updateDispatch(
+    id: string,
+    mutate: (dispatch: ClaudeJobDispatch) => ClaudeJobDispatch,
+  ): Promise<ClaudeJobDispatch> {
+    return this.withLock(id, async () => {
+      const next = mutate(await this.readDispatch(id))
+      await writeFileAtomically(
+        this.dispatchPath(id),
+        `${JSON.stringify(next)}\n`,
+      )
+      return next
+    })
   }
 
   async list(): Promise<ClaudeJobState[]> {

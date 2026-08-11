@@ -59,6 +59,8 @@ jobs:
         run: test "$(claude --version | awk '{print $1}')" = "2.1.208"
       - name: Verify credential-free Claude CLI contract
         run: npm run test:cli-surface-compat
+      - name: Verify interactive background handoff
+        run: npm run test:background-command-compat
 
   release-regression:
     name: Release regression (${{ matrix.os }}, Node ${{ matrix.node }})

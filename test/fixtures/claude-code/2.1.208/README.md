@@ -17,6 +17,8 @@ paths, timestamps, token counts, and human text with deterministic values.
   native background task notification produced by `/btw`.
 - `btw-fresh-records.jsonl`: fresh-TUI session initialization, bare `/btw`
   usage pair, and its native `last-prompt` metadata tail.
+- `background-empty-records.jsonl`: fresh-session initialization plus the
+  three native user records emitted when `/background` has no model turn.
 - `sidechain-layout/`: valid main session plus native
   `<session-id>/subagents/agent-*.jsonl` entries with `isSidechain`, `agentId`,
   and attribution metadata.

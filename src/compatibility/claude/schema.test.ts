@@ -25,6 +25,7 @@ const advancedFixtureUrls = [
   'interrupted-session.jsonl',
   'btw-records.jsonl',
   'btw-fresh-records.jsonl',
+  'background-empty-records.jsonl',
 ].map(
   (name) =>
     new URL(

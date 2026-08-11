@@ -18,7 +18,13 @@ import type { SessionRunResult } from './session-service.js'
 
 const roots: string[] = []
 
-async function fixture() {
+async function fixture(
+  options: {
+    deferInitialTurn?: boolean
+    sourceSessionId?: string
+    sourceCheckpoint?: { resumeSessionAt: string; entryCount: number }
+  } = {},
+) {
   const configRoot = await mkdtemp(join(tmpdir(), 'praxis-top-agent-'))
   roots.push(configRoot)
   const cwd = join(configRoot, 'work')
@@ -27,9 +33,11 @@ async function fixture() {
   const now = new Date().toISOString()
   const state: ClaudeJobState = {
     state: 'working',
-    detail: 'starting',
-    tempo: 'active',
-    inFlight: { tasks: 1, queued: 0, kinds: ['prompt'] },
+    detail: options.deferInitialTurn ? 'initial answer' : 'starting',
+    tempo: options.deferInitialTurn ? 'blocked' : 'active',
+    ...(options.deferInitialTurn
+      ? { needs: 'send a prompt to start' }
+      : { inFlight: { tasks: 1, queued: 0, kinds: ['prompt'] } }),
     tokens: 0,
     output: null,
     children: null,
@@ -54,6 +62,13 @@ async function fixture() {
     version: 1,
     argv: ['initial prompt'],
     resume: false,
+    ...(options.deferInitialTurn ? { deferInitialTurn: true } : {}),
+    ...(options.sourceSessionId === undefined
+      ? {}
+      : { sourceSessionId: options.sourceSessionId }),
+    ...(options.sourceCheckpoint === undefined
+      ? {}
+      : { sourceCheckpoint: options.sourceCheckpoint }),
   })
   const manager = new TopLevelAgentManager({
     configRoot,
@@ -83,6 +98,166 @@ afterEach(async () => {
 })
 
 describe('TopLevelAgentManager', () => {
+  it('lazily forks a foreground session when an idle handoff first attaches', async () => {
+    const sourceSessionId = '99999999-9999-4999-8999-999999999999'
+    const sourceCheckpoint = {
+      resumeSessionAt: '88888888-8888-4888-8888-888888888888',
+      entryCount: 4,
+    }
+    const fixtureState = await fixture({
+      deferInitialTurn: true,
+      sourceSessionId,
+      sourceCheckpoint,
+    })
+    const calls: string[] = []
+    const worker = runTopLevelAgentWorker({
+      configRoot: fixtureState.configRoot,
+      id: fixtureState.id,
+      async createRuntime() {
+        return {
+          async run() {
+            throw new Error('must not start an initial provider turn')
+          },
+          async resume(sessionId, prompt) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            return {
+              sessionId,
+              text: 'CONTINUED',
+              usage: { inputTokens: 2, outputTokens: 1 },
+            }
+          },
+          async ensureFork(parentSessionId, targetSessionId, checkpoint) {
+            calls.push(
+              `ensureFork:${parentSessionId}:${targetSessionId}:${JSON.stringify(checkpoint)}`,
+            )
+            return {
+              parentSessionId,
+              sessionId: targetSessionId,
+            }
+          },
+        }
+      },
+    })
+    await waitFor(async () => {
+      try {
+        const processState = JSON.parse(
+          await readFile(
+            join(fixtureState.configRoot, 'sessions', `${process.pid}.json`),
+            'utf8',
+          ),
+        )
+        return processState.status === 'idle'
+      } catch {
+        return false
+      }
+    })
+    expect(calls).toEqual([])
+    await expect(
+      fixtureState.manager.list({ cwd: fixtureState.cwd, all: false }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: fixtureState.id,
+        status: 'idle',
+        state: 'working',
+        tempo: 'blocked',
+        needs: 'send a prompt to start',
+      }),
+    ])
+
+    const output: string[] = []
+    await fixtureState.manager.attach(
+      fixtureState.id,
+      (async function* () {
+        yield 'continue after handoff\n'
+      })(),
+      (text) => output.push(text),
+    )
+
+    expect(calls).toEqual([
+      `ensureFork:${sourceSessionId}:${fixtureState.sessionId}:${JSON.stringify(sourceCheckpoint)}`,
+      `resume:${fixtureState.sessionId}:continue after handoff`,
+    ])
+    expect(output.join('')).toContain('CONTINUED')
+    await expect
+      .poll(() => fixtureState.store.read(fixtureState.id))
+      .toMatchObject({ tempo: 'idle', inFlight: { tasks: 0 } })
+    expect(
+      (await fixtureState.store.read(fixtureState.id)).needs,
+    ).toBeUndefined()
+    await expect(
+      fixtureState.store.readDispatch(fixtureState.id),
+    ).resolves.toEqual({
+      version: 1,
+      argv: ['initial prompt'],
+      resume: true,
+      deferInitialTurn: true,
+      handoffComplete: true,
+    })
+    await fixtureState.manager.stop(fixtureState.id)
+    await worker
+
+    await fixtureState.store.update(fixtureState.id, (state) => ({
+      ...state,
+      state: 'working',
+      detail: 'CONTINUED',
+      tempo: 'idle',
+      socketPath: join(fixtureState.configRoot, 'control.sock'),
+      controlToken: 'fixture-control-token',
+      updatedAt: new Date().toISOString(),
+    }))
+    const restartedCalls: string[] = []
+    const restartedWorker = runTopLevelAgentWorker({
+      configRoot: fixtureState.configRoot,
+      id: fixtureState.id,
+      async createRuntime() {
+        return {
+          async run() {
+            throw new Error('must not restart an initial provider turn')
+          },
+          async resume(sessionId, prompt) {
+            restartedCalls.push(`resume:${sessionId}:${prompt}`)
+            return {
+              sessionId,
+              text: 'RESTARTED_CONTINUATION',
+              usage: { inputTokens: 2, outputTokens: 1 },
+            }
+          },
+          async ensureFork() {
+            throw new Error('must not repeat a completed handoff fork')
+          },
+        }
+      },
+    })
+    await waitFor(async () => {
+      try {
+        const processState = JSON.parse(
+          await readFile(
+            join(fixtureState.configRoot, 'sessions', `${process.pid}.json`),
+            'utf8',
+          ),
+        )
+        return processState.status === 'idle'
+      } catch {
+        return false
+      }
+    })
+    expect(restartedCalls).toEqual([])
+    const restartedOutput: string[] = []
+    await fixtureState.manager.attach(
+      fixtureState.id,
+      (async function* () {
+        yield 'continue after restart\n'
+      })(),
+      (text) => restartedOutput.push(text),
+    )
+    expect(restartedCalls).toEqual([
+      `resume:${fixtureState.sessionId}:continue after restart`,
+    ])
+    expect(restartedOutput.join('')).toContain('RESTARTED_CONTINUATION')
+    await fixtureState.manager.stop(fixtureState.id)
+    await restartedWorker
+  })
+
   it('waits for a newly launched worker socket before attaching', async () => {
     const fixtureState = await fixture()
     let ran = false

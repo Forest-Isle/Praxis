@@ -14,6 +14,7 @@ import {
   type ManualCompactResult,
   type ManualCompactSelection,
   type RewindPoint,
+  type SessionForkCheckpoint,
   type SessionInspection,
   type SessionRunResult,
   type SessionSummary,
@@ -52,6 +53,7 @@ import {
   type RuntimeEventSink,
 } from './core/runtime.js'
 import type {
+  InteractiveBackgroundRequest,
   InteractiveResumeOptions,
   InteractiveServiceFactory,
 } from './cli/interactive.js'
@@ -919,6 +921,11 @@ interface SessionCommands {
     targetSessionId?: string,
     resumeSessionAt?: string,
   ): Promise<ForkResult>
+  ensureFork?(
+    sessionId: string,
+    targetSessionId: string,
+    checkpoint?: SessionForkCheckpoint,
+  ): Promise<ForkResult>
   setPermissionMode?(
     sessionId: string,
     mode: ClaudePermissionMode,
@@ -938,6 +945,11 @@ interface SessionCommands {
     sessionId: string | undefined,
     permissionMode?: ClaudePermissionMode,
   ): Promise<string>
+  recordBackgroundUsage?(
+    sessionId: string | undefined,
+    permissionMode?: ClaudePermissionMode,
+  ): Promise<string>
+  recordBackgroundLaunch?(sessionId: string): Promise<SessionForkCheckpoint>
   forkSideQuestion?(
     sessionId: string,
     question: string,
@@ -980,6 +992,10 @@ interface TopLevelAgentCommands {
     argv: string[]
     resumeSessionId?: string
     cwd?: string
+    deferInitialTurn?: boolean
+    sourceSessionId?: string
+    sourceCheckpoint?: SessionForkCheckpoint
+    initialDetail?: string
   }): Promise<{ id: string; sessionId: string }>
   list(options: { cwd?: string; all: boolean }): Promise<TopLevelAgentSummary[]>
   logs(id: string): Promise<string>
@@ -1667,6 +1683,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
         pendingResumeSessionAt = undefined
         return service.fork(sessionId, targetSessionId, resumeSessionAt)
       },
+      ensureFork: (sessionId, targetSessionId, checkpoint) =>
+        service.ensureFork(sessionId, targetSessionId, checkpoint),
       setPermissionMode: (sessionId, permissionMode) =>
         service.setPermissionMode(sessionId, permissionMode),
       rewindFiles: (sessionId, userMessageId) =>
@@ -1690,6 +1708,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ),
       recordBtwUsage: (sessionId, permissionMode) =>
         service.recordBtwUsage(sessionId, permissionMode),
+      recordBackgroundUsage: (sessionId, permissionMode) =>
+        service.recordBackgroundUsage(sessionId, permissionMode),
+      recordBackgroundLaunch: (sessionId) =>
+        service.recordBackgroundLaunch(sessionId),
       forkSideQuestion: (sessionId, question, sideSignal) =>
         service.forkSideQuestion(sessionId, question, sideSignal),
       lifecycle: async (trigger, lifecycleOptions = {}) => {
@@ -2018,6 +2040,22 @@ const defaultDependencies: CliDependencies = {
         permissionMode: controls?.dangerouslySkipPermissions
           ? 'bypassPermissions'
           : (controls?.permissionMode ?? 'default'),
+      },
+      onBackground: (request: InteractiveBackgroundRequest) =>
+        requireTopLevelAgentManager(defaultDependencies).launch({
+          prompt: request.prompt,
+          initialDetail: request.detail,
+          sourceSessionId: request.sourceSessionId,
+          sourceCheckpoint: request.sourceCheckpoint,
+          cwd: request.cwd,
+          deferInitialTurn: true,
+          argv: agentDashboardWorkerArgv({
+            ...interactiveControls,
+            agent,
+          }),
+        }),
+      onBackgrounded: (result) => {
+        process.stdout.write(backgroundLaunchMessage(result.id))
       },
       ...(resume === undefined ? {} : { resume }),
       ...(resume?.fromPr !== undefined
@@ -3836,7 +3874,9 @@ function backgroundWorkerArgv(argv: readonly string[]): string[] {
   return filtered
 }
 
-function agentDashboardWorkerArgv(invocation: CliInvocation): string[] {
+function agentDashboardWorkerArgv(
+  invocation: CliControls & { agent: string | undefined },
+): string[] {
   const argv: string[] = []
   if (invocation.model !== undefined) argv.push('--model', invocation.model)
   if (invocation.effort !== undefined) argv.push('--effort', invocation.effort)
@@ -3867,6 +3907,10 @@ function agentDashboardWorkerArgv(invocation: CliInvocation): string[] {
     argv.push('--plugin-dir', directory)
   }
   return argv
+}
+
+function backgroundLaunchMessage(id: string): string {
+  return `backgrounded · ${id}\n  praxis agents             list sessions\n  praxis attach ${id}    open in this terminal\n  praxis logs ${id}      show recent output\n  praxis stop ${id}      stop this session\n`
 }
 
 function requireTopLevelAgentManager(
@@ -4493,9 +4537,7 @@ async function execute(
       argv: backgroundWorkerArgv(argv),
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
     })
-    io.stdout(
-      `backgrounded · ${launched.id}\n  praxis agents             list sessions\n  praxis attach ${launched.id}    open in this terminal\n  praxis logs ${launched.id}      show recent output\n  praxis stop ${launched.id}      stop this session\n`,
-    )
+    io.stdout(backgroundLaunchMessage(launched.id))
     return 0
   }
   let streamOutput: StreamJsonOutput | undefined

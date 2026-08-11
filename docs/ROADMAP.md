@@ -936,3 +936,21 @@ broader interactive TTY parity remain partial.
       validation, and session-local add/remove runtime reloads
 - [x] focused settings/component/Ink tests plus installed-package PTY deletion,
       CLI `--add-dir`, Workspace removal, and add-directory-dialog gates
+
+## Stage 106 - interactive background handoff parity
+
+Status: complete for the Claude Code 2.1.208 `/background` single-user CLI
+contract; broader interactive TTY parity remains partial.
+
+- [x] exact slash-catalog description, empty-session result, shared input
+      history, and captured three-record native JSONL envelope
+- [x] `Backgrounding…` transition, alternate-screen exit, eight-hex job ID, and
+      printed `agents`/`attach`/`logs`/`stop` management commands
+- [x] fresh blocked job session with no initial provider turn or source transcript
+      mutation, provider-free empty-command path, and failure recovery in the TUI
+- [x] private source-session checkpoint plus restart-safe first-attach lazy
+      native fork into the new job identity, preserving complete context and
+      bidirectional resume
+- [x] focused catalog/application/manager/Ink tests and a live Claude/Praxis PTY
+      gate covering blocked state, unchanged source JSONL, attach context, and
+      target transcript materialization

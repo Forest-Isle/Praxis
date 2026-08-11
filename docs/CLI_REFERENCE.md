@@ -48,6 +48,9 @@ praxis stop <agent-id>
 # Inside the interactive TUI
 /btw Explain this result without changing the conversation
 # Press f in the answer panel to continue it as a background Agent.
+/background
+# Moves a completed conversation to a new persistent job and frees the terminal.
+# Use the printed praxis attach/logs/stop commands with its eight-hex job ID.
 
 # MCP and plugins
 praxis mcp list

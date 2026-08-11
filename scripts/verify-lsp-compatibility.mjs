@@ -194,6 +194,7 @@ os.close(slave)
 output = b''
 sent = False
 selected = False
+confirmed = False
 exit_deadline = None
 forced = False
 while process.poll() is None:
@@ -231,8 +232,11 @@ while process.poll() is None:
             time.sleep(0.1)
             os.write(master, b'\\r')
         exit_deadline = time.time() + 5
+    if sent and exit_mode == 'ctrl-c' and not confirmed and b'Press Ctrl-C again to exit' in output:
+        confirmed = True
+        os.write(master, b'\\x03')
 code = process.wait()
-sys.exit(0 if sent and (forced or code in (0, 130)) else code)
+sys.exit(0 if sent and not forced and code in (0, 130) else 1)
 `
   return waitForExit(
     spawn(

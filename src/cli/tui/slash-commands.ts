@@ -24,6 +24,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'background',
+    description: 'Send this session to the background and free the terminal',
+    source: 'builtin',
+  },
+  {
     name: 'cd',
     description: 'Change the current working directory',
     source: 'builtin',

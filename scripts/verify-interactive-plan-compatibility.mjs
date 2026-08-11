@@ -216,6 +216,7 @@ process = subprocess.Popen(sys.argv[2:], stdin=slave, stdout=slave, stderr=slave
 os.close(slave)
 output = b''
 action_index = 0
+action_start = 0
 while process.poll() is None:
     ready, _, _ = select.select([master], [], [], 0.1)
     if not ready:
@@ -229,9 +230,16 @@ while process.poll() is None:
     output += chunk
     sys.stdout.buffer.write(chunk)
     sys.stdout.buffer.flush()
-    if action_index < len(actions) and actions[action_index]['waitFor'].encode() in output:
+    while action_index < len(actions):
+        needle = actions[action_index]['waitFor'].encode()
+        match = output.find(needle, action_start)
+        if match < 0:
+            break
         value = actions[action_index]['input'].encode()
         action_index += 1
+        action_start = match + len(needle)
+        if not value:
+            continue
         time.sleep(0.05)
         if value.endswith(b'\\r'):
             os.write(master, value[:-1])
@@ -239,6 +247,7 @@ while process.poll() is None:
             os.write(master, b'\\r')
         else:
             os.write(master, value)
+        break
 sys.exit(process.wait())
 `
   const child = spawn(
@@ -456,7 +465,7 @@ try {
 
   const planConfigRoot = join(root, 'praxis-plan-config')
   const planStart = requests.length
-  await runTty(
+  const planOutput = await runTty(
     praxis.command,
     [...praxis.args, '--model', 'fixture-model', 'PLAN_MODE_ROUND_TRIP'],
     {
@@ -468,9 +477,11 @@ try {
     'Praxis plan-mode round trip',
     [
       { waitFor: 'Approve this plan', input: 'y' },
-      { waitFor: planMarker, input: '/exit\r' },
+      { waitFor: planMarker, input: '' },
+      { waitFor: 'Try "review this project"', input: '/exit\r' },
     ],
   )
+  assert(planOutput.includes(planMarker), 'Plan-mode final response missing')
   const planMessages = JSON.stringify(
     requests.slice(planStart).map((request) => request.messages),
   )

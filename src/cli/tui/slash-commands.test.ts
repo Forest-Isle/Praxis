@@ -33,8 +33,20 @@ describe('TUI slash command catalog', () => {
       source: 'skill',
     })
     expect(commands.map(({ name }) => name)).toEqual(
-      expect.arrayContaining(['context', 'status', 'skills', 'tasks', 'plan']),
+      expect.arrayContaining([
+        'background',
+        'context',
+        'status',
+        'skills',
+        'tasks',
+        'plan',
+      ]),
     )
+    expect(commands.find((command) => command.name === 'background')).toEqual({
+      name: 'background',
+      description: 'Send this session to the background and free the terminal',
+      source: 'builtin',
+    })
   })
 
   it('filters a palette query until the user starts command arguments', () => {

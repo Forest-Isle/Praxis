@@ -13,6 +13,8 @@ import {
   newClaudeJobIdentity,
   type ClaudeJobState,
   type ClaudeJobDispatch,
+  type ClaudeJobSourceCheckpoint,
+  type ClaudeJobTempo,
 } from '../persistence/claude-job-store.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import {
@@ -31,6 +33,8 @@ export interface TopLevelAgentSummary {
   sessionId: string
   name: string
   status?: 'active' | 'idle'
+  tempo?: ClaudeJobTempo
+  needs?: string
   state?: 'working' | 'stopped' | 'failed' | 'done'
 }
 
@@ -45,6 +49,15 @@ export interface TopLevelAgentRuntime {
     prompt: string,
     signal: AbortSignal,
   ): Promise<SessionRunResult>
+  fork?(
+    sessionId: string,
+    targetSessionId?: string,
+  ): Promise<{ parentSessionId: string; sessionId: string }>
+  ensureFork?(
+    sessionId: string,
+    targetSessionId: string,
+    checkpoint?: ClaudeJobSourceCheckpoint,
+  ): Promise<{ parentSessionId: string; sessionId: string }>
   close?(): Promise<void>
 }
 
@@ -135,6 +148,7 @@ function clearWorkerFields(state: ClaudeJobState): ClaudeJobState {
   delete next.socketPath
   delete next.controlToken
   delete next.inFlight
+  delete next.needs
   return next
 }
 
@@ -284,19 +298,32 @@ export class TopLevelAgentManager {
     argv: string[]
     resumeSessionId?: string
     cwd?: string
+    deferInitialTurn?: boolean
+    sourceSessionId?: string
+    sourceCheckpoint?: ClaudeJobSourceCheckpoint
+    initialDetail?: string
   }): Promise<{ id: string; sessionId: string }> {
     const cwd = await canonicalDirectory(options.cwd ?? this.options.cwd)
     let identity: { id: string; sessionId: string } | undefined
     let state: ClaudeJobState | undefined
     for (let attempt = 0; attempt < JOB_CREATE_ATTEMPTS; attempt += 1) {
       const generated = newClaudeJobIdentity()
-      const sessionId = options.resumeSessionId ?? generated.sessionId
+      const sessionId = options.sourceSessionId
+        ? generated.sessionId
+        : (options.resumeSessionId ?? generated.sessionId)
       const now = new Date().toISOString()
       const candidate: ClaudeJobState = {
         state: 'working',
-        detail: 'starting',
-        tempo: 'active',
-        inFlight: { tasks: 1, queued: 0, kinds: ['prompt'] },
+        detail: options.deferInitialTurn
+          ? (options.initialDetail ?? options.prompt)
+          : 'starting',
+        tempo: options.deferInitialTurn ? 'blocked' : 'active',
+        ...(options.deferInitialTurn
+          ? { needs: 'send a prompt to start' }
+          : {}),
+        ...(options.deferInitialTurn
+          ? {}
+          : { inFlight: { tasks: 1, queued: 0, kinds: ['prompt'] } }),
         tokens: 0,
         output: null,
         children: null,
@@ -321,6 +348,13 @@ export class TopLevelAgentManager {
           version: 1,
           argv: [...options.argv],
           resume: options.resumeSessionId !== undefined,
+          ...(options.deferInitialTurn ? { deferInitialTurn: true } : {}),
+          ...(options.sourceSessionId === undefined
+            ? {}
+            : { sourceSessionId: options.sourceSessionId }),
+          ...(options.sourceCheckpoint === undefined
+            ? {}
+            : { sourceCheckpoint: options.sourceCheckpoint }),
         })
       ) {
         identity = { id: generated.id, sessionId }
@@ -440,8 +474,10 @@ export class TopLevelAgentManager {
         name: state.intent,
         ...(state.state === 'working'
           ? {
+              tempo: state.tempo,
+              ...(state.needs === undefined ? {} : { needs: state.needs }),
               status:
-                state.tempo === 'idle'
+                state.tempo === 'idle' || state.tempo === 'blocked'
                   ? ('idle' as const)
                   : ('active' as const),
             }
@@ -721,7 +757,6 @@ export class TopLevelAgentManager {
     } catch {
       const createdAt = Date.parse(state.createdAt)
       return (
-        state.detail === 'starting' &&
         Number.isFinite(createdAt) &&
         Date.now() - createdAt < WORKER_REGISTRATION_GRACE_MS
       )
@@ -739,7 +774,7 @@ export async function runTopLevelAgentWorker(options: {
 }): Promise<void> {
   const store = new ClaudeJobStore(options.configRoot)
   const initial = await store.read(options.id)
-  const dispatch = await store.readDispatch(options.id)
+  let dispatch = await store.readDispatch(options.id)
   const sensitiveValues = sensitiveEnvironmentValues(process.env)
   const safeText = (text: string): string =>
     redactSensitiveText(text, sensitiveValues)
@@ -784,6 +819,7 @@ export async function runTopLevelAgentWorker(options: {
     for (const client of clients) writeWire(client, message)
   }
   let liveTurnText = ''
+  let sessionStarted = dispatch.resume || dispatch.handoffComplete === true
   let outputWriteError: unknown
   let outputWrites = Promise.resolve()
   let runtime: TopLevelAgentRuntime
@@ -861,7 +897,9 @@ export async function runTopLevelAgentWorker(options: {
       }
       if (message.type === 'prompt' && message.text && message.requestId) {
         const { text, requestId } = message
-        turnQueue = turnQueue.then(() => runTurn(text, true, requestId, client))
+        turnQueue = turnQueue.then(() =>
+          runTurn(text, sessionStarted, requestId, client),
+        )
       }
     })
     client.once('close', () => clients.delete(client))
@@ -940,27 +978,56 @@ export async function runTopLevelAgentWorker(options: {
     outputWriteError = undefined
     activeController = new AbortController()
     const now = new Date().toISOString()
-    const activated = await store.update(options.id, (state) =>
-      state.state !== 'working'
-        ? state
-        : {
-            ...state,
-            detail: safeText(prompt),
-            tempo: 'active',
-            inFlight: { tasks: 1, queued: 0, kinds: ['prompt'] },
-            updatedAt: now,
-          },
-    )
+    const activated = await store.update(options.id, (state) => {
+      if (state.state !== 'working') return state
+      const next = {
+        ...state,
+        detail: safeText(prompt),
+        tempo: 'active' as const,
+        inFlight: { tasks: 1, queued: 0, kinds: ['prompt'] },
+        updatedAt: now,
+      }
+      delete next.needs
+      return next
+    })
     if (closing || activated.state !== 'working') return
     await writeProcessStatus('working')
+    let resumeTurn = resume
     try {
-      const result = resume
+      if (!sessionStarted && dispatch.sourceSessionId) {
+        if (!runtime.ensureFork && !runtime.fork) {
+          throw new Error('Background handoff runtime cannot fork sessions')
+        }
+        if (runtime.ensureFork) {
+          await runtime.ensureFork(
+            dispatch.sourceSessionId,
+            initial.sessionId,
+            dispatch.sourceCheckpoint,
+          )
+        } else {
+          await runtime.fork?.(dispatch.sourceSessionId, initial.sessionId)
+        }
+        dispatch = await store.updateDispatch(options.id, (current) => {
+          const next = {
+            ...current,
+            resume: true,
+            handoffComplete: true,
+          }
+          delete next.sourceSessionId
+          delete next.sourceCheckpoint
+          return next
+        })
+        sessionStarted = true
+        resumeTurn = true
+      }
+      const result = resumeTurn
         ? await runtime.resume(
             initial.sessionId,
             prompt,
             activeController.signal,
           )
         : await runtime.run(prompt, activeController.signal, initial.sessionId)
+      sessionStarted = true
       if (closing) return
       const completedAt = new Date().toISOString()
       await outputWrites
@@ -978,21 +1045,20 @@ export async function runTopLevelAgentWorker(options: {
         detail: resultText,
         text: resultText,
       })
-      const idled = await store.update(options.id, (state) =>
-        state.state !== 'working'
-          ? state
-          : {
-              ...state,
-              detail: resultText,
-              tempo: 'idle',
-              inFlight: { tasks: 0, queued: 0, kinds: [] },
-              tokens:
-                state.tokens +
-                result.usage.inputTokens +
-                result.usage.outputTokens,
-              updatedAt: completedAt,
-            },
-      )
+      const idled = await store.update(options.id, (state) => {
+        if (state.state !== 'working') return state
+        const next = {
+          ...state,
+          detail: resultText,
+          tempo: 'idle' as const,
+          inFlight: { tasks: 0, queued: 0, kinds: [] },
+          tokens:
+            state.tokens + result.usage.inputTokens + result.usage.outputTokens,
+          updatedAt: completedAt,
+        }
+        delete next.needs
+        return next
+      })
       if (!closing && idled.state === 'working') {
         await writeProcessStatus('idle')
       }
@@ -1003,7 +1069,7 @@ export async function runTopLevelAgentWorker(options: {
       if (closing || activeController.signal.aborted) return
       const message = safeErrorMessage(error)
       const failedAt = new Date().toISOString()
-      if (resume) {
+      if (resumeTurn) {
         try {
           await store.appendOutput(options.id, `${message}\n`)
           await store.trimOutput(options.id, MAX_JOB_OUTPUT_BYTES)
@@ -1013,17 +1079,18 @@ export async function runTopLevelAgentWorker(options: {
             detail: message,
             text: message,
           })
-          const idled = await store.update(options.id, (state) =>
-            state.state !== 'working'
-              ? state
-              : {
-                  ...state,
-                  detail: message,
-                  tempo: 'idle',
-                  inFlight: { tasks: 0, queued: 0, kinds: [] },
-                  updatedAt: failedAt,
-                },
-          )
+          const idled = await store.update(options.id, (state) => {
+            if (state.state !== 'working') return state
+            const next = {
+              ...state,
+              detail: message,
+              tempo: 'idle' as const,
+              inFlight: { tasks: 0, queued: 0, kinds: [] },
+              updatedAt: failedAt,
+            }
+            delete next.needs
+            return next
+          })
           if (!closing && idled.state === 'working') {
             await writeProcessStatus('idle')
           }
@@ -1050,30 +1117,40 @@ export async function runTopLevelAgentWorker(options: {
     server.once('error', reject)
     server.listen(socketFile, resolveListen)
   })
-  const registered = await store.update(options.id, (state) =>
-    state.state !== 'working'
-      ? state
-      : {
-          ...state,
-          pid: process.pid,
-          detail: 'starting',
-          tempo: 'active',
-          socketPath: socketFile,
-          updatedAt: new Date().toISOString(),
-        },
-  )
+  const waitingForHandoff =
+    dispatch.deferInitialTurn === true && dispatch.handoffComplete !== true
+  const registered = await store.update(options.id, (state) => {
+    if (state.state !== 'working') return state
+    const next = {
+      ...state,
+      pid: process.pid,
+      detail: dispatch.deferInitialTurn ? state.detail : 'starting',
+      tempo: dispatch.deferInitialTurn
+        ? waitingForHandoff
+          ? ('blocked' as const)
+          : ('idle' as const)
+        : ('active' as const),
+      ...(waitingForHandoff ? { needs: 'send a prompt to start' } : {}),
+      socketPath: socketFile,
+      updatedAt: new Date().toISOString(),
+    }
+    if (!waitingForHandoff) delete next.needs
+    return next
+  })
   if (registered.state !== 'working') {
     server.close()
     await runtime.close?.()
     await rm(socketFile, { force: true })
     return
   }
-  await writeProcessStatus('working')
+  await writeProcessStatus(dispatch.deferInitialTurn ? 'idle' : 'working')
 
   const stop = () => void setStopped('stopped').catch(() => undefined)
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
-  turnQueue = turnQueue.then(() => runTurn(initial.intent, dispatch.resume))
+  if (!dispatch.deferInitialTurn) {
+    turnQueue = turnQueue.then(() => runTurn(initial.intent, dispatch.resume))
+  }
   try {
     await finished
   } finally {

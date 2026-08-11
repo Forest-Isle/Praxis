@@ -10,6 +10,7 @@ import type {
   ManualCompactResult,
   ManualCompactSelection,
   RewindPoint,
+  SessionForkCheckpoint,
   SessionRunResult,
   SessionSummary,
   SideQuestionForkResult,
@@ -183,6 +184,11 @@ interface InteractiveSessionCommands {
     sessionId: string | undefined,
     permissionMode?: ClaudePermissionMode,
   ): Promise<string>
+  recordBackgroundUsage?(
+    sessionId: string | undefined,
+    permissionMode?: ClaudePermissionMode,
+  ): Promise<string>
+  recordBackgroundLaunch?(sessionId: string): Promise<SessionForkCheckpoint>
   forkSideQuestion?(
     sessionId: string,
     question: string,
@@ -238,6 +244,19 @@ export interface InteractiveResumeOptions {
   retryInterruptedTools?: boolean
 }
 
+export interface InteractiveBackgroundRequest {
+  sourceSessionId: string
+  sourceCheckpoint: SessionForkCheckpoint
+  prompt: string
+  detail: string
+  cwd: string
+}
+
+export interface InteractiveBackgroundResult {
+  id: string
+  sessionId: string
+}
+
 interface InteractiveAppProps {
   factory: InteractiveServiceFactory
   initialSessions: readonly SessionSummary[]
@@ -247,6 +266,9 @@ interface InteractiveAppProps {
   onCancel?: () => void
   onTurnChange?: (turn: Promise<void> | null) => void
   onCleanup?: (closing: Promise<void>) => void
+  onBackground?: (
+    request: InteractiveBackgroundRequest,
+  ) => Promise<InteractiveBackgroundResult>
   axScreenReader?: boolean
   allowNewSession?: boolean
   resume?: InteractiveResumeOptions
@@ -630,6 +652,7 @@ export function InteractiveApp({
   onCancel,
   onTurnChange,
   onCleanup,
+  onBackground,
   axScreenReader = false,
   allowNewSession = true,
   resume,
@@ -1666,6 +1689,28 @@ export function InteractiveApp({
     }
   }
 
+  const withLocalCommands = async <T,>(
+    operation: (commands: InteractiveSessionCommands) => Promise<T>,
+  ): Promise<T> => {
+    if (serviceRef.current) return operation(serviceRef.current)
+    const preferences = runtimePreferencesRef.current
+    const commands = await factory.createService({
+      eventSink: handleEvent,
+      requireProvider: false,
+      ...(preferences.model === undefined ? {} : { model: preferences.model }),
+      effort: preferences.effort,
+      permissionMode: preferences.permissionMode,
+      additionalDirectories: preferences.additionalDirectories,
+      cwd: runtimeCwdRef.current,
+      ...(signal ? { signal } : {}),
+    })
+    try {
+      return await operation(commands)
+    } finally {
+      await commands.close?.()
+    }
+  }
+
   const openSession = (nextSessionId: string | null) => {
     setSessionId(nextSessionId)
     const loadId = sessionLoadRef.current + 1
@@ -1973,6 +2018,72 @@ export function InteractiveApp({
     })()
     onTurnChange?.(showing)
     void showing.finally(() => onTurnChange?.(null))
+  }
+
+  const backgroundSession = () => {
+    appendPromptHistory('/background')
+    const backgrounding = (async () => {
+      setBusy(true)
+      try {
+        const hasModelTurn = history.some((item) => item.kind === 'assistant')
+        if (!sessionId || !hasModelTurn) {
+          const activeSessionId = await withLocalCommands(async (commands) => {
+            if (!commands.recordBackgroundUsage) {
+              throw new Error('Background sessions are unavailable.')
+            }
+            return commands.recordBackgroundUsage(
+              sessionId ?? undefined,
+              runtimePreferencesRef.current.permissionMode,
+            )
+          })
+          setSessionId(activeSessionId)
+          append({
+            kind: 'local-result',
+            text: 'Nothing to background yet — send a message first.',
+          })
+          return
+        }
+        if (!onBackground) {
+          throw new Error('Background sessions are unavailable.')
+        }
+        const prompt = [...history]
+          .reverse()
+          .find((item) => item.kind === 'user')
+        const detail = [...history]
+          .reverse()
+          .find((item) => item.kind === 'assistant' || item.kind === 'thinking')
+        const sourceCheckpoint = await withLocalCommands(async (commands) => {
+          if (!commands.recordBackgroundLaunch) {
+            throw new Error('Background sessions are unavailable.')
+          }
+          return commands.recordBackgroundLaunch(sessionId)
+        })
+        setStatus('Backgrounding…')
+        append({ kind: 'notice', text: 'Backgrounding…' })
+        await waitUntilRenderFlush()
+        await onBackground({
+          sourceSessionId: sessionId,
+          sourceCheckpoint,
+          prompt:
+            prompt && 'text' in prompt
+              ? prompt.text
+              : 'empty-background-command',
+          detail: detail && 'text' in detail ? detail.text : '',
+          cwd: runtimeCwdRef.current,
+        })
+        await retireService()
+        exit()
+      } catch (error) {
+        warn(error)
+      } finally {
+        if (componentMountedRef.current) {
+          setBusy(false)
+          setStatus('ready')
+        }
+      }
+    })()
+    onTurnChange?.(backgrounding)
+    void backgrounding.finally(() => onTurnChange?.(null))
   }
 
   const askSideQuestion = (question: string) => {
@@ -3899,6 +4010,8 @@ export function InteractiveApp({
         const sideQuestion = btwCommand[1]?.trim()
         if (sideQuestion) askSideQuestion(sideQuestion)
         else showBtwUsage()
+      } else if (prompt === '/background') {
+        backgroundSession()
       } else if (cdCommand) {
         append({ kind: 'user', text: prompt })
         const requestedCwd = cdCommand[1]?.trim()
@@ -4580,6 +4693,10 @@ export async function runInteractive(options: {
   requireSession?: boolean
   missingSessionMessage?: string
   resume?: InteractiveResumeOptions
+  onBackground?: (
+    request: InteractiveBackgroundRequest,
+  ) => Promise<InteractiveBackgroundResult>
+  onBackgrounded?: (result: InteractiveBackgroundResult) => void
 }): Promise<number> {
   const controller = new AbortController()
   const signal = options.signal
@@ -4642,6 +4759,7 @@ export async function runInteractive(options: {
   await listing.close?.()
   let activeTurn: Promise<void> | null = null
   let cleanup: Promise<void> | null = null
+  let backgrounded: InteractiveBackgroundResult | undefined
   const instance = render(
     <InteractiveApp
       factory={options.factory}
@@ -4660,6 +4778,16 @@ export async function runInteractive(options: {
       onCleanup={(closing) => {
         cleanup = closing
       }}
+      {...(options.onBackground === undefined
+        ? {}
+        : {
+            onBackground: async (request: InteractiveBackgroundRequest) => {
+              const result = await options.onBackground?.(request)
+              if (!result) throw new Error('Background launch returned no job')
+              backgrounded = result
+              return result
+            },
+          })}
       allowNewSession={!options.requireSession}
       {...(options.additionalDirectories === undefined
         ? {}
@@ -4680,5 +4808,6 @@ export async function runInteractive(options: {
   await instance.waitUntilExit()
   if (activeTurn) await activeTurn
   if (cleanup) await cleanup
+  if (backgrounded) options.onBackgrounded?.(backgrounded)
   return signal.aborted ? 130 : 0
 }
