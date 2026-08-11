@@ -329,14 +329,16 @@ is passed from the CLI composition root and never written to shared JSONL.
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, `Ctrl+T` task access, exact permission rule
   deletion and Workspace add/remove surfaces, and `/memory` discovery,
-  loading/final hierarchy, cancellation, and instruction-file no-write checks,
+  loading/final hierarchy, imported-file `$EDITOR` lifecycle, auto-memory
+  folder-launch sentinel, next-turn provider reload, and recursive shared-tree
+  path/type/content no-write snapshot around cancellation,
   `Ctrl+G` terminal suspension/edit/redraw, `/keybindings` shared template/editor
   creation, installed-package `Ctrl+V` text paste, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus
   installed-package `!pwd` execution, provider continuation, direct `/add-dir`
   cancellation, `/copy` response output, `/rename`, `/branch`, complete
   `/export` clipboard output, and native transcript tags;
-- pinned Claude 2.1.208 and Praxis provider-request capture proving inline,
+- pinned Claude 2.1.208 and Praxis headless provider-request capture proving inline,
   escaped-space, recursive, depth-four, dedupe/cycle, code/missing boundaries,
   plus next-turn reload after an imported file changes;
   installed-package `/compact` completion and `/rewind` menu gates, interaction

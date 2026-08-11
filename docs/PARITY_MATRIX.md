@@ -171,9 +171,11 @@ remain deliberately read-only.
 Enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.
 
-The required GitHub `CI` status installs exact Claude Code 2.1.208 and executes
-its credential-free recursive CLI signature gate plus interactive PTY,
-installed-package, performance, and production-audit lanes. The full 54-gate suite includes real
-model calls and remains an explicit maintainer qualification gate rather than
-requiring subscription state or billable credentials in public/fork CI.
+The required GitHub `CI` status installs Claude Code 2.1.208 at a fixed path and
+passes that exact executable to both the credential-free recursive CLI signature
+gate and the live memory-import provider-request gate, alongside interactive
+PTY, installed-package, performance, and production-audit lanes. The full
+54-gate suite includes real model calls and remains an explicit maintainer
+qualification gate rather than requiring subscription state or billable
+credentials in public/fork CI.
 Release automation does not expand or alter product parity scope.

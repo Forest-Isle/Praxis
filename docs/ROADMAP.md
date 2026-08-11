@@ -972,6 +972,8 @@ interactive TTY parity remains partial.
       `autoMemoryEnabled` visibility, create-on-open folder behavior, and native
       macOS/Linux/Windows folder launch with in-flight generation guards
 - [x] focused catalog/component/screen-reader/editor/folder interaction tests;
-      installed PTY hierarchy/cancel/no-write coverage; pinned 2.1.208 import
-      fixture and live provider-request gate; existing 200-line `MEMORY.md`
-      context and standard Read/Write/Edit gates retained
+      installed PTY imported-file `$EDITOR` lifecycle, platform folder-launch
+      sentinel, next-turn provider reload, and recursive path/type/content
+      no-write snapshot around cancel; pinned 2.1.208 import fixture and live
+      provider-request gate; existing 200-line `MEMORY.md` context and standard
+      Read/Write/Edit gates retained
