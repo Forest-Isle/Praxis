@@ -82,8 +82,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   slash palette, tabbed help and shortcut surfaces, searchable resume picker,
   restored active-branch conversation history, streaming and expandable
   thinking, grouped multi-file reads, globally expandable tool results,
-  command-specific `/add-dir`, `/copy`, `/config`, `/usage`, `/mcp`, and
-  live extension-reload controls,
+  command-specific `/add-dir`, `/copy`, `/branch`, `/rename`, `/export`,
+  `/config`, `/usage`, `/mcp`, and live extension-reload controls,
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external

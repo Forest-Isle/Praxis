@@ -2270,6 +2270,14 @@ describe('ClaudeSessionService', () => {
       }),
     ])
 
+    await service.rename(first.sessionId, 'renamed-session')
+    await expect(service.sessions()).resolves.toEqual([
+      expect.objectContaining({
+        sessionId: first.sessionId,
+        name: 'renamed-session',
+      }),
+    ])
+
     const forked = await service.fork(first.sessionId)
     expect(forked.sessionId).not.toBe(first.sessionId)
     expect(forked.parentSessionId).toBe(first.sessionId)
@@ -2283,6 +2291,33 @@ describe('ClaudeSessionService', () => {
     const source = await readFile(forkPaths.sessionFile, 'utf8')
     expect(source).toContain(`"sessionId":"${forked.sessionId}"`)
     expect(source).not.toContain(`"sessionId":"${first.sessionId}"`)
+    expect(source).toContain('"customTitle":"renamed-session"')
+  })
+
+  it('generates a provider-backed kebab-case session name without transcript mutation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-name-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const provider = queuedProvider(['first answer', 'review-auth-flow'])
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+    })
+    const result = await service.run('review authentication')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    const before = await readFile(paths.sessionFile, 'utf8')
+
+    await expect(service.sessionNameSuggestion(result.sessionId)).resolves.toBe(
+      'review-auth-flow',
+    )
+    expect(await readFile(paths.sessionFile, 'utf8')).toBe(before)
   })
 
   it('resumes and forks at an active user message using native transcript branches', async () => {

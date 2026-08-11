@@ -13,6 +13,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'branch',
+    description: 'Create a branch of the current conversation at this point',
+    source: 'builtin',
+  },
+  {
     name: 'help',
     description: 'Show help and available commands',
     source: 'builtin',
@@ -31,6 +36,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
     name: 'effort',
     description: 'Set effort level for model usage',
+    source: 'builtin',
+  },
+  {
+    name: 'export',
+    description: 'Export the current conversation',
     source: 'builtin',
   },
   {
@@ -97,6 +107,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
     name: 'reload-skills',
     description: 'Pick up skills added or changed on disk during this session',
+    source: 'builtin',
+  },
+  {
+    name: 'rename',
+    description: 'Rename the current conversation',
     source: 'builtin',
   },
   {

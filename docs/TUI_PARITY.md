@@ -19,7 +19,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
 - entering `/` opens an unboxed, named, described, filterable command list
   rather than requiring users to remember the available slash commands;
 - applicable local commands include direct `/add-dir`, response `/copy [N]`,
-  `/config`, `/usage`, `/mcp`, `/skill`, and live plugin/skill reload entries;
+  native `/branch` and `/rename`, full-conversation `/export`, `/config`,
+  `/usage`, `/mcp`, `/skill`, and live plugin/skill reload entries;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
 - entering `!` switches the composer to shell mode; submitting runs the command
@@ -74,6 +75,7 @@ status-line plugins are not native parity requirements.
 | Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures       |
 | Decision      | bordered, numbered choices               | permission/question/plan/MCP tests             |
 | Resume        | selectable list plus active history      | projection, picker, interaction, and Ink tests |
+| Export        | clipboard/file method and filename flow  | formatter, interaction, and PTY fixtures       |
 | Accessibility | decoration-free semantic text            | screen-reader fixture                          |
 
 ## Architecture
@@ -126,6 +128,9 @@ is passed from the CLI composition root and never written to shared JSONL.
   screen-reader branch; `external-editor` owns command parsing and private
   temporary prompt-file lifecycle.
 - `SelectionMenu`: reusable model, effort, and permission-rule scope chooser.
+- `conversation-export`: terminal-style, complete in-memory transcript
+  projection for native clipboard and cwd-relative file export; it never writes
+  an export entry or Praxis-only field into shared JSONL.
 - `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
   scoped rule search and atomic creation/removal; original/additional workspace
   directory presentation; and session-local directory add/remove controls.
@@ -158,6 +163,13 @@ is passed from the CLI composition root and never written to shared JSONL.
   `/config` and `/usage` open their matching status tabs; `/mcp` lists current
   server status; `/skill` aliases the shared skill list; `/reload-skills` and
   `/reload-plugins` rebuild the active extension-backed service in place.
+- `/rename [name]` appends Claude-native title records; without a name it asks
+  the active provider for a short kebab-case title. `/branch` forks the active
+  native transcript, applies the observed ` (Branch)` title, switches the live
+  session, and prints the original-session resume target. `/export` opens the
+  observed clipboard/file chooser. Clipboard export contains the complete
+  terminal-style conversation; file export adds a timestamped editable filename
+  prompt and writes under the current working directory without changing JSONL.
 - `/model` retains the current model, restores the invocation default, or accepts
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
@@ -268,7 +280,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   control-code undo, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus
   installed-package `!pwd` execution, provider continuation, direct `/add-dir`
-  cancellation, `/copy` clipboard output, and native transcript tags;
+  cancellation, `/copy` response output, `/rename`, `/branch`, complete
+  `/export` clipboard output, and native transcript tags;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
@@ -282,8 +295,8 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the remaining applicable built-in command catalog
-(`/background`, `/branch`, `/btw`, `/cd`, `/compact`, `/export`, `/hooks`,
-`/memory`, `/rename`, `/rewind`, and presentation controls), exact denied-history
+(`/background`, `/btw`, `/cd`, `/compact`, `/hooks`, `/memory`, `/rewind`, and
+presentation controls), exact denied-history
 behavior, and remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

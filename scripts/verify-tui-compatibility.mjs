@@ -344,11 +344,29 @@ expect {
 expect -re {Context.*3 tokens}
 expect -re {Try.*review this project}
 after 100
+set phase "rename session"
+send "/rename installed-title"
+after 100
+send "\r"
+expect -re {Session renamed to: installed-title}
 set phase "copy response"
 send "/copy"
 expect -re {Copy Praxis.*last response}
 send "\r"
 expect -re {Copied last response to clipboard}
+set phase "export conversation"
+send "/export"
+expect -re {Export the current conversation}
+send "\r"
+expect -re {Export conversation}
+expect -re {Copy to clipboard}
+send "\r"
+expect -re {Conversation copied to clipboard}
+set phase "branch conversation"
+send "/branch"
+expect -re {Create a branch of the current conversation}
+send "\r"
+expect -re {Branched conversation.*new branch}
 set phase "first TUI exit"
 send "\003"
 expect -re {Press Ctrl-C again to exit}
@@ -426,15 +444,32 @@ exit 0
   const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
     .map(String)
     .filter((file) => file.endsWith('.jsonl'))
-  assert.equal(transcriptFiles.length, 1)
-  const transcript = await readFile(
-    join(projectRoot, transcriptFiles[0]),
-    'utf8',
+  assert.equal(transcriptFiles.length, 2)
+  const transcripts = await Promise.all(
+    transcriptFiles.map(async (file) => ({
+      file,
+      content: await readFile(join(projectRoot, file), 'utf8'),
+    })),
   )
+  const originalTranscript = transcripts.find(
+    ({ content }) =>
+      content.includes('"customTitle":"installed-title"') &&
+      !content.includes('installed-title (Branch)'),
+  )
+  const branchTranscript = transcripts.find(({ content }) =>
+    content.includes('installed-title (Branch)'),
+  )
+  assert.ok(originalTranscript)
+  assert.ok(branchTranscript)
+  const transcript = originalTranscript.content
   assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
   assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
   assert.match(transcript, /<bash-stderr><\/bash-stderr>/u)
-  assert.equal(await readFile(clipboardOutput, 'utf8'), 'TUI_FAKE_OK')
+  const clipboard = await readFile(clipboardOutput, 'utf8')
+  assert.match(clipboard, /Praxis Code v/u)
+  assert.match(clipboard, /❯ reply briefly/u)
+  assert.match(clipboard, /⏺ TUI_FAKE_OK/u)
+  assert.match(clipboard, /❯ \/export/u)
   const resumeProbe = String.raw`
 set timeout 15
 log_user 1
@@ -463,7 +498,7 @@ exit 0
       TUI_CONFIG_ROOT: configRoot,
       TUI_NODE: process.execPath,
       TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
-      TUI_SESSION_ID: basename(transcriptFiles[0], '.jsonl'),
+      TUI_SESSION_ID: basename(branchTranscript.file, '.jsonl'),
     },
     timeout: 60_000,
   })

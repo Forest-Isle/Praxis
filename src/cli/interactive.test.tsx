@@ -443,6 +443,162 @@ describe('InteractiveApp', () => {
     )
   })
 
+  it('exports the complete conversation to the clipboard or a file', async () => {
+    const clipboardWriter = vi.fn<(text: string) => Promise<void>>(async () =>
+      Promise.resolve(),
+    )
+    const exportWriter = vi.fn<(path: string, text: string) => Promise<void>>(
+      async () => Promise.resolve(),
+    )
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'user', text: 'Inspect the repository' },
+          { kind: 'assistant', text: 'Everything is clean.' },
+        ]}
+        display={{ version: '0.2.0', cwd: '/workspace' }}
+        clipboardWriter={clipboardWriter}
+        exportWriter={exportWriter}
+      />,
+    )
+
+    app.stdin.write('/export')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Export conversation')
+    expect(app.lastFrame()).toContain('Copy to clipboard')
+    expect(app.lastFrame()).toContain('Save to file')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(clipboardWriter).toHaveBeenCalledOnce()
+    expect(clipboardWriter.mock.calls[0]?.[0]).toContain(
+      '❯ Inspect the repository',
+    )
+    expect(clipboardWriter.mock.calls[0]?.[0]).toContain(
+      '⏺ Everything is clean.',
+    )
+    expect(app.lastFrame()).toContain('Conversation copied to clipboard')
+
+    app.stdin.write('/export')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Enter filename:')
+    expect(app.lastFrame()).toContain('praxis-conversation.txt')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Export conversation')
+    expect(app.lastFrame()).toContain('Save to file')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).not.toContain('Export conversation')
+
+    app.stdin.write('/export')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+
+    app.stdin.write('\r')
+    await flush()
+    expect(exportWriter).toHaveBeenCalledOnce()
+    expect(exportWriter.mock.calls[0]?.[0]).toMatch(
+      /^\/workspace\/\d{4}-\d{2}-\d{2}-\d{6}-praxis-conversation\.txt$/u,
+    )
+    expect(exportWriter.mock.calls[0]?.[1]).toContain('❯ /export')
+    expect(app.lastFrame()).toContain('Conversation exported to: /workspace/')
+  })
+
+  it('renames and branches the active conversation without a model turn', async () => {
+    const calls: string[] = []
+    let currentName = 'original-name'
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork(sessionId) {
+            calls.push(`fork:${sessionId}`)
+            return { parentSessionId: sessionId, sessionId: 'branch-session' }
+          },
+          async rename(sessionId, name) {
+            calls.push(`rename:${sessionId}:${name}`)
+            if (sessionId === 'original-session') currentName = name
+          },
+          async sessionNameSuggestion(sessionId) {
+            calls.push(`suggest:${sessionId}`)
+            return 'generated-session-name'
+          },
+          async sessions() {
+            return [
+              {
+                sessionId: 'original-session',
+                name: currentName,
+                lastPrompt: 'work',
+                updatedAt: '2026-08-11T00:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+            ]
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        resume={{ sessionId: 'original-session' }}
+      />,
+    )
+
+    app.stdin.write('/rename')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'Session renamed to: generated-session-name',
+    )
+
+    app.stdin.write('/rename manual-title')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Session renamed to: manual-title')
+
+    app.stdin.write('/branch')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual([
+      'suggest:original-session',
+      'rename:original-session:generated-session-name',
+      'rename:original-session:manual-title',
+      'fork:original-session',
+      'rename:branch-session:manual-title (Branch)',
+    ])
+    expect(app.lastFrame()).toContain('Branched conversation.')
+    expect(app.lastFrame()).toContain('branch-session')
+    expect(app.lastFrame()).toContain('Use /resume')
+    expect(app.lastFrame()).toContain('original-session ("manual-title")')
+    expect(app.lastFrame()).toContain('praxis -r original-session')
+    expect(app.lastFrame()).toContain('a new terminal.')
+  })
+
   it('keeps Shift+Enter as a multiline composer shortcut', async () => {
     const calls: string[] = []
     const app = render(

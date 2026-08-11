@@ -119,6 +119,12 @@ import {
   completeTuiWorkspaceDirectory,
   resolveTuiWorkspaceDirectory,
 } from './tui/workspace-directories.js'
+import {
+  conversationExportPath,
+  conversationExportText,
+  defaultConversationExportFilename,
+  writeConversationExport,
+} from './tui/conversation-export.js'
 
 interface InteractiveSessionCommands {
   run(
@@ -144,6 +150,11 @@ interface InteractiveSessionCommands {
   fork(sessionId: string, targetSessionId?: string): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
   transcript?(sessionId: string): Promise<TranscriptItem[]>
+  rename?(sessionId: string, name: string): Promise<void>
+  sessionNameSuggestion?(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null>
   workflows?(): readonly Record<string, unknown>[]
   slashCommands?(): readonly TuiSlashCommand[]
   agentDefinitions?(): readonly TuiAgentEntry[]
@@ -222,6 +233,7 @@ interface InteractiveAppProps {
   suspendProcess?: () => void | Promise<void>
   clipboardReader?: () => Promise<TuiClipboardContent>
   clipboardWriter?: (text: string) => Promise<void>
+  exportWriter?: (path: string, text: string) => Promise<void>
   permissionRuleStore?: {
     load(): Promise<readonly TuiPermissionRule[]>
     add(input: {
@@ -348,6 +360,8 @@ type InteractiveMenu =
   | { kind: 'model'; selectedIndex: number }
   | { kind: 'model-input' }
   | { kind: 'effort'; selectedIndex: number }
+  | { kind: 'export'; selectedIndex: number }
+  | { kind: 'export-filename' }
   | { kind: 'status'; tabIndex: number }
   | {
       kind: 'list'
@@ -530,6 +544,7 @@ export function InteractiveApp({
   suspendProcess = suspendTuiProcess,
   clipboardReader = readTuiClipboard,
   clipboardWriter = writeTuiClipboard,
+  exportWriter = writeConversationExport,
   permissionRuleStore,
   workspaceDirectoryResolver = resolveTuiWorkspaceDirectory,
   workspaceDirectoryCompleter = completeTuiWorkspaceDirectory,
@@ -1659,6 +1674,51 @@ export function InteractiveApp({
     void copying.finally(() => onTurnChange?.(null))
   }
 
+  const exportConversation = (method: 'clipboard' | 'file') => {
+    if (method === 'file') {
+      updateComposerInput(defaultConversationExportFilename())
+      updateMenu({ kind: 'export-filename' })
+      return
+    }
+    const text = conversationExportText(runtimeDisplay, history)
+    const copying = clipboardWriter(text).then(
+      () => {
+        updateMenu(null)
+        append({
+          kind: 'local-result',
+          text: 'Conversation copied to clipboard',
+        })
+      },
+      (error: unknown) => warn(error),
+    )
+    onTurnChange?.(copying)
+    void copying.finally(() => onTurnChange?.(null))
+  }
+
+  const saveConversation = (filename: string) => {
+    let path: string
+    try {
+      path = conversationExportPath(display.cwd, filename)
+    } catch (error) {
+      warn(error)
+      return
+    }
+    const text = conversationExportText(runtimeDisplay, history)
+    const saving = exportWriter(path, text).then(
+      () => {
+        clearComposerInput()
+        updateMenu(null)
+        append({
+          kind: 'local-result',
+          text: `Conversation exported to: ${path}`,
+        })
+      },
+      (error: unknown) => warn(error),
+    )
+    onTurnChange?.(saving)
+    void saving.finally(() => onTurnChange?.(null))
+  }
+
   const reloadExtensions = (kind: 'plugins' | 'skills') => {
     const loading = (async () => {
       setBusy(true)
@@ -1706,6 +1766,72 @@ export function InteractiveApp({
     })()
     onTurnChange?.(loading)
     void loading.finally(() => onTurnChange?.(null))
+  }
+
+  const renameSession = (requestedName?: string) => {
+    const renaming = (async () => {
+      if (!sessionId) {
+        append({ kind: 'warning', text: 'No active conversation to rename.' })
+        return
+      }
+      setBusy(true)
+      setStatus('renaming session')
+      try {
+        const commands = await service()
+        if (!commands.rename) {
+          throw new Error('This interactive service cannot rename sessions.')
+        }
+        const name =
+          requestedName?.trim() ||
+          (await commands.sessionNameSuggestion?.(sessionId, signal))
+        if (!name) throw new Error('Could not generate a session name')
+        await commands.rename(sessionId, name)
+        append({ kind: 'local-result', text: `Session renamed to: ${name}` })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(renaming)
+    void renaming.finally(() => onTurnChange?.(null))
+  }
+
+  const branchSession = () => {
+    const branching = (async () => {
+      if (!sessionId) {
+        append({ kind: 'warning', text: 'No active conversation to branch.' })
+        return
+      }
+      setBusy(true)
+      setStatus('branching conversation')
+      try {
+        const commands = await service()
+        const originalSessionId = sessionId
+        const source = (await commands.sessions()).find(
+          (candidate) => candidate.sessionId === originalSessionId,
+        )
+        const fork = await commands.fork(originalSessionId)
+        const branchName = source?.name ? `${source.name} (Branch)` : undefined
+        if (branchName && commands.rename) {
+          await commands.rename(fork.sessionId, branchName)
+        }
+        setSessionId(fork.sessionId)
+        setPendingFork(false)
+        append({
+          kind: 'local-result',
+          text: `Branched conversation. You are now in the new branch (session ${fork.sessionId}). Use /resume ${originalSessionId}${source?.name ? ` ("${source.name}")` : ''} to return to the original, or run praxis -r ${originalSessionId} in a new terminal.`,
+        })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+        setStatus('ready')
+      }
+    })()
+    onTurnChange?.(branching)
+    void branching.finally(() => onTurnChange?.(null))
   }
 
   const submit = async (
@@ -2755,6 +2881,38 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'export-filename') {
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu({ kind: 'export', selectedIndex: 1 })
+        } else if (key.return) {
+          const filename = inputRef.current.trim()
+          if (!filename) {
+            append({ kind: 'warning', text: 'Enter a filename or press Esc.' })
+          } else {
+            saveConversation(filename)
+          }
+        } else {
+          editComposer()
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'export') {
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+        } else if (key.upArrow || key.downArrow) {
+          updateMenu({ ...activeMenu, selectedIndex: key.upArrow ? 0 : 1 })
+        } else if (value === '1' || value === '2') {
+          updateMenu({ ...activeMenu, selectedIndex: Number(value) - 1 })
+        } else if (key.return) {
+          exportConversation(
+            activeMenu.selectedIndex === 0 ? 'clipboard' : 'file',
+          )
+        }
+        return
+      }
+
       if (key.escape) {
         updateMenu(null)
         return
@@ -2939,6 +3097,7 @@ export function InteractiveApp({
       composerImagesRef.current.clear()
       if (!prompt || prompt === '!') return
       const copyCommand = /^\/copy(?:\s+(\d+))?$/u.exec(prompt)
+      const renameCommand = /^\/rename(?:\s+(.+))?$/u.exec(prompt)
       if (prompt === '/exit') {
         exit()
       } else if (prompt === '/help' || prompt === '?') {
@@ -2971,6 +3130,12 @@ export function InteractiveApp({
         setKeybindingsEditing(true)
       } else if (prompt === '/add-dir') {
         openWorkspaceDirectoryInput()
+      } else if (prompt === '/branch') {
+        append({ kind: 'user', text: prompt })
+        branchSession()
+      } else if (prompt === '/export') {
+        append({ kind: 'user', text: prompt })
+        updateMenu({ kind: 'export', selectedIndex: 0 })
       } else if (prompt === '/permissions') {
         const loading = (async () => {
           setBusy(true)
@@ -3076,12 +3241,16 @@ export function InteractiveApp({
       } else if (prompt === '/reload-skills') {
         reloadExtensions('skills')
       } else if (copyCommand) {
+        append({ kind: 'user', text: prompt })
         const ordinal = Number(copyCommand[1] ?? 1)
         if (!Number.isSafeInteger(ordinal) || ordinal < 1) {
           append({ kind: 'warning', text: 'Usage: /copy [positive number]' })
         } else {
           copyResponse(ordinal)
         }
+      } else if (renameCommand) {
+        append({ kind: 'user', text: prompt })
+        renameSession(renameCommand[1])
       } else if (prompt === '/plan') {
         changePermissionMode('plan')
       } else if (prompt.startsWith('!')) {
@@ -3221,6 +3390,11 @@ export function InteractiveApp({
               </Text>
               <Text>› {input}</Text>
               <Text dimColor>Enter confirms · Esc cancels</Text>
+            </DialogFrame>
+          ) : menu?.kind === 'export-filename' ? (
+            <DialogFrame title="Enter filename:" screenReader={axScreenReader}>
+              <Text>&gt; {input}</Text>
+              <Text dimColor>Enter to save · Esc to go back</Text>
             </DialogFrame>
           ) : menu?.kind === 'permission-rule-input' ? (
             <Box flexDirection="column">
@@ -3413,6 +3587,27 @@ export function InteractiveApp({
                 }))}
                 selectedIndex={menu.selectedIndex}
                 footer="↑/↓ select · Enter applies to this session · Esc cancels"
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'export' ? (
+              <SelectionMenu
+                title="Export conversation"
+                description="Select export method"
+                options={[
+                  {
+                    label: 'Copy to clipboard',
+                    description:
+                      'Copy the conversation to your system clipboard',
+                  },
+                  {
+                    label: 'Save to file',
+                    description:
+                      'Save the conversation to a file in the current directory',
+                  },
+                ]}
+                selectedIndex={menu.selectedIndex}
+                footer="Esc to cancel"
                 width={width}
                 screenReader={axScreenReader}
               />

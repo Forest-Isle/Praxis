@@ -235,6 +235,9 @@ Your job is to predict what THEY would type - not what you think they should do.
 Reply with ONLY the suggestion, no quotes or explanation.
 Use 2-12 words. Do not ask a question, evaluate the prior response, introduce a new idea, or use a Claude voice. If the topic is unsafe or sensitive, reply with an empty string.`
 
+const SESSION_NAME_INSTRUCTION = `Generate a concise name for this coding session based on the conversation.
+Use 2-5 short words in kebab-case. Reply with ONLY the name, without quotes, punctuation, or explanation.`
+
 function validPromptSuggestion(value: string): string | null {
   const suggestion = value.trim()
   if (!suggestion) return null
@@ -242,6 +245,13 @@ function validPromptSuggestion(value: string): string | null {
   if (words.length < 2 || words.length > 12) return null
   if (/[?？\n\r]/u.test(suggestion) || /[.!。！]/u.test(suggestion)) return null
   return suggestion
+}
+
+function validSessionName(value: string): string | null {
+  const name = value.trim().split(/\r?\n/u)[0]?.trim() ?? ''
+  return /^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+){1,4}$/u.test(name)
+    ? name.toLocaleLowerCase()
+    : null
 }
 
 export class ClaudeSessionService {
@@ -633,6 +643,32 @@ export class ClaudeSessionService {
     return validPromptSuggestion(suggestion)
   }
 
+  async sessionNameSuggestion(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const provider = this.provider()
+    const loaded = await this.turnStore(sessionId).withLease((lease) =>
+      lease.load(),
+    )
+    if (loaded.status === 'conflict' || loaded.value.entries.length === 0) {
+      return null
+    }
+    let suggestion = ''
+    for await (const event of provider.complete({
+      messages: [
+        ...projectClaudeModelMessages(loaded.value.entries),
+        { role: 'user', content: SESSION_NAME_INSTRUCTION },
+      ],
+      ...(this.options.effort ? { effort: this.options.effort } : {}),
+      ...(signal ? { signal } : {}),
+    })) {
+      if (event.type === 'text-delta') suggestion += event.delta
+      if (event.type === 'tool-call') return null
+    }
+    return validSessionName(suggestion)
+  }
+
   async sessions(): Promise<SessionSummary[]> {
     const paths = this.paths(randomUUID())
     let names: string[]
@@ -754,6 +790,31 @@ export class ClaudeSessionService {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
       throw error
+    }
+  }
+
+  async rename(sessionId: string, name: string): Promise<void> {
+    this.assertWritable()
+    const normalized = name.trim()
+    if (!normalized) throw new Error('Session name must not be empty')
+    const result = await this.turnStore(sessionId).withLease(async (lease) => {
+      const snapshot = await lease.load()
+      if (snapshot.entries.length === 0) {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      if (this.hasSessionName(snapshot.entries, normalized)) return
+      const appendResult = await lease.appendMany(
+        snapshot.tail,
+        this.sessionNameEntries(sessionId, normalized),
+      )
+      if (appendResult.status === 'conflict') {
+        throw new Error(
+          `Claude transcript rename conflict: ${appendResult.reason}`,
+        )
+      }
+    })
+    if (result.status === 'conflict') {
+      throw new Error(`Claude transcript rename conflict: ${result.reason}`)
     }
   }
 

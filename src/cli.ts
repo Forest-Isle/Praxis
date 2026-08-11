@@ -923,6 +923,11 @@ interface SessionCommands {
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
   transcript?(sessionId: string): Promise<ClaudeDisplayTranscriptItem[]>
+  rename?(sessionId: string, name: string): Promise<void>
+  sessionNameSuggestion?(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null>
   nextScheduledPrompt?(
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
@@ -1682,6 +1687,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       export: (sessionId) => service.export(sessionId),
       transcript: (sessionId) =>
         service.transcript(sessionId, pendingResumeSessionAt),
+      rename: (sessionId, name) => service.rename(sessionId, name),
+      sessionNameSuggestion: (sessionId, signal) =>
+        service.sessionNameSuggestion(sessionId, signal),
       nextScheduledPrompt: (signal) => service.nextScheduledPrompt(signal),
       close: async () => {
         let failure: unknown
