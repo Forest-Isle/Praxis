@@ -10,9 +10,9 @@ const dependency = parse(await readFile(dependencyPath, 'utf8'))
 const release = parse(releaseSource)
 
 assert.equal(
-  release.permissions?.checks,
+  release.permissions?.statuses,
   'write',
-  'Release Please must be able to publish protected check runs',
+  'Release Please must be able to publish protected commit statuses',
 )
 
 assert.ok(
@@ -54,10 +54,15 @@ assert.match(
   releaseSource,
   /dependency-review\.yml\) CHECK_NAME='Dependency review'/u,
 )
-assert.match(releaseSource, /repos\/\$GITHUB_REPOSITORY\/check-runs/u)
-assert.match(releaseSource, /head_sha:\$sha/u)
-assert.match(releaseSource, /conclusion:"success"/u)
-assert.match(releaseSource, /details_url:\$url/u)
+assert.match(
+  releaseSource,
+  /statuses\/\$HEAD_SHA[\s\S]*state=pending[\s\S]*context="\$CHECK_NAME"/u,
+)
+assert.match(
+  releaseSource,
+  /statuses\/\$HEAD_SHA[\s\S]*state=success[\s\S]*context="\$CHECK_NAME"/u,
+)
+assert.match(releaseSource, /target_url="\$RUN_URL"/u)
 assert.match(releaseSource, /-f base_ref=main/u)
 assert.match(releaseSource, /-f head_ref="\$HEAD_BRANCH"/u)
 assert.doesNotMatch(releaseSource, /contexts\/[^\s"']+/u)
