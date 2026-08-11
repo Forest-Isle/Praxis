@@ -21,8 +21,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
 - applicable local commands include direct `/add-dir`, response `/copy [N]`,
   native `/branch` and `/rename`, full-conversation `/export`, `/config`,
   `/usage`, `/mcp`, `/skill`, provider-backed `/compact`, native `/rewind`,
-  runtime `/cd`, transcript-free `/btw` side questions, and live plugin/skill
-  reload entries;
+  runtime `/cd`, transcript-free `/btw` side questions, persistent
+  `/background` terminal handoff, and live plugin/skill reload entries;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
 - entering `!` switches the composer to shell mode; submitting runs the command
@@ -82,6 +82,7 @@ status-line plugins are not native parity requirements.
 | Rewind        | bounded checkpoints and restore actions  | native JSONL/file-history and interaction gates |
 | Cwd           | local result plus relocated session      | service, interaction, and installed PTY gates   |
 | Side question | local history panel and Agent handoff    | black-box, service, Ink, and JSONL fixtures     |
+| Background    | blocked job handoff and terminal restore | black-box, manager, Ink, and PTY gate           |
 | Accessibility | decoration-free semantic text            | screen-reader fixture                           |
 
 ## Architecture
@@ -96,6 +97,7 @@ shared extensions -> slash catalog -> command palette -> existing session servic
 runtime controls -> service retirement/recreation -> existing session service
 /cd -> canonical cwd -> native session relocation -> recreated runtime service
 /btw -> contextual provider call -> local panel -> optional native Agent sidechain
+/background -> source-tail checkpoint -> blocked job -> idempotent fork on attach
 Git worktree ----> read-only diff snapshots ------> diff dashboard
 keyboard input -------------------> existing callbacks and session service
 `!` command -> direct runtime Bash -> native bash user records -> model turn
@@ -206,6 +208,17 @@ is passed from the CLI composition root and never written to shared JSONL.
   launches the existing native background Agent path, appends the observed
   `system/local_command` pair, persists the Agent sidechain, and records native
   queue operations plus the task notification in the main transcript.
+- `/background` rejects a session without a completed model turn using Claude's
+  exact local result and three native user records. A completed conversation
+  writes only shared input history, renders `Backgrounding…`, closes the
+  foreground service, creates a new eight-hex job/session identity, restores the
+  terminal, and prints `agents`/`attach`/`logs`/`stop` commands. The worker stays
+  blocked without a provider turn; its private dispatch sidecar names the source
+  session and active-tail checkpoint, and first attach lazily forks that Claude
+  chain into the new job session before resuming it. A durable completion marker
+  makes restart recovery idempotent even if the source later advances. The source
+  transcript remains byte-for-byte unchanged, while the new transcript is
+  resumable by either Claude or Praxis.
 - `/model` retains the current model, restores the invocation default, or accepts
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
@@ -322,7 +335,9 @@ is passed from the CLI composition root and never written to shared JSONL.
   preserved-message replay, and installed-package `/cd` relocation plus
   post-change `!pwd` execution; `/btw` usage, streaming/history/copy/cancel/fork
   interaction coverage, native sidechain and queue-notification persistence,
-  and captured 2.1.208 JSONL records;
+  and captured 2.1.208 JSONL records; `/background` empty/success/failure Ink
+  coverage plus a live Claude/Praxis PTY handoff, blocked-state, lazy-fork,
+  unchanged-source, provider-context, and cross-resume gate;
 - full `npm run check`, package regression, and performance budgets;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
@@ -336,8 +351,7 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the remaining applicable built-in command catalog
-(`/background`, `/hooks`, `/memory`, and
-presentation controls), exact denied-history
-behavior, and remaining exact command-specific dialogs and layout behavior. Each
+(`/hooks`, `/memory`, and presentation controls), exact denied-history behavior,
+and remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

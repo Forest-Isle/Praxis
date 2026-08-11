@@ -103,7 +103,7 @@ function isAttachable(
 }
 
 function agentStatus(agent: TopLevelAgentSummary): string {
-  return agent.status ?? agent.state ?? 'unknown'
+  return agent.tempo ?? agent.status ?? agent.state ?? 'unknown'
 }
 
 function trimOutput(output: string): string {
@@ -123,6 +123,8 @@ function sectionFor(
   agent: TopLevelAgentSummary,
 ): 'Ready for review' | 'Needs input' | 'Working' | 'Completed' {
   if (!isActive(agent)) return 'Completed'
+  if (agent.tempo === 'blocked' || agent.needs !== undefined)
+    return 'Needs input'
   return agent.status === 'idle' ? 'Ready for review' : 'Working'
 }
 
@@ -176,6 +178,7 @@ export function AgentsDashboardApp({
   const [agents, setAgents] = useState<TopLevelAgentSummary[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
   const selectedIndexRef = useRef(0)
+  const selectedKeyRef = useRef<string | undefined>(undefined)
   const [mode, setMode] = useState<DashboardMode>('list')
   const [attachedId, setAttachedId] = useState<string>()
   const [input, setInput] = useState('')
@@ -196,11 +199,20 @@ export function AgentsDashboardApp({
         }),
       )
       setAgents(next)
-      setSelectedIndex((current) => {
-        const selected = Math.min(current, Math.max(0, next.length - 1))
-        selectedIndexRef.current = selected
-        return selected
-      })
+      const selectedKey = selectedKeyRef.current
+      const matchingIndex =
+        selectedKey === undefined
+          ? -1
+          : next.findIndex((agent) => agentKey(agent) === selectedKey)
+      const selected =
+        matchingIndex >= 0
+          ? matchingIndex
+          : Math.min(selectedIndexRef.current, Math.max(0, next.length - 1))
+      selectedIndexRef.current = selected
+      selectedKeyRef.current = next[selected]
+        ? agentKey(next[selected])
+        : undefined
+      setSelectedIndex(selected)
       setNotice((current) => (current === 'Loading agents…' ? '' : current))
     } catch (error) {
       setNotice(`Could not refresh agents: ${errorMessage(error)}`)
@@ -388,6 +400,7 @@ export function AgentsDashboardApp({
       setInput('')
       setReviewAgent(undefined)
       setNotice(`Resumed ${launched.id}`)
+      selectedKeyRef.current = launched.id
       await refresh()
       attachAgent({
         id: launched.id,
@@ -457,12 +470,17 @@ export function AgentsDashboardApp({
     if (key.upArrow) {
       const next = Math.max(0, selectedIndexRef.current - 1)
       selectedIndexRef.current = next
+      selectedKeyRef.current = agents[next] ? agentKey(agents[next]) : undefined
       setSelectedIndex(next)
       return
     }
     if (key.downArrow) {
       const next = Math.min(agents.length - 1, selectedIndexRef.current + 1)
       selectedIndexRef.current = Math.max(0, next)
+      const selectedAgent = agents[selectedIndexRef.current]
+      selectedKeyRef.current = selectedAgent
+        ? agentKey(selectedAgent)
+        : undefined
       setSelectedIndex(selectedIndexRef.current)
       return
     }

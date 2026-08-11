@@ -97,6 +97,18 @@ describe('ClaudeJobStore', () => {
       argv: ['test prompt'],
       resume: false,
     })
+    await expect(
+      store.updateDispatch(identity.id, (dispatch) => ({
+        ...dispatch,
+        resume: true,
+        handoffComplete: true,
+      })),
+    ).resolves.toEqual({
+      version: 1,
+      argv: ['test prompt'],
+      resume: true,
+      handoffComplete: true,
+    })
     expect(
       await readFile(
         join(configRoot, 'jobs', identity.id, 'state.json'),

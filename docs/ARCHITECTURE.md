@@ -168,8 +168,11 @@ dead workers, and routes logs/attach/stop. `ClaudeJobStore` atomically replaces
 state and dispatch files, serializes timeline changes, and bounds the recent
 output log. The worker keeps its session runtime alive after a completed turn,
 marks `sessions/<pid>.json` idle, and accepts serialized follow-up prompts over
-an authenticated local Unix socket. Job controls are operational state only;
-all resumable conversation content stays in shared project JSONL.
+an authenticated local Unix socket. Interactive `/background` allocates a fresh
+blocked job identity without touching the source transcript; a private dispatch
+reference lets the worker lazily fork the active native chain into the job
+session on first attach. Job controls are operational state only; all resumable
+conversation content stays in shared project JSONL.
 
 `ScheduledPromptManager` owns session-only jobs in memory and durable jobs in
 the shared project-local `scheduled_tasks.json`. `ClaudeScheduledTaskStore`

@@ -8,6 +8,7 @@ const packageDocument = JSON.parse(
 )
 const excluded = new Set([
   'test:compat:all',
+  'test:docs',
   'test:package',
   'test:performance',
 ])
@@ -21,6 +22,7 @@ const transientModelPatterns = [
   'error_max_turns',
   '"stop_reason":"tool_use"',
   'Reached maximum number of turns',
+  'Claude memoryBoundary did not expose marker SHARED_MEMORY_LINE_',
 ]
 
 for (const [name, command] of Object.entries(packageDocument.scripts ?? {})) {

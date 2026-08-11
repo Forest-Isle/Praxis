@@ -677,6 +677,220 @@ describe('InteractiveApp', () => {
     expect(answerSideQuestion).not.toHaveBeenCalled()
   })
 
+  it('records native /background rejection for a session without a model turn', async () => {
+    const recordBackgroundUsage = vi.fn(async () => 'empty-session')
+    const onBackground = vi.fn()
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            expect(options.requireProvider).toBe(false)
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              recordBackgroundUsage,
+            }
+          },
+        }}
+        initialSessions={[]}
+        onBackground={onBackground}
+      />,
+    )
+
+    app.stdin.write('/background')
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain(
+      'Nothing to background yet — send a message first.',
+    )
+    expect(recordBackgroundUsage).toHaveBeenCalledWith(undefined, 'default')
+    expect(onBackground).not.toHaveBeenCalled()
+  })
+
+  it('rejects /background when an interrupted turn only reached thinking and tools', async () => {
+    const recordBackgroundUsage = vi.fn(async () => 'interrupted-session')
+    const onBackground = vi.fn()
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              recordBackgroundUsage,
+            }
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'user', text: 'source prompt' },
+          { kind: 'thinking', text: 'partial reasoning' },
+          {
+            kind: 'tool',
+            call: { id: 'call-1', name: 'Read', input: { file_path: 'a.ts' } },
+            detail: 'a.ts',
+          },
+          { kind: 'notice', text: 'Interrupted by user.' },
+        ]}
+        resume={{ sessionId: 'interrupted-session' }}
+        onBackground={onBackground}
+      />,
+    )
+
+    app.stdin.write('/background')
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain(
+      'Nothing to background yet — send a message first.',
+    )
+    expect(recordBackgroundUsage).toHaveBeenCalledWith(
+      'interrupted-session',
+      'default',
+    )
+    expect(onBackground).not.toHaveBeenCalled()
+  })
+
+  it('backgrounds a completed conversation through the native handoff seam', async () => {
+    let finishBackground:
+      ((value: { id: string; sessionId: string }) => void) | undefined
+    const recordBackgroundLaunch = vi.fn(async () => ({
+      resumeSessionAt: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      entryCount: 4,
+    }))
+    const onBackground = vi.fn(
+      () =>
+        new Promise<{ id: string; sessionId: string }>((resolve) => {
+          finishBackground = resolve
+        }),
+    )
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              recordBackgroundLaunch,
+            }
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'user', text: 'source prompt' },
+          { kind: 'assistant', text: 'source answer' },
+        ]}
+        resume={{ sessionId: 'source-session' }}
+        display={{ version: 'test', cwd: '/workspace' }}
+        onBackground={onBackground}
+      />,
+    )
+
+    app.stdin.write('/background')
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('Backgrounding…')
+    expect(recordBackgroundLaunch).toHaveBeenCalledWith('source-session')
+    await expect.poll(() => onBackground.mock.calls.length).toBe(1)
+    expect(onBackground).toHaveBeenCalledWith({
+      sourceSessionId: 'source-session',
+      sourceCheckpoint: {
+        resumeSessionAt: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        entryCount: 4,
+      },
+      prompt: 'source prompt',
+      detail: 'source answer',
+      cwd: '/workspace',
+    })
+
+    finishBackground?.({
+      id: 'abcd1234',
+      sessionId: 'abcd1234-1111-4111-8111-111111111111',
+    })
+    await flush()
+  })
+
+  it('keeps the TUI usable when /background launch fails', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async recordBackgroundLaunch() {
+                return {
+                  resumeSessionAt: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                  entryCount: 4,
+                }
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'user', text: 'source prompt' },
+          { kind: 'assistant', text: 'source answer' },
+        ]}
+        resume={{ sessionId: 'source-session' }}
+        onBackground={async () => {
+          throw new Error('background launch failed')
+        }}
+      />,
+    )
+
+    app.stdin.write('/background')
+    app.stdin.write('\r')
+    await flush()
+
+    await expect
+      .poll(() => app.lastFrame() ?? '')
+      .toContain('background launch failed')
+    expect(app.lastFrame()).toContain('? for shortcuts')
+  })
+
   it('streams /btw answers and manages history, copy, and clear locally', async () => {
     const clipboardWriter = vi.fn(async () => undefined)
     const questions: string[] = []

@@ -300,6 +300,102 @@ describe('AgentsDashboardApp', () => {
     expect(attached).toEqual(['efgh5678'])
   })
 
+  it('keeps the selected agent identity when a status change reorders sections', async () => {
+    const resumed: TopLevelAgentSummary = {
+      ...activeAgent,
+      id: 'resumed1',
+      name: 'resumed agent',
+      status: 'active',
+      state: 'working',
+    }
+    const native: TopLevelAgentSummary = {
+      cwd: '/workspace',
+      kind: 'interactive',
+      startedAt: 2,
+      sessionId: 'native-fixture-session',
+      name: 'native fixture',
+      status: 'idle',
+    }
+    let agents = [native, resumed]
+    const stopped: string[] = []
+    const manager: AgentsDashboardManager = {
+      async launch() {
+        throw new Error('unused')
+      },
+      async list() {
+        return agents
+      },
+      async review() {
+        return 'REVIEW'
+      },
+      async stop(id) {
+        stopped.push(id)
+      },
+      async attach() {
+        throw new Error('unused')
+      },
+    }
+    const app = render(
+      <AgentsDashboardApp
+        manager={manager}
+        defaults={{ argv: [], cwd: '/workspace' }}
+        refreshIntervalMs={60_000}
+      />,
+    )
+
+    await flush()
+    app.stdin.write('\u001b[B')
+    await flush()
+    expect(app.lastFrame()).toContain('Selected resumed1')
+
+    agents = [{ ...resumed, status: 'idle' }, native]
+    app.stdin.write('\u0012')
+    await flush()
+    expect(app.lastFrame()).toContain('Selected resumed1')
+
+    app.stdin.write('\u0018')
+    await flush()
+    expect(stopped).toEqual(['resumed1'])
+  })
+
+  it('shows blocked handoffs in Needs input instead of Ready for review', async () => {
+    const blocked: TopLevelAgentSummary = {
+      ...activeAgent,
+      tempo: 'blocked',
+      needs: 'send a prompt to start',
+    }
+    const manager: AgentsDashboardManager = {
+      async launch() {
+        throw new Error('unused')
+      },
+      async list() {
+        return [blocked]
+      },
+      async review() {
+        return 'REVIEW'
+      },
+      async stop() {
+        throw new Error('unused')
+      },
+      async attach() {
+        throw new Error('unused')
+      },
+    }
+    const app = render(
+      <AgentsDashboardApp
+        manager={manager}
+        defaults={{ argv: [], cwd: '/workspace' }}
+        refreshIntervalMs={60_000}
+      />,
+    )
+
+    await flush()
+    expect(app.lastFrame()).toMatch(
+      /Ready for review \(0\)[\s\S]*Needs input \(1\)/u,
+    )
+    expect(app.lastFrame()).toContain('blocked · abcd1234')
+  })
+
   it('reviews active native sessions without treating them as attachable', async () => {
     const native: TopLevelAgentSummary = {
       cwd: '/workspace',

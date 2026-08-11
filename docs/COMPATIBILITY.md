@@ -328,10 +328,19 @@ is never authoritative conversation state. Dynamic completion-notification
 fields are XML escaped before transcript insertion.
 
 Top-level background sessions use Claude's observed `jobs/<8-hex-id>` and
-`sessions/<pid>.json` layout, including `template: "bg"`, active/idle tempo,
-managed session identity, timeline, and terminal state. A Praxis owner marker,
-dispatch record, control token, and bounded `output.log` are operational
-sidecars: they coordinate only Praxis workers and are not conversation state.
+`sessions/<pid>.json` layout, including `template: "bg"`, active/blocked/idle
+tempo, managed session identity, timeline, and terminal state. Interactive
+`/background` creates a fresh job session that remains blocked until input; its
+dispatch sidecar privately identifies the foreground source session and active
+tail checkpoint. First attach forks that native chain into the fresh session
+before resuming it, while the source transcript remains byte-for-byte unchanged.
+Praxis preserves that source invariant on every platform; the pinned Claude
+2.1.208 probe records an upstream OS difference where Ubuntu appends native
+local-command records but macOS leaves the source unchanged.
+The checkpoint and a durable completion marker make the lazy fork idempotent
+across worker restarts even if the source later advances. A Praxis owner marker,
+dispatch record, control token, and bounded `output.log` are operational sidecars:
+they coordinate only Praxis workers and are not conversation state.
 Claude's private daemon does not discover a synthetic job from state files
 alone, so Praxis never fabricates or takes over Claude daemon sockets. Shared
 project JSONL remains authoritative and carries native `sessionKind: "bg"`,
@@ -457,6 +466,10 @@ ID collision, and persist an XML-safe completion notification.
 contract, drives a real detached Praxis worker through logs, attach, and stop,
 validates native job/session layout and background transcript metadata, then
 proves Claude -> Praxis and Praxis -> Claude resume.
+`npm run test:background-command-compat` drives Claude and Praxis through the
+interactive `/background` PTY flow and proves fresh job identity,
+blocked-until-input state, transcript-free launch, unchanged source JSONL, lazy
+fork on attach, complete provider context, and resumable target transcripts.
 `npm run test:scheduled-compat` compares `CronCreate`, `CronDelete`, `CronList`,
 and exact `ScheduleWakeup` descriptions/schemas, proves Praxis-created native
 jobs are visible and deletable after Claude resume, proves Claude-created jobs
