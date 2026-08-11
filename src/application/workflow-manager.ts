@@ -94,6 +94,7 @@ interface WorkflowTask {
   args: unknown
   defaultModel: string
   startTime: number
+  durationMs: number | null
   status: 'running' | 'completed' | 'failed' | 'killed'
   result: unknown
   error?: string
@@ -234,6 +235,7 @@ export class WorkflowManager {
       args: structuredClone(options.args),
       defaultModel: options.defaultModel,
       startTime: Date.now(),
+      durationMs: null,
       status: 'running',
       result: null,
       logs: [],
@@ -577,13 +579,14 @@ export class WorkflowManager {
       task.status = task.controller.signal.aborted ? 'killed' : 'failed'
       task.error = `${error instanceof Error ? (error.stack ?? error.message) : String(error)}`
     } finally {
+      task.durationMs = Date.now() - task.startTime
       task.notificationPending = true
       await task.store.writeRun(this.runRecord(task))
     }
   }
 
   private runRecord(task: WorkflowTask): Record<string, unknown> {
-    const durationMs = Date.now() - task.startTime
+    const durationMs = task.durationMs ?? Date.now() - task.startTime
     return {
       runId: task.runId,
       timestamp: new Date().toISOString(),
@@ -617,6 +620,8 @@ export class WorkflowManager {
       run_id: task.runId,
       progress: task.progress,
       result: task.result,
+      startTime: task.startTime,
+      durationMs: task.durationMs ?? Date.now() - task.startTime,
       ...(task.error ? { error: task.error } : {}),
     }
   }
@@ -705,7 +710,7 @@ export class WorkflowManager {
       `agents_empty_result: ${empty}`,
       `subagent_tokens: ${task.totalTokens}`,
       `tool_uses: ${task.totalToolCalls}`,
-      `duration_ms: ${Date.now() - task.startTime}`,
+      `duration_ms: ${task.durationMs ?? Date.now() - task.startTime}`,
       '</usage>',
       '</task-notification>',
     ].join('\n')

@@ -64,6 +64,23 @@ describe('WorkflowManager', () => {
       timeout: 5_000,
     })
     expect(firstOutput).toContain('"status": "completed"')
+    const firstDuration = (
+      JSON.parse(firstOutput.slice(0, firstOutput.indexOf('\n\n'))) as {
+        durationMs: number
+      }
+    ).durationMs
+    const terminalDuration = manager.list()[0]?.durationMs
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10))
+    expect(manager.list()[0]?.durationMs).toBe(terminalDuration)
+    const repeatedOutput = await manager.output(first.taskId, {
+      block: false,
+      timeout: 0,
+    })
+    expect(
+      JSON.parse(repeatedOutput.slice(0, repeatedOutput.indexOf('\n\n')))
+        .durationMs,
+    ).toBe(firstDuration)
+    expect(notifications.messages[0]).toContain(`duration_ms: ${firstDuration}`)
     const run = JSON.parse(
       await readFile(
         join(
