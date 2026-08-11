@@ -316,7 +316,12 @@ try {
   assert.equal(state.tempo, 'blocked')
   assert.equal(state.needs, 'send a prompt to start')
   const claudeSource = await transcriptContaining('BACKGROUND_CONTEXT_SEED')
-  assert.doesNotMatch(claudeSource.source, /<command-name>\/background/u)
+  const claudeSourceHasBackgroundCommand = /<command-name>\/background/u.test(
+    claudeSource.source,
+  )
+  if (process.platform === 'darwin') {
+    assert.equal(claudeSourceHasBackgroundCommand, false)
+  }
   const beforeAttach = await transcript(state.sessionId, false)
   if (beforeAttach)
     assert.doesNotMatch(beforeAttach, /BACKGROUND_CONTEXT_SEED/u)
@@ -433,7 +438,7 @@ try {
         blockedUntilPrompt: true,
         transcriptInitiallyMetadataOnly: true,
         attachContextPreserved: true,
-        sourceTranscriptUnchanged: true,
+        sourceTranscriptUnchanged: !claudeSourceHasBackgroundCommand,
         attachTranscriptContainsSourceContext: afterAttach.includes(
           'BACKGROUND_CONTEXT_SEED',
         ),

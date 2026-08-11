@@ -334,6 +334,9 @@ tempo, managed session identity, timeline, and terminal state. Interactive
 dispatch sidecar privately identifies the foreground source session and active
 tail checkpoint. First attach forks that native chain into the fresh session
 before resuming it, while the source transcript remains byte-for-byte unchanged.
+Praxis preserves that source invariant on every platform; the pinned Claude
+2.1.208 probe records an upstream OS difference where Ubuntu appends native
+local-command records but macOS leaves the source unchanged.
 The checkpoint and a durable completion marker make the lazy fork idempotent
 across worker restarts even if the source later advances. A Praxis owner marker,
 dispatch record, control token, and bounded `output.log` are operational sidecars:
