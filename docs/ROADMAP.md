@@ -981,9 +981,8 @@ interactive TTY parity remains partial.
 
 ## Stage 107 - interactive hooks browser parity
 
-Status: implemented for the observed Claude Code 2.1.208 read-only `/hooks`
-browser subset; broader hook-management and interactive TTY parity remain
-partial.
+Status: complete for the observed Claude Code 2.1.208 read-only `/hooks`
+contract. Overall interactive TTY parity remains partial.
 
 - [x] observed read-only event descriptions, bounded numeric/arrow navigation,
       hook counts, and nested event → matcher → hook → detail flow
