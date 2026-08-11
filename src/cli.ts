@@ -58,6 +58,10 @@ import type {
   InteractiveServiceFactory,
 } from './cli/interactive.js'
 import type { TuiSlashCommand } from './cli/tui/slash-commands.js'
+import {
+  projectTuiHooks,
+  type TuiHookConfiguration,
+} from './cli/tui/hook-settings.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
 import { createCliDebugSink } from './cli/debug.js'
 import {
@@ -977,6 +981,7 @@ interface SessionCommands {
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
   slashCommands?(): readonly TuiSlashCommand[]
+  hookConfiguration?(): TuiHookConfiguration
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
   agentDefinitions?(): readonly { name: string; description: string }[]
@@ -1759,6 +1764,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
           description: definition.description,
           source: definition.kind,
         })),
+      hookConfiguration: () => projectTuiHooks(settings),
       agentDefinitions: () => extensions.agentDefinitions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),

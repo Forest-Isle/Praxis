@@ -83,7 +83,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   restored active-branch conversation history, streaming and expandable
   thinking, grouped multi-file reads, globally expandable tool results,
   command-specific `/add-dir`, `/copy`, `/branch`, `/rename`, `/export`,
-  provider-backed `/compact`, native `/rewind`, runtime `/cd`, transcript-free
+  read-only shared `/hooks`, provider-backed `/compact`, native `/rewind`, runtime `/cd`, transcript-free
   `/btw` side questions with background-Agent handoff, interactive
   `/background` terminal handoff, `/config`, `/usage`, `/mcp`, `/memory` shared
   instruction and auto-memory access, and live extension-reload controls,

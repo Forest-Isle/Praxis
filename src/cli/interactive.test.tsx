@@ -10,6 +10,7 @@ import {
   type InteractiveServiceFactory,
   runInteractive,
 } from './interactive.js'
+import { projectTuiHooks } from './tui/hook-settings.js'
 
 afterEach(() => cleanup())
 
@@ -414,6 +415,95 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(app.lastFrame()).toContain('Did not add a working directory.')
+  })
+
+  it('navigates the read-only hooks event, matcher, and hook menus', async () => {
+    const settings = {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash|Write',
+            hooks: [
+              {
+                type: 'command',
+                command: 'echo check',
+                statusMessage: 'Checking tool',
+              },
+              { type: 'prompt', prompt: 'Is this safe?' },
+            ],
+          },
+          {
+            hooks: [{ type: 'http', url: 'https://example.test/hook' }],
+          },
+        ],
+      },
+    }
+    const original = JSON.stringify(settings)
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          hookConfiguration() {
+            return projectTuiHooks([
+              {
+                path: '/shared/.claude/settings.json',
+                scope: 'user',
+                value: settings,
+              },
+            ])
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('/hooks')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('3 hooks configured')
+    expect(app.lastFrame()).toContain('PreToolUse (3)')
+    expect(app.lastFrame()).toContain('This menu is read-only')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('PreToolUse - Matchers')
+    expect(app.lastFrame()).toContain('[User] (all) 1 hook')
+    expect(app.lastFrame()).toContain('[User] Bash|Write 2 hooks')
+
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('PreToolUse - Matcher: Bash|Write')
+    expect(app.lastFrame()).toContain('[command] Checking tool')
+    expect(app.lastFrame()).toContain('[prompt] Is this safe?')
+    expect(app.lastFrame()).toContain('User Settings')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('PreToolUse - Matchers')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Hooks')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).not.toContain('This menu is read-only')
+    expect(JSON.stringify(settings)).toBe(original)
   })
 
   it('copies the selected prior assistant response without a model turn', async () => {

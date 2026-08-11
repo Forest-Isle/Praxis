@@ -20,7 +20,8 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
   rather than requiring users to remember the available slash commands;
 - applicable local commands include direct `/add-dir`, response `/copy [N]`,
   native `/branch` and `/rename`, full-conversation `/export`, `/config`,
-  `/usage`, `/mcp`, `/skill`, provider-backed `/compact`, native `/rewind`,
+  `/usage`, `/mcp`, `/skill`, read-only shared `/hooks`, provider-backed
+  `/compact`, native `/rewind`,
   runtime `/cd`, transcript-free `/btw` side questions, persistent
   `/background` terminal handoff, and live plugin/skill reload entries;
 - permission mode, shortcut hint, and model effort share the footer row;
@@ -83,6 +84,7 @@ status-line plugins are not native parity requirements.
 | Cwd           | local result plus relocated session      | service, interaction, and installed PTY gates   |
 | Side question | local history panel and Agent handoff    | black-box, service, Ink, and JSONL fixtures     |
 | Background    | blocked job handoff and terminal restore | black-box, manager, Ink, and PTY gate           |
+| Hooks         | read-only event/matcher/hook browser     | live Claude, projection, Ink, and PTY gates     |
 | Accessibility | decoration-free semantic text            | screen-reader fixture                           |
 
 ## Architecture
@@ -363,7 +365,7 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the remaining applicable built-in command catalog
-(`/hooks` and presentation controls), exact denied-history behavior,
+(presentation controls), exact denied-history behavior,
 and remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

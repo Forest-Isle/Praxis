@@ -978,3 +978,20 @@ interactive TTY parity remains partial.
       exclusion and sibling-JSONL mutation sentinel; pinned 2.1.208 import
       fixture and live provider-request gate; existing 200-line `MEMORY.md`
       context and standard Read/Write/Edit gates retained
+
+## Stage 107 - interactive hooks browser parity
+
+Status: complete for the Claude Code 2.1.208 `/hooks` contract; broader
+interactive TTY parity remains partial.
+
+- [x] black-box-confirmed read-only event catalog, descriptions, bounded
+      navigation, hook counts, and nested event → matcher → hook flow
+- [x] user/project/local/plugin scope projection from the active shared
+      settings and plugin data plane, including command, prompt, agent, and HTTP
+      hooks
+- [x] provider-free hooks-only loading that reads no unrelated plugin resources
+      and creates no plugin operational state
+- [x] cwd and plugin reload refresh through the existing `/cd` and
+      `/reload-plugins` commands without a competing configuration store
+- [x] focused projection/component/Ink tests plus pinned Claude 2.1.208 and
+      installed-package PTY comparison with tree-wide no-write verification

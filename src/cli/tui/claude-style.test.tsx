@@ -10,6 +10,7 @@ import {
   ExternalEditorWait,
   FilePicker,
   HelpMenu,
+  HookDashboard,
   ListDashboard,
   MemoryDashboard,
   MarkdownText,
@@ -22,6 +23,7 @@ import {
   Transcript,
   WelcomePanel,
 } from './claude-style.js'
+import { projectTuiHooks } from './hook-settings.js'
 
 afterEach(() => cleanup())
 
@@ -511,6 +513,54 @@ describe('Claude-style TUI components', () => {
       />,
     )
     expect(populated.lastFrame()).toContain('❯ w1 [running] Review repository')
+  })
+
+  it('renders hook events, matchers, details, and screen-reader selection', () => {
+    const configuration = projectTuiHooks([
+      {
+        path: '/shared/settings.json',
+        scope: 'user',
+        value: {
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [{ type: 'command', command: 'echo inspect' }],
+              },
+            ],
+          },
+        },
+      },
+    ])
+    const events = render(
+      <HookDashboard
+        configuration={configuration}
+        depth="events"
+        eventIndex={0}
+        matcherIndex={0}
+        hookIndex={0}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(events.lastFrame()).toContain('1 hooks configured')
+    expect(events.lastFrame()).toContain('❯ 1. PreToolUse (1)')
+    expect(events.lastFrame()).toContain('↓ 12 more below')
+
+    const hooks = render(
+      <HookDashboard
+        configuration={configuration}
+        depth="hooks"
+        eventIndex={0}
+        matcherIndex={0}
+        hookIndex={0}
+        width={80}
+        screenReader
+      />,
+    )
+    expect(hooks.lastFrame()).toContain('PreToolUse - Matcher: Bash')
+    expect(hooks.lastFrame()).toContain('Selected: 1. [command] echo inspect')
+    expect(hooks.lastFrame()).not.toContain('────')
   })
 
   it('renders a bounded slash command palette with descriptions', () => {

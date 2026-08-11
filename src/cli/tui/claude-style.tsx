@@ -6,6 +6,7 @@ import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import { composerEditorSegments } from './composer-editor.js'
 import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
 import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
+import type { TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'
@@ -22,7 +23,6 @@ export interface TuiDisplayMetadata {
   permissionMode?: string
   contextWindowTokens?: number
 }
-
 export type TranscriptItem =
   | { kind: 'user' | 'assistant' | 'notice' | 'warning'; text: string }
   | { kind: 'local-result'; text: string }
@@ -1206,6 +1206,171 @@ export function MemoryDashboard({
       <Text> </Text>
       <Text dimColor italic>
         Enter to confirm · Esc to cancel
+      </Text>
+    </Box>
+  )
+}
+
+function selectedWindow(length: number, selectedIndex: number, size: number) {
+  return Math.max(
+    0,
+    Math.min(selectedIndex - Math.floor(size / 2), Math.max(0, length - size)),
+  )
+}
+
+export function HookDashboard({
+  configuration,
+  depth,
+  eventIndex,
+  matcherIndex,
+  hookIndex,
+  width,
+  screenReader,
+}: {
+  configuration: TuiHookConfiguration
+  depth: 'events' | 'matchers' | 'hooks'
+  eventIndex: number
+  matcherIndex: number
+  hookIndex: number
+  width: number
+  screenReader: boolean
+}) {
+  const event = configuration.events[eventIndex]
+  const matcher = event?.matchers[matcherIndex]
+  const rows =
+    depth === 'events'
+      ? configuration.events
+      : depth === 'matchers'
+        ? (event?.matchers ?? [])
+        : (matcher?.hooks ?? [])
+  const selectedIndex =
+    depth === 'events'
+      ? eventIndex
+      : depth === 'matchers'
+        ? matcherIndex
+        : hookIndex
+  const maxVisible = depth === 'events' ? 5 : 7
+  const start = selectedWindow(rows.length, selectedIndex, maxVisible)
+  const visible = rows.slice(start, start + maxVisible)
+  const line = '─'.repeat(Math.max(12, Math.min(100, width)))
+
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      {!screenReader ? <Text dimColor>{line}</Text> : null}
+      <Text bold>
+        {' '}
+        {depth === 'events'
+          ? 'Hooks'
+          : depth === 'matchers'
+            ? `${event?.name ?? 'Hooks'} - Matchers`
+            : `${event?.name ?? 'Hooks'} - Matcher: ${matcher?.matcher ?? '(all)'}`}
+      </Text>
+      {depth === 'events' ? (
+        <>
+          <Text> {configuration.hookCount} hooks configured</Text>
+          <Text> </Text>
+          <Text>
+            {' ℹ '}This menu is read-only. To add or modify hooks, edit
+            settings.json directly or ask Claude.
+          </Text>
+          <Text dimColor> Learn more</Text>
+          <Text> </Text>
+        </>
+      ) : (
+        <>
+          {(event?.detail ?? []).map((detail) => (
+            <Text key={detail}> {detail}</Text>
+          ))}
+          <Text> </Text>
+        </>
+      )}
+      {start > 0 ? <Text dimColor> ↑ {start} more above</Text> : null}
+      {visible.length === 0 ? (
+        <>
+          <Text dimColor>
+            {' '}
+            {depth === 'matchers'
+              ? 'No hooks configured for this event'
+              : 'No hooks configured for this matcher'}
+          </Text>
+          {depth === 'matchers' ? (
+            <Text dimColor>
+              {' '}
+              To add hooks, edit settings.json directly or ask Claude
+            </Text>
+          ) : null}
+        </>
+      ) : (
+        visible.map((row, visibleIndex) => {
+          const index = start + visibleIndex
+          const selected = index === selectedIndex
+          if (depth === 'events') {
+            const item = row as TuiHookConfiguration['events'][number]
+            return (
+              <Box key={item.name}>
+                <Box width={30}>
+                  <Text inverse={!screenReader && selected}>
+                    {screenReader && selected
+                      ? 'Selected: '
+                      : selected
+                        ? '❯ '
+                        : '  '}
+                    {index + 1}. {item.name}
+                    {item.matchers.length > 0
+                      ? ` (${item.matchers.reduce((count, current) => count + current.hooks.length, 0)})`
+                      : ''}
+                  </Text>
+                </Box>
+                <Text dimColor>{item.description}</Text>
+              </Box>
+            )
+          }
+          if (depth === 'matchers') {
+            const item = row as NonNullable<typeof event>['matchers'][number]
+            return (
+              <Text
+                key={`${item.scope}-${item.matcher}-${index}`}
+                inverse={!screenReader && selected}
+              >
+                {screenReader && selected
+                  ? 'Selected: '
+                  : selected
+                    ? '❯ '
+                    : '  '}
+                {index + 1}. [{item.scope}] {item.matcher} {item.hooks.length}{' '}
+                {item.hooks.length === 1 ? 'hook' : 'hooks'}
+              </Text>
+            )
+          }
+          const item = row as NonNullable<typeof matcher>['hooks'][number]
+          return (
+            <Box key={`${item.path}-${index}`}>
+              <Box flexGrow={1}>
+                <Text inverse={!screenReader && selected} wrap="truncate-end">
+                  {screenReader && selected
+                    ? 'Selected: '
+                    : selected
+                      ? '❯ '
+                      : '  '}
+                  {index + 1}. [{item.type}] {item.label}
+                </Text>
+              </Box>
+              <Text dimColor> {item.scopeLabel}</Text>
+            </Box>
+          )
+        })
+      )}
+      {start + visible.length < rows.length ? (
+        <Text dimColor>
+          {' '}
+          ↓ {rows.length - start - visible.length} more below
+        </Text>
+      ) : null}
+      <Text> </Text>
+      <Text dimColor>
+        {depth === 'hooks' || rows.length === 0
+          ? 'Esc to go back'
+          : 'Enter to confirm · Esc to cancel'}
       </Text>
     </Box>
   )

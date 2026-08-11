@@ -159,7 +159,27 @@ try {
   await writeFile(join(cwd, 'CLAUDE.md'), '# Shared project memory\n')
   await writeFile(
     join(configRoot, 'settings.json'),
-    `${JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        permissions: { allow: ['Bash(npm test:*)'] },
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Bash|Write',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'printf fixture-hook',
+                  statusMessage: 'Checking fixture tool',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      null,
+      2,
+    )}\n`,
   )
   const diffFixture = join(cwd, 'fixture.txt')
   await writeFile(diffFixture, 'before\n')
@@ -425,6 +445,25 @@ expect {
   -re {❯[^\r\n]*\/rev} {}
 }
 send "\025"
+expect -re {Try.*review this project}
+set phase "hooks dialog"
+send "/hooks"
+expect -re {View hook configurations}
+send "\r"
+expect -re {1 hooks configured}
+expect -re {This menu is read-only}
+expect -re {PreToolUse.*\(1\)}
+send "\r"
+expect -re {PreToolUse - Matchers}
+expect -re {\[User\].*Bash\|Write.*1 hook}
+send "\r"
+expect -re {PreToolUse - Matcher: Bash\|Write}
+expect -re {\[command\].*Checking fixture tool.*User Settings}
+send "\033"
+expect -re {PreToolUse - Matchers}
+send "\033"
+expect -re {1 hooks configured}
+send "\033"
 expect -re {Try.*review this project}
 set phase "add-dir command"
 send "/add-dir"
@@ -914,6 +953,23 @@ exit 0
     JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8'))
       .permissions.allow,
     [],
+  )
+  assert.deepEqual(
+    JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')).hooks,
+    {
+      PreToolUse: [
+        {
+          matcher: 'Bash|Write',
+          hooks: [
+            {
+              type: 'command',
+              command: 'printf fixture-hook',
+              statusMessage: 'Checking fixture tool',
+            },
+          ],
+        },
+      ],
+    },
   )
   console.log('TUI compatibility verification passed')
 } finally {
