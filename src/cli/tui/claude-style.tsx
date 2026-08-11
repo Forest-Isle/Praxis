@@ -10,10 +10,7 @@ import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'
-import type { TuiTheme } from './theme-settings.js'
-
-const BRAND = '#D97757'
-const ACCENT = '#B8A1FF'
+import { tuiPalette, useTuiPalette, type TuiTheme } from './theme.js'
 const SPINNER = ['✳', '✢', '✣', '✤', '✥'] as const
 
 export interface TuiDisplayMetadata {
@@ -109,18 +106,19 @@ export function WelcomePanel({
   display: TuiDisplayMetadata
   width: number
 }) {
+  const palette = useTuiPalette()
   const panelWidth = Math.min(100, Math.max(32, width))
   const wide = panelWidth >= 68
   return (
     <Box
       borderStyle="round"
-      borderColor="gray"
+      borderColor={palette.muted}
       flexDirection="column"
       width={panelWidth}
       paddingX={1}
     >
       <Box>
-        <Text color={BRAND} bold>
+        <Text color={palette.brand} bold>
           Praxis
         </Text>
         <Text> Code v{display.version} </Text>
@@ -133,11 +131,11 @@ export function WelcomePanel({
           width={wide ? '50%' : '100%'}
         >
           <Text bold>Welcome back!</Text>
-          <Text color={BRAND} bold>
+          <Text color={palette.brand} bold>
             ▐▛███▜▌
           </Text>
-          <Text color={BRAND}>▝▜█████▛▘</Text>
-          <Text color={BRAND}> ▘▘ ▝▝</Text>
+          <Text color={palette.brand}>▝▜█████▛▘</Text>
+          <Text color={palette.brand}> ▘▘ ▝▝</Text>
           <Text>
             {display.model ?? 'provider default'}
             {display.effort ? (
@@ -163,13 +161,14 @@ export function WelcomePanel({
 }
 
 function InlineText({ text }: { text: string }) {
+  const palette = useTuiPalette()
   const tokens = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/u)
   return (
     <Text>
       {tokens.map((token, index) => {
         if (token.startsWith('`') && token.endsWith('`'))
           return (
-            <Text key={index} color="cyan">
+            <Text key={index} color={palette.info}>
               {token.slice(1, -1)}
             </Text>
           )
@@ -182,7 +181,7 @@ function InlineText({ text }: { text: string }) {
         const link = /^\[([^\]]+)\]\(([^)]+)\)$/u.exec(token)
         if (link)
           return (
-            <Text key={index} color="blue" underline>
+            <Text key={index} color={palette.link} underline>
               {link[1]}
             </Text>
           )
@@ -193,6 +192,7 @@ function InlineText({ text }: { text: string }) {
 }
 
 function MarkdownLine({ line }: { line: string }) {
+  const palette = useTuiPalette()
   if (line.startsWith('### '))
     return (
       <Text bold>
@@ -201,13 +201,13 @@ function MarkdownLine({ line }: { line: string }) {
     )
   if (line.startsWith('## '))
     return (
-      <Text bold color={ACCENT}>
+      <Text bold color={palette.accent}>
         <InlineText text={line.slice(3)} />
       </Text>
     )
   if (line.startsWith('# '))
     return (
-      <Text bold color={BRAND}>
+      <Text bold color={palette.brand}>
         <InlineText text={line.slice(2)} />
       </Text>
     )
@@ -236,17 +236,18 @@ function MarkdownLine({ line }: { line: string }) {
 }
 
 function ToolResultText({ text }: { text: string }) {
+  const palette = useTuiPalette()
   return (
     <Box flexDirection="column">
       {text.split('\n').map((line, index) => (
         <Text
           key={index}
           {...(line.startsWith('+') && !line.startsWith('+++')
-            ? { color: 'green' as const }
+            ? { color: palette.success }
             : line.startsWith('-') && !line.startsWith('---')
-              ? { color: 'red' as const }
+              ? { color: palette.error }
               : line.startsWith('@@')
-                ? { color: 'cyan' as const }
+                ? { color: palette.info }
                 : { dimColor: true })}
         >
           {line || ' '}
@@ -285,6 +286,7 @@ function ToolTranscriptEntry({
   result?: Extract<TranscriptItem, { kind: 'tool-result' }>
   detailed: boolean
 }) {
+  const palette = useTuiPalette()
   const displayResult =
     call.name === 'Read' &&
     result?.text.startsWith('Wasted call — file unchanged since your last Read')
@@ -309,7 +311,8 @@ function ToolTranscriptEntry({
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text>
-        <Text color={ACCENT}>⏺</Text> <Text bold>{toolHeading(call)}</Text>
+        <Text color={palette.accent}>⏺</Text>{' '}
+        <Text bold>{toolHeading(call)}</Text>
       </Text>
       {!['Bash', 'Read', 'Edit'].includes(call.name) && detail ? (
         <Text dimColor> {detail}</Text>
@@ -317,7 +320,7 @@ function ToolTranscriptEntry({
       {result ? (
         <Box marginLeft={2} flexDirection="column">
           {result.isError ? (
-            <Text color="red">⎿ Error: {errorText}</Text>
+            <Text color={palette.error}>⎿ Error: {errorText}</Text>
           ) : call.name === 'Edit' ? (
             <>
               <Text dimColor>
@@ -326,13 +329,13 @@ function ToolTranscriptEntry({
                 {oldLines.length === 1 ? '' : 's'}
               </Text>
               {oldLines.map((line, index) => (
-                <Text key={`old-${index}`} color="red">
+                <Text key={`old-${index}`} color={palette.error}>
                   {'   '}
                   {index + 1} -{line}
                 </Text>
               ))}
               {newLines.map((line, index) => (
-                <Text key={`new-${index}`} color="green">
+                <Text key={`new-${index}`} color={palette.success}>
                   {'   '}
                   {index + 1} +{line}
                 </Text>
@@ -370,12 +373,13 @@ function ThinkingBlock({
   expanded: boolean
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   const summary = text.replace(/\s+/gu, ' ').trim()
   const showFull = screenReader || active || expanded
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text
-        {...(!screenReader ? { color: ACCENT } : {})}
+        {...(!screenReader ? { color: palette.accent } : {})}
         dimColor={!screenReader}
         italic={!screenReader}
       >
@@ -476,6 +480,7 @@ function ContextUsageBlock({
 }
 
 export function MarkdownText({ text }: { text: string }) {
+  const palette = useTuiPalette()
   const lines = text.split('\n')
   let code = false
   return (
@@ -490,7 +495,7 @@ export function MarkdownText({ text }: { text: string }) {
           )
         }
         return code ? (
-          <Text key={index} color="cyan">
+          <Text key={index} color={palette.info}>
             │ {line}
           </Text>
         ) : (
@@ -516,6 +521,7 @@ export function Transcript({
   detailedTranscript?: boolean
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   const detailed = thinkingExpanded || detailedTranscript
   const results = new Map(
     items
@@ -601,7 +607,7 @@ export function Transcript({
         if (item.kind === 'user') {
           return (
             <Box key={index} marginTop={index === 0 ? 0 : 1}>
-              <Text color={BRAND} bold>
+              <Text color={palette.brand} bold>
                 {screenReader ? 'You: ' : '❯ '}
               </Text>
               <Text bold>{item.text}</Text>
@@ -612,7 +618,7 @@ export function Transcript({
           return (
             <Box key={index} marginTop={1}>
               {screenReader ? <Text>Praxis:</Text> : null}
-              {!screenReader ? <Text color={ACCENT}>⏺ </Text> : null}
+              {!screenReader ? <Text color={palette.accent}>⏺ </Text> : null}
               <MarkdownText text={item.text} />
             </Box>
           )
@@ -631,7 +637,7 @@ export function Transcript({
         if (item.kind === 'compact') {
           return (
             <Box key={index} flexDirection="column" marginTop={1}>
-              <Text color={ACCENT} italic>
+              <Text color={palette.accent} italic>
                 {screenReader
                   ? 'Conversation compacted'
                   : '✻ Conversation compacted (ctrl+o for history)'}
@@ -671,11 +677,11 @@ export function Transcript({
             item.text.length > 500 ? `${item.text.slice(0, 497)}...` : item.text
           return (
             <Box key={index} marginLeft={2} flexDirection="column">
-              <Text color={item.isError ? 'red' : 'gray'}>
+              <Text color={item.isError ? palette.error : palette.muted}>
                 {item.isError ? '└ Error' : '└ Result'}
               </Text>
               {item.isError ? (
-                <Text color="red">{text}</Text>
+                <Text color={palette.error}>{text}</Text>
               ) : (
                 <ToolResultText text={text} />
               )}
@@ -714,7 +720,7 @@ export function Transcript({
                     visible.map((line, lineIndex) => (
                       <Text
                         key={lineIndex}
-                        {...(result.isError ? { color: 'red' as const } : {})}
+                        {...(result.isError ? { color: palette.error } : {})}
                         dimColor={!result.isError}
                       >
                         {lineIndex === 0 ? '⎿ ' : '   '}
@@ -738,7 +744,7 @@ export function Transcript({
           return (
             <Text
               key={index}
-              {...(item.isError ? { color: 'red' as const } : {})}
+              {...(item.isError ? { color: palette.error } : {})}
             >
               ⎿ {output}
             </Text>
@@ -754,7 +760,7 @@ export function Transcript({
         return (
           <Text
             key={index}
-            {...(item.kind === 'warning' ? { color: 'red' as const } : {})}
+            {...(item.kind === 'warning' ? { color: palette.error } : {})}
             dimColor={item.kind === 'notice'}
           >
             {item.kind === 'warning' ? '⚠ ' : '· '}
@@ -774,7 +780,7 @@ export function Transcript({
           {screenReader ? (
             <Text>Praxis: </Text>
           ) : (
-            <Text color={ACCENT}>✳ </Text>
+            <Text color={palette.accent}>✳ </Text>
           )}
           <MarkdownText text={activeText} />
         </Box>
@@ -800,6 +806,7 @@ export function DiffDashboard({
   width: number
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   const source = snapshots[sourceIndex]
   const snapshot = source?.snapshot ?? { files: [], additions: 0, deletions: 0 }
   const selected = snapshot.files[selectedIndex]
@@ -830,9 +837,9 @@ export function DiffDashboard({
           <Text
             key={`${scrollOffset}-${index}`}
             {...(patchLine.startsWith('+')
-              ? { color: 'green' as const }
+              ? { color: palette.success }
               : patchLine.startsWith('-')
-                ? { color: 'red' as const }
+                ? { color: palette.error }
                 : { dimColor: true })}
           >
             {'  '}
@@ -861,8 +868,8 @@ export function DiffDashboard({
       <Text>
         {'  '}
         {snapshot.files.length} file{snapshot.files.length === 1 ? '' : 's'}{' '}
-        changed <Text color="green">+{snapshot.additions}</Text>{' '}
-        <Text color="red">-{snapshot.deletions}</Text>
+        changed <Text color={palette.success}>+{snapshot.additions}</Text>{' '}
+        <Text color={palette.error}>-{snapshot.deletions}</Text>
       </Text>
       <Text> </Text>
       {snapshot.files.length === 0 ? (
@@ -871,8 +878,8 @@ export function DiffDashboard({
         snapshot.files.map((file, index) => (
           <Text key={file.path} inverse={index === selectedIndex}>
             {index === selectedIndex ? '❯ ' : '  '}
-            {file.path} <Text color="green">+{file.additions}</Text>{' '}
-            <Text color="red">-{file.deletions}</Text>
+            {file.path} <Text color={palette.success}>+{file.additions}</Text>{' '}
+            <Text color={palette.error}>-{file.deletions}</Text>
           </Text>
         ))
       )}
@@ -1022,20 +1029,21 @@ const THEME_OPTIONS: readonly { theme: TuiTheme; label: string }[] = [
 export function ThemePicker({
   currentTheme,
   selectedIndex,
+  syntaxHighlightingDisabled,
   width,
   screenReader,
 }: {
   currentTheme: TuiTheme
   selectedIndex: number
+  syntaxHighlightingDisabled: boolean
   width: number
   screenReader: boolean
 }) {
   const previewTheme = THEME_OPTIONS[selectedIndex]?.theme ?? currentTheme
-  const previewColor = previewTheme.includes('daltonized')
-    ? 'blue'
-    : previewTheme.includes('ansi')
-      ? 'cyan'
-      : ACCENT
+  const preview = tuiPalette(previewTheme)
+  const syntax = preview.syntax
+  const syntaxColor = (color: string) =>
+    syntaxHighlightingDisabled ? {} : { color }
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       {!screenReader ? <Text>{'▔'.repeat(Math.min(100, width))}</Text> : null}
@@ -1057,16 +1065,63 @@ export function ThemePicker({
             {' '}
             {'╌'.repeat(Math.max(1, Math.min(96, width - 3)))}
           </Text>
-          <Text color={previewColor}> function greet() {'{'}</Text>
-          <Text color="red"> - console.log(&quot;Hello, World!&quot;);</Text>
-          <Text color="green"> + console.log(&quot;Hello, Praxis!&quot;);</Text>
-          <Text color={previewColor}> {'}'}</Text>
+          <Text>
+            <Text dimColor> 1 </Text>
+            <Text {...syntaxColor(syntax.keyword)}>function</Text>
+            <Text {...syntaxColor(syntax.text)}> </Text>
+            <Text {...syntaxColor(syntax.identifier)}>greet</Text>
+            <Text {...syntaxColor(syntax.text)}>() {'{'}</Text>
+          </Text>
+          <Text>
+            <Text dimColor> 2 - </Text>
+            <Text
+              {...syntaxColor(syntax.text)}
+              {...(syntaxHighlightingDisabled || !syntax.removedBackground
+                ? {}
+                : { backgroundColor: syntax.removedBackground })}
+            >
+              {' console.log("Hello, World!"); '}
+            </Text>
+          </Text>
+          <Text>
+            <Text dimColor> 2 + </Text>
+            <Text
+              {...syntaxColor(syntax.text)}
+              {...(syntaxHighlightingDisabled || !syntax.addedBackground
+                ? {}
+                : { backgroundColor: syntax.addedBackground })}
+            >
+              {' console.'}
+              <Text {...syntaxColor(syntax.identifier)}>log</Text>
+              {'('}
+              <Text {...syntaxColor(syntax.string)}>&quot;Hello, </Text>
+              <Text
+                {...(syntaxHighlightingDisabled || !syntax.addedHighlight
+                  ? {}
+                  : { backgroundColor: syntax.addedHighlight })}
+              >
+                Praxis
+              </Text>
+              <Text {...syntaxColor(syntax.string)}>!&quot;</Text>
+              {'); '}
+            </Text>
+          </Text>
+          <Text>
+            <Text dimColor> 3 </Text>
+            <Text {...syntaxColor(syntax.text)}>{'}'}</Text>
+          </Text>
           <Text dimColor>
             {' '}
             {'╌'.repeat(Math.max(1, Math.min(96, width - 3)))}
           </Text>
         </>
       ) : null}
+      <Text dimColor>
+        {' '}
+        {syntaxHighlightingDisabled
+          ? 'Syntax highlighting disabled (ctrl+t to enable)'
+          : `Syntax theme: ${preview.syntaxTheme} (ctrl+t to disable)`}
+      </Text>
       <Text dimColor> Enter to select · Esc to cancel</Text>
     </Box>
   )
@@ -1475,6 +1530,7 @@ export function BtwPanel({
   width: number
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   const selected = entries[selectedIndex]
   const lines = selected?.answer.split('\n') ?? []
   const visibleLines = lines.slice(scrollOffset, scrollOffset + 16)
@@ -1523,7 +1579,7 @@ export function BtwPanel({
       ) : selected?.status === 'forking' ? (
         <Text> {'  '}· Forking…</Text>
       ) : selected?.status === 'error' ? (
-        <Text color="red">
+        <Text color={palette.error}>
           {' '}
           {'  '}
           {selected.error ?? 'Side question failed'}
@@ -1559,6 +1615,7 @@ export function SessionPicker({
   screenReader: boolean
   query?: string
 }) {
+  const palette = useTuiPalette()
   const maxVisible = 8
   const start = Math.max(
     0,
@@ -1574,7 +1631,7 @@ export function SessionPicker({
       <Text bold> Resume session</Text>
       <Box
         borderStyle={screenReader ? undefined : 'round'}
-        borderColor="gray"
+        borderColor={palette.muted}
         paddingX={screenReader ? 0 : 1}
         marginY={1}
       >
@@ -1589,7 +1646,7 @@ export function SessionPicker({
         return (
           <Box key={session?.sessionId ?? 'new'}>
             <Text
-              {...(index === selectedIndex ? { color: BRAND } : {})}
+              {...(index === selectedIndex ? { color: palette.brand } : {})}
               bold={index === selectedIndex}
             >
               {index === selectedIndex ? '❯ ' : '  '}
@@ -1629,6 +1686,7 @@ export function CommandPalette({
   width: number
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   const maxVisible = 12
   const start = Math.max(
     0,
@@ -1665,7 +1723,9 @@ export function CommandPalette({
           return (
             <Box key={command.name} flexDirection="row">
               <Box width={30}>
-                <Text {...(selected ? { color: BRAND, bold: true } : {})}>
+                <Text
+                  {...(selected ? { color: palette.brand, bold: true } : {})}
+                >
                   /{command.name}
                 </Text>
               </Box>
@@ -1842,6 +1902,7 @@ export function HelpMenu({
   width: number
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   const tabs = ['General', 'Commands', 'Custom commands'] as const
   const commands = tabIndex === 1 ? builtinCommands : customCommands
   const maxVisible = 10
@@ -1862,7 +1923,9 @@ export function HelpMenu({
         {tabs.map((tab, index) => (
           <Text
             key={tab}
-            {...(index === tabIndex ? { color: BRAND, bold: true } : {})}
+            {...(index === tabIndex
+              ? { color: palette.brand, bold: true }
+              : {})}
           >
             {' '}
             {tab}{' '}
@@ -1895,7 +1958,7 @@ export function HelpMenu({
                   <Box key={command.name} flexDirection="column">
                     <Text
                       {...(index === selectedIndex
-                        ? { color: BRAND, bold: true }
+                        ? { color: palette.brand, bold: true }
                         : {})}
                     >
                       {index === selectedIndex ? '↓ ' : '  '}/{command.name}
@@ -1936,6 +1999,7 @@ export function SelectionMenu({
   width: number
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   const maxVisible = 7
   const start = Math.max(
     0,
@@ -1948,7 +2012,7 @@ export function SelectionMenu({
   return (
     <Box
       borderStyle={screenReader ? undefined : 'round'}
-      borderColor="gray"
+      borderColor={palette.muted}
       flexDirection="column"
       marginTop={1}
       paddingX={screenReader ? 0 : 1}
@@ -1965,7 +2029,7 @@ export function SelectionMenu({
             flexDirection="column"
             marginTop={1}
           >
-            <Text {...(selected ? { color: BRAND, bold: true } : {})}>
+            <Text {...(selected ? { color: palette.brand, bold: true } : {})}>
               {selected ? '❯ ' : '  '}
               {index + 1}. {option.label}
               {option.selected ? ' ✔' : ''}
@@ -1991,6 +2055,7 @@ export function SelectionMenu({
 }
 
 function ComposerInput({ input, cursor }: { input: string; cursor: number }) {
+  const palette = useTuiPalette()
   const { before, current, after } = composerEditorSegments({
     text: input,
     cursor,
@@ -1999,7 +2064,7 @@ function ComposerInput({ input, cursor }: { input: string; cursor: number }) {
   return (
     <Text>
       {before}
-      <Text color="black" backgroundColor={ACCENT}>
+      <Text color={palette.selectionText} backgroundColor={palette.accent}>
         {cursorText}
       </Text>
       {after}
@@ -2056,6 +2121,7 @@ export function Composer({
   shellMode?: boolean
   footerMessage?: { text: string; isError: boolean }
 }) {
+  const palette = useTuiPalette()
   const [spinnerIndex, setSpinnerIndex] = useState(0)
   useEffect(() => {
     if (!busy || screenReader) return
@@ -2104,12 +2170,12 @@ export function Composer({
         <Text>Pasting…</Text>
       ) : busy ? (
         <Text>
-          <Text color={ACCENT}>{SPINNER[spinnerIndex]}</Text> {status}…{' '}
+          <Text color={palette.accent}>{SPINNER[spinnerIndex]}</Text> {status}…{' '}
           <Text dimColor>· esc to interrupt</Text>
         </Text>
       ) : (
         <Text>
-          <Text {...(shellMode ? {} : { color: BRAND })} bold>
+          <Text {...(shellMode ? {} : { color: palette.brand })} bold>
             {shellMode ? '! ' : '❯ '}
           </Text>
           {input ? (
@@ -2147,13 +2213,13 @@ export function Composer({
           <Box flexGrow={1} />
           {footerMessage ? (
             footerMessage.isError ? (
-              <Text color="red">{footerMessage.text}</Text>
+              <Text color={palette.error}>{footerMessage.text}</Text>
             ) : (
               <Text dimColor>{footerMessage.text}</Text>
             )
           ) : display.effort ? (
             <Text>
-              <Text color={ACCENT}>● {display.effort}</Text>
+              <Text color={palette.accent}>● {display.effort}</Text>
               <Text dimColor> · /effort</Text>
             </Text>
           ) : null}
@@ -2172,15 +2238,16 @@ export function DialogFrame({
   children: React.ReactNode
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   return (
     <Box
       flexDirection="column"
       borderStyle={screenReader ? undefined : 'round'}
-      borderColor="yellow"
+      borderColor={palette.warning}
       paddingX={screenReader ? 0 : 1}
       marginTop={1}
     >
-      <Text color="yellow" bold>
+      <Text color={palette.warning} bold>
         {title}
       </Text>
       {children}

@@ -92,6 +92,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external
   editing, shared `/keybindings` creation/editing and supported-action remapping,
+  shared `/theme` profiles with immediate semantic recoloring and syntax toggles,
   `Ctrl+V` text/image clipboard paste, `Ctrl+Z` shell suspension and `fg`
   recovery, permission-gated `!` shell turns, navigable current/per-turn Git
   diff views, rich decision panels, and measured context budgets; print mode,

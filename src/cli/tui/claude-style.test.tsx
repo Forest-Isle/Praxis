@@ -397,6 +397,7 @@ describe('Claude-style TUI components', () => {
       <ThemePicker
         currentTheme="dark"
         selectedIndex={1}
+        syntaxHighlightingDisabled={false}
         width={100}
         screenReader={false}
       />,
@@ -409,7 +410,30 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('2. Dark mode ✔')
     expect(frame).toContain('4. Dark mode (colorblind-friendly)')
     expect(frame).toContain('6. Dark mode (ANSI colors only)')
+    expect(frame).toContain('1 function greet()')
+    expect(frame).toContain('2 -  console.log("Hello, World!");')
+    expect(frame).toContain('2 +  console.log("Hello, Praxis!");')
+    expect(frame).toContain(
+      'Syntax theme: Monokai Extended (ctrl+t to disable)',
+    )
     expect(frame).toContain('Enter to select · Esc to cancel')
+  })
+
+  it('renders a semantic, decoration-free theme picker for screen readers', () => {
+    const app = render(
+      <ThemePicker
+        currentTheme="light-ansi"
+        selectedIndex={6}
+        syntaxHighlightingDisabled
+        width={100}
+        screenReader
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('7. Light mode (ANSI colors only) ✔')
+    expect(frame).toContain('Syntax highlighting disabled (ctrl+t to enable)')
+    expect(frame).not.toContain('function greet')
+    expect(frame).not.toContain('╌')
   })
 
   it('shows active thinking in full and expands retained thinking on demand', () => {

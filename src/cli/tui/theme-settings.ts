@@ -3,18 +3,11 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { writeFileAtomically } from '../../platform/atomic-write.js'
-
-export const TUI_THEMES = [
-  'auto',
-  'dark',
-  'light',
-  'dark-daltonized',
-  'light-daltonized',
-  'dark-ansi',
-  'light-ansi',
-] as const
-
-export type TuiTheme = (typeof TUI_THEMES)[number]
+import {
+  DEFAULT_TUI_THEME_SETTINGS,
+  TUI_THEMES,
+  type TuiThemeSettings,
+} from './theme.js'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -55,17 +48,23 @@ async function sourceUnchanged(
   }
 }
 
-export async function loadTuiTheme(
+export async function loadTuiThemeSettings(
   configRoot = configRootPath(),
-): Promise<TuiTheme> {
+): Promise<TuiThemeSettings> {
   const { value } = await readSettings(join(configRoot, 'settings.json'))
-  return TUI_THEMES.includes(value.theme as TuiTheme)
-    ? (value.theme as TuiTheme)
-    : 'auto'
+  return {
+    theme: TUI_THEMES.includes(value.theme as TuiThemeSettings['theme'])
+      ? (value.theme as TuiThemeSettings['theme'])
+      : DEFAULT_TUI_THEME_SETTINGS.theme,
+    syntaxHighlightingDisabled:
+      typeof value.syntaxHighlightingDisabled === 'boolean'
+        ? value.syntaxHighlightingDisabled
+        : DEFAULT_TUI_THEME_SETTINGS.syntaxHighlightingDisabled,
+  }
 }
 
-export async function saveTuiTheme(
-  theme: TuiTheme,
+export async function saveTuiThemeSettings(
+  next: TuiThemeSettings,
   configRoot = configRootPath(),
 ): Promise<void> {
   const path = join(configRoot, 'settings.json')
@@ -73,7 +72,15 @@ export async function saveTuiTheme(
     const { value, source } = await readSettings(path)
     const committed = await writeFileAtomically(
       path,
-      `${JSON.stringify({ ...value, theme }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          ...value,
+          theme: next.theme,
+          syntaxHighlightingDisabled: next.syntaxHighlightingDisabled,
+        },
+        null,
+        2,
+      )}\n`,
       { beforeCommit: () => sourceUnchanged(path, source) },
     )
     if (committed) return

@@ -878,6 +878,34 @@ expect -re {Praxis Code won't ask before using allowed tools}
 send "\033"
 after 100
 expect -re {bypass permissions on}
+set phase "theme dialog"
+send "/theme"
+expect -re {Change the theme}
+send "\r"
+expect -re {Choose the text style that looks best with your terminal}
+expect -re {2\. Dark mode.*✔}
+expect -re {Dark mode \(colorblind-friendly\)}
+expect -re {Dark mode \(ANSI colors only\)}
+expect -re {Syntax theme: Monokai Extended.*ctrl\+t to disable}
+send "\024"
+expect -re {Syntax highlighting disabled.*ctrl\+t to enable}
+send "\024"
+expect -re {Syntax theme: Monokai Extended.*ctrl\+t to disable}
+send "\033\[B"
+after 100
+send "\033"
+after 100
+expect -re {bypass permissions on}
+send "/theme"
+after 100
+send "\r"
+expect -re {2\. Dark mode.*✔}
+send "3"
+after 100
+expect -re {Syntax theme: GitHub.*ctrl\+t to disable}
+send "\r"
+expect -re {Theme set to light}
+expect -re {bypass permissions on}
 set phase "context and status dialogs"
 send "/context"
 expect -re {Visualize current context usage}
@@ -1334,6 +1362,13 @@ expect {
 expect -re {⎿.*work}
 expect -re {❯.*reply briefly}
 expect -re {TUI_FAKE_OK}
+send "/theme"
+after 100
+send "\r"
+expect -re {3\. Light mode.*✔}
+expect -re {Syntax theme: GitHub.*ctrl\+t to disable}
+send "\033"
+after 100
 send "/compact"
 expect -re {Clear conversation history.*summary}
 send "\r"
@@ -1396,6 +1431,11 @@ exit 0
   assert.equal(
     JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')).theme,
     'light',
+  )
+  assert.equal(
+    JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8'))
+      .syntaxHighlightingDisabled,
+    false,
   )
   console.log('TUI compatibility verification passed')
 } finally {

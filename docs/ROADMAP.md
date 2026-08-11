@@ -1007,9 +1007,13 @@ contract; broader presentation and denied-history parity remain partial.
 - [x] Claude-native user `settings.json` theme values with bounded parsing,
       atomic compare-before-commit writes, and preservation of unrelated shared
       settings
+- [x] startup application of the selected semantic palette, exact syntax/diff
+      preview colors for every built-in profile, immediate picker recoloring,
+      restart persistence, and persisted `Ctrl+T` syntax highlighting toggles
 - [x] focused settings, component, Ink interaction, catalog, and
-      installed-package PTY coverage
-- [ ] custom-theme creation/editing and syntax-highlight toggle contract
+      installed-package PTY coverage, including screen-reader, Escape,
+      navigation, cancellation, and load/save failure paths
+- [ ] custom-theme creation/editing
 - [ ] `/terminal-setup` Shift+Enter installation across supported terminals
 - [ ] `/tui` default/fullscreen renderer switching
 - [ ] exact Recently denied selection, reset, deduplication, and lifetime

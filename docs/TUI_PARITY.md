@@ -240,6 +240,14 @@ is passed from the CLI composition root and never written to shared JSONL.
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
   turn receives the selected provider controls.
+- `/theme` opens the observed built-in profile picker with Auto, dark/light,
+  colorblind-friendly, and ANSI-only choices. Each choice renders its observed
+  syntax-token and diff preview through the same semantic palette applied to the
+  complete TUI. Selection recolors immediately, persists Claude's native
+  `theme` value to shared user `settings.json`, preserves unrelated settings,
+  and is restored before the next interactive render. `Ctrl+T` toggles and
+  persists Claude's native `syntaxHighlightingDisabled` setting without leaving
+  the picker or invoking a model turn.
 - `/permissions` loads Claude-native permission arrays into Recently denied,
   Allow, Ask, Deny, and Workspace tabs, opening on Allow like 2.1.208. Rule
   search is local; adding a rule chooses `.claude/settings.local.json`,
@@ -334,13 +342,16 @@ is passed from the CLI composition root and never written to shared JSONL.
 
 ## Verification
 
-- focused Ink render fixtures at wide and narrow widths;
+- focused Ink render fixtures at wide and narrow widths, including exact
+  built-in syntax/diff preview palettes and the decoration-free screen-reader
+  branch;
 - interaction tests for prompts, selection, permission, questions, plan, MCP,
   streaming, tools, direct shell turns, cancellation, and screen-reader mode;
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
-  context/status/skill dashboards, built-in `/theme` selection and shared
-  settings persistence, `Ctrl+T` task access, exact permission rule
+  context/status/skill dashboards, built-in `/theme` selection, `Ctrl+T` syntax
+  toggling, immediate profile application, cancellation, restart persistence,
+  and shared settings persistence, `Ctrl+T` task access, exact permission rule
   deletion and Workspace add/remove surfaces, providerless `/hooks`
   scope coverage plus installed event/matcher/detail navigation, and `/memory`
   discovery, loading/final hierarchy, imported-file `$EDITOR` lifecycle,

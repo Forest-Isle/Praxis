@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { afterEach, expect, it } from 'vitest'
 
-import { loadTuiTheme, saveTuiTheme } from './theme-settings.js'
+import { loadTuiThemeSettings, saveTuiThemeSettings } from './theme-settings.js'
 
 const roots: string[] = []
 
@@ -19,9 +19,15 @@ it('loads the shared Claude theme and defaults unknown values to auto', async ()
   roots.push(root)
   await writeFile(join(root, 'settings.json'), '{"theme":"dark-ansi"}\n')
 
-  await expect(loadTuiTheme(root)).resolves.toBe('dark-ansi')
+  await expect(loadTuiThemeSettings(root)).resolves.toEqual({
+    theme: 'dark-ansi',
+    syntaxHighlightingDisabled: false,
+  })
   await writeFile(join(root, 'settings.json'), '{"theme":"custom"}\n')
-  await expect(loadTuiTheme(root)).resolves.toBe('auto')
+  await expect(loadTuiThemeSettings(root)).resolves.toEqual({
+    theme: 'auto',
+    syntaxHighlightingDisabled: false,
+  })
 })
 
 it('atomically saves a theme while preserving unrelated shared settings', async () => {
@@ -32,12 +38,16 @@ it('atomically saves a theme while preserving unrelated shared settings', async 
     '{"theme":"dark","permissions":{"allow":["Read"]}}\n',
   )
 
-  await saveTuiTheme('light-daltonized', root)
+  await saveTuiThemeSettings(
+    { theme: 'light-daltonized', syntaxHighlightingDisabled: true },
+    root,
+  )
 
   expect(
     JSON.parse(await readFile(join(root, 'settings.json'), 'utf8')),
   ).toEqual({
     theme: 'light-daltonized',
+    syntaxHighlightingDisabled: true,
     permissions: { allow: ['Read'] },
   })
 })
@@ -48,8 +58,11 @@ it('rejects malformed shared settings instead of replacing them', async () => {
   const path = join(root, 'settings.json')
   await writeFile(path, '[]\n')
 
-  await expect(saveTuiTheme('dark', root)).rejects.toThrow(
-    'JSON root must be an object',
-  )
+  await expect(
+    saveTuiThemeSettings(
+      { theme: 'dark', syntaxHighlightingDisabled: false },
+      root,
+    ),
+  ).rejects.toThrow('JSON root must be an object')
   await expect(readFile(path, 'utf8')).resolves.toBe('[]\n')
 })

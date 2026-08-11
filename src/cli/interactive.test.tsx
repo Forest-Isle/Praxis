@@ -21,7 +21,10 @@ const flush = async () => {
 
 describe('InteractiveApp', () => {
   it('loads and persists a shared presentation theme without a model turn', async () => {
-    const saved: string[] = []
+    const saved: Array<{
+      theme: string
+      syntaxHighlightingDisabled: boolean
+    }> = []
     const app = render(
       <InteractiveApp
         factory={{
@@ -30,12 +33,16 @@ describe('InteractiveApp', () => {
           },
         }}
         initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'dark',
+          syntaxHighlightingDisabled: false,
+        }}
         themeStore={{
           async load() {
-            return 'dark'
+            throw new Error('unused')
           },
-          async save(theme) {
-            saved.push(theme)
+          async save(settings) {
+            saved.push(settings)
           },
         }}
       />,
@@ -47,12 +54,194 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Choose the text style')
     expect(app.lastFrame()).toContain('2. Dark mode ✔')
 
+    app.stdin.write('3')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(saved).toEqual([
+      { theme: 'light', syntaxHighlightingDisabled: false },
+    ])
+    expect(app.lastFrame()).toContain('Theme set to light')
+    expect(app.lastFrame()).toContain('? for shortcuts')
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('3. Light mode ✔')
+    expect(app.lastFrame()).toContain('Syntax theme: GitHub')
+  })
+
+  it('toggles syntax highlighting in the theme picker and persists immediately', async () => {
+    const saved: unknown[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'dark-daltonized',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async save(settings) {
+            saved.push(settings)
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'Syntax theme: Monokai Extended (ctrl+t to disable)',
+    )
+    app.stdin.write('\u0014')
+    await flush()
+    expect(saved).toEqual([
+      { theme: 'dark-daltonized', syntaxHighlightingDisabled: true },
+    ])
+    expect(app.lastFrame()).toContain(
+      'Syntax highlighting disabled (ctrl+t to enable)',
+    )
+  })
+
+  it('cancels theme selection without writing shared settings', async () => {
+    const save = vi.fn(async () => undefined)
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'dark',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          save,
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+
+    expect(save).not.toHaveBeenCalled()
+    expect(app.lastFrame()).not.toContain('Choose the text style')
+  })
+
+  it('supports numeric profile selection and clamps theme navigation', async () => {
+    const saved: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'auto',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async save(settings) {
+            saved.push(settings.theme)
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[A')
+    app.stdin.write('7')
+    await flush()
+    expect(app.lastFrame()).toContain('Syntax theme: ansi')
     app.stdin.write('\u001B[B')
     app.stdin.write('\r')
     await flush()
-    expect(saved).toEqual(['light'])
-    expect(app.lastFrame()).toContain('Theme set to light')
-    expect(app.lastFrame()).toContain('? for shortcuts')
+    expect(saved).toEqual(['light-ansi'])
+  })
+
+  it('surfaces theme load and save failures without changing the active profile', async () => {
+    const loadFailure = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        themeStore={{
+          async load() {
+            throw new Error('bad theme file')
+          },
+          async save() {
+            throw new Error('unused')
+          },
+        }}
+      />,
+    )
+    await flush()
+    expect(loadFailure.lastFrame()).toContain(
+      'Unable to load theme settings: bad theme file',
+    )
+    loadFailure.unmount()
+
+    const saveFailure = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'dark',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async save() {
+            throw new Error('settings locked')
+          },
+        }}
+      />,
+    )
+    saveFailure.stdin.write('/theme')
+    saveFailure.stdin.write('\r')
+    await flush()
+    saveFailure.stdin.write('\u001B[B')
+    saveFailure.stdin.write('\r')
+    await flush()
+    expect(saveFailure.lastFrame()).toContain('settings locked')
+    expect(saveFailure.lastFrame()).toContain('2. Dark mode ✔')
   })
 
   it('uses native session names in the session picker', async () => {
