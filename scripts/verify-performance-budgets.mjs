@@ -16,6 +16,11 @@ import { createElement } from 'react'
 import { clearTimeout, setTimeout } from 'node:timers'
 import { render as renderInk } from 'ink-testing-library'
 
+import {
+  minimumPercentileSampleCount,
+  percentile,
+} from './performance-statistics.mjs'
+
 import { ClaudeSessionService } from '../dist/application/session-service.js'
 import { Transcript } from '../dist/cli/tui/claude-style.js'
 import { TuiThemeProvider } from '../dist/cli/tui/theme.js'
@@ -39,24 +44,13 @@ const sessionCount = 500
 const transcriptEntryCount = 20_000
 const cliTimeoutMs = 5_000
 const cliColdStartSampleCount = 21
+const transcriptSyntaxRenderSampleCount = minimumPercentileSampleCount(95)
 if (typeof globalThis.gc !== 'function') {
   throw new Error(
     'Performance heap probe requires Node.js --expose-gc; use npm run test:performance',
   )
 }
 const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-performance-'))
-
-function percentile(samples, percentileValue) {
-  const sorted = [...samples].sort((left, right) => left - right)
-  const index = Math.max(
-    0,
-    Math.min(
-      sorted.length - 1,
-      Math.ceil((percentileValue / 100) * sorted.length) - 1,
-    ),
-  )
-  return sorted[index]
-}
 
 async function samples(count, action) {
   await action()
@@ -333,7 +327,7 @@ try {
     text: `${syntaxBlock}\nRender marker ${index}`,
   }))
   const transcriptSyntaxRenderP95Ms = percentile(
-    await samples(3, async () => {
+    await samples(transcriptSyntaxRenderSampleCount, async () => {
       const app = renderInk(
         createElement(
           TuiThemeProvider,
