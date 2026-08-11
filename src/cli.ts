@@ -40,6 +40,7 @@ import {
   loadClaudeSettings,
   loadClaudeSharedResources,
   resolveClaudeProjectMemoryDirectory,
+  type ClaudeJsonResource,
 } from './compatibility/claude/shared-resources.js'
 import {
   AgentRunCancelledError,
@@ -82,6 +83,7 @@ import { ClaudeHookRunner } from './hooks/claude-hooks.js'
 import { ClaudeMcpToolRegistry } from './mcp/claude-mcp-tools.js'
 import {
   ClaudeMcpManagement,
+  filterDisabledMcpResources,
   mcpScope,
   type McpServerRecord,
 } from './mcp/claude-mcp-management.js'
@@ -1415,6 +1417,15 @@ const createDefaultService: CliDependencies['createService'] = async ({
     additionalReadDirectories: [claudeBackgroundTaskParent(cwd)],
     ...(environment ? { environment } : {}),
   })
+  const runtimeMcpResources = async (
+    candidates: readonly ClaudeJsonResource[],
+  ) => {
+    const management = new ClaudeMcpManagement({
+      configRoot,
+      cwd: workspace.cwd(),
+    })
+    return filterDisabledMcpResources(candidates, await management.disabled())
+  }
   const mcpTools = await ClaudeMcpToolRegistry.connect({
     base: cli.bare
       ? localTools
@@ -1422,11 +1433,46 @@ const createDefaultService: CliDependencies['createService'] = async ({
           base: localTools,
           provider: hostedToolProvider,
         }),
-    resources: resources.mcp,
+    resources: await runtimeMcpResources(resources.mcp),
+    reloadResources: async () => {
+      if (cli.strictMcpConfig) return runtimeMcpResources(cli.mcpResources)
+      const refreshed = await loadClaudeSharedResources({
+        configRoot,
+        cwd: workspace.cwd(),
+        claudeStatePath,
+        ...(automaticSettingSources === undefined
+          ? {}
+          : { settingSources: automaticSettingSources }),
+      })
+      return runtimeMcpResources([
+        ...refreshed.mcp,
+        ...pluginResources.mcp,
+        ...cli.mcpResources,
+      ])
+    },
     cwd,
     configRoot,
     onWarning: (message) => runtimeEventSink({ type: 'warning', message }),
     onPromptsChanged: (prompts) => extensions.setMcpPrompts(prompts),
+    authenticateServer: async (name) => {
+      const record = await new ClaudeMcpManagement({
+        configRoot,
+        cwd: workspace.cwd(),
+      }).get(name)
+      const server = mcpOAuthServerIdentity(record.name, record.config)
+      const oauth = mcpOauthOptions(record.config)
+      const clientSecret = oauth.clientId
+        ? await new ClaudeMcpOAuthStore({ configRoot }).readClientSecret(server)
+        : undefined
+      await authenticateMcpServer({
+        configRoot,
+        server,
+        ...oauth,
+        ...(clientSecret ? { clientSecret } : {}),
+        noBrowser: false,
+        write: (message) => process.stdout.write(message),
+      })
+    },
     ...(onElicitation ? { onElicitation } : {}),
     eventSink: runtimeEventSink,
     ...(signal ? { signal } : {}),
@@ -1597,6 +1643,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       provider: hostedToolProvider,
       ...(providerForModel ? { providerForModel } : {}),
       tools: filteredTools,
+      mcp: mcpTools,
       permissions,
       permissionResolverForMode,
       extensions,

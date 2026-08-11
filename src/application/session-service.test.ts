@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   ModelProvider,
@@ -79,6 +79,37 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('exposes the typed MCP runtime management API', async () => {
+    const inspect = vi.fn(async () => [
+      { name: 'fixture', status: 'connected' as const, toolCount: 1 },
+    ])
+    const reconnect = vi.fn(async () => undefined)
+    const authenticate = vi.fn(async () => undefined)
+    const reload = vi.fn(async () => undefined)
+    const tools = vi.fn(async () => [
+      { name: 'marker', fullName: 'mcp__fixture__marker' },
+    ])
+    const service = new ClaudeSessionService({
+      configRoot: '/tmp/config',
+      cwd: '/tmp/project',
+      claudeVersion: '2.1.208',
+      mcp: { inspect, reconnect, authenticate, reload, tools },
+    })
+
+    await expect(service.mcpInspect()).resolves.toEqual([
+      { name: 'fixture', status: 'connected', toolCount: 1 },
+    ])
+    await service.mcpReconnect('fixture')
+    await service.mcpAuthenticate('fixture')
+    await service.mcpReload()
+    await expect(service.mcpTools('fixture')).resolves.toEqual([
+      { name: 'marker', fullName: 'mcp__fixture__marker' },
+    ])
+    expect(reconnect).toHaveBeenCalledWith('fixture')
+    expect(authenticate).toHaveBeenCalledWith('fixture')
+    expect(reload).toHaveBeenCalledOnce()
+  })
+
   it('runs and resumes native shell turns through tool hooks before the provider', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-shell-turn-'))
     roots.push(root)

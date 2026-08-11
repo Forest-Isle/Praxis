@@ -124,6 +124,11 @@ import {
 } from '../tools/claude-user-message.js'
 import type { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
 import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
+import type {
+  ClaudeMcpRuntime,
+  ClaudeMcpServerStatus,
+  ClaudeMcpToolInspection,
+} from '../mcp/claude-mcp-tools.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -175,6 +180,7 @@ export interface ClaudeSessionServiceOptions {
   fileCheckpointing?: boolean
   fileRewindRoots?: readonly string[]
   interactiveTools?: ClaudeInteractiveToolManager
+  mcp?: ClaudeMcpRuntime
 }
 
 export interface SessionRunResult {
@@ -367,6 +373,31 @@ export class ClaudeSessionService {
 
   workflows(): readonly Record<string, unknown>[] {
     return this.workflowManager?.list() ?? []
+  }
+
+  mcpInspect(): Promise<readonly ClaudeMcpServerStatus[]> {
+    return this.requireMcp().inspect()
+  }
+
+  mcpReconnect(name: string): Promise<void> {
+    return this.requireMcp().reconnect(name)
+  }
+
+  mcpAuthenticate(name: string): Promise<void> {
+    return this.requireMcp().authenticate(name)
+  }
+
+  mcpReload(): Promise<void> {
+    return this.requireMcp().reload()
+  }
+
+  mcpTools(name: string): Promise<readonly ClaudeMcpToolInspection[]> {
+    return this.requireMcp().tools(name)
+  }
+
+  private requireMcp(): ClaudeMcpRuntime {
+    if (!this.options.mcp) throw new Error('MCP runtime is not configured')
+    return this.options.mcp
   }
 
   async close(): Promise<void> {
