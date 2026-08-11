@@ -12,6 +12,8 @@ export interface ClaudeTextResource {
   path: string
   scope: ClaudeResourceScope
   content: string
+  importedFrom?: string
+  importRoot?: string
 }
 
 export interface ClaudeJsonResource {
@@ -71,6 +73,115 @@ async function readOptionalText(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
   }
+}
+
+const CLAUDE_INSTRUCTION_IMPORT_DEPTH = 4
+
+function stripClaudeInstructionCode(line: string): string {
+  let result = ''
+  let inlineCodeLength = 0
+  for (let index = 0; index < line.length;) {
+    if (line[index] !== '`') {
+      result += inlineCodeLength === 0 ? line[index] : ' '
+      index += 1
+      continue
+    }
+    let end = index + 1
+    while (line[end] === '`') end += 1
+    const length = end - index
+    if (inlineCodeLength === 0) inlineCodeLength = length
+    else if (length === inlineCodeLength) inlineCodeLength = 0
+    result += ' '.repeat(length)
+    index = end
+  }
+  return result
+}
+
+function claudeInstructionImportPaths(
+  resource: ClaudeTextResource,
+  homeDirectory: string,
+): string[] {
+  const paths: string[] = []
+  let fence: { character: string; length: number } | null = null
+  for (const line of resource.content.split(/\r?\n/u)) {
+    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/u.exec(line)
+    if (fence) {
+      if (
+        fenceMatch?.[1]?.[0] === fence.character &&
+        fenceMatch[1].length >= fence.length &&
+        line.slice(fenceMatch[0].length).trim() === ''
+      ) {
+        fence = null
+      }
+      continue
+    }
+    if (fenceMatch?.[1]) {
+      fence = {
+        character: fenceMatch[1][0] ?? '`',
+        length: fenceMatch[1].length,
+      }
+      continue
+    }
+    const visible = stripClaudeInstructionCode(line)
+    for (const match of visible.matchAll(/@((?:\\[ \t]|[^\s])+)/gu)) {
+      const rawPath = match[1]
+      if (!rawPath) continue
+      const importedPath = rawPath.replace(/\\([ \t])/gu, '$1')
+      if (/^https?:\/\//u.test(importedPath)) continue
+      paths.push(
+        importedPath.startsWith('~/')
+          ? join(homeDirectory, importedPath.slice(2))
+          : resolve(dirname(resource.path), importedPath),
+      )
+    }
+  }
+  return paths
+}
+
+export async function resolveClaudeInstructionImports(
+  resources: readonly ClaudeTextResource[],
+  { homeDirectory = homedir() }: { homeDirectory?: string } = {},
+): Promise<ClaudeTextResource[]> {
+  const seen = new Set(
+    await Promise.all(resources.map(({ path }) => canonicalPath(path))),
+  )
+  const resolved: ClaudeTextResource[] = []
+
+  const appendImports = async (
+    resource: ClaudeTextResource,
+    root: ClaudeTextResource,
+    depth: number,
+  ): Promise<void> => {
+    if (depth >= CLAUDE_INSTRUCTION_IMPORT_DEPTH) return
+    for (const path of claudeInstructionImportPaths(resource, homeDirectory)) {
+      let canonical: string
+      let content: string
+      try {
+        canonical = await realpath(path)
+        content = await readFile(canonical, 'utf8')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
+      if (seen.has(canonical)) continue
+      seen.add(canonical)
+      const imported: ClaudeTextResource = {
+        path: canonical,
+        scope: root.scope,
+        content,
+        importedFrom: resource.path,
+        importRoot: root.path,
+      }
+      resolved.push(imported)
+      await appendImports(imported, root, depth + 1)
+    }
+  }
+
+  for (const resource of resources) {
+    resolved.push(resource)
+    await appendImports(resource, resource, 0)
+  }
+  return resolved
 }
 
 async function readOptionalJson(
@@ -564,10 +675,13 @@ export async function loadClaudeContextResources({
     homeBoundary,
     memoryIdentityRoot,
   )
+  const instructions = resources.instructions.filter((resource) =>
+    selectedScope(resource.scope, settingSources),
+  )
   return {
-    instructions: resources.instructions.filter((resource) =>
-      selectedScope(resource.scope, settingSources),
-    ),
+    instructions: await resolveClaudeInstructionImports(instructions, {
+      homeDirectory,
+    }),
     conditionalRules: resources.conditionalRules.filter((resource) =>
       selectedScope(resource.scope, settingSources),
     ),
@@ -644,10 +758,16 @@ export async function loadClaudeSharedResources({
     resources.filter((resource) =>
       selectedScope(resource.scope, settingSources),
     )
+  const instructions = await resolveClaudeInstructionImports(
+    selected(
+      [globalInstruction, ...globalRules, ...projectInstructions].filter(
+        present,
+      ),
+    ),
+    { homeDirectory },
+  )
   return {
-    instructions: [globalInstruction, ...globalRules, ...projectInstructions]
-      .filter(present)
-      .filter((resource) => selectedScope(resource.scope, settingSources)),
+    instructions,
     memory: selected(memory),
     skills: selected(skills),
     commands: selected(commands),

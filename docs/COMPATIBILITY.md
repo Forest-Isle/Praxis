@@ -505,11 +505,16 @@ through a linked memory `Read`, permission-authorized memory `Write`, native
 tool-result persistence, second-process resume, and a provider-free native fork
 against that same root. It compares source and fork records field-for-field
 after the defined session-ID and transient-record transformation.
-`npm run test:compat:all` is the authoritative aggregate: it discovers all 49
+`npm run test:compat:all` is the authoritative aggregate: it discovers all 55
 compatibility gates from `package.json`, rejects unsupported command shapes or
 duplicate entrypoints, and runs each in an isolated child process. The complete
 matrix passed on Claude Code 2.1.208 after the conditional-rule and compaction
 fixtures were calibrated to current context/tool envelopes.
+`npm run test:memory-import-compat` captures pinned Claude and Praxis provider
+requests to prove recursive instruction imports, their observed parsing and
+depth boundaries, and next-turn reload after an imported file changes. Required
+CI passes the exact locally installed 2.1.208 executable to this gate rather
+than relying on a version string or ambient `PATH` resolution.
 `npm run test:conditional-compat` proves that only a successful matching `Read`
 activates a path rule, validates the native attachment envelope and resume
 persistence, requires successful native tool results for every negative tool

@@ -54,13 +54,22 @@ jobs:
       - name: Install dependencies and compatibility baseline
         run: |
           npm ci
-          npm install --global @anthropic-ai/claude-code@2.1.208
+          npm install --prefix /tmp/praxis-claude-pin-21208 @anthropic-ai/claude-code@2.1.208
+          echo "/tmp/praxis-claude-pin-21208/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Verify pinned Claude baseline
-        run: test "$(claude --version | awk '{print $1}')" = "2.1.208"
+        run: test "$(/tmp/praxis-claude-pin-21208/node_modules/.bin/claude --version | awk '{print $1}')" = "2.1.208"
       - name: Verify credential-free Claude CLI contract
+        env:
+          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
         run: npm run test:cli-surface-compat
       - name: Verify interactive background handoff
+        env:
+          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
         run: npm run test:background-command-compat
+      - name: Verify pinned memory import contract
+        env:
+          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
+        run: npm run test:memory-import-compat
 
   release-regression:
     name: Release regression (${{ matrix.os }}, Node ${{ matrix.node }})

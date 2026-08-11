@@ -85,8 +85,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   command-specific `/add-dir`, `/copy`, `/branch`, `/rename`, `/export`,
   provider-backed `/compact`, native `/rewind`, runtime `/cd`, transcript-free
   `/btw` side questions with background-Agent handoff, interactive
-  `/background` terminal handoff, `/config`, `/usage`, `/mcp`, and live
-  extension-reload controls,
+  `/background` terminal handoff, `/config`, `/usage`, `/mcp`, `/memory` shared
+  instruction and auto-memory access, and live extension-reload controls,
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external
@@ -103,8 +103,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   credential redaction, and sanitized child processes.
 - **Durable local work** — resumable sessions, full-history forks, file
   checkpoints, tasks, foreground/background subagents, and top-level agents.
-- **Claude-compatible ecosystem** — shared instructions, memory, skills,
-  commands, agents, hooks, settings, MCP servers, plugins, and transcript data.
+- **Claude-compatible ecosystem** — shared instructions with recursive `@`
+  imports, memory, skills, commands, agents, hooks, settings, MCP servers,
+  plugins, and transcript data.
 - **Provider-neutral models** — native Anthropic Messages and OpenAI-compatible
   streaming adapters with explicit capability checks and metering controls.
 

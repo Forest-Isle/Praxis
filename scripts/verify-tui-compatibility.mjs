@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import {
   chmod,
+  lstat,
   mkdtemp,
   mkdir,
+  readlink,
   realpath,
   readFile,
   readdir,
@@ -12,8 +15,10 @@ import {
 } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { basename, delimiter, join } from 'node:path'
+import { basename, delimiter, dirname, join, sep } from 'node:path'
 import { promisify } from 'node:util'
+
+import { resolveClaudeProjectMemoryDirectory } from '../dist/compatibility/claude/shared-resources.js'
 
 const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-tui-compat-'))
@@ -29,8 +34,17 @@ const osascript = join(binRoot, 'osascript')
 const pbpaste = join(binRoot, 'pbpaste')
 const pbcopy = join(binRoot, 'pbcopy')
 const clipboardOutput = join(root, 'clipboard-output.txt')
+const editorOutput = join(root, 'editor-output.txt')
+const folderOutput = join(root, 'folder-output.txt')
 const wlPaste = join(binRoot, 'wl-paste')
 const wlCopy = join(binRoot, 'wl-copy')
+const open = join(binRoot, 'open')
+const xdgOpen = join(binRoot, 'xdg-open')
+const snapshotHelper = join(root, 'snapshot-shared-trees.mjs')
+const importedMemory = join(configRoot, 'imported.md')
+const importedBefore = 'IMPORTED_TUI_CONTEXT_BEFORE'
+const importedAfter = 'IMPORTED_TUI_CONTEXT_AFTER'
+const providerRequests = []
 let cli
 let port
 const packageJson = JSON.parse(
@@ -44,6 +58,49 @@ const expectedVersionPattern = packageJson.version.replace(
   '\\$&',
 )
 
+async function snapshotSharedTrees(roots) {
+  const snapshot = []
+  const walk = async (rootName, directory, prefix = '') => {
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch (error) {
+      if (error.code === 'ENOENT') return
+      throw error
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name))
+    for (const entry of entries) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name
+      const absolute = join(directory, entry.name)
+      if (entry.isDirectory()) {
+        snapshot.push({ path: `${rootName}/${path}`, type: 'directory' })
+        await walk(rootName, absolute, path)
+        continue
+      }
+      if (entry.isSymbolicLink()) {
+        snapshot.push({
+          path: `${rootName}/${path}`,
+          type: 'symlink',
+          content: await readlink(absolute),
+        })
+        continue
+      }
+      const stats = await lstat(absolute)
+      snapshot.push({
+        path: `${rootName}/${path}`,
+        type: stats.isFile() ? 'file' : 'other',
+        content: stats.isFile()
+          ? (await readFile(absolute)).toString('base64')
+          : null,
+      })
+    }
+  }
+  for (const [rootName, directory] of Object.entries(roots)) {
+    await walk(rootName, directory)
+  }
+  return snapshot
+}
+
 const provider = createServer(async (request, response) => {
   let requestBody = ''
   for await (const chunk of request) {
@@ -53,6 +110,7 @@ const provider = createServer(async (request, response) => {
   let latestText = ''
   try {
     const payload = JSON.parse(requestBody)
+    providerRequests.push(payload)
     const latestContent = payload.messages?.at(-1)?.content
     latestText =
       typeof latestContent === 'string'
@@ -65,7 +123,9 @@ const provider = createServer(async (request, response) => {
     ? 'SIDE'
     : latestText.includes('reply briefly')
       ? 'TUI_MODEL_OK'
-      : 'TUI_FAKE_OK'
+      : latestText.includes('memory reload probe')
+        ? 'MEMORY_RELOAD_OK'
+        : 'TUI_FAKE_OK'
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
     `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
@@ -92,6 +152,12 @@ try {
     '---\nname: reviewer\ndescription: Reviews the shared fixture.\n---\nReview the requested fixture.\n',
   )
   await writeFile(
+    join(configRoot, 'CLAUDE.md'),
+    '# Shared user memory\n@imported.md\n',
+  )
+  await writeFile(importedMemory, `${importedBefore}\n`)
+  await writeFile(join(cwd, 'CLAUDE.md'), '# Shared project memory\n')
+  await writeFile(
     join(configRoot, 'settings.json'),
     `${JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }, null, 2)}\n`,
   )
@@ -117,13 +183,43 @@ try {
   await chmod(claude, 0o755)
   await writeFile(
     editor,
-    '#!/bin/sh\ncase "$1" in *keybindings.json) exit 0 ;; esac\nprintf \'edited first line\\nedited second line\\n\\n\' > "$1"\n',
+    `#!/bin/sh
+case "$1" in
+  *keybindings.json) exit 0 ;;
+  *imported.md)
+    printf '${importedAfter}\\n' > "$1"
+    printf '%s\\n' "$1" >> "$TUI_EDITOR_OUTPUT"
+    exit 0
+    ;;
+esac
+printf 'edited first line\\nedited second line\\n\\n' > "$1"
+`,
   )
   await chmod(editor, 0o755)
   await writeFile(osascript, '#!/bin/sh\nexit 1\n')
   await writeFile(pbpaste, "#!/bin/sh\nprintf 'INSTALLED_CLIPBOARD'\n")
   await writeFile(pbcopy, '#!/bin/sh\ncat > "$TUI_CLIPBOARD_OUTPUT"\n')
   await writeFile(wlCopy, '#!/bin/sh\ncat > "$TUI_CLIPBOARD_OUTPUT"\n')
+  const folderLauncher =
+    '#!/bin/sh\nprintf \'%s\\n\' "$1" > "$TUI_FOLDER_OUTPUT"\n'
+  await Promise.all([
+    writeFile(open, folderLauncher),
+    writeFile(xdgOpen, folderLauncher),
+    writeFile(
+      snapshotHelper,
+      `import { lstat, readFile, readdir, readlink, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
+${snapshotSharedTrees.toString()}
+
+const snapshot = await snapshotSharedTrees({
+  config: process.argv[2],
+  project: process.argv[3],
+})
+await writeFile(process.argv[4], JSON.stringify(snapshot))
+`,
+    ),
+  ])
   await writeFile(
     wlPaste,
     '#!/bin/sh\ncase "$*" in *image/png*) exit 1 ;; *) printf \'INSTALLED_CLIPBOARD\' ;; esac\n',
@@ -134,6 +230,8 @@ try {
     chmod(pbcopy, 0o755),
     chmod(wlCopy, 0o755),
     chmod(wlPaste, 0o755),
+    chmod(open, 0o755),
+    chmod(xdgOpen, 0o755),
   ])
   const { stdout: packed } = await execFileAsync(
     'npm',
@@ -152,6 +250,142 @@ try {
     provider.listen(0, '127.0.0.1', resolve)
   })
   port = provider.address().port
+
+  const cancelConfigRoot = join(root, 'cancel-config')
+  const cancelCwd = join(root, 'cancel-work')
+  const cancelSessionId = randomUUID()
+  await Promise.all([
+    mkdir(join(cancelConfigRoot, 'rules', 'nested'), { recursive: true }),
+    mkdir(join(cancelCwd, '.claude', 'rules'), { recursive: true }),
+  ])
+  const cancelMemoryDirectory = await resolveClaudeProjectMemoryDirectory({
+    configRoot: cancelConfigRoot,
+    cwd: cancelCwd,
+  })
+  const cancelProjectDirectory = dirname(cancelMemoryDirectory)
+  const cancelSentinel = join(cancelProjectDirectory, 'snapshot-sentinel.jsonl')
+  await mkdir(cancelProjectDirectory, { recursive: true })
+  await Promise.all([
+    writeFile(
+      join(cancelConfigRoot, 'CLAUDE.md'),
+      '# Cancel user memory\n@details/imported.md\n',
+    ),
+    writeFile(
+      join(cancelConfigRoot, 'rules', 'nested', 'rule.md'),
+      '# Cancel nested user rule\n',
+    ),
+    mkdir(join(cancelConfigRoot, 'details'), { recursive: true }).then(() =>
+      writeFile(
+        join(cancelConfigRoot, 'details', 'imported.md'),
+        'CANCEL_IMPORTED_UNCHANGED\n',
+      ),
+    ),
+    writeFile(join(cancelCwd, 'CLAUDE.md'), '# Cancel project memory\n'),
+    writeFile(
+      join(cancelCwd, '.claude', 'rules', 'project.md'),
+      '# Cancel nested project rule\n',
+    ),
+    writeFile(cancelSentinel, '{"sentinel":"unchanged"}\n'),
+  ])
+  const sentinelBefore = await snapshotSharedTrees({
+    config: cancelConfigRoot,
+    project: cancelCwd,
+  })
+  await writeFile(cancelSentinel, '{"sentinel":"mutated"}\n')
+  const sentinelMutated = await snapshotSharedTrees({
+    config: cancelConfigRoot,
+    project: cancelCwd,
+  })
+  const sentinelBeforeRecord = sentinelBefore.find(({ path }) =>
+    path.endsWith('/snapshot-sentinel.jsonl'),
+  )
+  const sentinelMutatedRecord = sentinelMutated.find(({ path }) =>
+    path.endsWith('/snapshot-sentinel.jsonl'),
+  )
+  assert.ok(sentinelBeforeRecord)
+  assert.ok(sentinelMutatedRecord)
+  const sentinelRecordPath = sentinelBeforeRecord.path
+  assert.notDeepEqual(
+    sentinelMutatedRecord,
+    sentinelBeforeRecord,
+    'shared-tree snapshot did not detect a sibling JSONL mutation',
+  )
+  await writeFile(cancelSentinel, '{"sentinel":"unchanged"}\n')
+  const cancelBeforePath = join(root, 'cancel-before.json')
+  const cancelAfterPath = join(root, 'cancel-after.json')
+  const cancelProbe = String.raw`
+set timeout 15
+log_user 1
+set phase "installed memory cancel"
+expect_before timeout {
+  puts stderr "TUI memory cancel timed out during $phase"
+  exit 1
+}
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CANCEL_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --session-id $env(TUI_CANCEL_SESSION_ID) --dangerously-skip-permissions
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect -re {Praxis.*Code.*v${expectedVersionPattern}}
+exec $env(TUI_NODE) $env(TUI_SNAPSHOT_HELPER) $env(TUI_CANCEL_CONFIG_ROOT) $env(TUI_CANCEL_CWD) $env(TUI_CANCEL_BEFORE)
+send "/memory"
+expect -re {Open a memory file in your editor}
+send "\r"
+expect -re {Auto-memory: on}
+expect -re {User memory}
+expect -re {imported.md}
+expect -re {Project memory}
+expect -re {Open auto-memory folder}
+send "\033"
+expect -re {Cancelled memory editing}
+exec $env(TUI_NODE) $env(TUI_SNAPSHOT_HELPER) $env(TUI_CANCEL_CONFIG_ROOT) $env(TUI_CANCEL_CWD) $env(TUI_CANCEL_AFTER)
+send "\003"
+expect -re {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+  await execFileAsync('expect', ['-c', cancelProbe], {
+    cwd: cancelCwd,
+    env: {
+      ...process.env,
+      CI: 'true',
+      PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
+      TUI_CANCEL_AFTER: cancelAfterPath,
+      TUI_CANCEL_BEFORE: cancelBeforePath,
+      TUI_CANCEL_CONFIG_ROOT: cancelConfigRoot,
+      TUI_CANCEL_CWD: cancelCwd,
+      TUI_CANCEL_SESSION_ID: cancelSessionId,
+      TUI_CLI: cli,
+      TUI_NODE: process.execPath,
+      TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+      TUI_SNAPSHOT_HELPER: snapshotHelper,
+    },
+    timeout: 60_000,
+  })
+  const [cancelBefore, cancelAfter] = await Promise.all(
+    [cancelBeforePath, cancelAfterPath].map(async (path) =>
+      JSON.parse(await readFile(path, 'utf8')),
+    ),
+  )
+  const cancelProjectPrefix = sentinelRecordPath.slice(
+    0,
+    -'snapshot-sentinel.jsonl'.length,
+  )
+  const sessionTranscriptPath = `${cancelProjectPrefix}${cancelSessionId}.jsonl`
+  const runtimeArtifacts = new Set([
+    'config/history.jsonl',
+    sessionTranscriptPath,
+    `${sessionTranscriptPath}.lock`,
+  ])
+  const sharedSnapshot = (snapshot) =>
+    snapshot.filter(({ path }) => !runtimeArtifacts.has(path))
+  assert.ok(
+    cancelAfter.some(({ path }) => path === sentinelRecordPath),
+    'sibling JSONL sentinel was not covered by the cancel snapshot',
+  )
+  assert.deepEqual(
+    sharedSnapshot(cancelAfter),
+    sharedSnapshot(cancelBefore),
+    'installed /memory cancel changed the recursive shared tree',
+  )
 
   const probe = String.raw`
 set timeout 15
@@ -434,6 +668,38 @@ expect -re {Create a branch of the current conversation}
 after 100
 send "\r"
 expect -re {Branched conversation.*new branch}
+set phase "memory dialog"
+send "/memory"
+expect -re {Open a memory file in your editor}
+after 100
+send "\r"
+expect -re {Auto-memory: on}
+expect -re {User memory}
+expect -re {Saved in ~/.claude/CLAUDE.md}
+expect -re {imported.md}
+expect -re {Project memory}
+expect -re {Saved in ./CLAUDE.md}
+expect -re {Open auto-memory folder}
+set phase "memory imported editor"
+send "2"
+expect -re {Opened memory file at .*imported.md}
+expect -re {Using Editor-wrapper}
+after 100
+set phase "memory folder launcher"
+send "/memory"
+expect -re {Open a memory file in your editor}
+send "\r"
+expect -re {Auto-memory: on}
+send "4"
+expect -re {Open auto-memory folder.*✔}
+send "\033"
+expect -re {Cancelled memory editing}
+after 100
+set phase "memory provider reload"
+send "memory reload probe"
+expect -re {❯.*memory reload probe}
+send "\r"
+expect -re {MEMORY_RELOAD_OK}
 set phase "first TUI exit"
 send "\003"
 expect -re {Press Ctrl-C again to exit}
@@ -484,6 +750,8 @@ exit 0
         TUI_CLIPBOARD_OUTPUT: clipboardOutput,
         TUI_CONFIG_ROOT: configRoot,
         TUI_EDITOR: editor,
+        TUI_EDITOR_OUTPUT: editorOutput,
+        TUI_FOLDER_OUTPUT: folderOutput,
         TUI_MOVED_ROOT: movedCwd,
         TUI_NODE: process.execPath,
         TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
@@ -508,6 +776,36 @@ exit 0
     )
   }
   assert.match(result.stdout, /TUI_FAKE_OK/u)
+  assert.equal(
+    await readFile(join(configRoot, 'CLAUDE.md'), 'utf8'),
+    '# Shared user memory\n@imported.md\n',
+  )
+  assert.equal(
+    await readFile(join(cwd, 'CLAUDE.md'), 'utf8'),
+    '# Shared project memory\n',
+  )
+  assert.equal(await readFile(importedMemory, 'utf8'), `${importedAfter}\n`)
+  assert.equal(
+    (await readFile(editorOutput, 'utf8')).trim(),
+    await realpath(importedMemory),
+  )
+  const openedFolder = (await readFile(folderOutput, 'utf8')).trim()
+  assert.equal(basename(openedFolder), 'memory')
+  assert.ok(
+    (await realpath(openedFolder)).startsWith(
+      `${await realpath(configRoot)}${sep}`,
+    ),
+  )
+  const memoryReloadRequest = providerRequests.findLast((request) =>
+    JSON.stringify(request.messages ?? []).includes('memory reload probe'),
+  )
+  assert.ok(
+    memoryReloadRequest,
+    'installed /memory emitted no next provider turn',
+  )
+  const memoryReloadSource = JSON.stringify(memoryReloadRequest)
+  assert.match(memoryReloadSource, new RegExp(importedAfter, 'u'))
+  assert.doesNotMatch(memoryReloadSource, new RegExp(importedBefore, 'u'))
   const projectRoot = join(configRoot, 'projects')
   const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
     .map(String)

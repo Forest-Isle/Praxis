@@ -954,3 +954,27 @@ contract; broader interactive TTY parity remains partial.
 - [x] focused catalog/application/manager/Ink tests and a live Claude/Praxis PTY
       gate covering blocked state, unchanged source JSONL, attach context, and
       target transcript materialization
+
+## Stage 108 - interactive memory editor parity
+
+Status: complete for the Claude Code 2.1.208 `/memory` contract; broader
+interactive TTY parity remains partial.
+
+- [x] black-box-confirmed `Open a memory file in your editor` catalog entry,
+      loading surface, `Auto-memory: on/off` status, numbered user/project
+      hierarchy, inline/recursive/escaped-space `@` imports, four-level depth,
+      dedupe/cycle/code/missing boundaries, help URL, and cancel result
+- [x] user and project file editing through the existing suspended external
+      editor lifecycle, including absent-file targets; one authoritative shared
+      resolver feeds both `/memory` and provider context, with pinned Claude and
+      Praxis two-turn requests proving edits reload on the next turn
+- [x] canonical main-repository auto-memory directory reuse across worktrees,
+      `autoMemoryEnabled` visibility, create-on-open folder behavior, and native
+      macOS/Linux/Windows folder launch with in-flight generation guards
+- [x] focused catalog/component/screen-reader/editor/folder interaction tests;
+      installed PTY imported-file `$EDITOR` lifecycle, platform folder-launch
+      sentinel, next-turn provider reload, and recursive path/type/content
+      no-write snapshot around cancel with exact runtime transcript/lock
+      exclusion and sibling-JSONL mutation sentinel; pinned 2.1.208 import
+      fixture and live provider-request gate; existing 200-line `MEMORY.md`
+      context and standard Read/Write/Edit gates retained

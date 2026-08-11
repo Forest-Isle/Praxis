@@ -3737,6 +3737,55 @@ describe('ClaudeSessionService', () => {
     expect(transcript).not.toContain('DYNAMIC_CONTEXT')
   })
 
+  it('reloads imported shared instructions in the next provider request', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-import-reload-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const importedPath = join(configRoot, 'details.md')
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(cwd, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(join(configRoot, 'CLAUDE.md'), 'Shared import: @details.md\n'),
+      writeFile(importedPath, 'IMPORTED_CONTEXT_BEFORE'),
+    ])
+    const requests: ModelRequest[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: `answer-${requests.length}` }
+        },
+      },
+      contextAssembler: new ClaudeContextAssembler({
+        loadResources: () => loadClaudeContextResources({ configRoot, cwd }),
+      }),
+    })
+
+    const first = await service.run('first prompt')
+    await writeFile(importedPath, 'IMPORTED_CONTEXT_AFTER')
+    await service.resume(first.sessionId, 'second prompt')
+
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      'IMPORTED_CONTEXT_BEFORE',
+    )
+    expect(JSON.stringify(requests[0]?.messages)).not.toContain(
+      'IMPORTED_CONTEXT_AFTER',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'IMPORTED_CONTEXT_AFTER',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).not.toContain(
+      'IMPORTED_CONTEXT_BEFORE',
+    )
+  })
+
   it('counts relocated first-user context against the context budget', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-context-budget-'))
     roots.push(root)

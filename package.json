@@ -74,6 +74,7 @@
     "test:resume-at-compat": "npm run build && node scripts/verify-resume-session-at-compatibility.mjs",
     "test:resume-selector-compat": "npm run build && node scripts/verify-resume-selector-compatibility.mjs",
     "test:thinking-compat": "npm run build && node scripts/verify-thinking-controls.mjs",
+    "test:memory-import-compat": "npm run build && node scripts/verify-memory-import-compatibility.mjs",
     "test:tui-compat": "npm run build && node scripts/verify-tui-compatibility.mjs",
     "test:tmux-worktree-compat": "npm run build && node scripts/verify-tmux-worktree-compatibility.mjs",
     "test:init-maintenance-compat": "npm run build && node scripts/verify-init-maintenance-compatibility.mjs",

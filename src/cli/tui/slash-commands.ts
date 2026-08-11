@@ -70,6 +70,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'memory',
+    description: 'Open a memory file in your editor',
+    source: 'builtin',
+  },
+  {
     name: 'permissions',
     description: 'Manage allow and deny tool permission rules',
     source: 'builtin',

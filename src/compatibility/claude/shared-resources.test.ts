@@ -177,6 +177,94 @@ describe('Claude shared resource discovery', () => {
     })
   })
 
+  it('resolves Claude instruction imports with the observed recursive boundaries', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-shared-imports-')),
+    )
+    tempDirectories.push(root)
+    const homeDirectory = join(root, 'home')
+    const configRoot = join(homeDirectory, '.claude')
+    const cwd = join(homeDirectory, 'project')
+    await Promise.all([
+      writeFixture(
+        join(configRoot, 'CLAUDE.md'),
+        [
+          'USER_ROOT inline @inline.md after',
+          '@direct.md',
+          '@escaped\\ space.md',
+          '@missing.md',
+          '@direct.md',
+          '`@inline-code.md`',
+          '    @indented.md',
+          '```md',
+          '@fenced.md',
+          '```',
+          '@cycle-a.md',
+        ].join('\n'),
+      ),
+      writeFixture(join(configRoot, 'inline.md'), 'USER_INLINE'),
+      writeFixture(join(configRoot, 'direct.md'), 'USER_DIRECT\n@recursive.md'),
+      writeFixture(join(configRoot, 'recursive.md'), 'USER_RECURSIVE'),
+      writeFixture(join(configRoot, 'escaped space.md'), 'USER_SPACE'),
+      writeFixture(join(configRoot, 'inline-code.md'), 'IGNORED_INLINE_CODE'),
+      writeFixture(join(configRoot, 'indented.md'), 'INDENTED_IMPORT'),
+      writeFixture(join(configRoot, 'fenced.md'), 'IGNORED_FENCE'),
+      writeFixture(join(configRoot, 'cycle-a.md'), 'CYCLE_A\n@cycle-b.md'),
+      writeFixture(join(configRoot, 'cycle-b.md'), 'CYCLE_B\n@cycle-a.md'),
+      writeFixture(
+        join(cwd, 'CLAUDE.md'),
+        'PROJECT_ROOT @project-inline.md\n@depth-1.md',
+      ),
+      writeFixture(join(cwd, 'project-inline.md'), 'PROJECT_INLINE'),
+      ...Array.from({ length: 5 }, (_, index) =>
+        writeFixture(
+          join(cwd, `depth-${index + 1}.md`),
+          `DEPTH_${index + 1}${index < 4 ? `\n@depth-${index + 2}.md` : ''}`,
+        ),
+      ),
+    ])
+
+    const [context, shared] = await Promise.all([
+      loadClaudeContextResources({ configRoot, cwd, homeDirectory }),
+      loadClaudeSharedResources({ configRoot, cwd, homeDirectory }),
+    ])
+    const expectedContent = [
+      expect.stringContaining('USER_ROOT'),
+      'USER_INLINE',
+      expect.stringContaining('USER_DIRECT'),
+      'USER_RECURSIVE',
+      'USER_SPACE',
+      'INDENTED_IMPORT',
+      expect.stringContaining('CYCLE_A'),
+      expect.stringContaining('CYCLE_B'),
+      expect.stringContaining('PROJECT_ROOT'),
+      'PROJECT_INLINE',
+      expect.stringContaining('DEPTH_1'),
+      expect.stringContaining('DEPTH_2'),
+      expect.stringContaining('DEPTH_3'),
+      expect.stringContaining('DEPTH_4'),
+    ]
+    expect(context.instructions.map(({ content }) => content)).toEqual(
+      expectedContent,
+    )
+    expect(shared.instructions.map(({ content }) => content)).toEqual(
+      expectedContent,
+    )
+    expect(JSON.stringify(context.instructions)).not.toContain(
+      'IGNORED_INLINE_CODE',
+    )
+    expect(JSON.stringify(context.instructions)).not.toContain('IGNORED_FENCE')
+    expect(JSON.stringify(context.instructions)).not.toContain('DEPTH_5')
+    expect(
+      context.instructions.filter(({ importedFrom }) => importedFrom),
+    ).toHaveLength(12)
+    expect(context.instructions[3]).toMatchObject({
+      importedFrom: await realpath(join(configRoot, 'direct.md')),
+      importRoot: join(configRoot, 'CLAUDE.md'),
+      scope: 'user',
+    })
+  })
+
   it('filters all shared customization categories by selected setting sources', async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), 'praxis-shared-sources-')),
@@ -185,9 +273,13 @@ describe('Claude shared resource discovery', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'workspace')
     await Promise.all([
-      writeFixture(join(configRoot, 'CLAUDE.md'), 'USER_CONTEXT'),
-      writeFixture(join(cwd, 'CLAUDE.md'), 'PROJECT_CONTEXT'),
+      writeFixture(
+        join(configRoot, 'CLAUDE.md'),
+        'USER_CONTEXT\n@../shared.md',
+      ),
+      writeFixture(join(cwd, 'CLAUDE.md'), 'PROJECT_CONTEXT\n@../shared.md'),
       writeFixture(join(cwd, 'CLAUDE.local.md'), 'LOCAL_CONTEXT'),
+      writeFixture(join(root, 'shared.md'), 'SHARED_CONTEXT'),
       writeFixture(
         join(configRoot, 'skills', 'user-skill', 'SKILL.md'),
         'USER_SKILL',
@@ -210,7 +302,8 @@ describe('Claude shared resource discovery', () => {
       settingSources: ['user'],
     })
     expect(user.instructions.map((resource) => resource.content)).toEqual([
-      'USER_CONTEXT',
+      'USER_CONTEXT\n@../shared.md',
+      'SHARED_CONTEXT',
     ])
     expect(user.skills.map((resource) => resource.content)).toEqual([
       'USER_SKILL',
@@ -226,7 +319,7 @@ describe('Claude shared resource discovery', () => {
     })
     expect(
       projectContext.instructions.map((resource) => resource.content),
-    ).toEqual(['PROJECT_CONTEXT'])
+    ).toEqual(['PROJECT_CONTEXT\n@../shared.md', 'SHARED_CONTEXT'])
     await expect(
       loadClaudeSettings({ configRoot, cwd, settingSources: [] }),
     ).resolves.toEqual([])
