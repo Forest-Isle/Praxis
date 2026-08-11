@@ -348,8 +348,10 @@ expect {
   timeout { puts stderr "assistant response did not render"; exit 1 }
   eof { puts stderr "Praxis exited before assistant response"; exit 1 }
 }
-expect -re {Try.*review this project}
-after 100
+# Ink may include the restored empty composer in the same repaint that emitted
+# the response. Continuing with /cd below proves the composer is interactive
+# without depending on which fragment expect consumes from that repaint.
+after 300
 set phase "change working directory"
 send "/cd"
 after 300
