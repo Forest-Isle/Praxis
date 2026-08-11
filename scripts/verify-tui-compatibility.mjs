@@ -164,8 +164,12 @@ expect -re {/clear}
 send "rev"
 expect -re {/review}
 expect -re {Review the shared fixture}
+expect -re {❯[^\r\n]*\/rev}
 send "\033"
-expect -re {❯ /rev}
+expect {
+  -re {Review the shared fixture} { puts stderr "slash palette remained open after Escape"; exit 1 }
+  -re {❯[^\r\n]*\/rev} {}
+}
 send "\025"
 expect -re {Try.*review this project}
 set phase "add-dir command"
@@ -349,30 +353,42 @@ expect -re {Try.*review this project}
 after 100
 set phase "change working directory"
 send "/cd"
+after 300
 send "\r"
 expect -re {Usage: /cd <path>}
 send "/cd $env(TUI_MOVED_ROOT)"
+after 300
 send "\r"
-expect -re {Moved to .*moved-work}
+expect -re {Moved to}
+expect -re {moved-work}
+expect -re {Try.*review this project}
+after 300
 set phase "shell mode after cd"
-send "!pwd"
+send "!"
+expect -re {! for shell mode}
+send "pwd"
+after 100
 send "\r"
 expect -re {⎿.*moved-work}
 expect -re {TUI_FAKE_OK}
-after 100
+expect -re {Try.*review this project}
+after 300
 set phase "rename session"
 send "/rename installed-title"
-after 100
+after 300
 send "\r"
 expect -re {Session renamed to: installed-title}
+after 300
 set phase "copy response"
 send "/copy"
 expect -re {Copy Praxis.*last response}
+after 100
 send "\r"
 expect -re {Copied last response to clipboard}
 set phase "export conversation"
 send "/export"
 expect -re {Export the current conversation}
+after 100
 send "\r"
 expect -re {Export conversation}
 expect -re {Copy to clipboard}
@@ -381,6 +397,7 @@ expect -re {Conversation copied to clipboard}
 set phase "rewind menu"
 send "/rewind"
 expect -re {Restore the code and/or conversation}
+after 100
 send "\r"
 expect -re {Rewind}
 expect -re {current}
@@ -389,6 +406,7 @@ after 100
 set phase "branch conversation"
 send "/branch"
 expect -re {Create a branch of the current conversation}
+after 100
 send "\r"
 expect -re {Branched conversation.*new branch}
 set phase "first TUI exit"
@@ -503,7 +521,7 @@ exit 0
   assert.match(transcript, /<local-command-stdout>Moved to /u)
   assert.match(transcript, /The session's working directory has changed to /u)
   assert.ok(
-    transcript.includes(`<bash-stdout>${canonicalMovedCwd}\n</bash-stdout>`),
+    transcript.includes(`<bash-stdout>${canonicalMovedCwd}\\n</bash-stdout>`),
   )
   assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
   assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
@@ -539,7 +557,7 @@ expect eof
 exit 0
 `
   await execFileAsync('expect', ['-c', resumeProbe], {
-    cwd,
+    cwd: movedCwd,
     env: {
       ...process.env,
       CI: 'true',
