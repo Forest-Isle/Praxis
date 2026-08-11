@@ -60,6 +60,7 @@ import {
 import {
   addTuiPermissionRule,
   loadTuiPermissionRules,
+  removeTuiPermissionRule,
   type TuiPermissionBehavior,
   type TuiPermissionRule,
 } from './tui/permission-settings.js'
@@ -110,6 +111,10 @@ import {
   tuiKeyChord,
   type TuiKeybindingsFile,
 } from './tui/keybindings.js'
+import {
+  completeTuiWorkspaceDirectory,
+  resolveTuiWorkspaceDirectory,
+} from './tui/workspace-directories.js'
 
 interface InteractiveSessionCommands {
   run(
@@ -164,6 +169,7 @@ export interface InteractiveServiceFactory {
     model?: string
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
     permissionMode?: ClaudePermissionMode
+    additionalDirectories?: readonly string[]
     signal?: AbortSignal
   }): Promise<InteractiveSessionCommands>
 }
@@ -193,6 +199,7 @@ interface InteractiveAppProps {
   slashCommands?: readonly TuiSlashCommand[]
   agents?: readonly TuiAgentEntry[]
   allowDangerouslySkipPermissions?: boolean
+  additionalDirectories?: readonly string[]
   diffLoader?: () => Promise<TuiDiffSnapshot>
   fileLoader?: () => Promise<readonly TuiFileEntry[]>
   externalEditor?: (
@@ -215,7 +222,10 @@ interface InteractiveAppProps {
       rule: string
       scope: ClaudeResourceScope
     }): Promise<void>
+    remove?(rule: TuiPermissionRule): Promise<void>
   }
+  workspaceDirectoryResolver?: typeof resolveTuiWorkspaceDirectory
+  workspaceDirectoryCompleter?: typeof completeTuiWorkspaceDirectory
 }
 
 type PendingPermission = {
@@ -299,11 +309,32 @@ type InteractiveMenu =
       query: string
       rules: readonly TuiPermissionRule[]
     }
-  | { kind: 'permission-rule-input'; behavior: TuiPermissionBehavior }
+  | {
+      kind: 'permission-rule-input'
+      behavior: TuiPermissionBehavior
+      rules: readonly TuiPermissionRule[]
+    }
+  | {
+      kind: 'permission-delete'
+      rule: TuiPermissionRule
+      rules: readonly TuiPermissionRule[]
+      selectedIndex: number
+    }
   | {
       kind: 'permission-scope'
       behavior: TuiPermissionBehavior
       rule: string
+      rules: readonly TuiPermissionRule[]
+      selectedIndex: number
+    }
+  | {
+      kind: 'workspace-directory-input'
+      rules: readonly TuiPermissionRule[]
+    }
+  | {
+      kind: 'workspace-directory-delete'
+      path: string
+      rules: readonly TuiPermissionRule[]
       selectedIndex: number
     }
   | { kind: 'model'; selectedIndex: number }
@@ -322,6 +353,7 @@ type RuntimePreferences = {
   model?: string
   effort: (typeof EFFORT_OPTIONS)[number]
   permissionMode: ClaudePermissionMode
+  additionalDirectories: readonly string[]
 }
 
 function permissionMode(value: string | undefined): ClaudePermissionMode {
@@ -364,6 +396,25 @@ function questionAnswer(question: ClaudeQuestion, input: string): string {
       return option.label
     })
     .join(', ')
+}
+
+function permissionDeleteTitle(behavior: TuiPermissionBehavior): string {
+  return `Delete ${
+    behavior === 'allow' ? 'allowed' : behavior === 'deny' ? 'denied' : 'ask'
+  } tool?`
+}
+
+function permissionScopeLabel(scope: ClaudeResourceScope): string {
+  return scope === 'local'
+    ? 'From project local settings'
+    : scope === 'project'
+      ? 'From project settings'
+      : 'From user settings'
+}
+
+function permissionRuleDescription(rule: string): string | undefined {
+  const bashPrefix = /^Bash\((.*?)(?::\*| \*)\)$/u.exec(rule)?.[1]?.trim()
+  return bashPrefix ? `Any Bash command starting with ${bashPrefix}` : undefined
 }
 
 function describeTool(
@@ -444,6 +495,7 @@ export function InteractiveApp({
   slashCommands = EMPTY_SLASH_COMMANDS,
   agents = EMPTY_AGENTS,
   allowDangerouslySkipPermissions = false,
+  additionalDirectories = [],
   diffLoader,
   fileLoader,
   externalEditor = editTuiPrompt,
@@ -454,6 +506,8 @@ export function InteractiveApp({
   suspendProcess = suspendTuiProcess,
   clipboardReader = readTuiClipboard,
   permissionRuleStore,
+  workspaceDirectoryResolver = resolveTuiWorkspaceDirectory,
+  workspaceDirectoryCompleter = completeTuiWorkspaceDirectory,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const width = useTerminalWidth(terminalWidth)
@@ -487,6 +541,7 @@ export function InteractiveApp({
           rule: string
           scope: ClaudeResourceScope
         }) => addTuiPermissionRule({ cwd: display.cwd, ...input }),
+        remove: removeTuiPermissionRule,
       },
     [permissionRuleStore, display.cwd],
   )
@@ -589,6 +644,7 @@ export function InteractiveApp({
     useState<RuntimePreferences>(() => ({
       effort: effort(display.effort),
       permissionMode: permissionMode(display.permissionMode),
+      additionalDirectories: [...new Set(additionalDirectories)],
     }))
   const runtimePreferencesRef = useRef(runtimePreferences)
   const [permission, setPermission] = useState<PendingPermission | null>(null)
@@ -690,6 +746,12 @@ export function InteractiveApp({
     permissionMode: runtimePreferences.permissionMode,
     ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
   }
+  const workspaceDirectories = [
+    display.cwd,
+    ...runtimePreferences.additionalDirectories.filter(
+      (path) => path !== display.cwd,
+    ),
+  ].map((path) => ({ path, original: path === display.cwd }))
   const permissionOptions = useMemo(
     () => [
       ...PERMISSION_OPTIONS,
@@ -1384,6 +1446,7 @@ export function InteractiveApp({
             : { model: preferences.model }),
           effort: preferences.effort,
           permissionMode: preferences.permissionMode,
+          additionalDirectories: preferences.additionalDirectories,
           ...(signal ? { signal } : {}),
         })
       })()
@@ -2118,7 +2181,13 @@ export function InteractiveApp({
       if (activeMenu.kind === 'permission-rule-input') {
         if (key.escape || value === '\u001B') {
           clearComposerInput()
-          updateMenu(null)
+          updateMenu({
+            kind: 'permission-dashboard',
+            tabIndex: 1,
+            selectedIndex: -1,
+            query: '',
+            rules: activeMenu.rules,
+          })
         } else if (key.return) {
           const rule = inputRef.current.trim()
           if (!rule) {
@@ -2132,6 +2201,7 @@ export function InteractiveApp({
               kind: 'permission-scope',
               behavior: activeMenu.behavior,
               rule,
+              rules: activeMenu.rules,
               selectedIndex: 0,
             })
           }
@@ -2141,9 +2211,189 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'workspace-directory-input') {
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu({
+            kind: 'permission-dashboard',
+            tabIndex: 1,
+            selectedIndex: -1,
+            query: '',
+            rules: activeMenu.rules,
+          })
+        } else if (key.tab) {
+          const completion = (async () => {
+            try {
+              updateComposerInput(
+                await workspaceDirectoryCompleter(
+                  inputRef.current,
+                  display.cwd,
+                ),
+              )
+            } catch (error) {
+              warn(error)
+            }
+          })()
+          onTurnChange?.(completion)
+          void completion.finally(() => onTurnChange?.(null))
+        } else if (key.return) {
+          const addition = (async () => {
+            setBusy(true)
+            try {
+              const path = await workspaceDirectoryResolver(
+                inputRef.current,
+                display.cwd,
+              )
+              clearComposerInput()
+              if (path !== display.cwd) {
+                updateRuntimePreferences((current) => ({
+                  ...current,
+                  additionalDirectories: [
+                    ...new Set([...current.additionalDirectories, path]),
+                  ],
+                }))
+                await retireService()
+              }
+              const rules = await permissionStore.load()
+              updateMenu({
+                kind: 'permission-dashboard',
+                tabIndex: 1,
+                selectedIndex: -1,
+                query: '',
+                rules,
+              })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(addition)
+          void addition.finally(() => onTurnChange?.(null))
+        } else {
+          editComposer()
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'workspace-directory-delete') {
+        if (key.escape || value === '\u001B') {
+          updateMenu({
+            kind: 'permission-dashboard',
+            tabIndex: 1,
+            selectedIndex: -1,
+            query: '',
+            rules: activeMenu.rules,
+          })
+          return
+        }
+        if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: key.upArrow ? 0 : 1,
+          })
+          return
+        }
+        const confirmed =
+          (key.return && activeMenu.selectedIndex === 0) ||
+          value.toLowerCase() === 'y' ||
+          value === '1'
+        const declined =
+          (key.return && activeMenu.selectedIndex === 1) ||
+          value.toLowerCase() === 'n' ||
+          value === '2'
+        if (!confirmed && !declined) return
+        if (confirmed) {
+          updateRuntimePreferences((current) => ({
+            ...current,
+            additionalDirectories: current.additionalDirectories.filter(
+              (path) => path !== activeMenu.path,
+            ),
+          }))
+          void retireService()
+        }
+        updateMenu({
+          kind: 'permission-dashboard',
+          tabIndex: 1,
+          selectedIndex: -1,
+          query: '',
+          rules: activeMenu.rules,
+        })
+        return
+      }
+
+      if (activeMenu.kind === 'permission-delete') {
+        if (key.escape || value === '\u001B') {
+          updateMenu({
+            kind: 'permission-dashboard',
+            tabIndex: 1,
+            selectedIndex: -1,
+            query: '',
+            rules: activeMenu.rules,
+          })
+          return
+        }
+        if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: key.upArrow ? 0 : 1,
+          })
+          return
+        }
+        const confirmed =
+          (key.return && activeMenu.selectedIndex === 0) ||
+          value.toLowerCase() === 'y' ||
+          value === '1'
+        const declined =
+          (key.return && activeMenu.selectedIndex === 1) ||
+          value.toLowerCase() === 'n' ||
+          value === '2'
+        if (!confirmed && !declined) return
+        if (declined) {
+          updateMenu({
+            kind: 'permission-dashboard',
+            tabIndex: 1,
+            selectedIndex: -1,
+            query: '',
+            rules: activeMenu.rules,
+          })
+          return
+        }
+        const removal = (async () => {
+          setBusy(true)
+          try {
+            if (!permissionStore.remove)
+              throw new Error('Permission rule removal is unavailable.')
+            await permissionStore.remove(activeMenu.rule)
+            await retireService()
+            const rules = await permissionStore.load()
+            updateMenu({
+              kind: 'permission-dashboard',
+              tabIndex: 1,
+              selectedIndex: -1,
+              query: '',
+              rules,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(removal)
+        void removal.finally(() => onTurnChange?.(null))
+        return
+      }
+
       if (activeMenu.kind === 'permission-scope') {
         if (key.escape || value === '\u001B') {
-          updateMenu(null)
+          updateMenu({
+            kind: 'permission-dashboard',
+            tabIndex: 1,
+            selectedIndex: -1,
+            query: '',
+            rules: activeMenu.rules,
+          })
           return
         }
         if (key.upArrow || key.downArrow) {
@@ -2172,9 +2422,8 @@ export function InteractiveApp({
               const rules = await permissionStore.load()
               updateMenu({
                 kind: 'permission-dashboard',
-                tabIndex:
-                  ['allow', 'ask', 'deny'].indexOf(activeMenu.behavior) + 1,
-                selectedIndex: 0,
+                tabIndex: 1,
+                selectedIndex: -1,
                 query: '',
                 rules,
               })
@@ -2202,7 +2451,7 @@ export function InteractiveApp({
               0,
               Math.min(4, activeMenu.tabIndex + (key.leftArrow ? -1 : 1)),
             ),
-            selectedIndex: 0,
+            selectedIndex: -1,
             query: '',
           })
           return
@@ -2224,43 +2473,74 @@ export function InteractiveApp({
           activeMenu.tabIndex === 0
             ? recentDenied.length
             : activeMenu.tabIndex === 4
-              ? permissionOptions.length
+              ? runtimePreferences.additionalDirectories.length + 1
               : matchingRules.length + 1
         if (key.upArrow || key.downArrow) {
+          if (rowCount === 0) return
+          const nextIndex =
+            activeMenu.selectedIndex < 0
+              ? key.downArrow
+                ? 0
+                : -1
+              : activeMenu.selectedIndex + (key.upArrow ? -1 : 1)
           updateMenu({
             ...activeMenu,
             selectedIndex: Math.max(
-              0,
-              Math.min(
-                Math.max(0, rowCount - 1),
-                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
-              ),
+              -1,
+              Math.min(Math.max(0, rowCount - 1), nextIndex),
             ),
           })
         } else if (key.backspace || key.delete) {
           updateMenu({
             ...activeMenu,
             query: activeMenu.query.slice(0, -1),
-            selectedIndex: 0,
+            selectedIndex: -1,
           })
         } else if (behavior && !key.ctrl && !key.meta && value && printable) {
           updateMenu({
             ...activeMenu,
             query: activeMenu.query + value,
-            selectedIndex: 0,
+            selectedIndex: -1,
           })
+        } else if (key.return && behavior && activeMenu.selectedIndex === 0) {
+          clearComposerInput()
+          updateMenu({
+            kind: 'permission-rule-input',
+            behavior,
+            rules: activeMenu.rules,
+          })
+        } else if (key.return && behavior && activeMenu.selectedIndex > 0) {
+          const rule = matchingRules[activeMenu.selectedIndex - 1]
+          if (rule)
+            updateMenu({
+              kind: 'permission-delete',
+              rule,
+              rules: activeMenu.rules,
+              selectedIndex: 0,
+            })
         } else if (
           key.return &&
-          behavior &&
-          activeMenu.selectedIndex === matchingRules.length
+          activeMenu.tabIndex === 4 &&
+          activeMenu.selectedIndex >= 0
         ) {
-          clearComposerInput()
-          updateMenu({ kind: 'permission-rule-input', behavior })
-        } else if (key.return && activeMenu.tabIndex === 4) {
-          const mode = permissionOptions[activeMenu.selectedIndex]?.mode
-          if (mode) {
-            updateMenu(null)
-            changePermissionMode(mode)
+          const path =
+            runtimePreferences.additionalDirectories[activeMenu.selectedIndex]
+          if (path) {
+            updateMenu({
+              kind: 'workspace-directory-delete',
+              path,
+              rules: activeMenu.rules,
+              selectedIndex: 0,
+            })
+          } else if (
+            activeMenu.selectedIndex ===
+            runtimePreferences.additionalDirectories.length
+          ) {
+            clearComposerInput()
+            updateMenu({
+              kind: 'workspace-directory-input',
+              rules: activeMenu.rules,
+            })
           }
         }
         return
@@ -2535,8 +2815,8 @@ export function InteractiveApp({
           try {
             updateMenu({
               kind: 'permission-dashboard',
-              tabIndex: 0,
-              selectedIndex: 0,
+              tabIndex: 1,
+              selectedIndex: -1,
               query: '',
               rules: await permissionStore.load(),
             })
@@ -2764,17 +3044,86 @@ export function InteractiveApp({
               <Text dimColor>Enter confirms · Esc cancels</Text>
             </DialogFrame>
           ) : menu?.kind === 'permission-rule-input' ? (
+            <Box flexDirection="column">
+              <Text bold>Add {menu.behavior} permission rule</Text>
+              <Text>
+                Permission rules are a tool name, optionally followed by a
+                specifier in parentheses.
+              </Text>
+              <Text>e.g., WebFetch or Bash(ls *)</Text>
+              <Text> </Text>
+              <Box
+                borderStyle={axScreenReader ? undefined : 'round'}
+                paddingX={axScreenReader ? 0 : 1}
+              >
+                <Text {...(input ? {} : { dimColor: true })}>
+                  {input || 'Enter permission rule…'}
+                </Text>
+              </Box>
+              <Text dimColor>Enter to submit · Esc to cancel</Text>
+            </Box>
+          ) : menu?.kind === 'workspace-directory-input' ? (
+            <Box flexDirection="column">
+              <Text bold>Add directory to workspace</Text>
+              <Text>
+                Praxis Code will be able to read files in this directory and
+                make edits when auto-accept edits is on.
+              </Text>
+              <Text> </Text>
+              <Text>Enter the path to the directory:</Text>
+              <Box
+                borderStyle={axScreenReader ? undefined : 'round'}
+                paddingX={axScreenReader ? 0 : 1}
+              >
+                <Text {...(input ? {} : { dimColor: true })}>
+                  {input || 'Directory path…'}
+                </Text>
+              </Box>
+              <Text dimColor>
+                Tab to complete · Enter to add · Esc to cancel
+              </Text>
+            </Box>
+          ) : menu?.kind === 'permission-delete' ? (
             <DialogFrame
-              title="Add a permission rule"
+              title={permissionDeleteTitle(menu.rule.behavior)}
               screenReader={axScreenReader}
             >
-              <Text dimColor>
-                Examples: Bash(npm test:*), Read(./src/**),
-                WebFetch(domain:example.com)
+              <Text>{menu.rule.rule}</Text>
+              {permissionRuleDescription(menu.rule.rule) ? (
+                <Text dimColor>
+                  {permissionRuleDescription(menu.rule.rule)}
+                </Text>
+              ) : null}
+              <Text dimColor>{permissionScopeLabel(menu.rule.scope)}</Text>
+              <Text> </Text>
+              <Text>Are you sure you want to delete this permission rule?</Text>
+              <Text> </Text>
+              <Text inverse={menu.selectedIndex === 0}>
+                {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
               </Text>
-              <Text>› {input}</Text>
-              <Text dimColor>Enter continues to scope · Esc cancels</Text>
+              <Text inverse={menu.selectedIndex === 1}>
+                {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
+              </Text>
+              <Text dimColor>Esc to cancel</Text>
             </DialogFrame>
+          ) : menu?.kind === 'workspace-directory-delete' ? (
+            <Box flexDirection="column">
+              <Text bold>Remove directory from workspace?</Text>
+              <Text> {menu.path}</Text>
+              <Text> </Text>
+              <Text>
+                Praxis Code will no longer have access to files in this
+                directory.
+              </Text>
+              <Text> </Text>
+              <Text inverse={menu.selectedIndex === 0}>
+                {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
+              </Text>
+              <Text inverse={menu.selectedIndex === 1}>
+                {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
+              </Text>
+              <Text dimColor>Enter to confirm · Esc to cancel</Text>
+            </Box>
           ) : menu ? (
             menu.kind === 'help' ? (
               <HelpMenu
@@ -2802,34 +3151,34 @@ export function InteractiveApp({
                 query={menu.query}
                 rules={menu.rules}
                 recentDenied={recentDenied}
-                workspaceModes={permissionOptions.map((option) => ({
-                  label: option.label,
-                  selected: option.mode === runtimePreferences.permissionMode,
-                }))}
+                workspaceDirectories={workspaceDirectories}
                 width={width}
                 screenReader={axScreenReader}
               />
             ) : menu.kind === 'permission-scope' ? (
               <SelectionMenu
-                title="Save permission rule"
-                description={`${menu.behavior}: ${menu.rule}`}
+                title="Where should this rule be saved?"
+                description={`${menu.rule}${
+                  permissionRuleDescription(menu.rule)
+                    ? ` · ${permissionRuleDescription(menu.rule)}`
+                    : ''
+                }`}
                 options={[
                   {
-                    label: 'Local project',
-                    description: 'Save to .claude/settings.local.json.',
+                    label: 'Project settings (local)',
+                    description: 'Saved in .claude/settings.local.json',
                   },
                   {
-                    label: 'Checked-in project',
-                    description: 'Save to .claude/settings.json.',
+                    label: 'Project settings',
+                    description: 'Checked in at .claude/settings.json',
                   },
                   {
-                    label: 'User',
-                    description:
-                      'Save to the Claude config root settings.json.',
+                    label: 'User settings',
+                    description: 'Saved in at ~/.claude/settings.json',
                   },
                 ]}
                 selectedIndex={menu.selectedIndex}
-                footer="↑/↓ select · Enter saves · Esc cancels"
+                footer="Enter to confirm · Esc to cancel"
                 width={width}
                 screenReader={axScreenReader}
               />
@@ -2943,6 +3292,7 @@ export async function runInteractive(options: {
   signal?: AbortSignal
   axScreenReader?: boolean
   allowDangerouslySkipPermissions?: boolean
+  additionalDirectories?: readonly string[]
   display?: TuiDisplayMetadata
   sessionFilter?: (session: SessionSummary) => boolean
   requireSession?: boolean
@@ -3014,6 +3364,9 @@ export async function runInteractive(options: {
         cleanup = closing
       }}
       allowNewSession={!options.requireSession}
+      {...(options.additionalDirectories === undefined
+        ? {}
+        : { additionalDirectories: options.additionalDirectories })}
       {...(resume === undefined ? {} : { resume })}
       {...(options.display === undefined ? {} : { display: options.display })}
       {...(options.axScreenReader ? { axScreenReader: true } : {})}

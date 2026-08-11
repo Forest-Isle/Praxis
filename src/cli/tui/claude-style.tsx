@@ -812,7 +812,7 @@ export function PermissionDashboard({
   query,
   rules,
   recentDenied,
-  workspaceModes,
+  workspaceDirectories,
   width,
   screenReader,
 }: {
@@ -821,7 +821,7 @@ export function PermissionDashboard({
   query: string
   rules: readonly TuiPermissionRule[]
   recentDenied: readonly string[]
-  workspaceModes: readonly { label: string; selected: boolean }[]
+  workspaceDirectories: readonly { path: string; original: boolean }[]
   width: number
   screenReader: boolean
 }) {
@@ -838,16 +838,25 @@ export function PermissionDashboard({
       )
     : []
   const rows =
+    tabIndex === 0 ? recentDenied : matchingRules.map((rule) => rule.rule)
+  const originalWorkspace = workspaceDirectories.find(
+    (directory) => directory.original,
+  )
+  const additionalWorkspaces = workspaceDirectories.filter(
+    (directory) => !directory.original,
+  )
+  const description =
     tabIndex === 0
-      ? recentDenied
-      : tabIndex === 4
-        ? workspaceModes.map(
-            (mode) => `${mode.selected ? '●' : '○'} ${mode.label}`,
-          )
-        : [
-            ...matchingRules.map((rule) => `${rule.rule}  ${rule.scope}`),
-            'Add a new rule…',
-          ]
+      ? recentDenied.length === 0
+        ? 'No recent denials. Commands denied by the auto mode classifier will appear here.'
+        : 'Commands denied by the auto mode classifier appear here.'
+      : tabIndex === 1
+        ? "Praxis Code won't ask before using allowed tools."
+        : tabIndex === 2
+          ? 'Praxis Code will always ask for confirmation before using these tools.'
+          : tabIndex === 3
+            ? 'Praxis Code will reject requests to use denied tools.'
+            : 'Praxis Code can read files in the workspace, and make edits when auto-accept edits is on.'
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       {!screenReader ? (
@@ -863,6 +872,8 @@ export function PermissionDashboard({
           </Text>
         ))}
       </Text>
+      <Text> </Text>
+      <Text> {description}</Text>
       {tabIndex >= 1 && tabIndex <= 3 ? (
         <Box
           borderStyle={screenReader ? undefined : 'round'}
@@ -870,27 +881,51 @@ export function PermissionDashboard({
           marginY={1}
         >
           <Text {...(query ? {} : { dimColor: true })}>
-            ⌕ {query || 'Search rules…'}
+            ⌕ {query || 'Search…'}
           </Text>
         </Box>
       ) : (
         <Text> </Text>
       )}
-      {rows.length === 0 ? (
-        <Text dimColor>
-          {tabIndex === 0 ? '  No recently denied tools.' : '  No entries.'}
-        </Text>
-      ) : (
+      {tabIndex >= 1 && tabIndex <= 3 ? (
+        ['Add a new rule…', ...rows].map((row, index) => (
+          <Text key={`${index}-${row}`} inverse={index === selectedIndex}>
+            {index === selectedIndex ? '❯ ' : '  '}
+            {index + 1}. {row}
+          </Text>
+        ))
+      ) : tabIndex === 4 ? (
+        <>
+          {originalWorkspace ? (
+            <Text>
+              {'    -  '}
+              {originalWorkspace.path} (Original working directory)
+            </Text>
+          ) : null}
+          {additionalWorkspaces.map((directory, index) => (
+            <Text key={directory.path} inverse={selectedIndex === index}>
+              {selectedIndex === index ? '❯ ' : '  '}
+              {index + 1}. {directory.path}
+            </Text>
+          ))}
+          <Text inverse={selectedIndex === additionalWorkspaces.length}>
+            {selectedIndex === additionalWorkspaces.length ? '❯ ' : '  '}
+            {additionalWorkspaces.length + 1}. Add directory…
+          </Text>
+        </>
+      ) : rows.length > 0 ? (
         rows.map((row, index) => (
           <Text key={`${index}-${row}`} inverse={index === selectedIndex}>
             {index === selectedIndex ? '❯ ' : '  '}
-            {row}
+            {index + 1}. {row}
           </Text>
         ))
-      )}
+      ) : null}
       <Text> </Text>
       <Text dimColor>
-        ←/→ tabs · ↑/↓ select · type to search · Enter to choose · Esc to close
+        {selectedIndex >= 0
+          ? '↑/↓ navigate · Enter to select · ←/→ to switch · Esc to cancel'
+          : '←/→ to switch · ↓ to select · Esc to cancel'}
       </Text>
     </Box>
   )

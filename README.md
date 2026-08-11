@@ -92,8 +92,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 - **Built-in tools** — read, write, edit, glob, search, shell, notebook, PDF,
   image, web, scheduled prompts, workflows, and worktrees.
 - **Permission boundary** — local allow/ask/deny rules, safe and bare modes,
-  searchable scoped-rule dashboard, local/project/user atomic settings writes,
-  path confinement, credential redaction, and sanitized child processes.
+  searchable scoped-rule creation/removal, local/project/user atomic settings
+  writes, interactive workspace-directory add/remove controls, path confinement,
+  credential redaction, and sanitized child processes.
 - **Durable local work** — resumable sessions, full-history forks, file
   checkpoints, tasks, foreground/background subagents, and top-level agents.
 - **Claude-compatible ecosystem** — shared instructions, memory, skills,

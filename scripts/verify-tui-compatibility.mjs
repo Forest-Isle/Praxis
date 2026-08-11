@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-tui-compat-'))
 const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
+const sharedRoot = join(root, 'shared-access')
 const installRoot = join(root, 'install')
 const binRoot = join(root, 'bin')
 const claude = join(binRoot, 'claude')
@@ -55,6 +56,7 @@ try {
     mkdir(join(configRoot, 'commands'), { recursive: true }),
     mkdir(join(configRoot, 'agents'), { recursive: true }),
     mkdir(cwd),
+    mkdir(sharedRoot),
     mkdir(installRoot),
     mkdir(binRoot),
   ])
@@ -132,7 +134,7 @@ expect_before timeout {
   puts stderr "TUI compatibility timed out during $phase"
   exit 1
 }
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions --add-dir $env(TUI_SHARED_ROOT)
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect {
   -re {Praxis.*Code.*v${expectedVersionPattern}} {}
@@ -179,8 +181,46 @@ send "/permissions"
 expect -re {Manage allow and deny tool permission rules}
 send "\r"
 expect -re {Recently denied.*Allow.*Ask.*Deny.*Workspace}
+expect -re {Praxis Code won't ask before using allowed tools}
+expect -re {1\. Add a new rule}
+expect -re {2\. Bash\(npm test:\*\)}
+send "\033\[B"
+after 100
+send "\033\[B"
+after 100
+send "\r"
+expect -re {Delete allowed tool}
+expect -re {From user settings}
+send "\r"
+expect -re {1\. Add a new rule}
 send "\033\[C"
-expect -re {Bash\(npm test:\*\).*user}
+after 100
+send "\033\[C"
+after 100
+send "\033\[C"
+expect -re {Original working directory}
+expect -re {shared-access}
+send "\033\[B"
+after 100
+send "\r"
+expect -re {Remove directory from workspace}
+expect -re {shared-access}
+send "\r"
+expect -re {Praxis Code won't ask before using allowed tools}
+send "\033\[C"
+after 100
+send "\033\[C"
+after 100
+send "\033\[C"
+expect -re {Original working directory}
+send "\033\[B"
+after 100
+send "\r"
+expect -re {Add directory to workspace}
+expect -re {Tab to complete.*Enter to add}
+send "\033"
+after 100
+expect -re {Praxis Code won't ask before using allowed tools}
 send "\033"
 after 100
 expect -re {bypass permissions on}
@@ -341,6 +381,7 @@ exit 0
         TUI_EDITOR: editor,
         TUI_NODE: process.execPath,
         TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+        TUI_SHARED_ROOT: sharedRoot,
       },
       timeout: 180_000,
     })
@@ -376,6 +417,11 @@ exit 0
   assert.match(
     await readFile(join(configRoot, 'keybindings.json'), 'utf8'),
     /"ctrl\+v": "chat:imagePaste"/u,
+  )
+  assert.deepEqual(
+    JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8'))
+      .permissions.allow,
+    [],
   )
   console.log('TUI compatibility verification passed')
 } finally {

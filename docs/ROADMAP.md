@@ -919,3 +919,20 @@ partial.
       of the last valid in-memory map
 - [x] focused file/parser/editor/interaction tests, exact live-template compare,
       and installed-package PTY creation/content gate
+
+## Stage 100 - permission dashboard mutation parity
+
+Status: complete for the Claude Code 2.1.208 permission-rule create/delete and
+workspace-directory add/remove contract; exact denied-history behavior and
+broader interactive TTY parity remain partial.
+
+- [x] black-box-confirmed default Allow tab, tab descriptions, search focus,
+      numbered add/rule ordering, scoped save choices, and selected-row footer
+- [x] allowed/ask/denied deletion confirmations with observed titles, Bash
+      prefix descriptions, source-scope labels, Yes/No flow, and atomic shared
+      settings rewrites that retain Claude's empty permission arrays
+- [x] Workspace presentation for the immutable original cwd plus numbered
+      `--add-dir` roots, path-completing directory input, canonical directory
+      validation, and session-local add/remove runtime reloads
+- [x] focused settings/component/Ink tests plus installed-package PTY deletion,
+      CLI `--add-dir`, Workspace removal, and add-directory-dialog gates

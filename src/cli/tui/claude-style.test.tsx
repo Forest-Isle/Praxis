@@ -228,15 +228,21 @@ describe('Claude-style TUI components', () => {
         query="npm"
         rules={rules}
         recentDenied={[]}
-        workspaceModes={[{ label: 'Default', selected: true }]}
+        workspaceDirectories={[
+          { path: '/project', original: true },
+          { path: '/shared', original: false },
+        ]}
         width={100}
         screenReader={false}
       />,
     )
     expect(allow.lastFrame()).toContain('Recently denied')
     expect(allow.lastFrame()).toContain('⌕ npm')
-    expect(allow.lastFrame()).toContain('Bash(npm test:*)  project')
-    expect(allow.lastFrame()).toContain('Add a new rule…')
+    expect(allow.lastFrame()).toContain(
+      "Praxis Code won't ask before using allowed tools.",
+    )
+    expect(allow.lastFrame()).toContain('1. Add a new rule…')
+    expect(allow.lastFrame()).toContain('2. Bash(npm test:*)')
 
     const workspace = render(
       <PermissionDashboard
@@ -245,12 +251,20 @@ describe('Claude-style TUI components', () => {
         query=""
         rules={rules}
         recentDenied={[]}
-        workspaceModes={[{ label: 'Default', selected: true }]}
+        workspaceDirectories={[
+          { path: '/project', original: true },
+          { path: '/shared', original: false },
+        ]}
         width={100}
         screenReader={false}
       />,
     )
-    expect(workspace.lastFrame()).toContain('● Default')
+    expect(workspace.lastFrame()).toContain(
+      '/project (Original working directory)',
+    )
+    expect(workspace.lastFrame()).toContain('/shared')
+    expect(workspace.lastFrame()).toContain('1. /shared')
+    expect(workspace.lastFrame()).toContain('2. Add directory…')
   })
 
   it('shows active thinking in full and expands retained thinking on demand', () => {

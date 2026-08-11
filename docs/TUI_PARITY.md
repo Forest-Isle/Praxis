@@ -121,7 +121,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   temporary prompt-file lifecycle.
 - `SelectionMenu`: reusable model, effort, and permission-rule scope chooser.
 - `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
-  scoped rule search; rule creation; and workspace permission-mode selection.
+  scoped rule search and atomic creation/removal; original/additional workspace
+  directory presentation; and session-local directory add/remove controls.
 - `ContextUsageBlock`: transcript-native usage grid, autocompact reserve, and
   estimates for skills discovered through the shared Claude data plane.
 - `StatusDashboard`: Settings, Status, Config, Usage, and Stats tabs backed by
@@ -147,12 +148,16 @@ is passed from the CLI composition root and never written to shared JSONL.
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
   turn receives the selected provider controls.
 - `/permissions` loads Claude-native permission arrays into Recently denied,
-  Allow, Ask, Deny, and Workspace tabs. Rule search is local; adding a rule
-  chooses `.claude/settings.local.json`, checked-in `.claude/settings.json`, or
-  user `settings.json`, preserves unrelated keys, writes atomically, and retires
-  the active service so the next turn reloads policy. Workspace mode changes
-  still append the native `permission-mode` transcript record. `Shift+Tab`
-  cycles the same local mode set.
+  Allow, Ask, Deny, and Workspace tabs, opening on Allow like 2.1.208. Rule
+  search is local; adding a rule chooses `.claude/settings.local.json`,
+  checked-in `.claude/settings.json`, or user `settings.json`. Selecting an
+  existing rule opens the observed allowed/ask/denied deletion confirmation.
+  Both mutations preserve unrelated settings, use atomic compare-before-commit
+  writes, retain Claude's empty arrays, and retire the active service so the
+  next turn reloads policy. Workspace shows the immutable original cwd and
+  numbered `--add-dir` roots; Tab-completed canonical directories can be added
+  or removed for the current interactive runtime. `Shift+Tab` remains the
+  permission-mode control and writes native `permission-mode` records.
 - The composer edits at its real Unicode code-point cursor. It supports arrow
   movement, Meta-word movement, `Ctrl+A/E/B/F/W/U/K`, backspace/delete,
   multiline `Shift+Enter`, submitted-prompt history, and bounded edit undo with
@@ -242,8 +247,9 @@ is passed from the CLI composition root and never written to shared JSONL.
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, `Ctrl+T` task access, file and agent `@`
-  selection, `Ctrl+G` terminal suspension/edit/redraw, `/keybindings` shared
-  template/editor creation, installed-package `Ctrl+V` text paste,
+  selection, exact permission rule deletion and Workspace add/remove surfaces,
+  `Ctrl+G` terminal suspension/edit/redraw, `/keybindings` shared template/editor
+  creation, installed-package `Ctrl+V` text paste,
   control-code undo, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus
   installed-package `!pwd` execution, provider continuation, and native
@@ -261,8 +267,8 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the full built-in command catalog and its
-command-specific dialogs, permission-rule removal and exact denied-history
-behavior, exact multi-read grouping and historical turn attribution,
+command-specific dialogs, exact denied-history behavior, exact multi-read
+grouping and historical turn attribution,
 remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

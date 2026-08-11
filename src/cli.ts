@@ -1910,13 +1910,21 @@ const defaultDependencies: CliDependencies = {
     signal,
   }) => {
     const { runInteractive } = await import('./cli/interactive.js')
+    const interactiveControls = controls ?? DEFAULT_CLI_CONTROLS
+    const initialAdditionalDirectories = interactiveControls.addDirectories.map(
+      (directory) => realpathSync(resolve(process.cwd(), directory)),
+    )
     return runInteractive({
       factory: {
-        createService: (options) =>
+        createService: ({ additionalDirectories, ...options }) =>
           createDefaultService({
             ...options,
             ...(agent === undefined ? {} : { agent }),
-            ...(controls === undefined ? {} : { controls }),
+            controls: {
+              ...interactiveControls,
+              addDirectories:
+                additionalDirectories ?? interactiveControls.addDirectories,
+            },
             interactive: true,
           }),
         scheduledPrompts: true,
@@ -1927,6 +1935,7 @@ const defaultDependencies: CliDependencies = {
       ...(controls?.allowDangerouslySkipPermissions
         ? { allowDangerouslySkipPermissions: true }
         : {}),
+      additionalDirectories: initialAdditionalDirectories,
       display: {
         version: VERSION,
         cwd: process.cwd(),

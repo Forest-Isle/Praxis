@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   addTuiPermissionRule,
   loadTuiPermissionRules,
+  removeTuiPermissionRule,
 } from './permission-settings.js'
 
 const roots: string[] = []
@@ -83,5 +84,44 @@ describe('TUI permission settings', () => {
         scope: 'project',
       }),
     ).rejects.toThrow('permissions.ask must be an array')
+  })
+
+  it('atomically removes one scoped rule and keeps Claude empty arrays', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-tui-permissions-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await addTuiPermissionRule({
+      configRoot,
+      cwd,
+      behavior: 'allow',
+      rule: 'Bash(npm test:*)',
+      scope: 'local',
+    })
+    const [rule] = await loadTuiPermissionRules(cwd, configRoot)
+    if (!rule) throw new Error('permission fixture was not loaded')
+
+    await removeTuiPermissionRule(rule)
+
+    const settings = JSON.parse(await readFile(rule.path, 'utf8'))
+    expect(settings.permissions.allow).toEqual([])
+    await expect(loadTuiPermissionRules(cwd, configRoot)).resolves.toEqual([])
+  })
+
+  it('leaves settings unchanged when the selected rule is already absent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-tui-permissions-'))
+    roots.push(root)
+    const path = join(root, 'settings.json')
+    const source = '{"permissions":{"deny":[]},"theme":"dark"}\n'
+    await writeFile(path, source)
+
+    await removeTuiPermissionRule({
+      behavior: 'deny',
+      rule: 'Read(./secrets/**)',
+      scope: 'user',
+      path,
+    })
+
+    await expect(readFile(path, 'utf8')).resolves.toBe(source)
   })
 })

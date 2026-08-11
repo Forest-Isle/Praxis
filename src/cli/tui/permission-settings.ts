@@ -127,3 +127,39 @@ export async function addTuiPermissionRule({
   }
   throw new Error(`Settings changed concurrently: ${path}`)
 }
+
+export async function removeTuiPermissionRule(
+  rule: TuiPermissionRule,
+): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const { value: settings, source } = await readSettings(rule.path)
+    const permissions = settings.permissions
+    if (permissions === undefined) return
+    if (!isRecord(permissions))
+      throw new Error(`permissions must be an object: ${rule.path}`)
+    const existing = permissions[rule.behavior]
+    if (existing === undefined) return
+    if (!Array.isArray(existing))
+      throw new Error(
+        `permissions.${rule.behavior} must be an array: ${rule.path}`,
+      )
+    const index = existing.findIndex((value) => value === rule.rule)
+    if (index === -1) return
+    const nextRules = [...existing]
+    nextRules.splice(index, 1)
+    const committed = await writeFileAtomically(
+      rule.path,
+      `${JSON.stringify(
+        {
+          ...settings,
+          permissions: { ...permissions, [rule.behavior]: nextRules },
+        },
+        null,
+        2,
+      )}\n`,
+      { beforeCommit: () => sourceUnchanged(rule.path, source) },
+    )
+    if (committed) return
+  }
+  throw new Error(`Settings changed concurrently: ${rule.path}`)
+}

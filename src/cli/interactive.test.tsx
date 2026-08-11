@@ -1302,7 +1302,7 @@ describe('InteractiveApp', () => {
     })
   })
 
-  it('persists a slash-selected permission mode before the next resume', async () => {
+  it('persists a Shift+Tab-selected permission mode before the next resume', async () => {
     const creates: Array<{ permissionMode: string | undefined }> = []
     const changes: Array<{ sessionId: string; mode: string }> = []
     const factory: InteractiveServiceFactory = {
@@ -1351,18 +1351,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('first')
     app.stdin.write('\r')
     await flush()
-    app.stdin.write('/permissions')
-    app.stdin.write('\r')
-    await flush()
-    expect(app.lastFrame()).toContain('Permissions')
-    app.stdin.write('\u001B[C')
-    app.stdin.write('\u001B[C')
-    app.stdin.write('\u001B[C')
-    app.stdin.write('\u001B[C')
-    await flush()
-    expect(app.lastFrame()).toContain('○ Accept edits')
-    app.stdin.write('\u001B[B')
-    app.stdin.write('\r')
+    app.stdin.write('\u001B[Z')
     await flush()
     await flush()
 
@@ -1408,16 +1397,18 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Recently denied')
-    app.stdin.write('\u001B[C')
+    expect(app.lastFrame()).toContain(
+      "Praxis Code won't ask before using allowed tools.",
+    )
+    app.stdin.write('\u001B[B')
     await flush()
-    expect(app.lastFrame()).toContain('Add a new rule…')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Add a permission rule')
+    expect(app.lastFrame()).toContain('Add allow permission rule')
     app.stdin.write('Bash(npm test:*)')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Save permission rule')
+    expect(app.lastFrame()).toContain('Where should this rule be saved?')
     app.stdin.write('\u001B[B')
     app.stdin.write('\r')
     await flush()
@@ -1425,6 +1416,203 @@ describe('InteractiveApp', () => {
       { behavior: 'allow', rule: 'Bash(npm test:*)', scope: 'project' },
     ])
     expect(app.lastFrame()).toContain('Bash(npm test:*)')
+  })
+
+  it('confirms and removes an existing scoped permission rule', async () => {
+    const rules = [
+      {
+        behavior: 'allow' as const,
+        rule: 'Bash(npm test:*)',
+        scope: 'local' as const,
+        path: '/workspace/.claude/settings.local.json',
+      },
+    ]
+    const removals: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        permissionRuleStore={{
+          async load() {
+            return rules
+          },
+          async add() {},
+          async remove(rule) {
+            removals.push(rule.rule)
+            rules.splice(
+              rules.findIndex((candidate) => candidate.rule === rule.rule),
+              1,
+            )
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/permissions')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('Delete allowed tool?')
+    expect(app.lastFrame()).toContain('Any Bash command starting with npm test')
+    expect(app.lastFrame()).toContain('From project local settings')
+    app.stdin.write('\r')
+    await flush()
+    await flush()
+    expect(removals).toEqual(['Bash(npm test:*)'])
+    expect(app.lastFrame()).toContain('1. Add a new rule…')
+    expect(app.lastFrame()).not.toContain('2. Bash(npm test:*)')
+  })
+
+  it.each([
+    ['ask', 'Delete ask tool?'],
+    ['deny', 'Delete denied tool?'],
+  ] as const)(
+    'uses the observed %s deletion title',
+    async (behavior, title) => {
+      const app = render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          permissionRuleStore={{
+            async load() {
+              return [
+                {
+                  behavior,
+                  rule: 'Read(./fixture/**)',
+                  scope: 'user',
+                  path: '/fixture/settings.json',
+                },
+              ]
+            },
+            async add() {},
+          }}
+        />,
+      )
+
+      app.stdin.write('/permissions')
+      app.stdin.write('\r')
+      await flush()
+      const moves = behavior === 'ask' ? 1 : 2
+      for (let index = 0; index < moves; index += 1) {
+        app.stdin.write('\u001B[C')
+        await flush()
+      }
+      app.stdin.write('\u001B[B')
+      await flush()
+      app.stdin.write('\u001B[B')
+      await flush()
+      app.stdin.write('\r')
+      await flush()
+      expect(app.lastFrame()).toContain(title)
+      expect(app.lastFrame()).toContain('From user settings')
+    },
+  )
+
+  it('shows and extends workspace directories through the permission dashboard', async () => {
+    const creates: Array<readonly string[] | undefined> = []
+    const resolver = vi.fn(async () => '/new-shared')
+    const completer = vi.fn(async () => './new-shared/')
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            creates.push(options.additionalDirectories)
+            return {
+              async run() {
+                return {
+                  sessionId: 'session-1',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'dev', cwd: '/workspace' }}
+        additionalDirectories={['/shared']}
+        workspaceDirectoryResolver={resolver}
+        workspaceDirectoryCompleter={completer}
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add() {},
+        }}
+      />,
+    )
+
+    app.stdin.write('/permissions')
+    app.stdin.write('\r')
+    await flush()
+    for (let index = 0; index < 3; index += 1) {
+      app.stdin.write('\u001B[C')
+      await flush()
+    }
+    expect(app.lastFrame()).toContain('/workspace (Original working directory)')
+    expect(app.lastFrame()).toContain('/shared')
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Remove directory from workspace?')
+    expect(app.lastFrame()).toContain('/shared')
+    app.stdin.write('\r')
+    await flush()
+    for (let index = 0; index < 3; index += 1) {
+      app.stdin.write('\u001B[C')
+      await flush()
+    }
+    expect(app.lastFrame()).not.toContain('/shared')
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Add directory to workspace')
+    app.stdin.write('./new')
+    app.stdin.write('\t')
+    await flush()
+    expect(completer).toHaveBeenCalledWith('./new', '/workspace')
+    expect(app.lastFrame()).toContain('./new-shared/')
+    app.stdin.write('\r')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(resolver).toHaveBeenCalledWith('./new-shared/', '/workspace')
+    expect(app.lastFrame()).toContain('Permissions')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Try "review this project"')
+    app.stdin.write('continue')
+    await flush()
+    expect(app.lastFrame()).toContain('continue')
+    app.stdin.write('\r')
+    await flush()
+    expect(creates).toContainEqual(['/new-shared'])
   })
 
   it('starts a truly empty visible conversation for /clear', async () => {
