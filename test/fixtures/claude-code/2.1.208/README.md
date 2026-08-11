@@ -24,6 +24,9 @@ paths, timestamps, token counts, and human text with deterministic values.
   and attribution metadata.
 - `media-error-session.jsonl`: image result and non-zero Bash error result.
 - `interrupted-session.jsonl`: Ctrl-C tool rejection and interruption message.
+- `memory-import-contract.json`: pinned provider-request observation for inline,
+  escaped-space, recursive, deduplicated/cyclic, code, missing-file, and
+  four-level import boundaries.
 
 They contain no Claude Code source and no user configuration or conversation
 data.

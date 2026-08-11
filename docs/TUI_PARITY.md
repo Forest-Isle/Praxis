@@ -148,6 +148,11 @@ is passed from the CLI composition root and never written to shared JSONL.
   estimates for skills discovered through the shared Claude data plane.
 - `StatusDashboard`: Settings, Status, Config, Usage, and Stats tabs backed by
   the current local runtime state.
+- `MemoryDashboard`: shared user/project instruction files, `@`-imported rows,
+  `autoMemoryEnabled` state, and the canonical project auto-memory folder. The
+  shared compatibility resolver owns recursive imports for both this view and
+  provider context. File edits use the suspended editor lifecycle; the next
+  turn reloads instructions without adding shared transcript fields.
 - `ListDashboard`: shared presentation for `.claude` skills and local
   background task/workflow state.
 - `BtwPanel`: session-local side-question history with bounded answer scrolling,
@@ -323,13 +328,17 @@ is passed from the CLI composition root and never written to shared JSONL.
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, `Ctrl+T` task access, exact permission rule
-  deletion and Workspace add/remove surfaces,
+  deletion and Workspace add/remove surfaces, and `/memory` discovery,
+  loading/final hierarchy, cancellation, and instruction-file no-write checks,
   `Ctrl+G` terminal suspension/edit/redraw, `/keybindings` shared template/editor
   creation, installed-package `Ctrl+V` text paste, and a real zsh
   `Ctrl+Z`/`jobs`/`fg` stop-and-resume cycle with composer retention, plus
   installed-package `!pwd` execution, provider continuation, direct `/add-dir`
   cancellation, `/copy` response output, `/rename`, `/branch`, complete
   `/export` clipboard output, and native transcript tags;
+- pinned Claude 2.1.208 and Praxis provider-request capture proving inline,
+  escaped-space, recursive, depth-four, dedupe/cycle, code/missing boundaries,
+  plus next-turn reload after an imported file changes;
   installed-package `/compact` completion and `/rewind` menu gates, interaction
   cancellation coverage, plus native selective-summary projection and
   preserved-message replay, and installed-package `/cd` relocation plus
@@ -351,7 +360,7 @@ plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
 TUI” claim. Remaining
 black-box-driven work includes the remaining applicable built-in command catalog
-(`/hooks`, `/memory`, and presentation controls), exact denied-history behavior,
+(`/hooks` and presentation controls), exact denied-history behavior,
 and remaining exact command-specific dialogs and layout behavior. Each
 item needs an observed contract and a
 focused TTY or Ink gate before the matrix can return to a complete status.

@@ -20,7 +20,7 @@ describe('TUI memory files', () => {
     roots.push(root)
     const homeDirectory = join(root, 'home')
     const configRoot = join(homeDirectory, '.claude')
-    const cwd = join(root, 'project')
+    const cwd = join(homeDirectory, 'project')
     await Promise.all([
       mkdir(configRoot, { recursive: true }),
       mkdir(join(cwd, '.claude'), { recursive: true }),
@@ -28,13 +28,18 @@ describe('TUI memory files', () => {
     await Promise.all([
       writeFile(
         join(configRoot, 'CLAUDE.md'),
-        '# User\n\n@user-details.md\n\n```md\n@ignored-user.md\n```\n',
+        '# User inline @user-details.md\n@escaped\\ details.md\n```md\n@ignored-user.md\n```\n',
       ),
-      writeFile(join(configRoot, 'user-details.md'), '# User details\n'),
+      writeFile(
+        join(configRoot, 'user-details.md'),
+        '# User details\n@nested.md\n',
+      ),
+      writeFile(join(configRoot, 'nested.md'), '# Nested details\n'),
+      writeFile(join(configRoot, 'escaped details.md'), '# Escaped details\n'),
       writeFile(join(configRoot, 'ignored-user.md'), '# Not imported\n'),
       writeFile(
         join(cwd, 'CLAUDE.md'),
-        '# Project\n\n@.claude/project-details.md\n\n    @.claude/ignored-project.md\n',
+        '# Project inline @.claude/project-details.md\n@missing.md\n',
       ),
       writeFile(
         join(cwd, '.claude', 'project-details.md'),
@@ -53,6 +58,8 @@ describe('TUI memory files', () => {
     expect(result.entries.map((entry) => entry.label)).toEqual([
       'User memory',
       '└ ~/.claude/user-details.md',
+      '└ ~/.claude/nested.md',
+      '└ ~/.claude/escaped details.md',
       'Project memory',
       '└ ./.claude/project-details.md',
       'Open auto-memory folder',
@@ -62,7 +69,7 @@ describe('TUI memory files', () => {
       imported: true,
       scope: 'user',
     })
-    expect(result.entries[3]).toMatchObject({
+    expect(result.entries[5]).toMatchObject({
       annotation: '@-imported',
       imported: true,
       scope: 'project',

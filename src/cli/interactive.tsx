@@ -805,6 +805,10 @@ export function InteractiveApp({
     useState<TuiMemoryFileEntry | null>(null)
   const memoryEditorRequestRef = useRef<TuiMemoryFileEntry | null>(null)
   const memoryMenuGenerationRef = useRef(0)
+  const memoryFolderOpeningRef = useRef<{
+    generation: number
+    index: number
+  } | null>(null)
   const [keybindings, setKeybindings] = useState(defaultTuiKeybindings)
   const keySequenceRef = useRef<{ chord: string; at: number } | null>(null)
   const [processSuspendRequested, setProcessSuspendRequested] = useState(false)
@@ -3060,21 +3064,15 @@ export function InteractiveApp({
         })
         return
       }
-      if (/^[1-9]$/u.test(value)) {
-        updateMenu({
-          ...earlyMenu,
-          selectedIndex: Math.min(
-            Math.max(0, earlyMenu.entries.length - 1),
-            Number(value) - 1,
-          ),
-        })
-        return
-      }
-      if (!key.return) return
-      const entry = earlyMenu.entries[earlyMenu.selectedIndex]
+      const numericIndex = /^[1-9]$/u.test(value) ? Number(value) - 1 : null
+      if (!key.return && numericIndex === null) return
+      const selectedIndex = numericIndex ?? earlyMenu.selectedIndex
+      const entry = earlyMenu.entries[selectedIndex]
       if (!entry) return
       if (entry.kind === 'folder') {
         const generation = earlyMenu.generation
+        if (memoryFolderOpeningRef.current?.generation === generation) return
+        memoryFolderOpeningRef.current = { generation, index: selectedIndex }
         const opening = memoryFolderOpener(entry.path).then(() => {
           if (
             menuRef.current?.kind === 'memory' &&
@@ -3082,12 +3080,21 @@ export function InteractiveApp({
           ) {
             updateMenu({
               ...menuRef.current,
-              openedIndex: earlyMenu.selectedIndex,
+              selectedIndex,
+              openedIndex: selectedIndex,
             })
           }
-        }, warn)
+        })
         onTurnChange?.(opening)
-        void opening.finally(() => onTurnChange?.(null))
+        void opening.catch(warn).finally(() => {
+          if (
+            memoryFolderOpeningRef.current?.generation === generation &&
+            memoryFolderOpeningRef.current.index === selectedIndex
+          ) {
+            memoryFolderOpeningRef.current = null
+            onTurnChange?.(null)
+          }
+        })
       } else {
         updateMenu(null)
         memoryEditorRequestRef.current = entry

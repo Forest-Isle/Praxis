@@ -523,6 +523,14 @@ exit 0
     )
   }
   assert.match(result.stdout, /TUI_FAKE_OK/u)
+  assert.equal(
+    await readFile(join(configRoot, 'CLAUDE.md'), 'utf8'),
+    '# Shared user memory\n',
+  )
+  assert.equal(
+    await readFile(join(cwd, 'CLAUDE.md'), 'utf8'),
+    '# Shared project memory\n',
+  )
   const projectRoot = join(configRoot, 'projects')
   const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
     .map(String)

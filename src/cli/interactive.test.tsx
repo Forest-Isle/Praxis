@@ -2152,10 +2152,12 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B[B')
     app.stdin.write('\u001B[B')
     app.stdin.write('\r')
+    app.stdin.write('\r')
     await flush()
     expect(memoryFolderOpener).toHaveBeenCalledWith(
       '/shared-claude/projects/workspace/memory',
     )
+    expect(memoryFolderOpener).toHaveBeenCalledOnce()
     expect(app.lastFrame()).toContain('Open auto-memory folder ✔')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
@@ -2167,7 +2169,6 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 25))
     await flush()
     app.stdin.write('2')
-    app.stdin.write('\r')
     await new Promise((resolve) => setTimeout(resolve, 25))
     await flush()
     expect(memoryEditor).toHaveBeenCalledWith('/workspace/CLAUDE.md', {
@@ -2178,13 +2179,14 @@ describe('InteractiveApp', () => {
   })
 
   it('does not apply a stale memory-folder completion to a reopened dialog', async () => {
-    let resolveFolderOpen: (() => void) | undefined
+    const folderResolvers: Array<() => void> = []
     const memoryFolderOpener = vi.fn(
       () =>
         new Promise<void>((resolve) => {
-          resolveFolderOpen = resolve
+          folderResolvers.push(resolve)
         }),
     )
+    const onTurnChange = vi.fn()
     const app = render(
       <InteractiveApp
         factory={{
@@ -2213,6 +2215,7 @@ describe('InteractiveApp', () => {
           ],
         })}
         memoryFolderOpener={memoryFolderOpener}
+        onTurnChange={onTurnChange}
       />,
     )
 
@@ -2220,7 +2223,6 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     app.stdin.write('2')
-    app.stdin.write('\r')
     await flush()
     expect(memoryFolderOpener).toHaveBeenCalledOnce()
 
@@ -2229,11 +2231,21 @@ describe('InteractiveApp', () => {
     app.stdin.write('/memory')
     app.stdin.write('\r')
     await flush()
-    resolveFolderOpen?.()
+    app.stdin.write('2')
+    await flush()
+    expect(memoryFolderOpener).toHaveBeenCalledTimes(2)
+
+    folderResolvers[0]?.()
     await flush()
 
     expect(app.lastFrame()).toContain('Open auto-memory folder')
     expect(app.lastFrame()).not.toContain('Open auto-memory folder ✔')
+    expect(onTurnChange.mock.calls.at(-1)?.[0]).not.toBeNull()
+
+    folderResolvers[1]?.()
+    await flush()
+    expect(app.lastFrame()).toContain('Open auto-memory folder ✔')
+    expect(onTurnChange.mock.calls.at(-1)?.[0]).toBeNull()
   })
 
   it('retains the last valid keybindings when editor reload fails', async () => {

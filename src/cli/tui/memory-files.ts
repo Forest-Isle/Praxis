@@ -1,14 +1,7 @@
 import { spawn } from 'node:child_process'
-import { mkdir, readFile, realpath } from 'node:fs/promises'
+import { mkdir, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-} from 'node:path'
+import { basename, isAbsolute, relative, resolve } from 'node:path'
 
 import {
   loadClaudeContextResources,
@@ -51,13 +44,13 @@ export function displayTuiMemoryPath(
 ): string {
   const absolute = resolve(path)
   const home = resolve(homeDirectory)
-  if (isWithin(home, absolute)) {
-    const suffix = relative(home, absolute)
-    return suffix ? `~/${suffix}` : '~'
-  }
   if (isWithin(resolve(cwd), absolute)) {
     const suffix = relative(resolve(cwd), absolute)
     return suffix ? `./${suffix}` : '.'
+  }
+  if (isWithin(home, absolute)) {
+    const suffix = relative(home, absolute)
+    return suffix ? `~/${suffix}` : '~'
   }
   return absolute
 }
@@ -66,77 +59,31 @@ function isMemoryInstruction(resource: ClaudeTextResource): boolean {
   return /^CLAUDE(?:\.local)?\.md$/u.test(basename(resource.path))
 }
 
-function importedPaths(
+function importedEntries(
   resource: ClaudeTextResource,
-  homeDirectory: string,
-): string[] {
-  const paths: string[] = []
-  let fence: { character: string; length: number } | null = null
-  for (const line of resource.content.split(/\r?\n/u)) {
-    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/u.exec(line)
-    if (fence) {
-      if (
-        fenceMatch?.[1]?.[0] === fence.character &&
-        fenceMatch[1].length >= fence.length &&
-        line.slice(fenceMatch[0].length).trim() === ''
-      ) {
-        fence = null
-      }
-      continue
-    }
-    if (fenceMatch?.[1]) {
-      fence = {
-        character: fenceMatch[1][0] ?? '`',
-        length: fenceMatch[1].length,
-      }
-      continue
-    }
-    if (/^(?: {4}|\t)/u.test(line)) continue
-    const match = /^\s*@([^\s]+)\s*$/u.exec(line)
-    if (!match?.[1] || /^https?:\/\//u.test(match[1])) continue
-    paths.push(
-      match[1].startsWith('~/')
-        ? join(homeDirectory, match[1].slice(2))
-        : resolve(dirname(resource.path), match[1]),
-    )
-  }
-  return paths
-}
-
-async function readable(path: string): Promise<boolean> {
-  try {
-    await readFile(path, 'utf8')
-    return true
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-    throw error
-  }
-}
-
-async function importedEntries(
-  resource: ClaudeTextResource,
+  instructions: readonly ClaudeTextResource[],
   cwd: string,
   homeDirectory: string,
   sourceDisplayPath: string,
-): Promise<TuiMemoryFileEntry[]> {
-  const entries: TuiMemoryFileEntry[] = []
-  for (const path of importedPaths(resource, homeDirectory)) {
-    if (!(await readable(path))) continue
-    const canonicalPath = await realpath(path)
-    entries.push({
+): TuiMemoryFileEntry[] {
+  return instructions
+    .filter(
+      (candidate) =>
+        candidate.importRoot !== undefined &&
+        resolve(candidate.importRoot) === resolve(resource.path),
+    )
+    .map((candidate) => ({
       kind: 'file',
-      label: `└ ${displayTuiMemoryPath(canonicalPath, cwd, homeDirectory)}`,
-      path: canonicalPath,
-      displayPath: displayTuiMemoryPath(canonicalPath, cwd, homeDirectory),
+      label: `└ ${displayTuiMemoryPath(candidate.path, cwd, homeDirectory)}`,
+      path: candidate.path,
+      displayPath: displayTuiMemoryPath(candidate.path, cwd, homeDirectory),
       annotation:
         resource.scope === 'user'
           ? `Saved in ${sourceDisplayPath}`
           : '@-imported',
       scope: resource.scope,
-      imported: true,
-    })
-  }
-  return entries
+      imported: true as const,
+    }))
 }
 
 function autoMemorySetting(settings: readonly { value: unknown }[]): boolean {
@@ -171,10 +118,15 @@ export async function loadTuiMemoryFiles({
   ])
   const userPath = resolve(configRoot, 'CLAUDE.md')
   const projectResources = context.instructions.filter(
-    (resource) => resource.scope !== 'user' && isMemoryInstruction(resource),
+    (resource) =>
+      resource.importedFrom === undefined &&
+      resource.scope !== 'user' &&
+      isMemoryInstruction(resource),
   )
   const userResource = context.instructions.find(
-    (resource) => resolve(resource.path) === userPath,
+    (resource) =>
+      resource.importedFrom === undefined &&
+      resolve(resource.path) === userPath,
   )
   const projectPath = resolve(canonicalCwd, 'CLAUDE.md')
   const entries: TuiMemoryFileEntry[] = [
@@ -189,12 +141,13 @@ export async function loadTuiMemoryFiles({
   ]
   if (userResource) {
     entries.push(
-      ...(await importedEntries(
+      ...importedEntries(
         userResource,
+        context.instructions,
         canonicalCwd,
         canonicalHome,
         '~/.claude/CLAUDE.md',
-      )),
+      ),
     )
   }
 
@@ -227,12 +180,13 @@ export async function loadTuiMemoryFiles({
       scope: resource.scope,
     })
     entries.push(
-      ...(await importedEntries(
+      ...importedEntries(
         resource,
+        context.instructions,
         canonicalCwd,
         canonicalHome,
         displayPath,
-      )),
+      ),
     )
   }
 
