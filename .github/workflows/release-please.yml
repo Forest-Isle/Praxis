@@ -48,8 +48,14 @@ jobs:
               --branch "$HEAD_BRANCH" --event workflow_dispatch --limit 20 \
               --json databaseId,headSha | jq -r --arg sha "$HEAD_SHA" \
               '[.[] | select(.headSha == $sha)] | max_by(.databaseId).databaseId // 0')
-            gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" \
-              --ref "$HEAD_BRANCH"
+            if test "$WORKFLOW" = dependency-review.yml; then
+              gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" \
+                --ref "$HEAD_BRANCH" -f base_ref=main \
+                -f head_ref="$HEAD_BRANCH"
+            else
+              gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" \
+                --ref "$HEAD_BRANCH"
+            fi
           done
           AUTO_MERGE=$(jq -r \
             'if .state != "OPEN" then .state elif .autoMergeRequest == null then "disabled" else "enabled" end' \
