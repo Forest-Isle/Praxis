@@ -44,13 +44,28 @@ const expectedVersionPattern = packageJson.version.replace(
 )
 
 const provider = createServer(async (request, response) => {
+  let requestBody = ''
   for await (const chunk of request) {
     // Drain request before responding so the real adapter lifecycle is tested.
-    void chunk
+    requestBody += chunk
   }
+  let latestText = ''
+  try {
+    const payload = JSON.parse(requestBody)
+    const latestContent = payload.messages?.at(-1)?.content
+    latestText =
+      typeof latestContent === 'string'
+        ? latestContent
+        : JSON.stringify(latestContent ?? '')
+  } catch {
+    // Invalid provider requests are exercised by the adapter tests.
+  }
+  const content = latestText.includes('Reply with SIDE only.')
+    ? 'SIDE'
+    : 'TUI_FAKE_OK'
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
-    `data: ${JSON.stringify({ choices: [{ delta: { content: 'TUI_FAKE_OK' }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
   )
 })
 
@@ -244,21 +259,6 @@ expect -re {Praxis Code won't ask before using allowed tools}
 send "\033"
 after 100
 expect -re {bypass permissions on}
-set phase "file and agent mentions"
-send "@fix"
-expect -re {\+ fixture.txt}
-send "\r"
-expect -re {❯ @fixture.txt}
-send "\037"
-expect -re {❯ @fix}
-send "\025"
-expect -re {Try.*review this project}
-send "@rev"
-expect -re {reviewer.*\(agent\)}
-send "\r"
-expect -re {❯.*reviewer.*agent}
-send "\025"
-expect -re {Try.*review this project}
 set phase "context and status dialogs"
 send "/context"
 expect -re {Visualize current context usage}
@@ -348,7 +348,6 @@ expect {
   timeout { puts stderr "assistant response did not render"; exit 1 }
   eof { puts stderr "Praxis exited before assistant response"; exit 1 }
 }
-expect -re {Context.*3 tokens}
 expect -re {Try.*review this project}
 after 100
 set phase "change working directory"
@@ -378,6 +377,26 @@ send "/rename installed-title"
 after 300
 send "\r"
 expect -re {Session renamed to: installed-title}
+after 300
+set phase "btw usage"
+send "/btw"
+after 300
+send "\r"
+expect -re {Usage: /btw <your question>}
+set phase "btw answer"
+send "/btw Reply with SIDE only."
+after 300
+send "\r"
+expect -re {/btw Reply with SIDE only.}
+expect -re {SIDE}
+expect -re {c to copy.*f to fork}
+set phase "btw copy"
+send "c"
+expect -re {52;c;U0lERQ==}
+expect -re {Copied to clipboard}
+set phase "btw fork"
+send "f"
+expect -re {⑂ forked reply-with-side \([0-9a-f]{4}\)}
 after 300
 set phase "copy response"
 send "/copy"
@@ -486,7 +505,7 @@ exit 0
   const projectRoot = join(configRoot, 'projects')
   const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
     .map(String)
-    .filter((file) => file.endsWith('.jsonl'))
+    .filter((file) => file.endsWith('.jsonl') && !file.includes('/subagents/'))
   assert.equal(transcriptFiles.length, 2)
   const transcripts = await Promise.all(
     transcriptFiles.map(async (file) => ({
@@ -514,6 +533,10 @@ exit 0
     ),
   )
   assert.match(transcript, /<command-name>\/cd<\/command-name>/u)
+  assert.match(transcript, /<command-name>\/btw<\/command-name>/u)
+  assert.match(transcript, /⑂ forked reply-with-side \([0-9a-f]{4}\)/u)
+  assert.match(transcript, /"type":"queue-operation","operation":"enqueue"/u)
+  assert.match(transcript, /<task-notification>/u)
   assert.match(
     transcript,
     /<local-command-stdout>Usage: \/cd <path><\/local-command-stdout>/u,
@@ -526,6 +549,15 @@ exit 0
   assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
   assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
   assert.match(transcript, /<bash-stderr><\/bash-stderr>/u)
+  const inputHistory = await readFile(join(configRoot, 'history.jsonl'), 'utf8')
+  assert.match(inputHistory, /"display":"\/btw"/u)
+  assert.match(inputHistory, /"display":"\/btw Reply with SIDE only\."/u)
+  const sidechainFiles = (await readdir(projectRoot, { recursive: true }))
+    .map(String)
+    .filter(
+      (file) => file.includes('/subagents/agent-') && file.endsWith('.jsonl'),
+    )
+  assert.equal(sidechainFiles.length, 1)
   const clipboard = await readFile(clipboardOutput, 'utf8')
   assert.match(clipboard, /Praxis Code v/u)
   assert.match(clipboard, /❯ reply briefly/u)

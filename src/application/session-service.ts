@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
+  appendFile,
   copyFile,
   link,
   lstat,
@@ -186,6 +187,18 @@ export interface SessionRunResult {
   modelUsage?: Readonly<Record<string, ModelUsage>>
 }
 
+export interface SideQuestionResult {
+  sessionId: string
+  text: string
+  usage: ModelUsage
+  costUsd?: number
+}
+
+export interface SideQuestionForkResult {
+  agentId: string
+  name: string
+}
+
 export interface SessionSummary {
   sessionId: string
   name?: string
@@ -300,6 +313,14 @@ export class ClaudeSessionService {
   private readonly worktreeManager: SessionWorktreeManager | null
   private readonly sessionCwds = new Map<string, string>()
   private readonly hostedSubagents = new Set<ClaudeSubagentExecutor>()
+  private readonly hostedSubagentsByRegistry = new WeakMap<
+    ToolRegistry,
+    ClaudeSubagentExecutor
+  >()
+  private readonly backgroundNotificationWrites = new Map<
+    string,
+    Promise<void>
+  >()
   private readonly downloadedFileResourceSessions = new Set<string>()
   private runtimeCwd: string
 
@@ -348,6 +369,8 @@ export class ClaudeSessionService {
     await Promise.all(
       [...this.hostedSubagents].map((executor) => executor.close()),
     )
+    await Promise.resolve()
+    await Promise.all([...this.backgroundNotificationWrites.values()])
     this.hostedSubagents.clear()
     await this.workflowManager?.close()
   }
@@ -526,7 +549,7 @@ export class ClaudeSessionService {
       'Monitor',
       'PushNotification',
     ]
-    return {
+    const hostedRegistry: ToolRegistry = {
       definitions: () => {
         const definitions = interactiveRegistry.definitions()
         return [...definitions].sort((left, right) => {
@@ -541,6 +564,10 @@ export class ClaudeSessionService {
       prepare: (call, context) => interactiveRegistry.prepare(call, context),
       execute: (call, context) => interactiveRegistry.execute(call, context),
     }
+    if (subagentExecutor) {
+      this.hostedSubagentsByRegistry.set(hostedRegistry, subagentExecutor)
+    }
+    return hostedRegistry
   }
 
   async run(
@@ -624,6 +651,148 @@ export class ClaudeSessionService {
       resumeSessionAt,
       command,
     )
+  }
+
+  async answerSideQuestion(
+    sessionId: string | undefined,
+    question: string,
+    signal?: AbortSignal,
+    onDelta?: (delta: string) => void,
+    permissionMode: ClaudePermissionMode = 'default',
+  ): Promise<SideQuestionResult> {
+    const prompt = question.trim()
+    if (!prompt) throw new Error('Side question must not be empty')
+    const activeSessionId = await this.ensureLocalSession(
+      sessionId,
+      permissionMode,
+    )
+    await this.appendInputHistory(`/btw ${prompt}`, activeSessionId)
+    const provider = this.provider()
+    let entries: ClaudeTranscriptEntry[] = []
+    if (sessionId) {
+      const loaded =
+        this.options.sessionPersistence === false
+          ? await this.turnStore(activeSessionId).withLease((lease) =>
+              lease.load(),
+            )
+          : {
+              status: 'completed' as const,
+              value: await this.store(activeSessionId).loadReadOnly(),
+            }
+      if (loaded.status === 'conflict') {
+        throw new Error(`Claude side question conflict: ${loaded.reason}`)
+      }
+      if (loaded.value.entries.length === 0) {
+        throw new Error(`Claude session not found: ${activeSessionId}`)
+      }
+      entries = loaded.value.entries
+      this.restoreWorktree(entries)
+    }
+    const assembledContext = await this.options.contextAssembler?.assemble({
+      cwd: this.activeCwd(),
+    })
+    const messages = [
+      ...(assembledContext?.systemMessages ?? []),
+      ...injectFirstUserMessageContext(
+        [
+          ...projectClaudeModelMessages(entries),
+          { role: 'user' as const, content: prompt },
+        ],
+        assembledContext?.firstUserMessageContext,
+      ),
+    ]
+    const budget = this.contextBudget(provider)
+    if (budget) budget.assertFits(budget.evaluate(messages))
+    let text = ''
+    let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+    for await (const event of provider.complete({
+      messages,
+      ...(this.options.effort ? { effort: this.options.effort } : {}),
+      ...(signal ? { signal } : {}),
+    })) {
+      if (event.type === 'text-delta') {
+        text += event.delta
+        onDelta?.(event.delta)
+      } else if (event.type === 'usage') {
+        usage = event.usage
+      } else if (event.type === 'tool-call') {
+        throw new Error('Side questions cannot call tools; press f to fork')
+      }
+    }
+    const pricing = this.options.pricing?.resolve(
+      provider.model ?? 'praxis/provider',
+    )
+    return {
+      sessionId: activeSessionId,
+      text,
+      usage,
+      ...(pricing ? { costUsd: usageCostUsd(usage, pricing) } : {}),
+    }
+  }
+
+  async forkSideQuestion(
+    sessionId: string,
+    question: string,
+    signal?: AbortSignal,
+  ): Promise<SideQuestionForkResult> {
+    const prompt = question.trim()
+    if (!prompt) throw new Error('Side question must not be empty')
+    const name =
+      prompt
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/gu, '-')
+        .replace(/^-+|-+$/gu, '')
+        .split('-')
+        .filter(Boolean)
+        .slice(0, 3)
+        .join('-')
+        .slice(0, 64) || 'side-question'
+    const registry = this.createHostedToolRegistry(sessionId)
+    const call: ModelToolCall = {
+      id: randomUUID(),
+      name: 'Agent',
+      input: {
+        description: prompt,
+        prompt,
+        subagent_type: 'general-purpose',
+        run_in_background: true,
+        name,
+      },
+    }
+    const context = {
+      cwd: this.activeCwd(),
+      ...(signal ? { signal } : {}),
+    }
+    const prepared = await registry.prepare(call, context)
+    const result = await registry.execute(prepared, context)
+    const agentId = result.nativeToolUseResult?.agentId
+    if (result.isError || typeof agentId !== 'string') {
+      throw new Error(result.content || 'Could not fork side question')
+    }
+    await this.appendSystemLocalCommand(
+      sessionId,
+      'btw',
+      prompt,
+      `⑂ forked ${name} (${agentId.slice(-4)})`,
+    )
+    const executor = this.hostedSubagentsByRegistry.get(registry)
+    if (executor) {
+      void executor
+        .notifications(true)
+        .then(({ messages }) =>
+          this.enqueueBackgroundNotifications(sessionId, messages),
+        )
+        .catch((error: unknown) =>
+          this.options.eventSink?.({
+            type: 'warning',
+            message:
+              error instanceof Error
+                ? error.message
+                : `Could not persist background notification: ${String(error)}`,
+          }),
+        )
+    }
+    return { agentId, name }
   }
 
   async promptSuggestion(
@@ -1040,6 +1209,50 @@ export class ClaudeSessionService {
     })
     if (result.status === 'conflict') {
       throw new Error(`Claude cd usage conflict: ${result.reason}`)
+    }
+  }
+
+  async recordBtwUsage(
+    sessionId: string | undefined,
+    permissionMode: ClaudePermissionMode = 'default',
+  ): Promise<string> {
+    const activeSessionId = await this.ensureLocalSession(
+      sessionId,
+      permissionMode,
+    )
+    await this.appendInputHistory('/btw', activeSessionId)
+    while (true) {
+      const result = await this.turnStore(activeSessionId).withLease(
+        async (lease) => {
+          const snapshot = await lease.load()
+          if (snapshot.entries.length === 0) {
+            throw new Error(`Claude session not found: ${activeSessionId}`)
+          }
+          const entries = this.localCommandEntries(
+            activeSessionId,
+            this.activeCwd(),
+            this.logicalTailUuid(snapshot.tail),
+            'btw',
+            '',
+            'Usage: /btw <your question>',
+          )
+          const leafUuid = entries.at(-1)?.uuid
+          if (typeof leafUuid !== 'string') {
+            throw new Error('Claude btw local command pair is incomplete')
+          }
+          const appended = await lease.appendMany(snapshot.tail, [
+            ...entries,
+            { type: 'last-prompt', leafUuid, sessionId: activeSessionId },
+          ])
+          if (appended.status === 'conflict') {
+            throw new Error(
+              `Claude local command append conflict: ${appended.reason}`,
+            )
+          }
+        },
+      )
+      if (result.status === 'completed') return activeSessionId
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
     }
   }
 
@@ -2943,13 +3156,173 @@ export class ClaudeSessionService {
     }
   }
 
+  private async appendSystemLocalCommand(
+    sessionId: string,
+    command: string,
+    args: string,
+    output: string,
+  ): Promise<void> {
+    while (true) {
+      const result = await this.turnStore(sessionId).withLease(
+        async (lease) => {
+          const snapshot = await lease.load()
+          if (snapshot.entries.length === 0) {
+            throw new Error(`Claude session not found: ${sessionId}`)
+          }
+          const appendResult = await lease.appendMany(
+            snapshot.tail,
+            this.localCommandEntries(
+              sessionId,
+              this.activeCwd(),
+              this.logicalTailUuid(snapshot.tail),
+              command,
+              args,
+              output,
+            ),
+          )
+          if (appendResult.status === 'conflict') {
+            throw new Error(
+              `Claude local command append conflict: ${appendResult.reason}`,
+            )
+          }
+        },
+      )
+      if (result.status === 'completed') return
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+    }
+  }
+
+  private async ensureLocalSession(
+    sessionId: string | undefined,
+    permissionMode: ClaudePermissionMode,
+  ): Promise<string> {
+    if (sessionId) return sessionId
+    this.assertWritable()
+    const createdSessionId = randomUUID()
+    const store = this.turnStore(createdSessionId)
+    const created = await store.create([
+      { type: 'mode', mode: 'normal', sessionId: createdSessionId },
+      {
+        type: 'permission-mode',
+        permissionMode,
+        sessionId: createdSessionId,
+      },
+    ])
+    if (created.status === 'conflict') {
+      throw new Error(`Session ID ${createdSessionId} is already in use`)
+    }
+    this.sessionCwds.set(createdSessionId, this.activeCwd())
+    this.options.interactiveTools?.restore(createdSessionId, [
+      { type: 'mode', mode: 'normal', sessionId: createdSessionId },
+      {
+        type: 'permission-mode',
+        permissionMode,
+        sessionId: createdSessionId,
+      },
+    ])
+    return createdSessionId
+  }
+
+  private async appendInputHistory(
+    display: string,
+    sessionId: string,
+  ): Promise<void> {
+    await mkdir(this.options.configRoot, { recursive: true })
+    await appendFile(
+      join(this.options.configRoot, 'history.jsonl'),
+      `${JSON.stringify({
+        display,
+        pastedContents: {},
+        timestamp: Date.now(),
+        project: this.activeCwd(),
+        sessionId,
+      })}\n`,
+      'utf8',
+    )
+  }
+
+  private async appendBackgroundNotification(
+    sessionId: string,
+    content: string,
+  ): Promise<void> {
+    while (true) {
+      const result = await this.turnStore(sessionId).withLease(
+        async (lease) => {
+          const snapshot = await lease.load()
+          if (snapshot.entries.length === 0) {
+            throw new Error(`Claude session not found: ${sessionId}`)
+          }
+          const timestamp = new Date().toISOString()
+          const entries: ClaudeTranscriptEntry[] = [
+            {
+              type: 'queue-operation',
+              operation: 'enqueue',
+              timestamp,
+              sessionId,
+              content,
+            },
+            {
+              type: 'queue-operation',
+              operation: 'dequeue',
+              timestamp,
+              sessionId,
+            },
+            {
+              parentUuid: this.logicalTailUuid(snapshot.tail),
+              isSidechain: false,
+              promptId: randomUUID(),
+              type: 'user',
+              message: { role: 'user', content },
+              uuid: randomUUID(),
+              timestamp,
+              permissionMode: 'default',
+              origin: { kind: 'task-notification' },
+              promptSource: 'system',
+              userType: 'external',
+              entrypoint: 'cli',
+              cwd: this.activeCwd(),
+              sessionId,
+              version: this.options.claudeVersion,
+              gitBranch: null,
+            },
+          ]
+          const appended = await lease.appendMany(snapshot.tail, entries)
+          if (appended.status === 'conflict') {
+            throw new Error(
+              `Claude background notification append conflict: ${appended.reason}`,
+            )
+          }
+        },
+      )
+      if (result.status === 'completed') return
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+    }
+  }
+
+  private enqueueBackgroundNotifications(
+    sessionId: string,
+    messages: readonly string[],
+  ): Promise<void> {
+    const previous = this.backgroundNotificationWrites.get(sessionId)
+    const queued = (previous ?? Promise.resolve()).then(async () => {
+      for (const message of messages) {
+        await this.appendBackgroundNotification(sessionId, message)
+      }
+    })
+    this.backgroundNotificationWrites.set(sessionId, queued)
+    const cleanup = () => {
+      if (this.backgroundNotificationWrites.get(sessionId) === queued)
+        this.backgroundNotificationWrites.delete(sessionId)
+    }
+    void queued.then(cleanup, cleanup)
+    return queued
+  }
+
   private cdCommandEntries(
     sessionId: string,
     cwd: string,
     parentUuid: string | null,
   ): ClaudeTranscriptEntry[] {
-    const firstUuid = randomUUID()
-    const secondUuid = randomUUID()
     const timestamp = new Date().toISOString()
     const common = {
       isSidechain: false,
@@ -2961,27 +3334,21 @@ export class ClaudeSessionService {
       version: this.options.claudeVersion,
       gitBranch: null,
     }
+    const localCommands = this.localCommandEntries(
+      sessionId,
+      cwd,
+      parentUuid,
+      'cd',
+      cwd,
+      `Moved to ${cwd}`,
+      timestamp,
+    )
+    const secondUuid = localCommands[1]?.uuid
+    if (typeof secondUuid !== 'string') {
+      throw new Error('Claude cd local command pair is incomplete')
+    }
     return [
-      {
-        ...common,
-        type: 'system',
-        subtype: 'local_command',
-        isMeta: false,
-        level: 'info',
-        parentUuid,
-        uuid: firstUuid,
-        content: `<command-name>/cd</command-name>\n            <command-message>cd</command-message>\n            <command-args>${cwd}</command-args>`,
-      },
-      {
-        ...common,
-        type: 'system',
-        subtype: 'local_command',
-        isMeta: false,
-        level: 'info',
-        parentUuid: firstUuid,
-        uuid: secondUuid,
-        content: `<local-command-stdout>Moved to ${cwd}</local-command-stdout>`,
-      },
+      ...localCommands,
       {
         ...common,
         parentUuid: secondUuid,
@@ -2993,6 +3360,54 @@ export class ClaudeSessionService {
         },
         isMeta: true,
         uuid: randomUUID(),
+      },
+    ]
+  }
+
+  private localCommandEntries(
+    sessionId: string,
+    cwd: string,
+    parentUuid: string | null,
+    command: string,
+    args: string,
+    output: string,
+    timestamp: string = new Date().toISOString(),
+  ): ClaudeTranscriptEntry[] {
+    const firstUuid = randomUUID()
+    return [
+      {
+        parentUuid,
+        isSidechain: false,
+        type: 'system',
+        subtype: 'local_command',
+        content: `<command-name>/${command}</command-name>\n            <command-message>${command}</command-message>\n            <command-args>${args}</command-args>`,
+        level: 'info',
+        timestamp,
+        uuid: firstUuid,
+        isMeta: false,
+        userType: 'external',
+        entrypoint: 'cli',
+        cwd,
+        sessionId,
+        version: this.options.claudeVersion,
+        gitBranch: null,
+      },
+      {
+        parentUuid: firstUuid,
+        isSidechain: false,
+        type: 'system',
+        subtype: 'local_command',
+        content: `<local-command-stdout>${output}</local-command-stdout>`,
+        level: 'info',
+        timestamp,
+        uuid: randomUUID(),
+        isMeta: false,
+        userType: 'external',
+        entrypoint: 'cli',
+        cwd,
+        sessionId,
+        version: this.options.claudeVersion,
+        gitBranch: null,
       },
     ]
   }

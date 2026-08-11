@@ -18,6 +18,12 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'btw',
+    description:
+      'Ask a quick side question without adding it to the conversation',
+    source: 'builtin',
+  },
+  {
     name: 'cd',
     description: 'Change the current working directory',
     source: 'builtin',

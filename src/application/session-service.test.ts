@@ -23,6 +23,7 @@ import type {
 } from '../core/runtime.js'
 import { ContextBudget } from '../core/context-budget.js'
 import { AgentRunCancelledError, ModelProviderError } from '../core/runtime.js'
+import { ModelPricingRegistry } from '../core/usage.js'
 import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
@@ -792,6 +793,388 @@ describe('ClaudeSessionService', () => {
     expect(transcript).toContain(
       '<local-command-stdout>Usage: /cd <path></local-command-stdout>',
     )
+  })
+
+  it('answers a side question from session context without changing JSONL', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-btw-'))
+    roots.push(root)
+    const requests: ModelRequest[] = []
+    const responses = ['main context answer', 'side answer']
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        const response = responses.shift()
+        if (!response) throw new Error('Provider response fixture exhausted')
+        yield { type: 'text-delta', delta: response.slice(0, 4) }
+        yield { type: 'text-delta', delta: response.slice(4) }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 7, outputTokens: 3 },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider,
+    })
+    const run = await service.run('remember main context')
+    const sessionFile = resolveClaudePaths({
+      configDir: join(root, 'config'),
+      cwd: root,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const before = await readFile(sessionFile, 'utf8')
+    const deltas: string[] = []
+
+    await expect(
+      service.answerSideQuestion(
+        run.sessionId,
+        'what was the answer?',
+        undefined,
+        (delta) => deltas.push(delta),
+      ),
+    ).resolves.toEqual({
+      sessionId: run.sessionId,
+      text: 'side answer',
+      usage: { inputTokens: 7, outputTokens: 3 },
+    })
+
+    expect(deltas).toEqual(['side', ' answer'])
+    expect(requests[1]?.tools).toBeUndefined()
+    expect(requests[1]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'main context answer',
+        }),
+        { role: 'user', content: 'what was the answer?' },
+      ]),
+    )
+    await expect(readFile(sessionFile, 'utf8')).resolves.toBe(before)
+    const inputHistory = JSON.parse(
+      await readFile(join(root, 'config', 'history.jsonl'), 'utf8'),
+    ) as Record<string, unknown>
+    expect(inputHistory).toMatchObject({
+      display: '/btw what was the answer?',
+      pastedContents: {},
+      project: root,
+      sessionId: run.sessionId,
+    })
+  })
+
+  it('records native bare /btw usage without a provider call', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-btw-usage-'))
+    roots.push(root)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['main answer']),
+    })
+    const run = await service.run('start here')
+
+    await service.recordBtwUsage(run.sessionId)
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: join(root, 'config'),
+        cwd: root,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('<command-name>/btw</command-name>')
+    expect(transcript).toContain(
+      '<local-command-stdout>Usage: /btw <your question></local-command-stdout>',
+    )
+    await expect(
+      readFile(join(root, 'config', 'history.jsonl'), 'utf8'),
+    ).resolves.toContain(`"display":"/btw"`)
+  })
+
+  it('creates a reusable native session for fresh /btw usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-btw-fresh-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['main answer']),
+    })
+
+    const sessionId = await service.recordBtwUsage(
+      undefined,
+      'bypassPermissions',
+    )
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: root,
+      sessionId,
+    })
+    const transcript = (await readFile(paths.sessionFile, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+
+    expect(transcript.slice(0, 2)).toEqual([
+      { type: 'mode', mode: 'normal', sessionId },
+      {
+        type: 'permission-mode',
+        permissionMode: 'bypassPermissions',
+        sessionId,
+      },
+    ])
+    expect(transcript.at(-1)).toMatchObject({
+      type: 'last-prompt',
+      sessionId,
+      leafUuid: transcript.at(-2)?.uuid,
+    })
+    await expect(
+      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
+    ).resolves.toContain(`"sessionId":"${sessionId}"`)
+    await expect(service.resume(sessionId, 'continue')).resolves.toMatchObject({
+      sessionId,
+      text: 'main answer',
+    })
+  })
+
+  it('returns provider cost for a fresh side question', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-btw-cost-'))
+    roots.push(root)
+    const queued = queuedProvider(['side answer'])
+    const provider: ModelProvider = {
+      ...queued,
+      model: 'fixture-side-model',
+    }
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider,
+      pricing: new ModelPricingRegistry({
+        'fixture-side-model': {
+          inputPerMillionUsd: 2,
+          outputPerMillionUsd: 4,
+        },
+      }),
+    })
+
+    const result = await service.answerSideQuestion(undefined, 'question')
+
+    expect(result.sessionId).toMatch(/^[0-9a-f-]{36}$/u)
+    expect(result.costUsd).toBe(0.000014)
+    await expect(
+      readFile(join(root, 'config', 'history.jsonl'), 'utf8'),
+    ).resolves.toContain(`"sessionId":"${result.sessionId}"`)
+  })
+
+  it('forks a /btw question into a native background Agent sidechain', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-btw-fork-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    let calls = 0
+    const events: RuntimeEvent[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        calls += 1
+        yield {
+          type: 'text-delta',
+          delta: calls === 1 ? 'main answer' : 'THIRD',
+        }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 3, outputTokens: 1 },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+      subagentToolNames: ['Agent', 'TaskOutput'],
+      sessionPersistence: true,
+      eventSink: (event) => events.push(event),
+    })
+    const run = await service.run('start here')
+
+    const result = await service.forkSideQuestion(
+      run.sessionId,
+      'Reply with THIRD only.',
+    )
+
+    expect(result.name).toBe('reply-with-third')
+    expect(result.agentId).toMatch(/^a[0-9a-f]+$/u)
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    })
+    const transcript = await readFile(paths.sessionFile, 'utf8')
+    expect(transcript).toContain('<command-name>/btw</command-name>')
+    expect(transcript).toContain(
+      '<command-args>Reply with THIRD only.</command-args>',
+    )
+    expect(transcript).toContain(
+      `⑂ forked reply-with-third (${result.agentId.slice(-4)})`,
+    )
+    await expect(
+      readdir(join(paths.projectRoot, run.sessionId, 'subagents')),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        `agent-${result.agentId}.jsonl`,
+        `agent-${result.agentId}.meta.json`,
+      ]),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(events.filter((event) => event.type === 'warning')).toEqual([])
+    await expect
+      .poll(() => readFile(paths.sessionFile, 'utf8'))
+      .toContain('"type":"queue-operation","operation":"enqueue"')
+    await expect
+      .poll(() => readFile(paths.sessionFile, 'utf8'))
+      .toContain(`<task-id>${result.agentId}</task-id>`)
+    await service.close()
+  })
+
+  it('retries the /btw Agent handoff while a foreground turn owns the lease', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-btw-lease-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    let calls = 0
+    let releaseForeground!: () => void
+    const foregroundGate = new Promise<void>((resolve) => {
+      releaseForeground = resolve
+    })
+    const warnings: RuntimeEvent[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        calls += 1
+        const call = calls
+        if (call === 2) await foregroundGate
+        yield { type: 'text-delta', delta: `answer-${call}` }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 2, outputTokens: 1 },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+      subagentToolNames: ['Agent', 'TaskOutput'],
+      sessionPersistence: true,
+      eventSink: (event) => {
+        if (event.type === 'warning') warnings.push(event)
+      },
+    })
+    const run = await service.run('start here')
+    const foreground = service.resume(run.sessionId, 'hold the lease')
+    await expect.poll(() => calls).toBe(2)
+
+    const fork = service.forkSideQuestion(run.sessionId, 'Background task')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    releaseForeground()
+
+    await expect(foreground).resolves.toMatchObject({ text: 'answer-2' })
+    const forked = await fork
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    await expect
+      .poll(() => readFile(sessionFile, 'utf8'))
+      .toContain(`<command-args>Background task</command-args>`)
+    await expect
+      .poll(() => readFile(sessionFile, 'utf8'))
+      .toContain(`<task-id>${forked.agentId}</task-id>`)
+    expect(warnings).toEqual([])
+    await service.close()
+  })
+
+  it('serializes concurrently completing /btw Agent notifications', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-btw-queue-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    let calls = 0
+    let backgroundStarted = 0
+    let releaseBackground!: () => void
+    const backgroundGate = new Promise<void>((resolve) => {
+      releaseBackground = resolve
+    })
+    const warnings: RuntimeEvent[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        calls += 1
+        if (calls > 1) {
+          backgroundStarted += 1
+          await backgroundGate
+        }
+        yield { type: 'text-delta', delta: `answer-${calls}` }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 2, outputTokens: 1 },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+      subagentToolNames: ['Agent', 'TaskOutput'],
+      sessionPersistence: true,
+      eventSink: (event) => {
+        if (event.type === 'warning') warnings.push(event)
+      },
+    })
+    const run = await service.run('start here')
+    const first = await service.forkSideQuestion(run.sessionId, 'First task')
+    const second = await service.forkSideQuestion(run.sessionId, 'Second task')
+    await expect.poll(() => backgroundStarted).toBe(2)
+
+    releaseBackground()
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    await expect
+      .poll(async () => {
+        const transcript = await readFile(sessionFile, 'utf8')
+        return transcript.match(/"operation":"enqueue"/gu)?.length ?? 0
+      })
+      .toBe(2)
+    const transcript = await readFile(sessionFile, 'utf8')
+    expect(transcript).toContain(`<task-id>${first.agentId}</task-id>`)
+    expect(transcript).toContain(`<task-id>${second.agentId}</task-id>`)
+    expect(warnings).toEqual([])
+    await service.close()
   })
 
   it('rejects a non-directory cwd without changing the active workspace', async () => {

@@ -24,6 +24,7 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'last-prompt',
   'permission-mode',
   'pr-link',
+  'queue-operation',
   'relocated',
   'system',
   'user',
@@ -764,6 +765,17 @@ function validateCompactSummary(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
+  if (entry.type === 'queue-operation') {
+    if (
+      !isNonEmptyString(entry.sessionId) ||
+      !isNonEmptyString(entry.timestamp) ||
+      (entry.operation !== 'enqueue' && entry.operation !== 'dequeue') ||
+      (entry.operation === 'enqueue' && !isNonEmptyString(entry.content))
+    ) {
+      throw new Error('Claude queue-operation entry has invalid metadata')
+    }
+    return
+  }
   if (entry.type === 'relocated') {
     if (
       !isNonEmptyString(entry.sessionId) ||
@@ -868,7 +880,7 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
     }
     if (
       !isNonEmptyString(entry.sessionId) ||
-      !isNonEmptyString(entry.lastPrompt)
+      (entry.lastPrompt !== undefined && !isNonEmptyString(entry.lastPrompt))
     ) {
       throw new Error('Claude last-prompt entry has invalid metadata')
     }

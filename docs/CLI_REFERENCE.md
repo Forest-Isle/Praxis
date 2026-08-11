@@ -45,6 +45,10 @@ praxis logs <agent-id>
 praxis attach <agent-id>
 praxis stop <agent-id>
 
+# Inside the interactive TUI
+/btw Explain this result without changing the conversation
+# Press f in the answer panel to continue it as a background Agent.
+
 # MCP and plugins
 praxis mcp list
 praxis plugin list --available
