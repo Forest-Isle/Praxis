@@ -91,6 +91,8 @@ try {
     join(configRoot, 'agents', 'reviewer.md'),
     '---\nname: reviewer\ndescription: Reviews the shared fixture.\n---\nReview the requested fixture.\n',
   )
+  await writeFile(join(configRoot, 'CLAUDE.md'), '# Shared user memory\n')
+  await writeFile(join(cwd, 'CLAUDE.md'), '# Shared project memory\n')
   await writeFile(
     join(configRoot, 'settings.json'),
     `${JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }, null, 2)}\n`,
@@ -434,6 +436,19 @@ expect -re {Create a branch of the current conversation}
 after 100
 send "\r"
 expect -re {Branched conversation.*new branch}
+set phase "memory dialog"
+send "/memory"
+expect -re {Open a memory file in your editor}
+after 100
+send "\r"
+expect -re {Auto-memory: on}
+expect -re {User memory}
+expect -re {Saved in ~/.claude/CLAUDE.md}
+expect -re {Project memory}
+expect -re {Saved in ./CLAUDE.md}
+expect -re {Open auto-memory folder}
+send "\033"
+expect -re {Cancelled memory editing}
 set phase "first TUI exit"
 send "\003"
 expect -re {Press Ctrl-C again to exit}

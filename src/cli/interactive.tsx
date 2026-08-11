@@ -49,6 +49,7 @@ import {
   ExternalEditorWait,
   HelpMenu,
   ListDashboard,
+  MemoryDashboard,
   MentionPicker,
   PermissionDashboard,
   SelectionMenu,
@@ -61,6 +62,12 @@ import {
   type TuiBtwEntry,
   type TuiDisplayMetadata,
 } from './tui/claude-style.js'
+import {
+  loadTuiMemoryFiles,
+  openTuiMemoryFolder,
+  type TuiMemoryFileEntry,
+  type TuiMemoryFiles,
+} from './tui/memory-files.js'
 import {
   loadGitDiff,
   visiblePatchLines,
@@ -291,6 +298,15 @@ interface InteractiveAppProps {
     path: string,
     options: TuiEditorOptions,
   ) => Promise<{ editorName: string }>
+  memoryFilesLoader?: (
+    configRoot: string,
+    cwd: string,
+  ) => Promise<TuiMemoryFiles>
+  memoryEditor?: (
+    path: string,
+    options: TuiEditorOptions,
+  ) => Promise<{ editorName: string }>
+  memoryFolderOpener?: (path: string) => Promise<void>
   suspendProcess?: () => void | Promise<void>
   clipboardReader?: () => Promise<TuiClipboardContent>
   clipboardWriter?: (text: string) => Promise<void>
@@ -444,6 +460,15 @@ type InteractiveMenu =
       direction: 'from' | 'to'
     }
   | { kind: 'status'; tabIndex: number }
+  | {
+      kind: 'memory'
+      generation: number
+      loading: boolean
+      autoMemoryEnabled: boolean
+      entries: TuiMemoryFiles['entries']
+      selectedIndex: number
+      openedIndex: number | null
+    }
   | {
       kind: 'list'
       title: string
@@ -669,6 +694,10 @@ export function InteractiveApp({
   keybindingsFile = ensureTuiKeybindingsFile,
   keybindingsLoader = loadTuiKeybindings,
   keybindingsEditor = openTuiEditorFile,
+  memoryFilesLoader = (configRoot, cwd) =>
+    loadTuiMemoryFiles({ configRoot, cwd }),
+  memoryEditor = openTuiEditorFile,
+  memoryFolderOpener = openTuiMemoryFolder,
   suspendProcess = suspendTuiProcess,
   clipboardReader = readTuiClipboard,
   clipboardWriter = writeTuiClipboard,
@@ -772,6 +801,10 @@ export function InteractiveApp({
     prompt: string
   } | null>(null)
   const [keybindingsEditing, setKeybindingsEditing] = useState(false)
+  const [memoryEditorRequest, setMemoryEditorRequest] =
+    useState<TuiMemoryFileEntry | null>(null)
+  const memoryEditorRequestRef = useRef<TuiMemoryFileEntry | null>(null)
+  const memoryMenuGenerationRef = useRef(0)
   const [keybindings, setKeybindings] = useState(defaultTuiKeybindings)
   const keySequenceRef = useRef<{ chord: string; at: number } | null>(null)
   const [processSuspendRequested, setProcessSuspendRequested] = useState(false)
@@ -1216,6 +1249,35 @@ export function InteractiveApp({
     onTurnChange?.(editing)
     void editing.finally(() => onTurnChange?.(null))
   }, [keybindingsEditing])
+
+  useEffect(() => {
+    if (memoryEditorRequest === null) return
+    const editing = (async () => {
+      try {
+        await waitUntilRenderFlush()
+        let editorName = 'your editor'
+        await suspendTerminal(async () => {
+          const editor = await memoryEditor(memoryEditorRequest.path, {
+            cwd: runtimeCwdRef.current,
+            ...(signal === undefined ? {} : { signal }),
+          })
+          editorName = editor.editorName
+        })
+        append({
+          kind: 'local-result',
+          text: `Opened memory file at ${memoryEditorRequest.displayPath}\n\n  ▎ Using ${editorName}. To change editor, set $EDITOR or $VISUAL environment variable.`,
+        })
+        await retireService()
+      } catch (error) {
+        warn(error)
+      } finally {
+        memoryEditorRequestRef.current = null
+        setMemoryEditorRequest(null)
+      }
+    })()
+    onTurnChange?.(editing)
+    void editing.finally(() => onTurnChange?.(null))
+  }, [memoryEditorRequest])
 
   useEffect(() => {
     if (!processSuspendRequested) return
@@ -2977,7 +3039,69 @@ export function InteractiveApp({
       return
     }
 
-    if (externalEditorRequest !== null || keybindingsEditing) return
+    const earlyMenu = menuRef.current
+    if (earlyMenu?.kind === 'memory') {
+      if (key.escape || value === '\u001B') {
+        updateMenu(null)
+        append({ kind: 'local-result', text: 'Cancelled memory editing' })
+        return
+      }
+      if (earlyMenu.loading) return
+      if (key.upArrow || key.downArrow) {
+        updateMenu({
+          ...earlyMenu,
+          selectedIndex: Math.max(
+            0,
+            Math.min(
+              Math.max(0, earlyMenu.entries.length - 1),
+              earlyMenu.selectedIndex + (key.upArrow ? -1 : 1),
+            ),
+          ),
+        })
+        return
+      }
+      if (/^[1-9]$/u.test(value)) {
+        updateMenu({
+          ...earlyMenu,
+          selectedIndex: Math.min(
+            Math.max(0, earlyMenu.entries.length - 1),
+            Number(value) - 1,
+          ),
+        })
+        return
+      }
+      if (!key.return) return
+      const entry = earlyMenu.entries[earlyMenu.selectedIndex]
+      if (!entry) return
+      if (entry.kind === 'folder') {
+        const generation = earlyMenu.generation
+        const opening = memoryFolderOpener(entry.path).then(() => {
+          if (
+            menuRef.current?.kind === 'memory' &&
+            menuRef.current.generation === generation
+          ) {
+            updateMenu({
+              ...menuRef.current,
+              openedIndex: earlyMenu.selectedIndex,
+            })
+          }
+        }, warn)
+        onTurnChange?.(opening)
+        void opening.finally(() => onTurnChange?.(null))
+      } else {
+        updateMenu(null)
+        memoryEditorRequestRef.current = entry
+        setMemoryEditorRequest(entry)
+      }
+      return
+    }
+
+    if (
+      externalEditorRequest !== null ||
+      keybindingsEditing ||
+      memoryEditorRequestRef.current !== null
+    )
+      return
 
     if (clipboardPendingRef.current > 0) {
       if (isKeybinding('chat:imagePaste')) pasteClipboard()
@@ -4004,6 +4128,53 @@ export function InteractiveApp({
         })
       } else if (prompt === '/keybindings') {
         setKeybindingsEditing(true)
+      } else if (prompt === '/memory') {
+        append({ kind: 'user', text: prompt })
+        const generation = ++memoryMenuGenerationRef.current
+        updateMenu({
+          kind: 'memory',
+          generation,
+          loading: true,
+          autoMemoryEnabled: true,
+          entries: [],
+          selectedIndex: 0,
+          openedIndex: null,
+        })
+        const loading = (async () => {
+          setBusy(true)
+          try {
+            const files = await memoryFilesLoader(
+              keybindingsRoot,
+              runtimeCwdRef.current,
+            )
+            if (
+              menuRef.current?.kind === 'memory' &&
+              menuRef.current.generation === generation
+            ) {
+              updateMenu({
+                kind: 'memory',
+                generation,
+                loading: false,
+                autoMemoryEnabled: files.autoMemoryEnabled,
+                entries: files.entries,
+                selectedIndex: 0,
+                openedIndex: null,
+              })
+            }
+          } catch (error) {
+            if (
+              menuRef.current?.kind === 'memory' &&
+              menuRef.current.generation === generation
+            ) {
+              updateMenu(null)
+              warn(error)
+            }
+          } finally {
+            if (memoryMenuGenerationRef.current === generation) setBusy(false)
+          }
+        })()
+        onTurnChange?.(loading)
+        void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/add-dir') {
         openWorkspaceDirectoryInput()
       } else if (btwCommand) {
@@ -4205,7 +4376,9 @@ export function InteractiveApp({
             detailedTranscript={thinkingExpanded}
             screenReader={axScreenReader}
           />
-          {externalEditorRequest !== null || keybindingsEditing ? (
+          {externalEditorRequest !== null ||
+          keybindingsEditing ||
+          memoryEditorRequest !== null ? (
             <ExternalEditorWait screenReader={axScreenReader} />
           ) : permission ? (
             <DialogFrame
@@ -4570,6 +4743,16 @@ export function InteractiveApp({
                 }
                 commandCount={allSlashCommands.length}
                 detailedTranscript={thinkingExpanded}
+                width={width}
+                screenReader={axScreenReader}
+              />
+            ) : menu.kind === 'memory' ? (
+              <MemoryDashboard
+                autoMemoryEnabled={menu.autoMemoryEnabled}
+                entries={menu.entries}
+                selectedIndex={menu.selectedIndex}
+                openedIndex={menu.openedIndex}
+                loading={menu.loading}
                 width={width}
                 screenReader={axScreenReader}
               />

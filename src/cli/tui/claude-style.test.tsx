@@ -11,6 +11,7 @@ import {
   FilePicker,
   HelpMenu,
   ListDashboard,
+  MemoryDashboard,
   MarkdownText,
   MentionPicker,
   PermissionDashboard,
@@ -33,6 +34,57 @@ const display = {
 }
 
 describe('Claude-style TUI components', () => {
+  it('renders the observed memory file dialog and screen-reader branch', () => {
+    const entries = [
+      {
+        kind: 'file' as const,
+        label: 'User memory',
+        path: '/home/test/.claude/CLAUDE.md',
+        displayPath: '~/.claude/CLAUDE.md',
+        annotation: 'Saved in ~/.claude/CLAUDE.md',
+        scope: 'user' as const,
+      },
+      {
+        kind: 'folder' as const,
+        label: 'Open auto-memory folder',
+        path: '/memory',
+        displayPath: '/memory',
+        scope: 'project' as const,
+      },
+    ]
+    const app = render(
+      <MemoryDashboard
+        autoMemoryEnabled
+        entries={entries}
+        selectedIndex={1}
+        openedIndex={1}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Memory')
+    expect(frame).toContain('Auto-memory: on')
+    expect(frame).toContain('1. User memory')
+    expect(frame).toContain('Saved in ~/.claude/CLAUDE.md')
+    expect(frame).toContain('2. Open auto-memory folder ✔')
+    expect(frame).toContain('https://code.claude.com/docs/en/memory')
+    expect(frame.split('\n')[0]).toBe('─'.repeat(100))
+
+    const accessible = render(
+      <MemoryDashboard
+        autoMemoryEnabled={false}
+        entries={entries.slice(0, 1)}
+        selectedIndex={0}
+        openedIndex={null}
+        width={40}
+        screenReader
+      />,
+    )
+    expect(accessible.lastFrame()).toContain('Auto-memory: off')
+    expect(accessible.lastFrame()).not.toContain('────')
+  })
+
   it('renders the wide welcome hierarchy and local identity', () => {
     const app = render(<WelcomePanel display={display} width={100} />)
     const frame = app.lastFrame() ?? ''

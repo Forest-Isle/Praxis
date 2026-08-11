@@ -6,6 +6,7 @@ import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import { composerEditorSegments } from './composer-editor.js'
 import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
 import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
+import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'
 
@@ -1149,6 +1150,63 @@ export function ListDashboard({
       )}
       <Text> </Text>
       <Text dimColor>↑/↓ to select · Esc to close</Text>
+    </Box>
+  )
+}
+
+export function MemoryDashboard({
+  autoMemoryEnabled,
+  entries,
+  selectedIndex,
+  openedIndex,
+  loading = false,
+  width,
+  screenReader,
+}: {
+  autoMemoryEnabled: boolean
+  entries: readonly TuiMemoryFileEntry[]
+  selectedIndex: number
+  openedIndex: number | null
+  loading?: boolean
+  width: number
+  screenReader: boolean
+}) {
+  const panelWidth = Math.min(100, width)
+  return (
+    <Box flexDirection="column" width={panelWidth}>
+      {!screenReader ? (
+        <Text color="cyan">{'─'.repeat(panelWidth)}</Text>
+      ) : null}
+      <Text bold> Memory</Text>
+      <Text> </Text>
+      {loading ? (
+        <Text dimColor> ✶ Loading memory files…</Text>
+      ) : (
+        <>
+          <Text> Auto-memory: {autoMemoryEnabled ? 'on' : 'off'}</Text>
+          <Text> </Text>
+          {entries.map((entry, index) => (
+            <Box key={`${entry.kind}-${entry.path}`}>
+              <Box width={Math.max(24, Math.min(52, panelWidth - 28))}>
+                <Text inverse={index === selectedIndex}>
+                  {index === selectedIndex ? '❯ ' : '  '}
+                  {index + 1}. {entry.label}
+                  {openedIndex === index ? ' ✔' : ''}
+                </Text>
+              </Box>
+              {entry.annotation ? (
+                <Text dimColor>{entry.annotation}</Text>
+              ) : null}
+            </Box>
+          ))}
+        </>
+      )}
+      <Text> </Text>
+      <Text dimColor> Learn more: https://code.claude.com/docs/en/memory</Text>
+      <Text> </Text>
+      <Text dimColor italic>
+        Enter to confirm · Esc to cancel
+      </Text>
     </Box>
   )
 }

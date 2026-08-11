@@ -2085,6 +2085,157 @@ describe('InteractiveApp', () => {
     expect(serviceCreations).toBe(0)
   })
 
+  it('loads, navigates, opens, and edits shared memory files without a model turn', async () => {
+    const memoryFilesLoader = vi.fn(async () => ({
+      autoMemoryEnabled: true,
+      entries: [
+        {
+          kind: 'file' as const,
+          label: 'User memory',
+          path: '/shared-claude/CLAUDE.md',
+          displayPath: '~/.claude/CLAUDE.md',
+          annotation: 'Saved in ~/.claude/CLAUDE.md',
+          scope: 'user' as const,
+        },
+        {
+          kind: 'file' as const,
+          label: 'Project memory',
+          path: '/workspace/CLAUDE.md',
+          displayPath: './CLAUDE.md',
+          annotation: 'Saved in ./CLAUDE.md',
+          scope: 'project' as const,
+        },
+        {
+          kind: 'folder' as const,
+          label: 'Open auto-memory folder',
+          path: '/shared-claude/projects/workspace/memory',
+          displayPath: '/shared-claude/projects/workspace/memory',
+          scope: 'project' as const,
+        },
+      ],
+    }))
+    const memoryEditor = vi.fn(async () => ({ editorName: 'Fixture editor' }))
+    const memoryFolderOpener = vi.fn(async () => undefined)
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'dev', cwd: '/workspace' }}
+        keybindingsConfigRoot="/shared-claude"
+        memoryFilesLoader={memoryFilesLoader}
+        memoryEditor={memoryEditor}
+        memoryFolderOpener={memoryFolderOpener}
+      />,
+    )
+
+    app.stdin.write('/mem')
+    await flush()
+    expect(app.lastFrame()).toContain('/memory')
+    expect(app.lastFrame()).toContain('Open a memory file in your editor')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\r')
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    await flush()
+    expect(memoryFilesLoader).toHaveBeenCalledWith(
+      '/shared-claude',
+      '/workspace',
+    )
+    expect(app.lastFrame()).toContain('Auto-memory: on')
+    expect(app.lastFrame()).toContain('1. User memory')
+    expect(app.lastFrame()).toContain('3. Open auto-memory folder')
+
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(memoryFolderOpener).toHaveBeenCalledWith(
+      '/shared-claude/projects/workspace/memory',
+    )
+    expect(app.lastFrame()).toContain('Open auto-memory folder ✔')
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Cancelled memory editing')
+
+    app.stdin.write('/memory')
+    app.stdin.write('\r')
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    await flush()
+    app.stdin.write('2')
+    app.stdin.write('\r')
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    await flush()
+    expect(memoryEditor).toHaveBeenCalledWith('/workspace/CLAUDE.md', {
+      cwd: '/workspace',
+    })
+    expect(app.lastFrame()).toContain('Opened memory file at ./CLAUDE.md')
+    expect(app.lastFrame()).toContain('Using Fixture editor')
+  })
+
+  it('does not apply a stale memory-folder completion to a reopened dialog', async () => {
+    let resolveFolderOpen: (() => void) | undefined
+    const memoryFolderOpener = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFolderOpen = resolve
+        }),
+    )
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        memoryFilesLoader={async () => ({
+          autoMemoryEnabled: true,
+          entries: [
+            {
+              kind: 'file',
+              label: 'User memory',
+              path: '/shared-claude/CLAUDE.md',
+              displayPath: '~/.claude/CLAUDE.md',
+              scope: 'user',
+            },
+            {
+              kind: 'folder',
+              label: 'Open auto-memory folder',
+              path: '/shared-claude/projects/workspace/memory',
+              displayPath: '/shared-claude/projects/workspace/memory',
+              scope: 'project',
+            },
+          ],
+        })}
+        memoryFolderOpener={memoryFolderOpener}
+      />,
+    )
+
+    app.stdin.write('/memory')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('2')
+    app.stdin.write('\r')
+    await flush()
+    expect(memoryFolderOpener).toHaveBeenCalledOnce()
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    app.stdin.write('/memory')
+    app.stdin.write('\r')
+    await flush()
+    resolveFolderOpen?.()
+    await flush()
+
+    expect(app.lastFrame()).toContain('Open auto-memory folder')
+    expect(app.lastFrame()).not.toContain('Open auto-memory folder ✔')
+  })
+
   it('retains the last valid keybindings when editor reload fails', async () => {
     const retained = new Map([
       [
