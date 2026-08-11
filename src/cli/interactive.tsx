@@ -228,6 +228,7 @@ export interface InteractiveServiceFactory {
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
+    hooksOnly?: boolean
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
     approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
     onElicitation?: (
@@ -4320,6 +4321,7 @@ export function InteractiveApp({
             localService = await factory.createService({
               eventSink: handleEvent,
               requireProvider: false,
+              hooksOnly: true,
               ...(preferences.model === undefined
                 ? {}
                 : { model: preferences.model }),

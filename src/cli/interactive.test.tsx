@@ -439,12 +439,19 @@ describe('InteractiveApp', () => {
       },
     }
     const original = JSON.stringify(settings)
-    const creations: Array<{ requireProvider: boolean; cwd?: string }> = []
+    const creations: Array<{
+      requireProvider: boolean
+      hooksOnly?: boolean
+      cwd?: string
+    }> = []
     let closes = 0
     const factory: InteractiveServiceFactory = {
       async createService(options) {
         creations.push({
           requireProvider: options.requireProvider,
+          ...(options.hooksOnly === undefined
+            ? {}
+            : { hooksOnly: options.hooksOnly }),
           ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         })
         return {
@@ -518,18 +525,29 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).not.toContain('This menu is read-only')
     expect(JSON.stringify(settings)).toBe(original)
     expect(creations).toEqual([
-      { requireProvider: false, cwd: '/fixture/workspace' },
+      {
+        requireProvider: false,
+        hooksOnly: true,
+        cwd: '/fixture/workspace',
+      },
     ])
     expect(closes).toBe(1)
   })
 
   it('reloads provider-free hook projections after cwd and plugin changes', async () => {
-    const creations: Array<{ requireProvider: boolean; cwd?: string }> = []
+    const creations: Array<{
+      requireProvider: boolean
+      hooksOnly?: boolean
+      cwd?: string
+    }> = []
     let hookGeneration = 0
     const factory: InteractiveServiceFactory = {
       async createService(options) {
         creations.push({
           requireProvider: options.requireProvider,
+          ...(options.hooksOnly === undefined
+            ? {}
+            : { hooksOnly: options.hooksOnly }),
           ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         })
         if (!options.requireProvider) {
@@ -626,9 +644,21 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('3 hooks configured')
 
     expect(creations.filter((creation) => !creation.requireProvider)).toEqual([
-      { requireProvider: false, cwd: '/fixture/initial' },
-      { requireProvider: false, cwd: '/fixture/next' },
-      { requireProvider: false, cwd: '/fixture/next' },
+      {
+        requireProvider: false,
+        hooksOnly: true,
+        cwd: '/fixture/initial',
+      },
+      {
+        requireProvider: false,
+        hooksOnly: true,
+        cwd: '/fixture/next',
+      },
+      {
+        requireProvider: false,
+        hooksOnly: true,
+        cwd: '/fixture/next',
+      },
     ])
   })
 

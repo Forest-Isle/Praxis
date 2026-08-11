@@ -6,10 +6,7 @@ import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import { composerEditorSegments } from './composer-editor.js'
 import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
 import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
-import {
-  TUI_HOOK_MENU,
-  type TuiHookConfiguration,
-} from './hook-settings.js'
+import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { TuiPermissionRule } from './permission-settings.js'
 import type { TuiSlashCommand } from './slash-commands.js'

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
+  access,
   chmod,
   lstat,
   mkdtemp,
@@ -28,7 +29,17 @@ const movedCwd = join(root, 'moved-work')
 const sharedRoot = join(root, 'shared-access')
 const installRoot = join(root, 'install')
 const binRoot = join(root, 'bin')
-const claude = join(binRoot, 'claude')
+const claude = '/tmp/praxis-claude-pin-21208/node_modules/.bin/claude'
+const pluginRoot = join(
+  configRoot,
+  'plugins',
+  'cache',
+  'inline',
+  'hooks-fixture',
+  '1.0.0',
+)
+const pluginHooks = join(pluginRoot, 'hooks', 'hooks.json')
+const pluginReloader = join(binRoot, 'reload-plugin.mjs')
 const editor = join(binRoot, 'editor-wrapper')
 const osascript = join(binRoot, 'osascript')
 const pbpaste = join(binRoot, 'pbpaste')
@@ -101,6 +112,42 @@ async function snapshotSharedTrees(roots) {
   return snapshot
 }
 
+async function sharedTreeSnapshot() {
+  return snapshotSharedTrees({
+    config: configRoot,
+    project: cwd,
+    movedProject: movedCwd,
+  })
+}
+
+function terminalContract(output) {
+  const oscSequence = new RegExp(
+    // eslint-disable-next-line no-control-regex -- PTY captures require ANSI stripping.
+    '\\u001B\\][^\\u0007]*(?:\\u0007|\\u001B\\\\)',
+    'gu',
+  )
+  const ansiSequence = new RegExp(
+    // eslint-disable-next-line no-control-regex -- PTY captures require ANSI stripping.
+    '\\u001B(?:\\[[0-?]*[ -/]*[@-~]|\\([A-Z0-9]|[=>])',
+    'giu',
+  )
+  const text = output
+    .replaceAll(oscSequence, ' ')
+    .replaceAll(ansiSequence, ' ')
+    .replaceAll(/\s+/gu, '')
+  return {
+    hookCount: /4hooksconfigured?/u.test(text),
+    user: /\[User\].*01-user/u.test(text),
+    project: /\[Project\].*02-project/u.test(text),
+    local: /\[Local\].*03-local/u.test(text),
+    plugin: /\[Plugin\].*04-plugin/u.test(text),
+    command: /\[command\].*Usercommand/u.test(text),
+    prompt: /\[prompt\].*Projectprompt/u.test(text),
+    agent: /\[agent\].*Localagent/u.test(text),
+    http: /\[http\].*https:\/\/fixture\.test\/plugin/u.test(text),
+  }
+}
+
 const provider = createServer(async (request, response) => {
   let requestBody = ''
   for await (const chunk of request) {
@@ -133,16 +180,24 @@ const provider = createServer(async (request, response) => {
 })
 
 try {
+  await access(claude)
+  const { stdout: claudeVersion } = await execFileAsync(claude, ['--version'])
+  assert.match(claudeVersion, /^2\.1\.208\b/u)
   await Promise.all([
     mkdir(configRoot, { recursive: true }),
     mkdir(join(configRoot, 'commands'), { recursive: true }),
     mkdir(join(configRoot, 'agents'), { recursive: true }),
-    mkdir(cwd),
-    mkdir(movedCwd),
+    mkdir(cwd, { recursive: true }),
+    mkdir(movedCwd, { recursive: true }),
     mkdir(sharedRoot),
     mkdir(installRoot),
     mkdir(binRoot),
+    mkdir(join(pluginRoot, '.claude-plugin'), { recursive: true }),
+    mkdir(join(pluginRoot, 'hooks'), { recursive: true }),
+    mkdir(join(cwd, '.claude'), { recursive: true }),
+    mkdir(join(movedCwd, '.claude'), { recursive: true }),
   ])
+  const canonicalCwd = await realpath(cwd)
   await writeFile(
     join(configRoot, 'commands', 'review.md'),
     '---\ndescription: Review the shared fixture.\n---\nReview $ARGUMENTS\n',
@@ -162,15 +217,16 @@ try {
     `${JSON.stringify(
       {
         permissions: { allow: ['Bash(npm test:*)'] },
+        enabledPlugins: { 'hooks-fixture@inline': true },
         hooks: {
           PreToolUse: [
             {
-              matcher: 'Bash|Write',
+              matcher: '01-user',
               hooks: [
                 {
                   type: 'command',
                   command: 'printf fixture-hook',
-                  statusMessage: 'Checking fixture tool',
+                  statusMessage: 'User command',
                 },
               ],
             },
@@ -181,6 +237,127 @@ try {
       2,
     )}\n`,
   )
+  await Promise.all([
+    writeFile(
+      join(configRoot, '.claude.json'),
+      `${JSON.stringify(
+        {
+          hasCompletedOnboarding: true,
+          projects: {
+            [canonicalCwd]: {
+              allowedTools: [],
+              mcpContextUris: [],
+              mcpServers: {},
+              enabledMcpjsonServers: [],
+              disabledMcpjsonServers: [],
+              hasTrustDialogAccepted: true,
+              projectOnboardingSeenCount: 1,
+              hasClaudeMdExternalIncludesApproved: false,
+              hasClaudeMdExternalIncludesWarningShown: false,
+              lastGracefulShutdown: true,
+              lastVersionBase: '2.1.208',
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    ),
+    writeFile(
+      join(cwd, '.claude', 'settings.json'),
+      `${JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '02-project',
+              hooks: [{ type: 'prompt', prompt: 'Project prompt' }],
+            },
+          ],
+        },
+      })}\n`,
+    ),
+    writeFile(
+      join(cwd, '.claude', 'settings.local.json'),
+      `${JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '03-local',
+              hooks: [{ type: 'agent', prompt: 'Local agent' }],
+            },
+          ],
+        },
+      })}\n`,
+    ),
+    writeFile(
+      join(movedCwd, '.claude', 'settings.json'),
+      `${JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '02-project',
+              hooks: [{ type: 'prompt', prompt: 'Moved project prompt' }],
+            },
+          ],
+        },
+      })}\n`,
+    ),
+    writeFile(
+      join(movedCwd, '.claude', 'settings.local.json'),
+      `${JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '03-local',
+              hooks: [{ type: 'agent', prompt: 'Moved local agent' }],
+            },
+          ],
+        },
+      })}\n`,
+    ),
+    writeFile(
+      join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      `${JSON.stringify({
+        name: 'hooks-fixture',
+        version: '1.0.0',
+        hooks: './hooks/hooks.json',
+      })}\n`,
+    ),
+    writeFile(
+      pluginHooks,
+      `${JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '04-plugin',
+              hooks: [{ type: 'http', url: 'https://fixture.test/plugin' }],
+            },
+          ],
+        },
+      })}\n`,
+    ),
+    writeFile(
+      join(configRoot, 'plugins', 'installed_plugins.json'),
+      `${JSON.stringify({
+        version: 2,
+        plugins: {
+          'hooks-fixture@inline': [
+            {
+              scope: 'user',
+              installPath: pluginRoot,
+              version: '1.0.0',
+              installedAt: '2026-08-11T00:00:00.000Z',
+              lastUpdated: '2026-08-11T00:00:00.000Z',
+            },
+          ],
+        },
+      })}\n`,
+    ),
+    writeFile(
+      pluginReloader,
+      `import { writeFile } from 'node:fs/promises'\nconst path = process.argv[2]\nawait writeFile(path, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '04-plugin', hooks: [{ type: 'http', url: 'https://fixture.test/plugin-reloaded' }] }] } }) + '\\n')\n`,
+    ),
+  ])
   const diffFixture = join(cwd, 'fixture.txt')
   await writeFile(diffFixture, 'before\n')
   await execFileAsync('git', ['init', '-q'], { cwd })
@@ -199,8 +376,6 @@ try {
     { cwd },
   )
   await writeFile(diffFixture, 'after\n')
-  await writeFile(claude, "#!/bin/sh\nprintf '2.1.208 (Claude Code)\\n'\n")
-  await chmod(claude, 0o755)
   await writeFile(
     editor,
     `#!/bin/sh
@@ -406,6 +581,75 @@ exit 0
     sharedSnapshot(cancelBefore),
     'installed /memory cancel changed the recursive shared tree',
   )
+  const claudeHooksProbe = String.raw`
+set timeout 20
+log_user 1
+set phase "Claude 2.1.208 startup"
+expect_before timeout {
+  puts stderr "Claude hooks capture timed out during $phase"
+  exit 1
+}
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color DISABLE_AUTOUPDATER=1 CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) $env(TUI_CLAUDE) --ax-screen-reader --plugin-dir $env(TUI_PLUGIN_ROOT)
+stty rows 32 columns 100 < $spawn_out(slave,name)
+expect {
+  -re {Quick.*safety.*check} { send "\r"; exp_continue }
+  -re {manual mode on} {}
+  eof { puts stderr "Claude exited before startup"; exit 1 }
+}
+set phase "Claude hooks menu"
+after 300
+send "/hooks\r"
+after 1000
+send "1\r"
+expect -re {\[Local\].*03-local}
+after 300
+send "1\r"
+expect -re {\[agent\].*Local agent}
+send "\033"
+after 100
+send "2\r"
+expect -re {\[prompt\].*Project prompt}
+send "\033"
+after 100
+send "3\r"
+expect -re {\[command\].*User command}
+send "\033"
+after 100
+send "4\r"
+expect -re {\[http\].*https://fixture.test/plugin}
+send "\003"
+after 100
+send "\003"
+expect eof
+exit 0
+`
+  const claudeHooksCapture = await execFileAsync(
+    'expect',
+    ['-c', claudeHooksProbe],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        PATH: `${dirname(claude)}${delimiter}${process.env.PATH ?? ''}`,
+        TUI_CLAUDE: claude,
+        TUI_CONFIG_ROOT: configRoot,
+        TUI_PLUGIN_ROOT: pluginRoot,
+      },
+      timeout: 90_000,
+    },
+  )
+  const observedClaudeContract = terminalContract(claudeHooksCapture.stdout)
+  assert.deepEqual(observedClaudeContract, {
+    hookCount: true,
+    user: true,
+    project: true,
+    local: true,
+    plugin: true,
+    command: true,
+    prompt: true,
+    agent: true,
+    http: true,
+  })
 
   const providerlessProbe = String.raw`
 set timeout 15
@@ -418,50 +662,49 @@ expect_before timeout {
 spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
+expect -re {shortcuts}
 set phase "providerless hooks"
-send "/hooks\r"
-expect -re {1 hooks configured}
+send "/hooks"
+expect -re {View hook configurations}
+send "\r"
+expect -re {4 hooks configured}
 expect -re {This menu is read-only}
-expect -re {PreToolUse.*\(1\)}
+expect -re {PreToolUse.*\(4\)}
 send "\r"
 expect -re {PreToolUse - Matchers}
-expect -re {\[User\].*Bash\|Write.*1 hook}
-send "\r"
-expect -re {PreToolUse - Matcher: Bash\|Write}
-expect -re {\[command\].*Checking fixture tool.*User Settings}
-send "\033"
-expect -re {PreToolUse - Matchers}
-send "\033"
-expect -re {1 hooks configured}
-send "\033"
-send "\003"
-expect -re {Press Ctrl-C again to exit}
-send "\003"
-expect eof
+expect -re {\[User\][^\r\n]*01-user[^\r\n]*1 hook}
+expect -re {\[Project\][^\r\n]*02-project[^\r\n]*1 hook}
+expect -re {\[Local\][^\r\n]*03-local[^\r\n]*1 hook}
+expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
+exec kill -KILL [exp_pid]
 exit 0
 `
-  const settingsBeforeProviderlessProbe = await readFile(
-    join(configRoot, 'settings.json'),
-  )
+  const treesBeforeProviderlessProbe = await sharedTreeSnapshot()
   const providerlessEnvironment = { ...process.env }
   delete providerlessEnvironment.PRAXIS_API_KEY
   delete providerlessEnvironment.PRAXIS_MODEL
-  await execFileAsync('expect', ['-c', providerlessProbe], {
-    cwd,
-    env: {
-      ...providerlessEnvironment,
-      CI: 'true',
-      PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
-      TUI_CLI: cli,
-      TUI_CONFIG_ROOT: configRoot,
-      TUI_NODE: process.execPath,
+  const providerlessCapture = await execFileAsync(
+    'expect',
+    ['-c', providerlessProbe],
+    {
+      cwd,
+      env: {
+        ...providerlessEnvironment,
+        CI: 'true',
+        PATH: `${binRoot}${delimiter}${dirname(claude)}${delimiter}${process.env.PATH ?? ''}`,
+        TUI_CLI: cli,
+        TUI_CONFIG_ROOT: configRoot,
+        TUI_NODE: process.execPath,
+        TUI_PLUGIN_ROOT: pluginRoot,
+      },
+      timeout: 60_000,
     },
-    timeout: 60_000,
-  })
-  assert.deepEqual(
-    await readFile(join(configRoot, 'settings.json')),
-    settingsBeforeProviderlessProbe,
   )
+  const providerlessContract = terminalContract(providerlessCapture.stdout)
+  for (const key of ['hookCount', 'user', 'project', 'local', 'plugin']) {
+    assert.equal(providerlessContract[key], observedClaudeContract[key])
+  }
+  assert.deepEqual(await sharedTreeSnapshot(), treesBeforeProviderlessProbe)
 
   const probe = String.raw`
 set timeout 15
@@ -471,7 +714,7 @@ expect_before timeout {
   puts stderr "TUI compatibility timed out during $phase"
   exit 1
 }
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions --add-dir $env(TUI_SHARED_ROOT)
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions --add-dir $env(TUI_SHARED_ROOT) --plugin-dir $env(TUI_PLUGIN_ROOT)
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect {
   -re {Praxis.*Code.*v${expectedVersionPattern}} {}
@@ -506,19 +749,44 @@ set phase "hooks dialog"
 send "/hooks"
 expect -re {View hook configurations}
 send "\r"
-expect -re {1 hooks configured}
+expect -re {4 hooks configured}
 expect -re {This menu is read-only}
-expect -re {PreToolUse.*\(1\)}
+expect -re {PreToolUse.*\(4\)}
 send "\r"
 expect -re {PreToolUse - Matchers}
-expect -re {\[User\].*Bash\|Write.*1 hook}
+expect -re {\[User\][^\r\n]*01-user[^\r\n]*1 hook}
+expect -re {\[Project\][^\r\n]*02-project[^\r\n]*1 hook}
+expect -re {\[Local\][^\r\n]*03-local[^\r\n]*1 hook}
+expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
+expect -re {Enter to confirm}
 send "\r"
-expect -re {PreToolUse - Matcher: Bash\|Write}
-expect -re {\[command\].*Checking fixture tool.*User Settings}
+expect -re {\[command\].*User command.*User Settings}
+expect -re {Esc to go back}
+after 300
+send "\033"
+after 100
+send "\033\[B\r"
+expect -re {\[prompt\].*Project prompt.*Project Settings}
+expect -re {Esc to go back}
+after 300
+send "\033"
+after 100
+send "\033\[B\r"
+expect -re {\[agent\].*Local agent.*Local Settings}
+expect -re {Esc to go back}
+after 300
+send "\033"
+after 100
+send "\033\[B\r"
+expect -re {\[http\].*https://fixture.test/plugin.*Plugin Hooks}
+expect -re {Esc to go back}
+after 300
 send "\033"
 expect -re {PreToolUse - Matchers}
+after 100
 send "\033"
-expect -re {1 hooks configured}
+expect -re {4 hooks configured}
+after 100
 send "\033"
 expect -re {Try.*review this project}
 set phase "add-dir command"
@@ -697,6 +965,59 @@ expect -re {Moved to}
 expect -re {moved-work}
 expect -re {Try.*review this project}
 after 300
+set phase "hooks after cwd change"
+send "/hooks"
+expect -re {View hook configurations}
+send "\r"
+expect -re {4 hooks configured}
+send "\r"
+expect -re {\[Project\][^\r\n]*02-project[^\r\n]*1 hook}
+expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
+send "\033\[B\r"
+expect -re {\[prompt\].*Moved project prompt.*Project Settings}
+expect -re {Esc to go back}
+after 300
+send "\033"
+after 100
+send "\033\[B\r"
+expect -re {\[agent\].*Moved local agent.*Local Settings}
+expect -re {Esc to go back}
+after 300
+send "\033"
+expect -re {PreToolUse - Matchers}
+after 100
+send "\033"
+expect -re {4 hooks configured}
+after 100
+send "\033"
+expect -re {Try.*review this project}
+set phase "hooks after plugin reload"
+exec $env(TUI_NODE) $env(TUI_PLUGIN_RELOADER) $env(TUI_PLUGIN_HOOKS)
+send "/reload-plugins"
+expect -re {Activate pending plugin changes}
+send "\r"
+expect -re {Plugin changes activated for this session}
+send "/hooks"
+expect -re {View hook configurations}
+send "\r"
+expect -re {4 hooks configured}
+send "\r"
+expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
+send "\033\[B"
+send "\033\[B"
+send "\033\[B\r"
+expect -re {\[http\].*https://fixture.test/plugin-reloaded.*Plugin Hooks}
+expect -re {Esc to go back}
+after 300
+send "\033"
+expect -re {PreToolUse - Matchers}
+after 100
+send "\033"
+expect -re {4 hooks configured}
+after 100
+send "\033"
+expect -re {Try.*review this project}
+after 300
 set phase "shell mode after cd"
 send "!"
 expect -re {! for shell mode}
@@ -840,7 +1161,7 @@ exit 0
       env: {
         ...process.env,
         CI: 'true',
-        PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
+        PATH: `${binRoot}${delimiter}${dirname(claude)}${delimiter}${process.env.PATH ?? ''}`,
         TUI_CLI: cli,
         TUI_CLIPBOARD_OUTPUT: clipboardOutput,
         TUI_CONFIG_ROOT: configRoot,
@@ -849,6 +1170,9 @@ exit 0
         TUI_FOLDER_OUTPUT: folderOutput,
         TUI_MOVED_ROOT: movedCwd,
         TUI_NODE: process.execPath,
+        TUI_PLUGIN_HOOKS: pluginHooks,
+        TUI_PLUGIN_RELOADER: pluginReloader,
+        TUI_PLUGIN_ROOT: pluginRoot,
         TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
         TUI_SHARED_ROOT: sharedRoot,
       },
@@ -901,6 +1225,7 @@ exit 0
   const memoryReloadSource = JSON.stringify(memoryReloadRequest)
   assert.match(memoryReloadSource, new RegExp(importedAfter, 'u'))
   assert.doesNotMatch(memoryReloadSource, new RegExp(importedBefore, 'u'))
+  assert.deepEqual(terminalContract(result.stdout), observedClaudeContract)
   const projectRoot = join(configRoot, 'projects')
   const transcriptFiles = (await readdir(projectRoot, { recursive: true }))
     .map(String)
@@ -992,10 +1317,11 @@ exit 0
     env: {
       ...process.env,
       CI: 'true',
-      PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
+      PATH: `${binRoot}${delimiter}${dirname(claude)}${delimiter}${process.env.PATH ?? ''}`,
       TUI_CLI: cli,
       TUI_CONFIG_ROOT: configRoot,
       TUI_NODE: process.execPath,
+      TUI_PLUGIN_ROOT: pluginRoot,
       TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
       TUI_SESSION_ID: basename(branchTranscript.file, '.jsonl'),
     },
@@ -1015,12 +1341,12 @@ exit 0
     {
       PreToolUse: [
         {
-          matcher: 'Bash|Write',
+          matcher: '01-user',
           hooks: [
             {
               type: 'command',
               command: 'printf fixture-hook',
-              statusMessage: 'Checking fixture tool',
+              statusMessage: 'User command',
             },
           ],
         },

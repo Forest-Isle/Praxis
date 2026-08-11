@@ -1017,6 +1017,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
+    hooksOnly?: boolean
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
     approveTool?: (
       call: ModelToolCall,
@@ -1077,6 +1078,7 @@ const consoleIO: CliIO = {
 const createDefaultService: CliDependencies['createService'] = async ({
   eventSink,
   requireProvider,
+  hooksOnly = false,
   approveRecovery,
   approveTool,
   agent,
@@ -1157,7 +1159,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
     )
   }
-  if (apiKey && model) {
+  if (!hooksOnly && apiKey && model) {
     if (!providerEnvironment) {
       throw new Error('Provider environment is unavailable')
     }
@@ -1226,39 +1228,43 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       : {}),
   }
+  const hookConfiguration = async () => {
+    const [settings, pluginResources] = await Promise.all([
+      loadClaudeSettings({
+        configRoot,
+        cwd,
+        ...(cli.bare
+          ? { settingSources: [] }
+          : cli.settingSources === undefined
+            ? {}
+            : { settingSources: cli.settingSources }),
+      }),
+      loadClaudePlugins({
+        configRoot,
+        cwd,
+        pluginDirectories: cli.pluginDirectories,
+        pluginUrls: cli.pluginUrls,
+        strictPluginDirectories:
+          cli.pluginDirectories.length + cli.pluginUrls.length > 0,
+        loadInstalled: !cli.safeMode && !cli.bare,
+        readOnlyHooks: true,
+        environment: runtimeEnvironment,
+      }),
+    ])
+    return projectTuiHooks([
+      ...settings,
+      ...pluginResources.settings,
+      ...(cli.additionalSettings ? [cli.additionalSettings] : []),
+    ])
+  }
+  if (hooksOnly) {
+    const service = new ClaudeSessionService(options)
+    return Object.assign(service, { hookConfiguration })
+  }
   if (!provider && !exposeToolRegistry) {
     const service = new ClaudeSessionService(options)
     if (!interactive) return service
-    return Object.assign(service, {
-      hookConfiguration: async () => {
-        const [settings, pluginResources] = await Promise.all([
-          loadClaudeSettings({
-            configRoot,
-            cwd,
-            ...(cli.bare
-              ? { settingSources: [] }
-              : cli.settingSources === undefined
-                ? {}
-                : { settingSources: cli.settingSources }),
-          }),
-          loadClaudePlugins({
-            configRoot,
-            cwd,
-            pluginDirectories: cli.pluginDirectories,
-            pluginUrls: cli.pluginUrls,
-            strictPluginDirectories:
-              cli.pluginDirectories.length + cli.pluginUrls.length > 0,
-            loadInstalled: !cli.safeMode && !cli.bare,
-            environment: runtimeEnvironment,
-          }),
-        ])
-        return projectTuiHooks([
-          ...settings,
-          ...pluginResources.settings,
-          ...(cli.additionalSettings ? [cli.additionalSettings] : []),
-        ])
-      },
-    })
+    return Object.assign(service, { hookConfiguration })
   }
   const toolProvider: ModelProvider = provider ?? {
     model: 'praxis/provider',
@@ -2058,7 +2064,10 @@ const defaultDependencies: CliDependencies = {
             },
             interactive: true,
           }),
-        scheduledPrompts: true,
+        scheduledPrompts: Boolean(
+          process.env.PRAXIS_API_KEY &&
+          (interactiveControls.model ?? process.env.PRAXIS_MODEL),
+        ),
       },
       ...(signal ? { signal } : {}),
       ...(initialPrompt === undefined ? {} : { initialPrompt }),
