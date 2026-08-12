@@ -10,7 +10,9 @@ import {
   projectBackgroundBashTask,
   projectTuiTasks,
   projectWorkflowTask,
+  reconcileTuiTaskPanelState,
   TaskPanel,
+  updateTuiTaskPanelState,
   type TuiTaskEntry,
 } from './task-panel.js'
 
@@ -300,5 +302,59 @@ describe('TaskPanel', () => {
     expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(
       25,
     )
+  })
+
+  it('preserves selected identity across refresh reordering and closes vanished detail', () => {
+    const completed: TuiTaskEntry = {
+      ...olderShell,
+      id: 'completed',
+      status: 'completed',
+    }
+    expect(
+      reconcileTuiTaskPanelState(
+        { depth: 'list', selectedIndex: 1, scrollOffset: 4 },
+        [newestShell, completed],
+        [completed, newestShell],
+      ),
+    ).toEqual({ depth: 'list', selectedIndex: 0, scrollOffset: 4 })
+    expect(
+      reconcileTuiTaskPanelState(
+        { depth: 'detail', selectedIndex: 0, scrollOffset: 3 },
+        [newestShell],
+        [completed],
+      ),
+    ).toEqual({ depth: 'list', selectedIndex: 0, scrollOffset: 0 })
+  })
+
+  it('provides bounded list navigation and independent detail scrolling', () => {
+    expect(
+      updateTuiTaskPanelState(
+        { depth: 'list', selectedIndex: 0, scrollOffset: 0 },
+        runningShells,
+        { type: 'move', delta: -1 },
+      ),
+    ).toMatchObject({ selectedIndex: 0 })
+    const selected = updateTuiTaskPanelState(
+      { depth: 'list', selectedIndex: 0, scrollOffset: 0 },
+      runningShells,
+      { type: 'move', delta: 1 },
+    )
+    const detail = updateTuiTaskPanelState(selected, runningShells, {
+      type: 'open',
+    })
+    expect(detail).toEqual({
+      depth: 'detail',
+      selectedIndex: 1,
+      scrollOffset: 0,
+    })
+    expect(
+      updateTuiTaskPanelState(detail, runningShells, {
+        type: 'scroll',
+        delta: 1,
+      }),
+    ).toMatchObject({ depth: 'detail', scrollOffset: 1 })
+    expect(
+      updateTuiTaskPanelState(detail, runningShells, { type: 'back' }),
+    ).toEqual({ depth: 'list', selectedIndex: 1, scrollOffset: 0 })
   })
 })

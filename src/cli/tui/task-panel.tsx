@@ -2,6 +2,7 @@ import { Box, Text } from 'ink'
 
 import type { BackgroundAgentSnapshot } from '../../application/background-agent-manager.js'
 import type { BackgroundBashSnapshot } from '../../application/background-bash-manager.js'
+import type { WorkflowTaskSnapshot } from '../../application/workflow-manager.js'
 
 export type TuiTaskKind = 'shell' | 'agent' | 'workflow'
 export type TuiTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
@@ -23,6 +24,12 @@ export interface TuiTaskPanelState {
   selectedIndex: number
   scrollOffset: number
 }
+
+export type TuiTaskPanelAction =
+  | { type: 'move'; delta: -1 | 1 }
+  | { type: 'open' }
+  | { type: 'back' }
+  | { type: 'scroll'; delta: -1 | 1 }
 
 function requiredString(
   record: Readonly<Record<string, unknown>>,
@@ -94,8 +101,9 @@ export function projectBackgroundAgentTask(
 }
 
 export function projectWorkflowTask(
-  record: Readonly<Record<string, unknown>>,
+  workflow: WorkflowTaskSnapshot | Readonly<Record<string, unknown>>,
 ): TuiTaskEntry {
+  const record = workflow as Readonly<Record<string, unknown>>
   const result = record.result
   const error = typeof record.error === 'string' ? record.error : undefined
   const output =
@@ -133,13 +141,63 @@ export function projectWorkflowTask(
 export function projectTuiTasks(input: {
   shells?: readonly BackgroundBashSnapshot[]
   agents?: readonly BackgroundAgentSnapshot[]
-  workflows?: readonly Readonly<Record<string, unknown>>[]
+  workflows?: readonly WorkflowTaskSnapshot[]
 }): readonly TuiTaskEntry[] {
   return [
     ...(input.shells ?? []).map(projectBackgroundBashTask),
     ...(input.agents ?? []).map(projectBackgroundAgentTask),
     ...(input.workflows ?? []).map(projectWorkflowTask),
   ].sort((left, right) => right.createdAtMs - left.createdAtMs)
+}
+
+/** Preserve selection by task identity across polling and task reordering. */
+export function reconcileTuiTaskPanelState(
+  state: TuiTaskPanelState,
+  previousTasks: readonly TuiTaskEntry[],
+  tasks: readonly TuiTaskEntry[],
+): TuiTaskPanelState {
+  const selectedId = previousTasks[state.selectedIndex]?.id
+  const selectedIndex = selectedId
+    ? tasks.findIndex(({ id }) => id === selectedId)
+    : -1
+  if (tasks.length === 0) {
+    return { depth: 'list', selectedIndex: 0, scrollOffset: 0 }
+  }
+  if (selectedIndex >= 0) return { ...state, selectedIndex }
+  return {
+    depth: state.depth === 'detail' ? 'list' : state.depth,
+    selectedIndex: Math.min(state.selectedIndex, tasks.length - 1),
+    scrollOffset: 0,
+  }
+}
+
+export function updateTuiTaskPanelState(
+  state: TuiTaskPanelState,
+  tasks: readonly TuiTaskEntry[],
+  action: TuiTaskPanelAction,
+): TuiTaskPanelState {
+  if (tasks.length === 0) return initialTuiTaskPanelState(tasks)
+  if (action.type === 'back') {
+    return { ...state, depth: 'list', scrollOffset: 0 }
+  }
+  if (action.type === 'open') {
+    return { ...state, depth: 'detail', scrollOffset: 0 }
+  }
+  if (action.type === 'scroll') {
+    if (state.depth !== 'detail') return state
+    return {
+      ...state,
+      scrollOffset: Math.max(0, state.scrollOffset + action.delta),
+    }
+  }
+  if (state.depth !== 'list') return state
+  return {
+    ...state,
+    selectedIndex: Math.min(
+      tasks.length - 1,
+      Math.max(0, state.selectedIndex + action.delta),
+    ),
+  }
 }
 
 export function initialTuiTaskPanelState(

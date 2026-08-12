@@ -233,6 +233,55 @@ return agent('semantic prompt', {
     await manager.close()
   })
 
+  it('scopes snapshots and stop ownership to the launching session', async () => {
+    const { manager, script, parsed } = await fixture()
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const runAgent = vi.fn(
+      async (options: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          markStarted()
+          options.signal?.addEventListener(
+            'abort',
+            () => reject(new Error('aborted')),
+            { once: true },
+          )
+        }),
+    )
+    const launched = await manager.launch({
+      sessionId,
+      promptId: 'prompt-scoped',
+      script,
+      parsed,
+      args: { prompt: 'wait' },
+      defaultModel: 'fixture-model',
+      runAgent,
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+    await started
+
+    expect(manager.list(sessionId)).toMatchObject([
+      { task_id: launched.taskId, status: 'running' },
+    ])
+    expect(manager.list('other-session')).toEqual([])
+    expect(manager.hasForSession(sessionId, launched.taskId)).toBe(true)
+    expect(manager.hasForSession('other-session', launched.taskId)).toBe(false)
+    await manager.stopAndWait(launched.taskId)
+    const terminal = manager.list(sessionId)[0]
+    expect(terminal).toMatchObject({ status: 'killed' })
+    const duration = terminal?.durationMs
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(manager.list(sessionId)[0]?.durationMs).toBe(duration)
+    await expect(manager.stopAndWait(launched.taskId)).rejects.toThrow(
+      `Task ${launched.taskId} is not running (status: killed)`,
+    )
+    await manager.close()
+  })
+
   it('writes Claude v2 chained keys for repeated agent calls', async () => {
     const { manager } = await fixture()
     const script = `export const meta = {

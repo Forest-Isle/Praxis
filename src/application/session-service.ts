@@ -71,6 +71,10 @@ import {
   type RuntimeEventSink,
   type ToolRegistry,
 } from '../core/runtime.js'
+import {
+  BackgroundTaskRuntime,
+  type BackgroundTaskSnapshot,
+} from './background-task-runtime.js'
 import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
 import type { Compactor } from '../core/compaction.js'
@@ -109,7 +113,10 @@ import { ScheduledPromptManager } from './scheduled-prompt-manager.js'
 import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
 import { ClaudeWorkflowToolRegistry } from '../tools/claude-workflow-tools.js'
-import { WorkflowManager } from './workflow-manager.js'
+import {
+  WorkflowManager,
+  type WorkflowTaskSnapshot,
+} from './workflow-manager.js'
 import { SessionWorktreeManager } from './session-worktree.js'
 import type {
   WorktreeSessionState,
@@ -324,6 +331,7 @@ export class ClaudeSessionService {
   private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
   private readonly scheduledPrompts: ScheduledPromptManager | null
   private readonly workflowManager: WorkflowManager | null
+  private readonly backgroundTasks: BackgroundTaskRuntime
   private readonly worktreeManager: SessionWorktreeManager | null
   private readonly sessionCwds = new Map<string, string>()
   private readonly hostedSubagents = new Set<ClaudeSubagentExecutor>()
@@ -362,6 +370,7 @@ export class ClaudeSessionService {
           this.activeCwd(),
         )
       : null
+    this.backgroundTasks = new BackgroundTaskRuntime(this.workflowManager)
     this.worktreeManager =
       options.enableWorktrees && options.workspace
         ? new SessionWorktreeManager({
@@ -378,7 +387,7 @@ export class ClaudeSessionService {
     return this.scheduledPrompts?.next(signal) ?? Promise.resolve(null)
   }
 
-  workflows(): readonly Record<string, unknown>[] {
+  workflows(): readonly WorkflowTaskSnapshot[] {
     return this.workflowManager?.list() ?? []
   }
 
@@ -407,6 +416,14 @@ export class ClaudeSessionService {
     return this.options.mcp
   }
 
+  taskSnapshots(sessionId: string): Promise<BackgroundTaskSnapshot> {
+    return this.backgroundTasks.snapshot(sessionId)
+  }
+
+  stopTask(sessionId: string, taskId: string): Promise<void> {
+    return this.backgroundTasks.stop(sessionId, taskId)
+  }
+
   async close(): Promise<void> {
     this.scheduledPrompts?.close()
     await Promise.all(
@@ -415,6 +432,7 @@ export class ClaudeSessionService {
     await Promise.resolve()
     await Promise.all([...this.backgroundNotificationWrites.values()])
     this.hostedSubagents.clear()
+    this.backgroundTasks.clear()
     await this.workflowManager?.close()
     this.mcpClosePromise ??= this.options.mcp?.close?.() ?? Promise.resolve()
     await this.mcpClosePromise
@@ -441,6 +459,7 @@ export class ClaudeSessionService {
               : {}),
           })
         : null
+    if (taskTools) this.backgroundTasks.registerBash(sessionId, taskTools)
     const scheduledTools =
       this.scheduledPrompts &&
       (this.options.scheduledToolNames?.length ?? 0) > 0
@@ -515,6 +534,9 @@ export class ClaudeSessionService {
           })
         : null
     if (subagentExecutor) this.hostedSubagents.add(subagentExecutor)
+    if (subagentExecutor) {
+      this.backgroundTasks.registerAgents(sessionId, subagentExecutor)
+    }
     const agentTools = subagentExecutor
       ? subagentExecutor.registry(sessionId, 0, (callId) => callId)
       : wrappedBase

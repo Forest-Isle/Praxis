@@ -59,7 +59,7 @@ export interface WorkflowLaunchResult {
   transcriptDirectory: string
 }
 
-interface WorkflowProgress {
+export interface WorkflowProgress {
   index: number
   agentId: string
   label: string
@@ -108,6 +108,19 @@ interface WorkflowTask {
   controller: AbortController
   promise: Promise<void>
   notificationPending: boolean
+}
+
+export interface WorkflowTaskSnapshot {
+  task_id: string
+  task_type: 'local_workflow'
+  status: WorkflowTask['status']
+  summary: string
+  run_id: string
+  progress: readonly WorkflowProgress[]
+  result: unknown
+  startTime: number
+  durationMs: number
+  error?: string
 }
 
 class Semaphore {
@@ -275,6 +288,10 @@ export class WorkflowManager {
     return this.tasks.has(taskId)
   }
 
+  hasForSession(sessionId: string, taskId: string): boolean {
+    return this.tasks.get(taskId)?.sessionId === sessionId
+  }
+
   async output(
     taskId: string,
     options: { block: boolean; timeout: number },
@@ -312,6 +329,15 @@ export class WorkflowManager {
     })
   }
 
+  async stopAndWait(taskId: string): Promise<void> {
+    const task = this.task(taskId)
+    if (task.status !== 'running') {
+      throw new Error(`Task ${taskId} is not running (status: ${task.status})`)
+    }
+    task.controller.abort('TaskStop')
+    await task.promise
+  }
+
   async notifications(waitForRunning: boolean): Promise<{
     messages: string[]
     usage: { inputTokens: number; outputTokens: number }
@@ -339,8 +365,10 @@ export class WorkflowManager {
     }
   }
 
-  list(): readonly Record<string, unknown>[] {
-    return [...this.tasks.values()].map((task) => this.summary(task))
+  list(sessionId?: string): readonly WorkflowTaskSnapshot[] {
+    return [...this.tasks.values()]
+      .filter((task) => sessionId === undefined || task.sessionId === sessionId)
+      .map((task) => this.summary(task))
   }
 
   abortAll(): void {
@@ -611,7 +639,7 @@ export class WorkflowManager {
     }
   }
 
-  private summary(task: WorkflowTask): Record<string, unknown> {
+  private summary(task: WorkflowTask): WorkflowTaskSnapshot {
     return {
       task_id: task.taskId,
       task_type: 'local_workflow',

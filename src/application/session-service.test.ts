@@ -1764,6 +1764,131 @@ describe('ClaudeSessionService', () => {
     expect(aborted).toBe(true)
   })
 
+  it('exposes live Agent snapshots and routes stop through the owning runtime', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-tasks-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '33333333-3333-4333-8333-333333333333'
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        markStarted()
+        await new Promise<void>((resolve) =>
+          request.signal?.addEventListener('abort', () => resolve(), {
+            once: true,
+          }),
+        )
+        yield { type: 'text-delta' as const, delta: '' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+      subagentToolNames: ['Agent', 'TaskStop'],
+      sessionPersistence: true,
+    })
+    const registry = service.createHostedToolRegistry(sessionId)
+    const call = await registry.prepare(
+      {
+        id: 'runtime-agent',
+        name: 'Agent',
+        input: {
+          description: 'Runtime agent',
+          prompt: 'wait',
+          run_in_background: true,
+        },
+      },
+      { cwd },
+    )
+    const launched = await registry.execute(call, { cwd })
+    const taskId = String(launched.nativeToolUseResult?.agentId)
+    await started
+
+    await expect(service.taskSnapshots(sessionId)).resolves.toMatchObject({
+      shells: [],
+      agents: [{ agentId: taskId, status: 'running' }],
+      workflows: [],
+    })
+    await service.stopTask(sessionId, taskId)
+    await vi.waitFor(async () => {
+      await expect(service.taskSnapshots(sessionId)).resolves.toMatchObject({
+        agents: [{ agentId: taskId, status: 'stopped' }],
+      })
+    })
+    await expect(service.stopTask('other-session', taskId)).rejects.toThrow(
+      `No task found with ID: ${taskId}`,
+    )
+    await service.close()
+  })
+
+  it('exposes live Bash output and reaches a fixed stopped duration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-shell-tasks-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '44444444-4444-4444-8444-444444444444'
+    await mkdir(cwd, { recursive: true })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      taskToolNames: ['TaskOutput', 'TaskStop'],
+      sessionPersistence: true,
+    })
+    const registry = service.createHostedToolRegistry(sessionId)
+    const call = await registry.prepare(
+      {
+        id: 'runtime-shell',
+        name: 'Bash',
+        input: {
+          command: "printf 'started\\n'; sleep 30",
+          description: 'Runtime shell',
+          run_in_background: true,
+        },
+      },
+      { cwd },
+    )
+    const launched = await registry.execute(call, { cwd })
+    const taskId = String(launched.nativeToolUseResult?.backgroundTaskId)
+    await vi.waitFor(async () => {
+      await expect(service.taskSnapshots(sessionId)).resolves.toMatchObject({
+        shells: [
+          {
+            taskId,
+            status: 'running',
+            output: expect.stringContaining('started'),
+            durationMs: null,
+          },
+        ],
+      })
+    })
+
+    await service.stopTask(sessionId, taskId)
+    const stopped = await service.taskSnapshots(sessionId)
+    expect(stopped.shells).toMatchObject([
+      { taskId, status: 'stopped', durationMs: expect.any(Number) },
+    ])
+    const duration = stopped.shells[0]?.durationMs
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect((await service.taskSnapshots(sessionId)).shells[0]?.durationMs).toBe(
+      duration,
+    )
+    await service.close()
+  })
+
   it('persists and projects user image and document attachments', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-attachment-'))
     roots.push(root)
