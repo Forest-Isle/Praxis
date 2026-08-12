@@ -1088,6 +1088,7 @@ await writeFile(process.argv[4], JSON.stringify(snapshot))
     const profileProbe = String.raw`
 set timeout 15
 log_user 1
+log_file -noappend $env(TUI_CAPTURE_FILE)
 spawn -noecho env COLUMNS=100 LINES=32 CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
@@ -1106,21 +1107,20 @@ send "\003"
 expect eof
 exit 0
 `
-    const { stdout: praxisOutput } = await execFileAsync(
-      'expect',
-      ['-c', profileProbe],
-      {
-        cwd,
-        env: {
-          ...praxisProfileEnvironment,
-          TUI_CLI: cli,
-          TUI_NODE: process.execPath,
-          TUI_PROFILE_CONFIG: profileConfig,
-          TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
-        },
-        timeout: 60_000,
+    const profileCapture = join(root, `praxis-theme-${profile}.ansi`)
+    await execFileAsync('expect', ['-c', profileProbe], {
+      cwd,
+      env: {
+        ...praxisProfileEnvironment,
+        TUI_CLI: cli,
+        TUI_NODE: process.execPath,
+        TUI_CAPTURE_FILE: profileCapture,
+        TUI_PROFILE_CONFIG: profileConfig,
+        TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
       },
-    )
+      timeout: 60_000,
+    })
+    const praxisOutput = await readFile(profileCapture, 'utf8')
     const claudeOutput = realClaudeThemeCaptures.get(profile)
     assert.ok(claudeOutput, `missing Claude ${profile} reference capture`)
     for (const reference of expectedAnsi) {
