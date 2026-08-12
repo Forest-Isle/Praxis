@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { McpServerRecord } from '../../mcp/claude-mcp-management.js'
 import {
   McpPanelController,
+  mcpRuntimeFromSession,
   type TuiMcpRuntimeController,
 } from './mcp-panel-controller.js'
 
@@ -14,6 +15,29 @@ const record: McpServerRecord = {
 }
 
 describe('McpPanelController', () => {
+  it('adapts the live interactive session API without a presentation-only copy', async () => {
+    const commands = {
+      mcpInspect: vi.fn(async () => []),
+      mcpReconnect: vi.fn(async () => undefined),
+      mcpAuthenticate: vi.fn(async () => undefined),
+      mcpReload: vi.fn(async () => undefined),
+      mcpTools: vi.fn(async () => []),
+    }
+    const runtime = mcpRuntimeFromSession(commands)
+
+    await runtime.inspect()
+    await runtime.reconnect('fixture')
+    await runtime.authenticate('fixture')
+    await runtime.reload()
+    await runtime.tools('fixture')
+
+    expect(commands.mcpInspect).toHaveBeenCalledOnce()
+    expect(commands.mcpReconnect).toHaveBeenCalledWith('fixture')
+    expect(commands.mcpAuthenticate).toHaveBeenCalledWith('fixture')
+    expect(commands.mcpReload).toHaveBeenCalledOnce()
+    expect(commands.mcpTools).toHaveBeenCalledWith('fixture')
+  })
+
   it('loads config and live runtime state through the existing seams', async () => {
     const management = {
       list: vi.fn(async () => [record]),
@@ -108,7 +132,7 @@ describe('McpPanelController', () => {
     ])
   })
 
-  it('loads tools from the runtime and propagates action failures unchanged', async () => {
+  it('loads tools and returns actionable failures without corrupting panel state', async () => {
     const runtimeError = new Error('reconnect failed')
     const runtime: TuiMcpRuntimeController = {
       async inspect() {
@@ -153,10 +177,6 @@ describe('McpPanelController', () => {
         },
       ],
     })
-    await expect(
-      controller.execute({ type: 'reconnect', name: 'fixture' }),
-    ).rejects.toBe(runtimeError)
-
     const opened = await controller.open()
     await expect(
       controller.dispatch(
@@ -171,5 +191,25 @@ describe('McpPanelController', () => {
       },
       closed: false,
     })
+    const operations: string[] = []
+    const failedDetail = {
+      depth: 'detail',
+      serverIndex: 0,
+      selectedIndex: 1,
+    } as const
+    await expect(
+      controller.dispatch(
+        opened,
+        failedDetail,
+        { type: 'confirm' },
+        (command) => operations.push(command.type),
+      ),
+    ).resolves.toEqual({
+      model: opened,
+      state: failedDetail,
+      closed: false,
+      error: runtimeError.message,
+    })
+    expect(operations).toEqual(['reconnect'])
   })
 })

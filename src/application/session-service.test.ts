@@ -110,6 +110,27 @@ describe('ClaudeSessionService', () => {
     expect(reload).toHaveBeenCalledOnce()
   })
 
+  it('closes the MCP runtime when the owning session service closes', async () => {
+    const close = vi.fn(async () => undefined)
+    const service = new ClaudeSessionService({
+      configRoot: '/tmp/config',
+      cwd: '/tmp/project',
+      claudeVersion: '2.1.208',
+      mcp: {
+        inspect: async () => [],
+        reconnect: async () => undefined,
+        authenticate: async () => undefined,
+        reload: async () => undefined,
+        tools: async () => [],
+        close,
+      },
+    })
+
+    await service.close()
+    await service.close()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it('runs and resumes native shell turns through tool hooks before the provider', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-shell-turn-'))
     roots.push(root)

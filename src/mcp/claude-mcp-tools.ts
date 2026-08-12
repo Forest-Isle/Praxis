@@ -138,6 +138,8 @@ export interface ClaudeMcpRuntime {
   authenticate(name: string): Promise<void>
   reload(): Promise<void>
   tools(name: string): Promise<readonly ClaudeMcpToolInspection[]>
+  /** Release MCP transports and child processes owned by this runtime. */
+  close?(): Promise<void>
 }
 
 export interface ClaudeMcpConfigurationStatus {

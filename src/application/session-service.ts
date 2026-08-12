@@ -333,6 +333,7 @@ export class ClaudeSessionService {
     Promise<void>
   >()
   private readonly downloadedFileResourceSessions = new Set<string>()
+  private mcpClosePromise: Promise<void> | undefined
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
@@ -409,6 +410,8 @@ export class ClaudeSessionService {
     await Promise.all([...this.backgroundNotificationWrites.values()])
     this.hostedSubagents.clear()
     await this.workflowManager?.close()
+    this.mcpClosePromise ??= this.options.mcp?.close?.() ?? Promise.resolve()
+    await this.mcpClosePromise
   }
 
   createHostedToolRegistry(sessionId: string): ToolRegistry {

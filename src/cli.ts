@@ -80,7 +80,11 @@ import {
 } from './extensions/claude-extension-tools.js'
 import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
 import { ClaudeHookRunner } from './hooks/claude-hooks.js'
-import { ClaudeMcpToolRegistry } from './mcp/claude-mcp-tools.js'
+import {
+  ClaudeMcpToolRegistry,
+  type ClaudeMcpServerStatus,
+  type ClaudeMcpToolInspection,
+} from './mcp/claude-mcp-tools.js'
 import {
   ClaudeMcpManagement,
   filterDisabledMcpResources,
@@ -984,6 +988,11 @@ interface SessionCommands {
   ): Promise<{ id: string; prompt: string } | null>
   slashCommands?(): readonly TuiSlashCommand[]
   hookConfiguration?(): Promise<TuiHookConfiguration>
+  mcpInspect?(): Promise<readonly ClaudeMcpServerStatus[]>
+  mcpReconnect?(name: string): Promise<void>
+  mcpAuthenticate?(name: string): Promise<void>
+  mcpReload?(): Promise<void>
+  mcpTools?(name: string): Promise<readonly ClaudeMcpToolInspection[]>
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
   agentDefinitions?(): readonly { name: string; description: string }[]
@@ -1851,6 +1860,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
           source: definition.kind,
         })),
       hookConfiguration: async () => projectTuiHooks(settings),
+      mcpInspect: () => service.mcpInspect(),
+      mcpReconnect: (name) => service.mcpReconnect(name),
+      mcpAuthenticate: (name) => service.mcpAuthenticate(name),
+      mcpReload: () => service.mcpReload(),
+      mcpTools: (name) => service.mcpTools(name),
       agentDefinitions: () => extensions.agentDefinitions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
