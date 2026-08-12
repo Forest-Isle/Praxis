@@ -354,6 +354,8 @@ function setting(
     'checkpoints',
     'workflows',
     'permissionMode',
+    'worktreeBaseRef',
+    'gitignore',
     'theme',
     'outputStyle',
     'language',

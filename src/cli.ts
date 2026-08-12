@@ -1143,6 +1143,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
     },
     cwd,
   )
+  const effectiveAppendSystemPrompt = [
+    runtimeSettingsPrompt,
+    cli.appendSystemPrompt,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join('\n')
   const debug =
     cli.debug !== undefined || cli.debugFile !== undefined
       ? createCliDebugSink(eventSink, {
@@ -1695,13 +1701,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ...(cli.systemPrompt === undefined
           ? {}
           : { systemPrompt: cli.systemPrompt }),
-        ...(cli.appendSystemPrompt === undefined
-          ? runtimeSettingsPrompt
-            ? {
-                appendSystemPrompt: runtimeSettingsPrompt,
-              }
-            : {}
-          : { appendSystemPrompt: cli.appendSystemPrompt }),
+        ...(effectiveAppendSystemPrompt
+          ? { appendSystemPrompt: effectiveAppendSystemPrompt }
+          : {}),
       }),
       conditionalRuleResolver: new ClaudeConditionalRuleResolver({
         loadResources: loadContextResources,

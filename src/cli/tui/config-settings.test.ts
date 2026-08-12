@@ -80,6 +80,8 @@ describe('Claude 2.1.208 config settings contract', () => {
       'checkpoints',
       'workflows',
       'permissionMode',
+      'worktreeBaseRef',
+      'gitignore',
       'theme',
       'outputStyle',
       'language',
