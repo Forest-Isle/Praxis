@@ -71,19 +71,30 @@ describe('Claude 2.1.208 config settings contract', () => {
       ),
     ).toBe(false)
     expect(
-      CLAUDE_2_1_208_CONFIG_SETTINGS.every((setting) =>
-        setting.runtimeStatus === 'integrated'
-          ? setting.existingRuntimeConsumer !== null &&
-            setting.plannedConsumer === null
-          : setting.existingRuntimeConsumer === null &&
-            setting.plannedConsumer !== null,
-      ),
-    ).toBe(true)
+      CLAUDE_2_1_208_CONFIG_SETTINGS.filter(
+        (setting) => setting.runtimeStatus === 'integrated',
+      ).map((setting) => setting.nativeKey),
+    ).toEqual([
+      'autoCompact',
+      'thinking',
+      'checkpoints',
+      'workflows',
+      'permissionMode',
+      'theme',
+      'outputStyle',
+      'language',
+      'model',
+    ])
     expect(
       CLAUDE_2_1_208_CONFIG_SETTINGS.filter(
-        (setting) => setting.existingRuntimeConsumer !== null,
+        (setting) => setting.runtimeStatus === 'not-applicable',
       ).map((setting) => setting.nativeKey),
-    ).toEqual(['theme'])
+    ).toEqual(['switchModelsOnFlag'])
+    expect(
+      CLAUDE_2_1_208_CONFIG_SETTINGS.every(
+        (setting) => setting.runtimeConsumer.length > 0,
+      ),
+    ).toBe(true)
   })
 
   it('matches every captured label, scope, path, domain, and default', async () => {

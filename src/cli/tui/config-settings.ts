@@ -22,9 +22,9 @@ export interface ConfigSettingDefinition {
   path: readonly string[]
   values: readonly ConfigValue[] | 'language'
   defaultValue: ConfigValue
-  runtimeStatus: 'integrated' | 'planned'
-  existingRuntimeConsumer: string | null
-  plannedConsumer: string | null
+  runtimeStatus: 'integrated' | 'interactive-integration' | 'not-applicable'
+  runtimeConsumer: string
+  applicabilityReason?: string
 }
 
 export interface ConfigSettingsSnapshot {
@@ -346,9 +346,20 @@ function setting(
   path: readonly string[],
   values: readonly ConfigValue[] | 'language',
   defaultValue: ConfigValue,
-  plannedConsumer: string,
+  runtimeConsumer: string,
 ): ConfigSettingDefinition {
-  const integrated = nativeKey === 'theme'
+  const integrated = new Set([
+    'autoCompact',
+    'thinking',
+    'checkpoints',
+    'workflows',
+    'permissionMode',
+    'theme',
+    'outputStyle',
+    'language',
+    'model',
+  ]).has(nativeKey)
+  const notApplicable = nativeKey === 'switchModelsOnFlag'
   return {
     id: nativeKey,
     nativeKey,
@@ -357,9 +368,18 @@ function setting(
     path,
     values,
     defaultValue,
-    runtimeStatus: integrated ? 'integrated' : 'planned',
-    existingRuntimeConsumer: integrated ? 'Stage 109 theme runtime' : null,
-    plannedConsumer: integrated ? null : plannedConsumer,
+    runtimeStatus: integrated
+      ? 'integrated'
+      : notApplicable
+        ? 'not-applicable'
+        : 'interactive-integration',
+    runtimeConsumer,
+    ...(notApplicable
+      ? {
+          applicabilityReason:
+            'Claude subscription flag fallback is outside the API-provider, subscription-auth-free Praxis boundary',
+        }
+      : {}),
   }
 }
 

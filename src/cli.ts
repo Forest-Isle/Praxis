@@ -64,6 +64,11 @@ import {
   type TuiHookConfiguration,
 } from './cli/tui/hook-settings.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
+import {
+  applyRuntimeSettingDefaults,
+  loadRuntimeSettings,
+  runtimeSettingsSystemPrompt,
+} from './cli/tui/runtime-settings.js'
 import { createCliDebugSink } from './cli/debug.js'
 import {
   ClaudePermissionResolver,
@@ -1122,9 +1127,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
     requestedConfigRoot || configuredRoot
       ? join(configRoot, '.claude.json')
       : resolve(homedir(), '.claude.json')
+  const runtimeSettings =
+    controls.safeMode || controls.bare
+      ? undefined
+      : await loadRuntimeSettings({ configRoot, statePath: claudeStatePath })
+  const runtimeSettingsPrompt = runtimeSettingsSystemPrompt(runtimeSettings)
   const cli = await resolveCliControls(
     {
-      ...controls,
+      ...applyRuntimeSettingDefaults(controls, runtimeSettings),
       ...(interactiveModel === undefined ? {} : { model: interactiveModel }),
       ...(interactiveEffort === undefined ? {} : { effort: interactiveEffort }),
       ...(interactivePermissionMode === undefined
@@ -1560,6 +1570,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     )
     const selectedWorkflowTools = workflowToolNames.filter(
       (name) =>
+        (runtimeSettings?.workflows ?? true) &&
         cli.sessionPersistence &&
         !cli.bare &&
         (cli.tools === undefined ||
@@ -1666,6 +1677,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       enableWorktrees:
         cli.worktreeRequested || selectedWorktreeTools.length > 0,
       worktreeToolNames: selectedWorktreeTools,
+      ...(runtimeSettings
+        ? { worktreeBaseRef: runtimeSettings.worktreeBaseRef }
+        : {}),
       ...(interactiveTools ? { interactiveTools } : {}),
       ...(hooks ? { hooks } : {}),
       ...(agent ? { agent } : {}),
@@ -1682,7 +1696,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
           ? {}
           : { systemPrompt: cli.systemPrompt }),
         ...(cli.appendSystemPrompt === undefined
-          ? {}
+          ? runtimeSettingsPrompt
+            ? {
+                appendSystemPrompt: runtimeSettingsPrompt,
+              }
+            : {}
           : { appendSystemPrompt: cli.appendSystemPrompt }),
       }),
       conditionalRuleResolver: new ClaudeConditionalRuleResolver({
@@ -1694,7 +1712,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(permissionApprover ? { approveTool: permissionApprover } : {}),
       ...(approveRecovery ? { approveRecovery } : {}),
       fileCheckpointing:
-        runtimeEnvironment.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING === 'true',
+        runtimeEnvironment.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING ===
+          'true' || runtimeSettings?.checkpoints === true,
+      autoCompact: runtimeSettings?.autoCompact ?? true,
       fileRewindRoots: [
         ...cli.additionalDirectories,
         ...(memoryDirectory ? [memoryDirectory] : []),

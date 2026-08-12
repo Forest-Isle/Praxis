@@ -77,6 +77,93 @@ describe('SessionWorktreeManager', () => {
     ).rejects.toThrow()
   })
 
+  it('uses the upstream merge-base for fresh worktrees and HEAD when configured', async () => {
+    const root = await repository()
+    const base = await execFileAsync('git', [
+      '-C',
+      root,
+      'rev-parse',
+      'HEAD',
+    ]).then(({ stdout }) => stdout.trim())
+    await execFileAsync('git', ['-C', root, 'branch', 'upstream-base', base])
+    const branch = await execFileAsync('git', [
+      '-C',
+      root,
+      'symbolic-ref',
+      '--short',
+      'HEAD',
+    ]).then(({ stdout }) => stdout.trim())
+    await execFileAsync('git', [
+      '-C',
+      root,
+      'config',
+      `branch.${branch}.remote`,
+      '.',
+    ])
+    await execFileAsync('git', [
+      '-C',
+      root,
+      'config',
+      `branch.${branch}.merge`,
+      'refs/heads/upstream-base',
+    ])
+    await writeFile(join(root, 'ahead.txt'), 'ahead\n')
+    await execFileAsync('git', ['-C', root, 'add', 'ahead.txt'])
+    await execFileAsync('git', [
+      '-C',
+      root,
+      '-c',
+      'user.name=Praxis Test',
+      '-c',
+      'user.email=praxis@example.invalid',
+      'commit',
+      '-m',
+      'ahead',
+    ])
+    const head = await execFileAsync('git', [
+      '-C',
+      root,
+      'rev-parse',
+      'HEAD',
+    ]).then(({ stdout }) => stdout.trim())
+    const freshWorkspace = new WorkspaceContext(root)
+    const fresh = new SessionWorktreeManager({
+      workspace: freshWorkspace,
+      sessionId: '12121212-1212-4212-8212-121212121212',
+      baseRef: 'fresh',
+    })
+    await fresh.enter({ name: 'fresh-base' }, 'fresh')
+    await expect(
+      execFileAsync('git', [
+        '-C',
+        freshWorkspace.cwd(),
+        'rev-parse',
+        'HEAD',
+      ]).then(({ stdout }) => stdout.trim()),
+    ).resolves.toBe(base)
+    await fresh.exit({ action: 'remove', discard_changes: true }, 'exit-fresh')
+
+    const headWorkspace = new WorkspaceContext(root)
+    const fromHead = new SessionWorktreeManager({
+      workspace: headWorkspace,
+      sessionId: '13131313-1313-4313-8313-131313131313',
+      baseRef: 'head',
+    })
+    await fromHead.enter({ name: 'head-base' }, 'head')
+    await expect(
+      execFileAsync('git', [
+        '-C',
+        headWorkspace.cwd(),
+        'rev-parse',
+        'HEAD',
+      ]).then(({ stdout }) => stdout.trim()),
+    ).resolves.toBe(head)
+    await fromHead.exit(
+      { action: 'remove', discard_changes: true },
+      'exit-head',
+    )
+  })
+
   it('guards dirty removal and allows explicit discard', async () => {
     const root = await repository()
     const workspace = new WorkspaceContext(root)

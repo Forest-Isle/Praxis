@@ -2629,6 +2629,51 @@ describe('ClaudeSessionService', () => {
     expect(transcript).toContain('"isCompactSummary":true')
   })
 
+  it('honors the shared auto-compact setting without disabling manual compaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-no-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([`old-context ${'discarded '.repeat(600)}`]),
+    })
+    const first = await origin.run('CURRENT_TASK')
+    let compactCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unreachable']),
+      contextBudget: new ContextBudget({
+        contextWindowTokens: 400,
+        reserveTokens: 50,
+      }),
+      autoCompact: false,
+      compactor: {
+        async compact() {
+          compactCalls += 1
+          return {
+            summary: 'manual summary',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+          }
+        },
+      },
+    })
+
+    await expect(service.resume(first.sessionId, 'Continue.')).rejects.toThrow(
+      'Context exceeds provider budget',
+    )
+    expect(compactCalls).toBe(0)
+    await expect(service.compact(first.sessionId)).resolves.toMatchObject({
+      summary: 'manual summary',
+    })
+    expect(compactCalls).toBe(1)
+  })
+
   it('compacts a large completed tool result before the next model turn', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-tool-compact-'))
     roots.push(root)

@@ -175,9 +175,12 @@ export interface ClaudeSessionServiceOptions {
   initialWorktreeName?: string
   enableWorktrees?: boolean
   worktreeToolNames?: readonly ('EnterWorktree' | 'ExitWorktree')[]
+  worktreeBaseRef?: 'fresh' | 'head'
   fileResources?: readonly ClaudeFileResource[]
   fileResourceConfig?: Omit<ClaudeFileResourceConfig, 'sessionId' | 'signal'>
   fileCheckpointing?: boolean
+  /** Disable only automatic context compaction; manual /compact remains available. */
+  autoCompact?: boolean
   fileRewindRoots?: readonly string[]
   interactiveTools?: ClaudeInteractiveToolManager
   mcp?: ClaudeMcpRuntime
@@ -364,6 +367,9 @@ export class ClaudeSessionService {
         ? new SessionWorktreeManager({
             workspace: options.workspace,
             sessionId: '',
+            ...(options.worktreeBaseRef
+              ? { baseRef: options.worktreeBaseRef }
+              : {}),
           })
         : null
   }
@@ -2565,7 +2571,7 @@ export class ClaudeSessionService {
           }[] = [],
           preservedUserMessages: readonly string[] = [],
         ) => {
-          if (!budget) return
+          if (!budget || this.options.autoCompact === false) return
           const historyMessages = projectClaudeModelMessages(snapshot.entries)
           const predicted = budget.evaluate(
             [
