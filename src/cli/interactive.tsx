@@ -156,6 +156,39 @@ import {
   tuiPalette,
   type TuiThemeSettings,
 } from './tui/theme.js'
+import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
+import {
+  loadConfigSettings,
+  saveConfigSetting,
+  configSettingDefinition,
+} from './tui/config-settings.js'
+import { McpPanel } from './tui/mcp-panel.js'
+import {
+  McpPanelController,
+  mcpRuntimeFromSession,
+} from './tui/mcp-panel-controller.js'
+import {
+  initialTuiMcpPanelState,
+  type TuiMcpPanelModel,
+  type TuiMcpPanelState,
+} from './tui/mcp-panel-projector.js'
+import type {
+  ClaudeMcpServerStatus,
+  ClaudeMcpToolInspection,
+} from '../mcp/claude-mcp-tools.js'
+import type { ConfigDashboardTab } from './tui/config-dashboard.js'
+import type { ConfigValue } from './tui/config-settings.js'
+import {
+  TaskPanel,
+  initialTuiTaskPanelState,
+  projectTuiTasks,
+  reconcileTuiTaskPanelState,
+  updateTuiTaskPanelState,
+  type TuiTaskEntry,
+  type TuiTaskPanelState,
+} from './tui/task-panel.js'
+import type { BackgroundTaskSnapshot } from '../application/background-task-runtime.js'
+import { ClaudeMcpManagement } from '../mcp/claude-mcp-management.js'
 
 interface InteractiveSessionCommands {
   run(
@@ -221,6 +254,13 @@ interface InteractiveSessionCommands {
     signal?: AbortSignal,
   ): Promise<string | null>
   workflows?(): readonly Record<string, unknown>[]
+  taskSnapshots?(sessionId: string): Promise<BackgroundTaskSnapshot>
+  stopTask?(sessionId: string, taskId: string): Promise<void>
+  mcpInspect?(): Promise<readonly ClaudeMcpServerStatus[]>
+  mcpReconnect?(name: string): Promise<void>
+  mcpAuthenticate?(name: string): Promise<void>
+  mcpReload?(): Promise<void>
+  mcpTools?(name: string): Promise<readonly ClaudeMcpToolInspection[]>
   hookConfiguration?(): Promise<TuiHookConfiguration>
   slashCommands?(): readonly TuiSlashCommand[]
   agentDefinitions?(): readonly TuiAgentEntry[]
@@ -483,6 +523,16 @@ type InteractiveMenu =
       direction: 'from' | 'to'
     }
   | { kind: 'status'; tabIndex: number }
+  | {
+      kind: 'config'
+      snapshot: Awaited<ReturnType<typeof loadConfigSettings>>
+      tab: 'settings' | 'status' | 'config' | 'usage' | 'stats'
+      selectedIndex: number
+      query: string
+      searchFocused: boolean
+    }
+  | { kind: 'mcp'; model: TuiMcpPanelModel; state: TuiMcpPanelState }
+  | { kind: 'tasks'; tasks: readonly TuiTaskEntry[]; state: TuiTaskPanelState }
   | {
       kind: 'memory'
       generation: number
@@ -883,6 +933,8 @@ export function InteractiveApp({
   const [menu, setMenu] = useState<InteractiveMenu | null>(null)
   const menuRef = useRef<InteractiveMenu | null>(null)
   const [busy, setBusy] = useState(false)
+  const taskEntriesRef = useRef<readonly TuiTaskEntry[]>([])
+  const mcpControllerRef = useRef<McpPanelController | null>(null)
   const [compactProgress, setCompactProgress] = useState(0)
   const initialPromptRef = useRef(initialPrompt?.trim() ?? '')
   const [initialPromptPending, setInitialPromptPending] = useState(
@@ -1384,6 +1436,34 @@ export function InteractiveApp({
   const updateMenu = (next: InteractiveMenu | null) => {
     menuRef.current = next
     setMenu(next)
+  }
+
+  const refreshTasks = async (
+    existing?: Extract<InteractiveMenu, { kind: 'tasks' }>,
+  ) => {
+    const commands = await service()
+    if (!sessionId || !commands.taskSnapshots) {
+      const rows = workflowRows(commands.workflows?.() ?? [])
+      updateMenu({
+        kind: 'list',
+        title: 'Background',
+        rows,
+        emptyText: 'No tasks currently running',
+        selectedIndex: 0,
+      })
+      return
+    }
+    const snapshot = await commands.taskSnapshots(sessionId)
+    const tasks = projectTuiTasks(snapshot)
+    const state = existing
+      ? reconcileTuiTaskPanelState(
+          existing.state,
+          taskEntriesRef.current,
+          tasks,
+        )
+      : initialTuiTaskPanelState(tasks)
+    taskEntriesRef.current = tasks
+    updateMenu({ kind: 'tasks', tasks, state })
   }
 
   const updateBtwHistory = (
@@ -1944,14 +2024,7 @@ export function InteractiveApp({
       setBusy(true)
       setStatus('loading tasks')
       try {
-        const rows = workflowRows((await service()).workflows?.() ?? [])
-        updateMenu({
-          kind: 'list',
-          title: 'Background',
-          rows,
-          emptyText: 'No tasks currently running',
-          selectedIndex: 0,
-        })
+        await refreshTasks()
       } catch (error) {
         warn(error)
       } finally {
@@ -2080,16 +2153,43 @@ export function InteractiveApp({
       setBusy(true)
       setStatus('loading MCP servers')
       try {
-        const servers = (await service()).runtimeInfo?.().mcpServers ?? []
+        const commands = await service()
+        if (!commands.mcpInspect || !commands.mcpTools) {
+          const servers = commands.runtimeInfo?.().mcpServers ?? []
+          updateMenu({
+            kind: 'list',
+            title: 'MCP servers',
+            rows: servers.map((server) => ({
+              label: server.name,
+              description: server.status,
+            })),
+            emptyText: 'No MCP servers configured',
+            selectedIndex: 0,
+          })
+          return
+        }
+        const configRoot = process.env.CLAUDE_CONFIG_DIR
+        const management = new ClaudeMcpManagement({
+          cwd: runtimeCwdRef.current,
+          ...(configRoot ? { configRoot } : {}),
+        })
+        const controller = new McpPanelController({
+          cwd: runtimeCwdRef.current,
+          management,
+          runtime: mcpRuntimeFromSession({
+            mcpInspect: commands.mcpInspect,
+            mcpReconnect: commands.mcpReconnect ?? (async () => {}),
+            mcpAuthenticate: commands.mcpAuthenticate ?? (async () => {}),
+            mcpReload: commands.mcpReload ?? (async () => {}),
+            mcpTools: commands.mcpTools,
+          }),
+        })
+        mcpControllerRef.current = controller
+        const model = await controller.open()
         updateMenu({
-          kind: 'list',
-          title: 'MCP servers',
-          rows: servers.map((server) => ({
-            label: server.name,
-            description: server.status,
-          })),
-          emptyText: 'No MCP servers configured',
-          selectedIndex: 0,
+          kind: 'mcp',
+          model,
+          state: initialTuiMcpPanelState(model),
         })
       } catch (error) {
         warn(error)
@@ -3126,6 +3226,210 @@ export function InteractiveApp({
     }
 
     const earlyMenu = menuRef.current
+    if (earlyMenu?.kind === 'tasks') {
+      if (key.escape || value === '\u001B') {
+        updateMenu(null)
+        return
+      }
+      const selected = earlyMenu.tasks[earlyMenu.state.selectedIndex]
+      if (
+        (value.toLowerCase() === 'x' || value === 'X') &&
+        selected?.status === 'running'
+      ) {
+        const stopping = (async () => {
+          setBusy(true)
+          try {
+            const commands = await service()
+            if (!sessionId || !commands.stopTask)
+              throw new Error('Task controls are unavailable.')
+            await commands.stopTask(sessionId, selected.id)
+            await refreshTasks(earlyMenu)
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(stopping)
+        void stopping.finally(() => onTurnChange?.(null))
+        return
+      }
+      if (
+        key.upArrow ||
+        key.downArrow ||
+        key.return ||
+        key.leftArrow ||
+        key.rightArrow
+      ) {
+        const action = key.upArrow
+          ? { type: 'move' as const, delta: -1 as const }
+          : key.downArrow
+            ? { type: 'move' as const, delta: 1 as const }
+            : key.return
+              ? { type: 'open' as const }
+              : { type: 'back' as const }
+        const state = updateTuiTaskPanelState(
+          earlyMenu.state,
+          earlyMenu.tasks,
+          action,
+        )
+        updateMenu({ ...earlyMenu, state })
+      }
+      return
+    }
+    if (earlyMenu?.kind === 'mcp') {
+      if (key.escape || value === '\u001B') {
+        const transition = mcpControllerRef.current
+          ? { state: earlyMenu.state, command: { type: 'close' as const } }
+          : undefined
+        if (transition?.command?.type === 'close') updateMenu(null)
+        return
+      }
+      const input = key.upArrow
+        ? { type: 'up' as const }
+        : key.downArrow
+          ? { type: 'down' as const }
+          : key.return
+            ? { type: 'confirm' as const }
+            : key.leftArrow
+              ? { type: 'back' as const }
+              : null
+      if (input && mcpControllerRef.current) {
+        const dispatch = mcpControllerRef.current.dispatch(
+          earlyMenu.model,
+          earlyMenu.state,
+          input,
+        )
+        const operation = (async () => {
+          setBusy(true)
+          try {
+            const result = await dispatch
+            if (result.closed) updateMenu(null)
+            else
+              updateMenu({
+                kind: 'mcp',
+                model: result.model,
+                state: result.state,
+              })
+            if (result.error) warn(result.error)
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(operation)
+        void operation.finally(() => onTurnChange?.(null))
+      }
+      return
+    }
+    if (earlyMenu?.kind === 'config') {
+      if (key.escape || value === '\u001B') {
+        if (earlyMenu.searchFocused && earlyMenu.query) {
+          updateMenu({ ...earlyMenu, query: '' })
+        } else {
+          updateMenu(null)
+        }
+        return
+      }
+      const rows = projectConfigRows(earlyMenu.snapshot, earlyMenu.query)
+      if (key.leftArrow || key.rightArrow || key.tab) {
+        const tabs: readonly ConfigDashboardTab[] = [
+          'settings',
+          'status',
+          'config',
+          'usage',
+          'stats',
+        ]
+        const index = tabs.indexOf(earlyMenu.tab)
+        const direction = key.leftArrow || (key.tab && key.shift) ? -1 : 1
+        const tab =
+          tabs[Math.max(0, Math.min(tabs.length - 1, index + direction))] ??
+          'config'
+        updateMenu({
+          ...earlyMenu,
+          tab,
+          selectedIndex: 0,
+          searchFocused: tab === 'config',
+        })
+        return
+      }
+      if (earlyMenu.tab !== 'config') return
+      if (key.upArrow || key.downArrow) {
+        updateMenu({
+          ...earlyMenu,
+          searchFocused: false,
+          selectedIndex: Math.max(
+            0,
+            Math.min(
+              Math.max(0, rows.length - 1),
+              earlyMenu.selectedIndex + (key.upArrow ? -1 : 1),
+            ),
+          ),
+        })
+        return
+      }
+      if (value === '/' && !earlyMenu.searchFocused) {
+        updateMenu({ ...earlyMenu, searchFocused: true })
+        return
+      }
+      if (earlyMenu.searchFocused && key.backspace) {
+        updateMenu({ ...earlyMenu, query: earlyMenu.query.slice(0, -1) })
+        return
+      }
+      if (
+        earlyMenu.searchFocused &&
+        !key.ctrl &&
+        !key.meta &&
+        value &&
+        printable
+      ) {
+        updateMenu({
+          ...earlyMenu,
+          query: earlyMenu.query + value,
+          selectedIndex: 0,
+        })
+        return
+      }
+      if (key.return || value === ' ') {
+        const row = rows[earlyMenu.selectedIndex]
+        if (!row) return
+        const definition = configSettingDefinition(row.definition.id)
+        if (!definition || definition.values === 'language') {
+          append({
+            kind: 'warning',
+            text: 'This setting requires a typed value and is not yet editable in the panel.',
+          })
+          return
+        }
+        const values = definition.values
+        const currentIndex = values.indexOf(row.value)
+        const value = values[(currentIndex + 1) % values.length]
+        if (value === undefined) return
+        const saving = (async () => {
+          setBusy(true)
+          try {
+            const snapshot = await saveConfigSetting(
+              definition.id,
+              value as ConfigValue,
+            )
+            await retireService()
+            updateMenu({ ...earlyMenu, snapshot })
+            append({
+              kind: 'local-result',
+              text: `${definition.label} set to ${String(value)}`,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(saving)
+        void saving.finally(() => onTurnChange?.(null))
+      }
+      return
+    }
     if (earlyMenu?.kind === 'memory') {
       if (key.escape || value === '\u001B') {
         updateMenu(null)
@@ -4165,6 +4469,13 @@ export function InteractiveApp({
         return
       }
 
+      if (
+        activeMenu.kind === 'mcp' ||
+        activeMenu.kind === 'tasks' ||
+        activeMenu.kind === 'config'
+      ) {
+        return
+      }
       const optionCount =
         activeMenu.kind === 'model'
           ? modelOptions.length
@@ -4579,7 +4890,29 @@ export function InteractiveApp({
       } else if (prompt === '/status') {
         updateMenu({ kind: 'status', tabIndex: 1 })
       } else if (prompt === '/config') {
-        updateMenu({ kind: 'status', tabIndex: 2 })
+        const initial: Extract<InteractiveMenu, { kind: 'config' }> = {
+          kind: 'config',
+          snapshot: { settings: {}, state: {} },
+          tab: 'config',
+          selectedIndex: 0,
+          query: '',
+          searchFocused: true,
+        }
+        updateMenu(initial)
+        const loading = (async () => {
+          setBusy(true)
+          try {
+            const snapshot = await loadConfigSettings()
+            if (menuRef.current?.kind === 'config')
+              updateMenu({ ...menuRef.current, snapshot })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(loading)
+        void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/usage') {
         updateMenu({ kind: 'status', tabIndex: 3 })
       } else if (prompt === '/skills' || prompt === '/skill') {
@@ -5066,6 +5399,56 @@ export function InteractiveApp({
                   }
                   commandCount={allSlashCommands.length}
                   detailedTranscript={thinkingExpanded}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'config' ? (
+                <ConfigDashboard
+                  tab={menu.tab}
+                  snapshot={menu.snapshot}
+                  query={menu.query}
+                  selectedIndex={menu.selectedIndex}
+                  searchFocused={menu.searchFocused}
+                  settings={[
+                    {
+                      label: 'Provider',
+                      value: runtimeDisplay.model ?? 'default',
+                    },
+                    {
+                      label: 'Permission mode',
+                      value: runtimeDisplay.permissionMode ?? 'default',
+                    },
+                  ]}
+                  status={{
+                    version: runtimeDisplay.version,
+                    sessionId: sessionId ?? 'new',
+                    cwd: runtimeCwd,
+                    model: runtimeDisplay.model ?? 'default',
+                    settingSources: ['user', 'project', 'local'],
+                  }}
+                  usage={{
+                    costUsd: costUsd ?? 0,
+                    apiDurationMs: 0,
+                    wallDurationMs: 0,
+                    linesAdded: 0,
+                    linesRemoved: 0,
+                    usage: usage ?? { inputTokens: 0, outputTokens: 0 },
+                  }}
+                  stats={[]}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'mcp' ? (
+                <McpPanel
+                  model={menu.model}
+                  state={menu.state}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'tasks' ? (
+                <TaskPanel
+                  tasks={menu.tasks}
+                  state={menu.state}
                   width={width}
                   screenReader={axScreenReader}
                 />

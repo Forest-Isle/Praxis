@@ -364,15 +364,22 @@ export function ConfigDashboard({
       break
     case 'config':
       content = (
-        <ConfigRows
-          rows={rows}
-          query={query}
-          selectedIndex={Math.max(0, Math.min(selectedIndex, rows.length - 1))}
-          searchFocused={searchFocused}
-          maxRows={maxRows}
-          screenReader={screenReader}
-          width={width}
-        />
+        <>
+          <Text bold>Config</Text>
+          <Text>Available commands: /config · /status · /usage</Text>
+          <ConfigRows
+            rows={rows}
+            query={query}
+            selectedIndex={Math.max(
+              0,
+              Math.min(selectedIndex, rows.length - 1),
+            )}
+            searchFocused={searchFocused}
+            maxRows={maxRows}
+            screenReader={screenReader}
+            width={width}
+          />
+        </>
       )
       break
     case 'usage':

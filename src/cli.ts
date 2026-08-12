@@ -1887,6 +1887,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       mcpAuthenticate: (name) => service.mcpAuthenticate(name),
       mcpReload: () => service.mcpReload(),
       mcpTools: (name) => service.mcpTools(name),
+      taskSnapshots: (sessionId: string) => service.taskSnapshots(sessionId),
+      stopTask: (sessionId: string, taskId: string) =>
+        service.stopTask(sessionId, taskId),
       agentDefinitions: () => extensions.agentDefinitions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
