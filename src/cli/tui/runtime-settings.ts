@@ -124,6 +124,15 @@ export function runtimeSettingsSystemPrompt(
     settings.language === 'default'
       ? null
       : `Respond in the user's configured language: ${settings.language}.`,
+    settings.verbose
+      ? 'Provide enough operational detail for the interactive verbose transcript; include exact tool and implementation outcomes when useful.'
+      : null,
+    settings.workflowKeywordTriggerEnabled
+      ? null
+      : 'Do not treat "ultracode" as a dynamic-workflow trigger unless the user explicitly requests a workflow.',
+    settings.workflowSizeGuideline === 'unrestricted'
+      ? null
+      : `When creating a dynamic workflow, prefer a ${settings.workflowSizeGuideline} workflow unless the user explicitly requests otherwise.`,
   ].filter((section): section is string => section !== null)
   return sections.length > 0 ? sections.join('\n') : undefined
 }

@@ -89,8 +89,9 @@ export async function runSelfUpdate(
   }
   const operation = options.operation
   const force = options.force === true
-  const target =
-    operation === 'install' ? requireTarget(options.target) : 'latest'
+  const target = requireTarget(
+    options.target ?? (operation === 'install' ? 'stable' : 'latest'),
+  )
   const npmExecutable =
     options.npmExecutable ?? (process.platform === 'win32' ? 'npm.cmd' : 'npm')
   const spec = `${packageName}@${target}`

@@ -49,6 +49,10 @@ export interface ClaudeInteractiveToolCallbacks {
   ): Promise<boolean>
 }
 
+export interface ClaudeInteractiveToolSettings {
+  useAutoModeDuringPlan: boolean
+}
+
 interface SessionPlanState {
   mode: ClaudePermissionMode
   previousMode: ClaudePermissionMode
@@ -342,6 +346,7 @@ export class ClaudeInteractiveToolManager {
       enabledTools: readonly string[]
       callbacks: ClaudeInteractiveToolCallbacks
       permissionResolverForMode(mode: ClaudePermissionMode): PermissionResolver
+      settings?: ClaudeInteractiveToolSettings
     },
   ) {
     this.callbacks = options.callbacks
@@ -464,7 +469,10 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
     ) {
       return this.resolvePlanFile(state, call, context)
     }
-    return this.resolver(state.mode).resolve(call, context)
+    return this.resolver(this.planPermissionMode(sessionId)).resolve(
+      call,
+      context,
+    )
   }
 
   private async resolvePlanFile(
@@ -508,6 +516,16 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
       content: `Entered plan mode. Explore without modifying project files, write the final plan to ${state.planPath}, then call ExitPlanMode.`,
       isError: false,
     }
+  }
+
+  planPermissionMode(sessionId: string): ClaudePermissionMode {
+    const state = this.state(sessionId)
+    if (
+      state.mode !== 'plan' ||
+      this.options.settings?.useAutoModeDuringPlan === false
+    )
+      return 'plan'
+    return state.previousMode === 'bypassPermissions' ? 'plan' : 'auto'
   }
 
   async exit(

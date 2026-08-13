@@ -120,4 +120,51 @@ describe('Claude config runtime projection', () => {
       thinking: 'adaptive',
     })
   })
+
+  it('projects every previously interactive setting into a concrete runtime value', () => {
+    const settings = projectRuntimeSettings({
+      settings: {
+        spinnerTipsEnabled: false,
+        prefersReducedMotion: true,
+        awaySummaryEnabled: false,
+        workflowKeywordTriggerEnabled: false,
+        verbose: true,
+        terminalProgressBarEnabled: false,
+        showTurnDuration: false,
+        useAutoModeDuringPlan: false,
+        editorMode: 'vim',
+        askUserQuestionTimeout: '60s',
+        autoUpdatesChannel: 'stable',
+        preferredNotifChannel: 'terminal_bell',
+      },
+      state: {
+        workflowSizeGuideline: 'small',
+        copyFullResponse: true,
+        defaultToAgentsView: true,
+        leftArrowOpensAgents: false,
+        externalEditorContext: true,
+        prStatusFooterEnabled: false,
+      },
+    })
+    expect(settings).toMatchObject({
+      tips: false,
+      reduceMotion: true,
+      recap: false,
+      workflowKeywordTriggerEnabled: false,
+      workflowSizeGuideline: 'small',
+      verbose: true,
+      progressBar: false,
+      turnDuration: false,
+      useAutoModeDuringPlan: false,
+      copyFullResponse: true,
+      defaultToAgentsView: true,
+      leftArrowOpensAgents: false,
+      autoUpdatesChannel: 'stable',
+      notifChannel: 'terminal_bell',
+      editor: 'vim',
+      askUserQuestionTimeout: '60s',
+      externalEditorContext: true,
+      prStatus: false,
+    })
+  })
 })
