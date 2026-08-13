@@ -422,7 +422,9 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
 
   async isPlanFile(sessionId: string, requestedPath: string): Promise<boolean> {
     const state = this.state(sessionId)
-    return state.mode === 'plan' && this.isPlanFileForState(state, requestedPath)
+    return (
+      state.mode === 'plan' && this.isPlanFileForState(state, requestedPath)
+    )
   }
 
   consumeTransition(callId: string): ClaudePermissionMode | undefined {
@@ -530,11 +532,8 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
 
   planPermissionMode(sessionId: string): ClaudePermissionMode {
     const state = this.state(sessionId)
-    if (
-      state.mode !== 'plan' ||
-      this.options.settings?.useAutoModeDuringPlan === false
-    )
-      return 'plan'
+    if (state.mode !== 'plan') return state.mode
+    if (this.options.settings?.useAutoModeDuringPlan === false) return 'plan'
     return state.previousMode === 'bypassPermissions' ? 'plan' : 'auto'
   }
 

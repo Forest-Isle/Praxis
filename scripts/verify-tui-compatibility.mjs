@@ -1943,11 +1943,14 @@ expect -re {Copied to clipboard}
 set phase "btw fork"
 send "f"
 expect -re {⑂ forked reply-with-side \([0-9a-f]{4}\)}
-after 300
+expect -re {Try.*review this project}
 set phase "copy response"
 send "/copy"
-expect -re {Copy Praxis.*last response}
 after 100
+send "\r"
+expect -re {Copy response}
+expect -re {Full response}
+after 300
 send "\r"
 expect -re {Copied last response to clipboard}
 set phase "export conversation"
