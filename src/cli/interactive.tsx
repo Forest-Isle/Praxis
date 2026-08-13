@@ -168,6 +168,9 @@ import {
   type CustomThemeToken,
   type TuiCustomTheme,
 } from './tui/custom-themes.js'
+  setupTuiTerminal,
+  terminalSetupTuiSlashCommand,
+} from './tui/terminal-setup.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
 import {
   loadConfigSettings,
@@ -424,6 +427,7 @@ interface InteractiveAppProps {
     ): Promise<TuiCustomTheme>
     deleteCustomTheme?(theme: TuiCustomTheme): Promise<void>
   }
+  terminalSetup?: () => Promise<string>
   initialThemeSettings?: TuiThemeSettings
   initialThemeLoadError?: string
   workspaceDirectoryResolver?: typeof resolveTuiWorkspaceDirectory
@@ -870,6 +874,7 @@ export function InteractiveApp({
   sideQuestionClipboardWriter = writeTuiOsc52Clipboard,
   exportWriter = writeConversationExport,
   permissionRuleStore,
+  terminalSetup: terminalSetupOverride,
   themeStore,
   initialThemeSettings,
   initialThemeLoadError,
@@ -1048,6 +1053,10 @@ export function InteractiveApp({
     text: string
     isError: boolean
   }>()
+  const terminalSetupCommand = useMemo(
+    () => terminalSetupTuiSlashCommand(process.env, process.platform),
+    [],
+  )
   const [availableSlashCommands, setAvailableSlashCommands] =
     useState(slashCommands)
   const [availableAgents, setAvailableAgents] = useState(agents)
@@ -1123,8 +1132,12 @@ export function InteractiveApp({
   const serviceEpochRef = useRef(0)
   const serviceCreationEpochRef = useRef<number | null>(null)
   const allSlashCommands = useMemo(
-    () => mergeTuiSlashCommands(availableSlashCommands),
-    [availableSlashCommands],
+    () =>
+      mergeTuiSlashCommands([
+        ...(terminalSetupCommand === null ? [] : [terminalSetupCommand]),
+        ...availableSlashCommands,
+      ]),
+    [availableSlashCommands, terminalSetupCommand],
   )
   const builtinSlashCommands = useMemo(
     () => allSlashCommands.filter((command) => command.source === 'builtin'),
@@ -5272,7 +5285,7 @@ export function InteractiveApp({
       }
     }
     const implicitShiftNewline =
-      key.return && key.shift && keybindingAction === undefined
+      key.return && (key.shift || key.meta) && keybindingAction === undefined
     if (
       isKeybinding('chat:submit') ||
       isKeybinding('chat:newline') ||
@@ -5342,6 +5355,22 @@ export function InteractiveApp({
                 ),
           ),
         })
+      } else if (prompt === '/terminal-setup') {
+        const setup = (async () => {
+          setBusy(true)
+          setStatus('configuring terminal')
+          try {
+            const result = await (terminalSetupOverride ?? setupTuiTerminal)()
+            append({ kind: 'local-result', text: result })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+            setStatus('ready')
+          }
+        })()
+        onTurnChange?.(setup)
+        void setup.finally(() => onTurnChange?.(null))
       } else if (prompt === '/keybindings') {
         setKeybindingsEditing(true)
       } else if (prompt === '/memory') {

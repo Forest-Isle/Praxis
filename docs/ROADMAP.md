@@ -1023,6 +1023,10 @@ remain partial.
       deletion, sidecar locking/atomic writes, schema validation, and focused
       service plus InteractiveApp lifecycle coverage
 - [ ] `/terminal-setup` Shift+Enter installation across supported terminals
+- [x] `/terminal-setup` provider-free Shift+Enter installation/diagnostics
+      across native, VS Code-family, Alacritty, Zed, tmux/screen, and Apple
+      Terminal paths, with backups, duplicate detection, and focused Ink/unit
+      coverage (exact terminal PTY layout remains tracked separately)
 - [ ] `/tui` default/fullscreen renderer switching
 - [ ] exact Recently denied selection, reset, deduplication, and lifetime
       behavior beyond the observed empty-state and current-session population
