@@ -71,6 +71,10 @@ import {
   type RuntimeEventSink,
   type ToolRegistry,
 } from '../core/runtime.js'
+import {
+  BackgroundTaskRuntime,
+  type BackgroundTaskSnapshot,
+} from './background-task-runtime.js'
 import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
 import type { Compactor } from '../core/compaction.js'
@@ -109,7 +113,10 @@ import { ScheduledPromptManager } from './scheduled-prompt-manager.js'
 import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
 import { ClaudeWorkflowToolRegistry } from '../tools/claude-workflow-tools.js'
-import { WorkflowManager } from './workflow-manager.js'
+import {
+  WorkflowManager,
+  type WorkflowTaskSnapshot,
+} from './workflow-manager.js'
 import { SessionWorktreeManager } from './session-worktree.js'
 import type {
   WorktreeSessionState,
@@ -124,6 +131,11 @@ import {
 } from '../tools/claude-user-message.js'
 import type { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
 import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
+import type {
+  ClaudeMcpRuntime,
+  ClaudeMcpServerStatus,
+  ClaudeMcpToolInspection,
+} from '../mcp/claude-mcp-tools.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -170,11 +182,15 @@ export interface ClaudeSessionServiceOptions {
   initialWorktreeName?: string
   enableWorktrees?: boolean
   worktreeToolNames?: readonly ('EnterWorktree' | 'ExitWorktree')[]
+  worktreeBaseRef?: 'fresh' | 'head'
   fileResources?: readonly ClaudeFileResource[]
   fileResourceConfig?: Omit<ClaudeFileResourceConfig, 'sessionId' | 'signal'>
   fileCheckpointing?: boolean
+  /** Disable only automatic context compaction; manual /compact remains available. */
+  autoCompact?: boolean
   fileRewindRoots?: readonly string[]
   interactiveTools?: ClaudeInteractiveToolManager
+  mcp?: ClaudeMcpRuntime
 }
 
 export interface SessionRunResult {
@@ -315,6 +331,7 @@ export class ClaudeSessionService {
   private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
   private readonly scheduledPrompts: ScheduledPromptManager | null
   private readonly workflowManager: WorkflowManager | null
+  private readonly backgroundTasks: BackgroundTaskRuntime
   private readonly worktreeManager: SessionWorktreeManager | null
   private readonly sessionCwds = new Map<string, string>()
   private readonly hostedSubagents = new Set<ClaudeSubagentExecutor>()
@@ -327,6 +344,7 @@ export class ClaudeSessionService {
     Promise<void>
   >()
   private readonly downloadedFileResourceSessions = new Set<string>()
+  private mcpClosePromise: Promise<void> | undefined
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
@@ -352,11 +370,15 @@ export class ClaudeSessionService {
           this.activeCwd(),
         )
       : null
+    this.backgroundTasks = new BackgroundTaskRuntime(this.workflowManager)
     this.worktreeManager =
       options.enableWorktrees && options.workspace
         ? new SessionWorktreeManager({
             workspace: options.workspace,
             sessionId: '',
+            ...(options.worktreeBaseRef
+              ? { baseRef: options.worktreeBaseRef }
+              : {}),
           })
         : null
   }
@@ -365,8 +387,41 @@ export class ClaudeSessionService {
     return this.scheduledPrompts?.next(signal) ?? Promise.resolve(null)
   }
 
-  workflows(): readonly Record<string, unknown>[] {
+  workflows(): readonly WorkflowTaskSnapshot[] {
     return this.workflowManager?.list() ?? []
+  }
+
+  mcpInspect(): Promise<readonly ClaudeMcpServerStatus[]> {
+    return this.requireMcp().inspect()
+  }
+
+  mcpReconnect(name: string): Promise<void> {
+    return this.requireMcp().reconnect(name)
+  }
+
+  mcpAuthenticate(name: string): Promise<void> {
+    return this.requireMcp().authenticate(name)
+  }
+
+  mcpReload(): Promise<void> {
+    return this.requireMcp().reload()
+  }
+
+  mcpTools(name: string): Promise<readonly ClaudeMcpToolInspection[]> {
+    return this.requireMcp().tools(name)
+  }
+
+  private requireMcp(): ClaudeMcpRuntime {
+    if (!this.options.mcp) throw new Error('MCP runtime is not configured')
+    return this.options.mcp
+  }
+
+  taskSnapshots(sessionId: string): Promise<BackgroundTaskSnapshot> {
+    return this.backgroundTasks.snapshot(sessionId)
+  }
+
+  stopTask(sessionId: string, taskId: string): Promise<void> {
+    return this.backgroundTasks.stop(sessionId, taskId)
   }
 
   async close(): Promise<void> {
@@ -377,7 +432,10 @@ export class ClaudeSessionService {
     await Promise.resolve()
     await Promise.all([...this.backgroundNotificationWrites.values()])
     this.hostedSubagents.clear()
+    this.backgroundTasks.clear()
     await this.workflowManager?.close()
+    this.mcpClosePromise ??= this.options.mcp?.close?.() ?? Promise.resolve()
+    await this.mcpClosePromise
   }
 
   createHostedToolRegistry(sessionId: string): ToolRegistry {
@@ -401,6 +459,7 @@ export class ClaudeSessionService {
               : {}),
           })
         : null
+    if (taskTools) this.backgroundTasks.registerBash(sessionId, taskTools)
     const scheduledTools =
       this.scheduledPrompts &&
       (this.options.scheduledToolNames?.length ?? 0) > 0
@@ -475,6 +534,9 @@ export class ClaudeSessionService {
           })
         : null
     if (subagentExecutor) this.hostedSubagents.add(subagentExecutor)
+    if (subagentExecutor) {
+      this.backgroundTasks.registerAgents(sessionId, subagentExecutor)
+    }
     const agentTools = subagentExecutor
       ? subagentExecutor.registry(sessionId, 0, (callId) => callId)
       : wrappedBase
@@ -2531,7 +2593,7 @@ export class ClaudeSessionService {
           }[] = [],
           preservedUserMessages: readonly string[] = [],
         ) => {
-          if (!budget) return
+          if (!budget || this.options.autoCompact === false) return
           const historyMessages = projectClaudeModelMessages(snapshot.entries)
           const predicted = budget.evaluate(
             [

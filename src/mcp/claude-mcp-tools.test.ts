@@ -836,11 +836,13 @@ process.stdin.on('data', chunk => {
     const address = http.address()
     if (!address || typeof address === 'string') throw new Error('no address')
     const warning = vi.fn()
+    const authenticateServer = vi.fn(async () => undefined)
 
     const registry = await ClaudeMcpToolRegistry.connect({
       base,
       cwd: root,
       onWarning: warning,
+      authenticateServer,
       resources: [
         { path: '/broken.json', scope: 'user', value: { mcpServers: [] } },
         {
@@ -881,6 +883,30 @@ process.stdin.on('data', chunk => {
         'mcp__stdio__marker',
         'mcp__http__marker',
       ])
+      await expect(registry.inspect()).resolves.toEqual([
+        expect.objectContaining({
+          name: 'stdio',
+          status: 'connected',
+          capabilities: ['tools'],
+          toolCount: 1,
+        }),
+        expect.objectContaining({
+          name: 'http',
+          status: 'connected',
+          capabilities: ['tools'],
+          toolCount: 1,
+        }),
+      ])
+      await expect(registry.tools('http')).resolves.toEqual([
+        expect.objectContaining({
+          name: 'marker',
+          fullName: 'mcp__http__marker',
+        }),
+      ])
+      await registry.reconnect('stdio')
+      await registry.authenticate('stdio')
+      expect(authenticateServer).toHaveBeenCalledWith('stdio')
+      await registry.reload()
       await expect(
         registry.execute(
           { id: '1', name: 'mcp__stdio__marker', input: {} },

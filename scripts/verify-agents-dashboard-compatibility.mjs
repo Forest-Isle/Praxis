@@ -104,13 +104,13 @@ async function waitForCompletedAgent(id) {
 }
 
 async function runPraxisPty() {
-  await execFileAsync(
+  const { stdout } = await execFileAsync(
     'expect',
     [
       '-c',
       `
 set timeout 20
-spawn $env(PRAXIS_NODE) $env(PRAXIS_CLI) agents
+spawn env TERM=xterm-256color $env(PRAXIS_NODE) $env(PRAXIS_CLI) agents
 expect {
   -re {Completed [(]1[)]} {
     send "\\033\\[B"
@@ -194,6 +194,7 @@ expect {
       timeout: 30_000,
     },
   )
+  return stdout
 }
 
 try {
@@ -205,6 +206,10 @@ try {
     mkdir(otherCwd),
     mkdir(installRoot),
   ])
+  await writeFile(
+    join(configRoot, 'settings.json'),
+    `${JSON.stringify({ theme: 'light-ansi' })}\n`,
+  )
   await listenProvider()
   const { stdout: packed } = await execFileAsync(
     'npm',
@@ -360,7 +365,17 @@ try {
     true,
   )
 
-  await runPraxisPty()
+  const dashboardOutput = await runPraxisPty()
+  assert.match(
+    dashboardOutput,
+    new RegExp(String.raw`\u001B\[95m(?:\u001B\[[0-9;]*m)*Praxis agents`, 'u'),
+    'installed agents dashboard did not apply its persisted accent theme',
+  )
+  assert.match(
+    dashboardOutput,
+    new RegExp(String.raw`\u001B\[93m(?:\u001B\[[0-9;]*m)*Loading agents`, 'u'),
+    'installed agents dashboard did not apply its persisted warning theme',
+  )
   const resumed = (await jsonAgents(true)).find(
     (agent) =>
       agent.id !== launchedId && agent.sessionId === completed.sessionId,

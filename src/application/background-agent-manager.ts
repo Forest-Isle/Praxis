@@ -52,6 +52,8 @@ interface BackgroundAgentTask {
   notifications: BackgroundAgentNotification[]
   generation: number
   queuedMessages: { message: string; toolUseId: string }[]
+  startedAt: number
+  durationMs: number | null
 }
 
 interface BackgroundAgentNotification {
@@ -67,6 +69,10 @@ export interface BackgroundAgentSnapshot {
   outputFile: string
   result: BackgroundAgentRunResult | null
   error: string | null
+  name: string | null
+  description: string
+  startedAt: number
+  durationMs: number | null
 }
 
 function assertAgentId(agentId: string): void {
@@ -133,6 +139,8 @@ export class BackgroundAgentManager {
       notifications: [],
       generation: 0,
       queuedMessages: [],
+      startedAt: Date.now(),
+      durationMs: null,
     }
     this.tasks.set(spec.agentId, task)
     this.start(task, spec.prompt, false, spec.toolUseId)
@@ -165,6 +173,8 @@ export class BackgroundAgentManager {
       notifications: [],
       generation: 0,
       queuedMessages: [],
+      startedAt: Date.now() - result.durationMs,
+      durationMs: result.durationMs,
     }
     this.tasks.set(spec.agentId, task)
     return this.snapshot(task)
@@ -177,6 +187,12 @@ export class BackgroundAgentManager {
   snapshotById(agentId: string): BackgroundAgentSnapshot | null {
     const task = this.tasks.get(agentId)
     return task ? this.snapshot(task) : null
+  }
+
+  snapshots(): readonly BackgroundAgentSnapshot[] {
+    return [...this.tasks.values()]
+      .sort((left, right) => right.startedAt - left.startedAt)
+      .map((task) => this.snapshot(task))
   }
 
   async output(
@@ -212,6 +228,7 @@ export class BackgroundAgentManager {
     }
     task.status = 'stopped'
     task.error = 'Stopped by TaskStop'
+    task.durationMs ??= Date.now() - task.startedAt
     task.queuedMessages.length = 0
     task.controller.abort()
     return `Task ${agentId} stopped successfully`
@@ -304,6 +321,8 @@ export class BackgroundAgentManager {
     const generation = task.generation
     const controller = new AbortController()
     task.status = 'running'
+    task.startedAt = Date.now()
+    task.durationMs = null
     task.controller = controller
     task.result = null
     task.error = null
@@ -317,6 +336,7 @@ export class BackgroundAgentManager {
         }
         task.status = 'completed'
         task.result = result
+        task.durationMs = result.durationMs
         task.error = null
         task.notifications.push({
           status: 'completed',
@@ -334,8 +354,12 @@ export class BackgroundAgentManager {
           )
           return
         }
+        const failedResult =
+          error instanceof BackgroundAgentRunError ? error.result : undefined
         task.status = 'failed'
         task.result = null
+        task.durationMs =
+          failedResult?.durationMs ?? Date.now() - task.startedAt
         task.error = error instanceof Error ? error.message : String(error)
         task.notifications.push({
           status: 'failed',
@@ -379,6 +403,7 @@ export class BackgroundAgentManager {
       durationMs: 0,
     }
     task.result = stoppedResult
+    task.durationMs ??= stoppedResult.durationMs || Date.now() - task.startedAt
     task.notifications.push({
       status: 'stopped',
       result: stoppedResult,
@@ -406,6 +431,10 @@ export class BackgroundAgentManager {
       outputFile: task.spec.outputFile,
       result: task.result,
       error: task.error,
+      name: task.spec.name ?? null,
+      description: task.spec.description,
+      startedAt: task.startedAt,
+      durationMs: task.durationMs,
     }
   }
 

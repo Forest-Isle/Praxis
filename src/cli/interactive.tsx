@@ -56,6 +56,8 @@ import {
   SelectionMenu,
   SessionPicker,
   StatusDashboard,
+  ThemePicker,
+  CustomThemeEditor,
   Transcript,
   WelcomePanel,
   useTerminalWidth,
@@ -144,6 +146,61 @@ import {
   defaultConversationExportFilename,
   writeConversationExport,
 } from './tui/conversation-export.js'
+import {
+  loadTuiThemeSettings,
+  saveTuiThemeSettings,
+  themeSettingsWithCustomTheme,
+} from './tui/theme-settings.js'
+import {
+  DEFAULT_TUI_THEME_SETTINGS,
+  TUI_THEMES,
+  TuiThemeProvider,
+  tuiPalette,
+  type TuiThemeSettings,
+} from './tui/theme.js'
+import {
+  CUSTOM_THEME_TOKENS,
+  createTuiCustomTheme,
+  deleteTuiCustomTheme,
+  loadTuiCustomThemes,
+  updateTuiCustomTheme,
+  type CustomThemeBase,
+  type CustomThemeToken,
+  type TuiCustomTheme,
+} from './tui/custom-themes.js'
+import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
+import {
+  loadConfigSettings,
+  saveConfigSetting,
+  configSettingDefinition,
+} from './tui/config-settings.js'
+import { McpPanel } from './tui/mcp-panel.js'
+import {
+  McpPanelController,
+  mcpRuntimeFromSession,
+} from './tui/mcp-panel-controller.js'
+import {
+  initialTuiMcpPanelState,
+  type TuiMcpPanelModel,
+  type TuiMcpPanelState,
+} from './tui/mcp-panel-projector.js'
+import type {
+  ClaudeMcpServerStatus,
+  ClaudeMcpToolInspection,
+} from '../mcp/claude-mcp-tools.js'
+import type { ConfigDashboardTab } from './tui/config-dashboard.js'
+import type { ConfigValue } from './tui/config-settings.js'
+import {
+  TaskPanel,
+  initialTuiTaskPanelState,
+  projectTuiTasks,
+  reconcileTuiTaskPanelState,
+  updateTuiTaskPanelState,
+  type TuiTaskEntry,
+  type TuiTaskPanelState,
+} from './tui/task-panel.js'
+import type { BackgroundTaskSnapshot } from '../application/background-task-runtime.js'
+import { ClaudeMcpManagement } from '../mcp/claude-mcp-management.js'
 
 interface InteractiveSessionCommands {
   run(
@@ -209,6 +266,13 @@ interface InteractiveSessionCommands {
     signal?: AbortSignal,
   ): Promise<string | null>
   workflows?(): readonly Record<string, unknown>[]
+  taskSnapshots?(sessionId: string): Promise<BackgroundTaskSnapshot>
+  stopTask?(sessionId: string, taskId: string): Promise<void>
+  mcpInspect?(): Promise<readonly ClaudeMcpServerStatus[]>
+  mcpReconnect?(name: string): Promise<void>
+  mcpAuthenticate?(name: string): Promise<void>
+  mcpReload?(): Promise<void>
+  mcpTools?(name: string): Promise<readonly ClaudeMcpToolInspection[]>
   hookConfiguration?(): Promise<TuiHookConfiguration>
   slashCommands?(): readonly TuiSlashCommand[]
   agentDefinitions?(): readonly TuiAgentEntry[]
@@ -325,6 +389,23 @@ interface InteractiveAppProps {
     }): Promise<void>
     remove?(rule: TuiPermissionRule): Promise<void>
   }
+  themeStore?: {
+    load(): Promise<TuiThemeSettings>
+    save(update: Partial<TuiThemeSettings>): Promise<TuiThemeSettings>
+    loadCustomThemes?(): Promise<readonly TuiCustomTheme[]>
+    createCustomTheme?(input: {
+      name: string
+      base: CustomThemeBase
+    }): Promise<TuiCustomTheme>
+    updateCustomTheme?(
+      theme: TuiCustomTheme,
+      token: CustomThemeToken,
+      value: string | undefined,
+    ): Promise<TuiCustomTheme>
+    deleteCustomTheme?(theme: TuiCustomTheme): Promise<void>
+  }
+  initialThemeSettings?: TuiThemeSettings
+  initialThemeLoadError?: string
   workspaceDirectoryResolver?: typeof resolveTuiWorkspaceDirectory
   workspaceDirectoryCompleter?: typeof completeTuiWorkspaceDirectory
 }
@@ -442,6 +523,27 @@ type InteractiveMenu =
   | { kind: 'model'; selectedIndex: number }
   | { kind: 'model-input' }
   | { kind: 'effort'; selectedIndex: number }
+  | { kind: 'theme'; selectedIndex: number }
+  | {
+      kind: 'custom-theme-create'
+      base: CustomThemeBase
+    }
+  | {
+      kind: 'custom-theme-editor'
+      theme: TuiCustomTheme
+      selectedIndex: number
+      query: string
+    }
+  | {
+      kind: 'custom-theme-token'
+      theme: TuiCustomTheme
+      token: CustomThemeToken
+    }
+  | {
+      kind: 'custom-theme-delete'
+      theme: TuiCustomTheme
+      selectedIndex: number
+    }
   | { kind: 'export'; selectedIndex: number }
   | { kind: 'export-filename' }
   | { kind: 'compact-progress' }
@@ -464,6 +566,16 @@ type InteractiveMenu =
       direction: 'from' | 'to'
     }
   | { kind: 'status'; tabIndex: number }
+  | {
+      kind: 'config'
+      snapshot: Awaited<ReturnType<typeof loadConfigSettings>>
+      tab: 'settings' | 'status' | 'config' | 'usage' | 'stats'
+      selectedIndex: number
+      query: string
+      searchFocused: boolean
+    }
+  | { kind: 'mcp'; model: TuiMcpPanelModel; state: TuiMcpPanelState }
+  | { kind: 'tasks'; tasks: readonly TuiTaskEntry[]; state: TuiTaskPanelState }
   | {
       kind: 'memory'
       generation: number
@@ -488,6 +600,11 @@ type InteractiveMenu =
       emptyText: string
       selectedIndex: number
     }
+
+function selectionPrefix(selected: boolean, screenReader: boolean): string {
+  if (selected) return screenReader ? 'Selected: ' : '❯ '
+  return screenReader ? '' : '  '
+}
 
 type RuntimePreferences = {
   model?: string
@@ -716,6 +833,9 @@ export function InteractiveApp({
   sideQuestionClipboardWriter = writeTuiOsc52Clipboard,
   exportWriter = writeConversationExport,
   permissionRuleStore,
+  themeStore,
+  initialThemeSettings,
+  initialThemeLoadError,
   workspaceDirectoryResolver = resolveTuiWorkspaceDirectory,
   workspaceDirectoryCompleter = completeTuiWorkspaceDirectory,
 }: InteractiveAppProps) {
@@ -756,6 +876,38 @@ export function InteractiveApp({
         remove: removeTuiPermissionRule,
       },
     [permissionRuleStore, runtimeCwd],
+  )
+  const presentationThemeStore = useMemo(
+    () =>
+      themeStore ?? {
+        load: loadTuiThemeSettings,
+        save: saveTuiThemeSettings,
+        loadCustomThemes: () => loadTuiCustomThemes(),
+        createCustomTheme: (input: { name: string; base: CustomThemeBase }) =>
+          createTuiCustomTheme(input),
+        updateCustomTheme: (
+          theme: TuiCustomTheme,
+          token: CustomThemeToken,
+          value: string | undefined,
+        ) => updateTuiCustomTheme(theme, token, value),
+        deleteCustomTheme: (theme: TuiCustomTheme) =>
+          deleteTuiCustomTheme(theme),
+      },
+    [themeStore],
+  )
+  const [customThemes, setCustomThemes] = useState<readonly TuiCustomTheme[]>(
+    [],
+  )
+  const [themeSettings, setThemeSettings] = useState<TuiThemeSettings>(
+    initialThemeSettings ?? DEFAULT_TUI_THEME_SETTINGS,
+  )
+  const activePalette = tuiPalette(
+    TUI_THEMES.includes(themeSettings.theme as (typeof TUI_THEMES)[number])
+      ? (themeSettings.theme as (typeof TUI_THEMES)[number])
+      : 'dark',
+    themeSettings.syntaxHighlightingDisabled,
+    process.env,
+    themeSettings.customTheme,
   )
   const choices = useMemo(
     () =>
@@ -841,6 +993,8 @@ export function InteractiveApp({
   const [menu, setMenu] = useState<InteractiveMenu | null>(null)
   const menuRef = useRef<InteractiveMenu | null>(null)
   const [busy, setBusy] = useState(false)
+  const taskEntriesRef = useRef<readonly TuiTaskEntry[]>([])
+  const mcpControllerRef = useRef<McpPanelController | null>(null)
   const [compactProgress, setCompactProgress] = useState(0)
   const initialPromptRef = useRef(initialPrompt?.trim() ?? '')
   const [initialPromptPending, setInitialPromptPending] = useState(
@@ -1096,6 +1250,61 @@ export function InteractiveApp({
     setHistory((current) => [...current, line])
 
   useEffect(() => {
+    if (initialThemeSettings !== undefined) {
+      if (initialThemeLoadError)
+        append({ kind: 'warning', text: initialThemeLoadError })
+      return
+    }
+    let cancelled = false
+    void presentationThemeStore.load().then(
+      (loaded) => {
+        if (!cancelled)
+          setThemeSettings(themeSettingsWithCustomTheme(loaded, customThemes))
+      },
+      (error: unknown) => {
+        if (!cancelled)
+          append({
+            kind: 'warning',
+            text: `Unable to load theme settings: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          })
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [
+    customThemes,
+    initialThemeLoadError,
+    initialThemeSettings,
+    presentationThemeStore,
+  ])
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.resolve(
+      presentationThemeStore.loadCustomThemes?.() ?? [],
+    ).then(
+      (themes) => {
+        if (!cancelled && themes) setCustomThemes(themes)
+      },
+      (error: unknown) => {
+        if (!cancelled)
+          append({
+            kind: 'warning',
+            text: `Unable to load custom themes: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          })
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [presentationThemeStore])
+
+  useEffect(() => {
     let cancelled = false
     void keybindingsLoader(keybindingsRoot).then(
       (loaded) => {
@@ -1316,6 +1525,34 @@ export function InteractiveApp({
   const updateMenu = (next: InteractiveMenu | null) => {
     menuRef.current = next
     setMenu(next)
+  }
+
+  const refreshTasks = async (
+    existing?: Extract<InteractiveMenu, { kind: 'tasks' }>,
+  ) => {
+    const commands = await service()
+    if (!sessionId || !commands.taskSnapshots) {
+      const rows = workflowRows(commands.workflows?.() ?? [])
+      updateMenu({
+        kind: 'list',
+        title: 'Background',
+        rows,
+        emptyText: 'No tasks currently running',
+        selectedIndex: 0,
+      })
+      return
+    }
+    const snapshot = await commands.taskSnapshots(sessionId)
+    const tasks = projectTuiTasks(snapshot)
+    const state = existing
+      ? reconcileTuiTaskPanelState(
+          existing.state,
+          taskEntriesRef.current,
+          tasks,
+        )
+      : initialTuiTaskPanelState(tasks)
+    taskEntriesRef.current = tasks
+    updateMenu({ kind: 'tasks', tasks, state })
   }
 
   const updateBtwHistory = (
@@ -1876,14 +2113,7 @@ export function InteractiveApp({
       setBusy(true)
       setStatus('loading tasks')
       try {
-        const rows = workflowRows((await service()).workflows?.() ?? [])
-        updateMenu({
-          kind: 'list',
-          title: 'Background',
-          rows,
-          emptyText: 'No tasks currently running',
-          selectedIndex: 0,
-        })
+        await refreshTasks()
       } catch (error) {
         warn(error)
       } finally {
@@ -2012,16 +2242,43 @@ export function InteractiveApp({
       setBusy(true)
       setStatus('loading MCP servers')
       try {
-        const servers = (await service()).runtimeInfo?.().mcpServers ?? []
+        const commands = await service()
+        if (!commands.mcpInspect || !commands.mcpTools) {
+          const servers = commands.runtimeInfo?.().mcpServers ?? []
+          updateMenu({
+            kind: 'list',
+            title: 'MCP servers',
+            rows: servers.map((server) => ({
+              label: server.name,
+              description: server.status,
+            })),
+            emptyText: 'No MCP servers configured',
+            selectedIndex: 0,
+          })
+          return
+        }
+        const configRoot = process.env.CLAUDE_CONFIG_DIR
+        const management = new ClaudeMcpManagement({
+          cwd: runtimeCwdRef.current,
+          ...(configRoot ? { configRoot } : {}),
+        })
+        const controller = new McpPanelController({
+          cwd: runtimeCwdRef.current,
+          management,
+          runtime: mcpRuntimeFromSession({
+            mcpInspect: commands.mcpInspect,
+            mcpReconnect: commands.mcpReconnect ?? (async () => {}),
+            mcpAuthenticate: commands.mcpAuthenticate ?? (async () => {}),
+            mcpReload: commands.mcpReload ?? (async () => {}),
+            mcpTools: commands.mcpTools,
+          }),
+        })
+        mcpControllerRef.current = controller
+        const model = await controller.open()
         updateMenu({
-          kind: 'list',
-          title: 'MCP servers',
-          rows: servers.map((server) => ({
-            label: server.name,
-            description: server.status,
-          })),
-          emptyText: 'No MCP servers configured',
-          selectedIndex: 0,
+          kind: 'mcp',
+          model,
+          state: initialTuiMcpPanelState(model),
         })
       } catch (error) {
         warn(error)
@@ -2876,9 +3133,11 @@ export function InteractiveApp({
           ? ['Help', 'Tabs']
           : menuRef.current.kind === 'permission-dashboard'
             ? ['Settings', 'Tabs']
-            : menuRef.current.kind === 'model'
-              ? ['ModelPicker', 'Select']
-              : ['Select']
+            : menuRef.current.kind === 'theme'
+              ? ['ThemePicker', 'Select']
+              : menuRef.current.kind === 'model'
+                ? ['ModelPicker', 'Select']
+                : ['Select']
       : commandPaletteVisible || filePickerVisible
         ? ['Autocomplete', 'Chat']
         : permission || planApproval
@@ -3056,6 +3315,210 @@ export function InteractiveApp({
     }
 
     const earlyMenu = menuRef.current
+    if (earlyMenu?.kind === 'tasks') {
+      if (key.escape || value === '\u001B') {
+        updateMenu(null)
+        return
+      }
+      const selected = earlyMenu.tasks[earlyMenu.state.selectedIndex]
+      if (
+        (value.toLowerCase() === 'x' || value === 'X') &&
+        selected?.status === 'running'
+      ) {
+        const stopping = (async () => {
+          setBusy(true)
+          try {
+            const commands = await service()
+            if (!sessionId || !commands.stopTask)
+              throw new Error('Task controls are unavailable.')
+            await commands.stopTask(sessionId, selected.id)
+            await refreshTasks(earlyMenu)
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(stopping)
+        void stopping.finally(() => onTurnChange?.(null))
+        return
+      }
+      if (
+        key.upArrow ||
+        key.downArrow ||
+        key.return ||
+        key.leftArrow ||
+        key.rightArrow
+      ) {
+        const action = key.upArrow
+          ? { type: 'move' as const, delta: -1 as const }
+          : key.downArrow
+            ? { type: 'move' as const, delta: 1 as const }
+            : key.return
+              ? { type: 'open' as const }
+              : { type: 'back' as const }
+        const state = updateTuiTaskPanelState(
+          earlyMenu.state,
+          earlyMenu.tasks,
+          action,
+        )
+        updateMenu({ ...earlyMenu, state })
+      }
+      return
+    }
+    if (earlyMenu?.kind === 'mcp') {
+      if (key.escape || value === '\u001B') {
+        const transition = mcpControllerRef.current
+          ? { state: earlyMenu.state, command: { type: 'close' as const } }
+          : undefined
+        if (transition?.command?.type === 'close') updateMenu(null)
+        return
+      }
+      const input = key.upArrow
+        ? { type: 'up' as const }
+        : key.downArrow
+          ? { type: 'down' as const }
+          : key.return
+            ? { type: 'confirm' as const }
+            : key.leftArrow
+              ? { type: 'back' as const }
+              : null
+      if (input && mcpControllerRef.current) {
+        const dispatch = mcpControllerRef.current.dispatch(
+          earlyMenu.model,
+          earlyMenu.state,
+          input,
+        )
+        const operation = (async () => {
+          setBusy(true)
+          try {
+            const result = await dispatch
+            if (result.closed) updateMenu(null)
+            else
+              updateMenu({
+                kind: 'mcp',
+                model: result.model,
+                state: result.state,
+              })
+            if (result.error) warn(result.error)
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(operation)
+        void operation.finally(() => onTurnChange?.(null))
+      }
+      return
+    }
+    if (earlyMenu?.kind === 'config') {
+      if (key.escape || value === '\u001B') {
+        if (earlyMenu.searchFocused && earlyMenu.query) {
+          updateMenu({ ...earlyMenu, query: '' })
+        } else {
+          updateMenu(null)
+        }
+        return
+      }
+      const rows = projectConfigRows(earlyMenu.snapshot, earlyMenu.query)
+      if (key.leftArrow || key.rightArrow || key.tab) {
+        const tabs: readonly ConfigDashboardTab[] = [
+          'settings',
+          'status',
+          'config',
+          'usage',
+          'stats',
+        ]
+        const index = tabs.indexOf(earlyMenu.tab)
+        const direction = key.leftArrow || (key.tab && key.shift) ? -1 : 1
+        const tab =
+          tabs[Math.max(0, Math.min(tabs.length - 1, index + direction))] ??
+          'config'
+        updateMenu({
+          ...earlyMenu,
+          tab,
+          selectedIndex: 0,
+          searchFocused: tab === 'config',
+        })
+        return
+      }
+      if (earlyMenu.tab !== 'config') return
+      if (key.upArrow || key.downArrow) {
+        updateMenu({
+          ...earlyMenu,
+          searchFocused: false,
+          selectedIndex: Math.max(
+            0,
+            Math.min(
+              Math.max(0, rows.length - 1),
+              earlyMenu.selectedIndex + (key.upArrow ? -1 : 1),
+            ),
+          ),
+        })
+        return
+      }
+      if (value === '/' && !earlyMenu.searchFocused) {
+        updateMenu({ ...earlyMenu, searchFocused: true })
+        return
+      }
+      if (earlyMenu.searchFocused && key.backspace) {
+        updateMenu({ ...earlyMenu, query: earlyMenu.query.slice(0, -1) })
+        return
+      }
+      if (
+        earlyMenu.searchFocused &&
+        !key.ctrl &&
+        !key.meta &&
+        value &&
+        printable
+      ) {
+        updateMenu({
+          ...earlyMenu,
+          query: earlyMenu.query + value,
+          selectedIndex: 0,
+        })
+        return
+      }
+      if (key.return || value === ' ') {
+        const row = rows[earlyMenu.selectedIndex]
+        if (!row) return
+        const definition = configSettingDefinition(row.definition.id)
+        if (!definition || definition.values === 'language') {
+          append({
+            kind: 'warning',
+            text: 'This setting requires a typed value and is not yet editable in the panel.',
+          })
+          return
+        }
+        const values = definition.values
+        const currentIndex = values.indexOf(row.value)
+        const value = values[(currentIndex + 1) % values.length]
+        if (value === undefined) return
+        const saving = (async () => {
+          setBusy(true)
+          try {
+            const snapshot = await saveConfigSetting(
+              definition.id,
+              value as ConfigValue,
+            )
+            await retireService()
+            updateMenu({ ...earlyMenu, snapshot })
+            append({
+              kind: 'local-result',
+              text: `${definition.label} set to ${String(value)}`,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(saving)
+        void saving.finally(() => onTurnChange?.(null))
+      }
+      return
+    }
     if (earlyMenu?.kind === 'memory') {
       if (key.escape || value === '\u001B') {
         updateMenu(null)
@@ -4025,6 +4488,327 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'theme') {
+        const themeOptionCount = TUI_THEMES.length + customThemes.length + 1
+        const lastThemeOptionIndex = themeOptionCount - 1
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+        } else if (isKeybinding('theme:editCustom') || controlKey('e')) {
+          const options = [
+            ...TUI_THEMES,
+            ...customThemes.map((theme) => `custom:${theme.slug}` as const),
+          ]
+          const selected = options[activeMenu.selectedIndex]
+          const theme = selected?.startsWith('custom:')
+            ? customThemes.find((entry) => `custom:${entry.slug}` === selected)
+            : undefined
+          if (!theme) {
+            append({
+              kind: 'warning',
+              text: 'Only custom themes can be edited.',
+            })
+          } else {
+            updateMenu({
+              kind: 'custom-theme-editor',
+              theme,
+              selectedIndex: 0,
+              query: '',
+            })
+          }
+        } else if (isKeybinding('theme:toggleSyntaxHighlighting')) {
+          const syntaxHighlightingDisabled =
+            !themeSettings.syntaxHighlightingDisabled
+          const saving = (async () => {
+            setBusy(true)
+            try {
+              const committed = await presentationThemeStore.save({
+                syntaxHighlightingDisabled,
+              })
+              setThemeSettings(committed)
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(saving)
+          void saving.finally(() => onTurnChange?.(null))
+        } else if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                lastThemeOptionIndex,
+                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+        } else if (/^[1-9]$/u.test(value)) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.min(lastThemeOptionIndex, Number(value) - 1),
+          })
+        } else if (key.return) {
+          const options = [
+            ...TUI_THEMES,
+            ...customThemes.map((theme) => `custom:${theme.slug}` as const),
+            '__new__' as const,
+          ]
+          const selected = options[activeMenu.selectedIndex]
+          if (!selected) return
+          if (selected === '__new__') {
+            const base = themeSettings.theme.startsWith('custom:')
+              ? (themeSettings.customTheme?.base ?? 'dark')
+              : themeSettings.theme === 'auto'
+                ? 'dark'
+                : (themeSettings.theme as CustomThemeBase)
+            updateMenu({ kind: 'custom-theme-create', base })
+            return
+          }
+          const saving = (async () => {
+            setBusy(true)
+            try {
+              const customTheme = selected.startsWith('custom:')
+                ? customThemes.find(
+                    (theme) => `custom:${theme.slug}` === selected,
+                  )
+                : undefined
+              const committed = await presentationThemeStore.save({
+                theme: selected,
+                ...(customTheme === undefined ? {} : { customTheme }),
+              })
+              setThemeSettings(committed)
+              updateMenu(null)
+              append({
+                kind: 'local-result',
+                text: `Theme set to ${customTheme?.name ?? selected}`,
+              })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(saving)
+          void saving.finally(() => onTurnChange?.(null))
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'custom-theme-create') {
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu(null)
+        } else if (key.return) {
+          const name = inputRef.current.trim() || 'my-theme'
+          const creating = (async () => {
+            setBusy(true)
+            try {
+              const create = presentationThemeStore.createCustomTheme
+              if (!create)
+                throw new Error('Custom theme controls are unavailable.')
+              const theme = await create({ name, base: activeMenu.base })
+              setCustomThemes((current) =>
+                [...current, theme].sort((left, right) =>
+                  left.name.localeCompare(right.name),
+                ),
+              )
+              const committed = await presentationThemeStore.save({
+                theme: `custom:${theme.slug}`,
+                customTheme: theme,
+              })
+              setThemeSettings(committed)
+              clearComposerInput()
+              updateMenu(null)
+              append({
+                kind: 'local-result',
+                text: `Using custom theme "${theme.name}"`,
+              })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(creating)
+          void creating.finally(() => onTurnChange?.(null))
+        } else {
+          editComposer()
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'custom-theme-editor') {
+        const filteredTokens = CUSTOM_THEME_TOKENS.filter((token) =>
+          token.toLowerCase().includes(activeMenu.query.toLowerCase()),
+        )
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu(null)
+        } else if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                Math.max(0, filteredTokens.length - 1),
+                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+        } else if (key.return) {
+          const token = filteredTokens[activeMenu.selectedIndex]
+          if (token) {
+            const current = activeMenu.theme.overrides[token] ?? ''
+            clearComposerInput()
+            updateMenu({
+              kind: 'custom-theme-token',
+              theme: activeMenu.theme,
+              token,
+            })
+            updateComposerInput(current)
+          }
+        } else if (key.tab) {
+          const token = filteredTokens[activeMenu.selectedIndex]
+          if (token && activeMenu.theme.overrides[token] !== undefined) {
+            const resetting = (async () => {
+              setBusy(true)
+              try {
+                const update = presentationThemeStore.updateCustomTheme
+                if (!update)
+                  throw new Error('Custom theme controls are unavailable.')
+                const next = await update(activeMenu.theme, token, undefined)
+                setCustomThemes((current) =>
+                  current.map((entry) =>
+                    entry.slug === next.slug ? next : entry,
+                  ),
+                )
+                setThemeSettings((current) => ({
+                  ...current,
+                  theme: `custom:${next.slug}`,
+                  customTheme: next,
+                }))
+                updateMenu({ ...activeMenu, theme: next })
+              } catch (error) {
+                warn(error)
+              } finally {
+                setBusy(false)
+              }
+            })()
+            onTurnChange?.(resetting)
+            void resetting.finally(() => onTurnChange?.(null))
+          }
+        } else if (key.backspace || key.delete) {
+          updateMenu({
+            ...activeMenu,
+            query: activeMenu.query.slice(0, -1),
+            selectedIndex: 0,
+          })
+        } else if (!key.ctrl && !key.meta && value && printable) {
+          updateMenu({
+            ...activeMenu,
+            query: activeMenu.query + value,
+            selectedIndex: 0,
+          })
+        } else if (controlKey('d')) {
+          updateMenu({
+            kind: 'custom-theme-delete',
+            theme: activeMenu.theme,
+            selectedIndex: 0,
+          })
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'custom-theme-token') {
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu({
+            kind: 'custom-theme-editor',
+            theme: activeMenu.theme,
+            selectedIndex: 0,
+            query: '',
+          })
+        } else if (key.return) {
+          const valueToSave = inputRef.current.trim()
+          const saving = (async () => {
+            setBusy(true)
+            try {
+              const update = presentationThemeStore.updateCustomTheme
+              if (!update)
+                throw new Error('Custom theme controls are unavailable.')
+              const next = await update(
+                activeMenu.theme,
+                activeMenu.token,
+                valueToSave,
+              )
+              setCustomThemes((current) =>
+                current.map((entry) =>
+                  entry.slug === next.slug ? next : entry,
+                ),
+              )
+              setThemeSettings((current) => ({
+                ...current,
+                theme: `custom:${next.slug}`,
+                customTheme: next,
+              }))
+              clearComposerInput()
+              updateMenu({
+                kind: 'custom-theme-editor',
+                theme: next,
+                selectedIndex: 0,
+                query: '',
+              })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(saving)
+          void saving.finally(() => onTurnChange?.(null))
+        } else {
+          editComposer()
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'custom-theme-delete') {
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+        } else if (key.return || value.toLowerCase() === 'y') {
+          const deleting = (async () => {
+            setBusy(true)
+            try {
+              const remove = presentationThemeStore.deleteCustomTheme
+              if (!remove)
+                throw new Error('Custom theme controls are unavailable.')
+              await remove(activeMenu.theme)
+              setCustomThemes((current) =>
+                current.filter((entry) => entry.slug !== activeMenu.theme.slug),
+              )
+              const committed = await presentationThemeStore.save({
+                theme: activeMenu.theme.base,
+              })
+              setThemeSettings(committed)
+              updateMenu(null)
+              append({
+                kind: 'local-result',
+                text: `Deleted custom theme "${activeMenu.theme.name}"`,
+              })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(deleting)
+          void deleting.finally(() => onTurnChange?.(null))
+        }
+        return
+      }
+
       if (activeMenu.kind === 'compact-progress') {
         if (key.escape || value === '\u001B' || isKeybinding('chat:cancel')) {
           turnControllerRef.current?.abort()
@@ -4037,6 +4821,13 @@ export function InteractiveApp({
         return
       }
 
+      if (
+        activeMenu.kind === 'mcp' ||
+        activeMenu.kind === 'tasks' ||
+        activeMenu.kind === 'config'
+      ) {
+        return
+      }
       const optionCount =
         activeMenu.kind === 'model'
           ? modelOptions.length
@@ -4247,6 +5038,21 @@ export function InteractiveApp({
           kind: 'effort',
           selectedIndex: EFFORT_OPTIONS.indexOf(runtimePreferences.effort),
         })
+      } else if (prompt === '/theme') {
+        updateMenu({
+          kind: 'theme',
+          selectedIndex: Math.max(
+            0,
+            themeSettings.theme.startsWith('custom:')
+              ? TUI_THEMES.length +
+                  customThemes.findIndex(
+                    (theme) => `custom:${theme.slug}` === themeSettings.theme,
+                  )
+              : TUI_THEMES.indexOf(
+                  themeSettings.theme as (typeof TUI_THEMES)[number],
+                ),
+          ),
+        })
       } else if (prompt === '/keybindings') {
         setKeybindingsEditing(true)
       } else if (prompt === '/memory') {
@@ -4446,7 +5252,29 @@ export function InteractiveApp({
       } else if (prompt === '/status') {
         updateMenu({ kind: 'status', tabIndex: 1 })
       } else if (prompt === '/config') {
-        updateMenu({ kind: 'status', tabIndex: 2 })
+        const initial: Extract<InteractiveMenu, { kind: 'config' }> = {
+          kind: 'config',
+          snapshot: { settings: {}, state: {} },
+          tab: 'config',
+          selectedIndex: 0,
+          query: '',
+          searchFocused: true,
+        }
+        updateMenu(initial)
+        const loading = (async () => {
+          setBusy(true)
+          try {
+            const snapshot = await loadConfigSettings()
+            if (menuRef.current?.kind === 'config')
+              updateMenu({ ...menuRef.current, snapshot })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(loading)
+        void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/usage') {
         updateMenu({ kind: 'status', tabIndex: 3 })
       } else if (prompt === '/skills' || prompt === '/skill') {
@@ -4518,525 +5346,654 @@ export function InteractiveApp({
   })
 
   return (
-    <Box flexDirection="column">
-      {selectingSession ? (
-        <SessionPicker
-          sessions={filteredPickerChoices}
-          selectedIndex={selectedIndex}
-          screenReader={axScreenReader}
-          query={sessionSearch}
-        />
-      ) : (
-        <>
-          {!axScreenReader && history.length === 0 && !sessionId ? (
-            <WelcomePanel display={runtimeDisplay} width={width} />
-          ) : null}
-          {sessionId ? (
-            <Text dimColor>Session {sessionId.slice(0, 8)}</Text>
-          ) : null}
-          <Transcript
-            items={history}
-            activeText={activeText}
-            activeThinking={activeThinking}
-            thinkingExpanded={thinkingExpanded}
-            detailedTranscript={thinkingExpanded}
+    <TuiThemeProvider settings={themeSettings}>
+      <Box flexDirection="column">
+        {selectingSession ? (
+          <SessionPicker
+            sessions={filteredPickerChoices}
+            selectedIndex={selectedIndex}
             screenReader={axScreenReader}
+            query={sessionSearch}
           />
-          {externalEditorRequest !== null ||
-          keybindingsEditing ||
-          memoryEditorRequest !== null ? (
-            <ExternalEditorWait screenReader={axScreenReader} />
-          ) : permission ? (
-            <DialogFrame
-              title={
-                permission.kind === 'recovery'
-                  ? `Retry interrupted ${permission.call.name}?`
-                  : `Allow ${permission.call.name}?`
-              }
-              screenReader={axScreenReader}
-            >
-              <Text bold>{describeTool(permission.call, sensitiveValues)}</Text>
-              <Text>❯ 1. Yes</Text>
-              <Text> 2. No</Text>
-              <Text dimColor>Enter/Esc declines · y/n quick response</Text>
-            </DialogFrame>
-          ) : planApproval ? (
-            <DialogFrame
-              title="Approve this plan and begin implementation?"
-              screenReader={axScreenReader}
-            >
-              <Text dimColor>{planApproval.request.planPath}</Text>
-              {planApproval.request.plan ? (
-                <Box marginY={1}>
-                  <Text>{planApproval.request.plan}</Text>
-                </Box>
-              ) : null}
-              <Text>❯ 1. Yes, implement the plan</Text>
-              <Text> 2. No, keep planning</Text>
-            </DialogFrame>
-          ) : question ? (
-            <DialogFrame
-              title={`${question.questions[question.index]?.header}: ${question.questions[question.index]?.question}`}
-              screenReader={axScreenReader}
-            >
-              {question.questions[question.index]?.options.map(
-                (option, index) => (
-                  <Box key={`${index}-${option.label}`} flexDirection="column">
-                    <Text>
-                      {index === 0 ? '❯ ' : '  '}
-                      {index + 1}. {option.label} — {option.description}
-                    </Text>
-                    {option.preview ? (
-                      <Text dimColor>{option.preview}</Text>
-                    ) : null}
-                  </Box>
-                ),
-              )}
-              <Text>› {input}</Text>
-              <Text dimColor>
-                {question.questions[question.index]?.multiSelect
-                  ? 'Enter comma-separated option numbers or custom text · Esc cancels'
-                  : 'Enter one option number or custom text · Esc cancels'}
-              </Text>
-            </DialogFrame>
-          ) : elicitation ? (
-            <DialogFrame
-              title={`MCP elicitation (${elicitation.request.serverName})`}
-              screenReader={axScreenReader}
-            >
-              <Text>{elicitation.request.message}</Text>
-              {elicitation.request.url ? (
-                <Text>{elicitation.request.url}</Text>
-              ) : null}
-              {elicitation.request.requestedSchema ? (
-                <Text dimColor>
-                  {JSON.stringify(elicitation.request.requestedSchema)}
-                </Text>
-              ) : null}
-              <Text>› {input}</Text>
-              <Text dimColor>Enter JSON object to accept · Esc to cancel</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'model-input' ? (
-            <DialogFrame title="Enter model ID" screenReader={axScreenReader}>
-              <Text dimColor>
-                Enter a model ID supported by the configured provider.
-              </Text>
-              <Text>› {input}</Text>
-              <Text dimColor>Enter confirms · Esc cancels</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'export-filename' ? (
-            <DialogFrame title="Enter filename:" screenReader={axScreenReader}>
-              <Text>&gt; {input}</Text>
-              <Text dimColor>Enter to save · Esc to go back</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'compact-progress' ? (
-            <Box flexDirection="column">
-              <Text>✻ Compacting conversation…</Text>
-              <Text>
-                {'▰'.repeat(Math.floor(compactProgress / 2))}
-                {'▱'.repeat(50 - Math.floor(compactProgress / 2))}{' '}
-                {compactProgress}%
-              </Text>
-            </Box>
-          ) : menu?.kind === 'btw' ? (
-            <BtwPanel
-              entries={btwHistory}
-              selectedIndex={menu.selectedIndex}
-              scrollOffset={menu.scrollOffset}
-              copied={btwCopied}
-              width={width}
+        ) : (
+          <>
+            {!axScreenReader && history.length === 0 && !sessionId ? (
+              <WelcomePanel display={runtimeDisplay} width={width} />
+            ) : null}
+            {sessionId ? (
+              <Text dimColor>Session {sessionId.slice(0, 8)}</Text>
+            ) : null}
+            <Transcript
+              items={history}
+              activeText={activeText}
+              activeThinking={activeThinking}
+              thinkingExpanded={thinkingExpanded}
+              detailedTranscript={thinkingExpanded}
               screenReader={axScreenReader}
             />
-          ) : menu?.kind === 'rewind' ? (
-            <Box flexDirection="column">
-              <Text bold> Rewind</Text>
-              <Text> </Text>
-              <Text>
-                {' '}
-                Restore the code and/or conversation to the point before…
-              </Text>
-              <Text> </Text>
-              {(() => {
-                const window = rewindPointWindow(
-                  menu.points,
-                  menu.selectedIndex,
-                )
-                return (
-                  <>
-                    {window.start > 0 ? (
-                      <Text dimColor> ↑ {window.start} more above</Text>
-                    ) : null}
-                    {menu.points
-                      .slice(window.start, window.end)
-                      .map((point, offset) => {
-                        const index = window.start + offset
-                        return (
-                          <Box
-                            key={point.messageId}
-                            flexDirection="column"
-                            marginBottom={1}
-                          >
-                            <Text inverse={menu.selectedIndex === index}>
-                              {menu.selectedIndex === index ? ' ❯ ' : '   '}
-                              {point.prompt.replace(/\s+/gu, ' ').slice(0, 72)}
-                            </Text>
-                            <Text dimColor>
-                              {'     '}
-                              {point.fileChanges.length > 0
-                                ? point.fileChanges
-                                    .map((path) =>
-                                      path.startsWith(`${runtimeCwd}/`)
-                                        ? path.slice(runtimeCwd.length + 1)
-                                        : path,
-                                    )
-                                    .join(', ')
-                                : point.fileRestoreAvailable
-                                  ? 'No code changes'
-                                  : '⚠ No code restore'}
-                            </Text>
-                          </Box>
-                        )
-                      })}
-                    {window.end < menu.points.length ? (
-                      <Text dimColor>
-                        {' '}
-                        ↓ {menu.points.length - window.end} more below
-                      </Text>
-                    ) : null}
-                  </>
-                )
-              })()}
-              <Text inverse={menu.selectedIndex === menu.points.length}>
-                {menu.selectedIndex === menu.points.length ? ' ❯ ' : '   '}
-                (current)
-              </Text>
-              <Text> </Text>
-              <Text dimColor> Enter to continue · Esc to cancel</Text>
-            </Box>
-          ) : menu?.kind === 'rewind-confirm' ? (
-            <DialogFrame
-              title="Confirm restore point"
-              screenReader={axScreenReader}
-            >
-              <Text>│ {menu.point.prompt}</Text>
-              <Text> </Text>
-              <Text>The conversation will be forked.</Text>
-              <Text>
-                The code will{' '}
-                {menu.point.fileChanges.length > 0
-                  ? `restore ${menu.point.fileChanges.join(', ')}.`
-                  : 'be unchanged.'}
-              </Text>
-              <Text> </Text>
-              {rewindActions(menu.point).map((option, index) => (
-                <Text
-                  key={option.action}
-                  inverse={menu.selectedIndex === index}
-                >
-                  {menu.selectedIndex === index ? '❯ ' : '  '}
-                  {index + 1}. {option.label}
-                </Text>
-              ))}
-              <Text> </Text>
-              <Text color="yellow">
-                ⚠ Rewinding does not affect files edited manually or via bash.
-              </Text>
-            </DialogFrame>
-          ) : menu?.kind === 'rewind-context' ? (
-            <DialogFrame
-              title={`Summarize ${menu.direction === 'from' ? 'from' : 'up to'} here`}
-              screenReader={axScreenReader}
-            >
-              <Text>
-                {menu.direction === 'from'
-                  ? 'Messages after this point will be summarized.'
-                  : 'Messages up to this point will be summarized.'}
-              </Text>
-              <Text> </Text>
-              <Text>add context (optional): {input}</Text>
-              <Text dimColor>Enter to summarize · Esc to go back</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'permission-rule-input' ? (
-            <Box flexDirection="column">
-              <Text bold>Add {menu.behavior} permission rule</Text>
-              <Text>
-                Permission rules are a tool name, optionally followed by a
-                specifier in parentheses.
-              </Text>
-              <Text>e.g., WebFetch or Bash(ls *)</Text>
-              <Text> </Text>
-              <Box
-                borderStyle={axScreenReader ? undefined : 'round'}
-                paddingX={axScreenReader ? 0 : 1}
-              >
-                <Text {...(input ? {} : { dimColor: true })}>
-                  {input || 'Enter permission rule…'}
-                </Text>
-              </Box>
-              <Text dimColor>Enter to submit · Esc to cancel</Text>
-            </Box>
-          ) : menu?.kind === 'workspace-directory-input' ? (
-            <Box flexDirection="column">
-              <Text bold>Add directory to workspace</Text>
-              <Text>
-                Praxis Code will be able to read files in this directory and
-                make edits when auto-accept edits is on.
-              </Text>
-              <Text> </Text>
-              <Text>Enter the path to the directory:</Text>
-              <Box
-                borderStyle={axScreenReader ? undefined : 'round'}
-                paddingX={axScreenReader ? 0 : 1}
-              >
-                <Text {...(input ? {} : { dimColor: true })}>
-                  {input || 'Directory path…'}
-                </Text>
-              </Box>
-              <Text dimColor>
-                Tab to complete · Enter to add · Esc to cancel
-              </Text>
-            </Box>
-          ) : menu?.kind === 'permission-delete' ? (
-            <DialogFrame
-              title={permissionDeleteTitle(menu.rule.behavior)}
-              screenReader={axScreenReader}
-            >
-              <Text>{menu.rule.rule}</Text>
-              {permissionRuleDescription(menu.rule.rule) ? (
-                <Text dimColor>
-                  {permissionRuleDescription(menu.rule.rule)}
-                </Text>
-              ) : null}
-              <Text dimColor>{permissionScopeLabel(menu.rule.scope)}</Text>
-              <Text> </Text>
-              <Text>Are you sure you want to delete this permission rule?</Text>
-              <Text> </Text>
-              <Text inverse={menu.selectedIndex === 0}>
-                {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
-              </Text>
-              <Text inverse={menu.selectedIndex === 1}>
-                {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
-              </Text>
-              <Text dimColor>Esc to cancel</Text>
-            </DialogFrame>
-          ) : menu?.kind === 'workspace-directory-delete' ? (
-            <Box flexDirection="column">
-              <Text bold>Remove directory from workspace?</Text>
-              <Text> {menu.path}</Text>
-              <Text> </Text>
-              <Text>
-                Praxis Code will no longer have access to files in this
-                directory.
-              </Text>
-              <Text> </Text>
-              <Text inverse={menu.selectedIndex === 0}>
-                {menu.selectedIndex === 0 ? '❯ ' : '  '}1. Yes
-              </Text>
-              <Text inverse={menu.selectedIndex === 1}>
-                {menu.selectedIndex === 1 ? '❯ ' : '  '}2. No
-              </Text>
-              <Text dimColor>Enter to confirm · Esc to cancel</Text>
-            </Box>
-          ) : menu ? (
-            menu.kind === 'help' ? (
-              <HelpMenu
-                tabIndex={menu.tabIndex}
-                selectedIndex={menu.selectedIndex}
-                builtinCommands={builtinSlashCommands}
-                customCommands={customSlashCommands}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'diff' ? (
-              <DiffDashboard
-                snapshots={menu.snapshots}
-                sourceIndex={menu.sourceIndex}
-                selectedIndex={menu.selectedIndex}
-                viewingFile={menu.viewingFile}
-                scrollOffset={menu.scrollOffset}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'permission-dashboard' ? (
-              <PermissionDashboard
-                tabIndex={menu.tabIndex}
-                selectedIndex={menu.selectedIndex}
-                query={menu.query}
-                rules={menu.rules}
-                recentDenied={recentDenied}
-                workspaceDirectories={workspaceDirectories}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'permission-scope' ? (
-              <SelectionMenu
-                title="Where should this rule be saved?"
-                description={`${menu.rule}${
-                  permissionRuleDescription(menu.rule)
-                    ? ` · ${permissionRuleDescription(menu.rule)}`
-                    : ''
-                }`}
-                options={[
-                  {
-                    label: 'Project settings (local)',
-                    description: 'Saved in .claude/settings.local.json',
-                  },
-                  {
-                    label: 'Project settings',
-                    description: 'Checked in at .claude/settings.json',
-                  },
-                  {
-                    label: 'User settings',
-                    description: 'Saved in at ~/.claude/settings.json',
-                  },
-                ]}
-                selectedIndex={menu.selectedIndex}
-                footer="Enter to confirm · Esc to cancel"
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'status' ? (
-              <StatusDashboard
-                tabIndex={menu.tabIndex}
-                version={runtimeDisplay.version}
-                sessionId={sessionId}
-                display={runtimeDisplay}
-                {...(usage === undefined ? {} : { usage })}
-                {...(costUsd === undefined ? {} : { costUsd })}
-                turnCount={turnNumberRef.current}
-                toolCount={
-                  history.filter((item) => item.kind === 'tool').length
+            {externalEditorRequest !== null ||
+            keybindingsEditing ||
+            memoryEditorRequest !== null ? (
+              <ExternalEditorWait screenReader={axScreenReader} />
+            ) : permission ? (
+              <DialogFrame
+                title={
+                  permission.kind === 'recovery'
+                    ? `Retry interrupted ${permission.call.name}?`
+                    : `Allow ${permission.call.name}?`
                 }
-                commandCount={allSlashCommands.length}
-                detailedTranscript={thinkingExpanded}
-                width={width}
                 screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'memory' ? (
-              <MemoryDashboard
-                autoMemoryEnabled={menu.autoMemoryEnabled}
-                entries={menu.entries}
+              >
+                <Text bold>
+                  {describeTool(permission.call, sensitiveValues)}
+                </Text>
+                <Text>{selectionPrefix(true, axScreenReader)}1. Yes</Text>
+                <Text> 2. No</Text>
+                <Text dimColor>Enter/Esc declines · y/n quick response</Text>
+              </DialogFrame>
+            ) : planApproval ? (
+              <DialogFrame
+                title="Approve this plan and begin implementation?"
+                screenReader={axScreenReader}
+              >
+                <Text dimColor>{planApproval.request.planPath}</Text>
+                {planApproval.request.plan ? (
+                  <Box marginY={1}>
+                    <Text>{planApproval.request.plan}</Text>
+                  </Box>
+                ) : null}
+                <Text>
+                  {selectionPrefix(true, axScreenReader)}1. Yes, implement the
+                  plan
+                </Text>
+                <Text> 2. No, keep planning</Text>
+              </DialogFrame>
+            ) : question ? (
+              <DialogFrame
+                title={`${question.questions[question.index]?.header}: ${question.questions[question.index]?.question}`}
+                screenReader={axScreenReader}
+              >
+                {question.questions[question.index]?.options.map(
+                  (option, index) => (
+                    <Box
+                      key={`${index}-${option.label}`}
+                      flexDirection="column"
+                    >
+                      <Text>
+                        {index + 1}. {option.label} — {option.description}
+                      </Text>
+                      {option.preview ? (
+                        <Text dimColor>{option.preview}</Text>
+                      ) : null}
+                    </Box>
+                  ),
+                )}
+                <Text>
+                  {axScreenReader ? 'Current answer: ' : '› '}
+                  {input || (axScreenReader ? '(empty)' : '')}
+                </Text>
+                <Text dimColor>
+                  {question.questions[question.index]?.multiSelect
+                    ? 'Enter comma-separated option numbers or custom text · Esc cancels'
+                    : 'Enter one option number or custom text · Esc cancels'}
+                </Text>
+              </DialogFrame>
+            ) : elicitation ? (
+              <DialogFrame
+                title={`MCP elicitation (${elicitation.request.serverName})`}
+                screenReader={axScreenReader}
+              >
+                <Text>{elicitation.request.message}</Text>
+                {elicitation.request.url ? (
+                  <Text>{elicitation.request.url}</Text>
+                ) : null}
+                {elicitation.request.requestedSchema ? (
+                  <Text dimColor>
+                    {JSON.stringify(elicitation.request.requestedSchema)}
+                  </Text>
+                ) : null}
+                <Text>› {input}</Text>
+                <Text dimColor>
+                  Enter JSON object to accept · Esc to cancel
+                </Text>
+              </DialogFrame>
+            ) : menu?.kind === 'model-input' ? (
+              <DialogFrame title="Enter model ID" screenReader={axScreenReader}>
+                <Text dimColor>
+                  Enter a model ID supported by the configured provider.
+                </Text>
+                <Text>› {input}</Text>
+                <Text dimColor>Enter confirms · Esc cancels</Text>
+              </DialogFrame>
+            ) : menu?.kind === 'export-filename' ? (
+              <DialogFrame
+                title="Enter filename:"
+                screenReader={axScreenReader}
+              >
+                <Text>&gt; {input}</Text>
+                <Text dimColor>Enter to save · Esc to go back</Text>
+              </DialogFrame>
+            ) : menu?.kind === 'compact-progress' ? (
+              <Box flexDirection="column">
+                <Text>✻ Compacting conversation…</Text>
+                <Text>
+                  {'▰'.repeat(Math.floor(compactProgress / 2))}
+                  {'▱'.repeat(50 - Math.floor(compactProgress / 2))}{' '}
+                  {compactProgress}%
+                </Text>
+              </Box>
+            ) : menu?.kind === 'btw' ? (
+              <BtwPanel
+                entries={btwHistory}
                 selectedIndex={menu.selectedIndex}
-                openedIndex={menu.openedIndex}
-                loading={menu.loading}
+                scrollOffset={menu.scrollOffset}
+                copied={btwCopied}
                 width={width}
                 screenReader={axScreenReader}
               />
-            ) : menu.kind === 'hooks' ? (
-              <HookDashboard
-                configuration={menu.configuration}
-                depth={menu.depth}
-                eventIndex={menu.eventIndex}
-                matcherIndex={menu.matcherIndex}
-                hookIndex={menu.hookIndex}
-                width={width}
+            ) : menu?.kind === 'rewind' ? (
+              <Box flexDirection="column">
+                <Text bold> Rewind</Text>
+                <Text> </Text>
+                <Text>
+                  {' '}
+                  Restore the code and/or conversation to the point before…
+                </Text>
+                <Text> </Text>
+                {(() => {
+                  const window = rewindPointWindow(
+                    menu.points,
+                    menu.selectedIndex,
+                  )
+                  return (
+                    <>
+                      {window.start > 0 ? (
+                        <Text dimColor> ↑ {window.start} more above</Text>
+                      ) : null}
+                      {menu.points
+                        .slice(window.start, window.end)
+                        .map((point, offset) => {
+                          const index = window.start + offset
+                          return (
+                            <Box
+                              key={point.messageId}
+                              flexDirection="column"
+                              marginBottom={1}
+                            >
+                              <Text inverse={menu.selectedIndex === index}>
+                                {menu.selectedIndex === index ? ' ❯ ' : '   '}
+                                {point.prompt
+                                  .replace(/\s+/gu, ' ')
+                                  .slice(0, 72)}
+                              </Text>
+                              <Text dimColor>
+                                {'     '}
+                                {point.fileChanges.length > 0
+                                  ? point.fileChanges
+                                      .map((path) =>
+                                        path.startsWith(`${runtimeCwd}/`)
+                                          ? path.slice(runtimeCwd.length + 1)
+                                          : path,
+                                      )
+                                      .join(', ')
+                                  : point.fileRestoreAvailable
+                                    ? 'No code changes'
+                                    : '⚠ No code restore'}
+                              </Text>
+                            </Box>
+                          )
+                        })}
+                      {window.end < menu.points.length ? (
+                        <Text dimColor>
+                          {' '}
+                          ↓ {menu.points.length - window.end} more below
+                        </Text>
+                      ) : null}
+                    </>
+                  )
+                })()}
+                <Text inverse={menu.selectedIndex === menu.points.length}>
+                  {menu.selectedIndex === menu.points.length ? ' ❯ ' : '   '}
+                  (current)
+                </Text>
+                <Text> </Text>
+                <Text dimColor> Enter to continue · Esc to cancel</Text>
+              </Box>
+            ) : menu?.kind === 'rewind-confirm' ? (
+              <DialogFrame
+                title="Confirm restore point"
                 screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'list' ? (
-              <ListDashboard
-                title={menu.title}
-                rows={menu.rows}
-                emptyText={menu.emptyText}
-                selectedIndex={menu.selectedIndex}
-                width={width}
+              >
+                <Text>│ {menu.point.prompt}</Text>
+                <Text> </Text>
+                <Text>The conversation will be forked.</Text>
+                <Text>
+                  The code will{' '}
+                  {menu.point.fileChanges.length > 0
+                    ? `restore ${menu.point.fileChanges.join(', ')}.`
+                    : 'be unchanged.'}
+                </Text>
+                <Text> </Text>
+                {rewindActions(menu.point).map((option, index) => (
+                  <Text
+                    key={option.action}
+                    inverse={menu.selectedIndex === index}
+                  >
+                    {menu.selectedIndex === index ? '❯ ' : '  '}
+                    {index + 1}. {option.label}
+                  </Text>
+                ))}
+                <Text> </Text>
+                <Text color={activePalette.warning}>
+                  ⚠ Rewinding does not affect files edited manually or via bash.
+                </Text>
+              </DialogFrame>
+            ) : menu?.kind === 'rewind-context' ? (
+              <DialogFrame
+                title={`Summarize ${menu.direction === 'from' ? 'from' : 'up to'} here`}
                 screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'model' ? (
-              <SelectionMenu
-                title="Select model"
-                description={`Effort: ${runtimePreferences.effort}`}
-                options={modelOptions}
-                selectedIndex={menu.selectedIndex}
-                footer="↑/↓ select · ←/→ effort · Enter applies to this session · Esc cancels"
-                width={width}
+              >
+                <Text>
+                  {menu.direction === 'from'
+                    ? 'Messages after this point will be summarized.'
+                    : 'Messages up to this point will be summarized.'}
+                </Text>
+                <Text> </Text>
+                <Text>add context (optional): {input}</Text>
+                <Text dimColor>Enter to summarize · Esc to go back</Text>
+              </DialogFrame>
+            ) : menu?.kind === 'permission-rule-input' ? (
+              <Box flexDirection="column">
+                <Text bold>Add {menu.behavior} permission rule</Text>
+                <Text>
+                  Permission rules are a tool name, optionally followed by a
+                  specifier in parentheses.
+                </Text>
+                <Text>e.g., WebFetch or Bash(ls *)</Text>
+                <Text> </Text>
+                <Box
+                  borderStyle={axScreenReader ? undefined : 'round'}
+                  paddingX={axScreenReader ? 0 : 1}
+                >
+                  <Text {...(input ? {} : { dimColor: true })}>
+                    {input || 'Enter permission rule…'}
+                  </Text>
+                </Box>
+                <Text dimColor>Enter to submit · Esc to cancel</Text>
+              </Box>
+            ) : menu?.kind === 'workspace-directory-input' ? (
+              <Box flexDirection="column">
+                <Text bold>Add directory to workspace</Text>
+                <Text>
+                  Praxis Code will be able to read files in this directory and
+                  make edits when auto-accept edits is on.
+                </Text>
+                <Text> </Text>
+                <Text>Enter the path to the directory:</Text>
+                <Box
+                  borderStyle={axScreenReader ? undefined : 'round'}
+                  paddingX={axScreenReader ? 0 : 1}
+                >
+                  <Text {...(input ? {} : { dimColor: true })}>
+                    {input || 'Directory path…'}
+                  </Text>
+                </Box>
+                <Text dimColor>
+                  Tab to complete · Enter to add · Esc to cancel
+                </Text>
+              </Box>
+            ) : menu?.kind === 'permission-delete' ? (
+              <DialogFrame
+                title={permissionDeleteTitle(menu.rule.behavior)}
                 screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'effort' ? (
-              <SelectionMenu
-                title="Select effort"
-                description="Controls how much reasoning effort the provider should use."
-                options={EFFORT_OPTIONS.map((option) => ({
-                  label: option,
-                  description:
-                    option === 'low'
-                      ? 'Fastest and least deliberative.'
-                      : option === 'max'
-                        ? 'Highest available reasoning effort.'
-                        : 'Use this effort for the next session turns.',
-                  selected: option === runtimePreferences.effort,
-                }))}
-                selectedIndex={menu.selectedIndex}
-                footer="↑/↓ select · Enter applies to this session · Esc cancels"
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : menu.kind === 'export' ? (
-              <SelectionMenu
-                title="Export conversation"
-                description="Select export method"
-                options={[
-                  {
-                    label: 'Copy to clipboard',
-                    description:
-                      'Copy the conversation to your system clipboard',
-                  },
-                  {
-                    label: 'Save to file',
-                    description:
-                      'Save the conversation to a file in the current directory',
-                  },
-                ]}
-                selectedIndex={menu.selectedIndex}
-                footer="Esc to cancel"
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : null
-          ) : (
-            <>
-              {commandPaletteVisible ? (
-                <CommandPalette
-                  commands={matchingSlashCommands}
-                  selectedIndex={selectedSlashCommandIndex}
+              >
+                <Text>{menu.rule.rule}</Text>
+                {permissionRuleDescription(menu.rule.rule) ? (
+                  <Text dimColor>
+                    {permissionRuleDescription(menu.rule.rule)}
+                  </Text>
+                ) : null}
+                <Text dimColor>{permissionScopeLabel(menu.rule.scope)}</Text>
+                <Text> </Text>
+                <Text>
+                  Are you sure you want to delete this permission rule?
+                </Text>
+                <Text> </Text>
+                <Text inverse={!axScreenReader && menu.selectedIndex === 0}>
+                  {selectionPrefix(menu.selectedIndex === 0, axScreenReader)}
+                  1. Yes
+                </Text>
+                <Text inverse={!axScreenReader && menu.selectedIndex === 1}>
+                  {selectionPrefix(menu.selectedIndex === 1, axScreenReader)}
+                  2. No
+                </Text>
+                <Text dimColor>Esc to cancel</Text>
+              </DialogFrame>
+            ) : menu?.kind === 'workspace-directory-delete' ? (
+              <Box flexDirection="column">
+                <Text bold>Remove directory from workspace?</Text>
+                <Text> {menu.path}</Text>
+                <Text> </Text>
+                <Text>
+                  Praxis Code will no longer have access to files in this
+                  directory.
+                </Text>
+                <Text> </Text>
+                <Text inverse={!axScreenReader && menu.selectedIndex === 0}>
+                  {selectionPrefix(menu.selectedIndex === 0, axScreenReader)}
+                  1. Yes
+                </Text>
+                <Text inverse={!axScreenReader && menu.selectedIndex === 1}>
+                  {selectionPrefix(menu.selectedIndex === 1, axScreenReader)}
+                  2. No
+                </Text>
+                <Text dimColor>Enter to confirm · Esc to cancel</Text>
+              </Box>
+            ) : menu ? (
+              menu.kind === 'help' ? (
+                <HelpMenu
+                  tabIndex={menu.tabIndex}
+                  selectedIndex={menu.selectedIndex}
+                  builtinCommands={builtinSlashCommands}
+                  customCommands={customSlashCommands}
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : null}
-              {filePickerVisible ? (
-                <MentionPicker
-                  entries={matchingMentionEntries}
-                  selectedIndex={selectedFileIndex}
+              ) : menu.kind === 'diff' ? (
+                <DiffDashboard
+                  snapshots={menu.snapshots}
+                  sourceIndex={menu.sourceIndex}
+                  selectedIndex={menu.selectedIndex}
+                  viewingFile={menu.viewingFile}
+                  scrollOffset={menu.scrollOffset}
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : null}
-              {exitConfirmation ? (
-                <Text color="yellow">Press Ctrl-C again to exit</Text>
-              ) : null}
-              <Composer
-                input={shellMode ? input.slice(1) : input}
-                cursor={shellMode ? Math.max(0, inputCursor - 1) : inputCursor}
-                shellMode={shellMode}
-                busy={busy}
-                clipboardBusy={clipboardBusy}
-                status={status}
-                display={runtimeDisplay}
-                {...(usage === undefined ? {} : { usage })}
-                {...(costUsd === undefined ? {} : { costUsd })}
-                width={width}
-                screenReader={axScreenReader}
-                hasThinking={hasDetailedTranscript}
-                thinkingExpanded={thinkingExpanded}
-                shortcutsVisible={shortcutsVisible}
-                {...(editorFooterMessage === undefined
-                  ? {}
-                  : { footerMessage: editorFooterMessage })}
-              />
-            </>
-          )}
-        </>
-      )}
-    </Box>
+              ) : menu.kind === 'permission-dashboard' ? (
+                <PermissionDashboard
+                  tabIndex={menu.tabIndex}
+                  selectedIndex={menu.selectedIndex}
+                  query={menu.query}
+                  rules={menu.rules}
+                  recentDenied={recentDenied}
+                  workspaceDirectories={workspaceDirectories}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'permission-scope' ? (
+                <SelectionMenu
+                  title="Where should this rule be saved?"
+                  description={`${menu.rule}${
+                    permissionRuleDescription(menu.rule)
+                      ? ` · ${permissionRuleDescription(menu.rule)}`
+                      : ''
+                  }`}
+                  options={[
+                    {
+                      label: 'Project settings (local)',
+                      description: 'Saved in .claude/settings.local.json',
+                    },
+                    {
+                      label: 'Project settings',
+                      description: 'Checked in at .claude/settings.json',
+                    },
+                    {
+                      label: 'User settings',
+                      description: 'Saved in at ~/.claude/settings.json',
+                    },
+                  ]}
+                  selectedIndex={menu.selectedIndex}
+                  footer="Enter to confirm · Esc to cancel"
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'status' ? (
+                <StatusDashboard
+                  tabIndex={menu.tabIndex}
+                  version={runtimeDisplay.version}
+                  sessionId={sessionId}
+                  display={runtimeDisplay}
+                  {...(usage === undefined ? {} : { usage })}
+                  {...(costUsd === undefined ? {} : { costUsd })}
+                  turnCount={turnNumberRef.current}
+                  toolCount={
+                    history.filter((item) => item.kind === 'tool').length
+                  }
+                  commandCount={allSlashCommands.length}
+                  detailedTranscript={thinkingExpanded}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'config' ? (
+                <ConfigDashboard
+                  tab={menu.tab}
+                  snapshot={menu.snapshot}
+                  query={menu.query}
+                  selectedIndex={menu.selectedIndex}
+                  searchFocused={menu.searchFocused}
+                  settings={[
+                    {
+                      label: 'Provider',
+                      value: runtimeDisplay.model ?? 'default',
+                    },
+                    {
+                      label: 'Permission mode',
+                      value: runtimeDisplay.permissionMode ?? 'default',
+                    },
+                  ]}
+                  status={{
+                    version: runtimeDisplay.version,
+                    sessionId: sessionId ?? 'new',
+                    cwd: runtimeCwd,
+                    model: runtimeDisplay.model ?? 'default',
+                    settingSources: ['user', 'project', 'local'],
+                  }}
+                  usage={{
+                    costUsd: costUsd ?? 0,
+                    apiDurationMs: 0,
+                    wallDurationMs: 0,
+                    linesAdded: 0,
+                    linesRemoved: 0,
+                    usage: usage ?? { inputTokens: 0, outputTokens: 0 },
+                  }}
+                  stats={[]}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'mcp' ? (
+                <McpPanel
+                  model={menu.model}
+                  state={menu.state}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'tasks' ? (
+                <TaskPanel
+                  tasks={menu.tasks}
+                  state={menu.state}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'memory' ? (
+                <MemoryDashboard
+                  autoMemoryEnabled={menu.autoMemoryEnabled}
+                  entries={menu.entries}
+                  selectedIndex={menu.selectedIndex}
+                  openedIndex={menu.openedIndex}
+                  loading={menu.loading}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'hooks' ? (
+                <HookDashboard
+                  configuration={menu.configuration}
+                  depth={menu.depth}
+                  eventIndex={menu.eventIndex}
+                  matcherIndex={menu.matcherIndex}
+                  hookIndex={menu.hookIndex}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'list' ? (
+                <ListDashboard
+                  title={menu.title}
+                  rows={menu.rows}
+                  emptyText={menu.emptyText}
+                  selectedIndex={menu.selectedIndex}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'model' ? (
+                <SelectionMenu
+                  title="Select model"
+                  description={`Effort: ${runtimePreferences.effort}`}
+                  options={modelOptions}
+                  selectedIndex={menu.selectedIndex}
+                  footer="↑/↓ select · ←/→ effort · Enter applies to this session · Esc cancels"
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'effort' ? (
+                <SelectionMenu
+                  title="Select effort"
+                  description="Controls how much reasoning effort the provider should use."
+                  options={EFFORT_OPTIONS.map((option) => ({
+                    label: option,
+                    description:
+                      option === 'low'
+                        ? 'Fastest and least deliberative.'
+                        : option === 'max'
+                          ? 'Highest available reasoning effort.'
+                          : 'Use this effort for the next session turns.',
+                    selected: option === runtimePreferences.effort,
+                  }))}
+                  selectedIndex={menu.selectedIndex}
+                  footer="↑/↓ select · Enter applies to this session · Esc cancels"
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'theme' ? (
+                <ThemePicker
+                  currentTheme={themeSettings.theme}
+                  selectedIndex={menu.selectedIndex}
+                  customThemes={customThemes}
+                  syntaxHighlightingDisabled={
+                    themeSettings.syntaxHighlightingDisabled
+                  }
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'custom-theme-create' ? (
+                <DialogFrame
+                  title="New custom theme"
+                  screenReader={axScreenReader}
+                >
+                  <Text>Name: {input || 'my-theme'}</Text>
+                  <Text>
+                    based on {menu.base} · saved to ~/.claude/themes/theme.json
+                  </Text>
+                  <Text dimColor>Enter to create · Esc to cancel</Text>
+                </DialogFrame>
+              ) : menu.kind === 'custom-theme-editor' ? (
+                <CustomThemeEditor
+                  theme={menu.theme}
+                  width={width}
+                  screenReader={axScreenReader}
+                  value={menu.query}
+                  tokens={CUSTOM_THEME_TOKENS.filter((token) =>
+                    token.toLowerCase().includes(menu.query.toLowerCase()),
+                  )}
+                  selectedIndex={menu.selectedIndex}
+                  query={menu.query}
+                />
+              ) : menu.kind === 'custom-theme-token' ? (
+                <CustomThemeEditor
+                  theme={menu.theme}
+                  token={menu.token}
+                  width={width}
+                  screenReader={axScreenReader}
+                  value={input}
+                />
+              ) : menu.kind === 'custom-theme-delete' ? (
+                <DialogFrame
+                  title="Delete custom theme"
+                  screenReader={axScreenReader}
+                >
+                  <Text>Delete {menu.theme.name} permanently?</Text>
+                  <Text dimColor>Enter to confirm · Esc to cancel</Text>
+                </DialogFrame>
+              ) : menu.kind === 'export' ? (
+                <SelectionMenu
+                  title="Export conversation"
+                  description="Select export method"
+                  options={[
+                    {
+                      label: 'Copy to clipboard',
+                      description:
+                        'Copy the conversation to your system clipboard',
+                    },
+                    {
+                      label: 'Save to file',
+                      description:
+                        'Save the conversation to a file in the current directory',
+                    },
+                  ]}
+                  selectedIndex={menu.selectedIndex}
+                  footer="Esc to cancel"
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : null
+            ) : (
+              <>
+                {commandPaletteVisible ? (
+                  <CommandPalette
+                    commands={matchingSlashCommands}
+                    selectedIndex={selectedSlashCommandIndex}
+                    width={width}
+                    screenReader={axScreenReader}
+                  />
+                ) : null}
+                {filePickerVisible ? (
+                  <MentionPicker
+                    entries={matchingMentionEntries}
+                    selectedIndex={selectedFileIndex}
+                    width={width}
+                    screenReader={axScreenReader}
+                  />
+                ) : null}
+                {exitConfirmation ? (
+                  <Text color={activePalette.warning}>
+                    Press Ctrl-C again to exit
+                  </Text>
+                ) : null}
+                <Composer
+                  input={shellMode ? input.slice(1) : input}
+                  cursor={
+                    shellMode ? Math.max(0, inputCursor - 1) : inputCursor
+                  }
+                  shellMode={shellMode}
+                  busy={busy}
+                  clipboardBusy={clipboardBusy}
+                  status={status}
+                  display={runtimeDisplay}
+                  {...(usage === undefined ? {} : { usage })}
+                  {...(costUsd === undefined ? {} : { costUsd })}
+                  width={width}
+                  screenReader={axScreenReader}
+                  hasThinking={hasDetailedTranscript}
+                  thinkingExpanded={thinkingExpanded}
+                  shortcutsVisible={shortcutsVisible}
+                  {...(editorFooterMessage === undefined
+                    ? {}
+                    : { footerMessage: editorFooterMessage })}
+                />
+              </>
+            )}
+          </>
+        )}
+      </Box>
+    </TuiThemeProvider>
   )
 }
 
@@ -5116,6 +6073,15 @@ export async function runInteractive(options: {
     throw error
   }
   await listing.close?.()
+  let initialThemeSettings = DEFAULT_TUI_THEME_SETTINGS
+  let initialThemeLoadError: string | undefined
+  try {
+    initialThemeSettings = await loadTuiThemeSettings()
+  } catch (error) {
+    initialThemeLoadError = `Unable to load theme settings: ${
+      error instanceof Error ? error.message : String(error)
+    }`
+  }
   let activeTurn: Promise<void> | null = null
   let cleanup: Promise<void> | null = null
   let backgrounded: InteractiveBackgroundResult | undefined
@@ -5126,6 +6092,10 @@ export async function runInteractive(options: {
       slashCommands={initialSlashCommands}
       agents={initialAgents}
       initialHistory={initialHistory}
+      initialThemeSettings={initialThemeSettings}
+      {...(initialThemeLoadError === undefined
+        ? {}
+        : { initialThemeLoadError })}
       {...(options.initialPrompt === undefined
         ? {}
         : { initialPrompt: options.initialPrompt })}

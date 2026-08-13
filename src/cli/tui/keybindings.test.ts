@@ -38,11 +38,11 @@ describe('Claude-compatible TUI keybindings file', () => {
     )
     expect(template.$docs).toBe('https://code.claude.com/docs/en/keybindings')
     expect(template.bindings).toHaveLength(19)
-    expect(claudeKeybindingsTemplate().split('\n')).toHaveLength(273)
-    expect(Buffer.byteLength(claudeKeybindingsTemplate())).toBe(7_809)
+    expect(claudeKeybindingsTemplate().split('\n')).toHaveLength(272)
+    expect(Buffer.byteLength(claudeKeybindingsTemplate())).toBe(7_771)
     expect(
       createHash('sha256').update(claudeKeybindingsTemplate()).digest('hex'),
-    ).toBe('487dec2cf74685dfed8379543b9832d342017a452dcc91c9b848dbbaada6ee26')
+    ).toBe('7a8909e1db891e6c3511bdf61389b533966d417b044efe446753ad8d36ec42ad')
     expect(
       template.bindings.find(({ context }) => context === 'Chat')?.bindings,
     ).toMatchObject({
@@ -153,5 +153,8 @@ describe('Claude-compatible TUI keybindings file', () => {
     expect(
       resolveTuiKeybinding(defaultTuiKeybindings(), ['Chat'], 'ctrl+g'),
     ).toBe('chat:externalEditor')
+    expect(
+      resolveTuiKeybinding(defaultTuiKeybindings(), ['ThemePicker'], 'ctrl+e'),
+    ).toBeUndefined()
   })
 })

@@ -154,7 +154,6 @@ const CLAUDE_2_1_208_KEYBINDINGS = {
       context: 'ThemePicker',
       bindings: {
         'ctrl+t': 'theme:toggleSyntaxHighlighting',
-        'ctrl+e': 'theme:editCustom',
       },
     },
     {

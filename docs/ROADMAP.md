@@ -995,3 +995,34 @@ contract. Overall interactive TTY parity remains partial.
       `/reload-plugins` commands without a competing configuration store
 - [x] focused projection/component/Ink tests plus pinned Claude 2.1.208 and
       installed-package PTY comparison with tree-wide no-write verification
+
+## Stage 109 - interactive presentation controls
+
+Status: complete for Claude Code 2.1.208's built-in and custom `/theme`
+profile-selection contract; broader presentation and denied-history parity
+remain partial.
+
+- [x] black-box-confirmed `/theme` catalog description, picker title and
+      guidance, Auto/dark/light/colorblind-friendly/ANSI-only profile order,
+      selected-profile marker, cancellation, and result shape
+- [x] Claude-native user `settings.json` theme values with bounded parsing,
+      per-key mutation against the latest file under an exclusive lease,
+      atomic replacement with a final pre-rename fingerprint check and bounded
+      conflict retry, and preservation of untouched raw or unrelated settings;
+      the final syscall window is not an OS-level compare-and-swap against
+      non-cooperating writers
+- [x] startup application of the selected semantic palette, exact syntax/diff
+      preview colors for every built-in profile, immediate picker recoloring,
+      restart persistence, and persisted `Ctrl+T` syntax highlighting toggles
+      across transcript Markdown, tool/Edit diffs, and `/diff`
+- [x] focused settings, component, Ink interaction, catalog, and
+      installed-package PTY coverage, including a real fixed 2.1.208 ANSI
+      capture for every profile, explicit screen-reader focus announcements,
+      Escape, navigation, cancellation, and load/save failure paths
+- [x] Claude-compatible custom-theme creation, selection, token editing/reset,
+      deletion, sidecar locking/atomic writes, schema validation, and focused
+      service plus InteractiveApp lifecycle coverage
+- [ ] `/terminal-setup` Shift+Enter installation across supported terminals
+- [ ] `/tui` default/fullscreen renderer switching
+- [ ] exact Recently denied selection, reset, deduplication, and lifetime
+      behavior beyond the observed empty-state and current-session population

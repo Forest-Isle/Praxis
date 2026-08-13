@@ -64,6 +64,23 @@ describe('WorkflowManager', () => {
       timeout: 5_000,
     })
     expect(firstOutput).toContain('"status": "completed"')
+    const firstDuration = (
+      JSON.parse(firstOutput.slice(0, firstOutput.indexOf('\n\n'))) as {
+        durationMs: number
+      }
+    ).durationMs
+    const terminalDuration = manager.list()[0]?.durationMs
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10))
+    expect(manager.list()[0]?.durationMs).toBe(terminalDuration)
+    const repeatedOutput = await manager.output(first.taskId, {
+      block: false,
+      timeout: 0,
+    })
+    expect(
+      JSON.parse(repeatedOutput.slice(0, repeatedOutput.indexOf('\n\n')))
+        .durationMs,
+    ).toBe(firstDuration)
+    expect(notifications.messages[0]).toContain(`duration_ms: ${firstDuration}`)
     const run = JSON.parse(
       await readFile(
         join(
@@ -213,6 +230,55 @@ return agent('semantic prompt', {
     expect(manager.list().at(-1)).toMatchObject({
       progress: [{ cached: true, result: { value: 'cached' } }],
     })
+    await manager.close()
+  })
+
+  it('scopes snapshots and stop ownership to the launching session', async () => {
+    const { manager, script, parsed } = await fixture()
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const runAgent = vi.fn(
+      async (options: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          markStarted()
+          options.signal?.addEventListener(
+            'abort',
+            () => reject(new Error('aborted')),
+            { once: true },
+          )
+        }),
+    )
+    const launched = await manager.launch({
+      sessionId,
+      promptId: 'prompt-scoped',
+      script,
+      parsed,
+      args: { prompt: 'wait' },
+      defaultModel: 'fixture-model',
+      runAgent,
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+    await started
+
+    expect(manager.list(sessionId)).toMatchObject([
+      { task_id: launched.taskId, status: 'running' },
+    ])
+    expect(manager.list('other-session')).toEqual([])
+    expect(manager.hasForSession(sessionId, launched.taskId)).toBe(true)
+    expect(manager.hasForSession('other-session', launched.taskId)).toBe(false)
+    await manager.stopAndWait(launched.taskId)
+    const terminal = manager.list(sessionId)[0]
+    expect(terminal).toMatchObject({ status: 'killed' })
+    const duration = terminal?.durationMs
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(manager.list(sessionId)[0]?.durationMs).toBe(duration)
+    await expect(manager.stopAndWait(launched.taskId)).rejects.toThrow(
+      `Task ${launched.taskId} is not running (status: killed)`,
+    )
     await manager.close()
   })
 

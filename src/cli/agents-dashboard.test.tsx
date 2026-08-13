@@ -1,13 +1,16 @@
 import { setImmediate } from 'node:timers/promises'
 
 import { cleanup, render } from 'ink-testing-library'
+import type { ReactElement } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { TopLevelAgentSummary } from '../application/top-level-agent-manager.js'
 import {
   AgentsDashboardApp,
   type AgentsDashboardManager,
+  runAgentsDashboard,
 } from './agents-dashboard.js'
+import { TuiThemeProvider } from './tui/theme.js'
 
 afterEach(() => cleanup())
 
@@ -28,6 +31,94 @@ const activeAgent: TopLevelAgentSummary = {
 }
 
 describe('AgentsDashboardApp', () => {
+  it('loads persisted theme settings before the standalone dashboard renders', async () => {
+    let rendered: ReactElement | undefined
+    let loaded = false
+    const manager: AgentsDashboardManager = {
+      async launch() {
+        throw new Error('unused')
+      },
+      async list() {
+        return []
+      },
+      async stop() {
+        throw new Error('unused')
+      },
+      async attach() {
+        throw new Error('unused')
+      },
+    }
+
+    await expect(
+      runAgentsDashboard(
+        { manager, defaults: { argv: [] } },
+        {
+          async loadThemeSettings() {
+            loaded = true
+            return {
+              theme: 'light-ansi',
+              syntaxHighlightingDisabled: true,
+            }
+          },
+          renderDashboard(element, options) {
+            rendered = element
+            expect(options).toEqual({ exitOnCtrlC: false })
+            return { async waitUntilExit() {} }
+          },
+        },
+      ),
+    ).resolves.toBe(0)
+
+    expect(loaded).toBe(true)
+    expect(rendered?.type).toBe(TuiThemeProvider)
+    expect(rendered?.props).toMatchObject({
+      settings: {
+        theme: 'light-ansi',
+        syntaxHighlightingDisabled: true,
+      },
+    })
+  })
+
+  it('falls back to the default theme when shared settings are corrupt', async () => {
+    let rendered: ReactElement | undefined
+    const manager = {
+      async launch() {
+        throw new Error('unused')
+      },
+      async list() {
+        return []
+      },
+      async stop() {
+        throw new Error('unused')
+      },
+      async attach() {
+        throw new Error('unused')
+      },
+    } satisfies AgentsDashboardManager
+
+    await expect(
+      runAgentsDashboard(
+        { manager, defaults: { argv: [] } },
+        {
+          async loadThemeSettings() {
+            throw new Error('Invalid JSON: settings.json')
+          },
+          renderDashboard(element) {
+            rendered = element
+            return { async waitUntilExit() {} }
+          },
+        },
+      ),
+    ).resolves.toBe(0)
+
+    expect(rendered?.props).toMatchObject({
+      settings: {
+        theme: 'auto',
+        syntaxHighlightingDisabled: false,
+      },
+    })
+  })
+
   it('refreshes the full list for its cwd', async () => {
     let agents = [activeAgent]
     const requests: unknown[] = []

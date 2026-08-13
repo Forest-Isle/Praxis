@@ -96,6 +96,7 @@ export class SessionWorktreeManager {
     private readonly options: {
       workspace: WorkspaceContext
       sessionId: string
+      baseRef?: 'fresh' | 'head'
     },
   ) {}
 
@@ -194,16 +195,28 @@ export class SessionWorktreeManager {
       }
       const worktreePath = join(root, '.claude', 'worktrees', name)
       const branch = `worktree-${nameFromPath(name)}`
+      const baseCommit =
+        this.options.baseRef === 'head'
+          ? originalHeadCommit
+          : ((await gitOptional(root, ['merge-base', 'HEAD', '@{upstream}'])) ??
+            originalHeadCommit)
       await mkdir(join(root, '.claude', 'worktrees'), { recursive: true })
       try {
-        await git(root, ['worktree', 'add', '-b', branch, worktreePath, 'HEAD'])
+        await git(root, [
+          'worktree',
+          'add',
+          '-b',
+          branch,
+          worktreePath,
+          baseCommit,
+        ])
         const gitDirectory = await git(worktreePath, ['rev-parse', '--git-dir'])
         const absoluteGitDirectory = isAbsolute(gitDirectory)
           ? gitDirectory
           : resolve(worktreePath, gitDirectory)
         await writeFile(
           join(absoluteGitDirectory, 'CLAUDE_BASE'),
-          `${originalHeadCommit}\n`,
+          `${baseCommit}\n`,
         )
       } catch (error) {
         await execFileAsync(

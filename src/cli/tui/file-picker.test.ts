@@ -1,6 +1,8 @@
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -14,6 +16,7 @@ import {
 } from './file-picker.js'
 
 const roots: string[] = []
+const execFileAsync = promisify(execFile)
 
 afterEach(async () => {
   await Promise.all(
@@ -93,5 +96,21 @@ describe('TUI file picker', () => {
       { path: 'src/deep/', directory: true },
       { path: 'src/deep/agent.ts', directory: false },
     ])
+  })
+
+  it('can include gitignored paths when the shared setting disables filtering', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-file-picker-ignore-'))
+    roots.push(root)
+    await writeFile(join(root, '.gitignore'), 'ignored.txt\n')
+    await writeFile(join(root, 'ignored.txt'), '')
+    await execFileAsync('git', ['init', root])
+
+    expect(await loadTuiFileEntries(root)).not.toContainEqual({
+      path: 'ignored.txt',
+      directory: false,
+    })
+    expect(
+      await loadTuiFileEntries(root, { respectGitignore: false }),
+    ).toContainEqual({ path: 'ignored.txt', directory: false })
   })
 })

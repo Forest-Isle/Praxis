@@ -10,6 +10,7 @@ import type {
 } from '../core/runtime.js'
 import {
   BackgroundBashManager,
+  type BackgroundBashSnapshot,
   type BackgroundBashToolResult,
 } from '../application/background-bash-manager.js'
 import { isBackgroundBashTaskId } from '../application/background-task-id.js'
@@ -294,6 +295,15 @@ export class ClaudeTaskToolRegistry implements ToolRegistry {
         ? {}
         : { maxOutputBytes: options.maxOutputBytes }),
     })
+  }
+
+  /** Runtime-owned view used by the local tasks surface. */
+  async backgroundSnapshots(): Promise<readonly BackgroundBashSnapshot[]> {
+    return this.background.snapshots()
+  }
+
+  async stopBackgroundTask(taskId: string): Promise<BackgroundBashToolResult> {
+    return this.background.stop(taskId)
   }
 
   isEnabled(name: string): boolean {

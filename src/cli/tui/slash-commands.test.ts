@@ -37,6 +37,7 @@ describe('TUI slash command catalog', () => {
         'background',
         'context',
         'status',
+        'theme',
         'skills',
         'tasks',
         'plan',

@@ -1,0 +1,43 @@
+{
+  "version": "2.1.208",
+  "captureFile": "mcp-tui.capture.txt",
+  "captureSha256": "115cf60b79ba7fcb4ba30d5b8134096dab81c72c1c7d56a7758054f65ed0074b",
+  "terminal": {
+    "columns": 100,
+    "lines": 32,
+    "screenReader": true
+  },
+  "empty": {
+    "message": "No MCP servers configured. Run claude doctor if this is unexpected — it lists MCP config files that failed validation. Otherwise, run claude mcp --help or visit https://code.claude.com/docs/en/mcp to learn more."
+  },
+  "list": {
+    "title": "Manage MCP servers",
+    "count": "4 servers",
+    "groups": ["Project MCPs", "Local MCPs", "User MCPs"],
+    "connected": "✔  connected · 1 tool",
+    "failed": "✘  failed",
+    "needsAuthentication": "△  needs authentication",
+    "disabled": "◯  disabled",
+    "diagnostic": "※ Run claude --debug to see error logs",
+    "help": "https://code.claude.com/docs/en/mcp for help",
+    "footer": "↑/↓ to navigate · Enter to confirm · Esc to cancel"
+  },
+  "detail": {
+    "connectedStatus": "Status: done: connected",
+    "failedStatus": "Status: failed: failed",
+    "needsAuthenticationStatus": "Status: △ needs authentication",
+    "authenticationDetail": "Auth: failed: not authenticated",
+    "disabledStatus": "Status: ◯ disabled",
+    "connectedActions": ["View tools", "Reconnect", "Disable"],
+    "failedActions": ["Reconnect", "Disable"],
+    "needsAuthenticationActions": ["Authenticate", "Disable"],
+    "disabledActions": ["Enable"],
+    "prompt": "Enter selection",
+    "footer": "↑/↓ to navigate · Enter to select · Esc to back"
+  },
+  "tools": {
+    "titlePrefix": "Tools for ",
+    "detailLabels": ["Tool name:", "Full name:", "Description:"],
+    "footer": "Esc to go back"
+  }
+}

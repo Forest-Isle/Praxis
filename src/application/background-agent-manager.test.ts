@@ -55,6 +55,16 @@ describe('BackgroundAgentManager', () => {
     })
     finish?.(completed('RESULT'))
     await expect(output).resolves.toContain('<output>\nRESULT\n</output>')
+    expect(manager.snapshots()).toEqual([
+      expect.objectContaining({
+        agentId: 'a0123456789abcdef',
+        status: 'completed',
+        description: 'test agent',
+        name: null,
+        result: expect.objectContaining({ text: 'RESULT', durationMs: 5 }),
+        startedAt: expect.any(Number),
+      }),
+    ])
     await expect(
       manager.notifications({ waitForRunning: false }),
     ).resolves.toEqual({
@@ -89,14 +99,39 @@ describe('BackgroundAgentManager', () => {
     )
 
     expect(manager.stop('a0123456789abcdef')).toContain('stopped successfully')
+    const stoppedDuration = manager.snapshots()[0]?.durationMs
+    expect(stoppedDuration).toEqual(expect.any(Number))
     await Promise.resolve()
     expect(aborted).toBe(true)
     await expect(
       manager.output('a0123456789abcdef', { block: true, timeout: 30_000 }),
     ).resolves.toContain('<status>stopped</status>')
+    expect(manager.snapshots()[0]?.durationMs).toBe(stoppedDuration)
     expect(() => manager.stop('a0123456789abcdef')).toThrow(
       'is not running (status: stopped)',
     )
+  })
+
+  it('retains terminal duration for a failed task without a result snapshot', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async () => {
+        throw new BackgroundAgentRunError('failed agent', completed('partial'))
+      }),
+    )
+
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    expect(manager.snapshots()).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        result: null,
+        error: 'failed agent',
+        durationMs: 5,
+      }),
+    ])
   })
 
   it('publishes retained isolation metadata only after TaskStop cleanup settles', async () => {

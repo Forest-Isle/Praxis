@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
@@ -18,7 +18,8 @@ import {
   createBackgroundBashTaskId,
 } from './background-task-id.js'
 
-type BackgroundBashStatus = 'running' | 'completed' | 'failed' | 'stopped'
+export type BackgroundBashStatus =
+  'running' | 'completed' | 'failed' | 'stopped'
 
 interface BackgroundBashTask {
   taskId: string
@@ -33,6 +34,7 @@ interface BackgroundBashTask {
   controller: AbortController
   completion: Promise<void>
   startedAt: number
+  durationMs: number | null
   parentSignal?: AbortSignal
   parentAbort?: () => void
 }
@@ -48,6 +50,20 @@ interface PersistedBackgroundBashTask {
   output: string
   exitCode: number | null
   notified: boolean
+  startedAt?: number
+  durationMs?: number
+}
+
+export interface BackgroundBashSnapshot {
+  taskId: string
+  status: BackgroundBashStatus
+  command: string
+  description: string
+  outputFile: string
+  output: string
+  exitCode: number | null
+  startedAt: number
+  durationMs: number | null
 }
 
 export interface BackgroundBashManagerOptions {
@@ -113,7 +129,15 @@ function parsePersistedTask(
     !['completed', 'failed', 'stopped'].includes(String(task.status)) ||
     typeof task.output !== 'string' ||
     (task.exitCode !== null && !Number.isSafeInteger(task.exitCode)) ||
-    typeof task.notified !== 'boolean'
+    typeof task.notified !== 'boolean' ||
+    (task.startedAt !== undefined &&
+      (typeof task.startedAt !== 'number' ||
+        !Number.isSafeInteger(task.startedAt) ||
+        task.startedAt < 0)) ||
+    (task.durationMs !== undefined &&
+      (typeof task.durationMs !== 'number' ||
+        !Number.isSafeInteger(task.durationMs) ||
+        task.durationMs < 0))
   ) {
     return null
   }
@@ -148,6 +172,13 @@ export class BackgroundBashManager {
     return this.tasks.has(taskId)
   }
 
+  async snapshots(): Promise<readonly BackgroundBashSnapshot[]> {
+    await this.hydratePersistedTasks()
+    return [...this.tasks.values()]
+      .sort((left, right) => right.startedAt - left.startedAt)
+      .map((task) => this.snapshot(task))
+  }
+
   async launch(input: BackgroundBashLaunchInput): Promise<{
     taskId: string
     outputFile: string
@@ -176,6 +207,7 @@ export class BackgroundBashManager {
       controller,
       completion: Promise.resolve(),
       startedAt: Date.now(),
+      durationMs: null,
       ...(input.signal
         ? {
             parentSignal: input.signal,
@@ -315,6 +347,7 @@ export class BackgroundBashManager {
         task.exitCode = 1
         task.output = `Background task failed: ${error instanceof Error ? error.message : String(error)}`
       }
+      task.durationMs = Date.now() - task.startedAt
       await writeFile(task.outputFile, task.output, { mode: 0o600 }).catch(
         () => undefined,
       )
@@ -360,6 +393,7 @@ export class BackgroundBashManager {
     task.output = result.output
     task.exitCode = result.code
     task.status = result.code === 0 && !result.timedOut ? 'completed' : 'failed'
+    task.durationMs = Date.now() - task.startedAt
   }
 
   private outputResult(
@@ -408,11 +442,13 @@ export class BackgroundBashManager {
     const existing = this.tasks.get(taskId)
     if (existing) return existing
     try {
+      const stateFile = resolve(this.sessionStateRoot, `${taskId}.json`)
+      const [source, metadata] = await Promise.all([
+        readFile(stateFile, 'utf8'),
+        stat(stateFile),
+      ])
       const state = parsePersistedTask(
-        await readFile(
-          resolve(this.sessionStateRoot, `${taskId}.json`),
-          'utf8',
-        ),
+        source,
         taskId,
         resolve(this.outputRoot, `${taskId}.output`),
       )
@@ -421,7 +457,8 @@ export class BackgroundBashManager {
         ...state,
         controller: new AbortController(),
         completion: Promise.resolve(),
-        startedAt: Date.now(),
+        startedAt: state.startedAt ?? Math.floor(metadata.mtimeMs),
+        durationMs: state.durationMs ?? null,
       }
       this.tasks.set(taskId, task)
       return task
@@ -459,11 +496,27 @@ export class BackgroundBashManager {
       output: task.output,
       exitCode: task.exitCode,
       notified: task.notified,
+      startedAt: task.startedAt,
+      ...(task.durationMs === null ? {} : { durationMs: task.durationMs }),
     }
     await writeFileAtomically(
       resolve(this.sessionStateRoot, `${task.taskId}.json`),
       JSON.stringify(state, null, 2),
       { mode: 0o600 },
     )
+  }
+
+  private snapshot(task: BackgroundBashTask): BackgroundBashSnapshot {
+    return {
+      taskId: task.taskId,
+      status: task.status,
+      command: task.command,
+      description: task.description,
+      outputFile: task.outputFile,
+      output: task.output,
+      exitCode: task.exitCode,
+      startedAt: task.startedAt,
+      durationMs: task.durationMs,
+    }
   }
 }

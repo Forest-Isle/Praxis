@@ -1,0 +1,28 @@
+{
+  "version": "2.1.208",
+  "captureFile": "tasks-tui.capture.txt",
+  "captureSha256": "f4c5950c37130f0f34d53126b7e2be884abeaa250bc485f7b1029ac437812d1b",
+  "terminal": {
+    "columns": 100,
+    "lines": 32,
+    "screenReader": true
+  },
+  "empty": {
+    "title": "Background",
+    "message": "No tasks currently running",
+    "footer": "↑/↓ to select · Enter to view · Esc to close"
+  },
+  "multipleRunningShells": {
+    "title": "Background",
+    "summary": "2 active shells",
+    "order": "most-recent-first",
+    "rows": ["sleep 100 (running)", "sleep 90 (running)"],
+    "footer": "↑/↓ to select · Enter to view · x to stop · Esc to close"
+  },
+  "runningShellDetail": {
+    "title": "Shell details",
+    "fields": ["Status", "Runtime", "Command", "Output"],
+    "emptyOutput": "No output available",
+    "footer": "← to go back · Esc/Enter/Space to close · x to stop"
+  }
+}

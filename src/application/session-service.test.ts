@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   ModelProvider,
@@ -79,6 +79,58 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('exposes the typed MCP runtime management API', async () => {
+    const inspect = vi.fn(async () => [
+      { name: 'fixture', status: 'connected' as const, toolCount: 1 },
+    ])
+    const reconnect = vi.fn(async () => undefined)
+    const authenticate = vi.fn(async () => undefined)
+    const reload = vi.fn(async () => undefined)
+    const tools = vi.fn(async () => [
+      { name: 'marker', fullName: 'mcp__fixture__marker' },
+    ])
+    const service = new ClaudeSessionService({
+      configRoot: '/tmp/config',
+      cwd: '/tmp/project',
+      claudeVersion: '2.1.208',
+      mcp: { inspect, reconnect, authenticate, reload, tools },
+    })
+
+    await expect(service.mcpInspect()).resolves.toEqual([
+      { name: 'fixture', status: 'connected', toolCount: 1 },
+    ])
+    await service.mcpReconnect('fixture')
+    await service.mcpAuthenticate('fixture')
+    await service.mcpReload()
+    await expect(service.mcpTools('fixture')).resolves.toEqual([
+      { name: 'marker', fullName: 'mcp__fixture__marker' },
+    ])
+    expect(reconnect).toHaveBeenCalledWith('fixture')
+    expect(authenticate).toHaveBeenCalledWith('fixture')
+    expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it('closes the MCP runtime when the owning session service closes', async () => {
+    const close = vi.fn(async () => undefined)
+    const service = new ClaudeSessionService({
+      configRoot: '/tmp/config',
+      cwd: '/tmp/project',
+      claudeVersion: '2.1.208',
+      mcp: {
+        inspect: async () => [],
+        reconnect: async () => undefined,
+        authenticate: async () => undefined,
+        reload: async () => undefined,
+        tools: async () => [],
+        close,
+      },
+    })
+
+    await service.close()
+    await service.close()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it('runs and resumes native shell turns through tool hooks before the provider', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-shell-turn-'))
     roots.push(root)
@@ -1712,6 +1764,131 @@ describe('ClaudeSessionService', () => {
     expect(aborted).toBe(true)
   })
 
+  it('exposes live Agent snapshots and routes stop through the owning runtime', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-tasks-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '33333333-3333-4333-8333-333333333333'
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        markStarted()
+        await new Promise<void>((resolve) =>
+          request.signal?.addEventListener('abort', () => resolve(), {
+            once: true,
+          }),
+        )
+        yield { type: 'text-delta' as const, delta: '' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+      subagentToolNames: ['Agent', 'TaskStop'],
+      sessionPersistence: true,
+    })
+    const registry = service.createHostedToolRegistry(sessionId)
+    const call = await registry.prepare(
+      {
+        id: 'runtime-agent',
+        name: 'Agent',
+        input: {
+          description: 'Runtime agent',
+          prompt: 'wait',
+          run_in_background: true,
+        },
+      },
+      { cwd },
+    )
+    const launched = await registry.execute(call, { cwd })
+    const taskId = String(launched.nativeToolUseResult?.agentId)
+    await started
+
+    await expect(service.taskSnapshots(sessionId)).resolves.toMatchObject({
+      shells: [],
+      agents: [{ agentId: taskId, status: 'running' }],
+      workflows: [],
+    })
+    await service.stopTask(sessionId, taskId)
+    await vi.waitFor(async () => {
+      await expect(service.taskSnapshots(sessionId)).resolves.toMatchObject({
+        agents: [{ agentId: taskId, status: 'stopped' }],
+      })
+    })
+    await expect(service.stopTask('other-session', taskId)).rejects.toThrow(
+      `No task found with ID: ${taskId}`,
+    )
+    await service.close()
+  })
+
+  it('exposes live Bash output and reaches a fixed stopped duration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-shell-tasks-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '44444444-4444-4444-8444-444444444444'
+    await mkdir(cwd, { recursive: true })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      taskToolNames: ['TaskOutput', 'TaskStop'],
+      sessionPersistence: true,
+    })
+    const registry = service.createHostedToolRegistry(sessionId)
+    const call = await registry.prepare(
+      {
+        id: 'runtime-shell',
+        name: 'Bash',
+        input: {
+          command: "printf 'started\\n'; sleep 30",
+          description: 'Runtime shell',
+          run_in_background: true,
+        },
+      },
+      { cwd },
+    )
+    const launched = await registry.execute(call, { cwd })
+    const taskId = String(launched.nativeToolUseResult?.backgroundTaskId)
+    await vi.waitFor(async () => {
+      await expect(service.taskSnapshots(sessionId)).resolves.toMatchObject({
+        shells: [
+          {
+            taskId,
+            status: 'running',
+            output: expect.stringContaining('started'),
+            durationMs: null,
+          },
+        ],
+      })
+    })
+
+    await service.stopTask(sessionId, taskId)
+    const stopped = await service.taskSnapshots(sessionId)
+    expect(stopped.shells).toMatchObject([
+      { taskId, status: 'stopped', durationMs: expect.any(Number) },
+    ])
+    const duration = stopped.shells[0]?.durationMs
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect((await service.taskSnapshots(sessionId)).shells[0]?.durationMs).toBe(
+      duration,
+    )
+    await service.close()
+  })
+
   it('persists and projects user image and document attachments', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-attachment-'))
     roots.push(root)
@@ -2575,6 +2752,51 @@ describe('ClaudeSessionService', () => {
     expect(transcript).toContain('old-context')
     expect(transcript).toContain('"subtype":"compact_boundary"')
     expect(transcript).toContain('"isCompactSummary":true')
+  })
+
+  it('honors the shared auto-compact setting without disabling manual compaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-no-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([`old-context ${'discarded '.repeat(600)}`]),
+    })
+    const first = await origin.run('CURRENT_TASK')
+    let compactCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unreachable']),
+      contextBudget: new ContextBudget({
+        contextWindowTokens: 400,
+        reserveTokens: 50,
+      }),
+      autoCompact: false,
+      compactor: {
+        async compact() {
+          compactCalls += 1
+          return {
+            summary: 'manual summary',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+          }
+        },
+      },
+    })
+
+    await expect(service.resume(first.sessionId, 'Continue.')).rejects.toThrow(
+      'Context exceeds provider budget',
+    )
+    expect(compactCalls).toBe(0)
+    await expect(service.compact(first.sessionId)).resolves.toMatchObject({
+      summary: 'manual summary',
+    })
+    expect(compactCalls).toBe(1)
   })
 
   it('compacts a large completed tool result before the next model turn', async () => {
