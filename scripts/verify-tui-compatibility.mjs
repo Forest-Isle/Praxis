@@ -1061,7 +1061,11 @@ await writeFile(process.argv[4], JSON.stringify(snapshot))
     provider.listen(0, '127.0.0.1', resolve)
   })
   port = provider.address().port
-  const tuiProbeEnvironment = { ...process.env, FORCE_COLOR: '3' }
+  const tuiProbeEnvironment = {
+    ...process.env,
+    FORCE_COLOR: '3',
+    PRAXIS_CLAUDE_BINARY: pinnedClaude,
+  }
   delete tuiProbeEnvironment.NO_COLOR
 
   for (const [profile, expectedAnsi] of Object.entries(claudeThemeAnsi)) {

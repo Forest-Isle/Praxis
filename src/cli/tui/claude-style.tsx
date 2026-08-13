@@ -1115,6 +1115,16 @@ export function PermissionDashboard({
             {index + 1}. {row}
           </Text>
         ))
+      ) : tabIndex === 0 ? (
+        ['Clear recently denied…', ...rows].map((row, index) => (
+          <Text
+            key={`${index}-${row}`}
+            inverse={!screenReader && index === selectedIndex}
+          >
+            {selectionPrefix(index === selectedIndex, screenReader)}
+            {index + 1}. {row}
+          </Text>
+        ))
       ) : tabIndex === 4 ? (
         <>
           {originalWorkspace ? (

@@ -146,6 +146,9 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
   scoped rule search and atomic creation/removal; original/additional workspace
   directory presentation; and session-local directory add/remove controls.
+- `/tui` switches between the default and fullscreen renderers, persists the
+  Claude-compatible `tui` runtime setting, and resumes the active session after
+  the renderer restart.
 - `ContextUsageBlock`: transcript-native usage grid, autocompact reserve, and
   estimates for skills discovered through the shared Claude data plane.
 - `StatusDashboard`: Settings, Status, Config, Usage, and Stats tabs backed by

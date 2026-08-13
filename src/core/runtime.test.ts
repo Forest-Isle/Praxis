@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AgentRunCancelledError,
   AgentRuntime,
+  annotatePermissionDecision,
   ModelProviderError,
   type ModelToolCall,
   type ModelProvider,
@@ -1060,6 +1061,45 @@ describe('AgentRuntime', () => {
     })
     expect(events.some((event) => event.type === 'tool-call')).toBe(false)
     expect(events.some((event) => event.type === 'tool-result')).toBe(false)
+  })
+
+  it('emits the classifier source for classified permission decisions', async () => {
+    const events: RuntimeEvent[] = []
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield* []
+      }),
+      (event) => events.push(event),
+      {
+        tools: {
+          definitions: () => [],
+          async prepare(call) {
+            return call
+          },
+          async execute() {
+            return { content: 'unused', isError: false }
+          },
+        },
+        permissions: {
+          resolve: () =>
+            annotatePermissionDecision(
+              { behavior: 'deny', reason: 'classifier policy' },
+              'auto-classifier',
+            ),
+        },
+      },
+    )
+    await runtime.executeDirectToolCall(
+      { id: 'classified', name: 'Bash', input: { command: 'dangerous' } },
+      { observer: { async assistantCompleted() {}, async toolCompleted() {} } },
+    )
+    expect(events).toContainEqual({
+      type: 'permission-decision',
+      callId: 'classified',
+      behavior: 'deny',
+      reason: 'classifier policy',
+      source: 'auto-classifier',
+    })
   })
 
   it('approves a recovered tool after preparation and before execution', async () => {

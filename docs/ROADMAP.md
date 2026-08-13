@@ -1026,6 +1026,9 @@ remain partial.
       across native, VS Code-family, Alacritty, Zed, tmux/screen, and Apple
       Terminal paths, with backups, duplicate detection, and focused Ink/unit
       coverage (exact terminal PTY layout remains tracked separately)
-- [ ] `/tui` default/fullscreen renderer switching
+- [x] `/tui` default/fullscreen renderer switching with persisted runtime
+      settings and active-session resume
 - [ ] exact Recently denied selection, reset, deduplication, and lifetime
-      behavior beyond the observed empty-state and current-session population
+      behavior against the pinned Claude 2.1.208 black-box flow; the local
+      sidecar, source filtering, cleanup, and focused interaction coverage are
+      implemented

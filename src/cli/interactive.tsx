@@ -83,6 +83,10 @@ import {
   type TuiPermissionBehavior,
   type TuiPermissionRule,
 } from './tui/permission-settings.js'
+import {
+  createRecentlyDeniedStore,
+  type RecentlyDeniedStore,
+} from './tui/recently-denied.js'
 import type { ClaudeResourceScope } from '../compatibility/claude/shared-resources.js'
 import type { TuiHookConfiguration } from './tui/hook-settings.js'
 import {
@@ -418,6 +422,7 @@ interface InteractiveAppProps {
     }): Promise<void>
     remove?(rule: TuiPermissionRule): Promise<void>
   }
+  recentlyDeniedStore?: RecentlyDeniedStore
   themeStore?: {
     load(): Promise<TuiThemeSettings>
     save(update: Partial<TuiThemeSettings>): Promise<TuiThemeSettings>
@@ -532,6 +537,12 @@ type InteractiveMenu =
   | {
       kind: 'permission-delete'
       rule: TuiPermissionRule
+      rules: readonly TuiPermissionRule[]
+      selectedIndex: number
+    }
+  | {
+      kind: 'recently-denied-delete'
+      display: string
       rules: readonly TuiPermissionRule[]
       selectedIndex: number
     }
@@ -881,6 +892,7 @@ export function InteractiveApp({
   sideQuestionClipboardWriter = writeTuiOsc52Clipboard,
   exportWriter = writeConversationExport,
   permissionRuleStore,
+  recentlyDeniedStore: suppliedRecentlyDeniedStore,
   terminalSetup: terminalSetupOverride,
   themeStore,
   initialThemeSettings,
@@ -903,7 +915,7 @@ export function InteractiveApp({
     [keybindingsConfigRoot],
   )
   const configTarget = useMemo(
-    () => runtimeSettingsTarget ?? resolveConfigSettingsLocation(),
+    () => resolveConfigSettingsLocation(runtimeSettingsTarget),
     [runtimeSettingsTarget],
   )
   const sensitiveValues = useMemo(
@@ -938,6 +950,12 @@ export function InteractiveApp({
         remove: removeTuiPermissionRule,
       },
     [permissionRuleStore, runtimeCwd],
+  )
+  const recentDeniedStore = useMemo(
+    () =>
+      suppliedRecentlyDeniedStore ??
+      createRecentlyDeniedStore(configTarget.configRoot),
+    [suppliedRecentlyDeniedStore, configTarget.configRoot],
   )
   const presentationThemeStore = useMemo(
     () =>
@@ -1102,6 +1120,8 @@ export function InteractiveApp({
   const turnMutatedFilesRef = useRef(false)
   const permissionCallsRef = useRef(new Map<string, string>())
   const [recentDenied, setRecentDenied] = useState<readonly string[]>([])
+  const recentDeniedRef = useRef<readonly string[]>([])
+  recentDeniedRef.current = recentDenied
   const [exitConfirmation, setExitConfirmation] = useState(false)
   const exitConfirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -1843,11 +1863,18 @@ export function InteractiveApp({
         })
         break
       case 'permission-decision':
-        if (event.behavior === 'deny') {
+        if (event.behavior === 'deny' && event.source === 'auto-classifier') {
           const denied =
             permissionCallsRef.current.get(event.callId) ?? event.callId
-          setRecentDenied((current) =>
-            [denied, ...current.filter((item) => item !== denied)].slice(0, 20),
+          void recentDeniedStore.record(denied).then(
+            (entries) => setRecentDenied(entries),
+            (error: unknown) =>
+              append({
+                kind: 'warning',
+                text: `Unable to save recently denied action: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              }),
           )
         }
         append({
@@ -4339,6 +4366,65 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'recently-denied-delete') {
+        if (key.escape || value === '\u001B') {
+          updateMenu({
+            kind: 'permission-dashboard',
+            tabIndex: 0,
+            selectedIndex: -1,
+            query: '',
+            rules: activeMenu.rules,
+          })
+          return
+        }
+        if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: key.upArrow ? 0 : 1,
+          })
+          return
+        }
+        const confirmed =
+          (key.return && activeMenu.selectedIndex === 0) ||
+          value.toLowerCase() === 'y' ||
+          value === '1'
+        const declined =
+          (key.return && activeMenu.selectedIndex === 1) ||
+          value.toLowerCase() === 'n' ||
+          value === '2'
+        if (!confirmed && !declined) return
+        if (declined) {
+          updateMenu({
+            kind: 'permission-dashboard',
+            tabIndex: 0,
+            selectedIndex: -1,
+            query: '',
+            rules: activeMenu.rules,
+          })
+          return
+        }
+        const removal = (async () => {
+          setBusy(true)
+          try {
+            setRecentDenied(await recentDeniedStore.remove(activeMenu.display))
+            updateMenu({
+              kind: 'permission-dashboard',
+              tabIndex: 0,
+              selectedIndex: -1,
+              query: '',
+              rules: activeMenu.rules,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(removal)
+        void removal.finally(() => onTurnChange?.(null))
+        return
+      }
+
       if (activeMenu.kind === 'permission-scope') {
         if (key.escape || value === '\u001B') {
           updateMenu({
@@ -4425,7 +4511,7 @@ export function InteractiveApp({
           : []
         const rowCount =
           activeMenu.tabIndex === 0
-            ? recentDenied.length
+            ? recentDenied.length + 1
             : activeMenu.tabIndex === 4
               ? runtimePreferences.additionalDirectories.length + 1
               : matchingRules.length + 1
@@ -4456,6 +4542,37 @@ export function InteractiveApp({
             query: activeMenu.query + value,
             selectedIndex: -1,
           })
+        } else if (
+          key.return &&
+          activeMenu.tabIndex === 0 &&
+          activeMenu.selectedIndex === 0
+        ) {
+          const clearing = (async () => {
+            setBusy(true)
+            try {
+              await recentDeniedStore.clear()
+              setRecentDenied([])
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(clearing)
+          void clearing.finally(() => onTurnChange?.(null))
+        } else if (
+          key.return &&
+          activeMenu.tabIndex === 0 &&
+          activeMenu.selectedIndex > 0
+        ) {
+          const display = recentDenied[activeMenu.selectedIndex - 1]
+          if (display)
+            updateMenu({
+              kind: 'recently-denied-delete',
+              display,
+              rules: activeMenu.rules,
+              selectedIndex: 0,
+            })
         } else if (key.return && behavior && activeMenu.selectedIndex === 0) {
           clearComposerInput()
           updateMenu({
@@ -5465,6 +5582,7 @@ export function InteractiveApp({
               query: '',
               rules: await permissionStore.load(),
             })
+            setRecentDenied(await recentDeniedStore.load())
           } catch (error) {
             warn(error)
           } finally {
@@ -6076,6 +6194,22 @@ export function InteractiveApp({
                   rules={menu.rules}
                   recentDenied={recentDenied}
                   workspaceDirectories={workspaceDirectories}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'recently-denied-delete' ? (
+                <SelectionMenu
+                  title="Delete recently denied action?"
+                  description={menu.display}
+                  options={[
+                    {
+                      label: 'Yes',
+                      description: 'Remove this action from Recently denied.',
+                    },
+                    { label: 'No', description: 'Keep this action.' },
+                  ]}
+                  selectedIndex={menu.selectedIndex}
+                  footer="Enter to confirm · Esc to cancel"
                   width={width}
                   screenReader={axScreenReader}
                 />
