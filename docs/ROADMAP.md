@@ -1022,7 +1022,6 @@ remain partial.
 - [x] Claude-compatible custom-theme creation, selection, token editing/reset,
       deletion, sidecar locking/atomic writes, schema validation, and focused
       service plus InteractiveApp lifecycle coverage
-- [ ] `/terminal-setup` Shift+Enter installation across supported terminals
 - [x] `/terminal-setup` provider-free Shift+Enter installation/diagnostics
       across native, VS Code-family, Alacritty, Zed, tmux/screen, and Apple
       Terminal paths, with backups, duplicate detection, and focused Ink/unit
