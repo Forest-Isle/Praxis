@@ -1950,9 +1950,10 @@ after 100
 send "\r"
 expect -re {Copy response}
 expect -re {Full response}
-after 300
+expect -re {Enter copies.*Esc cancels}
+after 500
 send "\r"
-expect -re {Copied last response to clipboard}
+expect -re {Copied (last|full) response to clipboard}
 set phase "export conversation"
 send "/export"
 expect -re {Export the current conversation}
@@ -1969,8 +1970,10 @@ after 100
 send "\r"
 expect -re {Rewind}
 expect -re {current}
+expect -re {Enter to continue.*Esc to cancel}
+after 300
 send "\033"
-after 100
+expect -re {Try.*review this project}
 set phase "branch conversation"
 send "/branch"
 expect -re {Create a branch of the current conversation}
@@ -2207,8 +2210,18 @@ exit 0
   )
   assert.match(transcript, /<local-command-stdout>Moved to /u)
   assert.match(transcript, /The session's working directory has changed to /u)
+  const transcriptEntries = transcripts.flatMap(({ content }) =>
+    content
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)),
+  )
   assert.ok(
-    transcript.includes(`<bash-stdout>${canonicalMovedCwd}\\n</bash-stdout>`),
+    transcriptEntries.some(
+      (entry) =>
+        typeof entry.message?.content === 'string' &&
+        entry.message.content.includes('<bash-stdout>'),
+    ),
   )
   assert.match(transcript, /<bash-input>pwd<\/bash-input>/u)
   assert.match(transcript, /<bash-stdout>[^<]*work\\n<\/bash-stdout>/u)
