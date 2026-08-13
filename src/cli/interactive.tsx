@@ -168,6 +168,7 @@ import {
   type CustomThemeToken,
   type TuiCustomTheme,
 } from './tui/custom-themes.js'
+import {
   setupTuiTerminal,
   terminalSetupTuiSlashCommand,
 } from './tui/terminal-setup.js'
