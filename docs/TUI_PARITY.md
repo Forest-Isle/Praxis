@@ -252,10 +252,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   changed final pre-rename fingerprint triggers a bounded reread/merge/retry;
   atomic rename prevents partial files but is not an OS-level compare-and-swap,
   so a non-cooperating writer can still win the syscall window after that check.
- Custom profiles use Claude's `.claude/themes/<slug>.json` shape, persist
- `theme: "custom:<slug>"`, and support creation, token editing/reset, and
- deletion from the picker. Built-in profiles remain protected; custom sidecars
- are validated, leased, and atomically updated.
+  Custom profiles use Claude's `.claude/themes/<slug>.json` shape, persist
+  `theme: "custom:<slug>"`, and support creation, token editing/reset, and
+  deletion from the picker. Built-in profiles remain protected; custom sidecars
+  are validated, leased, and atomically updated.
 - `/terminal-setup` is a provider-free local command. It reports native
   Shift+Enter support for iTerm2, WezTerm, Ghostty, Kitty, and Warp; installs
   the Claude-compatible escape sequence in VS Code-family JSONC keybindings,
@@ -263,7 +263,7 @@ is passed from the CLI composition root and never written to shared JSONL.
   gives tmux, screen, unsupported, remote-IDE, and non-interactive contexts an
   actionable diagnostic with the backslash+Return fallback. Apple Terminal on
   macOS is handled with a preferences backup, default/startup profile updates,
-   visual-bell configuration, and interrupted-setup recovery state.
+  visual-bell configuration, and interrupted-setup recovery state.
 - `/permissions` loads Claude-native permission arrays into Recently denied,
   Allow, Ask, Deny, and Workspace tabs, opening on Allow like 2.1.208. Rule
   search is local; adding a rule chooses `.claude/settings.local.json`,
