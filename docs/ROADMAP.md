@@ -1019,7 +1019,10 @@ contract; broader presentation and denied-history parity remain partial.
       capture for every profile, explicit screen-reader focus announcements,
       Escape, navigation, cancellation, and load/save failure paths
 - [ ] custom-theme creation/editing
-- [ ] `/terminal-setup` Shift+Enter installation across supported terminals
+- [x] `/terminal-setup` provider-free Shift+Enter installation/diagnostics
+      across native, VS Code-family, Alacritty, Zed, tmux/screen, and Apple
+      Terminal paths, with backups, duplicate detection, and focused Ink/unit
+      coverage (exact terminal PTY layout remains tracked separately)
 - [ ] `/tui` default/fullscreen renderer switching
 - [ ] exact Recently denied selection, reset, deduplication, and lifetime
       behavior beyond the observed empty-state and current-session population

@@ -71,6 +71,30 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Syntax theme: GitHub')
   })
 
+  it('runs /terminal-setup as a local command without creating a model turn', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            calls.push('service')
+            throw new Error('terminal setup must not require a provider')
+          },
+        }}
+        initialSessions={[]}
+        terminalSetup={async () => 'Installed terminal Shift+Enter key binding'}
+      />,
+    )
+
+    app.stdin.write('/terminal-setup')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'Installed terminal Shift+Enter key binding',
+    )
+    expect(calls).toEqual([])
+  })
+
   it('toggles syntax highlighting in the theme picker and persists immediately', async () => {
     const saved: unknown[] = []
     const app = render(
@@ -2142,6 +2166,46 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(calls).toEqual(['shift first\nshift second'])
+  })
+
+  it('accepts the ESC+Return sequence installed by terminal setup', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run(prompt) {
+                calls.push(prompt)
+                return {
+                  sessionId: 'meta-session',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('meta first')
+    app.stdin.write('\u001B\r')
+    app.stdin.write('meta second')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['meta first\nmeta second'])
   })
 
   it('supports task, model, stash, escape, and continuation shortcuts', async () => {

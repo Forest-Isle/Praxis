@@ -94,6 +94,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   editing, shared `/keybindings` creation/editing and supported-action remapping,
   shared `/theme` profiles with immediate semantic recoloring and persisted
   syntax toggles across transcript code and diff views,
+  provider-free `/terminal-setup` diagnostics and repeatable Shift+Enter setup
+  for supported local terminals,
   `Ctrl+V` text/image clipboard paste, `Ctrl+Z` shell suspension and `fg`
   recovery, permission-gated `!` shell turns, navigable current/per-turn Git
   diff views, rich decision panels, and measured context budgets; print mode,
