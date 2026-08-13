@@ -9,6 +9,7 @@ import {
 import type { CliControls } from '../protocol.js'
 
 export interface PraxisRuntimeSettings {
+  tui: 'default' | 'fullscreen'
   autoCompact: boolean
   switchModelsOnFlag: boolean
   tips: boolean
@@ -53,6 +54,7 @@ export function projectRuntimeSettings(
   snapshot: ConfigSettingsSnapshot,
 ): PraxisRuntimeSettings {
   return {
+    tui: value(snapshot, 'tui') as PraxisRuntimeSettings['tui'],
     autoCompact: value(snapshot, 'autoCompact') as boolean,
     switchModelsOnFlag: value(snapshot, 'switchModelsOnFlag') as boolean,
     tips: value(snapshot, 'tips') as boolean,

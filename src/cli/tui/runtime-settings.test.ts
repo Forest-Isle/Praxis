@@ -24,8 +24,9 @@ describe('Claude config runtime projection', () => {
   it('projects all 30 captured settings with their native defaults', () => {
     const settings = projectRuntimeSettings({ settings: {}, state: {} })
 
-    expect(Object.keys(settings)).toHaveLength(30)
+    expect(Object.keys(settings)).toHaveLength(31)
     expect(settings).toMatchObject({
+      tui: 'default',
       autoCompact: true,
       thinking: true,
       checkpoints: true,

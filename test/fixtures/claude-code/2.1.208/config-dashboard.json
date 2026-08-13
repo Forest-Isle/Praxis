@@ -265,6 +265,14 @@
         "opusplan"
       ],
       "defaultValue": "default"
+    },
+    {
+      "nativeKey": "tui",
+      "label": "TUI renderer",
+      "scope": "settings",
+      "path": ["tui"],
+      "domain": ["default", "fullscreen"],
+      "defaultValue": "default"
     }
   ],
   "configFooterSearch": "Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear",
@@ -299,7 +307,8 @@
     "askUserQuestionTimeout",
     "externalEditorContext",
     "prStatus",
-    "model"
+    "model",
+    "tui"
   ],
   "excluded": [
     {

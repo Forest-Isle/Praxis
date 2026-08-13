@@ -20,7 +20,7 @@ const snapshot = {
 
 describe('Claude-style config dashboard', () => {
   it('projects native values and filters labels, keys, and values', () => {
-    expect(projectConfigRows(snapshot)).toHaveLength(30)
+    expect(projectConfigRows(snapshot)).toHaveLength(31)
     expect(projectConfigRows(snapshot, 'auto-compact')[0]).toMatchObject({
       value: false,
       displayValue: 'false',
@@ -59,7 +59,7 @@ describe('Claude-style config dashboard', () => {
     expect(frame).toContain('⌕ Search settings…')
     expect(frame).toContain('Auto-compact')
     expect(frame).toContain('❯ Show tips')
-    expect(frame).toContain('↓ 22 more below')
+    expect(frame).toContain('↓ 23 more below')
     expect(frame).toContain(
       'Enter/Space to change · / to search · Esc to close',
     )

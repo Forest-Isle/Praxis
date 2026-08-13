@@ -176,6 +176,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'tui',
+    description: 'Switch between the default and fullscreen renderers',
+    source: 'builtin',
+  },
+  {
     name: 'exit',
     description: 'Exit the CLI',
     source: 'builtin',

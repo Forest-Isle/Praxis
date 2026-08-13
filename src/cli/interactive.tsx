@@ -182,6 +182,7 @@ import {
 } from './tui/config-settings.js'
 import {
   projectRuntimeSettings,
+  loadRuntimeSettings,
   type PraxisRuntimeSettings,
 } from './tui/runtime-settings.js'
 import {
@@ -365,6 +366,10 @@ interface InteractiveAppProps {
   onCancel?: () => void
   onTurnChange?: (turn: Promise<void> | null) => void
   onCleanup?: (closing: Promise<void>) => void
+  onRendererChange?: (
+    mode: PraxisRuntimeSettings['tui'],
+    sessionId: string | null,
+  ) => void
   onBackground?: (
     request: InteractiveBackgroundRequest,
   ) => Promise<InteractiveBackgroundResult>
@@ -848,6 +853,7 @@ export function InteractiveApp({
   onCancel,
   onTurnChange,
   onCleanup,
+  onRendererChange,
   onBackground,
   axScreenReader = false,
   allowNewSession = true,
@@ -5310,6 +5316,7 @@ export function InteractiveApp({
       composerImagesRef.current.clear()
       if (!prompt || prompt === '!') return
       const copyCommand = /^\/copy(?:\s+(\d+))?$/u.exec(prompt)
+      const tuiCommand = /^\/tui(?:\s+(default|fullscreen))?$/u.exec(prompt)
       const renameCommand = /^\/rename(?:\s+(.+))?$/u.exec(prompt)
       const cdCommand = /^\/cd(?:\s+(.+))?$/u.exec(prompt)
       const btwCommand = /^\/btw(?:\s+([\s\S]+))?$/u.exec(prompt)
@@ -5594,6 +5601,34 @@ export function InteractiveApp({
         })()
         onTurnChange?.(loading)
         void loading.finally(() => onTurnChange?.(null))
+      } else if (tuiCommand) {
+        const mode = tuiCommand[1] as PraxisRuntimeSettings['tui'] | undefined
+        if (!mode) {
+          append({
+            kind: 'local-result',
+            text: `TUI renderer: ${runtimeSettingsRef.current.tui}. Usage: /tui default|fullscreen`,
+          })
+        } else {
+          const saving = (async () => {
+            setBusy(true)
+            try {
+              const snapshot = await saveConfigSetting(
+                'tui',
+                mode,
+                configTarget,
+              )
+              await reloadRuntimeSettings(snapshot)
+              onRendererChange?.(mode, sessionId)
+              exit()
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(saving)
+          void saving.finally(() => onTurnChange?.(null))
+        }
       } else if (prompt === '/usage') {
         updateMenu({ kind: 'status', tabIndex: 3 })
       } else if (prompt === '/update') {
@@ -6383,61 +6418,17 @@ export async function runInteractive(options: {
   const signal = options.signal
     ? AbortSignal.any([options.signal, controller.signal])
     : controller.signal
-  const listing = await options.factory.createService({
-    eventSink: () => undefined,
-    requireProvider: false,
-    signal,
-  })
-  let initialSessions: SessionSummary[]
-  let initialSlashCommands: readonly TuiSlashCommand[]
-  let initialAgents: readonly TuiAgentEntry[]
-  try {
-    const sessions = await listing.sessions()
-    initialSessions = options.sessionFilter
-      ? sessions.filter(options.sessionFilter)
-      : sessions
-    initialSlashCommands = listing.slashCommands?.() ?? []
-    initialAgents = listing.agentDefinitions?.() ?? []
-    if (options.requireSession && initialSessions.length === 0) {
-      throw new Error(
-        options.missingSessionMessage ??
-          'No conversation linked to a pull request in this project',
-      )
-    }
-  } catch (error) {
-    try {
-      await listing.close?.()
-    } catch {
-      // Preserve the session-listing failure as the primary error.
-    }
-    throw error
-  }
-  const canonicalResumeSession =
-    options.resume?.sessionId === undefined
-      ? undefined
-      : initialSessions.find(
-          (session) =>
-            session.sessionId.toLowerCase() ===
-            options.resume?.sessionId?.toLowerCase(),
-        )
-  const resume = canonicalResumeSession
-    ? { ...options.resume, sessionId: canonicalResumeSession.sessionId }
-    : options.resume
-  let initialHistory: readonly TranscriptItem[] = []
-  try {
-    initialHistory =
-      resume?.sessionId === undefined || listing.transcript === undefined
-        ? []
-        : await listing.transcript(resume.sessionId)
-  } catch (error) {
-    try {
-      await listing.close?.()
-    } catch {
-      // Preserve the transcript-loading failure as the primary error.
-    }
-    throw error
-  }
-  await listing.close?.()
+  let currentResume = options.resume
+  let currentInitialPrompt = options.initialPrompt
+  let currentRuntimeSettings =
+    options.runtimeSettings ?? (await loadRuntimeSettings())
+  let currentRenderer = currentRuntimeSettings.tui
+  let rendererChange: {
+    mode: PraxisRuntimeSettings['tui']
+    sessionId: string | null
+  } | null = null
+  let rendererNotice: string | undefined
+  const readRendererChange = () => rendererChange
   let initialThemeSettings = DEFAULT_TUI_THEME_SETTINGS
   let initialThemeLoadError: string | undefined
   try {
@@ -6447,64 +6438,147 @@ export async function runInteractive(options: {
       error instanceof Error ? error.message : String(error)
     }`
   }
-  let activeTurn: Promise<void> | null = null
-  let cleanup: Promise<void> | null = null
-  let backgrounded: InteractiveBackgroundResult | undefined
-  const instance = render(
-    <InteractiveApp
-      factory={options.factory}
-      initialSessions={initialSessions}
-      slashCommands={initialSlashCommands}
-      agents={initialAgents}
-      initialHistory={initialHistory}
-      {...(options.runtimeSettings === undefined
-        ? {}
-        : { runtimeSettings: options.runtimeSettings })}
-      initialThemeSettings={initialThemeSettings}
-      {...(initialThemeLoadError === undefined
-        ? {}
-        : { initialThemeLoadError })}
-      {...(options.initialPrompt === undefined
-        ? {}
-        : { initialPrompt: options.initialPrompt })}
-      signal={signal}
-      onCancel={() => controller.abort()}
-      onTurnChange={(turn) => {
-        activeTurn = turn
-      }}
-      onCleanup={(closing) => {
-        cleanup = closing
-      }}
-      {...(options.onBackground === undefined
-        ? {}
-        : {
-            onBackground: async (request: InteractiveBackgroundRequest) => {
-              const result = await options.onBackground?.(request)
-              if (!result) throw new Error('Background launch returned no job')
-              backgrounded = result
-              return result
-            },
-          })}
-      allowNewSession={!options.requireSession}
-      {...(options.additionalDirectories === undefined
-        ? {}
-        : { additionalDirectories: options.additionalDirectories })}
-      {...(resume === undefined ? {} : { resume })}
-      {...(options.display === undefined ? {} : { display: options.display })}
-      {...(options.axScreenReader ? { axScreenReader: true } : {})}
-      {...(options.allowDangerouslySkipPermissions
-        ? { allowDangerouslySkipPermissions: true }
-        : {})}
-    />,
-    {
-      exitOnCtrlC: false,
-      incrementalRendering: !options.axScreenReader,
-      interactive: true,
-    },
-  )
-  await instance.waitUntilExit()
-  if (activeTurn) await activeTurn
-  if (cleanup) await cleanup
-  if (backgrounded) options.onBackgrounded?.(backgrounded)
+  while (true) {
+    const listing = await options.factory.createService({
+      eventSink: () => undefined,
+      requireProvider: false,
+      signal,
+    })
+    let initialSessions: SessionSummary[]
+    let initialSlashCommands: readonly TuiSlashCommand[]
+    let initialAgents: readonly TuiAgentEntry[]
+    try {
+      const sessions = await listing.sessions()
+      initialSessions = options.sessionFilter
+        ? sessions.filter(options.sessionFilter)
+        : sessions
+      initialSlashCommands = listing.slashCommands?.() ?? []
+      initialAgents = listing.agentDefinitions?.() ?? []
+      if (options.requireSession && initialSessions.length === 0) {
+        throw new Error(
+          options.missingSessionMessage ??
+            'No conversation linked to a pull request in this project',
+        )
+      }
+    } catch (error) {
+      try {
+        await listing.close?.()
+      } catch {
+        // Preserve the session-listing failure as the primary error.
+      }
+      throw error
+    }
+    const canonicalResumeSession =
+      currentResume?.sessionId === undefined
+        ? undefined
+        : initialSessions.find(
+            (session) =>
+              session.sessionId.toLowerCase() ===
+              currentResume?.sessionId?.toLowerCase(),
+          )
+    const resume = canonicalResumeSession
+      ? { ...currentResume, sessionId: canonicalResumeSession.sessionId }
+      : currentResume
+    let initialHistory: readonly TranscriptItem[] = []
+    try {
+      initialHistory =
+        resume?.sessionId === undefined || listing.transcript === undefined
+          ? []
+          : await listing.transcript(resume.sessionId)
+    } catch (error) {
+      try {
+        await listing.close?.()
+      } catch {
+        // Preserve the transcript-loading failure as the primary error.
+      }
+      throw error
+    }
+    await listing.close?.()
+    if (signal.aborted) break
+    const history =
+      rendererNotice === undefined
+        ? initialHistory
+        : [
+            ...initialHistory,
+            { kind: 'local-result' as const, text: rendererNotice },
+          ]
+    rendererNotice = undefined
+    let activeTurn: Promise<void> | null = null
+    let cleanup: Promise<void> | null = null
+    let backgrounded: InteractiveBackgroundResult | undefined
+    rendererChange = null
+    const instance = render(
+      <InteractiveApp
+        factory={options.factory}
+        initialSessions={initialSessions}
+        slashCommands={initialSlashCommands}
+        agents={initialAgents}
+        initialHistory={history}
+        runtimeSettings={currentRuntimeSettings}
+        initialThemeSettings={initialThemeSettings}
+        {...(initialThemeLoadError === undefined
+          ? {}
+          : { initialThemeLoadError })}
+        {...(currentInitialPrompt === undefined
+          ? {}
+          : { initialPrompt: currentInitialPrompt })}
+        signal={signal}
+        onCancel={() => controller.abort()}
+        onTurnChange={(turn) => {
+          activeTurn = turn
+        }}
+        onCleanup={(closing) => {
+          cleanup = closing
+        }}
+        onRendererChange={(mode, sessionId) => {
+          rendererChange = { mode, sessionId }
+          currentRenderer = mode
+          currentRuntimeSettings = { ...currentRuntimeSettings, tui: mode }
+        }}
+        {...(options.onBackground === undefined
+          ? {}
+          : {
+              onBackground: async (request: InteractiveBackgroundRequest) => {
+                const result = await options.onBackground?.(request)
+                if (!result)
+                  throw new Error('Background launch returned no job')
+                backgrounded = result
+                return result
+              },
+            })}
+        allowNewSession={!options.requireSession}
+        {...(options.additionalDirectories === undefined
+          ? {}
+          : { additionalDirectories: options.additionalDirectories })}
+        {...(resume === undefined ? {} : { resume })}
+        {...(options.display === undefined ? {} : { display: options.display })}
+        {...(options.axScreenReader ? { axScreenReader: true } : {})}
+        {...(options.allowDangerouslySkipPermissions
+          ? { allowDangerouslySkipPermissions: true }
+          : {})}
+      />,
+      {
+        exitOnCtrlC: false,
+        incrementalRendering: !options.axScreenReader,
+        interactive: true,
+        alternateScreen: currentRenderer === 'fullscreen',
+      },
+    )
+    await instance.waitUntilExit()
+    if (activeTurn) await activeTurn
+    if (cleanup) await cleanup
+    if (backgrounded) options.onBackgrounded?.(backgrounded)
+    const change = readRendererChange()
+    if (!change || signal.aborted) break
+    currentInitialPrompt = undefined
+    currentRenderer = change.mode
+    rendererNotice =
+      change.mode === 'fullscreen'
+        ? 'Using flicker-free rendering'
+        : 'Switched back to the classic renderer'
+    currentResume = change.sessionId
+      ? { sessionId: change.sessionId }
+      : undefined
+  }
   return signal.aborted ? 130 : 0
 }

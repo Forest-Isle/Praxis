@@ -337,6 +337,15 @@ export const CLAUDE_2_1_208_CONFIG_SETTINGS = [
     'default',
     'startup provider model selection',
   ),
+  setting(
+    'tui',
+    'TUI renderer',
+    'settings',
+    ['tui'],
+    ['default', 'fullscreen'],
+    'default',
+    'interactive renderer mode',
+  ),
 ] as const satisfies readonly ConfigSettingDefinition[]
 
 function setting(

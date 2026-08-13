@@ -205,6 +205,42 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual([])
   })
 
+  it('reports the current renderer and restarts after switching it', async () => {
+    const rendererChanges: Array<{
+      mode: 'default' | 'fullscreen'
+      sessionId: string | null
+    }> = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        runtimeSettings={{
+          ...projectRuntimeSettings({ settings: {}, state: {} }),
+          tui: 'default',
+        }}
+        onRendererChange={(mode, sessionId) => {
+          rendererChanges.push({ mode, sessionId })
+        }}
+      />,
+    )
+
+    app.stdin.write('/tui')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('TUI renderer: default')
+    expect(app.lastFrame()).toContain('/tui default|fullscreen')
+
+    app.stdin.write('/tui fullscreen')
+    app.stdin.write('\r')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await flush()
+    expect(rendererChanges).toEqual([{ mode: 'fullscreen', sessionId: null }])
+  })
+
   it('toggles syntax highlighting in the theme picker and persists immediately', async () => {
     const saved: unknown[] = []
     const app = render(

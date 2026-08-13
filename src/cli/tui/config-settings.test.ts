@@ -189,6 +189,20 @@ describe('Claude 2.1.208 config settings contract', () => {
     })
   })
 
+  it('persists the Claude-compatible TUI renderer key in settings.json', async () => {
+    const configRoot = await root()
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      '{"theme":"dark","tui":"default","unknown":true}\n',
+    )
+
+    await saveConfigSetting('tui', 'fullscreen', configRoot)
+
+    expect(
+      JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')),
+    ).toEqual({ theme: 'dark', tui: 'fullscreen', unknown: true })
+  })
+
   it('uses an explicit Claude state path independently of the config root', async () => {
     const container = await root()
     const configRoot = join(container, 'config')
