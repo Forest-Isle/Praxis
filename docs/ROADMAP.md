@@ -998,8 +998,9 @@ contract. Overall interactive TTY parity remains partial.
 
 ## Stage 109 - interactive presentation controls
 
-Status: complete for Claude Code 2.1.208's built-in `/theme` profile-selection
-contract; broader presentation and denied-history parity remain partial.
+Status: complete for Claude Code 2.1.208's built-in and custom `/theme`
+profile-selection contract; broader presentation and denied-history parity
+remain partial.
 
 - [x] black-box-confirmed `/theme` catalog description, picker title and
       guidance, Auto/dark/light/colorblind-friendly/ANSI-only profile order,
@@ -1018,7 +1019,9 @@ contract; broader presentation and denied-history parity remain partial.
       installed-package PTY coverage, including a real fixed 2.1.208 ANSI
       capture for every profile, explicit screen-reader focus announcements,
       Escape, navigation, cancellation, and load/save failure paths
-- [ ] custom-theme creation/editing
+- [x] Claude-compatible custom-theme creation, selection, token editing/reset,
+      deletion, sidecar locking/atomic writes, schema validation, and focused
+      service plus InteractiveApp lifecycle coverage
 - [ ] `/terminal-setup` Shift+Enter installation across supported terminals
 - [ ] `/tui` default/fullscreen renderer switching
 - [ ] exact Recently denied selection, reset, deduplication, and lifetime

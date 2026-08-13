@@ -1,5 +1,7 @@
 import { createContext, useContext, type ReactNode } from 'react'
 
+import type { TuiCustomTheme } from './custom-themes.js'
+
 export const TUI_THEMES = [
   'auto',
   'dark',
@@ -11,10 +13,12 @@ export const TUI_THEMES = [
 ] as const
 
 export type TuiTheme = (typeof TUI_THEMES)[number]
+export type TuiThemeSetting = TuiTheme | `custom:${string}`
 
 export interface TuiThemeSettings {
-  theme: TuiTheme
+  theme: TuiThemeSetting
   syntaxHighlightingDisabled: boolean
+  customTheme?: TuiCustomTheme
 }
 
 export interface TuiSyntaxPalette {
@@ -218,6 +222,7 @@ export function tuiPalette(
   profile: TuiTheme,
   syntaxHighlightingDisabled = false,
   environment: TerminalEnvironment = process.env,
+  customTheme?: TuiCustomTheme,
 ): TuiPalette {
   const dark =
     profile === 'auto'
@@ -266,7 +271,7 @@ export function tuiPalette(
       : syntaxBase
   const autoColor = (color: string) =>
     profile === 'auto' ? adaptAutoColor(color) : color
-  return {
+  const palette: TuiPalette = {
     profile,
     dark,
     ansiOnly,
@@ -297,6 +302,44 @@ export function tuiPalette(
     syntaxTheme: ansiOnly ? 'ansi' : dark ? 'Monokai Extended' : 'GitHub',
     syntax,
   }
+  if (customTheme) {
+    const overrides = customTheme.overrides
+    const override = (token: keyof typeof overrides, fallback: string) =>
+      overrides[token] ?? fallback
+    palette.brand = override('claude', palette.brand)
+    palette.accent = override('suggestion', palette.accent)
+    palette.info = override('professionalBlue', palette.info)
+    palette.link = override('ide', palette.link)
+    palette.error = override('error', palette.error)
+    palette.success = override('success', palette.success)
+    palette.warning = override('warning', palette.warning)
+    palette.muted = override('inactive', palette.muted)
+    palette.selectionText = override('inverseText', palette.selectionText)
+    palette.syntax = {
+      ...palette.syntax,
+      text: override('text', palette.syntax.text),
+      keyword: override(
+        'claudeBlue_FOR_SYSTEM_SPINNER',
+        palette.syntax.keyword,
+      ),
+      identifier: override('suggestion', palette.syntax.identifier),
+      string: override('success', palette.syntax.string),
+      removedBackground: override(
+        'diffRemoved',
+        palette.syntax.removedBackground ?? '',
+      ),
+      addedBackground: override(
+        'diffAdded',
+        palette.syntax.addedBackground ?? '',
+      ),
+      addedHighlight: override(
+        'diffAddedWord',
+        palette.syntax.addedHighlight ?? '',
+      ),
+    }
+    palette.profile = customTheme.base
+  }
+  return palette
 }
 
 const TuiPaletteContext = createContext<TuiPalette>(tuiPalette('auto'))
@@ -308,9 +351,17 @@ export function TuiThemeProvider({
   settings: TuiThemeSettings
   children: ReactNode
 }) {
+  const baseTheme = TUI_THEMES.includes(settings.theme as TuiTheme)
+    ? (settings.theme as TuiTheme)
+    : 'dark'
   return (
     <TuiPaletteContext.Provider
-      value={tuiPalette(settings.theme, settings.syntaxHighlightingDisabled)}
+      value={tuiPalette(
+        baseTheme,
+        settings.syntaxHighlightingDisabled,
+        process.env,
+        settings.customTheme,
+      )}
     >
       {children}
     </TuiPaletteContext.Provider>

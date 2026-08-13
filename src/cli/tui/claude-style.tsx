@@ -9,6 +9,7 @@ import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { TuiPermissionRule } from './permission-settings.js'
+import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
 import type { TuiSlashCommand } from './slash-commands.js'
 import {
   tuiPalette,
@@ -1178,17 +1179,46 @@ export function ThemePicker({
   currentTheme,
   selectedIndex,
   syntaxHighlightingDisabled,
+  customThemes = [],
+  allowCustomThemes = true,
   width,
   screenReader,
 }: {
-  currentTheme: TuiTheme
+  currentTheme: TuiTheme | `custom:${string}`
   selectedIndex: number
   syntaxHighlightingDisabled: boolean
+  customThemes?: readonly TuiCustomTheme[]
+  allowCustomThemes?: boolean
   width: number
   screenReader: boolean
 }) {
-  const previewTheme = THEME_OPTIONS[selectedIndex]?.theme ?? currentTheme
-  const preview = tuiPalette(previewTheme, syntaxHighlightingDisabled)
+  const options = [
+    ...THEME_OPTIONS.map((option) => ({ ...option, customTheme: undefined })),
+    ...customThemes.map((theme) => ({
+      theme: `custom:${theme.slug}` as const,
+      label: `${theme.name} (custom)`,
+      customTheme: theme,
+    })),
+    ...(allowCustomThemes
+      ? [{ theme: '__new__' as const, label: 'New custom theme…' }]
+      : []),
+  ]
+  const selected = options[selectedIndex]
+  const selectedCustomTheme =
+    selected && 'customTheme' in selected ? selected.customTheme : undefined
+  const previewTheme =
+    selected?.theme.startsWith('custom:') && selectedCustomTheme
+      ? selectedCustomTheme.base
+      : selected?.theme === '__new__'
+        ? 'dark'
+        : (selected?.theme ??
+          (currentTheme.startsWith('custom:') ? 'dark' : currentTheme))
+  const preview = tuiPalette(
+    previewTheme as TuiTheme,
+    syntaxHighlightingDisabled,
+    process.env,
+    selectedCustomTheme,
+  )
   const syntax = preview.syntax
   const syntaxColor = (color: string) =>
     syntaxHighlightingDisabled ? {} : { color }
@@ -1199,7 +1229,7 @@ export function ThemePicker({
       <Text> </Text>
       <Text> Choose the text style that looks best with your terminal</Text>
       <Text> </Text>
-      {THEME_OPTIONS.map((option, index) =>
+      {options.map((option, index) =>
         screenReader ? (
           <Text key={option.theme}>
             {index + 1}. {option.label}
@@ -1216,7 +1246,7 @@ export function ThemePicker({
       )}
       <Text> </Text>
       {screenReader ? (
-        <Text>Selected: {THEME_OPTIONS[selectedIndex]?.label}</Text>
+        <Text>Selected: {options[selectedIndex]?.label}</Text>
       ) : null}
       {!screenReader ? (
         <>
@@ -1277,11 +1307,68 @@ export function ThemePicker({
       ) : null}
       <Text dimColor>
         {' '}
-        {syntaxHighlightingDisabled
-          ? 'Syntax highlighting disabled (ctrl+t to enable)'
-          : `Syntax theme: ${preview.syntaxTheme} (ctrl+t to disable)`}
+        {selected?.theme === '__new__'
+          ? 'Enter to create a custom theme'
+          : syntaxHighlightingDisabled
+            ? 'Syntax highlighting disabled (ctrl+t to enable)'
+            : `Syntax theme: ${preview.syntaxTheme} (ctrl+t to disable)`}
       </Text>
       <Text dimColor> Enter to select · Esc to cancel</Text>
+    </Box>
+  )
+}
+
+export function CustomThemeEditor({
+  theme,
+  token,
+  value,
+  tokens = [],
+  selectedIndex = 0,
+  query = '',
+  width,
+  screenReader,
+}: {
+  theme: TuiCustomTheme
+  token?: CustomThemeToken
+  value: string
+  tokens?: readonly CustomThemeToken[]
+  selectedIndex?: number
+  query?: string
+  width: number
+  screenReader: boolean
+}) {
+  return (
+    <Box flexDirection="column" width={Math.min(100, width)}>
+      <Text bold>{theme.name}</Text>
+      {token ? (
+        <>
+          <Text> </Text>
+          <Text>██ {token}</Text>
+          <Text dimColor>preset: {value || '(not customized)'}</Text>
+          <Text> </Text>
+          <Text>Value: {value}</Text>
+          <Text dimColor>
+            Accepts rgb(r,g,b), #rrggbb, ansi256(n), or ansi:name
+          </Text>
+          <Text dimColor>Enter to save · Esc to cancel</Text>
+        </>
+      ) : (
+        <>
+          <Text dimColor>⌕ {query || 'Filter color tokens…'}</Text>
+          {tokens
+            .slice(selectedIndex, selectedIndex + 8)
+            .map((entry, index) => (
+              <Text key={entry} inverse={index === 0}>
+                {index === 0 ? '❯ ' : '  '}██ {entry}
+                {theme.overrides[entry] === undefined ? '' : ' (custom)'}
+              </Text>
+            ))}
+          <Text dimColor>
+            ↑/↓ to nav · Enter to edit · Tab to reset · Esc to done
+          </Text>
+        </>
+      )}
+      {screenReader ? <Text>Editing custom theme token</Text> : null}
     </Box>
   )
 }

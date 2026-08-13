@@ -11,6 +11,8 @@ import {
   runInteractive,
 } from './interactive.js'
 import { projectTuiHooks } from './tui/hook-settings.js'
+import type { TuiCustomTheme } from './tui/custom-themes.js'
+import type { TuiThemeSettings } from './tui/theme.js'
 
 afterEach(() => cleanup())
 
@@ -20,6 +22,113 @@ const flush = async () => {
 }
 
 describe('InteractiveApp', () => {
+  it('creates, selects, edits, resets, and deletes a custom theme from /theme', async () => {
+    const customThemes: TuiCustomTheme[] = []
+    let settings: TuiThemeSettings = {
+      theme: 'auto' as const,
+      syntaxHighlightingDisabled: false,
+    }
+    const saved: unknown[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={settings}
+        themeStore={{
+          async load() {
+            return settings
+          },
+          async save(update) {
+            saved.push(update)
+            settings = {
+              ...settings,
+              ...update,
+            }
+            return settings
+          },
+          async loadCustomThemes() {
+            return [...customThemes]
+          },
+          async createCustomTheme(input) {
+            const theme = {
+              name: input.name,
+              slug: input.name.toLowerCase().replace(/\s+/gu, '-'),
+              base: input.base,
+              overrides: {},
+            }
+            customThemes.push(theme)
+            return theme
+          },
+          async updateCustomTheme(theme, token, value) {
+            const next = {
+              ...theme,
+              overrides: {
+                ...theme.overrides,
+                ...(value === undefined ? {} : { [token]: value }),
+              },
+            }
+            if (value === undefined) delete next.overrides[token]
+            const index = customThemes.findIndex(
+              (entry) => entry.slug === theme.slug,
+            )
+            customThemes[index] = next
+            return next
+          },
+          async deleteCustomTheme(theme) {
+            const index = customThemes.findIndex(
+              (entry) => entry.slug === theme.slug,
+            )
+            customThemes.splice(index, 1)
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('New custom theme…')
+    for (let index = 0; index < 7; index += 1) app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('New custom theme')
+
+    app.stdin.write('Ocean')
+    app.stdin.write('\r')
+    await flush()
+    expect(settings.theme).toBe('custom:ocean')
+    expect(app.lastFrame()).toContain('Using custom theme "Ocean"')
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Ocean (custom) ✔')
+    app.stdin.write('\u0005')
+    await flush()
+    expect(app.lastFrame()).toContain('Filter color tokens')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('#00aaff')
+    app.stdin.write('\r')
+    await flush()
+    expect(customThemes[0]?.overrides).toEqual({ autoAccept: '#00aaff' })
+    app.stdin.write('\u0009')
+    await flush()
+    expect(customThemes[0]?.overrides).toEqual({})
+    app.stdin.write('\u0004')
+    await flush()
+    expect(app.lastFrame()).toContain('Delete Ocean permanently?')
+    app.stdin.write('\r')
+    app.stdin.write('\r')
+    await flush()
+    expect(customThemes).toEqual([])
+    expect(saved.at(-1)).toEqual({ theme: 'dark' })
+  })
+
   it('loads and persists a shared presentation theme without a model turn', async () => {
     const saved: unknown[] = []
     const app = render(
@@ -193,6 +302,7 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Syntax theme: ansi')
     app.stdin.write('\u001B[B')
+    app.stdin.write('\u001B[A')
     app.stdin.write('\r')
     await flush()
     expect(saved).toEqual(['light-ansi'])

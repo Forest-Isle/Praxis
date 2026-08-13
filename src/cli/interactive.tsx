@@ -57,6 +57,7 @@ import {
   SessionPicker,
   StatusDashboard,
   ThemePicker,
+  CustomThemeEditor,
   Transcript,
   WelcomePanel,
   useTerminalWidth,
@@ -148,6 +149,7 @@ import {
 import {
   loadTuiThemeSettings,
   saveTuiThemeSettings,
+  themeSettingsWithCustomTheme,
 } from './tui/theme-settings.js'
 import {
   DEFAULT_TUI_THEME_SETTINGS,
@@ -156,6 +158,16 @@ import {
   tuiPalette,
   type TuiThemeSettings,
 } from './tui/theme.js'
+import {
+  CUSTOM_THEME_TOKENS,
+  createTuiCustomTheme,
+  deleteTuiCustomTheme,
+  loadTuiCustomThemes,
+  updateTuiCustomTheme,
+  type CustomThemeBase,
+  type CustomThemeToken,
+  type TuiCustomTheme,
+} from './tui/custom-themes.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
 import {
   loadConfigSettings,
@@ -380,6 +392,17 @@ interface InteractiveAppProps {
   themeStore?: {
     load(): Promise<TuiThemeSettings>
     save(update: Partial<TuiThemeSettings>): Promise<TuiThemeSettings>
+    loadCustomThemes?(): Promise<readonly TuiCustomTheme[]>
+    createCustomTheme?(input: {
+      name: string
+      base: CustomThemeBase
+    }): Promise<TuiCustomTheme>
+    updateCustomTheme?(
+      theme: TuiCustomTheme,
+      token: CustomThemeToken,
+      value: string | undefined,
+    ): Promise<TuiCustomTheme>
+    deleteCustomTheme?(theme: TuiCustomTheme): Promise<void>
   }
   initialThemeSettings?: TuiThemeSettings
   initialThemeLoadError?: string
@@ -501,6 +524,26 @@ type InteractiveMenu =
   | { kind: 'model-input' }
   | { kind: 'effort'; selectedIndex: number }
   | { kind: 'theme'; selectedIndex: number }
+  | {
+      kind: 'custom-theme-create'
+      base: CustomThemeBase
+    }
+  | {
+      kind: 'custom-theme-editor'
+      theme: TuiCustomTheme
+      selectedIndex: number
+      query: string
+    }
+  | {
+      kind: 'custom-theme-token'
+      theme: TuiCustomTheme
+      token: CustomThemeToken
+    }
+  | {
+      kind: 'custom-theme-delete'
+      theme: TuiCustomTheme
+      selectedIndex: number
+    }
   | { kind: 'export'; selectedIndex: number }
   | { kind: 'export-filename' }
   | { kind: 'compact-progress' }
@@ -839,15 +882,32 @@ export function InteractiveApp({
       themeStore ?? {
         load: loadTuiThemeSettings,
         save: saveTuiThemeSettings,
+        loadCustomThemes: () => loadTuiCustomThemes(),
+        createCustomTheme: (input: { name: string; base: CustomThemeBase }) =>
+          createTuiCustomTheme(input),
+        updateCustomTheme: (
+          theme: TuiCustomTheme,
+          token: CustomThemeToken,
+          value: string | undefined,
+        ) => updateTuiCustomTheme(theme, token, value),
+        deleteCustomTheme: (theme: TuiCustomTheme) =>
+          deleteTuiCustomTheme(theme),
       },
     [themeStore],
+  )
+  const [customThemes, setCustomThemes] = useState<readonly TuiCustomTheme[]>(
+    [],
   )
   const [themeSettings, setThemeSettings] = useState<TuiThemeSettings>(
     initialThemeSettings ?? DEFAULT_TUI_THEME_SETTINGS,
   )
   const activePalette = tuiPalette(
-    themeSettings.theme,
+    TUI_THEMES.includes(themeSettings.theme as (typeof TUI_THEMES)[number])
+      ? (themeSettings.theme as (typeof TUI_THEMES)[number])
+      : 'dark',
     themeSettings.syntaxHighlightingDisabled,
+    process.env,
+    themeSettings.customTheme,
   )
   const choices = useMemo(
     () =>
@@ -1198,7 +1258,8 @@ export function InteractiveApp({
     let cancelled = false
     void presentationThemeStore.load().then(
       (loaded) => {
-        if (!cancelled) setThemeSettings(loaded)
+        if (!cancelled)
+          setThemeSettings(themeSettingsWithCustomTheme(loaded, customThemes))
       },
       (error: unknown) => {
         if (!cancelled)
@@ -1213,7 +1274,35 @@ export function InteractiveApp({
     return () => {
       cancelled = true
     }
-  }, [initialThemeLoadError, initialThemeSettings, presentationThemeStore])
+  }, [
+    customThemes,
+    initialThemeLoadError,
+    initialThemeSettings,
+    presentationThemeStore,
+  ])
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.resolve(
+      presentationThemeStore.loadCustomThemes?.() ?? [],
+    ).then(
+      (themes) => {
+        if (!cancelled && themes) setCustomThemes(themes)
+      },
+      (error: unknown) => {
+        if (!cancelled)
+          append({
+            kind: 'warning',
+            text: `Unable to load custom themes: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          })
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [presentationThemeStore])
 
   useEffect(() => {
     let cancelled = false
@@ -4400,8 +4489,32 @@ export function InteractiveApp({
       }
 
       if (activeMenu.kind === 'theme') {
+        const themeOptionCount = TUI_THEMES.length + customThemes.length + 1
+        const lastThemeOptionIndex = themeOptionCount - 1
         if (key.escape || value === '\u001B') {
           updateMenu(null)
+        } else if (isKeybinding('theme:editCustom') || controlKey('e')) {
+          const options = [
+            ...TUI_THEMES,
+            ...customThemes.map((theme) => `custom:${theme.slug}` as const),
+          ]
+          const selected = options[activeMenu.selectedIndex]
+          const theme = selected?.startsWith('custom:')
+            ? customThemes.find((entry) => `custom:${entry.slug}` === selected)
+            : undefined
+          if (!theme) {
+            append({
+              kind: 'warning',
+              text: 'Only custom themes can be edited.',
+            })
+          } else {
+            updateMenu({
+              kind: 'custom-theme-editor',
+              theme,
+              selectedIndex: 0,
+              query: '',
+            })
+          }
         } else if (isKeybinding('theme:toggleSyntaxHighlighting')) {
           const syntaxHighlightingDisabled =
             !themeSettings.syntaxHighlightingDisabled
@@ -4426,25 +4539,51 @@ export function InteractiveApp({
             selectedIndex: Math.max(
               0,
               Math.min(
-                TUI_THEMES.length - 1,
+                lastThemeOptionIndex,
                 activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
               ),
             ),
           })
-        } else if (/^[1-7]$/u.test(value)) {
-          updateMenu({ ...activeMenu, selectedIndex: Number(value) - 1 })
+        } else if (/^[1-9]$/u.test(value)) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.min(lastThemeOptionIndex, Number(value) - 1),
+          })
         } else if (key.return) {
-          const selected = TUI_THEMES[activeMenu.selectedIndex]
+          const options = [
+            ...TUI_THEMES,
+            ...customThemes.map((theme) => `custom:${theme.slug}` as const),
+            '__new__' as const,
+          ]
+          const selected = options[activeMenu.selectedIndex]
           if (!selected) return
+          if (selected === '__new__') {
+            const base = themeSettings.theme.startsWith('custom:')
+              ? (themeSettings.customTheme?.base ?? 'dark')
+              : themeSettings.theme === 'auto'
+                ? 'dark'
+                : (themeSettings.theme as CustomThemeBase)
+            updateMenu({ kind: 'custom-theme-create', base })
+            return
+          }
           const saving = (async () => {
             setBusy(true)
             try {
+              const customTheme = selected.startsWith('custom:')
+                ? customThemes.find(
+                    (theme) => `custom:${theme.slug}` === selected,
+                  )
+                : undefined
               const committed = await presentationThemeStore.save({
                 theme: selected,
+                ...(customTheme === undefined ? {} : { customTheme }),
               })
               setThemeSettings(committed)
               updateMenu(null)
-              append({ kind: 'local-result', text: `Theme set to ${selected}` })
+              append({
+                kind: 'local-result',
+                text: `Theme set to ${customTheme?.name ?? selected}`,
+              })
             } catch (error) {
               warn(error)
             } finally {
@@ -4453,6 +4592,219 @@ export function InteractiveApp({
           })()
           onTurnChange?.(saving)
           void saving.finally(() => onTurnChange?.(null))
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'custom-theme-create') {
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu(null)
+        } else if (key.return) {
+          const name = inputRef.current.trim() || 'my-theme'
+          const creating = (async () => {
+            setBusy(true)
+            try {
+              const create = presentationThemeStore.createCustomTheme
+              if (!create)
+                throw new Error('Custom theme controls are unavailable.')
+              const theme = await create({ name, base: activeMenu.base })
+              setCustomThemes((current) =>
+                [...current, theme].sort((left, right) =>
+                  left.name.localeCompare(right.name),
+                ),
+              )
+              const committed = await presentationThemeStore.save({
+                theme: `custom:${theme.slug}`,
+                customTheme: theme,
+              })
+              setThemeSettings(committed)
+              clearComposerInput()
+              updateMenu(null)
+              append({
+                kind: 'local-result',
+                text: `Using custom theme "${theme.name}"`,
+              })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(creating)
+          void creating.finally(() => onTurnChange?.(null))
+        } else {
+          editComposer()
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'custom-theme-editor') {
+        const filteredTokens = CUSTOM_THEME_TOKENS.filter((token) =>
+          token.toLowerCase().includes(activeMenu.query.toLowerCase()),
+        )
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu(null)
+        } else if (key.upArrow || key.downArrow) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.max(
+              0,
+              Math.min(
+                Math.max(0, filteredTokens.length - 1),
+                activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
+              ),
+            ),
+          })
+        } else if (key.return) {
+          const token = filteredTokens[activeMenu.selectedIndex]
+          if (token) {
+            const current = activeMenu.theme.overrides[token] ?? ''
+            clearComposerInput()
+            updateMenu({
+              kind: 'custom-theme-token',
+              theme: activeMenu.theme,
+              token,
+            })
+            updateComposerInput(current)
+          }
+        } else if (key.tab) {
+          const token = filteredTokens[activeMenu.selectedIndex]
+          if (token && activeMenu.theme.overrides[token] !== undefined) {
+            const resetting = (async () => {
+              setBusy(true)
+              try {
+                const update = presentationThemeStore.updateCustomTheme
+                if (!update)
+                  throw new Error('Custom theme controls are unavailable.')
+                const next = await update(activeMenu.theme, token, undefined)
+                setCustomThemes((current) =>
+                  current.map((entry) =>
+                    entry.slug === next.slug ? next : entry,
+                  ),
+                )
+                setThemeSettings((current) => ({
+                  ...current,
+                  theme: `custom:${next.slug}`,
+                  customTheme: next,
+                }))
+                updateMenu({ ...activeMenu, theme: next })
+              } catch (error) {
+                warn(error)
+              } finally {
+                setBusy(false)
+              }
+            })()
+            onTurnChange?.(resetting)
+            void resetting.finally(() => onTurnChange?.(null))
+          }
+        } else if (key.backspace || key.delete) {
+          updateMenu({
+            ...activeMenu,
+            query: activeMenu.query.slice(0, -1),
+            selectedIndex: 0,
+          })
+        } else if (!key.ctrl && !key.meta && value && printable) {
+          updateMenu({
+            ...activeMenu,
+            query: activeMenu.query + value,
+            selectedIndex: 0,
+          })
+        } else if (controlKey('d')) {
+          updateMenu({
+            kind: 'custom-theme-delete',
+            theme: activeMenu.theme,
+            selectedIndex: 0,
+          })
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'custom-theme-token') {
+        if (key.escape || value === '\u001B') {
+          clearComposerInput()
+          updateMenu({
+            kind: 'custom-theme-editor',
+            theme: activeMenu.theme,
+            selectedIndex: 0,
+            query: '',
+          })
+        } else if (key.return) {
+          const valueToSave = inputRef.current.trim()
+          const saving = (async () => {
+            setBusy(true)
+            try {
+              const update = presentationThemeStore.updateCustomTheme
+              if (!update)
+                throw new Error('Custom theme controls are unavailable.')
+              const next = await update(
+                activeMenu.theme,
+                activeMenu.token,
+                valueToSave,
+              )
+              setCustomThemes((current) =>
+                current.map((entry) =>
+                  entry.slug === next.slug ? next : entry,
+                ),
+              )
+              setThemeSettings((current) => ({
+                ...current,
+                theme: `custom:${next.slug}`,
+                customTheme: next,
+              }))
+              clearComposerInput()
+              updateMenu({
+                kind: 'custom-theme-editor',
+                theme: next,
+                selectedIndex: 0,
+                query: '',
+              })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(saving)
+          void saving.finally(() => onTurnChange?.(null))
+        } else {
+          editComposer()
+        }
+        return
+      }
+
+      if (activeMenu.kind === 'custom-theme-delete') {
+        if (key.escape || value === '\u001B') {
+          updateMenu(null)
+        } else if (key.return || value.toLowerCase() === 'y') {
+          const deleting = (async () => {
+            setBusy(true)
+            try {
+              const remove = presentationThemeStore.deleteCustomTheme
+              if (!remove)
+                throw new Error('Custom theme controls are unavailable.')
+              await remove(activeMenu.theme)
+              setCustomThemes((current) =>
+                current.filter((entry) => entry.slug !== activeMenu.theme.slug),
+              )
+              const committed = await presentationThemeStore.save({
+                theme: activeMenu.theme.base,
+              })
+              setThemeSettings(committed)
+              updateMenu(null)
+              append({
+                kind: 'local-result',
+                text: `Deleted custom theme "${activeMenu.theme.name}"`,
+              })
+            } catch (error) {
+              warn(error)
+            } finally {
+              setBusy(false)
+            }
+          })()
+          onTurnChange?.(deleting)
+          void deleting.finally(() => onTurnChange?.(null))
         }
         return
       }
@@ -4689,7 +5041,17 @@ export function InteractiveApp({
       } else if (prompt === '/theme') {
         updateMenu({
           kind: 'theme',
-          selectedIndex: Math.max(0, TUI_THEMES.indexOf(themeSettings.theme)),
+          selectedIndex: Math.max(
+            0,
+            themeSettings.theme.startsWith('custom:')
+              ? TUI_THEMES.length +
+                  customThemes.findIndex(
+                    (theme) => `custom:${theme.slug}` === themeSettings.theme,
+                  )
+              : TUI_THEMES.indexOf(
+                  themeSettings.theme as (typeof TUI_THEMES)[number],
+                ),
+          ),
         })
       } else if (prompt === '/keybindings') {
         setKeybindingsEditing(true)
@@ -5514,12 +5876,52 @@ export function InteractiveApp({
                 <ThemePicker
                   currentTheme={themeSettings.theme}
                   selectedIndex={menu.selectedIndex}
+                  customThemes={customThemes}
                   syntaxHighlightingDisabled={
                     themeSettings.syntaxHighlightingDisabled
                   }
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : menu.kind === 'custom-theme-create' ? (
+                <DialogFrame
+                  title="New custom theme"
+                  screenReader={axScreenReader}
+                >
+                  <Text>Name: {input || 'my-theme'}</Text>
+                  <Text>
+                    based on {menu.base} · saved to ~/.claude/themes/theme.json
+                  </Text>
+                  <Text dimColor>Enter to create · Esc to cancel</Text>
+                </DialogFrame>
+              ) : menu.kind === 'custom-theme-editor' ? (
+                <CustomThemeEditor
+                  theme={menu.theme}
+                  width={width}
+                  screenReader={axScreenReader}
+                  value={menu.query}
+                  tokens={CUSTOM_THEME_TOKENS.filter((token) =>
+                    token.toLowerCase().includes(menu.query.toLowerCase()),
+                  )}
+                  selectedIndex={menu.selectedIndex}
+                  query={menu.query}
+                />
+              ) : menu.kind === 'custom-theme-token' ? (
+                <CustomThemeEditor
+                  theme={menu.theme}
+                  token={menu.token}
+                  width={width}
+                  screenReader={axScreenReader}
+                  value={input}
+                />
+              ) : menu.kind === 'custom-theme-delete' ? (
+                <DialogFrame
+                  title="Delete custom theme"
+                  screenReader={axScreenReader}
+                >
+                  <Text>Delete {menu.theme.name} permanently?</Text>
+                  <Text dimColor>Enter to confirm · Esc to cancel</Text>
+                </DialogFrame>
               ) : menu.kind === 'export' ? (
                 <SelectionMenu
                   title="Export conversation"

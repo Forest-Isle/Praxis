@@ -14,6 +14,7 @@ import {
   TUI_THEMES,
   type TuiThemeSettings,
 } from './theme.js'
+import { loadTuiCustomThemes, type TuiCustomTheme } from './custom-themes.js'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -61,23 +62,56 @@ async function fingerprintUnchanged(
   }
 }
 
-function settingsFromRecord(value: Record<string, unknown>): TuiThemeSettings {
+function settingsFromRecord(
+  value: Record<string, unknown>,
+  customTheme?: TuiCustomTheme,
+): TuiThemeSettings {
+  const configuredTheme = value.theme
+  const theme = TUI_THEMES.includes(
+    configuredTheme as (typeof TUI_THEMES)[number],
+  )
+    ? (configuredTheme as (typeof TUI_THEMES)[number])
+    : typeof configuredTheme === 'string' &&
+        /^custom:[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(configuredTheme) &&
+        customTheme?.slug === configuredTheme.slice('custom:'.length)
+      ? (configuredTheme as `custom:${string}`)
+      : DEFAULT_TUI_THEME_SETTINGS.theme
   return {
-    theme: TUI_THEMES.includes(value.theme as TuiThemeSettings['theme'])
-      ? (value.theme as TuiThemeSettings['theme'])
-      : DEFAULT_TUI_THEME_SETTINGS.theme,
+    theme,
     syntaxHighlightingDisabled:
       typeof value.syntaxHighlightingDisabled === 'boolean'
         ? value.syntaxHighlightingDisabled
         : DEFAULT_TUI_THEME_SETTINGS.syntaxHighlightingDisabled,
+    ...(customTheme === undefined ? {} : { customTheme }),
   }
+}
+
+export function themeSettingsWithCustomTheme(
+  settings: TuiThemeSettings,
+  customThemes: readonly TuiCustomTheme[],
+): TuiThemeSettings {
+  if (!settings.theme.startsWith('custom:')) return settings
+  const customTheme = customThemes.find(
+    (theme) => `custom:${theme.slug}` === settings.theme,
+  )
+  return customTheme === undefined ? settings : { ...settings, customTheme }
 }
 
 export async function loadTuiThemeSettings(
   configRoot = configRootPath(),
 ): Promise<TuiThemeSettings> {
   const { value } = await readSettings(join(configRoot, 'settings.json'))
-  return settingsFromRecord(value)
+  const configured = value.theme
+  const customSlug =
+    typeof configured === 'string' && configured.startsWith('custom:')
+      ? configured.slice('custom:'.length)
+      : undefined
+  const customTheme = customSlug
+    ? (await loadTuiCustomThemes(configRoot)).find(
+        (theme) => theme.slug === customSlug,
+      )
+    : undefined
+  return settingsFromRecord(value, customTheme)
 }
 
 export async function saveTuiThemeSettings(
@@ -100,7 +134,25 @@ export async function saveTuiThemeSettings(
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const { value, fingerprint: expectedFingerprint } =
         await readSettings(path)
-      const next = { ...settingsFromRecord(value), ...update }
+      const selectedTheme = update.theme ?? value.theme
+      const customTheme =
+        typeof selectedTheme === 'string' && selectedTheme.startsWith('custom:')
+          ? (await loadTuiCustomThemes(configRoot)).find(
+              (theme) => theme.slug === selectedTheme.slice('custom:'.length),
+            )
+          : undefined
+      if (
+        typeof selectedTheme === 'string' &&
+        selectedTheme.startsWith('custom:') &&
+        customTheme === undefined
+      ) {
+        throw new Error(`Custom theme is not available: ${selectedTheme}`)
+      }
+      const next = {
+        ...settingsFromRecord(value, customTheme),
+        ...update,
+        ...(customTheme === undefined ? {} : { customTheme }),
+      }
       const persisted = { ...value }
       if (update.theme !== undefined) persisted.theme = update.theme
       if (update.syntaxHighlightingDisabled !== undefined)
