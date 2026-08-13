@@ -700,11 +700,10 @@ async function installAppleTerminalSetup(
     const profiles = [
       ...new Set([defaultProfile.stdout.trim(), startupProfile.stdout.trim()]),
     ]
-    const changed = await Promise.all(
-      profiles.map((profile) =>
-        updateAppleTerminalProfile(profile, plistPath, run),
-      ),
-    )
+    const changed: boolean[] = []
+    for (const profile of profiles) {
+      changed.push(await updateAppleTerminalProfile(profile, plistPath, run))
+    }
     if (!changed.some(Boolean))
       throw new Error('Failed to update Terminal.app profile settings')
     await run('killall', ['cfprefsd'])
