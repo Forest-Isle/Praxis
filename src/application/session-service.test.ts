@@ -661,12 +661,18 @@ describe('ClaudeSessionService', () => {
     await mkdir(originalCwd)
     await mkdir(relocatedCwd)
     const canonicalRelocatedCwd = await realpath(relocatedCwd)
+    const serviceWorkspace = new WorkspaceContext(originalCwd)
     const service = new ClaudeSessionService({
       configRoot,
       cwd: originalCwd,
       claudeVersion: '2.1.208',
-      workspace: new WorkspaceContext(originalCwd),
-      provider: queuedProvider(['before move', 'after move']),
+      workspace: serviceWorkspace,
+      provider: queuedProvider(['before move', 'after move', 'after shell']),
+      tools: new LocalToolRegistry({
+        cwd: originalCwd,
+        cwdProvider: () => serviceWorkspace.cwd(),
+      }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
     })
     const run = await service.run('start here')
     const original = resolveClaudePaths({
@@ -700,8 +706,13 @@ describe('ClaudeSessionService', () => {
     )
 
     await service.resume(run.sessionId, 'continue here')
+    await service.resumeShell(run.sessionId, 'pwd')
     const continued = await readFile(relocated, 'utf8')
     expect(continued).toContain(`"cwd":"${canonicalRelocatedCwd}"`)
+    expect(continued).toContain(
+      `<bash-stdout>${canonicalRelocatedCwd}\\n</bash-stdout>`,
+    )
+    expect(continued).toContain('<bash-input>pwd</bash-input>')
     expect(await service.sessions()).toEqual([
       expect.objectContaining({ sessionId: run.sessionId }),
     ])

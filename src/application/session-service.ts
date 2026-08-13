@@ -1802,6 +1802,10 @@ export class ClaudeSessionService {
     }
     const pinnedCwd = this.sessionCwds.get(sessionId) ?? this.activeCwd()
     this.sessionCwds.set(sessionId, pinnedCwd)
+    if (this.options.workspace?.cwd() !== pinnedCwd) {
+      this.options.workspace?.setCwd(pinnedCwd)
+    }
+    this.runtimeCwd = pinnedCwd
     const sessionPaths = this.paths(sessionId)
     const toolResultDirectory = join(
       sessionPaths.projectRoot,
