@@ -13,6 +13,7 @@ import {
 import { projectTuiHooks } from './tui/hook-settings.js'
 import type { TuiCustomTheme } from './tui/custom-themes.js'
 import type { TuiThemeSettings } from './tui/theme.js'
+import { projectRuntimeSettings } from './tui/runtime-settings.js'
 
 afterEach(() => cleanup())
 
@@ -4777,6 +4778,63 @@ describe('InteractiveApp', () => {
     await flush()
     expect(result).toBeNull()
     expect(app.lastFrame()).toContain('done')
+  })
+
+  it('times out AskUserQuestion without affecting MCP elicitation', async () => {
+    vi.useFakeTimers()
+    try {
+      let answer: unknown = 'pending'
+      const factory: InteractiveServiceFactory = {
+        async createService({ askUser }) {
+          return {
+            async run() {
+              answer = await askUser?.([
+                {
+                  question: 'Continue?',
+                  header: 'Confirm',
+                  options: [{ label: 'Yes', description: 'Continue' }],
+                  multiSelect: false,
+                },
+              ])
+              return {
+                sessionId: 'session-1',
+                text: 'done',
+                usage: { inputTokens: 1, outputTokens: 1 },
+              }
+            },
+            async resume() {
+              throw new Error('unused')
+            },
+            async fork() {
+              throw new Error('unused')
+            },
+            async sessions() {
+              return []
+            },
+          }
+        },
+      }
+      const app = render(
+        <InteractiveApp
+          factory={factory}
+          initialSessions={[]}
+          runtimeSettings={projectRuntimeSettings({
+            settings: { askUserQuestionTimeout: '60s' },
+            state: {},
+          })}
+        />,
+      )
+      await vi.runAllTimersAsync()
+      app.stdin.write('start')
+      app.stdin.write('\r')
+      await vi.runAllTimersAsync()
+      expect(app.lastFrame()).toContain('Confirm: Continue?')
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(answer).toBeNull()
+      expect(app.lastFrame()).toContain('done')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('shows plan content and forwards plan approval', async () => {

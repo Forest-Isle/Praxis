@@ -95,6 +95,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   shared built-in and Claude-compatible custom `/theme` profiles with immediate
   semantic recoloring, token editing/reset, deletion, and persisted syntax
   toggles across transcript code and diff views,
+   shared runtime preferences for reduced motion, spinner tips, progress and
+   turn-duration display, editor mode, recap, notifications, auto-update channel,
+   gitignore-aware file references, and configurable AskUserQuestion timeouts,
   `Ctrl+V` text/image clipboard paste, `Ctrl+Z` shell suspension and `fg`
   recovery, permission-gated `!` shell turns, navigable current/per-turn Git
   diff views, rich decision panels, and measured context budgets; print mode,

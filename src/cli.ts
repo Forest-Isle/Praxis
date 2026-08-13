@@ -1662,6 +1662,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
             enabledTools: selectedInteractiveTools,
             callbacks: { askUser, approvePlan },
             permissionResolverForMode,
+            settings: {
+              useAutoModeDuringPlan:
+                runtimeSettings?.useAutoModeDuringPlan ?? true,
+            },
           })
         : undefined
     const service = new ClaudeSessionService({
@@ -2714,7 +2718,13 @@ async function executeSelfUpdateCommand(
     if (operands.length > 0) {
       throw new Error(`${command} takes no operands`)
     }
-    const result = await dependencies.selfUpdate?.({ operation: 'update' })
+    const runtimeSettings = await loadRuntimeSettings()
+    const result = await dependencies.selfUpdate?.({
+      operation: 'update',
+      ...(runtimeSettings.autoUpdatesChannel === 'latest'
+        ? {}
+        : { target: runtimeSettings.autoUpdatesChannel }),
+    })
     if (!result) throw new Error('Self-update unavailable')
     if (json) writeJson(io, result)
     else io.stdout(`Praxis update completed: ${result.output}\n`)

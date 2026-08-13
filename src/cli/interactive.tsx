@@ -173,7 +173,27 @@ import {
   loadConfigSettings,
   saveConfigSetting,
   configSettingDefinition,
+  resolveConfigSettingsLocation,
+  type ConfigSettingsTarget,
 } from './tui/config-settings.js'
+import {
+  projectRuntimeSettings,
+  type PraxisRuntimeSettings,
+} from './tui/runtime-settings.js'
+import {
+  autoUpdateTarget,
+  copyCandidates,
+  externalEditorInitialContent,
+  formatTurnDuration,
+  questionTimeoutMilliseconds,
+  sessionRecap,
+  shouldShowCopyPicker,
+  spinnerTip,
+} from './tui/runtime-interactions.js'
+import {
+  notifyTerminal,
+  type TuiNotificationWriter,
+} from './tui/terminal-notifications.js'
 import { McpPanel } from './tui/mcp-panel.js'
 import {
   McpPanelController,
@@ -408,6 +428,9 @@ interface InteractiveAppProps {
   initialThemeLoadError?: string
   workspaceDirectoryResolver?: typeof resolveTuiWorkspaceDirectory
   workspaceDirectoryCompleter?: typeof completeTuiWorkspaceDirectory
+  runtimeSettings?: PraxisRuntimeSettings
+  runtimeSettingsTarget?: ConfigSettingsTarget
+  notificationWriter?: TuiNotificationWriter
 }
 
 type PendingPermission = {
@@ -566,6 +589,20 @@ type InteractiveMenu =
       direction: 'from' | 'to'
     }
   | { kind: 'status'; tabIndex: number }
+  | {
+      kind: 'copy'
+      candidates: readonly {
+        label: string
+        description: string
+        text: string
+      }[]
+      selectedIndex: number
+    }
+  | {
+      kind: 'agents'
+      agents: readonly TuiAgentEntry[]
+      selectedIndex: number
+    }
   | {
       kind: 'config'
       snapshot: Awaited<ReturnType<typeof loadConfigSettings>>
@@ -838,6 +875,9 @@ export function InteractiveApp({
   initialThemeLoadError,
   workspaceDirectoryResolver = resolveTuiWorkspaceDirectory,
   workspaceDirectoryCompleter = completeTuiWorkspaceDirectory,
+  runtimeSettings: suppliedRuntimeSettings,
+  runtimeSettingsTarget,
+  notificationWriter,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const width = useTerminalWidth(terminalWidth)
@@ -850,18 +890,28 @@ export function InteractiveApp({
       ),
     [keybindingsConfigRoot],
   )
+  const configTarget = useMemo(
+    () => runtimeSettingsTarget ?? resolveConfigSettingsLocation(),
+    [runtimeSettingsTarget],
+  )
   const sensitiveValues = useMemo(
     () => sensitiveEnvironmentValues(process.env),
     [],
   )
   const [runtimeCwd, setRuntimeCwd] = useState(display.cwd)
   const runtimeCwdRef = useRef(display.cwd)
+  const runtimeGitignoreRef = useRef(true)
   const loadDiffSnapshot = useMemo(
     () => diffLoader ?? (() => loadGitDiff(runtimeCwd)),
     [diffLoader, runtimeCwd],
   )
   const loadFiles = useMemo(
-    () => fileLoader ?? (() => loadTuiFileEntries(runtimeCwd)),
+    () =>
+      fileLoader ??
+      (() =>
+        loadTuiFileEntries(runtimeCwd, {
+          respectGitignore: runtimeGitignoreRef.current,
+        })),
     [fileLoader, runtimeCwd],
   )
   const permissionStore = useMemo(
@@ -901,6 +951,14 @@ export function InteractiveApp({
   const [themeSettings, setThemeSettings] = useState<TuiThemeSettings>(
     initialThemeSettings ?? DEFAULT_TUI_THEME_SETTINGS,
   )
+  const [runtimeSettings, setRuntimeSettings] = useState<PraxisRuntimeSettings>(
+    suppliedRuntimeSettings ??
+      projectRuntimeSettings({ settings: {}, state: {} }),
+  )
+  const runtimeSettingsRef = useRef(runtimeSettings)
+  runtimeSettingsRef.current = runtimeSettings
+  runtimeGitignoreRef.current = runtimeSettings.gitignore
+  const [vimInsertMode, setVimInsertMode] = useState(true)
   const activePalette = tuiPalette(
     TUI_THEMES.includes(themeSettings.theme as (typeof TUI_THEMES)[number])
       ? (themeSettings.theme as (typeof TUI_THEMES)[number])
@@ -933,6 +991,15 @@ export function InteractiveApp({
   const selectedIndexRef = useRef(0)
   const [sessionId, setSessionId] = useState<string | null>(
     resume?.sessionId ?? null,
+  )
+  const [activeSessionSummary, setActiveSessionSummary] = useState<
+    SessionSummary | undefined
+  >(() =>
+    resume?.sessionId
+      ? initialSessions.find(
+          (session) => session.sessionId === resume.sessionId,
+        )
+      : undefined,
   )
   const [pendingFork, setPendingFork] = useState(resume?.forkSession === true)
   const [input, setInput] = useState('')
@@ -1004,6 +1071,7 @@ export function InteractiveApp({
   const [activeText, setActiveText] = useState('')
   const [activeThinking, setActiveThinking] = useState('')
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
+  const [turnDuration, setTurnDuration] = useState<number | undefined>()
   const [usage, setUsage] = useState<ModelUsage | undefined>()
   const [costUsd, setCostUsd] = useState<number | undefined>()
   const [contextWindowTokens, setContextWindowTokens] = useState(
@@ -1037,6 +1105,8 @@ export function InteractiveApp({
   const elicitationRef = useRef<PendingElicitation | null>(null)
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
   const questionRef = useRef<PendingQuestion | null>(null)
+  const questionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const recapShownRef = useRef(false)
   const [planApproval, setPlanApproval] = useState<PendingPlanApproval | null>(
     null,
   )
@@ -1305,6 +1375,53 @@ export function InteractiveApp({
   }, [presentationThemeStore])
 
   useEffect(() => {
+    if (suppliedRuntimeSettings !== undefined) return
+    let cancelled = false
+    void loadConfigSettings(configTarget).then(
+      (snapshot) => {
+        if (!cancelled) setRuntimeSettings(projectRuntimeSettings(snapshot))
+      },
+      (error: unknown) => {
+        if (!cancelled)
+          append({
+            kind: 'warning',
+            text: `Unable to load runtime settings: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          })
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [configTarget, suppliedRuntimeSettings])
+
+  useEffect(() => {
+    if (
+      runtimeSettings.recap &&
+      resume?.sessionId &&
+      initialHistory.length > 0
+    ) {
+      const recap = sessionRecap(initialHistory)
+      if (recap && !recapShownRef.current) {
+        recapShownRef.current = true
+        append({ kind: 'notice', text: recap })
+      }
+    }
+  }, [initialHistory, resume?.sessionId, runtimeSettings.recap])
+
+  useEffect(() => {
+    if (!runtimeSettings.defaultToAgentsView || availableAgents.length === 0)
+      return
+    if (selectingSession || menuRef.current !== null) return
+    updateMenu({ kind: 'agents', agents: availableAgents, selectedIndex: 0 })
+  }, [
+    availableAgents.length,
+    runtimeSettings.defaultToAgentsView,
+    selectingSession,
+  ])
+
+  useEffect(() => {
     let cancelled = false
     void keybindingsLoader(keybindingsRoot).then(
       (loaded) => {
@@ -1412,10 +1529,17 @@ export function InteractiveApp({
         await waitUntilRenderFlush()
         let result: TuiEditorResult | undefined
         await suspendTerminal(async () => {
-          result = await externalEditor(externalEditorRequest.prompt, {
-            cwd: runtimeCwdRef.current,
-            ...(signal === undefined ? {} : { signal }),
-          })
+          result = await externalEditor(
+            externalEditorInitialContent(
+              externalEditorRequest.prompt,
+              history,
+              runtimeSettingsRef.current.externalEditorContext,
+            ),
+            {
+              cwd: runtimeCwdRef.current,
+              ...(signal === undefined ? {} : { signal }),
+            },
+          )
         })
         if (!result) throw new Error('External editor returned no content')
         updateComposerEditor(createComposerEditor(result.content))
@@ -1434,7 +1558,7 @@ export function InteractiveApp({
     })()
     onTurnChange?.(editing)
     void editing.finally(() => onTurnChange?.(null))
-  }, [externalEditorRequest])
+  }, [externalEditorRequest, history])
 
   useEffect(() => {
     if (!keybindingsEditing) return
@@ -1867,8 +1991,15 @@ export function InteractiveApp({
           if (settled) return
           settled = true
           signal?.removeEventListener('abort', abort)
-          if (questionRef.current === pending) questionRef.current = null
-          setQuestion((current) => (current === pending ? null : current))
+          if (questionTimeoutRef.current) {
+            clearTimeout(questionTimeoutRef.current)
+            questionTimeoutRef.current = null
+          }
+          if (questionRef.current?.resolve === pending.resolve)
+            questionRef.current = null
+          setQuestion((current) =>
+            current?.resolve === pending.resolve ? null : current,
+          )
           resolveResult(result)
         },
       }
@@ -1880,6 +2011,15 @@ export function InteractiveApp({
       clearComposerInput()
       questionRef.current = pending
       setQuestion(pending)
+      const timeout = questionTimeoutMilliseconds(
+        runtimeSettingsRef.current.askUserQuestionTimeout,
+      )
+      if (timeout !== undefined) {
+        questionTimeoutRef.current = setTimeout(() => {
+          questionTimeoutRef.current = null
+          questionRef.current?.resolve(null)
+        }, timeout)
+      }
     })
 
   const approvePlan: ClaudeInteractiveToolCallbacks['approvePlan'] = (
@@ -2004,6 +2144,16 @@ export function InteractiveApp({
     }
   }
 
+  const reloadRuntimeSettings = async (
+    snapshot?: Awaited<ReturnType<typeof loadConfigSettings>>,
+  ) => {
+    const current = snapshot ?? (await loadConfigSettings(configTarget))
+    const projected = projectRuntimeSettings(current)
+    runtimeSettingsRef.current = projected
+    setRuntimeSettings(projected)
+    return projected
+  }
+
   const withLocalCommands = async <T,>(
     operation: (commands: InteractiveSessionCommands) => Promise<T>,
   ): Promise<T> => {
@@ -2028,6 +2178,13 @@ export function InteractiveApp({
 
   const openSession = (nextSessionId: string | null) => {
     setSessionId(nextSessionId)
+    setActiveSessionSummary(
+      nextSessionId === null
+        ? undefined
+        : initialSessions.find(
+            (session) => session.sessionId === nextSessionId,
+          ),
+    )
     const loadId = sessionLoadRef.current + 1
     sessionLoadRef.current = loadId
     if (nextSessionId === null) {
@@ -2155,6 +2312,17 @@ export function InteractiveApp({
       append({
         kind: 'warning',
         text: `No ${position === 1 ? '' : `${ordinal(position)}-latest `}response to copy.`,
+      })
+      return
+    }
+    if (
+      !runtimeSettingsRef.current.copyFullResponse &&
+      shouldShowCopyPicker(response.text)
+    ) {
+      updateMenu({
+        kind: 'copy',
+        candidates: copyCandidates(response.text),
+        selectedIndex: 0,
       })
       return
     }
@@ -2852,6 +3020,7 @@ export function InteractiveApp({
     images: readonly ModelImage[] = [],
   ) => {
     const turnNumber = turnNumberRef.current + 1
+    const turnStartedAt = Date.now()
     turnNumberRef.current = turnNumber
     turnMutatedFilesRef.current = false
     scheduledWaitRef.current?.abort()
@@ -2863,10 +3032,14 @@ export function InteractiveApp({
       ? AbortSignal.any([signal, turnController.signal])
       : turnController.signal
     setBusy(true)
+    setTurnDuration(undefined)
     setCommandPaletteOpen(false)
     setStatus('assembling-context')
     setActiveText('')
     setActiveThinking('')
+    if (runtimeSettingsRef.current.tips) {
+      setStatus(spinnerTip(runtimeSettingsRef.current) ?? 'assembling-context')
+    }
     if (shellCommand === undefined) append({ kind: 'user', text: prompt })
     else turnMutatedFilesRef.current = true
     let commands: InteractiveSessionCommands | undefined
@@ -2943,6 +3116,21 @@ export function InteractiveApp({
       setActiveText('')
       setActiveThinking('')
       setStatus('ready')
+      setTurnDuration(Date.now() - turnStartedAt)
+      if (
+        runtimeSettingsRef.current.notifChannel !== 'notifications_disabled'
+      ) {
+        notifyTerminal({
+          channel: runtimeSettingsRef.current.notifChannel as Parameters<
+            typeof notifyTerminal
+          >[0]['channel'],
+          title: 'Praxis',
+          message: 'Turn complete',
+          ...(notificationWriter === undefined
+            ? {}
+            : { write: notificationWriter }),
+        })
+      }
     } catch (error) {
       if (turnController.signal.aborted && !signal?.aborted) {
         if (shellCommand !== undefined) updateComposerInput(`!${shellCommand}`)
@@ -3179,6 +3367,25 @@ export function InteractiveApp({
     }
     const isKeybinding = (action: string) => keybindingAction === action
 
+    if (
+      runtimeSettingsRef.current.editor === 'vim' &&
+      !permission &&
+      !planApproval &&
+      !question &&
+      !elicitation &&
+      menuRef.current === null
+    ) {
+      if (!vimInsertMode) {
+        if (value === 'i' || value === 'a') setVimInsertMode(true)
+        else if (key.leftArrow || key.rightArrow) editComposer()
+        return
+      }
+      if (key.escape || value === '\u001B') {
+        setVimInsertMode(false)
+        return
+      }
+    }
+
     if (permission) {
       if (lower === 'y' || value === '1') {
         permission.resolve(true)
@@ -3315,6 +3522,77 @@ export function InteractiveApp({
     }
 
     const earlyMenu = menuRef.current
+    if (earlyMenu?.kind === 'copy') {
+      if (key.escape || value === '\u001B') {
+        updateMenu(null)
+        return
+      }
+      if (key.upArrow || key.downArrow) {
+        updateMenu({
+          ...earlyMenu,
+          selectedIndex: Math.max(
+            0,
+            Math.min(
+              earlyMenu.candidates.length - 1,
+              earlyMenu.selectedIndex + (key.upArrow ? -1 : 1),
+            ),
+          ),
+        })
+        return
+      }
+      if (/^[1-9]$/u.test(value)) {
+        updateMenu({
+          ...earlyMenu,
+          selectedIndex: Math.min(
+            earlyMenu.candidates.length - 1,
+            Number(value) - 1,
+          ),
+        })
+        return
+      }
+      if (key.return) {
+        const candidate = earlyMenu.candidates[earlyMenu.selectedIndex]
+        if (!candidate) return
+        const copying = clipboardWriter(candidate.text).then(
+          () => {
+            updateMenu(null)
+            append({
+              kind: 'local-result',
+              text: `Copied ${candidate.label.toLowerCase()} to clipboard.`,
+            })
+          },
+          (error: unknown) => warn(error),
+        )
+        onTurnChange?.(copying)
+        void copying.finally(() => onTurnChange?.(null))
+      }
+      return
+    }
+    if (earlyMenu?.kind === 'agents') {
+      if (key.escape || value === '\u001B') {
+        updateMenu(null)
+        return
+      }
+      if (key.upArrow || key.downArrow) {
+        updateMenu({
+          ...earlyMenu,
+          selectedIndex: Math.max(
+            0,
+            Math.min(
+              earlyMenu.agents.length - 1,
+              earlyMenu.selectedIndex + (key.upArrow ? -1 : 1),
+            ),
+          ),
+        })
+      } else if (key.return) {
+        const agent = earlyMenu.agents[earlyMenu.selectedIndex]
+        if (agent) {
+          updateComposerInput(`@${agent.name} `)
+          updateMenu(null)
+        }
+      }
+      return
+    }
     if (earlyMenu?.kind === 'tasks') {
       if (key.escape || value === '\u001B') {
         updateMenu(null)
@@ -3501,7 +3779,9 @@ export function InteractiveApp({
             const snapshot = await saveConfigSetting(
               definition.id,
               value as ConfigValue,
+              configTarget,
             )
+            await reloadRuntimeSettings(snapshot)
             await retireService()
             updateMenu({ ...earlyMenu, snapshot })
             append({
@@ -4934,6 +5214,15 @@ export function InteractiveApp({
       }
       if (key.tab) return
     }
+    if (
+      runtimeSettingsRef.current.leftArrowOpensAgents &&
+      key.leftArrow &&
+      inputRef.current.length === 0 &&
+      availableAgents.length > 0
+    ) {
+      updateMenu({ kind: 'agents', agents: availableAgents, selectedIndex: 0 })
+      return
+    }
     if (isKeybinding('chat:cancel')) {
       const now = Date.now()
       if (now - lastEscapeAtRef.current <= 500) clearComposerInput()
@@ -5264,7 +5553,7 @@ export function InteractiveApp({
         const loading = (async () => {
           setBusy(true)
           try {
-            const snapshot = await loadConfigSettings()
+            const snapshot = await loadConfigSettings(configTarget)
             if (menuRef.current?.kind === 'config')
               updateMenu({ ...menuRef.current, snapshot })
           } catch (error) {
@@ -5277,6 +5566,11 @@ export function InteractiveApp({
         void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/usage') {
         updateMenu({ kind: 'status', tabIndex: 3 })
+      } else if (prompt === '/update') {
+        append({
+          kind: 'local-result',
+          text: `Configured auto-update channel: ${autoUpdateTarget(runtimeSettingsRef.current.autoUpdatesChannel)}. Run praxis update to update now.`,
+        })
       } else if (prompt === '/skills' || prompt === '/skill') {
         updateMenu({
           kind: 'list',
@@ -5368,7 +5662,7 @@ export function InteractiveApp({
               activeText={activeText}
               activeThinking={activeThinking}
               thinkingExpanded={thinkingExpanded}
-              detailedTranscript={thinkingExpanded}
+              detailedTranscript={thinkingExpanded || runtimeSettings.verbose}
               screenReader={axScreenReader}
             />
             {externalEditorRequest !== null ||
@@ -5764,6 +6058,31 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : menu.kind === 'copy' ? (
+                <SelectionMenu
+                  title="Copy response"
+                  description="Choose the response content to copy."
+                  options={menu.candidates.map((candidate) => ({
+                    label: candidate.label,
+                    description: candidate.description,
+                  }))}
+                  selectedIndex={menu.selectedIndex}
+                  footer="↑/↓ select · Enter copies · Esc cancels"
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'agents' ? (
+                <ListDashboard
+                  title="Agents"
+                  rows={menu.agents.map((agent) => ({
+                    label: agent.name,
+                    description: agent.description,
+                  }))}
+                  emptyText="No agents configured"
+                  selectedIndex={menu.selectedIndex}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
               ) : menu.kind === 'config' ? (
                 <ConfigDashboard
                   tab={menu.tab}
@@ -5983,6 +6302,21 @@ export function InteractiveApp({
                   screenReader={axScreenReader}
                   hasThinking={hasDetailedTranscript}
                   thinkingExpanded={thinkingExpanded}
+                  reduceMotion={runtimeSettings.reduceMotion}
+                  progressBar={runtimeSettings.progressBar}
+                  {...(runtimeSettings.turnDuration
+                    ? (() => {
+                        const duration = formatTurnDuration(turnDuration)
+                        return duration === undefined
+                          ? {}
+                          : { turnDuration: duration }
+                      })()
+                    : {})}
+                  editorMode={runtimeSettings.editor}
+                  {...(runtimeSettings.prStatus &&
+                  activeSessionSummary?.prNumber
+                    ? { prStatus: `PR #${activeSessionSummary.prNumber}` }
+                    : {})}
                   shortcutsVisible={shortcutsVisible}
                   {...(editorFooterMessage === undefined
                     ? {}
@@ -6013,6 +6347,7 @@ export async function runInteractive(options: {
     request: InteractiveBackgroundRequest,
   ) => Promise<InteractiveBackgroundResult>
   onBackgrounded?: (result: InteractiveBackgroundResult) => void
+  runtimeSettings?: PraxisRuntimeSettings
 }): Promise<number> {
   const controller = new AbortController()
   const signal = options.signal
@@ -6092,6 +6427,9 @@ export async function runInteractive(options: {
       slashCommands={initialSlashCommands}
       agents={initialAgents}
       initialHistory={initialHistory}
+      {...(options.runtimeSettings === undefined
+        ? {}
+        : { runtimeSettings: options.runtimeSettings })}
       initialThemeSettings={initialThemeSettings}
       {...(initialThemeLoadError === undefined
         ? {}

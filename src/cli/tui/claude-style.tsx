@@ -2357,6 +2357,11 @@ export function Composer({
   shortcutsVisible = false,
   shellMode = false,
   footerMessage,
+  reduceMotion = false,
+  progressBar = true,
+  turnDuration,
+  editorMode = 'normal',
+  prStatus,
 }: {
   input: string
   cursor?: number
@@ -2373,17 +2378,22 @@ export function Composer({
   shortcutsVisible?: boolean
   shellMode?: boolean
   footerMessage?: { text: string; isError: boolean }
+  reduceMotion?: boolean
+  progressBar?: boolean
+  turnDuration?: string
+  editorMode?: 'normal' | 'vim'
+  prStatus?: string
 }) {
   const palette = useTuiPalette()
   const [spinnerIndex, setSpinnerIndex] = useState(0)
   useEffect(() => {
-    if (!busy || screenReader) return
+    if (!busy || screenReader || reduceMotion) return
     const timer = setInterval(
       () => setSpinnerIndex((current) => (current + 1) % SPINNER.length),
       90,
     )
     return () => clearInterval(timer)
-  }, [busy, screenReader])
+  }, [busy, reduceMotion, screenReader])
   if (screenReader)
     return (
       <Text>
@@ -2423,8 +2433,12 @@ export function Composer({
         <Text>Pasting…</Text>
       ) : busy ? (
         <Text>
-          <Text color={palette.accent}>{SPINNER[spinnerIndex]}</Text> {status}…{' '}
-          <Text dimColor>· esc to interrupt</Text>
+          {progressBar ? (
+            <Text color={palette.accent}>
+              {reduceMotion ? '•' : SPINNER[spinnerIndex]}
+            </Text>
+          ) : null}{' '}
+          {status}… <Text dimColor>· esc to interrupt</Text>
         </Text>
       ) : (
         <Text>
@@ -2470,10 +2484,17 @@ export function Composer({
             ) : (
               <Text dimColor>{footerMessage.text}</Text>
             )
+          ) : prStatus ? (
+            <Text dimColor>{prStatus}</Text>
+          ) : turnDuration ? (
+            <Text dimColor>Cooked for {turnDuration}</Text>
           ) : display.effort ? (
             <Text>
               <Text color={palette.accent}>● {display.effort}</Text>
-              <Text dimColor> · /effort</Text>
+              <Text dimColor>
+                {' '}
+                · {editorMode === 'vim' ? 'vim' : '/effort'}
+              </Text>
             </Text>
           ) : null}
         </Box>
