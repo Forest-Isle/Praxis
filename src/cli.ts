@@ -248,6 +248,7 @@ function createProviderForModel(
   providerEnvironment: ReturnType<typeof parseProviderEnvironment>,
   context: ReturnType<typeof parseContextEnvironment>,
   controls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>,
+  explicitThinkingControls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>,
 ): (selectedModel: string) => ModelProvider {
   return (selectedModel) => {
     const providerOptions = {
@@ -279,8 +280,8 @@ function createProviderForModel(
         })
       : new OpenAICompatibleProvider({
           ...providerOptions,
-          ...(controls.thinking === undefined &&
-          controls.maxThinkingTokens === undefined
+          ...(explicitThinkingControls.thinking === undefined &&
+          explicitThinkingControls.maxThinkingTokens === undefined
             ? {}
             : {
                 thinking: {
@@ -1195,6 +1196,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       providerEnvironment,
       context,
       cli,
+      controls,
     )
     const models = [model, ...(cli.fallbackModels ?? [])].filter(
       (candidate, index, all) => all.indexOf(candidate) === index,
@@ -1965,6 +1967,7 @@ const createDefaultAutoModeCritic: NonNullable<
     parseProviderEnvironment(process.env),
     parseContextEnvironment(process.env),
     {},
+    {},
   )(selectedModel)
 }
 
@@ -2070,6 +2073,7 @@ const defaultPluginEvalJudge: NonNullable<PluginEvalDependencies['judge']> = {
       apiKey,
       parseProviderEnvironment(environment),
       parseContextEnvironment(environment),
+      {},
       {},
     )(model)
     const prompt = `You are an eval judge. Return only JSON matching {"passed":boolean,"explanation":string}.
