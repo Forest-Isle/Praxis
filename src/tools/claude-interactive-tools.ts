@@ -420,6 +420,11 @@ ${state.planPath}
 Use AskUserQuestion for decisions that genuinely require the user. Write a complete, actionable plan to that file, then call ExitPlanMode to request approval.`
   }
 
+  async isPlanFile(sessionId: string, requestedPath: string): Promise<boolean> {
+    const state = this.state(sessionId)
+    return state.mode === 'plan' && this.isPlanFileForState(state, requestedPath)
+  }
+
   consumeTransition(callId: string): ClaudePermissionMode | undefined {
     const mode = this.transitions.get(callId)
     this.transitions.delete(callId)
@@ -481,20 +486,25 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
     context?: PermissionResolutionContext,
   ): Promise<PermissionDecision> {
     const requestedPath = String(call.input.file_path)
+    if (await this.isPlanFileForState(state, requestedPath)) {
+      return { behavior: 'allow' }
+    }
+    return this.resolver(state.mode).resolve(call, context)
+  }
+
+  private async isPlanFileForState(
+    state: SessionPlanState,
+    requestedPath: string,
+  ): Promise<boolean> {
     const canonical = async (path: string) =>
       join(await realpath(dirname(path)), basename(path))
     try {
-      if (
+      return (
         (await canonical(requestedPath)) === (await canonical(state.planPath))
-      ) {
-        return { behavior: 'allow' }
-      }
+      )
     } catch {
-      if (resolve(requestedPath) === state.planPath) {
-        return { behavior: 'allow' }
-      }
+      return resolve(requestedPath) === state.planPath
     }
-    return this.resolver(state.mode).resolve(call, context)
   }
 
   async enter(

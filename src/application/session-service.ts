@@ -2126,6 +2126,15 @@ export class ClaudeSessionService {
                 if (typeof path !== 'string') {
                   return interactiveMessageTools.execute(call, context)
                 }
+                if (
+                  (call.name === 'Write' || call.name === 'Edit') &&
+                  (await this.options.interactiveTools?.isPlanFile(
+                    sessionId,
+                    path,
+                  ))
+                ) {
+                  return interactiveMessageTools.execute(call, context)
+                }
                 const snapshotMessageId =
                   currentPromptId ??
                   this.promptIdForToolCall(snapshot.entries, call.id)

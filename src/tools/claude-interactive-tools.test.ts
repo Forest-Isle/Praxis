@@ -126,6 +126,10 @@ describe('ClaudeInteractiveToolManager', () => {
     })
     expect(manager.consumeTransition('call_EnterPlanMode')).toBe('plan')
     expect(manager.contextMessage(sessionId)).toContain(planPath)
+    await expect(manager.isPlanFile(sessionId, planPath)).resolves.toBe(true)
+    await expect(
+      manager.isPlanFile(sessionId, join(configRoot, 'project.ts')),
+    ).resolves.toBe(false)
     expect(
       await manager.permissions(sessionId).resolve({
         id: 'plan-write',
