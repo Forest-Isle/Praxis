@@ -14,6 +14,7 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
+const claudeCli = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
 let praxisCli = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
 const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-maintenance-'))
 const environment = { ...process.env, DISABLE_AUTOUPDATER: '1' }
@@ -54,7 +55,7 @@ async function praxis(args, cwd, configRoot) {
 }
 
 async function claude(args, cwd, configRoot) {
-  return run('claude', args, {
+  return run(claudeCli, args, {
     cwd,
     env: { ...environment, CLAUDE_CONFIG_DIR: configRoot },
   })
@@ -224,7 +225,7 @@ try {
     'dist',
     'cli.js',
   )
-  const version = (await run('claude', ['--version'])).stdout.trim()
+  const version = (await run(claudeCli, ['--version'])).stdout.trim()
   assert(
     version.startsWith('2.1.208 '),
     `Unsupported Claude version: ${version}`,

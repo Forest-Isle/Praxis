@@ -1,8 +1,14 @@
 import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 
 const projectRoot = process.cwd()
+const compatibilityEnvironment = { ...process.env }
+if (process.env.PRAXIS_CLAUDE_BINARY) {
+  compatibilityEnvironment.PATH = `${dirname(
+    process.env.PRAXIS_CLAUDE_BINARY,
+  )}${delimiter}${process.env.PATH ?? ''}`
+}
 const packageDocument = JSON.parse(
   await readFile(join(projectRoot, 'package.json'), 'utf8'),
 )
@@ -54,7 +60,7 @@ function run({ name, file }, index) {
     console.log(`\n[compatibility ${label}]`)
     const child = spawn(process.execPath, [file], {
       cwd: projectRoot,
-      env: process.env,
+      env: compatibilityEnvironment,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let diagnostics = ''
