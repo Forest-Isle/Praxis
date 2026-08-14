@@ -162,16 +162,64 @@ describe('Claude plugin runtime', () => {
     const details = await describeClaudePlugin(join(root, 'plugin'))
 
     expect(details.componentCosts).toEqual([
-      { kind: 'skill', name: 'review', alwaysOn: 4, onInvoke: 3 },
-      { kind: 'agent', name: 'reviewer', alwaysOn: 4, onInvoke: 2 },
-      { kind: 'command', name: 'hello', alwaysOn: 4, onInvoke: 1 },
+      { kind: 'skill', name: 'review', alwaysOn: 34, onInvoke: 40 },
+      { kind: 'agent', name: 'reviewer', alwaysOn: 27, onInvoke: 29 },
+      { kind: 'command', name: 'hello', alwaysOn: 30, onInvoke: 18 },
     ])
-    expect(details.tokenEstimate).toEqual({ alwaysOn: 12, onInvoke: 6 })
+    expect(details.tokenEstimate).toEqual({ alwaysOn: 91, onInvoke: 87 })
     expect(details.components).toMatchObject({
       hooks: ['SessionStart', 'Stop'],
       mcpServers: ['file', 'inline'],
       lspServers: ['fileLsp', 'inlineLsp'],
     })
+  })
+
+  it('matches Claude aggregate token projections for component metadata and bodies', async () => {
+    const { root } = await pluginFixture()
+    await writeFile(
+      join(root, 'plugin', 'skills', 'review', 'SKILL.md'),
+      '---\ndescription: review skill\nwhen_to_use: review code\n---\nreview body',
+    )
+    await writeFile(
+      join(root, 'plugin', 'agents', 'reviewer.md'),
+      '---\ndescription: worker agent\n---\nworker body',
+    )
+    await writeFile(
+      join(root, 'plugin', 'commands', 'hello.md'),
+      '---\ndescription: hello command\n---\nhello body',
+    )
+
+    const details = await describeClaudePlugin(join(root, 'plugin'))
+
+    expect(details.tokenEstimate).toEqual({ alwaysOn: 96, onInvoke: 89 })
+    expect(details.componentCosts).toEqual([
+      { kind: 'skill', name: 'review', alwaysOn: 43, onInvoke: 31 },
+      { kind: 'agent', name: 'reviewer', alwaysOn: 23, onInvoke: 31 },
+      { kind: 'command', name: 'hello', alwaysOn: 30, onInvoke: 28 },
+    ])
+  })
+
+  it('does not charge the plugin detail token envelope for empty invocation bodies', async () => {
+    const { root } = await pluginFixture()
+    await writeFile(
+      join(root, 'plugin', 'skills', 'review', 'SKILL.md'),
+      '---\ndescription: review skill\n---\n',
+    )
+    await writeFile(
+      join(root, 'plugin', 'agents', 'reviewer.md'),
+      '---\ndescription: worker agent\n---\n',
+    )
+    await writeFile(
+      join(root, 'plugin', 'commands', 'hello.md'),
+      '---\ndescription: hello command\n---\n',
+    )
+
+    const details = await describeClaudePlugin(join(root, 'plugin'))
+
+    expect(details.tokenEstimate.onInvoke).toBe(0)
+    expect(
+      details.componentCosts.map((component) => component.onInvoke),
+    ).toEqual([0, 0, 0])
   })
 
   it('keeps user-authored MCP files with internal-looking names in plugin details', async () => {

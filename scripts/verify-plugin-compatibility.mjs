@@ -462,9 +462,9 @@ try {
         output.includes('MCP servers (1)  fixtureMcp') &&
         output.includes('LSP servers (1)  fixtureLsp') &&
         output.includes('Per-component (rounded)') &&
-        /review\s+< 20\s+~\d+/u.test(output) &&
-        /worker\s+< 20\s+~\d+/u.test(output) &&
-        /hello\s+< 20\s+~\d+/u.test(output),
+        /review\s+(?:< 20|~\d+)\s+(?:< 20|~\d+)/u.test(output) &&
+        /worker\s+(?:< 20|~\d+)\s+(?:< 20|~\d+)/u.test(output) &&
+        /hello\s+(?:< 20|~\d+)\s+(?:< 20|~\d+)/u.test(output),
       `${label} plugin details inventory/token output was incomplete: ${output}`,
     )
   }
