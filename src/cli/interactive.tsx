@@ -185,6 +185,25 @@ import {
   setupTuiTerminal,
   terminalSetupTuiSlashCommand,
 } from './tui/terminal-setup.js'
+import {
+  commitElicitationText,
+  createTuiElicitationForm,
+  elicitationFormIsValid,
+  elicitationTextValue,
+  expandElicitationOptions,
+  focusedElicitationField,
+  McpElicitationForm,
+  McpElicitationUrl,
+  moveElicitationFocus,
+  moveElicitationOption,
+  selectElicitationOption,
+  toggleElicitationBoolean,
+  typeaheadElicitationOption,
+  unsetElicitationField,
+  validateTuiElicitationForm,
+  type TuiElicitationFormState,
+} from './tui/mcp-elicitation.js'
+import { openTuiUrl } from './tui/open-url.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
 import {
   loadConfigSettings,
@@ -470,6 +489,7 @@ interface InteractiveAppProps {
   runtimeSettings?: PraxisRuntimeSettings
   runtimeSettingsTarget?: ConfigSettingsTarget
   notificationWriter?: TuiNotificationWriter
+  elicitationUrlOpener?: (url: string) => void | Promise<void>
 }
 
 type PendingPermission = {
@@ -480,7 +500,10 @@ type PendingPermission = {
 
 type PendingElicitation = {
   request: CliElicitationRequest
-  resolve: (result: CliElicitationResult) => void
+  resolve: (
+    result: CliElicitationResult,
+    options?: { keepUrlDialog?: boolean },
+  ) => void
 }
 
 type PendingQuestion = {
@@ -936,6 +959,7 @@ export function InteractiveApp({
   runtimeSettings: suppliedRuntimeSettings,
   runtimeSettingsTarget,
   notificationWriter,
+  elicitationUrlOpener = openTuiUrl,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const width = useTerminalWidth(terminalWidth)
@@ -1181,6 +1205,10 @@ export function InteractiveApp({
     null,
   )
   const elicitationRef = useRef<PendingElicitation | null>(null)
+  const [elicitationForm, setElicitationForm] =
+    useState<TuiElicitationFormState | null>(null)
+  const [elicitationUrlWaiting, setElicitationUrlWaiting] = useState(false)
+  const elicitationUrlWaitingRef = useRef<PendingElicitation | null>(null)
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
   const questionRef = useRef<PendingQuestion | null>(null)
   const questionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2046,6 +2074,18 @@ export function InteractiveApp({
           kind: 'notice',
           text: `MCP elicitation completed · ${event.mcpServerName}`,
         })
+        if (
+          elicitationUrlWaitingRef.current?.request.serverName ===
+            event.mcpServerName &&
+          elicitationUrlWaitingRef.current.request.elicitationId ===
+            event.elicitationId
+        ) {
+          elicitationUrlWaitingRef.current = null
+          setElicitationUrlWaiting(false)
+          setElicitation(null)
+          setElicitationForm(null)
+          clearComposerInput()
+        }
         break
       case 'tool-use-summary':
         append({ kind: 'notice', text: event.summary })
@@ -2106,14 +2146,23 @@ export function InteractiveApp({
       let settled = false
       const pending: PendingElicitation = {
         request,
-        resolve: (result) => {
+        resolve: (result, options) => {
           if (settled) return
           settled = true
           if (elicitationRef.current === pending) elicitationRef.current = null
-          setElicitation((current) => (current === pending ? null : current))
+          if (!options?.keepUrlDialog) {
+            setElicitation((current) => (current === pending ? null : current))
+            setElicitationForm(null)
+            clearComposerInput()
+          }
           resolveResult(result)
         },
       }
+      const form = createTuiElicitationForm(request.requestedSchema)
+      setElicitationForm(form)
+      setElicitationUrlWaiting(false)
+      elicitationUrlWaitingRef.current = null
+      updateComposerInput(elicitationTextValue(form))
       elicitationRef.current = pending
       setElicitation(pending)
     })
@@ -3781,42 +3830,134 @@ export function InteractiveApp({
     }
 
     if (elicitation) {
-      if (key.escape) {
-        elicitation.resolve({ action: 'cancel' })
-      } else if (key.return) {
-        const answer = inputRef.current.trim()
-        clearComposerInput()
-        if (!answer || answer.toLowerCase() === 'decline') {
-          elicitation.resolve({ action: 'decline' })
-        } else if (answer.toLowerCase() === 'cancel') {
-          elicitation.resolve({ action: 'cancel' })
-        } else if (answer.toLowerCase() === 'accept') {
-          elicitation.resolve({ action: 'accept' })
-        } else {
-          try {
-            const content: unknown = JSON.parse(answer)
-            if (
-              !content ||
-              typeof content !== 'object' ||
-              Array.isArray(content)
-            )
-              throw new Error('elicitation content must be a JSON object')
-            elicitation.resolve({
-              action: 'accept',
-              content: content as Record<
-                string,
-                string | number | boolean | string[]
-              >,
-            })
-          } catch {
-            append({
-              kind: 'warning',
-              text: 'Elicitation response must be accept, decline, cancel, or a JSON object.',
-            })
-          }
+      const form =
+        elicitationForm ??
+        createTuiElicitationForm(elicitation.request.requestedSchema)
+      const currentField = focusedElicitationField(form)
+      const textField =
+        currentField &&
+        ['text', 'number', 'integer'].includes(currentField.kind)
+      const commitCurrent = () =>
+        textField ? commitElicitationText(form, inputRef.current) : form
+      const showForm = (next: TuiElicitationFormState) => {
+        setElicitationForm(next)
+        updateComposerInput(elicitationTextValue(next))
+      }
+      const move = (direction: -1 | 1) =>
+        showForm(moveElicitationFocus(commitCurrent(), direction))
+
+      if (elicitation.request.mode === 'url') {
+        const openUrl = () => {
+          void Promise.resolve()
+            .then(() => elicitationUrlOpener(elicitation.request.url ?? ''))
+            .catch(() => undefined)
         }
-      } else {
-        editComposer()
+        const dismissUrlDialog = () => {
+          elicitationUrlWaitingRef.current = null
+          setElicitationUrlWaiting(false)
+          setElicitation(null)
+          setElicitationForm(null)
+          clearComposerInput()
+        }
+        if (key.escape) {
+          if (elicitationUrlWaiting) dismissUrlDialog()
+          else elicitation.resolve({ action: 'cancel' })
+        } else if (key.leftArrow || key.rightArrow) {
+          setElicitationForm({
+            ...form,
+            focusIndex: form.focusIndex === 0 ? 1 : 0,
+          })
+        } else if (key.return && form.focusIndex === 0) {
+          if (elicitationUrlWaiting) {
+            openUrl()
+          } else {
+            openUrl()
+            elicitationUrlWaitingRef.current = elicitation
+            setElicitationUrlWaiting(true)
+            elicitation.resolve({ action: 'accept' }, { keepUrlDialog: true })
+          }
+        } else if (key.return && form.focusIndex === 1) {
+          if (elicitationUrlWaiting) dismissUrlDialog()
+          else elicitation.resolve({ action: 'decline' })
+        }
+        return
+      }
+
+      if (form.expandedField && currentField) {
+        if (key.escape || key.leftArrow) {
+          setElicitationForm({ ...form, expandedField: undefined })
+        } else if (key.upArrow) {
+          showForm(moveElicitationOption(form, -1))
+        } else if (key.downArrow) {
+          showForm(moveElicitationOption(form, 1))
+        } else if (value === ' ') {
+          setElicitationForm(
+            selectElicitationOption(form, currentField.kind === 'enum'),
+          )
+        } else if (key.return) {
+          showForm(
+            moveElicitationFocus(selectElicitationOption(form, true, true), 1),
+          )
+        } else if (printable && value) {
+          setElicitationForm(typeaheadElicitationOption(form, value))
+        }
+      } else if (key.escape) {
+        elicitation.resolve({ action: 'cancel' })
+      } else if (key.upArrow) {
+        move(-1)
+      } else if (key.downArrow) {
+        move(1)
+      } else if (!currentField && (key.leftArrow || key.rightArrow)) {
+        setElicitationForm({
+          ...form,
+          focusIndex:
+            form.focusIndex === form.fields.length
+              ? form.fields.length + 1
+              : form.fields.length,
+        })
+      } else if (form.focusIndex === form.fields.length && key.return) {
+        const validated = validateTuiElicitationForm(form)
+        if (elicitationFormIsValid(validated)) {
+          elicitation.resolve({
+            action: 'accept',
+            ...(Object.keys(validated.values).length > 0
+              ? { content: { ...validated.values } }
+              : {}),
+          })
+        } else {
+          showForm(validated)
+        }
+      } else if (form.focusIndex === form.fields.length + 1 && key.return) {
+        elicitation.resolve({ action: 'decline' })
+      } else if (currentField?.kind === 'boolean') {
+        if (value === ' ' || lower === 'y' || lower === 'n') {
+          let next = toggleElicitationBoolean(form)
+          if (lower === 'n' && next.values[currentField.name] === true)
+            next = toggleElicitationBoolean(next)
+          if (lower === 'y' && next.values[currentField.name] === false)
+            next = toggleElicitationBoolean(next)
+          setElicitationForm(next)
+        } else if (key.backspace) {
+          setElicitationForm(unsetElicitationField(form))
+        } else if (key.return) {
+          move(1)
+        }
+      } else if (
+        currentField &&
+        ['enum', 'multi-enum'].includes(currentField.kind)
+      ) {
+        if (key.rightArrow) {
+          setElicitationForm(expandElicitationOptions(form))
+        } else if (key.backspace) {
+          setElicitationForm(unsetElicitationField(form))
+        } else if (key.return) {
+          move(1)
+        } else if (printable && value) {
+          setElicitationForm(typeaheadElicitationOption(form, value))
+        }
+      } else if (textField) {
+        if (key.return) move(1)
+        else editComposer()
       }
       return
     }
@@ -6342,24 +6483,34 @@ export function InteractiveApp({
                 </Text>
               </DialogFrame>
             ) : elicitation ? (
-              <DialogFrame
-                title={`MCP elicitation (${elicitation.request.serverName})`}
-                screenReader={axScreenReader}
-              >
-                <Text>{elicitation.request.message}</Text>
-                {elicitation.request.url ? (
-                  <Text>{elicitation.request.url}</Text>
-                ) : null}
-                {elicitation.request.requestedSchema ? (
-                  <Text dimColor>
-                    {JSON.stringify(elicitation.request.requestedSchema)}
-                  </Text>
-                ) : null}
-                <Text>› {input}</Text>
-                <Text dimColor>
-                  Enter JSON object to accept · Esc to cancel
-                </Text>
-              </DialogFrame>
+              elicitation.request.mode === 'url' ? (
+                <McpElicitationUrl
+                  serverName={elicitation.request.serverName}
+                  message={elicitation.request.message}
+                  url={elicitation.request.url ?? ''}
+                  waiting={elicitationUrlWaiting}
+                  actionLabel={
+                    elicitation.request.elicitationId
+                      ? 'Skip confirmation'
+                      : 'Continue without waiting'
+                  }
+                  selection={elicitationForm?.focusIndex ?? 0}
+                  screenReader={axScreenReader}
+                />
+              ) : (
+                <McpElicitationForm
+                  serverName={elicitation.request.serverName}
+                  message={elicitation.request.message}
+                  state={
+                    elicitationForm ??
+                    createTuiElicitationForm(
+                      elicitation.request.requestedSchema,
+                    )
+                  }
+                  input={input}
+                  screenReader={axScreenReader}
+                />
+              )
             ) : menu?.kind === 'model-input' ? (
               <DialogFrame title="Enter model ID" screenReader={axScreenReader}>
                 <Text dimColor>

@@ -8,7 +8,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ModelToolCall, PermissionApproval } from '../core/runtime.js'
+import type {
+  ModelToolCall,
+  PermissionApproval,
+  RuntimeEventSink,
+} from '../core/runtime.js'
 import type { ClaudePlanApprovalResult } from '../tools/claude-interactive-tools.js'
 import {
   InteractiveApp,
@@ -5624,14 +5628,188 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('MCP elicitation (fixture)')
-    app.stdin.write('{"code":"ok"}')
+    expect(app.lastFrame()).toContain(
+      'MCP server “fixture” requests your input',
+    )
+    expect(app.lastFrame()).toContain('code: Type something…')
+    app.stdin.write('ok')
+    await flush()
+    app.stdin.write('\r')
     await flush()
     app.stdin.write('\r')
     await flush()
 
     expect(result).toEqual({ action: 'accept', content: { code: 'ok' } })
     expect(app.lastFrame()).toContain('done')
+  })
+
+  it('navigates boolean, enum, and required multi-select elicitation fields', async () => {
+    let result: unknown
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ onElicitation }) {
+            return {
+              async run() {
+                result = await onElicitation?.({
+                  serverName: 'fixture',
+                  message: 'Configure the task',
+                  mode: 'form',
+                  requestedSchema: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string' },
+                      enabled: { type: 'boolean' },
+                      color: {
+                        type: 'string',
+                        enum: ['red', 'blue'],
+                      },
+                      tags: {
+                        type: 'array',
+                        items: { type: 'string', enum: ['fast', 'safe'] },
+                        minItems: 1,
+                      },
+                    },
+                    required: ['name', 'enabled', 'tags'],
+                  },
+                })
+                return {
+                  sessionId: 'session-form-controls',
+                  text: 'configured',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('Ada')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write(' ')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[C')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write(' ')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[C')
+    await flush()
+    app.stdin.write(' ')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(result).toEqual({
+      action: 'accept',
+      content: {
+        name: 'Ada',
+        enabled: true,
+        color: 'blue',
+        tags: ['fast'],
+      },
+    })
+    expect(app.lastFrame()).toContain('configured')
+  })
+
+  it('opens URL elicitations and waits for the matching completion event', async () => {
+    let result: unknown
+    let eventSink: RuntimeEventSink | undefined
+    const opened: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            eventSink = options.eventSink
+            return {
+              async run() {
+                result = await options.onElicitation?.({
+                  serverName: 'browser-fixture',
+                  message: 'Authorize access',
+                  mode: 'url',
+                  url: 'https://example.com/authorize',
+                  elicitationId: 'elicit-1',
+                })
+                return {
+                  sessionId: 'session-url',
+                  text: 'accepted',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        elicitationUrlOpener={(url) => {
+          opened.push(url)
+        }}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'MCP server “browser-fixture” wants to open a URL',
+    )
+    app.stdin.write('\r')
+    await flush()
+    expect(result).toEqual({ action: 'accept' })
+    expect(opened).toEqual(['https://example.com/authorize'])
+    expect(app.lastFrame()).toContain('waiting for completion')
+    expect(app.lastFrame()).toContain('Reopen URL')
+    expect(app.lastFrame()).toContain('Skip confirmation')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(opened).toHaveLength(2)
+    eventSink?.({
+      type: 'elicitation-complete',
+      mcpServerName: 'browser-fixture',
+      elicitationId: 'different-id',
+    })
+    await flush()
+    expect(app.lastFrame()).toContain('waiting for completion')
+    eventSink?.({
+      type: 'elicitation-complete',
+      mcpServerName: 'browser-fixture',
+      elicitationId: 'elicit-1',
+    })
+    await flush()
+    expect(app.lastFrame()).not.toContain('waiting for completion')
+    expect(app.lastFrame()).toContain('MCP elicitation completed')
   })
 
   it('asks before retrying an interrupted tool during resume', async () => {
