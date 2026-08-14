@@ -69,6 +69,7 @@ import {
   type PermissionApproval,
   type PermissionDecision,
   type PermissionResolver,
+  type PermissionUpdate,
   type RuntimeEventSink,
   type ToolRegistry,
 } from '../core/runtime.js'
@@ -146,6 +147,9 @@ export interface ClaudeSessionServiceOptions {
   tools?: ToolRegistry
   permissions?: PermissionResolver
   permissionResolverForMode?: (mode: AgentPermissionMode) => PermissionResolver
+  persistPermissionUpdates?: (
+    updates: readonly PermissionUpdate[],
+  ) => void | Promise<void>
   approveTool?: (
     call: ModelToolCall,
     originalCall?: ModelToolCall,
@@ -336,6 +340,10 @@ export class ClaudeSessionService {
   private readonly backgroundTasks: BackgroundTaskRuntime
   private readonly worktreeManager: SessionWorktreeManager | null
   private readonly sessionCwds = new Map<string, string>()
+  private readonly sessionPermissionUpdates = new Map<
+    string,
+    PermissionUpdate[]
+  >()
   private readonly hostedSubagents = new Set<ClaudeSubagentExecutor>()
   private readonly hostedSubagentsByRegistry = new WeakMap<
     ToolRegistry,
@@ -424,6 +432,24 @@ export class ClaudeSessionService {
 
   stopTask(sessionId: string, taskId: string): Promise<void> {
     return this.backgroundTasks.stop(sessionId, taskId)
+  }
+
+  private async applyPermissionUpdates(
+    sessionId: string,
+    updates: readonly PermissionUpdate[],
+  ): Promise<void> {
+    if (updates.length === 0) return
+    await this.options.persistPermissionUpdates?.(updates)
+    const current = this.sessionPermissionUpdates.get(sessionId) ?? []
+    current.push(...updates)
+    this.sessionPermissionUpdates.set(sessionId, current)
+    const mode = updates.findLast(
+      (update): update is Extract<PermissionUpdate, { type: 'setMode' }> =>
+        update.type === 'setMode',
+    )?.mode
+    if (mode && this.options.interactiveTools) {
+      await this.options.interactiveTools.setMode(sessionId, mode)
+    }
   }
 
   async close(): Promise<void> {
@@ -524,6 +550,10 @@ export class ClaudeSessionService {
             ...(this.options.approveTool
               ? { approveTool: this.options.approveTool }
               : {}),
+            permissionUpdates: () =>
+              this.sessionPermissionUpdates.get(sessionId) ?? [],
+            onPermissionUpdates: (updates) =>
+              this.applyPermissionUpdates(sessionId, updates),
             ...(this.options.eventSink
               ? { eventSink: this.options.eventSink }
               : {}),
@@ -2071,6 +2101,10 @@ export class ClaudeSessionService {
               ...(this.options.approveTool
                 ? { approveTool: this.options.approveTool }
                 : {}),
+              permissionUpdates: () =>
+                this.sessionPermissionUpdates.get(sessionId) ?? [],
+              onPermissionUpdates: (updates) =>
+                this.applyPermissionUpdates(sessionId, updates),
               ...(this.options.eventSink
                 ? { eventSink: this.options.eventSink }
                 : {}),
@@ -2435,6 +2469,9 @@ export class ClaudeSessionService {
           toolResultDirectory,
           messages: projectClaudeModelMessages(snapshot.entries),
           observer,
+          permissionUpdates: this.sessionPermissionUpdates.get(sessionId) ?? [],
+          onPermissionUpdates: (updates: readonly PermissionUpdate[]) =>
+            this.applyPermissionUpdates(sessionId, updates),
           ...(signal ? { signal } : {}),
           ...(approveRecovery
             ? {
@@ -2901,6 +2938,10 @@ export class ClaudeSessionService {
               ...(this.options.approveTool
                 ? { approveTool: this.options.approveTool }
                 : {}),
+              permissionUpdates:
+                this.sessionPermissionUpdates.get(sessionId) ?? [],
+              onPermissionUpdates: (updates) =>
+                this.applyPermissionUpdates(sessionId, updates),
               ...(signal ? { signal } : {}),
             })
           } catch (error) {
@@ -3051,6 +3092,9 @@ export class ClaudeSessionService {
           ...(this.options.approveTool
             ? { approveTool: this.options.approveTool }
             : {}),
+          permissionUpdates: this.sessionPermissionUpdates.get(sessionId) ?? [],
+          onPermissionUpdates: (updates: readonly PermissionUpdate[]) =>
+            this.applyPermissionUpdates(sessionId, updates),
         }
         const result = signal
           ? await runtime.run({ ...runtimeRequest, signal })

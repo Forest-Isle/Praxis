@@ -25,9 +25,11 @@ import type {
   ModelUsage,
   PermissionApproval,
   PermissionDecision,
+  PermissionUpdate,
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
+import { permissionRuleValueToString } from '../permissions/permission-updates.js'
 import { AgentRunCancelledError } from '../core/runtime.js'
 import type {
   CliElicitationRequest,
@@ -3749,7 +3751,7 @@ export function InteractiveApp({
         if (
           permission.kind === 'tool' &&
           selected.action === 'persist-rule' &&
-          (selected.rule || selected.editableRule)
+          (selected.rule || selected.editableRule || selected.updates?.length)
         ) {
           const editedRule = permissionRuleEditor?.text.trim()
           const rule = selected.editableRule
@@ -3757,19 +3759,73 @@ export function InteractiveApp({
               ? `${selected.editableRule.toolName}(${editedRule})`
               : undefined
             : selected.rule
-          if (!rule) {
+          const updates: readonly PermissionUpdate[] = selected.editableRule
+            ? rule
+              ? [
+                  {
+                    type: 'addRules',
+                    rules: [
+                      {
+                        toolName: selected.editableRule.toolName,
+                        ruleContent: editedRule ?? '',
+                      },
+                    ],
+                    behavior: 'allow',
+                    destination: 'localSettings',
+                  },
+                ]
+              : []
+            : (selected.updates ??
+              (rule
+                ? [
+                    {
+                      type: 'addRules',
+                      rules: [
+                        /^([A-Za-z][\w-]*)(?:\((.*)\))?$/u.exec(rule),
+                      ].flatMap((match) =>
+                        match?.[1]
+                          ? [
+                              {
+                                toolName: match[1],
+                                ...(match[2] === undefined
+                                  ? {}
+                                  : { ruleContent: match[2] }),
+                              },
+                            ]
+                          : [],
+                      ),
+                      behavior: 'allow',
+                      destination: 'localSettings',
+                    } as const,
+                  ]
+                : []))
+          if (!rule && updates.length === 0) {
             permission.resolve({ behavior: 'allow' })
             return
           }
           const saving = (async () => {
             try {
-              await permissionStore.add({
+              for (const update of updates) {
+                if (
+                  update.type !== 'addRules' ||
+                  update.destination !== 'localSettings'
+                ) {
+                  continue
+                }
+                for (const value of update.rules) {
+                  const savedRule = permissionRuleValueToString(value)
+                  await permissionStore.add({
+                    behavior: update.behavior,
+                    rule: savedRule,
+                    scope: 'local',
+                  })
+                  immediatePermissionRulesRef.current.push(savedRule)
+                }
+              }
+              permission.resolve({
                 behavior: 'allow',
-                rule,
-                scope: 'local',
+                updatedPermissions: updates,
               })
-              immediatePermissionRulesRef.current.push(rule)
-              permission.resolve({ behavior: 'allow' })
             } catch (error) {
               warn(error)
             }
@@ -3781,10 +3837,14 @@ export function InteractiveApp({
         if (
           permission.kind === 'tool' &&
           selected.action === 'allow-session-action' &&
-          selected.rule
+          (selected.rule || selected.updates?.length)
         ) {
-          immediatePermissionRulesRef.current.push(selected.rule)
-          permission.resolve({ behavior: 'allow' })
+          if (selected.rule)
+            immediatePermissionRulesRef.current.push(selected.rule)
+          permission.resolve({
+            behavior: 'allow',
+            updatedPermissions: selected.updates ?? [],
+          })
           return
         }
         if (
@@ -3799,7 +3859,19 @@ export function InteractiveApp({
             ...current,
             permissionMode: 'acceptEdits',
           }))
-          permission.resolve({ behavior: 'allow' })
+          permission.resolve({
+            behavior: 'allow',
+            updatedPermissions:
+              selected.updates?.length
+                ? selected.updates
+                : [
+                    {
+                      type: 'setMode',
+                      mode: 'acceptEdits',
+                      destination: 'session',
+                    },
+                  ],
+          })
           const activeSessionId = sessionIdRef.current
           if (activeSessionId && serviceRef.current?.setPermissionMode) {
             const saving = serviceRef.current

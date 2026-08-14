@@ -86,8 +86,6 @@ export class ClaudeExtensionPermissionResolver implements PermissionResolver {
     call: ModelToolCall,
     context?: PermissionResolutionContext,
   ): PermissionDecision | Promise<PermissionDecision> {
-    return call.name === 'Skill'
-      ? { behavior: 'allow' }
-      : this.base.resolve(call, context)
+    return this.base.resolve(call, context)
   }
 }

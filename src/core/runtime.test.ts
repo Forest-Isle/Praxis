@@ -1239,4 +1239,63 @@ describe('AgentRuntime', () => {
     ).rejects.toThrow('recovery was declined')
     expect(approvals).toBe(1)
   })
+
+  it('applies approved permission updates before tool execution', async () => {
+    const applied: unknown[] = []
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield* []
+      }),
+      undefined,
+      {
+        tools: {
+          definitions: () => [],
+          async prepare(call, context) {
+            expect(context.permissionPhase).toBe('request')
+            return call
+          },
+          async execute(_call, context) {
+            expect(context.permissionPhase).toBe('execute')
+            expect(context.permissionApproved).toBe(true)
+            expect(context.permissionUpdates).toEqual([
+              {
+                type: 'addDirectories',
+                directories: ['/shared'],
+                destination: 'session',
+              },
+            ])
+            return { content: 'updated', isError: false }
+          },
+        },
+        permissions: {
+          resolve: () => ({ behavior: 'ask' }),
+        },
+      },
+    )
+    await expect(
+      runtime.executeDirectToolCall(
+        { id: 'permission-update', name: 'Write', input: {} },
+        {
+          observer: {
+            async assistantCompleted() {},
+            async toolCompleted() {},
+          },
+          approveTool: () => ({
+            behavior: 'allow',
+            updatedPermissions: [
+              {
+                type: 'addDirectories',
+                directories: ['/shared'],
+                destination: 'session',
+              },
+            ],
+          }),
+          onPermissionUpdates(updates) {
+            applied.push(...updates)
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ content: 'updated', isError: false })
+    expect(applied).toHaveLength(1)
+  })
 })

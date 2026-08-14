@@ -41,6 +41,7 @@ import {
 import { globFiles } from './glob.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
 import { openPdf } from './pdf.js'
+import { effectiveAdditionalDirectories } from '../permissions/permission-updates.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
@@ -852,9 +853,21 @@ export class LocalToolRegistry implements ToolRegistry {
     const workspaceRoots = [
       workspaceRoot,
       ...(await Promise.all(
-        this.additionalDirectories.map((directory) => realpath(directory)),
+        [
+          ...effectiveAdditionalDirectories(
+            context?.permissionUpdates,
+            this.additionalDirectories,
+          ),
+        ].map(async (directory) => {
+          try {
+            return await realpath(resolve(this.currentCwd(context), directory))
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+            throw error
+          }
+        }),
       )),
-    ]
+    ].filter((root): root is string => root !== null)
     const writableRoots =
       includeSharedMemory && this.sharedMemoryDirectory
         ? [...workspaceRoots, await realpath(this.sharedMemoryDirectory)]
@@ -885,6 +898,12 @@ export class LocalToolRegistry implements ToolRegistry {
     try {
       const canonical = await realpath(candidate)
       if (!roots.some((root) => isWithin(root, canonical))) {
+        if (
+          context?.permissionPhase === 'request' ||
+          context?.permissionApproved === true
+        ) {
+          return canonical
+        }
         throw new Error(`Path is outside workspace: ${requestedPath}`)
       }
       return canonical
@@ -894,6 +913,12 @@ export class LocalToolRegistry implements ToolRegistry {
       }
       const parent = await realpath(dirname(candidate))
       if (!roots.some((root) => isWithin(root, parent))) {
+        if (
+          context?.permissionPhase === 'request' ||
+          context?.permissionApproved === true
+        ) {
+          return join(parent, basename(candidate))
+        }
         throw new Error(`Path is outside workspace: ${requestedPath}`)
       }
       return join(parent, basename(candidate))

@@ -1,5 +1,6 @@
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { realpath } from 'node:fs/promises'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import {
@@ -10,8 +11,10 @@ import type {
   ModelToolCall,
   PermissionBehavior,
   PermissionDecision,
+  PermissionMode,
   PermissionResolutionContext,
   PermissionResolver,
+  PermissionUpdateDestination,
 } from '../core/runtime.js'
 import {
   loadClaudeAutoModeConfig,
@@ -19,11 +22,23 @@ import {
   type ClaudeAutoModeConfig,
 } from './claude-auto-classifier.js'
 import { stripClaudeSafeShellEnvironment } from './claude-shell-permission.js'
+import {
+  effectiveAdditionalDirectories,
+  effectivePermissionMode,
+  filePermissionSuggestions,
+  permissionRuleValueFromString,
+  permissionRuleValueToString,
+  shellCommandIsReadOnly,
+  shellPermissionSuggestions,
+  shellSubcommands,
+  skillPermissionSuggestions,
+} from './permission-updates.js'
 
 interface PermissionRule {
   behavior: PermissionBehavior
   toolName: string
   pattern: string | null
+  destination: PermissionUpdateDestination
   root?: string
 }
 
@@ -38,6 +53,8 @@ export interface ClaudePermissionResolverOptions {
   autoClassifier?: ClaudeAutoClassifier
   autoModeConfig?: ClaudeAutoModeConfig
   isSessionActionApproved?: (call: ModelToolCall) => boolean
+  additionalDirectories?: readonly string[]
+  additionalReadDirectories?: readonly string[]
 }
 
 export type ClaudePermissionMode =
@@ -76,6 +93,8 @@ const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   WebFetch: 'ask',
   WebSearch: 'ask',
   Bash: 'ask',
+  PowerShell: 'ask',
+  Skill: 'ask',
   Workflow: 'ask',
   StructuredOutput: 'allow',
   EnterWorktree: 'allow',
@@ -113,18 +132,19 @@ function readRuleStrings(
   value: unknown,
   behavior: PermissionBehavior,
   root?: string,
+  destination: PermissionUpdateDestination = 'session',
 ): PermissionRule[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((item) => {
     if (typeof item !== 'string') return []
-    const match = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/.exec(item)
-    const toolName = match?.[1]
-    if (!toolName) return []
+    const parsed = permissionRuleValueFromString(item)
+    if (!/^[A-Za-z][\w-]*$/u.test(parsed.toolName)) return []
     return [
       {
         behavior,
-        toolName,
-        pattern: match[2] ?? null,
+        toolName: parsed.toolName,
+        pattern: parsed.ruleContent ?? null,
+        destination,
         ...(root ? { root } : {}),
       },
     ]
@@ -140,11 +160,24 @@ function loadRules(settings: readonly ClaudeJsonResource[]): PermissionRule[] {
       resource.scope === 'user'
         ? dirname(resource.path)
         : resolve(dirname(resource.path), '..')
+    const destination =
+      resource.scope === 'user'
+        ? 'userSettings'
+        : resource.scope === 'project'
+          ? 'projectSettings'
+          : 'localSettings'
     return [
-      ...readRuleStrings(permissions.deny, 'deny', root),
-      ...readRuleStrings(permissions.ask, 'ask', root),
-      ...readRuleStrings(permissions.allow, 'allow', root),
+      ...readRuleStrings(permissions.deny, 'deny', root, destination),
+      ...readRuleStrings(permissions.ask, 'ask', root, destination),
+      ...readRuleStrings(permissions.allow, 'allow', root, destination),
     ]
+  })
+}
+
+function permissionRuleToString(rule: PermissionRule): string {
+  return permissionRuleValueToString({
+    toolName: rule.toolName,
+    ...(rule.pattern === null ? {} : { ruleContent: rule.pattern }),
   })
 }
 
@@ -324,6 +357,8 @@ export class ClaudePermissionResolver implements PermissionResolver {
   private readonly autoModeConfig: ClaudeAutoModeConfig
   private readonly isSessionActionApproved:
     ((call: ModelToolCall) => boolean) | undefined
+  private readonly additionalDirectories: readonly string[]
+  private readonly additionalReadDirectories: readonly string[]
 
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
@@ -331,14 +366,30 @@ export class ClaudePermissionResolver implements PermissionResolver {
     this.homeDirectory = resolve(options.homeDirectory ?? homedir())
     this.rules = [
       ...loadRules(options.settings),
-      ...readRuleStrings(options.disallowedTools ?? [], 'deny'),
-      ...readRuleStrings(options.allowedTools ?? [], 'allow'),
+      ...readRuleStrings(
+        options.disallowedTools ?? [],
+        'deny',
+        undefined,
+        'cliArg',
+      ),
+      ...readRuleStrings(
+        options.allowedTools ?? [],
+        'allow',
+        undefined,
+        'cliArg',
+      ),
     ]
     this.permissionMode = options.permissionMode ?? 'default'
     this.autoModeConfig =
       options.autoModeConfig ?? loadClaudeAutoModeConfig(options.settings)
     this.autoClassifier = options.autoClassifier
     this.isSessionActionApproved = options.isSessionActionApproved
+    this.additionalDirectories = (options.additionalDirectories ?? []).map(
+      (directory) => resolve(directory),
+    )
+    this.additionalReadDirectories = (
+      options.additionalReadDirectories ?? []
+    ).map((directory) => resolve(directory))
     if (this.permissionMode === 'auto') {
       if (!this.autoClassifier) {
         throw new Error('Permission mode auto requires a classifier')
@@ -351,13 +402,70 @@ export class ClaudePermissionResolver implements PermissionResolver {
     context?: PermissionResolutionContext,
   ): Promise<PermissionDecision> {
     const cwd = resolve(context?.cwd || this.cwdProvider?.() || this.cwd)
-    const matchingRule = (behavior: PermissionBehavior) =>
-      this.rules.find(
-        (candidate) =>
-          candidate.behavior === behavior &&
-          matchesRule(candidate, call, cwd, this.homeDirectory),
+    const updates = context?.permissionUpdates ?? []
+    const permissionMode =
+      (effectivePermissionMode(updates) as ClaudePermissionMode | undefined) ??
+      this.permissionMode
+    const effectiveRules = (behavior: PermissionBehavior) => {
+      let rules = this.rules.filter((rule) => rule.behavior === behavior)
+      for (const update of updates) {
+        if (
+          (update.type !== 'addRules' &&
+            update.type !== 'replaceRules' &&
+            update.type !== 'removeRules') ||
+          update.behavior !== behavior
+        ) {
+          continue
+        }
+        const root =
+          rules.find((rule) => rule.destination === update.destination)?.root ??
+          cwd
+        const changed = readRuleStrings(
+          update.rules.map(permissionRuleValueToString),
+          behavior,
+          root,
+          update.destination,
+        )
+        if (update.type === 'replaceRules') {
+          rules = [
+            ...rules.filter((rule) => rule.destination !== update.destination),
+            ...changed,
+          ]
+        } else if (update.type === 'removeRules') {
+          const removed = new Set(changed.map(permissionRuleToString))
+          rules = rules.filter(
+            (rule) =>
+              rule.destination !== update.destination ||
+              !removed.has(permissionRuleToString(rule)),
+          )
+        } else {
+          rules = [...rules, ...changed]
+        }
+      }
+      return rules
+    }
+    const matchingRule = (
+      behavior: PermissionBehavior,
+      candidateCall: ModelToolCall = call,
+    ) =>
+      effectiveRules(behavior).find((candidate) =>
+        matchesRule(candidate, candidateCall, cwd, this.homeDirectory),
       )
-    const denied = matchingRule('deny')
+    const command =
+      (call.name === 'Bash' || call.name === 'PowerShell') &&
+      typeof call.input.command === 'string'
+        ? call.input.command
+        : undefined
+    const subcommands = command ? shellSubcommands(command) : []
+    const subcommandCall = (subcommand: string): ModelToolCall => ({
+      ...call,
+      input: { ...call.input, command: subcommand },
+    })
+    const denied =
+      matchingRule('deny') ??
+      subcommands
+        .map((subcommand) => matchingRule('deny', subcommandCall(subcommand)))
+        .find((rule) => rule !== undefined)
     if (denied) {
       const suffix = denied.pattern === null ? '' : `(${denied.pattern})`
       return annotatePermissionDecision(
@@ -368,11 +476,11 @@ export class ClaudePermissionResolver implements PermissionResolver {
         'rule',
       )
     }
-    if (this.permissionMode === 'bypassPermissions') {
+    if (permissionMode === 'bypassPermissions') {
       return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
     }
     if (
-      this.permissionMode === 'plan' &&
+      permissionMode === 'plan' &&
       (call.name === 'Write' ||
         call.name === 'Edit' ||
         call.name === 'NotebookEdit')
@@ -389,15 +497,82 @@ export class ClaudePermissionResolver implements PermissionResolver {
     if (this.isSessionActionApproved?.(call)) {
       return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
     }
-    if (matchingRule('ask')) return this.askDecision(call, 'rule')
+    const asked =
+      matchingRule('ask') ??
+      subcommands
+        .map((subcommand) => matchingRule('ask', subcommandCall(subcommand)))
+        .find((rule) => rule !== undefined)
+    if (asked)
+      return this.askDecision(
+        call,
+        cwd,
+        permissionMode,
+        context,
+        'rule',
+        undefined,
+        true,
+      )
     if (
       matchingRule('allow') &&
-      (this.permissionMode !== 'auto' || !this.shouldClassify(call))
+      (permissionMode !== 'auto' || !this.shouldClassify(call))
     ) {
       return annotatePermissionDecision({ behavior: 'allow' }, 'rule')
     }
     if (
-      this.permissionMode === 'acceptEdits' &&
+      command &&
+      (permissionMode !== 'auto' || !this.shouldClassify(call)) &&
+      subcommands.length > 0 &&
+      subcommands.every(
+        (subcommand) =>
+          shellCommandIsReadOnly(subcommand) ||
+          matchingRule('allow', subcommandCall(subcommand)) !== undefined,
+      )
+    ) {
+      return annotatePermissionDecision({ behavior: 'allow' }, 'rule')
+    }
+
+    const filePath = FILE_TOOLS.has(call.name) ? permissionTarget(call) : null
+    if (filePath) {
+      let absolutePath = resolve(cwd, filePath)
+      if (call.name === 'Glob') {
+        try {
+          absolutePath = await realpath(absolutePath)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        }
+      }
+      const write = ['Write', 'Edit', 'NotebookEdit'].includes(call.name)
+      const roots = [
+        cwd,
+        ...effectiveAdditionalDirectories(
+          updates,
+          this.additionalDirectories,
+        ).map((directory) => resolve(cwd, directory)),
+        ...(write ? [] : this.additionalReadDirectories),
+      ]
+      const outside = !roots.some((root) => {
+        const child = relative(root, absolutePath)
+        return child === '' || (!child.startsWith('..') && !isAbsolute(child))
+      })
+      if (outside) {
+        return annotatePermissionDecision(
+          {
+            behavior: 'ask',
+            reason: 'Path is outside allowed working directories',
+            suggestions: filePermissionSuggestions(
+              absolutePath,
+              cwd,
+              write ? 'write' : 'read',
+              permissionMode as PermissionMode,
+              true,
+            ),
+          },
+          'default',
+        )
+      }
+    }
+    if (
+      permissionMode === 'acceptEdits' &&
       (call.name === 'Write' ||
         call.name === 'Edit' ||
         call.name === 'NotebookEdit')
@@ -406,7 +581,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
     }
 
     if (
-      this.permissionMode === 'auto' &&
+      permissionMode === 'auto' &&
       this.shouldClassify(call) &&
       this.autoClassifier
     ) {
@@ -438,13 +613,23 @@ export class ClaudePermissionResolver implements PermissionResolver {
       }
     }
 
-    if (this.permissionMode === 'auto' && call.name === 'Bash') {
+    if (permissionMode === 'auto' && call.name === 'Bash') {
       return annotatePermissionDecision({ behavior: 'allow' }, 'default')
     }
 
     const defaultBehavior = DEFAULT_BEHAVIOR[call.name]
     return defaultBehavior === 'ask'
-      ? this.askDecision(call, 'default')
+      ? this.askDecision(
+          call,
+          cwd,
+          permissionMode,
+          context,
+          'default',
+          command
+            ? (subcommand) =>
+                matchingRule('allow', subcommandCall(subcommand)) === undefined
+            : undefined,
+        )
       : defaultBehavior
         ? annotatePermissionDecision({ behavior: defaultBehavior }, 'default')
         : annotatePermissionDecision(
@@ -455,13 +640,18 @@ export class ClaudePermissionResolver implements PermissionResolver {
 
   private askDecision(
     call: ModelToolCall,
+    cwd: string,
+    permissionMode: ClaudePermissionMode,
+    context?: PermissionResolutionContext,
     source: 'rule' | 'mode' | 'default' = 'mode',
+    shellSuggestionFilter?: (subcommand: string) => boolean,
+    suppressSuggestions = false,
   ): PermissionDecision {
-    return this.permissionMode === 'dontAsk' || this.permissionMode === 'plan'
+    return permissionMode === 'dontAsk' || permissionMode === 'plan'
       ? annotatePermissionDecision(
           {
             behavior: 'deny',
-            reason: `Permission to use ${call.name} is disabled in ${this.permissionMode} mode`,
+            reason: `Permission to use ${call.name} is disabled in ${permissionMode} mode`,
           },
           'mode',
         )
@@ -471,6 +661,38 @@ export class ClaudePermissionResolver implements PermissionResolver {
             ...(call.name === 'Workflow'
               ? { reason: 'Review dynamic workflow before running' }
               : {}),
+            ...(!suppressSuggestions &&
+            (call.name === 'Bash' || call.name === 'PowerShell') &&
+            typeof call.input.command === 'string'
+              ? {
+                  suggestions: shellPermissionSuggestions(
+                    call.name,
+                    call.input.command,
+                    shellSuggestionFilter,
+                  ),
+                }
+              : !suppressSuggestions &&
+                  call.name === 'Skill' &&
+                  typeof call.input.skill === 'string'
+                ? {
+                    suggestions: skillPermissionSuggestions(call.input.skill),
+                  }
+                : !suppressSuggestions &&
+                    FILE_TOOLS.has(call.name) &&
+                    permissionTarget(call)
+                  ? {
+                      suggestions: filePermissionSuggestions(
+                        permissionTarget(call) ?? cwd,
+                        cwd,
+                        ['Write', 'Edit', 'NotebookEdit'].includes(call.name)
+                          ? 'write'
+                          : 'read',
+                        (effectivePermissionMode(context?.permissionUpdates) ??
+                          permissionMode) as PermissionMode,
+                        false,
+                      ),
+                    }
+                  : {}),
           },
           source,
         )

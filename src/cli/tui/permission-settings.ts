@@ -7,6 +7,11 @@ import {
   type ClaudeResourceScope,
 } from '../../compatibility/claude/shared-resources.js'
 import { writeFileAtomically } from '../../platform/atomic-write.js'
+import type { PermissionUpdate } from '../../core/runtime.js'
+import {
+  permissionRuleValueFromString,
+  permissionRuleValueToString,
+} from '../../permissions/permission-updates.js'
 
 export type TuiPermissionBehavior = 'allow' | 'ask' | 'deny'
 
@@ -162,4 +167,114 @@ export async function removeTuiPermissionRule(
     if (committed) return
   }
   throw new Error(`Settings changed concurrently: ${rule.path}`)
+}
+
+function destinationScope(
+  destination: PermissionUpdate['destination'],
+): ClaudeResourceScope | undefined {
+  return destination === 'userSettings'
+    ? 'user'
+    : destination === 'projectSettings'
+      ? 'project'
+      : destination === 'localSettings'
+        ? 'local'
+        : undefined
+}
+
+export async function persistTuiPermissionUpdates({
+  cwd,
+  updates,
+  configRoot = configRootPath(),
+}: {
+  cwd: string
+  updates: readonly PermissionUpdate[]
+  configRoot?: string
+}): Promise<void> {
+  for (const update of updates) {
+    const scope = destinationScope(update.destination)
+    if (!scope) continue
+    if (update.type === 'addRules') {
+      for (const rule of update.rules) {
+        await addTuiPermissionRule({
+          cwd,
+          behavior: update.behavior,
+          rule: permissionRuleValueToString(rule),
+          scope,
+          configRoot,
+        })
+      }
+      continue
+    }
+    const path = settingsPath(configRoot, cwd, scope)
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { value: settings, source } = await readSettings(path)
+      const permissions = isRecord(settings.permissions)
+        ? { ...settings.permissions }
+        : {}
+      if (update.type === 'setMode') {
+        permissions.defaultMode = update.mode
+      } else if (
+        update.type === 'addDirectories' ||
+        update.type === 'removeDirectories'
+      ) {
+        const existing = permissions.additionalDirectories
+        if (existing !== undefined && !Array.isArray(existing)) {
+          throw new Error(
+            `permissions.additionalDirectories must be an array: ${path}`,
+          )
+        }
+        const directories = Array.isArray(existing)
+          ? existing.filter(
+              (directory): directory is string => typeof directory === 'string',
+            )
+          : []
+        const changed = new Set(directories)
+        for (const directory of update.directories) {
+          if (update.type === 'addDirectories') changed.add(directory)
+          else changed.delete(directory)
+        }
+        permissions.additionalDirectories = [...changed]
+      } else if (
+        update.type === 'replaceRules' ||
+        update.type === 'removeRules'
+      ) {
+        const existing = permissions[update.behavior]
+        if (existing !== undefined && !Array.isArray(existing)) {
+          throw new Error(
+            `permissions.${update.behavior} must be an array: ${path}`,
+          )
+        }
+        const rules = Array.isArray(existing)
+          ? existing.filter((rule): rule is string => typeof rule === 'string')
+          : []
+        const changed = update.rules.map(permissionRuleValueToString)
+        if (update.type === 'replaceRules') {
+          permissions[update.behavior] = changed
+        } else {
+          const removed = new Set(changed)
+          permissions[update.behavior] = rules.filter(
+            (rule) =>
+              !removed.has(
+                permissionRuleValueToString(
+                  permissionRuleValueFromString(rule),
+                ),
+              ),
+          )
+        }
+      } else {
+        const unreachable: never = update
+        throw new Error(
+          `Unsupported permission update: ${JSON.stringify(unreachable)}`,
+        )
+      }
+      const committed = await writeFileAtomically(
+        path,
+        `${JSON.stringify({ ...settings, permissions }, null, 2)}\n`,
+        { beforeCommit: () => sourceUnchanged(path, source) },
+      )
+      if (committed) break
+      if (attempt === 2)
+        throw new Error(`Settings changed concurrently: ${path}`)
+    }
+  }
 }

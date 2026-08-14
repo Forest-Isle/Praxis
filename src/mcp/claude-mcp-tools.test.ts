@@ -1708,7 +1708,11 @@ process.stdin.on('data', async chunk => {
         ? 'not-json'
         : JSON.stringify(command === 'deny'
           ? { behavior: 'deny', message: 'DENIED_BY_MCP', interrupt: true }
-          : { behavior: 'allow', updatedInput: { command: 'updated' } })
+          : command === 'updates'
+            ? { behavior: 'allow', updatedInput: {}, updatedPermissions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings' }] }
+            : command === 'bad-updates'
+              ? { behavior: 'allow', updatedInput: {}, updatedPermissions: [{ type: 'setMode', mode: 'auto', destination: 'session' }] }
+            : { behavior: 'allow', updatedInput: { command: 'updated' } })
       result = { content: [{ type: 'text', text }] }
     }
     process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
@@ -1766,6 +1770,34 @@ process.stdin.on('data', async chunk => {
       })
       await expect(
         prompt({
+          id: 'toolu_updates',
+          name: 'Bash',
+          input: { command: 'updates' },
+        }),
+      ).resolves.toEqual({
+        behavior: 'allow',
+        updatedInput: { command: 'updates' },
+        updatedPermissions: [
+          {
+            type: 'addRules',
+            rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }],
+            behavior: 'allow',
+            destination: 'localSettings',
+          },
+        ],
+      })
+      await expect(
+        prompt({
+          id: 'toolu_bad_updates',
+          name: 'Bash',
+          input: { command: 'bad-updates' },
+        }),
+      ).resolves.toEqual({
+        behavior: 'allow',
+        updatedInput: { command: 'bad-updates' },
+      })
+      await expect(
+        prompt({
           id: 'toolu_invalid',
           name: 'Bash',
           input: { command: 'invalid' },
@@ -1773,7 +1805,7 @@ process.stdin.on('data', async chunk => {
       ).resolves.toEqual({
         behavior: 'deny',
         message:
-          "The permission prompt tool returned an invalid permission result. Expected {behavior: 'allow', updatedInput?: object} or {behavior: 'deny', message: string}.",
+          "The permission prompt tool returned an invalid permission result. Expected {behavior: 'allow', updatedInput: object} or {behavior: 'deny', message: string}.",
       })
       expect(() => registry.permissionPrompt('mcp__missing__approve')).toThrow(
         'Available MCP tools: mcp__permission__approve',

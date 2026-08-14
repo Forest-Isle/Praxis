@@ -66,6 +66,33 @@ describe('tool permission projection', () => {
     ])
   })
 
+  it('applies compound shell suggestions atomically without a false editable prefix', () => {
+    const suggestions = [
+      {
+        type: 'addRules' as const,
+        rules: [
+          { toolName: 'Bash', ruleContent: 'npm test:*' },
+          { toolName: 'Bash', ruleContent: 'git push:*' },
+        ],
+        behavior: 'allow' as const,
+        destination: 'localSettings' as const,
+      },
+    ]
+    const model = projectTuiToolPermission(
+      call('Bash', { command: 'cd src && npm test && git push' }),
+      '/workspace',
+      [],
+      { behavior: 'ask', suggestions },
+    )
+    expect(model.options[1]).toMatchObject({
+      action: 'persist-rule',
+      updates: suggestions,
+    })
+    expect(model.options[1]?.editableRule).toBeUndefined()
+    expect(model.options[1]?.label).toContain('Bash(npm test:*)')
+    expect(model.options[1]?.label).toContain('Bash(git push:*)')
+  })
+
   it('projects Edit and Write diffs with source-relative paths', () => {
     const directory = mkdtempSync(join(tmpdir(), 'praxis-permission-'))
     const existing = join(directory, 'existing.txt')
@@ -167,6 +194,31 @@ describe('tool permission projection', () => {
       label: 'Yes, allow reading from shared/ during this session',
       rule: 'Read(//shared/**)',
     })
+
+    const approvedRead = projectTuiToolPermission(
+      call('Read', { file_path: '/shared/config.json' }),
+      '/workspace',
+      [],
+      {
+        behavior: 'ask',
+        suggestions: [
+          {
+            type: 'addRules',
+            rules: [{ toolName: 'Read', ruleContent: '//shared/**' }],
+            behavior: 'allow',
+            destination: 'session',
+          },
+        ],
+      },
+    )
+    expect(approvedRead.options[1]?.updates).toEqual([
+      {
+        type: 'addRules',
+        rules: [{ toolName: 'Read', ruleContent: '//shared/**' }],
+        behavior: 'allow',
+        destination: 'session',
+      },
+    ])
   })
 
   it('projects Skill and fallback tools without leaking sensitive values', () => {
@@ -212,6 +264,14 @@ describe('tool permission projection', () => {
       action: 'allow-session-action',
       label: 'Yes, and allow Claude to edit its own settings for this session',
       rule: 'Edit(/.claude/**)',
+      updates: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Edit', ruleContent: '/.claude/**' }],
+          behavior: 'allow',
+          destination: 'session',
+        },
+      ],
     })
   })
 

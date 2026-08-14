@@ -101,6 +101,8 @@ RuntimeEvent -> interactive state -> transcript/dialog/composer components
 shared JSONL -> active-chain display projection -> restored transcript state
 shared extensions -> slash catalog -> command palette -> existing session service
 runtime controls -> service retirement/recreation -> existing session service
+permission decision -> ordered PermissionUpdate[] -> current session context
+session context -> resolver + path gate -> current and later tool executions
 /cd -> canonical cwd -> native session relocation -> recreated runtime service
 /btw -> contextual provider call -> local panel -> optional native Agent sidechain
 /background -> source-tail checkpoint -> blocked job -> idempotent fork on attach
@@ -155,7 +157,8 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `ToolPermissionDialog`: source-dispatched Bash/PowerShell, edit/write,
   notebook, filesystem, WebFetch, Skill, and fallback views; inline diffs,
   permission explanations, editable reusable command/Skill rules, `.claude`
-  session grants, accept/reject feedback, and screen-reader selection text.
+  session grants, compound-shell multi-rule choices, external-directory
+  read/edit grants, accept/reject feedback, and screen-reader selection text.
 - `/tui` switches between the default and fullscreen renderers, persists the
   Claude-compatible `tui` runtime setting, and resumes the active session after
   the renderer restart.
@@ -296,6 +299,16 @@ is passed from the CLI composition root and never written to shared JSONL.
   numbered `--add-dir` roots; Tab-completed canonical directories can be added
   or removed for the current interactive runtime. `Shift+Tab` remains the
   permission-mode control and writes native `permission-mode` records.
+- Tool permission choices return Claude-shaped ordered `PermissionUpdate[]`
+  rather than mutating an unrelated TUI-only allowlist. A compound shell
+  command applies all backend subcommand suggestions atomically; a single Bash
+  or PowerShell rule remains editable. File approvals can combine
+  `setMode(acceptEdits)` with `addDirectories`, while outside reads add a
+  session `Read(//absolute-directory/**)` rule. The request-phase path parser
+  canonicalizes targets for policy evaluation while preserving source-shaped
+  display paths, and the execution phase still rejects unapproved roots.
+  Session updates take effect for the current call and later calls without
+  retiring the service and do not enter shared transcript JSONL.
 - The composer edits at its real Unicode code-point cursor. It supports arrow
   movement, Meta-word movement, `Ctrl+A/E/B/F/W/U/K`, backspace/delete,
   multiline `Shift+Enter`, submitted-prompt history, and bounded edit undo with

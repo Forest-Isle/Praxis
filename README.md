@@ -111,8 +111,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   searchable scoped-rule creation/removal, local/project/user atomic settings
   writes, tool-specific Bash/PowerShell/file/notebook/WebFetch/Skill approval
   dialogs, editable reusable shell and Skill rules, source-root-aware Claude
-  file-rule matching, interactive workspace-directory add/remove controls, path
-  confinement, credential redaction, and sanitized child processes.
+  file-rule matching, atomic session permission updates, compound-shell rule
+  suggestions, live read/edit grants for external directories, interactive
+  workspace-directory add/remove controls, path confinement, credential
+  redaction, and sanitized child processes.
 - **Durable local work** — resumable sessions, full-history forks, file
   checkpoints, tasks, foreground/background subagents, and top-level agents.
 - **Claude-compatible ecosystem** — shared instructions with recursive `@`

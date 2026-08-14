@@ -255,7 +255,9 @@ describe('InteractiveApp', () => {
     app.stdin.write('/vim')
     app.stdin.write('\r')
     await waitFor(() =>
-      app.lastFrame()?.includes('Editor mode set to normal.') ? true : undefined,
+      app.lastFrame()?.includes('Editor mode set to normal.')
+        ? true
+        : undefined,
     )
     expect(
       JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')),
@@ -5213,7 +5215,19 @@ describe('InteractiveApp', () => {
     expect(added).toEqual([
       { behavior: 'allow', rule: 'Bash(npm run:*)', scope: 'local' },
     ])
-    expect(approvals).toEqual([{ behavior: 'allow' }])
+    expect(approvals).toEqual([
+      {
+        behavior: 'allow',
+        updatedPermissions: [
+          {
+            type: 'addRules',
+            rules: [{ toolName: 'Bash', ruleContent: 'npm run:*' }],
+            behavior: 'allow',
+            destination: 'localSettings',
+          },
+        ],
+      },
+    ])
     expect(app.lastFrame()).toContain('done')
   })
 
@@ -5279,7 +5293,18 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('2')
     await flush()
-    expect(approvals).toEqual([{ behavior: 'allow' }])
+    expect(approvals).toEqual([
+      {
+        behavior: 'allow',
+        updatedPermissions: [
+          {
+            type: 'setMode',
+            mode: 'acceptEdits',
+            destination: 'session',
+          },
+        ],
+      },
+    ])
     expect(app.lastFrame()).toContain('edited')
   })
 

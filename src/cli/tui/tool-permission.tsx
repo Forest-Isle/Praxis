@@ -4,8 +4,17 @@ import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 
 import { Box, Text } from 'ink'
 
-import type { ModelToolCall, PermissionDecision } from '../../core/runtime.js'
+import type {
+  ModelToolCall,
+  PermissionDecision,
+  PermissionUpdate,
+} from '../../core/runtime.js'
 import { claudeBashPermissionRuleContent } from '../../permissions/claude-shell-permission.js'
+import {
+  extractPermissionRules,
+  permissionRuleValueToString,
+  shellPermissionSuggestions,
+} from '../../permissions/permission-updates.js'
 import { redactSensitiveText } from '../../platform/sensitive-data.js'
 import {
   composerEditorSegments,
@@ -23,6 +32,7 @@ export interface TuiToolPermissionOption {
   action: TuiToolPermissionAction
   label: string
   rule?: string
+  updates?: readonly PermissionUpdate[]
   editableRule?: { toolName: string; initialValue: string }
 }
 
@@ -80,6 +90,14 @@ function claudeFolderSessionOption(
     action: 'allow-session-action',
     label: 'Yes, and allow Claude to edit its own settings for this session',
     rule: `Edit(${pattern})`,
+    updates: [
+      {
+        type: 'addRules',
+        rules: [{ toolName: 'Edit', ruleContent: pattern }],
+        behavior: 'allow',
+        destination: 'session',
+      },
+    ],
   }
 }
 
@@ -112,6 +130,7 @@ function fileOptions(
   path: string,
   cwd: string,
   readOnly: boolean,
+  suggestions: readonly PermissionUpdate[] = [],
 ): readonly TuiToolPermissionOption[] {
   const claudeFolderOption = readOnly
     ? undefined
@@ -122,6 +141,7 @@ function fileOptions(
       action: readOnly ? 'allow-session-action' : 'allow-session-edits',
       label: fileSessionLabel(path, cwd, readOnly),
       ...(readOnly ? { rule: readSessionRule(path, cwd) } : {}),
+      ...(suggestions.length ? { updates: suggestions } : {}),
     },
     { action: 'deny', label: 'No' },
   ]
@@ -131,6 +151,7 @@ function fileModel(
   call: ModelToolCall,
   cwd: string,
   sensitiveValues: readonly string[],
+  decision?: PermissionDecision,
 ): TuiToolPermissionModel | undefined {
   const path = stringInput(call, 'file_path')
   if (!path) return undefined
@@ -160,7 +181,12 @@ function fileModel(
           text,
         })),
       ],
-      options: fileOptions(path, cwd, false),
+      options: fileOptions(
+        path,
+        cwd,
+        false,
+        decision?.behavior === 'ask' ? decision.suggestions : [],
+      ),
     }
   }
   if (call.name === 'Write') {
@@ -191,7 +217,12 @@ function fileModel(
           text,
         })),
       ],
-      options: fileOptions(path, cwd, false),
+      options: fileOptions(
+        path,
+        cwd,
+        false,
+        decision?.behavior === 'ask' ? decision.suggestions : [],
+      ),
     }
   }
   return undefined
@@ -201,6 +232,7 @@ function notebookModel(
   call: ModelToolCall,
   cwd: string,
   sensitiveValues: readonly string[],
+  decision?: PermissionDecision,
 ): TuiToolPermissionModel | undefined {
   if (call.name !== 'NotebookEdit') return undefined
   const path = stringInput(call, 'notebook_path')
@@ -222,7 +254,12 @@ function notebookModel(
       prefix: mode === 'delete' ? '-' : '+',
       text,
     })),
-    options: fileOptions(path, cwd, false),
+    options: fileOptions(
+      path,
+      cwd,
+      false,
+      decision?.behavior === 'ask' ? decision.suggestions : [],
+    ),
   }
 }
 
@@ -230,6 +267,7 @@ function filesystemModel(
   call: ModelToolCall,
   cwd: string,
   sensitiveValues: readonly string[],
+  decision?: PermissionDecision,
 ): TuiToolPermissionModel | undefined {
   if (!['Read', 'Glob', 'Grep'].includes(call.name)) return undefined
   const path =
@@ -246,7 +284,12 @@ function filesystemModel(
     title: 'Read file',
     question: 'Do you want to proceed?',
     detail: [{ text: `${call.name}(${redact(argument, sensitiveValues)})` }],
-    options: fileOptions(path, cwd, true),
+    options: fileOptions(
+      path,
+      cwd,
+      true,
+      decision?.behavior === 'ask' ? decision.suggestions : [],
+    ),
   }
 }
 
@@ -288,25 +331,55 @@ function webFetchModel(
 function bashModel(
   call: ModelToolCall,
   sensitiveValues: readonly string[],
+  decision?: PermissionDecision,
 ): TuiToolPermissionModel | undefined {
   if (call.name !== 'Bash' && call.name !== 'PowerShell') return undefined
   const command = stringInput(call, 'command') ?? ''
   const description = stringInput(call, 'description')
   const displayCommand = redact(command, sensitiveValues)
-  const ruleContent =
+  const fallbackRuleContent =
     call.name === 'Bash' ? claudeBashPermissionRuleContent(command) : command
+  const suggestions =
+    decision?.behavior === 'ask' && decision.suggestions?.length
+      ? decision.suggestions
+      : shellPermissionSuggestions(call.name, command)
+  const suggestedRules = extractPermissionRules(suggestions)
+  const shellRules = suggestedRules.filter(
+    (rule) => rule.toolName === call.name,
+  )
+  const hasNonShellSuggestions = suggestions.some(
+    (update) =>
+      update.type === 'addDirectories' ||
+      (update.type === 'addRules' &&
+        update.rules.some((rule) => rule.toolName !== call.name)),
+  )
+  const editableRuleContent =
+    !hasNonShellSuggestions && shellRules.length === 1
+      ? shellRules[0]?.ruleContent
+      : undefined
+  const ruleContent = editableRuleContent ?? fallbackRuleContent
   const rule = `${call.name}(${ruleContent})`
   const persistentOption: TuiToolPermissionOption | undefined =
     call.name === 'PowerShell' && command.includes('\n')
       ? undefined
       : {
           action: 'persist-rule',
-          label: 'Yes, and don’t ask again for',
-          rule,
-          editableRule: {
-            toolName: call.name,
-            initialValue: ruleContent,
-          },
+          label:
+            shellRules.length > 1
+              ? `Yes, and don’t ask again for ${shellRules
+                  .map(permissionRuleValueToString)
+                  .join(', ')}`
+              : 'Yes, and don’t ask again for',
+          ...(shellRules.length === 1 ? { rule } : {}),
+          updates: suggestions,
+          ...(editableRuleContent === undefined
+            ? {}
+            : {
+                editableRule: {
+                  toolName: call.name,
+                  initialValue: editableRuleContent,
+                },
+              }),
         }
   return {
     kind: 'bash',
@@ -338,18 +411,40 @@ export function projectTuiToolPermission(
         }
       : model
   const specialized =
-    bashModel(call, sensitiveValues) ??
-    fileModel(call, cwd, sensitiveValues) ??
-    notebookModel(call, cwd, sensitiveValues) ??
-    filesystemModel(call, cwd, sensitiveValues) ??
+    bashModel(call, sensitiveValues, decision) ??
+    fileModel(call, cwd, sensitiveValues, decision) ??
+    notebookModel(call, cwd, sensitiveValues, decision) ??
+    filesystemModel(call, cwd, sensitiveValues, decision) ??
     webFetchModel(call, sensitiveValues)
   if (specialized) return explain(specialized)
 
   const skill = stringInput(call, 'skill') ?? stringInput(call, 'name')
   if (call.name === 'Skill' && skill) {
-    const spaceIndex = skill.indexOf(' ')
-    const commandPrefix =
-      spaceIndex > 0 ? skill.slice(0, spaceIndex) : undefined
+    const suggestions =
+      decision?.behavior === 'ask' ? (decision.suggestions ?? []) : []
+    const suggestedOptions = suggestions.flatMap((update) => {
+      if (update.type !== 'addRules') return []
+      return update.rules.flatMap((value) => {
+        if (value.toolName !== 'Skill') return []
+        const rule = permissionRuleValueToString(value)
+        const prefix = value.ruleContent?.endsWith(':*') === true
+        return [
+          {
+            action: 'persist-rule' as const,
+            label: prefix
+              ? `Yes, and don't ask again for ${value.ruleContent} commands in ${cwd}`
+              : `Yes, and don't ask again for ${skill} in ${cwd}`,
+            rule,
+            updates: [
+              {
+                ...update,
+                rules: [value],
+              },
+            ],
+          },
+        ]
+      })
+    })
     return explain({
       kind: 'skill',
       title: `Use skill "${redact(skill, sensitiveValues)}"?`,
@@ -357,20 +452,24 @@ export function projectTuiToolPermission(
       detail: [],
       options: [
         { action: 'allow-once', label: 'Yes' },
-        {
-          action: 'persist-rule',
-          label: `Yes, and don't ask again for ${skill} in ${cwd}`,
-          rule: `Skill(${skill})`,
-        },
-        ...(commandPrefix
-          ? [
+        ...(suggestedOptions.length
+          ? suggestedOptions
+          : [
               {
                 action: 'persist-rule' as const,
-                label: `Yes, and don't ask again for ${commandPrefix}:* commands in ${cwd}`,
-                rule: `Skill(${commandPrefix}:*)`,
+                label: `Yes, and don't ask again for ${skill} in ${cwd}`,
+                rule: `Skill(${skill})`,
               },
-            ]
-          : []),
+              ...(skill.includes(' ')
+                ? [
+                    {
+                      action: 'persist-rule' as const,
+                      label: `Yes, and don't ask again for ${skill.split(' ', 1)[0]}:* commands in ${cwd}`,
+                      rule: `Skill(${skill.split(' ', 1)[0]}:*)`,
+                    },
+                  ]
+                : []),
+            ]),
         { action: 'deny', label: 'No' },
       ],
     })

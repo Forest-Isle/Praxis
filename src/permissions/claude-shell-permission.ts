@@ -77,6 +77,34 @@ export function claudeBashPermissionRuleContent(command: string): string {
     : `${executable}:*`
 }
 
+export function claudeBashPermissionSuggestionContent(command: string): string {
+  const trimmed = command.trim()
+  if (trimmed.includes('\n')) {
+    const firstLine = trimmed.split('\n', 1)[0]?.trim()
+    return firstLine
+      ? claudeBashPermissionSuggestionContent(firstLine)
+      : trimmed
+  }
+  const tokens = trimmed.split(/\s+/u).filter(Boolean)
+  let commandIndex = 0
+  while (/^[A-Za-z_]\w*=/u.test(tokens[commandIndex] ?? '')) {
+    const name = tokens[commandIndex]?.split('=', 1)[0]
+    if (!name || !SAFE_SHELL_ENVIRONMENT.has(name)) return trimmed
+    commandIndex += 1
+  }
+  const executable = tokens[commandIndex]
+  const subcommand = tokens[commandIndex + 1]
+  if (
+    executable &&
+    /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(executable) &&
+    subcommand &&
+    /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(subcommand)
+  ) {
+    return `${executable} ${subcommand}:*`
+  }
+  return trimmed
+}
+
 function firstShellToken(value: string): { token: string; end: number } {
   let quote: "'" | '"' | null = null
   let escaped = false

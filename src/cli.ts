@@ -60,6 +60,7 @@ import type {
   InteractiveServiceFactory,
 } from './cli/interactive.js'
 import type { TuiSlashCommand } from './cli/tui/slash-commands.js'
+import { persistTuiPermissionUpdates } from './cli/tui/permission-settings.js'
 import {
   projectTuiHooks,
   type TuiHookConfiguration,
@@ -1411,6 +1412,22 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ? {}
         : { settingSources: automaticSettingSources }),
     })
+  const exposePlanDirectory =
+    interactive &&
+    askUser !== undefined &&
+    approvePlan !== undefined &&
+    ['EnterPlanMode', 'ExitPlanMode'].some(
+      (name) =>
+        (cli.tools === undefined ||
+          cli.tools.includes('default') ||
+          cli.tools.includes(name)) &&
+        !cli.disallowedTools.includes(name),
+    )
+  const initialAdditionalDirectories = [
+    ...cli.additionalDirectories,
+    ...(exposePlanDirectory ? [resolve(configRoot, 'plans')] : []),
+  ]
+  const initialAdditionalReadDirectories = [claudeBackgroundTaskParent(cwd)]
   const permissionResolverForMode = (permissionMode: ClaudePermissionMode) =>
     new ClaudeExtensionPermissionResolver(
       new ClaudePermissionResolver({
@@ -1419,6 +1436,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
         settings,
         allowedTools: cli.allowedTools,
         disallowedTools: cli.disallowedTools,
+        additionalDirectories: initialAdditionalDirectories,
+        additionalReadDirectories: initialAdditionalReadDirectories,
         permissionMode,
         ...(isSessionActionApproved ? { isSessionActionApproved } : {}),
         ...(permissionMode === 'auto'
@@ -1432,27 +1451,13 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const permissions = permissionResolverForMode(
     cli.dangerouslySkipPermissions ? 'bypassPermissions' : cli.permissionMode,
   )
-  const exposePlanDirectory =
-    interactive &&
-    askUser !== undefined &&
-    approvePlan !== undefined &&
-    ['EnterPlanMode', 'ExitPlanMode'].some(
-      (name) =>
-        (cli.tools === undefined ||
-          cli.tools.includes('default') ||
-          cli.tools.includes(name)) &&
-        !cli.disallowedTools.includes(name),
-    )
   const localTools = new LocalToolRegistry({
     cwd,
     cwdProvider: () => workspace.cwd(),
     enableReportFindings: exposeToolRegistry,
     ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
-    additionalDirectories: [
-      ...cli.additionalDirectories,
-      ...(exposePlanDirectory ? [resolve(configRoot, 'plans')] : []),
-    ],
-    additionalReadDirectories: [claudeBackgroundTaskParent(cwd)],
+    additionalDirectories: initialAdditionalDirectories,
+    additionalReadDirectories: initialAdditionalReadDirectories,
     ...(environment ? { environment } : {}),
   })
   const runtimeMcpResources = async (
@@ -1689,6 +1694,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
       mcp: mcpTools,
       permissions,
       permissionResolverForMode,
+      persistPermissionUpdates: (updates) =>
+        persistTuiPermissionUpdates({
+          cwd: workspace.cwd(),
+          configRoot,
+          updates,
+        }),
       extensions,
       enableSubagents,
       subagentToolNames: routedSubagentTools,

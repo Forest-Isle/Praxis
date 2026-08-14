@@ -38,6 +38,7 @@ import {
   sanitizeChildEnvironment,
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
+import { parsePermissionUpdates } from '../permissions/permission-updates.js'
 import {
   loadMcpOAuthProvider,
   mcpOAuthServerIdentity,
@@ -485,19 +486,29 @@ function toolContent(
 }
 
 const INVALID_PERMISSION_RESULT =
-  "The permission prompt tool returned an invalid permission result. Expected {behavior: 'allow', updatedInput?: object} or {behavior: 'deny', message: string}."
+  "The permission prompt tool returned an invalid permission result. Expected {behavior: 'allow', updatedInput: object} or {behavior: 'deny', message: string}."
 
 function invalidPermissionResult(): PermissionApproval {
   return { behavior: 'deny', message: INVALID_PERMISSION_RESULT }
 }
 
-function parsePermissionResult(source: string): PermissionApproval {
+function parsePermissionResult(
+  source: string,
+  currentInput: Record<string, unknown>,
+): PermissionApproval {
   const value: unknown = JSON.parse(source)
   if (!isRecord(value)) return invalidPermissionResult()
   if (value.behavior === 'allow') {
-    if (value.updatedInput === undefined) return { behavior: 'allow' }
     if (!isRecord(value.updatedInput)) return invalidPermissionResult()
-    return { behavior: 'allow', updatedInput: value.updatedInput }
+    const updatedPermissions = parsePermissionUpdates(value.updatedPermissions)
+    return {
+      behavior: 'allow',
+      updatedInput:
+        Object.keys(value.updatedInput).length === 0
+          ? currentInput
+          : value.updatedInput,
+      ...(updatedPermissions ? { updatedPermissions } : {}),
+    }
   }
   if (value.behavior === 'deny' && typeof value.message === 'string') {
     return {
@@ -1205,7 +1216,10 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
         return invalidPermissionResult()
       }
       try {
-        return parsePermissionResult(toolContent(result, tool.sensitiveValues))
+        return parsePermissionResult(
+          toolContent(result, tool.sensitiveValues),
+          call.input,
+        )
       } catch {
         return invalidPermissionResult()
       }
