@@ -126,6 +126,53 @@ describe('ClaudePermissionResolver', () => {
     ).toBe(true)
   })
 
+  it('normalizes safe wrappers while keeping allow and deny environment semantics distinct', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [
+        {
+          path: '/workspace/.claude/settings.json',
+          scope: 'project',
+          value: {
+            permissions: {
+              allow: ['Bash(npm test:*)'],
+              deny: ['Bash(rm:*)'],
+            },
+          },
+        },
+      ],
+    })
+
+    await expect(
+      resolver.resolve({
+        id: 'wrapped-allow',
+        name: 'Bash',
+        input: { command: 'NODE_ENV=test timeout 5 nice npm test -- --run' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'unsafe-env-allow',
+        name: 'Bash',
+        input: { command: 'CUSTOM=test npm test' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      resolver.resolve({
+        id: 'interleaved-deny',
+        name: 'Bash',
+        input: { command: 'nohup CUSTOM=test timeout 5 rm output.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(
+      resolver.resolve({
+        id: 'xargs-deny',
+        name: 'Bash',
+        input: { command: 'xargs rm output.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+  })
+
   it.each(['default', 'manual'] as const)(
     'honors immediate session approvals in %s mode',
     async (permissionMode) => {

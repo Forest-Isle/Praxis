@@ -21,7 +21,8 @@ import {
   type ClaudeAutoClassifier,
   type ClaudeAutoModeConfig,
 } from './claude-auto-classifier.js'
-import { stripClaudeSafeShellEnvironment } from './claude-shell-permission.js'
+import { shellPermissionMatchCandidates } from './bash-normalization.js'
+import { parseShellRule, shellRuleMatches } from './shell-rule-matching.js'
 import {
   effectiveAdditionalDirectories,
   effectivePermissionMode,
@@ -292,21 +293,36 @@ function matchesRule(
   if (rule.pattern === null) return true
   let target = permissionTarget(call)
   if (target === null) return false
-  if (call.name === 'Bash' && rule.pattern === target) return true
-  if (
-    call.name === 'Bash' &&
-    rule.behavior === 'allow' &&
-    rule.pattern.includes('*') &&
-    /[\n\r;|&<>`]|\$\(/.test(target)
-  ) {
-    return false
+  if (call.name === 'Bash' || call.name === 'PowerShell') {
+    const parsed = parseShellRule(rule.pattern)
+    const candidates =
+      call.name === 'Bash'
+        ? shellPermissionMatchCandidates(target, rule.behavior !== 'allow')
+        : [target]
+    return candidates.some((candidate) => {
+      if (rule.pattern === candidate) return true
+      if (
+        call.name === 'Bash' &&
+        rule.behavior === 'allow' &&
+        parsed.type !== 'exact' &&
+        /[\n\r;|&<>`]|\$\(/.test(candidate)
+      ) {
+        return false
+      }
+      if (shellRuleMatches(parsed, candidate, call.name === 'PowerShell')) {
+        return true
+      }
+      if (call.name === 'Bash' && parsed.type === 'prefix') {
+        return shellRuleMatches(
+          parsed,
+          candidate.startsWith('xargs ') ? candidate.slice(6) : candidate,
+        )
+      }
+      return false
+    })
   }
-  if (
-    ['Bash', 'PowerShell', 'Skill'].includes(call.name) &&
-    rule.pattern.endsWith(':*')
-  ) {
+  if (call.name === 'Skill' && rule.pattern.endsWith(':*')) {
     const commandPrefix = rule.pattern.slice(0, -2)
-    if (call.name === 'Bash') target = stripClaudeSafeShellEnvironment(target)
     return target === commandPrefix || target.startsWith(`${commandPrefix} `)
   }
   if (call.name === 'WebFetch' && rule.pattern.startsWith('domain:')) {

@@ -1,37 +1,4 @@
-const SAFE_SHELL_ENVIRONMENT = new Set([
-  'GOEXPERIMENT',
-  'GOOS',
-  'GOARCH',
-  'CGO_ENABLED',
-  'GO111MODULE',
-  'RUST_BACKTRACE',
-  'RUST_LOG',
-  'NODE_ENV',
-  'PYTHONUNBUFFERED',
-  'PYTHONDONTWRITEBYTECODE',
-  'PYTEST_DISABLE_PLUGIN_AUTOLOAD',
-  'PYTEST_DEBUG',
-  'ANTHROPIC_API_KEY',
-  'LANG',
-  'LANGUAGE',
-  'LC_ALL',
-  'LC_CTYPE',
-  'LC_TIME',
-  'CHARSET',
-  'TERM',
-  'COLORTERM',
-  'NO_COLOR',
-  'FORCE_COLOR',
-  'TZ',
-  'LS_COLORS',
-  'LSCOLORS',
-  'GREP_COLOR',
-  'GREP_COLORS',
-  'GCC_COLORS',
-  'TIME_STYLE',
-  'BLOCK_SIZE',
-  'BLOCKSIZE',
-])
+import { isClaudeSafeShellEnvironmentName } from './bash-normalization.js'
 
 const UNSAFE_BARE_SHELL_PREFIXES = new Set([
   'sh',
@@ -62,7 +29,7 @@ export function claudeBashPermissionRuleContent(command: string): string {
   let commandIndex = 0
   while (/^[A-Za-z_]\w*=/u.test(tokens[commandIndex] ?? '')) {
     const name = tokens[commandIndex]?.split('=', 1)[0]
-    if (!name || !SAFE_SHELL_ENVIRONMENT.has(name)) return command
+    if (!name || !isClaudeSafeShellEnvironmentName(name)) return command
     commandIndex += 1
   }
   const executable = tokens[commandIndex]
@@ -83,7 +50,7 @@ export function claudeBashPermissionSuggestionContent(command: string): string {
   let commandIndex = 0
   while (/^[A-Za-z_]\w*=/u.test(tokens[commandIndex] ?? '')) {
     const name = tokens[commandIndex]?.split('=', 1)[0]
-    if (!name || !SAFE_SHELL_ENVIRONMENT.has(name)) return trimmed
+    if (!name || !isClaudeSafeShellEnvironmentName(name)) return trimmed
     commandIndex += 1
   }
   const executable = tokens[commandIndex]
@@ -133,7 +100,8 @@ export function stripClaudeSafeShellEnvironment(command: string): string {
   while (remaining) {
     const { token, end } = firstShellToken(remaining)
     const assignment = /^([A-Za-z_]\w*)=/u.exec(token)
-    if (!assignment?.[1] || !SAFE_SHELL_ENVIRONMENT.has(assignment[1])) break
+    if (!assignment?.[1] || !isClaudeSafeShellEnvironmentName(assignment[1]))
+      break
     remaining = remaining.slice(end).trimStart()
   }
   return remaining
