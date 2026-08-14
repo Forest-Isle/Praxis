@@ -96,6 +96,11 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('Welcome back!')
     expect(frame).toContain('Tips for getting started')
     expect(frame).toContain('test-model · high effort')
+    // Claude 2.1.208 launch parity: title lives in the top border row,
+    // not in a separate title line inside the card.
+    expect(frame.split('\n')[0]).toContain('╭───Praxis Code v0.1.2')
+    // No status line between card and composer; left column is 11 rows tall.
+    expect(frame.split('\n').length).toBe(11)
     expect(frame).toContain('/Users/test/dev/Praxis')
     expect(frame.split('\n')[0]?.length).toBeLessThanOrEqual(100)
   })

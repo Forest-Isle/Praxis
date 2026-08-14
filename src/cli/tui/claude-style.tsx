@@ -122,51 +122,65 @@ export function WelcomePanel({
   const palette = useTuiPalette()
   const panelWidth = Math.min(100, Math.max(32, width))
   const wide = panelWidth >= 68
+  const brand = 'Praxis'
+  // Claude 2.1.208 embeds the title in the top border row:
+  //   ╭───Claude Code v2.1.208 ───...───╮
+  // Title block = "╭" + "───" + "Praxis Code vX.Y.Z" + " " = 4 + title.length + 1 chars.
+  const title = `${brand} Code v${display.version}`
+  const fill = Math.max(1, panelWidth - title.length - 6)
   return (
-    <Box
-      borderStyle="round"
-      borderColor={palette.muted}
-      flexDirection="column"
-      width={panelWidth}
-      paddingX={1}
-    >
-      <Box>
+    <Box flexDirection="column" width={panelWidth}>
+      <Text color={palette.muted}>
+        {'╭───'}
         <Text color={palette.brand} bold>
-          Praxis
+          {brand}
         </Text>
-        <Text> Code v{display.version} </Text>
-        <Text dimColor>{'─'.repeat(Math.max(1, panelWidth - 24))}</Text>
-      </Box>
-      <Box flexDirection={wide ? 'row' : 'column'} marginTop={1}>
-        <Box
-          alignItems={wide ? 'center' : undefined}
-          flexDirection="column"
-          width={wide ? '50%' : '100%'}
-        >
-          <Text bold>Welcome back!</Text>
-          <Text color={palette.brand} bold>
-            ▐▛███▜▌
-          </Text>
-          <Text color={palette.brand}>▝▜█████▛▘</Text>
-          <Text color={palette.brand}> ▘▘ ▝▝</Text>
-          <Text>
-            {display.model ?? 'provider default'}
-            {display.effort ? (
-              <Text dimColor> · {display.effort} effort</Text>
-            ) : null}
-          </Text>
-          <Text dimColor>{compactPath(display.cwd)}</Text>
-        </Box>
-        <Box
-          flexDirection="column"
-          width={wide ? '50%' : '100%'}
-          marginTop={wide ? 0 : 1}
-        >
-          <Text bold>Tips for getting started</Text>
-          <Text>Run /help for commands</Text>
-          <Text dimColor>───────────────────────</Text>
-          <Text bold>Shared with Claude Code</Text>
-          <Text>Sessions, memory, skills</Text>
+        {` Code v${display.version} `}
+        <Text dimColor>{'─'.repeat(fill)}</Text>
+        {'╮'}
+      </Text>
+      <Box
+        borderStyle="round"
+        borderColor={palette.muted}
+        borderTop={false}
+        flexDirection="column"
+        width={panelWidth}
+        paddingX={1}
+      >
+        <Box flexDirection={wide ? 'row' : 'column'}>
+          <Box
+            alignItems={wide ? 'center' : undefined}
+            flexDirection="column"
+            width={wide ? '50%' : '100%'}
+          >
+            <Text> </Text>
+            <Text bold>Welcome back!</Text>
+            <Text> </Text>
+            <Text color={palette.brand} bold>
+              ▐▛███▜▌
+            </Text>
+            <Text color={palette.brand}>▝▜█████▛▘</Text>
+            <Text color={palette.brand}> ▘▘ ▝▝</Text>
+            <Text> </Text>
+            <Text>
+              {display.model ?? 'provider default'}
+              {display.effort ? (
+                <Text dimColor> · {display.effort} effort</Text>
+              ) : null}
+            </Text>
+            <Text dimColor>{compactPath(display.cwd)}</Text>
+          </Box>
+          <Box
+            flexDirection="column"
+            width={wide ? '50%' : '100%'}
+            marginTop={wide ? 0 : 1}
+          >
+            <Text bold>Tips for getting started</Text>
+            <Text>Run /help for commands</Text>
+            <Text dimColor>───────────────────────</Text>
+            <Text bold>Shared with Claude Code</Text>
+            <Text>Sessions, memory, skills</Text>
+          </Box>
         </Box>
       </Box>
     </Box>
