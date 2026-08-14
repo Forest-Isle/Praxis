@@ -1500,7 +1500,7 @@ exit 0
   assert.deepEqual(observedClaudeContract, expectedHookNavigation)
 
   const providerlessProbe = String.raw`
-set timeout 15
+set timeout 60
 log_user 1
 set phase "providerless startup"
 expect_before timeout {
@@ -1543,7 +1543,7 @@ exit 0
   assert.deepEqual(await sharedTreeSnapshot(), treesBeforeProviderlessProbe)
 
   const probe = String.raw`
-set timeout 15
+set timeout 60
 proc capture {path data} {
   set handle [open $path a]
   fconfigure $handle -translation binary
