@@ -21,7 +21,10 @@ import {
   type ClaudeAutoClassifier,
   type ClaudeAutoModeConfig,
 } from './claude-auto-classifier.js'
+import { validateBashSemantics } from './bash-ast.js'
 import { shellPermissionMatchCandidates } from './bash-normalization.js'
+import { validateBashPathSafety } from './bash-path-safety.js'
+import { validateSedSafety } from './sed-safety.js'
 import { parseShellRule, shellRuleMatches } from './shell-rule-matching.js'
 import {
   effectiveAdditionalDirectories,
@@ -352,6 +355,22 @@ function matchesRule(
   return globExpression(permissionPattern).test(target)
 }
 
+function matchesExactBashRule(
+  rule: PermissionRule,
+  call: ModelToolCall,
+): boolean {
+  if (call.name !== 'Bash' || rule.toolName !== 'Bash' || rule.pattern === null)
+    return false
+  const command = permissionTarget(call)
+  if (command === null) return false
+  const parsed = parseShellRule(rule.pattern)
+  return shellPermissionMatchCandidates(command).some((candidate) => {
+    if (parsed.type === 'exact') return parsed.command === candidate
+    if (parsed.type === 'prefix') return parsed.prefix === candidate
+    return false
+  })
+}
+
 export function claudePermissionRuleMatches(
   rule: string,
   call: ModelToolCall,
@@ -498,9 +517,6 @@ export class ClaudePermissionResolver implements PermissionResolver {
         'rule',
       )
     }
-    if (permissionMode === 'bypassPermissions') {
-      return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
-    }
     if (
       permissionMode === 'plan' &&
       (call.name === 'Write' ||
@@ -515,8 +531,83 @@ export class ClaudePermissionResolver implements PermissionResolver {
         'mode',
       )
     }
-
     if (this.isSessionActionApproved?.(call)) {
+      return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
+    }
+    if (command && call.name === 'Bash') {
+      const semantics = validateBashSemantics(command)
+      const explicitlyAllowed = effectiveRules('allow').some((rule) =>
+        matchesExactBashRule(rule, call),
+      )
+      if (!semantics.safe) {
+        return explicitlyAllowed
+          ? annotatePermissionDecision({ behavior: 'allow' }, 'rule')
+          : annotatePermissionDecision(
+              {
+                behavior: 'ask',
+                reason: semantics.reason,
+                suggestions: [],
+              },
+              'default',
+            )
+      }
+      const writeRoots = [
+        cwd,
+        ...effectiveAdditionalDirectories(
+          updates,
+          this.additionalDirectories,
+        ).map((directory) => resolve(cwd, directory)),
+      ]
+      const pathSafety =
+        permissionMode === 'auto'
+          ? ({ safe: true } as const)
+          : validateBashPathSafety(command, {
+              cwd,
+              homeDirectory: this.homeDirectory,
+              writeRoots,
+              readRoots: [...writeRoots, ...this.additionalReadDirectories],
+              permissionMode,
+              fileRule: (operation, absolutePath) => {
+                const candidate: ModelToolCall = {
+                  id: call.id,
+                  name: operation === 'read' ? 'Read' : 'Edit',
+                  input: { file_path: absolutePath },
+                }
+                if (matchingRule('deny', candidate)) return 'deny'
+                if (matchingRule('allow', candidate)) return 'allow'
+                return null
+              },
+            })
+      if (!pathSafety.safe) {
+        if (pathSafety.behavior === 'deny') {
+          return annotatePermissionDecision(
+            { behavior: 'deny', reason: pathSafety.reason },
+            'rule',
+          )
+        }
+        return annotatePermissionDecision(
+          {
+            behavior: 'ask',
+            reason: pathSafety.reason,
+            ...(pathSafety.suggestions
+              ? { suggestions: pathSafety.suggestions }
+              : pathSafety.path
+                ? {
+                    suggestions: filePermissionSuggestions(
+                      pathSafety.path,
+                      cwd,
+                      pathSafety.operation === 'read' ? 'read' : 'write',
+                      permissionMode as PermissionMode,
+                      true,
+                    ),
+                  }
+                : {}),
+          },
+          'default',
+        )
+      }
+    }
+    if (permissionMode === 'bypassPermissions') {
       return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
     }
     const asked =
@@ -551,6 +642,22 @@ export class ClaudePermissionResolver implements PermissionResolver {
       )
     ) {
       return annotatePermissionDecision({ behavior: 'allow' }, 'rule')
+    }
+    if (command && call.name === 'Bash') {
+      const sedSafety = validateSedSafety(
+        command,
+        permissionMode === 'acceptEdits',
+      )
+      if (!sedSafety.safe) {
+        return annotatePermissionDecision(
+          {
+            behavior: 'ask',
+            reason: sedSafety.reason,
+            suggestions: [],
+          },
+          'default',
+        )
+      }
     }
 
     const filePath = FILE_TOOLS.has(call.name) ? permissionTarget(call) : null

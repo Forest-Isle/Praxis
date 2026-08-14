@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { analyzeBashCommands } from './bash-ast.js'
+import {
+  analyzeBashCommands,
+  analyzeBashStructure,
+  validateBashSemantics,
+} from './bash-ast.js'
 
 describe('Bash AST permission analysis', () => {
   it('extracts compound and pipeline commands without splitting quoted text', () => {
@@ -35,6 +39,26 @@ describe('Bash AST permission analysis', () => {
     })
   })
 
+  it('exposes static argv and redirects for path validation', () => {
+    expect(
+      analyzeBashStructure(
+        "NODE_ENV=test timeout 5 cp -- 'input file' output > result.log 2>&1",
+      ),
+    ).toEqual({
+      parsed: true,
+      commands: [
+        {
+          text: "NODE_ENV=test timeout 5 cp -- 'input file' output",
+          argv: ['timeout', '5', 'cp', '--', 'input file', 'output'],
+        },
+      ],
+      redirects: [
+        { operator: '>', target: 'result.log' },
+        { operator: '>&', target: '1' },
+      ],
+    })
+  })
+
   it('handles subshells, functions, background lists, and heredocs', () => {
     const source =
       'function check(){ npm test; }; (cd src && check) & cat <<EOF\nvalue\nEOF\ngit status'
@@ -66,5 +90,38 @@ describe('Bash AST permission analysis', () => {
       parsed: false,
       commands: [source],
     })
+  })
+
+  it.each([
+    ['eval "rm -rf /"', 'evaluates arguments as shell code'],
+    ['nohup timeout 5 nice -2 eval "rm x"', 'evaluates arguments'],
+    ['env -i FOO=bar eval "rm x"', 'evaluates arguments'],
+    ['env -S "eval rm x"', 'cannot be statically analyzed'],
+    ['stdbuf --output 0 eval x', 'cannot be statically analyzed'],
+    ['$COMMAND output.txt', 'runtime-determined'],
+    ['echo {safe,unsafe}', 'brace expansion'],
+    ['cat /proc/self/environ', '/proc/*/environ'],
+    ['jq "system(\\"id\\")"', 'system()'],
+    ["printf -v 'arr[$(id)]' value", 'array subscript'],
+    ['read "name\n# hidden"', 'hide arguments'],
+    ['echo\u00a0hidden', 'Unicode whitespace'],
+  ])('fails closed for semantic hazard %s', (source, reason) => {
+    expect(validateBashSemantics(source)).toMatchObject({
+      safe: false,
+      reason: expect.stringContaining(reason),
+    })
+  })
+
+  it.each([
+    'command -v npm',
+    'fc -ln 1',
+    'compgen -c',
+    'NODE_ENV=test timeout --signal TERM 5s npm test',
+    'nice -10 git status',
+    'stdbuf -o0 -e L npm test',
+    'env -i -u HOME FOO=bar npm test',
+    'echo $(git status)',
+  ])('accepts statically modeled command %s', (source) => {
+    expect(validateBashSemantics(source)).toEqual({ safe: true })
   })
 })
