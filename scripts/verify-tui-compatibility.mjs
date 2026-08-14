@@ -1134,7 +1134,7 @@ exit 0
       const claudeToken = referenceMatch[2]
       const praxisAnsi =
         profile === 'auto' ? claudeAnsi : praxisAnsiForClaude(claudeAnsi)
-      const praxisToken = claudeToken === 'Claude' ? 'Praxis' : claudeToken
+      const praxisToken = claudeToken
       assertThemeAnsiContext(
         claudeOutput,
         claudeAnsi,
@@ -1288,7 +1288,7 @@ exit 0
   }
   assertAnsiStyled(
     linuxLikeAnsi16Output,
-    'Praxis',
+    'Claude',
     ['\u001B[42m'],
     'Praxis auto Linux-like ANSI-16 added highlight',
   )
