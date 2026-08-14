@@ -1031,3 +1031,127 @@ remain partial.
 - [x] exact Recently denied selection, source filtering, duplicate retention,
       process lifetime, approve/retry actions, and Claude-native grant
       transcript behavior against the pinned Claude 2.1.208 black-box flow
+
+## Stage 110 - protected release check gates
+
+Status: complete for the 0.5.x protected-release bootstrap.
+
+- [x] release PRs run every protected check instead of skipping on transient
+      failures (`fix(release): run every protected check`)
+- [x] dispatched protected checks carry their dependency comparison refs
+      (`fix(release): pass dependency comparison refs`)
+- [x] bridge dispatched protected checks through the release status pipeline
+      (`fix(release): bridge dispatched protected checks`)
+- [x] publish protected commit statuses so required-status gates observe real
+      results (`fix(release): publish protected commit statuses`)
+- [x] continue dispatching after a protected auto-merge completes
+      (`fix(release): continue after protected auto-merge`)
+
+## Stage 115 - config dashboard panel and runtime
+
+Status: complete.
+
+- [x] config dashboard contract (`/config` panel) exposing shared settings
+- [x] shared-settings wiring into the live runtime so panel edits retire and
+      reload the service
+- [x] explicit prompt additions preserved across runtime settings changes
+
+## Stage 116 - MCP management panel and runtime
+
+Status: complete.
+
+- [x] `/mcp` management panel contract with live server status
+- [x] MCP panel runtime wiring and lifecycle management
+
+## Stage 117 - native task panel and runtime
+
+Status: complete.
+
+- [x] native task panel contract for `/tasks`
+- [x] native task runtime wiring, panel integration, and shared task-file
+      state
+
+## Stage 118 - custom themes
+
+Status: complete.
+
+- [x] shared theme picker across the interactive TUI
+- [x] theme application across interactive rendering surfaces
+- [x] theme persistence audit closure (sidecar locking/atomic writes)
+- [x] ANSI compatibility gate hardening and CI color-capture normalization
+- [x] syntax-render performance p95 stabilization
+
+## Stage 119/123 - terminal setup compatibility
+
+Status: complete.
+
+- [x] provider-free `/terminal-setup` Shift+Enter diagnostics/setup across
+      native, VS Code-family, Alacritty, Zed, tmux/screen, and Apple Terminal
+- [x] terminal profile updates serialized; import restoration and parity
+      documentation
+- [x] focused Ink/unit coverage (exact terminal PTY layout remains tracked
+      separately)
+
+## Stage 121 - panel integration
+
+Status: complete.
+
+- [x] config/MCP/task panels wired together through the shared runtime
+      preferences and extension-backed service reload
+
+## Stage 122 - custom themes retry
+
+Status: complete.
+
+- [x] custom-theme parity reworked against a second black-box pass; built-in
+      profiles protected, custom sidecars validated/leased/atomically updated
+
+## Stage 124 - config runtime
+
+Status: complete.
+
+- [x] config runtime preference persistence and service reload for panel edits
+
+## Stage 125 - renderer mode switching
+
+Status: complete.
+
+- [x] `/tui` default/fullscreen renderer switching with persisted runtime
+      settings and active-session resume
+- [x] alternate-screen rendering for the fullscreen renderer and mode-change
+      redraw
+
+## Stage 126 - recently denied persistence
+
+Status: complete.
+
+- [x] process-local Recently denied store with newest-first duplicate
+      retention and selected-item removal
+- [x] approve/retry action wiring for blocked auto-mode actions
+
+## Stage 127 - relocated-cwd transcript fidelity
+
+Status: complete.
+
+- [x] shell turns preserve the relocated cwd after `/cd` across session resume
+
+## Stage 128 - release packaging
+
+Status: complete.
+
+- [x] release tarball excludes source maps from the production package
+
+## Stage 129 - parity audit closure
+
+Status: complete.
+
+- [x] pinned Claude binary across compatibility gates
+- [x] plugin details token projections aligned to live 2.1.208
+- [x] transient image compatibility probe retry and PTY lifecycle stabilization
+
+## Stage 130 - recently denied parity alignment
+
+Status: complete.
+
+- [x] Recently denied presentation aligned to the exact Claude 2.1.208
+      selection/lifetime behavior and grant-transcript flow

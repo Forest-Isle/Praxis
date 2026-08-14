@@ -410,10 +410,13 @@ searchable-resume, thinking, composer, runtime-control, measured-status,
 tool-detail, current/per-turn diff-navigation, context/status/skill/task panels,
 plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
-TUI” claim. Remaining
-black-box-driven work includes `/terminal-setup`, `/tui` default/fullscreen
-renderer switching, exact
-denied-history selection and lifetime behavior, and remaining exact
+TUI” claim. Subsequent stages close
+`/terminal-setup` diagnostics/setup (Stage 119/123), `/tui` default/fullscreen
+renderer switching with persisted runtime settings and active-session resume
+(Stage 125), and exact
+denied-history selection, duplicate retention, lifetime, approve/retry, and
+Claude-native grant-transcript behavior (Stages 126-130). The remaining
+black-box-driven work is exact
 command-specific dialogs and layout behavior. `/statusline` remains excluded as
 a user-provided status-line plugin surface; 2.1.208 exposes neither `/vim` nor
 `/output-style`. Each included item needs an observed contract and a focused TTY
