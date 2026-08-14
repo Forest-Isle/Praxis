@@ -165,8 +165,7 @@ function stableServerConfig(server: McpOAuthServerIdentity): string {
 
 export function mcpOAuthRecordKey(server: McpOAuthServerIdentity): string {
   const digest = createHash('sha256')
-    // codeql[js/insufficient-password-hash] deterministic lookup-key derivation,
-    // not password storage — no stored secret is hashed.
+    // codeql[js/insufficient-password-hash] deterministic key derivation, not password storage
     .update(stableServerConfig(server))
     .digest('hex')
     .slice(0, 16)
@@ -178,8 +177,7 @@ export function mcpOAuthCredentialService(configRoot: string): string {
   const defaultRoot = resolve(join(homedir(), '.claude'))
   if (canonical === defaultRoot) return CREDENTIAL_SERVICE
   const digest = createHash('sha256')
-    // codeql[js/insufficient-password-hash] keychain service-name derivation
-    // from a config path — identifier derivation, not secret hashing.
+    // codeql[js/insufficient-password-hash] keychain service name from config path, not secret hashing
     .update(canonical)
     .digest('hex')
     .slice(0, 8)
