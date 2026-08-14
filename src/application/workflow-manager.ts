@@ -59,7 +59,7 @@ export interface WorkflowLaunchResult {
   transcriptDirectory: string
 }
 
-interface WorkflowProgress {
+export interface WorkflowProgress {
   index: number
   agentId: string
   label: string
@@ -94,6 +94,7 @@ interface WorkflowTask {
   args: unknown
   defaultModel: string
   startTime: number
+  durationMs: number | null
   status: 'running' | 'completed' | 'failed' | 'killed'
   result: unknown
   error?: string
@@ -107,6 +108,19 @@ interface WorkflowTask {
   controller: AbortController
   promise: Promise<void>
   notificationPending: boolean
+}
+
+export interface WorkflowTaskSnapshot {
+  task_id: string
+  task_type: 'local_workflow'
+  status: WorkflowTask['status']
+  summary: string
+  run_id: string
+  progress: readonly WorkflowProgress[]
+  result: unknown
+  startTime: number
+  durationMs: number
+  error?: string
 }
 
 class Semaphore {
@@ -234,6 +248,7 @@ export class WorkflowManager {
       args: structuredClone(options.args),
       defaultModel: options.defaultModel,
       startTime: Date.now(),
+      durationMs: null,
       status: 'running',
       result: null,
       logs: [],
@@ -273,6 +288,10 @@ export class WorkflowManager {
     return this.tasks.has(taskId)
   }
 
+  hasForSession(sessionId: string, taskId: string): boolean {
+    return this.tasks.get(taskId)?.sessionId === sessionId
+  }
+
   async output(
     taskId: string,
     options: { block: boolean; timeout: number },
@@ -310,6 +329,15 @@ export class WorkflowManager {
     })
   }
 
+  async stopAndWait(taskId: string): Promise<void> {
+    const task = this.task(taskId)
+    if (task.status !== 'running') {
+      throw new Error(`Task ${taskId} is not running (status: ${task.status})`)
+    }
+    task.controller.abort('TaskStop')
+    await task.promise
+  }
+
   async notifications(waitForRunning: boolean): Promise<{
     messages: string[]
     usage: { inputTokens: number; outputTokens: number }
@@ -337,8 +365,10 @@ export class WorkflowManager {
     }
   }
 
-  list(): readonly Record<string, unknown>[] {
-    return [...this.tasks.values()].map((task) => this.summary(task))
+  list(sessionId?: string): readonly WorkflowTaskSnapshot[] {
+    return [...this.tasks.values()]
+      .filter((task) => sessionId === undefined || task.sessionId === sessionId)
+      .map((task) => this.summary(task))
   }
 
   abortAll(): void {
@@ -577,13 +607,14 @@ export class WorkflowManager {
       task.status = task.controller.signal.aborted ? 'killed' : 'failed'
       task.error = `${error instanceof Error ? (error.stack ?? error.message) : String(error)}`
     } finally {
+      task.durationMs = Date.now() - task.startTime
       task.notificationPending = true
       await task.store.writeRun(this.runRecord(task))
     }
   }
 
   private runRecord(task: WorkflowTask): Record<string, unknown> {
-    const durationMs = Date.now() - task.startTime
+    const durationMs = task.durationMs ?? Date.now() - task.startTime
     return {
       runId: task.runId,
       timestamp: new Date().toISOString(),
@@ -608,7 +639,7 @@ export class WorkflowManager {
     }
   }
 
-  private summary(task: WorkflowTask): Record<string, unknown> {
+  private summary(task: WorkflowTask): WorkflowTaskSnapshot {
     return {
       task_id: task.taskId,
       task_type: 'local_workflow',
@@ -617,6 +648,8 @@ export class WorkflowManager {
       run_id: task.runId,
       progress: task.progress,
       result: task.result,
+      startTime: task.startTime,
+      durationMs: task.durationMs ?? Date.now() - task.startTime,
       ...(task.error ? { error: task.error } : {}),
     }
   }
@@ -705,7 +738,7 @@ export class WorkflowManager {
       `agents_empty_result: ${empty}`,
       `subagent_tokens: ${task.totalTokens}`,
       `tool_uses: ${task.totalToolCalls}`,
-      `duration_ms: ${Date.now() - task.startTime}`,
+      `duration_ms: ${task.durationMs ?? Date.now() - task.startTime}`,
       '</usage>',
       '</task-notification>',
     ].join('\n')

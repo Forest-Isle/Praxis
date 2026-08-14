@@ -154,7 +154,7 @@ function assertPackageContents(files, distFiles) {
     'package.json',
     ...distFiles,
   ])
-  const allowedDistSuffixes = ['.js', '.js.map', '.d.ts', '.d.ts.map']
+  const allowedDistSuffixes = ['.js', '.d.ts']
   const allowedSchemaJson =
     /^dist\/plugins\/mcpb-schemas\/mcpb-manifest-v0\.[1-4]\.schema\.json$/u
   for (const path of distFiles) {
@@ -1395,7 +1395,9 @@ try {
   if (!distFiles.includes('cli.js') || !distFiles.includes('cli.d.ts')) {
     throw new Error('Built release is missing CLI entry files')
   }
-  const packagedDistFiles = distFiles.map((path) => `dist/${path}`)
+  const packagedDistFiles = distFiles
+    .filter((path) => !path.endsWith('.map'))
+    .map((path) => `dist/${path}`)
 
   const packRoot = join(probeRoot, 'pack')
   await mkdir(packRoot, { recursive: true })
@@ -1413,6 +1415,14 @@ try {
     throw new Error(`Unexpected npm pack result: ${packOutput}`)
   }
   assertPackageContents(packed.files, packagedDistFiles)
+  const packagedSourceMaps = packed.files.filter((file) =>
+    file.path.endsWith('.map'),
+  )
+  if (packagedSourceMaps.length > 0) {
+    throw new Error(
+      `Release package unexpectedly contains source maps: ${packagedSourceMaps.map((file) => file.path).join(', ')}`,
+    )
+  }
   if (packed.size > maxPackageBytes) {
     throw new Error(
       `Release package exceeded ${maxPackageBytes} bytes: ${packed.size}`,

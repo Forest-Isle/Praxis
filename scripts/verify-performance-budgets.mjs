@@ -12,9 +12,18 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { createElement } from 'react'
 import { clearTimeout, setTimeout } from 'node:timers'
+import { render as renderInk } from 'ink-testing-library'
+
+import {
+  minimumPercentileSampleCount,
+  percentile,
+} from './performance-statistics.mjs'
 
 import { ClaudeSessionService } from '../dist/application/session-service.js'
+import { Transcript } from '../dist/cli/tui/claude-style.js'
+import { TuiThemeProvider } from '../dist/cli/tui/theme.js'
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
 import { selectClaudeSchemaAdapter } from '../dist/compatibility/claude/schema.js'
 import {
@@ -29,29 +38,19 @@ const budgets = {
   transcriptLoadP95Ms: 750,
   transcriptLoadHeapMiB: 96,
   transcriptAppendP95Ms: 750,
+  transcriptSyntaxRenderP95Ms: 1_500,
 }
 const sessionCount = 500
 const transcriptEntryCount = 20_000
 const cliTimeoutMs = 5_000
 const cliColdStartSampleCount = 21
+const transcriptSyntaxRenderSampleCount = minimumPercentileSampleCount(95)
 if (typeof globalThis.gc !== 'function') {
   throw new Error(
     'Performance heap probe requires Node.js --expose-gc; use npm run test:performance',
   )
 }
 const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-performance-'))
-
-function percentile(samples, percentileValue) {
-  const sorted = [...samples].sort((left, right) => left - right)
-  const index = Math.max(
-    0,
-    Math.min(
-      sorted.length - 1,
-      Math.ceil((percentileValue / 100) * sorted.length) - 1,
-    ),
-  )
-  return sorted[index]
-}
 
 async function samples(count, action) {
   await action()
@@ -318,6 +317,46 @@ try {
     budgets.transcriptAppendP95Ms,
   )
 
+  const syntaxBlock = `\`\`\`typescript\n${Array.from(
+    { length: 20 },
+    (_, index) =>
+      `const renderedLine${index} = "syntax-highlighted transcript payload"`,
+  ).join('\n')}\n\`\`\``
+  const syntaxItems = Array.from({ length: 200 }, (_, index) => ({
+    kind: 'assistant',
+    text: `${syntaxBlock}\nRender marker ${index}`,
+  }))
+  const transcriptSyntaxRenderP95Ms = percentile(
+    await samples(transcriptSyntaxRenderSampleCount, async () => {
+      const app = renderInk(
+        createElement(
+          TuiThemeProvider,
+          {
+            settings: {
+              theme: 'dark',
+              syntaxHighlightingDisabled: false,
+            },
+          },
+          createElement(Transcript, {
+            items: syntaxItems,
+            activeText: '',
+            screenReader: false,
+          }),
+        ),
+      )
+      if (!app.lastFrame()?.includes('Render marker 199')) {
+        throw new Error('Long transcript syntax render was incomplete')
+      }
+      app.unmount()
+    }),
+    95,
+  )
+  assertBudget(
+    'Long transcript syntax render p95',
+    transcriptSyntaxRenderP95Ms,
+    budgets.transcriptSyntaxRenderP95Ms,
+  )
+
   console.log(
     [
       'Praxis performance budgets passed',
@@ -326,6 +365,7 @@ try {
       `${transcriptMiB.toFixed(1)} MiB transcript load p95 ${formatMs(transcriptLoadP95Ms)}/${budgets.transcriptLoadP95Ms}ms`,
       `heap +${transcriptLoadHeapMiB.toFixed(1)} MiB/${budgets.transcriptLoadHeapMiB}MiB`,
       `append p95 ${formatMs(transcriptAppendP95Ms)}/${budgets.transcriptAppendP95Ms}ms`,
+      `syntax render p95 ${formatMs(transcriptSyntaxRenderP95Ms)}/${budgets.transcriptSyntaxRenderP95Ms}ms`,
     ].join('; '),
   )
 } finally {

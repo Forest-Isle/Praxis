@@ -17,6 +17,7 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
+const claudeCli = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
 const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-eval-'))
 const installRoot = join(root, 'install')
 const workspace = join(root, 'workspace')
@@ -269,7 +270,7 @@ try {
     'init leaked private option',
   )
 
-  const claudeVersion = spawnSync('claude', ['--version'], {
+  const claudeVersion = spawnSync(claudeCli, ['--version'], {
     encoding: 'utf8',
     env: environment,
   })
@@ -278,7 +279,7 @@ try {
       claudeVersion.stdout.startsWith('2.1.208 '),
       `Unsupported Claude version: ${claudeVersion.stdout}`,
     )
-    const claudeHelp = spawnSync('claude', ['plugin', 'eval', '--help'], {
+    const claudeHelp = spawnSync(claudeCli, ['plugin', 'eval', '--help'], {
       encoding: 'utf8',
       env: environment,
     })

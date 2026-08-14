@@ -20,7 +20,8 @@ export async function detectClaudeVersion(
 }
 
 export async function runClaudeJson(args, cwd, configRoot, extraEnv = {}) {
-  const { stdout } = await execFileAsync('claude', args, {
+  const executable = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
+  const { stdout } = await execFileAsync(executable, args, {
     cwd,
     env: {
       ...process.env,

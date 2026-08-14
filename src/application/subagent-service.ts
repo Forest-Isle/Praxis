@@ -59,6 +59,7 @@ import type {
 import {
   BackgroundAgentManager,
   BackgroundAgentRunError,
+  type BackgroundAgentSnapshot,
   type BackgroundAgentRunResult,
   type BackgroundAgentTaskSpec,
 } from './background-agent-manager.js'
@@ -323,6 +324,14 @@ export class ClaudeSubagentExecutor {
   async close(): Promise<void> {
     await this.background.close()
     this.ephemeralSidechains.clear()
+  }
+
+  backgroundSnapshots(): readonly BackgroundAgentSnapshot[] {
+    return this.background.snapshots()
+  }
+
+  stopBackgroundTask(taskId: string): string {
+    return this.background.stop(taskId)
   }
 
   private cwd(): string {

@@ -18,12 +18,19 @@ export type TuiMentionEntry =
 
 export async function loadTuiFileEntries(
   cwd: string,
+  options: { respectGitignore?: boolean } = {},
 ): Promise<readonly TuiFileEntry[]> {
   let stdout: string
   try {
     const result = await execFileAsync(
       'rg',
-      ['--files', '--hidden', '--glob', '!.git/**'],
+      [
+        '--files',
+        '--hidden',
+        ...(options.respectGitignore === false ? ['--no-ignore'] : []),
+        '--glob',
+        '!.git/**',
+      ],
       {
         cwd,
         encoding: 'utf8',

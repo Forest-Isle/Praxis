@@ -1,8 +1,14 @@
 import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 
 const projectRoot = process.cwd()
+const compatibilityEnvironment = { ...process.env }
+if (process.env.PRAXIS_CLAUDE_BINARY) {
+  compatibilityEnvironment.PATH = `${dirname(
+    process.env.PRAXIS_CLAUDE_BINARY,
+  )}${delimiter}${process.env.PATH ?? ''}`
+}
 const packageDocument = JSON.parse(
   await readFile(join(projectRoot, 'package.json'), 'utf8'),
 )
@@ -16,6 +22,7 @@ const entrypoints = []
 const seen = new Set()
 const retryableModelGates = new Set([
   'scripts/verify-claude-shared-resources.mjs',
+  'scripts/verify-image-compatibility.mjs',
 ])
 const maxDiagnosticsBytes = 64 * 1024
 const transientModelPatterns = [
@@ -23,6 +30,7 @@ const transientModelPatterns = [
   '"stop_reason":"tool_use"',
   'Reached maximum number of turns',
   'Claude memoryBoundary did not expose marker SHARED_MEMORY_LINE_',
+  'Claude reverse image resume did not expose marker PRAXIS_IMAGE_RESUME_OK',
 ]
 
 for (const [name, command] of Object.entries(packageDocument.scripts ?? {})) {
@@ -52,7 +60,7 @@ function run({ name, file }, index) {
     console.log(`\n[compatibility ${label}]`)
     const child = spawn(process.execPath, [file], {
       cwd: projectRoot,
-      env: process.env,
+      env: compatibilityEnvironment,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let diagnostics = ''

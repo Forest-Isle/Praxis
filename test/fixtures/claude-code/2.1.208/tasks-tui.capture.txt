@@ -1,0 +1,31 @@
+Capture: Claude Code 2.1.208, --ax-screen-reader, 100x32 PTY
+Binary: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
+Config: isolated CLAUDE_CONFIG_DIR with completed onboarding and trusted temporary cwd
+
+Claude Code v2.1.208
+you: /tasks
+Background
+No tasks currently running
+↑/↓ to select · Enter to view · Esc to close
+
+Reproduction for populated state:
+1. Submit !sleep 90 and press Ctrl+B at "ctrl+b to run in background".
+2. Submit !sleep 100 and press Ctrl+B at the same affordance.
+3. Wait for the idle composer, then submit /tasks.
+
+Claude Code v2.1.208
+you: /tasks
+Background
+2 active shells
+❯  sleep 100 (running)
+   sleep 90 (running)
+↑/↓ to select · Enter to view · x to stop · Esc to close
+
+Selecting the running sleep 100 row:
+Shell details
+Status: running
+Runtime: 3s
+Command: sleep 100
+Output:
+No output available
+← to go back · Esc/Enter/Space to close · x to stop

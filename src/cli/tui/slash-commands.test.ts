@@ -37,10 +37,12 @@ describe('TUI slash command catalog', () => {
         'background',
         'context',
         'status',
+        'theme',
         'skills',
         'tasks',
         'plan',
         'hooks',
+        'tui',
       ]),
     )
     expect(commands.find((command) => command.name === 'background')).toEqual({

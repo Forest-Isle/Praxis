@@ -1,11 +1,18 @@
-import { readFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { mkdir, open, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { setTimeout } from 'node:timers/promises'
 
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import {
+  ExclusiveFileLease,
+  type ExclusiveFileLeaseHandle,
+} from '../platform/exclusive-file-lease.js'
+import {
   loadClaudeSharedResources,
   resolveClaudeProjectIdentity,
+  type ClaudeJsonResource,
   type ClaudeResourceScope,
 } from '../compatibility/claude/shared-resources.js'
 
@@ -22,6 +29,7 @@ export interface McpServerRecord {
 interface McpManagementOptions {
   configRoot?: string
   cwd: string
+  beforeCommit?: (path: string, attempt: number) => Promise<void>
 }
 
 interface McpTarget {
@@ -33,22 +41,113 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-async function readJson(path: string): Promise<Record<string, unknown>> {
-  let source: string
+export function filterDisabledMcpResources(
+  resources: readonly ClaudeJsonResource[],
+  disabledNames: readonly string[],
+): readonly ClaudeJsonResource[] {
+  if (disabledNames.length === 0) return resources
+  const disabled = new Set(disabledNames)
+  return resources.map((resource) => {
+    if (!isRecord(resource.value) || !isRecord(resource.value.mcpServers)) {
+      return resource
+    }
+    return {
+      ...resource,
+      value: {
+        ...resource.value,
+        mcpServers: Object.fromEntries(
+          Object.entries(resource.value.mcpServers).filter(
+            ([name]) => !disabled.has(name),
+          ),
+        ),
+      },
+    }
+  })
+}
+
+interface SourceFingerprint {
+  source: string
+  device: number
+  inode: number
+  size: number
+  modifiedMs: number
+}
+
+async function readJsonSource(
+  path: string,
+  rejectSymlinks = true,
+): Promise<{
+  value: Record<string, unknown>
+  fingerprint?: SourceFingerprint
+}> {
+  let handle
   try {
-    source = await readFile(path, 'utf8')
+    handle = await open(
+      path,
+      constants.O_RDONLY | (rejectSymlinks ? constants.O_NOFOLLOW : 0),
+    )
+    const before = await handle.stat()
+    const source = await handle.readFile('utf8')
+    const after = await handle.stat()
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs
+    ) {
+      throw new Error(`MCP config changed while reading: ${path}`)
+    }
+    let value: unknown
+    try {
+      value = JSON.parse(source)
+    } catch (error) {
+      throw new Error(`Invalid MCP config JSON: ${path}`, { cause: error })
+    }
+    if (!isRecord(value))
+      throw new Error(`MCP config must be an object: ${path}`)
+    return {
+      value,
+      fingerprint: {
+        source,
+        device: after.dev,
+        inode: after.ino,
+        size: after.size,
+        modifiedMs: after.mtimeMs,
+      },
+    }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { value: {} }
+    if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
+      throw new Error(`MCP config must not be a symbolic link: ${path}`, {
+        cause: error,
+      })
+    }
     throw error
+  } finally {
+    await handle?.close()
   }
-  let value: unknown
-  try {
-    value = JSON.parse(source)
-  } catch (error) {
-    throw new Error(`Invalid MCP config JSON: ${path}`, { cause: error })
+}
+
+async function sourceUnchanged(
+  path: string,
+  fingerprint: SourceFingerprint | undefined,
+): Promise<boolean> {
+  const current = await readJsonSource(path, true)
+  if (!fingerprint || !current.fingerprint) {
+    return fingerprint === current.fingerprint
   }
-  if (!isRecord(value)) throw new Error(`MCP config must be an object: ${path}`)
-  return value
+  return (
+    current.fingerprint.source === fingerprint.source &&
+    current.fingerprint.device === fingerprint.device &&
+    current.fingerprint.inode === fingerprint.inode &&
+    current.fingerprint.size === fingerprint.size &&
+    current.fingerprint.modifiedMs === fingerprint.modifiedMs
+  )
+}
+
+async function canonicalTarget(path: string): Promise<string> {
+  await mkdir(dirname(path), { recursive: true })
+  return join(await realpath(dirname(path)), basename(path))
 }
 
 function serverMap(
@@ -96,20 +195,76 @@ function setScopedValue(
   root.projects = projects
 }
 
-async function writeJson(
+async function mutateJson(
   path: string,
-  value: Record<string, unknown>,
+  mutate: (
+    value: Record<string, unknown>,
+  ) => Record<string, unknown> | undefined,
+  beforeCommit?: (path: string, attempt: number) => Promise<void>,
 ): Promise<void> {
-  const committed = await writeFileAtomically(
-    path,
-    `${JSON.stringify(value, null, 2)}\n`,
-  )
-  if (!committed) throw new Error(`MCP config write was interrupted: ${path}`)
+  path = await canonicalTarget(path)
+  const lease = new ExclusiveFileLease(`${path}.praxis.lock`)
+  let handle: ExclusiveFileLeaseHandle | null = null
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    handle = await lease.tryAcquire()
+    if (handle) break
+    await setTimeout(5)
+  }
+  if (!handle) throw new Error(`MCP config write lock timed out: ${path}`)
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { value, fingerprint } = await readJsonSource(path, true)
+      const next = mutate(value)
+      if (!next) return
+      await beforeCommit?.(path, attempt)
+      const committed = await writeFileAtomically(
+        path,
+        `${JSON.stringify(next, null, 2)}\n`,
+        { beforeCommit: () => sourceUnchanged(path, fingerprint) },
+      )
+      if (committed) return
+    }
+    throw new Error(`MCP config changed concurrently: ${path}`)
+  } finally {
+    await handle.release()
+  }
+}
+
+function projectState(
+  root: Record<string, unknown>,
+  identity: string,
+  path: string,
+): Record<string, unknown> {
+  if (root.projects !== undefined && !isRecord(root.projects)) {
+    throw new Error(`MCP config projects must be an object: ${path}`)
+  }
+  const projects = root.projects as Record<string, unknown> | undefined
+  const project = projects?.[identity]
+  if (project !== undefined && !isRecord(project)) {
+    throw new Error(`MCP project state must be an object: ${path}`)
+  }
+  return project ? { ...project } : {}
+}
+
+function disabledServerNames(
+  project: Record<string, unknown>,
+  path: string,
+): string[] {
+  const disabled = project.disabledMcpServers
+  if (disabled === undefined) return []
+  if (
+    !Array.isArray(disabled) ||
+    disabled.some((name) => typeof name !== 'string')
+  ) {
+    throw new Error(`disabledMcpServers must be a string array: ${path}`)
+  }
+  return [...disabled]
 }
 
 export class ClaudeMcpManagement {
   private readonly configRoot: string
   private readonly cwd: string
+  private readonly beforeCommit?: McpManagementOptions['beforeCommit']
 
   constructor(options: McpManagementOptions) {
     this.configRoot = resolve(
@@ -118,6 +273,7 @@ export class ClaudeMcpManagement {
         join(homedir(), '.claude'),
     )
     this.cwd = resolve(options.cwd)
+    this.beforeCommit = options.beforeCommit
   }
 
   async list(scope?: McpScope): Promise<McpServerRecord[]> {
@@ -159,13 +315,19 @@ export class ClaudeMcpManagement {
     if (!isRecord(config))
       throw new Error('MCP server config must be an object')
     const target = await this.target(scope)
-    const root = await readJson(target.path)
-    const scoped = scopedValue(root, target)
-    const servers = serverMap(scoped, target.path)
-    servers[name] = config
-    setServerMap(scoped, servers)
-    setScopedValue(root, target, scoped)
-    await writeJson(target.path, root)
+    await mutateJson(
+      target.path,
+      (root) => {
+        const scoped = { ...scopedValue(root, target) }
+        const servers = { ...serverMap(scoped, target.path), [name]: config }
+        setServerMap(scoped, servers)
+        if (!target.projectIdentity) return scoped
+        const next = { ...root }
+        setScopedValue(next, target, scoped)
+        return next
+      },
+      this.beforeCommit,
+    )
     return { name, scope, path: target.path, config }
   }
 
@@ -174,31 +336,86 @@ export class ClaudeMcpManagement {
     const scopes: McpScope[] = scope ? [scope] : ['local', 'project', 'user']
     for (const candidate of scopes) {
       const target = await this.target(candidate)
-      const root = await readJson(target.path)
-      const scoped = scopedValue(root, target)
-      const servers = serverMap(scoped, target.path)
-      const config = servers[name]
-      if (!config) continue
-      delete servers[name]
-      setServerMap(scoped, servers)
-      setScopedValue(root, target, scoped)
-      await writeJson(target.path, root)
-      return { name, scope: candidate, path: target.path, config }
+      let removed: McpServerConfig | undefined
+      await mutateJson(
+        target.path,
+        (root) => {
+          const scoped = { ...scopedValue(root, target) }
+          const servers = { ...serverMap(scoped, target.path) }
+          removed = servers[name]
+          if (!removed) return undefined
+          delete servers[name]
+          setServerMap(scoped, servers)
+          if (!target.projectIdentity) return scoped
+          const next = { ...root }
+          setScopedValue(next, target, scoped)
+          return next
+        },
+        this.beforeCommit,
+      )
+      if (removed)
+        return { name, scope: candidate, path: target.path, config: removed }
     }
     throw new Error(`MCP server not found: ${name}`)
   }
 
   async resetProjectChoices(): Promise<void> {
     const path = join(this.configRoot, '.claude.json')
-    const root = await readJson(path)
     const identity = await resolveClaudeProjectIdentity({ cwd: this.cwd })
-    const projects = isRecord(root.projects) ? root.projects : {}
-    const project = isRecord(projects[identity]) ? projects[identity] : {}
-    project.enabledMcpjsonServers = []
-    project.disabledMcpjsonServers = []
-    projects[identity] = project
-    root.projects = projects
-    await writeJson(path, root)
+    await mutateJson(
+      path,
+      (root) => {
+        const projects = isRecord(root.projects) ? { ...root.projects } : {}
+        const project = isRecord(projects[identity]) ? projects[identity] : {}
+        projects[identity] = {
+          ...project,
+          enabledMcpjsonServers: [],
+          disabledMcpjsonServers: [],
+        }
+        return { ...root, projects }
+      },
+      this.beforeCommit,
+    )
+  }
+
+  async disabled(): Promise<readonly string[]> {
+    const path = join(this.configRoot, '.claude.json')
+    const identity = await resolveClaudeProjectIdentity({ cwd: this.cwd })
+    const root = (await readJsonSource(path, true)).value
+    return disabledServerNames(projectState(root, identity, path), path)
+  }
+
+  async setEnabled(
+    name: string,
+    scope: McpScope,
+    enabled: boolean,
+  ): Promise<void> {
+    this.validateName(name)
+    await this.get(name, scope)
+    const path = join(this.configRoot, '.claude.json')
+    const identity = await resolveClaudeProjectIdentity({ cwd: this.cwd })
+    await mutateJson(
+      path,
+      (root) => {
+        const project = projectState(root, identity, path)
+        const disabled = disabledServerNames(project, path)
+        const next = enabled
+          ? disabled.filter((candidate) => candidate !== name)
+          : disabled.includes(name)
+            ? disabled
+            : [...disabled, name]
+        if (
+          next.length === disabled.length &&
+          next.every((candidate, index) => candidate === disabled[index])
+        ) {
+          return undefined
+        }
+        const projects = isRecord(root.projects) ? { ...root.projects } : {}
+        projects[identity] = { ...project, disabledMcpServers: next }
+        return { ...root, projects }
+      },
+      this.beforeCommit,
+    )
   }
 
   private async target(scope: McpScope): Promise<McpTarget> {

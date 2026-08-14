@@ -2,6 +2,7 @@ import { cleanup, render } from 'ink-testing-library'
 import { Text } from 'ink'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { TuiThemeProvider } from './theme.js'
 import {
   CommandPalette,
   Composer,
@@ -20,6 +21,7 @@ import {
   SessionPicker,
   ShortcutHelp,
   StatusDashboard,
+  ThemePicker,
   Transcript,
   WelcomePanel,
 } from './claude-style.js'
@@ -118,6 +120,86 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('│ note')
     expect(frame).toContain('╭─ ts')
     expect(frame).toContain('│ const ok = true')
+  })
+
+  it('renders transcript code and diff surfaces under persisted syntax settings', () => {
+    const runtimeSurfaces = (
+      <>
+        <Transcript
+          screenReader={false}
+          activeText=""
+          items={[
+            {
+              kind: 'assistant',
+              text: '```ts\nfunction greet() { return "hello" }\n```',
+            },
+            {
+              kind: 'tool',
+              call: {
+                id: 'diff',
+                name: 'Bash',
+                input: { command: 'git diff' },
+              },
+              detail: 'Bash {"command":"git diff"}',
+            },
+            {
+              kind: 'tool-result',
+              callId: 'diff',
+              text: '@@ fixture\n-function oldName() {}\n+function newName() {}',
+              isError: false,
+            },
+          ]}
+        />
+        <DiffDashboard
+          snapshots={[
+            {
+              label: 'Current',
+              snapshot: {
+                additions: 1,
+                deletions: 1,
+                files: [
+                  {
+                    path: 'fixture.ts',
+                    additions: 1,
+                    deletions: 1,
+                    patch:
+                      '@@ fixture\n-function oldName() {}\n+function newName() {}',
+                  },
+                ],
+              },
+            },
+          ]}
+          sourceIndex={0}
+          selectedIndex={0}
+          viewingFile
+          scrollOffset={0}
+          width={100}
+          screenReader={false}
+        />
+      </>
+    )
+    const enabled = render(
+      <TuiThemeProvider
+        settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+      >
+        {runtimeSurfaces}
+      </TuiThemeProvider>,
+    )
+    const enabledFrame = enabled.lastFrame() ?? ''
+    expect(enabledFrame).toContain('│ function greet() { return "hello" }')
+    expect(enabledFrame).toContain('-function oldName() {}')
+    expect(enabledFrame).toContain('+function newName() {}')
+
+    const disabled = render(
+      <TuiThemeProvider
+        settings={{ theme: 'dark', syntaxHighlightingDisabled: true }}
+      >
+        {runtimeSurfaces}
+      </TuiThemeProvider>,
+    )
+    expect(disabled.lastFrame()).toContain(
+      '│ function greet() { return "hello" }',
+    )
   })
 
   it('gives user, assistant, tool, result, and warning distinct shapes', () => {
@@ -336,6 +418,75 @@ describe('Claude-style TUI components', () => {
     expect(patch.lastFrame()).toContain('Esc to back')
   })
 
+  it('announces diff source and file focus textually for screen readers', () => {
+    const snapshot = {
+      files: [
+        {
+          path: 'first.ts',
+          additions: 2,
+          deletions: 0,
+          patch: '@@ -1 +1 @@\n-before\n+after\n',
+        },
+        { path: 'second.ts', additions: 0, deletions: 1, patch: '' },
+      ],
+      additions: 2,
+      deletions: 1,
+    }
+    const first = render(
+      <DiffDashboard
+        snapshots={[
+          { label: 'Current', snapshot },
+          { label: 'T1', snapshot },
+        ]}
+        sourceIndex={0}
+        selectedIndex={0}
+        viewingFile={false}
+        scrollOffset={0}
+        width={100}
+        screenReader
+      />,
+    ).lastFrame()
+    const moved = render(
+      <DiffDashboard
+        snapshots={[
+          { label: 'Current', snapshot },
+          { label: 'T1', snapshot },
+        ]}
+        sourceIndex={1}
+        selectedIndex={1}
+        viewingFile={false}
+        scrollOffset={0}
+        width={100}
+        screenReader
+      />,
+    ).lastFrame()
+
+    expect(first).toContain('Current source: Current')
+    expect(first).toContain('Selected: first.ts +2 -0')
+    expect(moved).toContain('Current source: T1')
+    expect(moved).toContain('Selected: second.ts +0 -1')
+    expect(`${first}${moved}`).not.toContain('❯')
+
+    const detail = render(
+      <DiffDashboard
+        snapshots={[{ label: 'Current', snapshot }]}
+        sourceIndex={0}
+        selectedIndex={0}
+        viewingFile
+        scrollOffset={0}
+        width={100}
+        screenReader
+      />,
+    ).lastFrame()
+    expect(detail).toContain('Current source: Current')
+    expect(detail).toContain('first.ts')
+    expect(detail).toContain('-before')
+    expect(detail).toContain('+after')
+    expect(detail).not.toContain('─')
+    expect(detail).not.toContain('❯')
+    expect(detail).not.toContain('\u001B[7m')
+  })
+
   it('renders permission tabs, scoped rules, search, and workspace modes', () => {
     const rules = [
       {
@@ -389,6 +540,125 @@ describe('Claude-style TUI components', () => {
     expect(workspace.lastFrame()).toContain('/shared')
     expect(workspace.lastFrame()).toContain('1. /shared')
     expect(workspace.lastFrame()).toContain('2. Add directory…')
+  })
+
+  it('announces permission tab and row focus textually for screen readers', () => {
+    const props = {
+      query: 'npm',
+      rules: [
+        {
+          behavior: 'allow' as const,
+          rule: 'Bash(npm test:*)',
+          scope: 'project' as const,
+          path: '/project/.claude/settings.json',
+        },
+      ],
+      recentDenied: [],
+      workspaceDirectories: [
+        { path: '/project', original: true },
+        { path: '/shared', original: false },
+      ],
+      width: 100,
+      screenReader: true,
+    }
+    const addRule = render(
+      <PermissionDashboard {...props} tabIndex={1} selectedIndex={0} />,
+    ).lastFrame()
+    const existingRule = render(
+      <PermissionDashboard {...props} tabIndex={1} selectedIndex={1} />,
+    ).lastFrame()
+
+    expect(addRule).toContain('Current tab: Allow')
+    expect(addRule).toContain('Search: npm')
+    expect(addRule).toContain('Selected: 1. Add a new rule…')
+    expect(existingRule).toContain('Selected: 2. Bash(npm test:*)')
+    expect(`${addRule}${existingRule}`).not.toContain('❯')
+    expect(`${addRule}${existingRule}`).not.toContain('⌕')
+  })
+
+  it('renders the native Recently denied action and controls', () => {
+    const frame = render(
+      <PermissionDashboard
+        tabIndex={0}
+        selectedIndex={0}
+        query=""
+        rules={[]}
+        recentDenied={[
+          {
+            id: 'denied-1',
+            call: {
+              id: 'call-1',
+              name: 'Bash',
+              input: { command: 'rm /tmp/target' },
+            },
+            display: 'Delete target',
+            reason: 'Classifier policy',
+            sessionId: 'session-1',
+          },
+        ]}
+        workspaceDirectories={[]}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+
+    expect(frame).toContain(
+      'Commands recently denied by the auto mode classifier.',
+    )
+    expect(frame).toContain('1. ✘ Delete target  Classifier policy')
+    expect(frame).toContain(
+      'Enter to approve · r to retry · ↑/↓ to navigate · Esc to cancel',
+    )
+    expect(frame).not.toContain('Clear recently denied')
+  })
+
+  it('renders the observed built-in theme choices and active profile', () => {
+    const app = render(
+      <ThemePicker
+        currentTheme="dark"
+        selectedIndex={1}
+        syntaxHighlightingDisabled={false}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Theme')
+    expect(frame).toContain(
+      'Choose the text style that looks best with your terminal',
+    )
+    expect(frame).toContain('2. Dark mode ✔')
+    expect(frame).toContain('4. Dark mode (colorblind-friendly)')
+    expect(frame).toContain('6. Dark mode (ANSI colors only)')
+    expect(frame).toContain('1 function greet()')
+    expect(frame).toContain('2 -  console.log("Hello, World!");')
+    expect(frame).toContain('2 +  console.log("Hello, Praxis!");')
+    expect(frame).toContain(
+      'Syntax theme: Monokai Extended (ctrl+t to disable)',
+    )
+    expect(frame).toContain('Enter to select · Esc to cancel')
+  })
+
+  it('renders a semantic, decoration-free theme picker for screen readers', () => {
+    const app = render(
+      <ThemePicker
+        currentTheme="light-ansi"
+        selectedIndex={6}
+        syntaxHighlightingDisabled
+        width={100}
+        screenReader
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain(
+      '7. Light mode (ANSI colors only) (current) (focused)',
+    )
+    expect(frame).toContain('Selected: Light mode (ANSI colors only)')
+    expect(frame).toContain('Syntax highlighting disabled (ctrl+t to enable)')
+    expect(frame).not.toContain('function greet')
+    expect(frame).not.toContain('╌')
+    expect(frame).not.toContain('❯')
+    expect(frame).not.toContain('✔')
   })
 
   it('shows active thinking in full and expands retained thinking on demand', () => {
@@ -734,6 +1004,39 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('Select effort')
     expect(frame).toContain('❯ 2. high ✔')
     expect(frame).toContain('Enter applies · Esc cancels')
+  })
+
+  it('announces generic menu focus and current value for screen readers', () => {
+    const options = [
+      { label: 'low', description: 'Fast', selected: false },
+      { label: 'high', description: 'Thorough', selected: true },
+    ]
+    const low = render(
+      <SelectionMenu
+        title="Select effort"
+        options={options}
+        selectedIndex={0}
+        footer="Enter applies · Esc cancels"
+        width={70}
+        screenReader
+      />,
+    ).lastFrame()
+    const high = render(
+      <SelectionMenu
+        title="Select effort"
+        options={options}
+        selectedIndex={1}
+        footer="Enter applies · Esc cancels"
+        width={70}
+        screenReader
+      />,
+    ).lastFrame()
+
+    expect(low).toContain('Current: high')
+    expect(low).toContain('Selected: 1. low')
+    expect(high).toContain('Selected: 2. high')
+    expect(`${low}${high}`).not.toContain('❯')
+    expect(`${low}${high}`).not.toContain('✔')
   })
 
   it('renders composer effort, prompt, mode, and busy states', () => {

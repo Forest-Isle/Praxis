@@ -1,8 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 
 import { Box, Text, render, useApp, useInput } from 'ink'
 
 import type { TopLevelAgentSummary } from '../application/top-level-agent-manager.js'
+import { loadTuiThemeSettings } from './tui/theme-settings.js'
+import {
+  DEFAULT_TUI_THEME_SETTINGS,
+  TuiThemeProvider,
+  type TuiThemeSettings,
+  useTuiPalette,
+} from './tui/theme.js'
 
 export interface AgentsDashboardManager {
   launch(options: {
@@ -145,6 +158,7 @@ function AgentSection({
   agents: TopLevelAgentSummary[]
   selected?: TopLevelAgentSummary
 }) {
+  const palette = useTuiPalette()
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text bold>
@@ -156,7 +170,7 @@ function AgentSection({
         agents.map((agent) => (
           <Text
             key={agentKey(agent)}
-            {...(agent === selected ? { color: 'cyan' } : {})}
+            {...(agent === selected ? { color: palette.accent } : {})}
           >
             {agent === selected ? '› ' : '  '}
             {agent.name} · {agentStatus(agent)} · {agentKey(agent)}
@@ -175,6 +189,7 @@ export function AgentsDashboardApp({
   onCancel,
 }: AgentsDashboardAppProps) {
   const { exit } = useApp()
+  const palette = useTuiPalette()
   const [agents, setAgents] = useState<TopLevelAgentSummary[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
   const selectedIndexRef = useRef(0)
@@ -508,7 +523,7 @@ export function AgentsDashboardApp({
   const selected = agents[selectedIndex]
   return (
     <Box flexDirection="column">
-      <Text bold color="cyan">
+      <Text bold color={palette.accent}>
         Praxis agents
       </Text>
       <Text dimColor>{agents.length} sessions · live refresh</Text>
@@ -551,7 +566,7 @@ export function AgentsDashboardApp({
         </Box>
       )}
       {busy ? <Text dimColor>Working…</Text> : null}
-      {notice ? <Text color="yellow">{notice}</Text> : null}
+      {notice ? <Text color={palette.warning}>{notice}</Text> : null}
       {showHelp ? (
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Shortcuts</Text>
@@ -565,22 +580,39 @@ export function AgentsDashboardApp({
   )
 }
 
-export async function runAgentsDashboard(options: {
-  manager: AgentsDashboardManager
-  defaults: AgentsDashboardDefaults
-  signal?: AbortSignal
-}): Promise<number> {
+export async function runAgentsDashboard(
+  options: {
+    manager: AgentsDashboardManager
+    defaults: AgentsDashboardDefaults
+    signal?: AbortSignal
+  },
+  dependencies: {
+    loadThemeSettings?: () => Promise<TuiThemeSettings>
+    renderDashboard?: (
+      element: ReactElement,
+      options: { exitOnCtrlC: boolean },
+    ) => { waitUntilExit(): Promise<void> }
+  } = {},
+): Promise<number> {
   const controller = new AbortController()
   const signal = options.signal
     ? AbortSignal.any([options.signal, controller.signal])
     : controller.signal
-  const instance = render(
-    <AgentsDashboardApp
-      manager={options.manager}
-      defaults={options.defaults}
-      signal={signal}
-      onCancel={() => controller.abort()}
-    />,
+  let settings = DEFAULT_TUI_THEME_SETTINGS
+  try {
+    settings = await (dependencies.loadThemeSettings ?? loadTuiThemeSettings)()
+  } catch {
+    // A corrupt shared settings file must not make the standalone dashboard unusable.
+  }
+  const instance = (dependencies.renderDashboard ?? render)(
+    <TuiThemeProvider settings={settings}>
+      <AgentsDashboardApp
+        manager={options.manager}
+        defaults={options.defaults}
+        signal={signal}
+        onCancel={() => controller.abort()}
+      />
+    </TuiThemeProvider>,
     { exitOnCtrlC: false },
   )
   await instance.waitUntilExit()

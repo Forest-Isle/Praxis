@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
+import {
+  autoModePermissionOutcome,
+  permissionDecisionSource,
+} from '../core/runtime.js'
 import { ClaudePermissionResolver } from './claude-permission-resolver.js'
 
 describe('ClaudePermissionResolver', () => {
@@ -532,16 +536,102 @@ describe('ClaudePermissionResolver', () => {
         throw new Error('classifier unavailable')
       },
     })
-    await expect(
-      resolver.resolve({
-        id: 'write',
-        name: 'Write',
-        input: { file_path: '/workspace/output.txt', content: 'x' },
-      }),
-    ).resolves.toEqual({
+    const decision = await resolver.resolve({
+      id: 'write',
+      name: 'Write',
+      input: { file_path: '/workspace/output.txt', content: 'x' },
+    })
+    expect(decision).toEqual({
       behavior: 'deny',
       reason: 'Auto mode classifier failed: classifier unavailable',
     })
+    expect(autoModePermissionOutcome(decision)).toBe('unavailable')
+  })
+
+  it('tracks auto classifier denials without changing the public decision shape', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      permissionMode: 'auto',
+      autoClassifier: async () => ({
+        behavior: 'deny',
+        reason: 'classifier policy',
+      }),
+    })
+    const decision = await resolver.resolve({
+      id: 'write',
+      name: 'Write',
+      input: { file_path: '/workspace/output.txt', content: 'x' },
+    })
+    expect(decision).toEqual({
+      behavior: 'deny',
+      reason: 'classifier policy',
+    })
+    expect(permissionDecisionSource(decision)).toBe('auto-classifier')
+    expect(autoModePermissionOutcome(decision)).toBe('blocked')
+  })
+
+  it('bypasses the classifier only for a session-approved exact action', async () => {
+    let classifierCalls = 0
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      permissionMode: 'auto',
+      isSessionActionApproved: (call) =>
+        call.name === 'Bash' && call.input.command === 'rm /tmp/target',
+      autoClassifier: async () => {
+        classifierCalls += 1
+        return { behavior: 'deny', reason: 'classifier policy' }
+      },
+    })
+    await expect(
+      resolver.resolve({
+        id: 'approved',
+        name: 'Bash',
+        input: { command: 'rm /tmp/target' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'different',
+        name: 'Bash',
+        input: { command: 'rm /tmp/other' },
+      }),
+    ).resolves.toEqual({ behavior: 'deny', reason: 'classifier policy' })
+    expect(classifierCalls).toBe(1)
+  })
+
+  it('does not identify rule and mode denials as auto classifier decisions', async () => {
+    const rule = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      disallowedTools: ['Write'],
+      permissionMode: 'auto',
+      autoClassifier: async () => ({ behavior: 'allow' }),
+    })
+    const mode = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      permissionMode: 'plan',
+    })
+    expect(
+      permissionDecisionSource(
+        await rule.resolve({
+          id: 'rule',
+          name: 'Write',
+          input: { file_path: '/workspace/output.txt', content: 'x' },
+        }),
+      ),
+    ).toBe('rule')
+    expect(
+      permissionDecisionSource(
+        await mode.resolve({
+          id: 'mode',
+          name: 'Write',
+          input: { file_path: '/workspace/output.txt', content: 'x' },
+        }),
+      ),
+    ).toBe('mode')
   })
 
   it('does not let an allow rule bypass auto classification for risky actions', async () => {

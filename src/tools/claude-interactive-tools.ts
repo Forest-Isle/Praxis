@@ -49,6 +49,10 @@ export interface ClaudeInteractiveToolCallbacks {
   ): Promise<boolean>
 }
 
+export interface ClaudeInteractiveToolSettings {
+  useAutoModeDuringPlan: boolean
+}
+
 interface SessionPlanState {
   mode: ClaudePermissionMode
   previousMode: ClaudePermissionMode
@@ -342,6 +346,7 @@ export class ClaudeInteractiveToolManager {
       enabledTools: readonly string[]
       callbacks: ClaudeInteractiveToolCallbacks
       permissionResolverForMode(mode: ClaudePermissionMode): PermissionResolver
+      settings?: ClaudeInteractiveToolSettings
     },
   ) {
     this.callbacks = options.callbacks
@@ -415,6 +420,13 @@ ${state.planPath}
 Use AskUserQuestion for decisions that genuinely require the user. Write a complete, actionable plan to that file, then call ExitPlanMode to request approval.`
   }
 
+  async isPlanFile(sessionId: string, requestedPath: string): Promise<boolean> {
+    const state = this.state(sessionId)
+    return (
+      state.mode === 'plan' && this.isPlanFileForState(state, requestedPath)
+    )
+  }
+
   consumeTransition(callId: string): ClaudePermissionMode | undefined {
     const mode = this.transitions.get(callId)
     this.transitions.delete(callId)
@@ -464,7 +476,10 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
     ) {
       return this.resolvePlanFile(state, call, context)
     }
-    return this.resolver(state.mode).resolve(call, context)
+    return this.resolver(this.planPermissionMode(sessionId)).resolve(
+      call,
+      context,
+    )
   }
 
   private async resolvePlanFile(
@@ -473,20 +488,25 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
     context?: PermissionResolutionContext,
   ): Promise<PermissionDecision> {
     const requestedPath = String(call.input.file_path)
+    if (await this.isPlanFileForState(state, requestedPath)) {
+      return { behavior: 'allow' }
+    }
+    return this.resolver(state.mode).resolve(call, context)
+  }
+
+  private async isPlanFileForState(
+    state: SessionPlanState,
+    requestedPath: string,
+  ): Promise<boolean> {
     const canonical = async (path: string) =>
       join(await realpath(dirname(path)), basename(path))
     try {
-      if (
+      return (
         (await canonical(requestedPath)) === (await canonical(state.planPath))
-      ) {
-        return { behavior: 'allow' }
-      }
+      )
     } catch {
-      if (resolve(requestedPath) === state.planPath) {
-        return { behavior: 'allow' }
-      }
+      return resolve(requestedPath) === state.planPath
     }
-    return this.resolver(state.mode).resolve(call, context)
   }
 
   async enter(
@@ -508,6 +528,13 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
       content: `Entered plan mode. Explore without modifying project files, write the final plan to ${state.planPath}, then call ExitPlanMode.`,
       isError: false,
     }
+  }
+
+  planPermissionMode(sessionId: string): ClaudePermissionMode {
+    const state = this.state(sessionId)
+    if (state.mode !== 'plan') return state.mode
+    if (this.options.settings?.useAutoModeDuringPlan === false) return 'plan'
+    return state.previousMode === 'bypassPermissions' ? 'plan' : 'auto'
   }
 
   async exit(

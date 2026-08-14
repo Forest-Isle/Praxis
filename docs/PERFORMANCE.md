@@ -14,10 +14,11 @@ are outside these budgets.
 | Transcript load     | 20,000 JSONL entries and at least 8 MiB, five measured loads after one warmup | p95 <= 750 ms         |
 | Transcript memory   | same large transcript, forced GC before and after retained load               | heap growth <= 96 MiB |
 | Transcript append   | three leased tail appends to same large transcript                            | p95 <= 750 ms         |
+| Syntax rendering    | 200 transcript responses containing 4,000 highlighted TypeScript lines        | p95 <= 1,500 ms       |
 
 The transcript fixture is currently about 11 MiB. The gate also asserts exact
-entry and session counts so an accidentally smaller fixture cannot make a
-regression pass.
+entry and session counts and the final long-render marker, so an accidentally
+smaller fixture cannot make a regression pass.
 
 ## Running the gate
 

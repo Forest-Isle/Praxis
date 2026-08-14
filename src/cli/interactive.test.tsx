@@ -1,5 +1,6 @@
 import { Console as NodeConsole } from 'node:console'
 import { setImmediate } from 'node:timers/promises'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -11,6 +12,9 @@ import {
   runInteractive,
 } from './interactive.js'
 import { projectTuiHooks } from './tui/hook-settings.js'
+import type { TuiCustomTheme } from './tui/custom-themes.js'
+import type { TuiThemeSettings } from './tui/theme.js'
+import { projectRuntimeSettings } from './tui/runtime-settings.js'
 
 afterEach(() => cleanup())
 
@@ -19,7 +23,462 @@ const flush = async () => {
   await setImmediate()
 }
 
+async function waitFor<T>(read: () => T | undefined): Promise<T> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const value = read()
+    if (value !== undefined) return value
+    await delay(25)
+    await flush()
+  }
+  throw new Error('Timed out waiting for test condition')
+}
+
 describe('InteractiveApp', () => {
+  it('creates, selects, edits, resets, and deletes a custom theme from /theme', async () => {
+    const customThemes: TuiCustomTheme[] = []
+    let settings: TuiThemeSettings = {
+      theme: 'auto' as const,
+      syntaxHighlightingDisabled: false,
+    }
+    const saved: unknown[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={settings}
+        themeStore={{
+          async load() {
+            return settings
+          },
+          async save(update) {
+            saved.push(update)
+            settings = {
+              ...settings,
+              ...update,
+            }
+            return settings
+          },
+          async loadCustomThemes() {
+            return [...customThemes]
+          },
+          async createCustomTheme(input) {
+            const theme = {
+              name: input.name,
+              slug: input.name.toLowerCase().replace(/\s+/gu, '-'),
+              base: input.base,
+              overrides: {},
+            }
+            customThemes.push(theme)
+            return theme
+          },
+          async updateCustomTheme(theme, token, value) {
+            const next = {
+              ...theme,
+              overrides: {
+                ...theme.overrides,
+                ...(value === undefined ? {} : { [token]: value }),
+              },
+            }
+            if (value === undefined) delete next.overrides[token]
+            const index = customThemes.findIndex(
+              (entry) => entry.slug === theme.slug,
+            )
+            customThemes[index] = next
+            return next
+          },
+          async deleteCustomTheme(theme) {
+            const index = customThemes.findIndex(
+              (entry) => entry.slug === theme.slug,
+            )
+            customThemes.splice(index, 1)
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('New custom theme…')
+    for (let index = 0; index < 7; index += 1) app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('New custom theme')
+
+    app.stdin.write('Ocean')
+    app.stdin.write('\r')
+    await flush()
+    expect(settings.theme).toBe('custom:ocean')
+    expect(app.lastFrame()).toContain('Using custom theme "Ocean"')
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Ocean (custom) ✔')
+    app.stdin.write('\u0005')
+    await flush()
+    expect(app.lastFrame()).toContain('Filter color tokens')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('#00aaff')
+    app.stdin.write('\r')
+    await flush()
+    expect(customThemes[0]?.overrides).toEqual({ autoAccept: '#00aaff' })
+    app.stdin.write('\u0009')
+    await flush()
+    expect(customThemes[0]?.overrides).toEqual({})
+    app.stdin.write('\u0004')
+    await flush()
+    expect(app.lastFrame()).toContain('Delete Ocean permanently?')
+    app.stdin.write('\r')
+    app.stdin.write('\r')
+    await flush()
+    expect(customThemes).toEqual([])
+    expect(saved.at(-1)).toEqual({ theme: 'dark' })
+  })
+
+  it('loads and persists a shared presentation theme without a model turn', async () => {
+    const saved: unknown[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'dark',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async save(update) {
+            saved.push(update)
+            return {
+              theme: update.theme ?? 'dark',
+              syntaxHighlightingDisabled:
+                update.syntaxHighlightingDisabled ?? false,
+            }
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Choose the text style')
+    expect(app.lastFrame()).toContain('2. Dark mode ✔')
+
+    app.stdin.write('3')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(saved).toEqual([{ theme: 'light' }])
+    expect(app.lastFrame()).toContain('Theme set to light')
+    expect(app.lastFrame()).toContain('? for shortcuts')
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('3. Light mode ✔')
+    expect(app.lastFrame()).toContain('Syntax theme: GitHub')
+  })
+
+  it('runs /terminal-setup as a local command without creating a model turn', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            calls.push('service')
+            throw new Error('terminal setup must not require a provider')
+          },
+        }}
+        initialSessions={[]}
+        terminalSetup={async () => 'Installed terminal Shift+Enter key binding'}
+      />,
+    )
+
+    app.stdin.write('/terminal-setup')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'Installed terminal Shift+Enter key binding',
+    )
+    expect(calls).toEqual([])
+  })
+
+  it('reports the current renderer and restarts after switching it', async () => {
+    const rendererChanges: Array<{
+      mode: 'default' | 'fullscreen'
+      sessionId: string | null
+    }> = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        runtimeSettings={{
+          ...projectRuntimeSettings({ settings: {}, state: {} }),
+          tui: 'default',
+        }}
+        onRendererChange={(mode, sessionId) => {
+          rendererChanges.push({ mode, sessionId })
+        }}
+      />,
+    )
+
+    app.stdin.write('/tui')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('TUI renderer: default')
+    expect(app.lastFrame()).toContain('/tui default|fullscreen')
+
+    app.stdin.write('/tui fullscreen')
+    app.stdin.write('\r')
+    await waitFor(() => rendererChanges[0])
+    expect(rendererChanges).toEqual([{ mode: 'fullscreen', sessionId: null }])
+  })
+
+  it('toggles syntax highlighting in the theme picker and persists immediately', async () => {
+    const saved: unknown[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'dark-daltonized',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async save(update) {
+            saved.push(update)
+            return {
+              theme: update.theme ?? 'dark-daltonized',
+              syntaxHighlightingDisabled:
+                update.syntaxHighlightingDisabled ?? false,
+            }
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'Syntax theme: Monokai Extended (ctrl+t to disable)',
+    )
+    app.stdin.write('\u0014')
+    await flush()
+    expect(saved).toEqual([{ syntaxHighlightingDisabled: true }])
+    expect(app.lastFrame()).toContain(
+      'Syntax highlighting disabled (ctrl+t to enable)',
+    )
+  })
+
+  it('cancels theme selection without writing shared settings', async () => {
+    const save = vi.fn(async () => ({
+      theme: 'dark' as const,
+      syntaxHighlightingDisabled: false,
+    }))
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'dark',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          save,
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+
+    expect(save).not.toHaveBeenCalled()
+    expect(app.lastFrame()).not.toContain('Choose the text style')
+  })
+
+  it('supports numeric profile selection and clamps theme navigation', async () => {
+    const saved: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'auto',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async save(update) {
+            if (update.theme) saved.push(update.theme)
+            return {
+              theme: update.theme ?? 'auto',
+              syntaxHighlightingDisabled:
+                update.syntaxHighlightingDisabled ?? false,
+            }
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[A')
+    app.stdin.write('7')
+    await flush()
+    expect(app.lastFrame()).toContain('Syntax theme: ansi')
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\u001B[A')
+    app.stdin.write('\r')
+    await flush()
+    expect(saved).toEqual(['light-ansi'])
+  })
+
+  it('announces the focused screen-reader theme while navigating', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        axScreenReader
+        initialThemeSettings={{
+          theme: 'dark',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async save(update) {
+            return {
+              theme: update.theme ?? 'dark',
+              syntaxHighlightingDisabled:
+                update.syntaxHighlightingDisabled ?? false,
+            }
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/theme')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Selected: Dark mode')
+    app.stdin.write('\u001B[B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Selected: Light mode')
+    expect(app.lastFrame()).toContain('2. Dark mode (current)')
+    expect(app.lastFrame()).toContain('3. Light mode (focused)')
+    expect(app.lastFrame()).not.toContain('❯')
+    expect(app.lastFrame()).not.toContain('✔')
+  })
+
+  it('surfaces theme load and save failures without changing the active profile', async () => {
+    const loadFailure = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        themeStore={{
+          async load() {
+            throw new Error('bad theme file')
+          },
+          async save() {
+            throw new Error('unused')
+          },
+        }}
+      />,
+    )
+    await flush()
+    expect(loadFailure.lastFrame()).toContain(
+      'Unable to load theme settings: bad theme file',
+    )
+    loadFailure.unmount()
+
+    const saveFailure = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialThemeSettings={{
+          theme: 'dark',
+          syntaxHighlightingDisabled: false,
+        }}
+        themeStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async save() {
+            throw new Error('settings locked')
+          },
+        }}
+      />,
+    )
+    saveFailure.stdin.write('/theme')
+    saveFailure.stdin.write('\r')
+    await flush()
+    saveFailure.stdin.write('\u001B[B')
+    saveFailure.stdin.write('\r')
+    await flush()
+    expect(saveFailure.lastFrame()).toContain('settings locked')
+    expect(saveFailure.lastFrame()).toContain('2. Dark mode ✔')
+  })
+
   it('uses native session names in the session picker', async () => {
     const app = render(
       <InteractiveApp
@@ -1866,6 +2325,46 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual(['shift first\nshift second'])
   })
 
+  it('accepts the ESC+Return sequence installed by terminal setup', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run(prompt) {
+                calls.push(prompt)
+                return {
+                  sessionId: 'meta-session',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('meta first')
+    app.stdin.write('\u001B\r')
+    app.stdin.write('meta second')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['meta first\nmeta second'])
+  })
+
   it('supports task, model, stash, escape, and continuation shortcuts', async () => {
     const calls: string[] = []
     const factory: InteractiveServiceFactory = {
@@ -3115,6 +3614,7 @@ describe('InteractiveApp', () => {
           },
         }}
         initialSessions={[]}
+        axScreenReader
         permissionRuleStore={{
           async load() {
             return rules
@@ -3144,6 +3644,13 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Delete allowed tool?')
     expect(app.lastFrame()).toContain('Any Bash command starting with npm test')
     expect(app.lastFrame()).toContain('From project local settings')
+    expect(app.lastFrame()).toContain('Selected: 1. Yes')
+    expect(app.lastFrame()).not.toContain('❯')
+    app.stdin.write('\u001B[B')
+    await flush()
+    expect(app.lastFrame()).toContain('Selected: 2. No')
+    app.stdin.write('\u001B[A')
+    await flush()
     app.stdin.write('\r')
     await flush()
     await flush()
@@ -3885,6 +4392,115 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Hook response · PreToolUse:Bash · error')
   })
 
+  it('approves and retries only blocked auto-mode actions from Recently denied', async () => {
+    const approved: Array<{ sessionId: string; display: string }> = []
+    const retried: Array<{ sessionId: string; display: string }> = []
+    const sessionId = 'session-1'
+    let isApproved: ((call: ModelToolCall) => boolean) | undefined
+    const deniedCall: ModelToolCall = {
+      id: 'blocked-call',
+      name: 'Bash',
+      input: {
+        command: 'rm -rf /tmp/target',
+        description: 'Delete target',
+      },
+    }
+    const deniedAction = {
+      id: 'denied-1',
+      call: deniedCall,
+      display: 'Delete target',
+      reason: 'Classifier policy',
+      sessionId,
+    }
+    let deniedEntries = [deniedAction]
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            isApproved = options.isSessionActionApproved
+            return {
+              async run() {
+                return {
+                  sessionId,
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async retryRecentlyDenied(retrySessionId, display) {
+                retried.push({ sessionId: retrySessionId, display })
+                return {
+                  sessionId: retrySessionId,
+                  text: 'retried',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async approveRecentlyDenied(approveSessionId, display) {
+                approved.push({ sessionId: approveSessionId, display })
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        axScreenReader
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add() {},
+        }}
+        recentlyDeniedStore={{
+          async load() {
+            return deniedEntries
+          },
+          async record(action) {
+            deniedEntries = [action, ...deniedEntries]
+            return deniedEntries
+          },
+          async remove(id) {
+            deniedEntries = deniedEntries.filter((action) => action.id !== id)
+            return deniedEntries
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/permissions')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Current tab: Recently denied')
+    expect(app.lastFrame()).toContain('1. ✘ Delete target  Classifier policy')
+    expect(app.lastFrame()).not.toContain('rm -rf /tmp/other')
+
+    app.stdin.write('r')
+    await flush()
+    expect(retried).toEqual([{ sessionId, display: 'Delete target' }])
+    expect(isApproved?.(deniedCall)).toBe(true)
+    expect(
+      isApproved?.({
+        ...deniedCall,
+        input: { ...deniedCall.input, command: 'rm -rf /tmp/different' },
+      }),
+    ).toBe(false)
+
+    app.stdin.write('/permissions')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(approved).toEqual([{ sessionId, display: 'Delete target' }])
+    expect(app.lastFrame()).toContain('Current tab: Allow')
+    expect(app.lastFrame()).not.toContain('1. ✘ Delete target')
+  })
+
   it('interrupts a busy turn with escape and restores the composer', async () => {
     const factory: InteractiveServiceFactory = {
       async createService() {
@@ -4233,6 +4849,7 @@ describe('InteractiveApp', () => {
         factory={factory}
         initialSessions={[]}
         suspendProcess={suspendProcess}
+        axScreenReader
       />,
     )
 
@@ -4243,6 +4860,8 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Allow Bash')
     expect(app.lastFrame()).toContain('npm test')
+    expect(app.lastFrame()).toContain('Selected: 1. Yes')
+    expect(app.lastFrame()).not.toContain('❯')
 
     app.stdin.write('\u001a')
     await new Promise((resolve) => setTimeout(resolve, 75))
@@ -4250,7 +4869,7 @@ describe('InteractiveApp', () => {
     expect(suspendProcess).toHaveBeenCalledOnce()
     expect(app.lastFrame()).toContain('Allow Bash')
 
-    app.stdin.write('1')
+    app.stdin.write('y')
     await flush()
     expect(approval).toBe(true)
     expect(app.lastFrame()).toContain('done')
@@ -4301,14 +4920,18 @@ describe('InteractiveApp', () => {
       },
     }
     const app = render(
-      <InteractiveApp factory={factory} initialSessions={[]} />,
+      <InteractiveApp factory={factory} initialSessions={[]} axScreenReader />,
     )
     await flush()
     app.stdin.write('start')
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Runtime: Which runtime?')
+    expect(app.lastFrame()).toContain('Current answer: (empty)')
+    expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('Bun, with npm')
+    await flush()
+    expect(app.lastFrame()).toContain('Current answer: Bun, with npm')
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Checks: Which checks?')
@@ -4376,6 +4999,63 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('done')
   })
 
+  it('times out AskUserQuestion without affecting MCP elicitation', async () => {
+    vi.useFakeTimers()
+    try {
+      let answer: unknown = 'pending'
+      const factory: InteractiveServiceFactory = {
+        async createService({ askUser }) {
+          return {
+            async run() {
+              answer = await askUser?.([
+                {
+                  question: 'Continue?',
+                  header: 'Confirm',
+                  options: [{ label: 'Yes', description: 'Continue' }],
+                  multiSelect: false,
+                },
+              ])
+              return {
+                sessionId: 'session-1',
+                text: 'done',
+                usage: { inputTokens: 1, outputTokens: 1 },
+              }
+            },
+            async resume() {
+              throw new Error('unused')
+            },
+            async fork() {
+              throw new Error('unused')
+            },
+            async sessions() {
+              return []
+            },
+          }
+        },
+      }
+      const app = render(
+        <InteractiveApp
+          factory={factory}
+          initialSessions={[]}
+          runtimeSettings={projectRuntimeSettings({
+            settings: { askUserQuestionTimeout: '60s' },
+            state: {},
+          })}
+        />,
+      )
+      await vi.runAllTimersAsync()
+      app.stdin.write('start')
+      app.stdin.write('\r')
+      await vi.runAllTimersAsync()
+      expect(app.lastFrame()).toContain('Confirm: Continue?')
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(answer).toBeNull()
+      expect(app.lastFrame()).toContain('done')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows plan content and forwards plan approval', async () => {
     let approval: boolean | undefined
     const factory: InteractiveServiceFactory = {
@@ -4406,7 +5086,7 @@ describe('InteractiveApp', () => {
       },
     }
     const app = render(
-      <InteractiveApp factory={factory} initialSessions={[]} />,
+      <InteractiveApp factory={factory} initialSessions={[]} axScreenReader />,
     )
     await flush()
     app.stdin.write('start')
@@ -4414,6 +5094,8 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Approve this plan')
     expect(app.lastFrame()).toContain('1. Implement.')
+    expect(app.lastFrame()).toContain('Selected: 1. Yes, implement the plan')
+    expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('y')
     await flush()
     expect(approval).toBe(true)

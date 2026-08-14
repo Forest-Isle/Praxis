@@ -22,6 +22,7 @@ const executeVersionCommand: VersionCommand = async (file, args) => {
 export async function detectInstalledClaudeVersion(
   execute: VersionCommand = executeVersionCommand,
 ): Promise<string> {
-  const { stdout } = await execute('claude', ['--version'])
+  const executable = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
+  const { stdout } = await execute(executable, ['--version'])
   return parseClaudeVersionOutput(stdout)
 }

@@ -1836,6 +1836,15 @@ function scaledTokenCount(
   return totalChars === 0 ? 0 : Math.round((chars / totalChars) * totalTokens)
 }
 
+const CLAUDE_PLUGIN_DETAILS_TOKEN_ENVELOPE = 79
+
+function pluginDetailBucketTokenCount(content: string): number {
+  if (!content.trim()) return 0
+  // Claude's count-tokens request contributes a stable envelope cost in the
+  // 2.1.208 plugin-details contract, in addition to the assembled text.
+  return countTokens(content) + CLAUDE_PLUGIN_DETAILS_TOKEN_ENVELOPE
+}
+
 function keysFromJsonResources(
   resources: readonly ClaudeJsonResource[],
   property: 'hooks' | 'mcpServers',
@@ -1932,10 +1941,10 @@ export async function describeClaudePlugin(
     .join('\n')
   const onInvokeText = rawComponentCosts
     .map((component) => component.onInvokeText)
-    .join('\n')
+    .join('\n\n')
   const tokenEstimate = {
-    alwaysOn: countTokens(alwaysOnText),
-    onInvoke: countTokens(onInvokeText),
+    alwaysOn: pluginDetailBucketTokenCount(alwaysOnText),
+    onInvoke: pluginDetailBucketTokenCount(onInvokeText),
   }
   // Claude counts each assembled bucket once, then allocates that total by the
   // component character share so rounded rows remain additive.

@@ -71,6 +71,10 @@ import {
   type RuntimeEventSink,
   type ToolRegistry,
 } from '../core/runtime.js'
+import {
+  BackgroundTaskRuntime,
+  type BackgroundTaskSnapshot,
+} from './background-task-runtime.js'
 import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
 import type { Compactor } from '../core/compaction.js'
@@ -109,7 +113,10 @@ import { ScheduledPromptManager } from './scheduled-prompt-manager.js'
 import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
 import { ClaudeWorkflowToolRegistry } from '../tools/claude-workflow-tools.js'
-import { WorkflowManager } from './workflow-manager.js'
+import {
+  WorkflowManager,
+  type WorkflowTaskSnapshot,
+} from './workflow-manager.js'
 import { SessionWorktreeManager } from './session-worktree.js'
 import type {
   WorktreeSessionState,
@@ -124,6 +131,11 @@ import {
 } from '../tools/claude-user-message.js'
 import type { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
 import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
+import type {
+  ClaudeMcpRuntime,
+  ClaudeMcpServerStatus,
+  ClaudeMcpToolInspection,
+} from '../mcp/claude-mcp-tools.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -170,11 +182,15 @@ export interface ClaudeSessionServiceOptions {
   initialWorktreeName?: string
   enableWorktrees?: boolean
   worktreeToolNames?: readonly ('EnterWorktree' | 'ExitWorktree')[]
+  worktreeBaseRef?: 'fresh' | 'head'
   fileResources?: readonly ClaudeFileResource[]
   fileResourceConfig?: Omit<ClaudeFileResourceConfig, 'sessionId' | 'signal'>
   fileCheckpointing?: boolean
+  /** Disable only automatic context compaction; manual /compact remains available. */
+  autoCompact?: boolean
   fileRewindRoots?: readonly string[]
   interactiveTools?: ClaudeInteractiveToolManager
+  mcp?: ClaudeMcpRuntime
 }
 
 export interface SessionRunResult {
@@ -315,6 +331,7 @@ export class ClaudeSessionService {
   private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
   private readonly scheduledPrompts: ScheduledPromptManager | null
   private readonly workflowManager: WorkflowManager | null
+  private readonly backgroundTasks: BackgroundTaskRuntime
   private readonly worktreeManager: SessionWorktreeManager | null
   private readonly sessionCwds = new Map<string, string>()
   private readonly hostedSubagents = new Set<ClaudeSubagentExecutor>()
@@ -327,6 +344,7 @@ export class ClaudeSessionService {
     Promise<void>
   >()
   private readonly downloadedFileResourceSessions = new Set<string>()
+  private mcpClosePromise: Promise<void> | undefined
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
@@ -352,11 +370,15 @@ export class ClaudeSessionService {
           this.activeCwd(),
         )
       : null
+    this.backgroundTasks = new BackgroundTaskRuntime(this.workflowManager)
     this.worktreeManager =
       options.enableWorktrees && options.workspace
         ? new SessionWorktreeManager({
             workspace: options.workspace,
             sessionId: '',
+            ...(options.worktreeBaseRef
+              ? { baseRef: options.worktreeBaseRef }
+              : {}),
           })
         : null
   }
@@ -365,8 +387,41 @@ export class ClaudeSessionService {
     return this.scheduledPrompts?.next(signal) ?? Promise.resolve(null)
   }
 
-  workflows(): readonly Record<string, unknown>[] {
+  workflows(): readonly WorkflowTaskSnapshot[] {
     return this.workflowManager?.list() ?? []
+  }
+
+  mcpInspect(): Promise<readonly ClaudeMcpServerStatus[]> {
+    return this.requireMcp().inspect()
+  }
+
+  mcpReconnect(name: string): Promise<void> {
+    return this.requireMcp().reconnect(name)
+  }
+
+  mcpAuthenticate(name: string): Promise<void> {
+    return this.requireMcp().authenticate(name)
+  }
+
+  mcpReload(): Promise<void> {
+    return this.requireMcp().reload()
+  }
+
+  mcpTools(name: string): Promise<readonly ClaudeMcpToolInspection[]> {
+    return this.requireMcp().tools(name)
+  }
+
+  private requireMcp(): ClaudeMcpRuntime {
+    if (!this.options.mcp) throw new Error('MCP runtime is not configured')
+    return this.options.mcp
+  }
+
+  taskSnapshots(sessionId: string): Promise<BackgroundTaskSnapshot> {
+    return this.backgroundTasks.snapshot(sessionId)
+  }
+
+  stopTask(sessionId: string, taskId: string): Promise<void> {
+    return this.backgroundTasks.stop(sessionId, taskId)
   }
 
   async close(): Promise<void> {
@@ -377,7 +432,10 @@ export class ClaudeSessionService {
     await Promise.resolve()
     await Promise.all([...this.backgroundNotificationWrites.values()])
     this.hostedSubagents.clear()
+    this.backgroundTasks.clear()
     await this.workflowManager?.close()
+    this.mcpClosePromise ??= this.options.mcp?.close?.() ?? Promise.resolve()
+    await this.mcpClosePromise
   }
 
   createHostedToolRegistry(sessionId: string): ToolRegistry {
@@ -401,6 +459,7 @@ export class ClaudeSessionService {
               : {}),
           })
         : null
+    if (taskTools) this.backgroundTasks.registerBash(sessionId, taskTools)
     const scheduledTools =
       this.scheduledPrompts &&
       (this.options.scheduledToolNames?.length ?? 0) > 0
@@ -475,6 +534,9 @@ export class ClaudeSessionService {
           })
         : null
     if (subagentExecutor) this.hostedSubagents.add(subagentExecutor)
+    if (subagentExecutor) {
+      this.backgroundTasks.registerAgents(sessionId, subagentExecutor)
+    }
     const agentTools = subagentExecutor
       ? subagentExecutor.registry(sessionId, 0, (callId) => callId)
       : wrappedBase
@@ -1217,6 +1279,33 @@ export class ClaudeSessionService {
     }
   }
 
+  async approveRecentlyDenied(
+    sessionId: string,
+    display: string,
+  ): Promise<void> {
+    await this.appendPermissionGrant(sessionId, display, false)
+  }
+
+  async retryRecentlyDenied(
+    sessionId: string,
+    display: string,
+    signal?: AbortSignal,
+  ): Promise<SessionRunResult> {
+    await this.appendPermissionGrant(sessionId, display, true)
+    return this.executeTurn(
+      sessionId,
+      '/permissions',
+      true,
+      signal,
+      undefined,
+      [],
+      [],
+      undefined,
+      undefined,
+      true,
+    )
+  }
+
   async recordBtwUsage(
     sessionId: string | undefined,
     permissionMode: ClaudePermissionMode = 'default',
@@ -1719,6 +1808,7 @@ export class ClaudeSessionService {
     documents: readonly ModelDocument[] = [],
     resumeSessionAt?: string,
     shellCommand?: string,
+    skipUserPrompt = false,
   ): Promise<SessionRunResult> {
     this.assertWritable()
     if (prompt.length === 0 && images.length === 0 && documents.length === 0)
@@ -1740,6 +1830,10 @@ export class ClaudeSessionService {
     }
     const pinnedCwd = this.sessionCwds.get(sessionId) ?? this.activeCwd()
     this.sessionCwds.set(sessionId, pinnedCwd)
+    if (this.options.workspace?.cwd() !== pinnedCwd) {
+      this.options.workspace?.setCwd(pinnedCwd)
+    }
+    this.runtimeCwd = pinnedCwd
     const sessionPaths = this.paths(sessionId)
     const toolResultDirectory = join(
       sessionPaths.projectRoot,
@@ -2058,6 +2152,15 @@ export class ClaudeSessionService {
                       ? call.input.notebook_path
                       : undefined
                 if (typeof path !== 'string') {
+                  return interactiveMessageTools.execute(call, context)
+                }
+                if (
+                  (call.name === 'Write' || call.name === 'Edit') &&
+                  (await this.options.interactiveTools?.isPlanFile(
+                    sessionId,
+                    path,
+                  ))
+                ) {
                   return interactiveMessageTools.execute(call, context)
                 }
                 const snapshotMessageId =
@@ -2431,8 +2534,9 @@ export class ClaudeSessionService {
             : []),
         ]
 
-        const expansion =
-          shellCommand === undefined
+        const expansion = skipUserPrompt
+          ? { userMessages: [] as string[] }
+          : shellCommand === undefined
             ? this.options.extensions
               ? await this.options.extensions.expandPromptAsync(
                   prompt,
@@ -2481,7 +2585,7 @@ export class ClaudeSessionService {
             : {}),
         }))
         const agentMentionMessages =
-          shellCommand === undefined
+          shellCommand === undefined && !skipUserPrompt
             ? (this.options.extensions?.agentMentionMessages(prompt) ?? [])
             : []
         const injectAgentMentionContext = (
@@ -2531,7 +2635,7 @@ export class ClaudeSessionService {
           }[] = [],
           preservedUserMessages: readonly string[] = [],
         ) => {
-          if (!budget) return
+          if (!budget || this.options.autoCompact === false) return
           const historyMessages = projectClaudeModelMessages(snapshot.entries)
           const predicted = budget.evaluate(
             [
@@ -2750,7 +2854,7 @@ export class ClaudeSessionService {
           }
         }
 
-        if (this.options.hooks) {
+        if (this.options.hooks && !skipUserPrompt) {
           const outcome = await this.options.hooks.run(
             {
               ...hookSession,
@@ -2960,15 +3064,17 @@ export class ClaudeSessionService {
         if (!finalLeafUuid) {
           throw new Error('Could not locate final assistant response')
         }
-        await this.append(
-          lease,
-          snapshot.tail,
-          createClaudeLastPromptEntry({
-            sessionId,
-            lastPrompt: prompt,
-            leafUuid: finalLeafUuid,
-          }),
-        )
+        if (!skipUserPrompt) {
+          await this.append(
+            lease,
+            snapshot.tail,
+            createClaudeLastPromptEntry({
+              sessionId,
+              lastPrompt: prompt,
+              leafUuid: finalLeafUuid,
+            }),
+          )
+        }
         const totalUsage = mergeUsage(
           mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
           result.usage,
@@ -3395,6 +3501,133 @@ export class ClaudeSessionService {
       })}\n`,
       'utf8',
     )
+  }
+
+  private async appendPermissionGrant(
+    sessionId: string,
+    display: string,
+    retry: boolean,
+  ): Promise<void> {
+    this.assertWritable()
+    const normalized = display.trim()
+    if (!normalized) throw new Error('Permission action must not be empty')
+    while (true) {
+      const result = await this.turnStore(sessionId).withLease(
+        async (lease) => {
+          const snapshot = await lease.load()
+          if (snapshot.entries.length === 0) {
+            throw new Error(`Claude session not found: ${sessionId}`)
+          }
+          const timestamp = new Date().toISOString()
+          const promptId = randomUUID()
+          const commandUuid = randomUUID()
+          const common = {
+            isSidechain: false,
+            promptId,
+            timestamp,
+            userType: 'external',
+            entrypoint: 'cli',
+            cwd: this.activeCwd(),
+            sessionId,
+            version: this.options.claudeVersion,
+            gitBranch: null,
+          }
+          let parentUuid = this.logicalTailUuid(snapshot.tail)
+          const entries: ClaudeTranscriptEntry[] = []
+          if (
+            this.options.fileCheckpointing &&
+            this.options.sessionPersistence !== false
+          ) {
+            const fileHistory = new ClaudeFileHistory(
+              this.options.configRoot,
+              sessionId,
+              [this.activeCwd(), ...(this.options.fileRewindRoots ?? [])],
+            )
+            entries.push(
+              await fileHistory.snapshot(snapshot.entries, commandUuid),
+            )
+          }
+          if (retry) {
+            const retryUuid = randomUUID()
+            entries.push({
+              parentUuid,
+              isSidechain: false,
+              type: 'system',
+              subtype: 'permission_retry',
+              content: `Allowed ${normalized}`,
+              commands: [normalized],
+              level: 'info',
+              isMeta: false,
+              timestamp,
+              uuid: retryUuid,
+              userType: 'external',
+              entrypoint: 'cli',
+              cwd: this.activeCwd(),
+              sessionId,
+              version: this.options.claudeVersion,
+              gitBranch: null,
+            })
+            parentUuid = retryUuid
+          } else {
+            const caveatUuid = randomUUID()
+            entries.push({
+              ...common,
+              parentUuid,
+              type: 'user',
+              message: {
+                role: 'user',
+                content:
+                  '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>',
+              },
+              isMeta: true,
+              uuid: caveatUuid,
+            })
+            parentUuid = caveatUuid
+          }
+          entries.push({
+            ...common,
+            parentUuid,
+            type: 'user',
+            message: {
+              role: 'user',
+              content:
+                '<command-name>/permissions</command-name>\n            <command-message>permissions</command-message>\n            <command-args></command-args>',
+            },
+            uuid: commandUuid,
+          })
+          const outputUuid = randomUUID()
+          entries.push({
+            ...common,
+            parentUuid: commandUuid,
+            type: 'user',
+            message: {
+              role: 'user',
+              content: `<local-command-stdout>${retry ? '(no content)' : `Approved ${normalized}`}</local-command-stdout>`,
+            },
+            uuid: outputUuid,
+          })
+          entries.push({
+            ...common,
+            parentUuid: outputUuid,
+            type: 'user',
+            message: {
+              role: 'user',
+              content: `Permission granted for: ${normalized}. You may now retry this command if you would like.`,
+            },
+            isMeta: true,
+            uuid: randomUUID(),
+          })
+          const appended = await lease.appendMany(snapshot.tail, entries)
+          if (appended.status === 'conflict') {
+            throw new Error(
+              `Claude permission grant append conflict: ${appended.reason}`,
+            )
+          }
+        },
+      )
+      if (result.status === 'completed') return
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+    }
   }
 
   private async appendBackgroundNotification(

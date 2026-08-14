@@ -53,12 +53,14 @@ const FORKABLE_SYSTEM_SUBTYPES = new Set([
   'away_summary',
   'compact_boundary',
   'local_command',
+  'permission_retry',
   'stop_hook_summary',
   'turn_duration',
 ])
 const APPENDABLE_SYSTEM_SUBTYPES = new Set([
   'compact_boundary',
   'local_command',
+  'permission_retry',
 ])
 const FORKABLE_ATTACHMENT_TYPES = new Set([
   'agent_listing_delta',

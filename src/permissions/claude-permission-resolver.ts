@@ -2,6 +2,10 @@ import { isAbsolute, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
+import {
+  annotateAutoModePermissionOutcome,
+  annotatePermissionDecision,
+} from '../core/runtime.js'
 import type {
   ModelToolCall,
   PermissionBehavior,
@@ -31,6 +35,7 @@ export interface ClaudePermissionResolverOptions {
   permissionMode?: ClaudePermissionMode
   autoClassifier?: ClaudeAutoClassifier
   autoModeConfig?: ClaudeAutoModeConfig
+  isSessionActionApproved?: (call: ModelToolCall) => boolean
 }
 
 export type ClaudePermissionMode =
@@ -86,6 +91,20 @@ const FILE_TOOLS = new Set([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue)
+  if (!isRecord(value)) return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, canonicalValue(item)]),
+  )
+}
+
+export function claudePermissionActionKey(call: ModelToolCall): string {
+  return JSON.stringify({ name: call.name, input: canonicalValue(call.input) })
 }
 
 function readRuleStrings(
@@ -268,6 +287,8 @@ export class ClaudePermissionResolver implements PermissionResolver {
   private readonly permissionMode: ClaudePermissionMode
   private readonly autoClassifier: ClaudeAutoClassifier | undefined
   private readonly autoModeConfig: ClaudeAutoModeConfig
+  private readonly isSessionActionApproved:
+    ((call: ModelToolCall) => boolean) | undefined
 
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
@@ -282,6 +303,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
     this.autoModeConfig =
       options.autoModeConfig ?? loadClaudeAutoModeConfig(options.settings)
     this.autoClassifier = options.autoClassifier
+    this.isSessionActionApproved = options.isSessionActionApproved
     if (this.permissionMode === 'auto') {
       if (!this.autoClassifier) {
         throw new Error('Permission mode auto requires a classifier')
@@ -303,13 +325,16 @@ export class ClaudePermissionResolver implements PermissionResolver {
     const denied = matchingRule('deny')
     if (denied) {
       const suffix = denied.pattern === null ? '' : `(${denied.pattern})`
-      return {
-        behavior: 'deny',
-        reason: `Denied by Claude permission rule ${denied.toolName}${suffix}`,
-      }
+      return annotatePermissionDecision(
+        {
+          behavior: 'deny',
+          reason: `Denied by Claude permission rule ${denied.toolName}${suffix}`,
+        },
+        'rule',
+      )
     }
     if (this.permissionMode === 'bypassPermissions') {
-      return { behavior: 'allow' }
+      return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
     }
     if (
       this.permissionMode === 'plan' &&
@@ -317,18 +342,21 @@ export class ClaudePermissionResolver implements PermissionResolver {
         call.name === 'Edit' ||
         call.name === 'NotebookEdit')
     ) {
-      return {
-        behavior: 'deny',
-        reason: `Cannot use ${call.name} while in plan mode`,
-      }
+      return annotatePermissionDecision(
+        {
+          behavior: 'deny',
+          reason: `Cannot use ${call.name} while in plan mode`,
+        },
+        'mode',
+      )
     }
 
-    if (matchingRule('ask')) return this.askDecision(call)
+    if (matchingRule('ask')) return this.askDecision(call, 'rule')
     if (
       matchingRule('allow') &&
       (this.permissionMode !== 'auto' || !this.shouldClassify(call))
     ) {
-      return { behavior: 'allow' }
+      return annotatePermissionDecision({ behavior: 'allow' }, 'rule')
     }
     if (
       this.permissionMode === 'acceptEdits' &&
@@ -336,7 +364,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
         call.name === 'Edit' ||
         call.name === 'NotebookEdit')
     ) {
-      return { behavior: 'allow' }
+      return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
     }
 
     if (
@@ -344,45 +372,73 @@ export class ClaudePermissionResolver implements PermissionResolver {
       this.shouldClassify(call) &&
       this.autoClassifier
     ) {
+      if (this.isSessionActionApproved?.(call)) {
+        return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
+      }
       try {
-        return await this.autoClassifier({
+        const decision = await this.autoClassifier({
           call,
           cwd,
           messages: context?.messages ?? [],
           config: this.autoModeConfig,
         })
+        const annotated = annotatePermissionDecision(
+          decision,
+          'auto-classifier',
+        )
+        return decision.behavior === 'deny'
+          ? annotateAutoModePermissionOutcome(annotated, 'blocked')
+          : annotated
       } catch (error) {
-        return {
-          behavior: 'deny',
-          reason: `Auto mode classifier failed: ${error instanceof Error ? error.message : String(error)}`,
-        }
+        return annotateAutoModePermissionOutcome(
+          annotatePermissionDecision(
+            {
+              behavior: 'deny',
+              reason: `Auto mode classifier failed: ${error instanceof Error ? error.message : String(error)}`,
+            },
+            'auto-classifier',
+          ),
+          'unavailable',
+        )
       }
     }
 
     if (this.permissionMode === 'auto' && call.name === 'Bash') {
-      return { behavior: 'allow' }
+      return annotatePermissionDecision({ behavior: 'allow' }, 'default')
     }
 
     const defaultBehavior = DEFAULT_BEHAVIOR[call.name]
     return defaultBehavior === 'ask'
-      ? this.askDecision(call)
+      ? this.askDecision(call, 'default')
       : defaultBehavior
-        ? { behavior: defaultBehavior }
-        : { behavior: 'deny', reason: `Unknown tool ${call.name}` }
+        ? annotatePermissionDecision({ behavior: defaultBehavior }, 'default')
+        : annotatePermissionDecision(
+            { behavior: 'deny', reason: `Unknown tool ${call.name}` },
+            'default',
+          )
   }
 
-  private askDecision(call: ModelToolCall): PermissionDecision {
+  private askDecision(
+    call: ModelToolCall,
+    source: 'rule' | 'mode' | 'default' = 'mode',
+  ): PermissionDecision {
     return this.permissionMode === 'dontAsk' || this.permissionMode === 'plan'
-      ? {
-          behavior: 'deny',
-          reason: `Permission to use ${call.name} is disabled in ${this.permissionMode} mode`,
-        }
-      : {
-          behavior: 'ask',
-          ...(call.name === 'Workflow'
-            ? { reason: 'Review dynamic workflow before running' }
-            : {}),
-        }
+      ? annotatePermissionDecision(
+          {
+            behavior: 'deny',
+            reason: `Permission to use ${call.name} is disabled in ${this.permissionMode} mode`,
+          },
+          'mode',
+        )
+      : annotatePermissionDecision(
+          {
+            behavior: 'ask',
+            ...(call.name === 'Workflow'
+              ? { reason: 'Review dynamic workflow before running' }
+              : {}),
+          },
+          source,
+        )
   }
 
   private shouldClassify(call: ModelToolCall): boolean {

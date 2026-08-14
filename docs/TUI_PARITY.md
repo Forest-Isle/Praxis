@@ -146,6 +146,9 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
   scoped rule search and atomic creation/removal; original/additional workspace
   directory presentation; and session-local directory add/remove controls.
+- `/tui` switches between the default and fullscreen renderers, persists the
+  Claude-compatible `tui` runtime setting, and resumes the active session after
+  the renderer restart.
 - `ContextUsageBlock`: transcript-native usage grid, autocompact reserve, and
   estimates for skills discovered through the shared Claude data plane.
 - `StatusDashboard`: Settings, Status, Config, Usage, and Stats tabs backed by
@@ -240,8 +243,34 @@ is passed from the CLI composition root and never written to shared JSONL.
   an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
   turn receives the selected provider controls.
-- `/permissions` loads Claude-native permission arrays into Recently denied,
-  Allow, Ask, Deny, and Workspace tabs, opening on Allow like 2.1.208. Rule
+- `/theme` opens the observed built-in profile picker with Auto, dark/light,
+  colorblind-friendly, and ANSI-only choices. Each choice renders its observed
+  syntax-token and diff preview through the same semantic palette applied to the
+  complete TUI. Selection recolors immediately, persists Claude's native
+  `theme` value to shared user `settings.json`, preserves unrelated settings,
+  and is restored before the next interactive render. `Ctrl+T` toggles and
+  persists Claude's native `syntaxHighlightingDisabled` setting without leaving
+  the picker or invoking a model turn. Per-key writes preserve untouched raw
+  values and serialize cooperating Praxis processes with an advisory lease. A
+  changed final pre-rename fingerprint triggers a bounded reread/merge/retry;
+  atomic rename prevents partial files but is not an OS-level compare-and-swap,
+  so a non-cooperating writer can still win the syscall window after that check.
+  Custom profiles use Claude's `.claude/themes/<slug>.json` shape, persist
+  `theme: "custom:<slug>"`, and support creation, token editing/reset, and
+  deletion from the picker. Built-in profiles remain protected; custom sidecars
+  are validated, leased, and atomically updated.
+- `/terminal-setup` is a provider-free local command. It reports native
+  Shift+Enter support for iTerm2, WezTerm, Ghostty, Kitty, and Warp; installs
+  the Claude-compatible escape sequence in VS Code-family JSONC keybindings,
+  Alacritty TOML, or Zed keymap files with backups and duplicate detection; and
+  gives tmux, screen, unsupported, remote-IDE, and non-interactive contexts an
+  actionable diagnostic with the backslash+Return fallback. Apple Terminal on
+  macOS is handled with a preferences backup, default/startup profile updates,
+  visual-bell configuration, and interrupted-setup recovery state.
+- `/permissions` loads Claude-native permission arrays into Allow, Ask, Deny,
+  and Workspace tabs. Recently denied is a process-local list of actual
+  `automode-blocked` actions (newest first, duplicates retained); it opens
+  first when non-empty and supports the native approve/retry footer. Rule
   search is local; adding a rule chooses `.claude/settings.local.json`,
   checked-in `.claude/settings.json`, or user `settings.json`. Selecting an
   existing rule opens the observed allowed/ask/denied deletion confirmation.
@@ -334,12 +363,19 @@ is passed from the CLI composition root and never written to shared JSONL.
 
 ## Verification
 
-- focused Ink render fixtures at wide and narrow widths;
+- focused Ink render fixtures at wide and narrow widths, including exact
+  built-in syntax/diff preview palettes, persisted normal-render syntax state,
+  and explicit focused-selection announcements in the decoration-free
+  screen-reader branch;
 - interaction tests for prompts, selection, permission, questions, plan, MCP,
   streaming, tools, direct shell turns, cancellation, and screen-reader mode;
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
-  context/status/skill dashboards, `Ctrl+T` task access, exact permission rule
+  context/status/skill dashboards, built-in `/theme` selection, `Ctrl+T` syntax
+  toggling, immediate profile application to transcript code and diffs,
+  cancellation, restart persistence, and shared settings persistence; plus real
+  fixed Claude Code 2.1.208 `/theme` ANSI captures for every built-in profile,
+  `Ctrl+T` task access, exact permission rule
   deletion and Workspace add/remove surfaces, providerless `/hooks`
   scope coverage plus installed event/matcher/detail navigation, and `/memory`
   discovery, loading/final hierarchy, imported-file `$EDITOR` lifecycle,
@@ -374,9 +410,14 @@ searchable-resume, thinking, composer, runtime-control, measured-status,
 tool-detail, current/per-turn diff-navigation, context/status/skill/task panels,
 plan switching, prompt stash, continuation, file/agent-reference, undo, and
 direct shell seams, but they do not justify a blanket “complete Claude Code
-TUI” claim. Remaining
-black-box-driven work includes the remaining applicable built-in command catalog
-(presentation controls), exact denied-history behavior,
-and remaining exact command-specific dialogs and layout behavior. Each
-item needs an observed contract and a
-focused TTY or Ink gate before the matrix can return to a complete status.
+TUI” claim. Subsequent stages close
+`/terminal-setup` diagnostics/setup (Stage 119/123), `/tui` default/fullscreen
+renderer switching with persisted runtime settings and active-session resume
+(Stage 125), and exact
+denied-history selection, duplicate retention, lifetime, approve/retry, and
+Claude-native grant-transcript behavior (Stages 126-130). The remaining
+black-box-driven work is exact
+command-specific dialogs and layout behavior. `/statusline` remains excluded as
+a user-provided status-line plugin surface; 2.1.208 exposes neither `/vim` nor
+`/output-style`. Each included item needs an observed contract and a focused TTY
+or Ink gate before the matrix can return to a complete status.

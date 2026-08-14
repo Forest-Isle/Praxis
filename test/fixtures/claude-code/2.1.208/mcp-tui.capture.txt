@@ -1,0 +1,39 @@
+Capture: Claude Code 2.1.208, --ax-screen-reader, 100x32 PTY
+Claude Code v2.1.208
+No MCP servers configured. Run claude doctor if this is unexpected — it lists MCP config files that failed validation. Otherwise, run claude mcp --help or visit https://code.claude.com/docs/en/mcp to learn more.
+Manage MCP servers
+4 servers
+Project MCPs
+Local MCPs
+User MCPs
+Selected server: broken · ✘  failed
+connected · ✔  connected · 1 tool
+oauth-required · △  needs authentication
+local-server · ◯  disabled
+※ Run claude --debug to see error logs
+https://code.claude.com/docs/en/mcp for help
+↑/↓ to navigate · Enter to confirm · Esc to cancel
+
+Connected MCP Server
+Status: done: connected
+Status: failed: failed
+Status: ◯ disabled
+View tools
+Reconnect
+Disable
+Enable
+Enter selection
+↑/↓ to navigate · Enter to select · Esc to back
+
+Oauth-required MCP Server
+Status: △ needs authentication
+Auth: failed: not authenticated
+Authenticate
+Disable
+
+Tools for connected
+Selected tool: marker
+Tool name:
+Full name:
+Description:
+Esc to go back

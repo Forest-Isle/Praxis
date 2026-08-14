@@ -31,7 +31,12 @@ const base: ToolRegistry = {
   execute: async () => ({ content: 'base', isError: false }),
 }
 
-async function fixture(options: { approve?: boolean } = {}) {
+async function fixture(
+  options: {
+    approve?: boolean
+    initialMode?: 'default' | 'bypassPermissions'
+  } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), 'praxis-interactive-tools-'))
   roots.push(root)
   const configRoot = join(root, 'config')
@@ -50,7 +55,7 @@ async function fixture(options: { approve?: boolean } = {}) {
   )
   const manager = new ClaudeInteractiveToolManager({
     configRoot,
-    initialMode: 'default',
+    initialMode: options.initialMode ?? 'default',
     enabledTools: ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'],
     callbacks: { askUser, approvePlan },
     permissionResolverForMode,
@@ -126,6 +131,10 @@ describe('ClaudeInteractiveToolManager', () => {
     })
     expect(manager.consumeTransition('call_EnterPlanMode')).toBe('plan')
     expect(manager.contextMessage(sessionId)).toContain(planPath)
+    await expect(manager.isPlanFile(sessionId, planPath)).resolves.toBe(true)
+    await expect(
+      manager.isPlanFile(sessionId, join(configRoot, 'project.ts')),
+    ).resolves.toBe(false)
     expect(
       await manager.permissions(sessionId).resolve({
         id: 'plan-write',
@@ -167,6 +176,18 @@ describe('ClaudeInteractiveToolManager', () => {
       { type: 'permission-mode', permissionMode: 'plan', sessionId },
     ])
     expect(manager.contextMessage(sessionId)).toContain('Plan mode')
+  })
+
+  it('keeps the active bypass permission mode on the shared resolver path', async () => {
+    const { manager } = await fixture({ initialMode: 'bypassPermissions' })
+
+    expect(
+      await manager.permissions(sessionId).resolve({
+        id: 'bypass-bash',
+        name: 'Bash',
+        input: { command: 'printf ok' },
+      }),
+    ).toEqual({ behavior: 'allow' })
   })
 
   it('updates a session permission mode outside a model tool transition', async () => {

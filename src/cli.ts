@@ -40,6 +40,7 @@ import {
   loadClaudeSettings,
   loadClaudeSharedResources,
   resolveClaudeProjectMemoryDirectory,
+  type ClaudeJsonResource,
 } from './compatibility/claude/shared-resources.js'
 import {
   AgentRunCancelledError,
@@ -63,6 +64,11 @@ import {
   type TuiHookConfiguration,
 } from './cli/tui/hook-settings.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
+import {
+  applyRuntimeSettingDefaults,
+  loadRuntimeSettings,
+  runtimeSettingsSystemPrompt,
+} from './cli/tui/runtime-settings.js'
 import { createCliDebugSink } from './cli/debug.js'
 import {
   ClaudePermissionResolver,
@@ -79,9 +85,14 @@ import {
 } from './extensions/claude-extension-tools.js'
 import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
 import { ClaudeHookRunner } from './hooks/claude-hooks.js'
-import { ClaudeMcpToolRegistry } from './mcp/claude-mcp-tools.js'
+import {
+  ClaudeMcpToolRegistry,
+  type ClaudeMcpServerStatus,
+  type ClaudeMcpToolInspection,
+} from './mcp/claude-mcp-tools.js'
 import {
   ClaudeMcpManagement,
+  filterDisabledMcpResources,
   mcpScope,
   type McpServerRecord,
 } from './mcp/claude-mcp-management.js'
@@ -237,6 +248,7 @@ function createProviderForModel(
   providerEnvironment: ReturnType<typeof parseProviderEnvironment>,
   context: ReturnType<typeof parseContextEnvironment>,
   controls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>,
+  explicitThinkingControls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>,
 ): (selectedModel: string) => ModelProvider {
   return (selectedModel) => {
     const providerOptions = {
@@ -268,8 +280,8 @@ function createProviderForModel(
         })
       : new OpenAICompatibleProvider({
           ...providerOptions,
-          ...(controls.thinking === undefined &&
-          controls.maxThinkingTokens === undefined
+          ...(explicitThinkingControls.thinking === undefined &&
+          explicitThinkingControls.maxThinkingTokens === undefined
             ? {}
             : {
                 thinking: {
@@ -938,6 +950,12 @@ interface SessionCommands {
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
   changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
   recordCdUsage?(sessionId: string): Promise<void>
+  approveRecentlyDenied?(sessionId: string, display: string): Promise<void>
+  retryRecentlyDenied?(
+    sessionId: string,
+    display: string,
+    signal?: AbortSignal,
+  ): Promise<SessionRunResult>
   answerSideQuestion?(
     sessionId: string | undefined,
     question: string,
@@ -982,6 +1000,11 @@ interface SessionCommands {
   ): Promise<{ id: string; prompt: string } | null>
   slashCommands?(): readonly TuiSlashCommand[]
   hookConfiguration?(): Promise<TuiHookConfiguration>
+  mcpInspect?(): Promise<readonly ClaudeMcpServerStatus[]>
+  mcpReconnect?(name: string): Promise<void>
+  mcpAuthenticate?(name: string): Promise<void>
+  mcpReload?(): Promise<void>
+  mcpTools?(name: string): Promise<readonly ClaudeMcpToolInspection[]>
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
   agentDefinitions?(): readonly { name: string; description: string }[]
@@ -1027,6 +1050,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     model?: string
     effort?: CliControls['effort']
     permissionMode?: ClaudePermissionMode
+    isSessionActionApproved?: (call: ModelToolCall) => boolean
     controls?: CliControls
     interactive?: boolean
     sessionKind?: 'bg'
@@ -1085,6 +1109,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   model: interactiveModel,
   effort: interactiveEffort,
   permissionMode: interactivePermissionMode,
+  isSessionActionApproved,
   controls = DEFAULT_CLI_CONTROLS,
   interactive = false,
   sessionKind,
@@ -1111,9 +1136,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
     requestedConfigRoot || configuredRoot
       ? join(configRoot, '.claude.json')
       : resolve(homedir(), '.claude.json')
+  const runtimeSettings =
+    controls.safeMode || controls.bare
+      ? undefined
+      : await loadRuntimeSettings({ configRoot, statePath: claudeStatePath })
+  const runtimeSettingsPrompt = runtimeSettingsSystemPrompt(runtimeSettings)
   const cli = await resolveCliControls(
     {
-      ...controls,
+      ...applyRuntimeSettingDefaults(controls, runtimeSettings),
       ...(interactiveModel === undefined ? {} : { model: interactiveModel }),
       ...(interactiveEffort === undefined ? {} : { effort: interactiveEffort }),
       ...(interactivePermissionMode === undefined
@@ -1122,6 +1152,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
     },
     cwd,
   )
+  const effectiveAppendSystemPrompt = [
+    runtimeSettingsPrompt,
+    cli.appendSystemPrompt,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join('\n')
   const debug =
     cli.debug !== undefined || cli.debugFile !== undefined
       ? createCliDebugSink(eventSink, {
@@ -1168,6 +1204,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       providerEnvironment,
       context,
       cli,
+      controls,
     )
     const models = [model, ...(cli.fallbackModels ?? [])].filter(
       (candidate, index, all) => all.indexOf(candidate) === index,
@@ -1381,6 +1418,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         allowedTools: cli.allowedTools,
         disallowedTools: cli.disallowedTools,
         permissionMode,
+        ...(isSessionActionApproved ? { isSessionActionApproved } : {}),
         ...(permissionMode === 'auto'
           ? {
               autoClassifier:
@@ -1415,6 +1453,15 @@ const createDefaultService: CliDependencies['createService'] = async ({
     additionalReadDirectories: [claudeBackgroundTaskParent(cwd)],
     ...(environment ? { environment } : {}),
   })
+  const runtimeMcpResources = async (
+    candidates: readonly ClaudeJsonResource[],
+  ) => {
+    const management = new ClaudeMcpManagement({
+      configRoot,
+      cwd: workspace.cwd(),
+    })
+    return filterDisabledMcpResources(candidates, await management.disabled())
+  }
   const mcpTools = await ClaudeMcpToolRegistry.connect({
     base: cli.bare
       ? localTools
@@ -1422,11 +1469,46 @@ const createDefaultService: CliDependencies['createService'] = async ({
           base: localTools,
           provider: hostedToolProvider,
         }),
-    resources: resources.mcp,
+    resources: await runtimeMcpResources(resources.mcp),
+    reloadResources: async () => {
+      if (cli.strictMcpConfig) return runtimeMcpResources(cli.mcpResources)
+      const refreshed = await loadClaudeSharedResources({
+        configRoot,
+        cwd: workspace.cwd(),
+        claudeStatePath,
+        ...(automaticSettingSources === undefined
+          ? {}
+          : { settingSources: automaticSettingSources }),
+      })
+      return runtimeMcpResources([
+        ...refreshed.mcp,
+        ...pluginResources.mcp,
+        ...cli.mcpResources,
+      ])
+    },
     cwd,
     configRoot,
     onWarning: (message) => runtimeEventSink({ type: 'warning', message }),
     onPromptsChanged: (prompts) => extensions.setMcpPrompts(prompts),
+    authenticateServer: async (name) => {
+      const record = await new ClaudeMcpManagement({
+        configRoot,
+        cwd: workspace.cwd(),
+      }).get(name)
+      const server = mcpOAuthServerIdentity(record.name, record.config)
+      const oauth = mcpOauthOptions(record.config)
+      const clientSecret = oauth.clientId
+        ? await new ClaudeMcpOAuthStore({ configRoot }).readClientSecret(server)
+        : undefined
+      await authenticateMcpServer({
+        configRoot,
+        server,
+        ...oauth,
+        ...(clientSecret ? { clientSecret } : {}),
+        noBrowser: false,
+        write: (message) => process.stdout.write(message),
+      })
+    },
     ...(onElicitation ? { onElicitation } : {}),
     eventSink: runtimeEventSink,
     ...(signal ? { signal } : {}),
@@ -1505,6 +1587,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     )
     const selectedWorkflowTools = workflowToolNames.filter(
       (name) =>
+        (runtimeSettings?.workflows ?? true) &&
         cli.sessionPersistence &&
         !cli.bare &&
         (cli.tools === undefined ||
@@ -1590,6 +1673,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
             enabledTools: selectedInteractiveTools,
             callbacks: { askUser, approvePlan },
             permissionResolverForMode,
+            settings: {
+              useAutoModeDuringPlan:
+                runtimeSettings?.useAutoModeDuringPlan ?? true,
+            },
           })
         : undefined
     const service = new ClaudeSessionService({
@@ -1597,6 +1684,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       provider: hostedToolProvider,
       ...(providerForModel ? { providerForModel } : {}),
       tools: filteredTools,
+      mcp: mcpTools,
       permissions,
       permissionResolverForMode,
       extensions,
@@ -1610,6 +1698,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       enableWorktrees:
         cli.worktreeRequested || selectedWorktreeTools.length > 0,
       worktreeToolNames: selectedWorktreeTools,
+      ...(runtimeSettings
+        ? { worktreeBaseRef: runtimeSettings.worktreeBaseRef }
+        : {}),
       ...(interactiveTools ? { interactiveTools } : {}),
       ...(hooks ? { hooks } : {}),
       ...(agent ? { agent } : {}),
@@ -1625,9 +1716,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ...(cli.systemPrompt === undefined
           ? {}
           : { systemPrompt: cli.systemPrompt }),
-        ...(cli.appendSystemPrompt === undefined
-          ? {}
-          : { appendSystemPrompt: cli.appendSystemPrompt }),
+        ...(effectiveAppendSystemPrompt
+          ? { appendSystemPrompt: effectiveAppendSystemPrompt }
+          : {}),
       }),
       conditionalRuleResolver: new ClaudeConditionalRuleResolver({
         loadResources: loadContextResources,
@@ -1638,7 +1729,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(permissionApprover ? { approveTool: permissionApprover } : {}),
       ...(approveRecovery ? { approveRecovery } : {}),
       fileCheckpointing:
-        runtimeEnvironment.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING === 'true',
+        runtimeEnvironment.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING ===
+          'true' || runtimeSettings?.checkpoints === true,
+      autoCompact: runtimeSettings?.autoCompact ?? true,
       fileRewindRoots: [
         ...cli.additionalDirectories,
         ...(memoryDirectory ? [memoryDirectory] : []),
@@ -1736,6 +1829,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
       rewindPoints: (sessionId) => service.rewindPoints(sessionId),
       changeCwd: (sessionId, cwd) => service.changeCwd(sessionId, cwd),
       recordCdUsage: (sessionId) => service.recordCdUsage(sessionId),
+      approveRecentlyDenied: (sessionId, display) =>
+        service.approveRecentlyDenied(sessionId, display),
+      retryRecentlyDenied: (sessionId, display, retrySignal) =>
+        service.retryRecentlyDenied(sessionId, display, retrySignal),
       answerSideQuestion: (
         sessionId,
         question,
@@ -1804,6 +1901,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
           source: definition.kind,
         })),
       hookConfiguration: async () => projectTuiHooks(settings),
+      mcpInspect: () => service.mcpInspect(),
+      mcpReconnect: (name) => service.mcpReconnect(name),
+      mcpAuthenticate: (name) => service.mcpAuthenticate(name),
+      mcpReload: () => service.mcpReload(),
+      mcpTools: (name) => service.mcpTools(name),
+      taskSnapshots: (sessionId: string) => service.taskSnapshots(sessionId),
+      stopTask: (sessionId: string, taskId: string) =>
+        service.stopTask(sessionId, taskId),
       agentDefinitions: () => extensions.agentDefinitions(),
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
@@ -1874,6 +1979,7 @@ const createDefaultAutoModeCritic: NonNullable<
     apiKey,
     parseProviderEnvironment(process.env),
     parseContextEnvironment(process.env),
+    {},
     {},
   )(selectedModel)
 }
@@ -1980,6 +2086,7 @@ const defaultPluginEvalJudge: NonNullable<PluginEvalDependencies['judge']> = {
       apiKey,
       parseProviderEnvironment(environment),
       parseContextEnvironment(environment),
+      {},
       {},
     )(model)
     const prompt = `You are an eval judge. Return only JSON matching {"passed":boolean,"explanation":string}.
@@ -2628,7 +2735,13 @@ async function executeSelfUpdateCommand(
     if (operands.length > 0) {
       throw new Error(`${command} takes no operands`)
     }
-    const result = await dependencies.selfUpdate?.({ operation: 'update' })
+    const runtimeSettings = await loadRuntimeSettings()
+    const result = await dependencies.selfUpdate?.({
+      operation: 'update',
+      ...(runtimeSettings.autoUpdatesChannel === 'latest'
+        ? {}
+        : { target: runtimeSettings.autoUpdatesChannel }),
+    })
     if (!result) throw new Error('Self-update unavailable')
     if (json) writeJson(io, result)
     else io.stdout(`Praxis update completed: ${result.output}\n`)

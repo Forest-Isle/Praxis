@@ -4,6 +4,7 @@ import {
   readFile,
   realpath,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -16,6 +17,7 @@ import type { RuntimeEvent } from '../core/runtime.js'
 import {
   BackgroundBashManager,
   claudeBackgroundTaskParent,
+  claudeBackgroundTaskRoot,
 } from './background-bash-manager.js'
 
 const roots: string[] = []
@@ -74,6 +76,18 @@ describe('BackgroundBashManager', () => {
         exitCode: 0,
       },
     })
+    await expect(manager.snapshots()).resolves.toEqual([
+      expect.objectContaining({
+        taskId: launch.taskId,
+        status: 'completed',
+        command: "printf 'BG_START\\n'; sleep 0.05; printf 'BG_END\\n'",
+        description: 'Emit markers',
+        output: 'BG_START\nBG_END\n',
+        exitCode: 0,
+        startedAt: expect.any(Number),
+        durationMs: expect.any(Number),
+      }),
+    ])
     await expect(manager.notifications(true)).resolves.toEqual([])
     await expect(manager.notifications(false)).resolves.toEqual([])
     expect(events).toContainEqual(
@@ -296,6 +310,50 @@ describe('BackgroundBashManager', () => {
       expect.stringContaining(`<task-id>${launch.taskId}</task-id>`),
     ])
     await expect(reopened.notifications(false)).resolves.toEqual([])
+  })
+
+  it('uses a legacy state file timestamp as a stable creation fallback', async () => {
+    const { cwd, sessionId, stateRoot } = await createManager()
+    const taskId = 'b12345678'
+    const sessionStateRoot = join(stateRoot, sessionId)
+    const stateFile = join(sessionStateRoot, `${taskId}.json`)
+    const outputFile = join(
+      claudeBackgroundTaskRoot(cwd, sessionId),
+      `${taskId}.output`,
+    )
+    await mkdir(sessionStateRoot, { recursive: true })
+    await writeFile(
+      stateFile,
+      JSON.stringify({
+        version: 1,
+        taskId,
+        command: 'printf legacy',
+        description: 'Legacy task',
+        toolUseId: 'call_legacy',
+        outputFile,
+        status: 'completed',
+        output: 'legacy',
+        exitCode: 0,
+        notified: false,
+      }),
+    )
+    const expected = Math.floor((await stat(stateFile)).mtimeMs)
+    const reopened = new BackgroundBashManager({ cwd, sessionId, stateRoot })
+
+    await expect(reopened.snapshots()).resolves.toEqual([
+      expect.objectContaining({ taskId, startedAt: expected }),
+    ])
+    await expect(reopened.notifications(false)).resolves.toEqual([
+      expect.stringContaining(`<task-id>${taskId}</task-id>`),
+    ])
+    const restarted = new BackgroundBashManager({ cwd, sessionId, stateRoot })
+    await expect(restarted.snapshots()).resolves.toEqual([
+      expect.objectContaining({ taskId, startedAt: expected }),
+    ])
+    await expect(restarted.notifications(false)).resolves.toEqual([])
+    await expect(reopened.snapshots()).resolves.toEqual([
+      expect.objectContaining({ taskId, startedAt: expected }),
+    ])
   })
 
   it('ignores malformed persisted task state while hydrating notifications', async () => {

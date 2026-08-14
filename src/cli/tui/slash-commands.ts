@@ -116,6 +116,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'theme',
+    description: 'Change the theme',
+    source: 'builtin',
+  },
+  {
     name: 'skills',
     description: 'List available skills',
     source: 'builtin',
@@ -168,6 +173,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
     name: 'workflows',
     description: 'Browse running and completed workflows',
+    source: 'builtin',
+  },
+  {
+    name: 'tui',
+    description: 'Switch between the default and fullscreen renderers',
     source: 'builtin',
   },
   {
