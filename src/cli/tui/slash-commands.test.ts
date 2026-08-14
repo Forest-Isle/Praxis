@@ -5,6 +5,7 @@ import {
   mergeTuiSlashCommands,
   slashCommandQuery,
 } from './slash-commands.js'
+import { CLAUDE_2_1_208_COMMAND_BY_NAME } from './claude-command-inventory.js'
 
 describe('TUI slash command catalog', () => {
   it('keeps built-ins authoritative and normalizes extension names', () => {
@@ -34,7 +35,6 @@ describe('TUI slash command catalog', () => {
     })
     expect(commands.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
-        'background',
         'context',
         'status',
         'theme',
@@ -43,14 +43,16 @@ describe('TUI slash command catalog', () => {
         'tasks',
         'plan',
         'hooks',
-        'tui',
       ]),
     )
-    expect(commands.find((command) => command.name === 'background')).toEqual({
-      name: 'background',
-      description: 'Send this session to the background and free the terminal',
-      source: 'builtin',
-    })
+    for (const command of commands.filter(
+      (candidate) => candidate.source === 'builtin',
+    )) {
+      expect(
+        CLAUDE_2_1_208_COMMAND_BY_NAME.get(command.name),
+        `/${command.name} must come from the Claude 2.1.208 source registry`,
+      ).toMatchObject({ disposition: 'included' })
+    }
     expect(
       commands.find((command) => command.name === 'output-style'),
     ).toBeUndefined()

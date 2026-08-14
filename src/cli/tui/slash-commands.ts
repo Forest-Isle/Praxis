@@ -24,16 +24,6 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
-    name: 'background',
-    description: 'Send this session to the background and free the terminal',
-    source: 'builtin',
-  },
-  {
-    name: 'cd',
-    description: 'Change the current working directory',
-    source: 'builtin',
-  },
-  {
     name: 'help',
     description: 'Show help and available commands',
     source: 'builtin',
@@ -131,11 +121,6 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
-    name: 'skill',
-    description: 'List available skills',
-    source: 'builtin',
-  },
-  {
     name: 'mcp',
     description: 'Manage MCP servers',
     source: 'builtin',
@@ -146,11 +131,6 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
-    name: 'reload-skills',
-    description: 'Pick up skills added or changed on disk during this session',
-    source: 'builtin',
-  },
-  {
     name: 'rename',
     description: 'Rename the current conversation',
     source: 'builtin',
@@ -158,11 +138,6 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
     name: 'rewind',
     description: 'Restore the code and/or conversation to an earlier point',
-    source: 'builtin',
-  },
-  {
-    name: 'usage',
-    description: 'Show session cost, model usage, and activity stats',
     source: 'builtin',
   },
   {
@@ -178,11 +153,6 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
     name: 'workflows',
     description: 'Browse running and completed workflows',
-    source: 'builtin',
-  },
-  {
-    name: 'tui',
-    description: 'Switch between the default and fullscreen renderers',
     source: 'builtin',
   },
   {
