@@ -4,9 +4,121 @@ import {
   autoModePermissionOutcome,
   permissionDecisionSource,
 } from '../core/runtime.js'
-import { ClaudePermissionResolver } from './claude-permission-resolver.js'
+import {
+  claudePermissionRuleMatches,
+  ClaudePermissionResolver,
+} from './claude-permission-resolver.js'
 
 describe('ClaudePermissionResolver', () => {
+  it('matches exact command, domain, and filesystem permission rules', () => {
+    expect(
+      claudePermissionRuleMatches(
+        'Bash(npm test)',
+        { id: 'bash', name: 'Bash', input: { command: 'npm test' } },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Bash(npm test)',
+        { id: 'bash-other', name: 'Bash', input: { command: 'npm test:e2e' } },
+        '/workspace',
+      ),
+    ).toBe(false)
+    expect(
+      claudePermissionRuleMatches(
+        'WebFetch(domain:*.example.com)',
+        {
+          id: 'fetch',
+          name: 'WebFetch',
+          input: { url: 'https://docs.example.com/guide' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Read(src/**)',
+        {
+          id: 'read',
+          name: 'Read',
+          input: { file_path: '/workspace/src/index.ts' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'PowerShell(Get-ChildItem)',
+        {
+          id: 'powershell',
+          name: 'PowerShell',
+          input: { command: 'Get-ChildItem' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Skill(reviewer)',
+        {
+          id: 'skill',
+          name: 'Skill',
+          input: { skill: 'reviewer' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+  })
+
+  it.each(['default', 'manual'] as const)(
+    'honors immediate session approvals in %s mode',
+    async (permissionMode) => {
+      const call = {
+        id: 'bash-approved',
+        name: 'Bash',
+        input: { command: 'npm test' },
+      }
+      await expect(
+        new ClaudePermissionResolver({
+          cwd: '/workspace',
+          settings: [],
+          permissionMode,
+          isSessionActionApproved: (candidate) => candidate === call,
+        }).resolve(call),
+      ).resolves.toEqual({ behavior: 'allow' })
+    },
+  )
+
+  it('keeps explicit deny and plan-mode restrictions ahead of session approval', async () => {
+    const bash = {
+      id: 'bash-denied',
+      name: 'Bash',
+      input: { command: 'rm output.txt' },
+    }
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        disallowedTools: ['Bash(rm *)'],
+        isSessionActionApproved: () => true,
+      }).resolve(bash),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'plan',
+        isSessionActionApproved: () => true,
+      }).resolve({
+        id: 'write-plan',
+        name: 'Write',
+        input: { file_path: '/workspace/output.txt', content: 'value' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+  })
+
   it('allows Agent by default while preserving explicit deny rules', async () => {
     const call = { id: 'agent', name: 'Agent', input: {} }
     await expect(

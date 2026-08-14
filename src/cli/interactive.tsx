@@ -42,6 +42,7 @@ import type {
 } from '../tools/claude-interactive-tools.js'
 import {
   claudePermissionActionKey,
+  claudePermissionRuleMatches,
   type ClaudePermissionMode,
 } from '../permissions/claude-permission-resolver.js'
 import {
@@ -204,6 +205,10 @@ import {
   type TuiElicitationFormState,
 } from './tui/mcp-elicitation.js'
 import { openTuiUrl } from './tui/open-url.js'
+import {
+  projectTuiToolPermission,
+  ToolPermissionDialog,
+} from './tui/tool-permission.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
 import {
   loadConfigSettings,
@@ -1200,7 +1205,18 @@ export function InteractiveApp({
   const permissionRef = useRef<PendingPermission | null>(null)
   const [permissionSelection, setPermissionSelection] = useState(0)
   const [permissionFeedbackMode, setPermissionFeedbackMode] = useState(false)
-  const alwaysAllowedToolNamesRef = useRef(new Set<string>())
+  const immediatePermissionRulesRef = useRef<string[]>([])
+  const toolPermissionModel = useMemo(
+    () =>
+      permission?.kind === 'tool'
+        ? projectTuiToolPermission(
+            permission.call,
+            runtimeCwd,
+            sensitiveValues,
+          )
+        : null,
+    [permission, runtimeCwd, sensitiveValues],
+  )
   const [elicitation, setElicitation] = useState<PendingElicitation | null>(
     null,
   )
@@ -2288,7 +2304,12 @@ export function InteractiveApp({
   }
 
   const isSessionActionApproved = (call: ModelToolCall): boolean => {
-    if (alwaysAllowedToolNamesRef.current.has(call.name)) return true
+    if (
+      immediatePermissionRulesRef.current.some((rule) =>
+        claudePermissionRuleMatches(rule, call, runtimeCwdRef.current),
+      )
+    )
+      return true
     const activeSessionId = sessionIdRef.current
     return activeSessionId
       ? (approvedSessionActionsRef.current
@@ -3671,12 +3692,21 @@ export function InteractiveApp({
     }
 
     if (permission) {
-      const optionCount = permission.kind === 'tool' ? 3 : 2
+      const options =
+        permission.kind === 'tool' && toolPermissionModel
+          ? toolPermissionModel.options
+          : [
+              { action: 'allow-once' as const, label: 'Yes' },
+              { action: 'deny' as const, label: 'No' },
+            ]
+      const optionCount = options.length
       const resolvePermission = (selectedIndex: number) => {
         const feedback = inputRef.current.trim()
         clearComposerInput()
         setPermissionFeedbackMode(false)
-        if (selectedIndex === 0) {
+        const selected = options[selectedIndex]
+        if (!selected) return
+        if (selected.action === 'allow-once') {
           permission.resolve(
             feedback
               ? { behavior: 'allow', feedback }
@@ -3684,15 +3714,20 @@ export function InteractiveApp({
           )
           return
         }
-        if (permission.kind === 'tool' && selectedIndex === 1) {
+        if (
+          permission.kind === 'tool' &&
+          selected.action === 'persist-rule' &&
+          selected.rule
+        ) {
+          const rule = selected.rule
           const saving = (async () => {
             try {
               await permissionStore.add({
                 behavior: 'allow',
-                rule: permission.call.name,
+                rule,
                 scope: 'local',
               })
-              alwaysAllowedToolNamesRef.current.add(permission.call.name)
+              immediatePermissionRulesRef.current.push(rule)
               permission.resolve({ behavior: 'allow' })
             } catch (error) {
               warn(error)
@@ -3700,6 +3735,38 @@ export function InteractiveApp({
           })()
           onTurnChange?.(saving)
           void saving.finally(() => onTurnChange?.(null))
+          return
+        }
+        if (
+          permission.kind === 'tool' &&
+          selected.action === 'allow-session-action' &&
+          selected.rule
+        ) {
+          immediatePermissionRulesRef.current.push(selected.rule)
+          permission.resolve({ behavior: 'allow' })
+          return
+        }
+        if (
+          permission.kind === 'tool' &&
+          selected.action === 'allow-session-edits'
+        ) {
+          for (const rule of ['Write', 'Edit', 'NotebookEdit']) {
+            if (!immediatePermissionRulesRef.current.includes(rule))
+              immediatePermissionRulesRef.current.push(rule)
+          }
+          updateRuntimePreferences((current) => ({
+            ...current,
+            permissionMode: 'acceptEdits',
+          }))
+          permission.resolve({ behavior: 'allow' })
+          const activeSessionId = sessionIdRef.current
+          if (activeSessionId && serviceRef.current?.setPermissionMode) {
+            const saving = serviceRef.current
+              .setPermissionMode(activeSessionId, 'acceptEdits')
+              .catch((error: unknown) => warn(error))
+            onTurnChange?.(saving)
+            void saving.finally(() => onTurnChange?.(null))
+          }
           return
         }
         permission.resolve(
@@ -3727,7 +3794,8 @@ export function InteractiveApp({
         setPermissionSelection((current) => (current + 1) % optionCount)
       } else if (
         key.tab &&
-        (permission.kind !== 'tool' || permissionSelection !== 1)
+        (options[permissionSelection]?.action === 'allow-once' ||
+          options[permissionSelection]?.action === 'deny')
       ) {
         clearComposerInput()
         setPermissionFeedbackMode(true)
@@ -3735,7 +3803,7 @@ export function InteractiveApp({
         resolvePermission(0)
       } else if (lower === 'n') {
         resolvePermission(optionCount - 1)
-      } else if (/^[1-3]$/u.test(value)) {
+      } else if (/^[1-9]$/u.test(value)) {
         const selectedIndex = Number(value) - 1
         if (selectedIndex < optionCount) resolvePermission(selectedIndex)
       } else if (key.return) {
@@ -6321,27 +6389,31 @@ export function InteractiveApp({
             memoryEditorRequest !== null ? (
               <ExternalEditorWait screenReader={axScreenReader} />
             ) : permission ? (
-              <DialogFrame
-                title={
-                  permission.kind === 'recovery'
-                    ? `Retry interrupted ${permission.call.name}?`
-                    : 'Tool use'
-                }
-                screenReader={axScreenReader}
-              >
-                <Box flexDirection="column" paddingX={1} paddingY={1}>
-                  <Text bold>
-                    {describeTool(permission.call, sensitiveValues)}
-                  </Text>
-                </Box>
-                <Text>Do you want to proceed?</Text>
-                <Text
-                  inverse={!axScreenReader && permissionSelection === 0}
+              permission.kind === 'tool' && toolPermissionModel ? (
+                <ToolPermissionDialog
+                  model={toolPermissionModel}
+                  selection={permissionSelection}
+                  feedbackMode={permissionFeedbackMode}
+                  feedback={input}
+                  screenReader={axScreenReader}
+                />
+              ) : (
+                <DialogFrame
+                  title={`Retry interrupted ${permission.call.name}?`}
+                  screenReader={axScreenReader}
                 >
-                  {selectionPrefix(permissionSelection === 0, axScreenReader)}
-                  1. Yes
-                </Text>
-                {permission.kind === 'tool' ? (
+                  <Box flexDirection="column" paddingX={1} paddingY={1}>
+                    <Text bold>
+                      {describeTool(permission.call, sensitiveValues)}
+                    </Text>
+                  </Box>
+                  <Text>Do you want to proceed?</Text>
+                  <Text
+                    inverse={!axScreenReader && permissionSelection === 0}
+                  >
+                    {selectionPrefix(permissionSelection === 0, axScreenReader)}
+                    1. Yes
+                  </Text>
                   <Text
                     inverse={!axScreenReader && permissionSelection === 1}
                   >
@@ -6349,40 +6421,24 @@ export function InteractiveApp({
                       permissionSelection === 1,
                       axScreenReader,
                     )}
-                    2. Yes, and don't ask again for{' '}
-                    <Text bold>{permission.call.name}</Text> commands in{' '}
-                    <Text bold>{runtimeCwd}</Text>
+                    2. No
                   </Text>
-                ) : null}
-                <Text
-                  inverse={
-                    !axScreenReader &&
-                    permissionSelection ===
-                      (permission.kind === 'tool' ? 2 : 1)
-                  }
-                >
-                  {selectionPrefix(
-                    permissionSelection ===
-                      (permission.kind === 'tool' ? 2 : 1),
-                    axScreenReader,
-                  )}
-                  {permission.kind === 'tool' ? '3' : '2'}. No
-                </Text>
-                {permissionFeedbackMode ? (
-                  <Text>
-                    ›{' '}
-                    {input ||
-                      (permissionSelection === 0
-                        ? 'tell Praxis what to do next'
-                        : 'tell Praxis what to do differently')}
+                  {permissionFeedbackMode ? (
+                    <Text>
+                      ›{' '}
+                      {input ||
+                        (permissionSelection === 0
+                          ? 'tell Praxis what to do next'
+                          : 'tell Praxis what to do differently')}
+                    </Text>
+                  ) : null}
+                  <Text dimColor>
+                    {permissionFeedbackMode
+                      ? 'Enter to submit · Tab to collapse · Esc to cancel'
+                      : 'Enter to confirm · Tab to add feedback · Esc to cancel'}
                   </Text>
-                ) : null}
-                <Text dimColor>
-                  {permissionFeedbackMode
-                    ? 'Enter to submit · Tab to collapse · Esc to cancel'
-                    : 'Enter to confirm · Tab to add feedback · Esc to cancel'}
-                </Text>
-              </DialogFrame>
+                </DialogFrame>
+              )
             ) : planApproval ? (
               <DialogFrame
                 title="Ready to code?"

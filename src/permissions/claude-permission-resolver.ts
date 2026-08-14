@@ -204,8 +204,12 @@ function globExpression(pattern: string): RegExp {
 }
 
 function permissionTarget(call: ModelToolCall): string | null {
-  if (call.name === 'Bash') {
+  if (call.name === 'Bash' || call.name === 'PowerShell') {
     return typeof call.input.command === 'string' ? call.input.command : null
+  }
+  if (call.name === 'Skill') {
+    const skill = call.input.skill ?? call.input.name
+    return typeof skill === 'string' ? skill : null
   }
   if (call.name === 'Agent') {
     return typeof call.input.subagent_type === 'string'
@@ -277,6 +281,18 @@ function matchesRule(
     if (!isAbsolute(target)) target = resolve(cwd, target)
   }
   return globExpression(permissionPattern).test(target)
+}
+
+export function claudePermissionRuleMatches(
+  rule: string,
+  call: ModelToolCall,
+  cwd: string,
+  homeDirectory = homedir(),
+): boolean {
+  const parsed = readRuleStrings([rule], 'allow')[0]
+  return parsed
+    ? matchesRule(parsed, call, resolve(cwd), resolve(homeDirectory))
+    : false
 }
 
 export class ClaudePermissionResolver implements PermissionResolver {
@@ -351,6 +367,9 @@ export class ClaudePermissionResolver implements PermissionResolver {
       )
     }
 
+    if (this.isSessionActionApproved?.(call)) {
+      return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
+    }
     if (matchingRule('ask')) return this.askDecision(call, 'rule')
     if (
       matchingRule('allow') &&
@@ -372,9 +391,6 @@ export class ClaudePermissionResolver implements PermissionResolver {
       this.shouldClassify(call) &&
       this.autoClassifier
     ) {
-      if (this.isSessionActionApproved?.(call)) {
-        return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
-      }
       try {
         const decision = await this.autoClassifier({
           call,

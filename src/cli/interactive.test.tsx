@@ -5121,11 +5121,11 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Tool use')
+    expect(app.lastFrame()).toContain('Bash command')
     expect(app.lastFrame()).toContain('npm test')
     expect(app.lastFrame()).toContain('Selected: 1. Yes')
     expect(app.lastFrame()).toContain(
-      "Yes, and don't ask again for Bash commands",
+      "Yes, and don't ask again for npm test",
     )
     expect(app.lastFrame()).not.toContain('❯')
 
@@ -5133,7 +5133,7 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(suspendProcess).toHaveBeenCalledOnce()
-    expect(app.lastFrame()).toContain('Tool use')
+    expect(app.lastFrame()).toContain('Bash command')
 
     app.stdin.write('y')
     await flush()
@@ -5141,7 +5141,7 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('done')
   })
 
-  it('persists the generic permission always-allow option and applies it immediately', async () => {
+  it('persists an exact Bash rule and applies it immediately', async () => {
     const added: unknown[] = []
     const approvals: PermissionApproval[] = []
     const call: ModelToolCall = {
@@ -5161,7 +5161,6 @@ describe('InteractiveApp', () => {
                   isSessionActionApproved?.({
                     ...call,
                     id: 'call-later',
-                    input: { command: 'npm run lint' },
                   }),
                 ).toBe(true)
                 return {
@@ -5201,10 +5200,155 @@ describe('InteractiveApp', () => {
     app.stdin.write('2')
     await flush()
     expect(added).toEqual([
-      { behavior: 'allow', rule: 'Bash', scope: 'local' },
+      { behavior: 'allow', rule: 'Bash(npm test)', scope: 'local' },
     ])
     expect(approvals).toEqual([{ behavior: 'allow' }])
     expect(app.lastFrame()).toContain('done')
+  })
+
+  it('shows file diffs and allows all edits for the current session', async () => {
+    const approvals: PermissionApproval[] = []
+    const edit: ModelToolCall = {
+      id: 'edit-once',
+      name: 'Edit',
+      input: {
+        file_path: '/work/project/index.ts',
+        old_string: 'const before = 1',
+        new_string: 'const after = 2',
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool, isSessionActionApproved }) {
+            return {
+              async run() {
+                const approval = await approveTool?.(edit)
+                if (approval !== undefined) approvals.push(approval)
+                expect(
+                  isSessionActionApproved?.({
+                    id: 'write-later',
+                    name: 'Write',
+                    input: {
+                      file_path: '/work/project/output.ts',
+                      content: 'export {}',
+                    },
+                  }),
+                ).toBe(true)
+                return {
+                  sessionId: 'session-edits',
+                  text: 'edited',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        display={{ cwd: '/work/project', version: 'test' }}
+      />,
+    )
+
+    app.stdin.write('edit')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Edit file')
+    expect(app.lastFrame()).toContain('- const before = 1')
+    expect(app.lastFrame()).toContain('+ const after = 2')
+    expect(app.lastFrame()).toContain('allow all edits during this session')
+
+    app.stdin.write('2')
+    await flush()
+    expect(approvals).toEqual([{ behavior: 'allow' }])
+    expect(app.lastFrame()).toContain('edited')
+  })
+
+  it('persists WebFetch permission by domain and applies it immediately', async () => {
+    const added: unknown[] = []
+    const first: ModelToolCall = {
+      id: 'fetch-first',
+      name: 'WebFetch',
+      input: { url: 'https://docs.example.com/one', prompt: 'Read it' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool, isSessionActionApproved }) {
+            return {
+              async run() {
+                await approveTool?.(first)
+                expect(
+                  isSessionActionApproved?.({
+                    ...first,
+                    id: 'fetch-second',
+                    input: {
+                      url: 'https://docs.example.com/two',
+                      prompt: 'Read more',
+                    },
+                  }),
+                ).toBe(true)
+                expect(
+                  isSessionActionApproved?.({
+                    ...first,
+                    id: 'fetch-other',
+                    input: { url: 'https://example.net', prompt: 'No' },
+                  }),
+                ).toBe(false)
+                return {
+                  sessionId: 'session-fetch',
+                  text: 'fetched',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add(input) {
+            added.push(input)
+          },
+        }}
+        display={{ cwd: '/work/project', version: 'test' }}
+      />,
+    )
+
+    app.stdin.write('fetch')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Fetch')
+    expect(app.lastFrame()).toContain('docs.example.com')
+    app.stdin.write('2')
+    await flush()
+    expect(added).toEqual([
+      {
+        behavior: 'allow',
+        rule: 'WebFetch(domain:docs.example.com)',
+        scope: 'local',
+      },
+    ])
+    expect(app.lastFrame()).toContain('fetched')
   })
 
   it('returns generic permission feedback with its selected decision', async () => {
