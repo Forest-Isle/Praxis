@@ -32,6 +32,26 @@ describe('Bash AST permission analysis', () => {
     })
   })
 
+  it('includes declaration, test, and unset command forms', () => {
+    expect(
+      analyzeBashCommands('export FOO=bar; [[ -f package.json ]]; unset FOO'),
+    ).toEqual({
+      parsed: true,
+      commands: ['export FOO=bar', '[[ -f package.json ]]', 'unset FOO'],
+    })
+  })
+
+  it('resolves sequential literal variables into command names and arguments', () => {
+    expect(
+      analyzeBashCommands(
+        'TARGET=/etc/passwd && cat $TARGET; SUB=push; git $SUB --force; V=rm; $V output',
+      ),
+    ).toEqual({
+      parsed: true,
+      commands: ['cat /etc/passwd', 'git push --force', 'rm output'],
+    })
+  })
+
   it('keeps redirections attached to the executable permission unit', () => {
     expect(analyzeBashCommands('npm test > output.log 2>&1')).toEqual({
       parsed: true,
@@ -105,6 +125,21 @@ describe('Bash AST permission analysis', () => {
     ["printf -v 'arr[$(id)]' value", 'array subscript'],
     ['read "name\n# hidden"', 'hide arguments'],
     ['echo\u00a0hidden', 'Unicode whitespace'],
+    ['echo ~[dynamic]', 'zsh dynamic directory'],
+    ['=curl example.com', 'zsh equals expansion'],
+    ['function hidden(){ rm output.txt; }', 'function definition'],
+    ['cat <<EOF\n$(id)\nEOF', 'unquoted delimiter'],
+    ['echo $(git status)', 'bare command substitution'],
+    ["[[ 'arr[$(id)]' -eq 0 ]]", 'array subscript'],
+    ['declare -n target=value', 'changes assignment semantics'],
+    ["declare 'arr[$(id)]=value'", 'array subscript'],
+    ["wait -p 'arr[$(id)]'", 'array subscript'],
+    ["test -R 'arr[$(id)]'", 'array subscript'],
+    ['printf -varr[$(id)] value', 'array subscript'],
+    ["read 'arr[$(id)]'", 'array subscript'],
+    ['VAR=safe cmd && rm $VAR', 'statically analyzed'],
+    ['A=x || rm $A', 'statically analyzed'],
+    ["ARGS='-rf /'; rm $ARGS", 'statically analyzed'],
   ])('fails closed for semantic hazard %s', (source, reason) => {
     expect(validateBashSemantics(source)).toMatchObject({
       safe: false,
@@ -120,7 +155,11 @@ describe('Bash AST permission analysis', () => {
     'nice -10 git status',
     'stdbuf -o0 -e L npm test',
     'env -i -u HOME FOO=bar npm test',
-    'echo $(git status)',
+    'echo "status: $(git status)"',
+    "cat <<'EOF'\n$(not-executed)\nEOF",
+    'TARGET=/etc/passwd && cat $TARGET',
+    'V=printf; $V value',
+    "read -p '[safe prompt]' name",
   ])('accepts statically modeled command %s', (source) => {
     expect(validateBashSemantics(source)).toEqual({ safe: true })
   })

@@ -76,19 +76,34 @@ const EVAL_LIKE_BUILTINS = new Set([
   'let',
 ])
 
+const SUBSCRIPT_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  test: new Set(['-v', '-R']),
+  '[': new Set(['-v', '-R']),
+  '[[': new Set(['-v', '-R']),
+  printf: new Set(['-v']),
+  read: new Set(['-a']),
+  unset: new Set(['-v']),
+  wait: new Set(['-p']),
+}
+
+const READ_VALUE_FLAGS = new Set(['-p', '-d', '-n', '-N', '-t', '-u', '-i'])
+
 type StaticValue = { ok: true; value: string } | { ok: false; nodeType: string }
 
 export type BashSemanticResult =
   { safe: true } | { safe: false; reason: string }
 
+const EMPTY_VARIABLE_SCOPE: ReadonlyMap<string, string> = new Map()
+
 function staticNodeValue(
   node: SyntaxNode,
   substitutions: boolean,
+  scope: ReadonlyMap<string, string> = EMPTY_VARIABLE_SCOPE,
 ): StaticValue {
   if (node.type === 'command_name') {
     const child = node.namedChild(0)
     return child
-      ? staticNodeValue(child, substitutions)
+      ? staticNodeValue(child, substitutions, scope)
       : { ok: false, nodeType: node.type }
   }
   if (
@@ -108,12 +123,21 @@ function staticNodeValue(
   if (node.type === 'command_substitution' && substitutions) {
     return { ok: true, value: SUBSTITUTION_PLACEHOLDER }
   }
+  if (node.type === 'simple_expansion') {
+    const name = node.namedChildren.find(
+      (child) => child.type === 'variable_name',
+    )?.text
+    const value = name ? scope.get(name) : undefined
+    return value === undefined
+      ? { ok: false, nodeType: node.type }
+      : { ok: true, value }
+  }
   if (node.type === 'string') {
     let value = ''
     let cursor = node.startIndex + 1
     for (const child of node.namedChildren) {
       value += sourceSlice(node, cursor, child.startIndex)
-      const part = staticNodeValue(child, substitutions)
+      const part = staticNodeValue(child, substitutions, scope)
       if (!part.ok) return part
       value += part.value
       cursor = child.endIndex
@@ -127,7 +151,7 @@ function staticNodeValue(
   if (node.type === 'concatenation') {
     let value = ''
     for (const child of node.namedChildren) {
-      const part = staticNodeValue(child, substitutions)
+      const part = staticNodeValue(child, substitutions, scope)
       if (!part.ok) return part
       value += part.value
     }
@@ -142,15 +166,31 @@ function sourceSlice(node: SyntaxNode, start: number, end: number): string {
   return node.text.slice(relativeStart, relativeEnd)
 }
 
-function commandArgv(node: SyntaxNode): StaticValue & { argv?: string[] } {
+function commandArgv(
+  node: SyntaxNode,
+  scope: ReadonlyMap<string, string> = EMPTY_VARIABLE_SCOPE,
+): StaticValue & { argv?: string[] } {
   const nameNode = node.childForFieldName('name')
   if (!nameNode) return { ok: false, nodeType: node.type }
-  const name = staticNodeValue(nameNode, false)
+  const name = staticNodeValue(nameNode, false, scope)
   if (!name.ok) return name
+  if (/[ \t\n*?[\]]/u.test(name.value)) {
+    return { ok: false, nodeType: 'simple_expansion' }
+  }
   const argv = [name.value]
   for (const argument of node.childrenForFieldName('argument')) {
-    const value = staticNodeValue(argument, true)
+    const value = staticNodeValue(
+      argument,
+      argument.type === 'string' || argument.type === 'concatenation',
+      scope,
+    )
     if (!value.ok) return value
+    if (
+      argument.type === 'simple_expansion' &&
+      /[ \t\n*?[\]]/u.test(value.value)
+    ) {
+      return { ok: false, nodeType: 'simple_expansion' }
+    }
     argv.push(value.value)
   }
   return { ok: true, value: name.value, argv }
@@ -325,25 +365,51 @@ function firstSemanticFailure(argv: readonly string[]): string | undefined {
       return 'jq file-loading flags cannot be automatically approved'
     }
   }
-  const subscriptFlag =
-    command === 'printf'
-      ? '-v'
-      : ['test', '[', '[['].includes(command)
-        ? '-v'
-        : undefined
-  if (subscriptFlag) {
-    const index = normalized.argv.indexOf(subscriptFlag)
-    if (index >= 0 && normalized.argv[index + 1]?.includes('[')) {
-      return `${command} ${subscriptFlag} operand contains array subscript`
+  const subscriptFlags = SUBSCRIPT_FLAGS[command]
+  if (subscriptFlags) {
+    for (let index = 1; index < normalized.argv.length; index += 1) {
+      const argument = normalized.argv[index] ?? ''
+      for (const flag of subscriptFlags) {
+        if (argument === flag && normalized.argv[index + 1]?.includes('[')) {
+          return `${command} ${flag} operand contains array subscript`
+        }
+        if (
+          flag.length === 2 &&
+          argument.startsWith(flag) &&
+          argument.length > 2 &&
+          argument.includes('[')
+        ) {
+          return `${command} ${flag} fused operand contains array subscript`
+        }
+        if (
+          argument.length > 2 &&
+          argument.startsWith('-') &&
+          !argument.startsWith('--') &&
+          argument.includes(flag.slice(1)) &&
+          normalized.argv[index + 1]?.includes('[')
+        ) {
+          return `${command} combined ${flag} operand contains array subscript`
+        }
+      }
     }
   }
-  if (
-    (command === 'read' || command === 'unset') &&
-    normalized.argv
-      .slice(1)
-      .some((arg) => !arg.startsWith('-') && arg.includes('['))
-  ) {
-    return `${command} operand contains array subscript`
+  if (command === 'read' || command === 'unset') {
+    let skipNext = false
+    for (const argument of normalized.argv.slice(1)) {
+      if (skipNext) {
+        skipNext = false
+        continue
+      }
+      if (argument.startsWith('-')) {
+        if (command === 'read' && READ_VALUE_FLAGS.has(argument)) {
+          skipNext = true
+        }
+        continue
+      }
+      if (argument.includes('[')) {
+        return `${command} positional operand contains array subscript`
+      }
+    }
   }
   for (const argument of normalized.argv) {
     if (PROC_ENVIRON.test(argument)) return 'Accesses /proc/*/environ'
@@ -362,7 +428,14 @@ function permissionUnit(node: SyntaxNode): SyntaxNode {
 function commandNodes(root: SyntaxNode): readonly SyntaxNode[] {
   const commands: SyntaxNode[] = []
   const visit = (node: SyntaxNode) => {
-    if (node.type === 'command') commands.push(permissionUnit(node))
+    if (
+      node.type === 'command' ||
+      node.type === 'declaration_command' ||
+      node.type === 'test_command' ||
+      node.type === 'unset_command'
+    ) {
+      commands.push(permissionUnit(node))
+    }
     for (const child of node.namedChildren) visit(child)
   }
   visit(root)
@@ -377,6 +450,93 @@ function rawCommandNodes(root: SyntaxNode): readonly SyntaxNode[] {
   }
   visit(root)
   return commands
+}
+
+function nearestControlNode(node: SyntaxNode): SyntaxNode | null {
+  let parent = node.parent
+  while (parent) {
+    if (
+      [
+        'if_statement',
+        'while_statement',
+        'for_statement',
+        'subshell',
+        'command_substitution',
+      ].includes(parent.type)
+    ) {
+      return parent
+    }
+    parent = parent.parent
+  }
+  return null
+}
+
+function scopeBarrier(source: string): boolean {
+  return (
+    /\|\||(^|[^|])\|([^|]|$)|(^|[^&])&([^&]|$)/u.test(source) ||
+    /\b(?:else|elif|fi|done)\b/u.test(source)
+  )
+}
+
+function standaloneAssignments(root: SyntaxNode): readonly SyntaxNode[] {
+  const assignments: SyntaxNode[] = []
+  const visit = (node: SyntaxNode) => {
+    if (
+      node.type === 'variable_assignment' &&
+      node.parent?.type !== 'command'
+    ) {
+      assignments.push(node)
+      return
+    }
+    for (const child of node.namedChildren) visit(child)
+  }
+  visit(root)
+  return assignments.sort((left, right) => left.startIndex - right.startIndex)
+}
+
+function variableScopeForCommand(
+  root: SyntaxNode,
+  command: SyntaxNode,
+  source: string,
+): ReadonlyMap<string, string> {
+  const scope = new Map<string, string>()
+  const commandControl = nearestControlNode(command)
+  for (const assignment of standaloneAssignments(root)) {
+    if (assignment.endIndex > command.startIndex) break
+    const assignmentControl = nearestControlNode(assignment)
+    if (assignmentControl && assignmentControl !== commandControl) continue
+    const between = source.slice(assignment.endIndex, command.startIndex)
+    if (scopeBarrier(between)) continue
+    const name = assignment.childForFieldName('name')?.text
+    if (!name || new RegExp(`\\bunset[ \\t]+${name}\\b`, 'u').test(between)) {
+      if (name) scope.delete(name)
+      continue
+    }
+    const valueNode = assignment.childForFieldName('value')
+    if (!valueNode) {
+      scope.set(name, '')
+      continue
+    }
+    const value = staticNodeValue(valueNode, true, scope)
+    if (value.ok) scope.set(name, value.value)
+  }
+  return scope
+}
+
+function shellQuoted(argument: string): string {
+  if (argument !== '' && !/["'\\ \t\n$`;|&<>(){}*?[\]~#]/u.test(argument)) {
+    return argument
+  }
+  return `'${argument.replace(/'/gu, `'\\''`)}'`
+}
+
+function resolvedCommandText(
+  node: SyntaxNode,
+  argv: readonly string[],
+): string {
+  return /\$[A-Za-z_]/u.test(node.text)
+    ? argv.map(shellQuoted).join(' ')
+    : node.text
 }
 
 export interface BashStaticCommand {
@@ -423,7 +583,10 @@ export function analyzeBashStructure(source: string): BashStaticAnalysis {
   }
   const commands: BashStaticCommand[] = []
   for (const node of nodes) {
-    const parsed = commandArgv(node)
+    const parsed = commandArgv(
+      node,
+      variableScopeForCommand(tree.rootNode, node, source),
+    )
     if (!parsed.ok || !parsed.argv) {
       return {
         parsed: false,
@@ -432,7 +595,10 @@ export function analyzeBashStructure(source: string): BashStaticAnalysis {
           : 'Command cannot be statically analyzed',
       }
     }
-    commands.push({ text: node.text, argv: parsed.argv })
+    commands.push({
+      text: resolvedCommandText(node, parsed.argv),
+      argv: parsed.argv,
+    })
   }
 
   const redirects: BashStaticRedirect[] = []
@@ -476,6 +642,15 @@ export function validateBashSemantics(source: string): BashSemanticResult {
       reason: 'Backslash-escaped whitespace cannot be statically analyzed',
     }
   }
+  if (/~\[/u.test(source)) {
+    return {
+      safe: false,
+      reason: 'Command contains zsh dynamic directory syntax',
+    }
+  }
+  if (/(?:^|[\s;&|])=[A-Za-z_]/u.test(source)) {
+    return { safe: false, reason: 'Command contains zsh equals expansion' }
+  }
 
   const tree = parser.parse(source)
   if (tree.rootNode.hasError) {
@@ -498,6 +673,51 @@ export function validateBashSemantics(source: string): BashSemanticResult {
     ) {
       structuralFailure = 'Command contains brace expansion'
       return
+    }
+    if (node.type === 'function_definition' || node.type === 'case_statement') {
+      structuralFailure = `${node.type === 'function_definition' ? 'Shell function definition' : 'Case statement'} cannot be statically analyzed`
+      return
+    }
+    if (node.type === 'heredoc_redirect') {
+      const start = node.namedChildren.find(
+        (child) => child.type === 'heredoc_start',
+      )?.text
+      const quoted =
+        start !== undefined &&
+        ((start.startsWith("'") && start.endsWith("'")) ||
+          (start.startsWith('"') && start.endsWith('"')) ||
+          start.startsWith('\\'))
+      if (!quoted) {
+        structuralFailure =
+          'Heredoc with unquoted delimiter undergoes shell expansion'
+        return
+      }
+    }
+    if (node.type === 'declaration_command') {
+      if (/^(?:declare|typeset|local)\s+-[A-Za-z]*[niaA]/u.test(node.text)) {
+        structuralFailure =
+          'Declaration flag changes assignment semantics and cannot be statically analyzed'
+        return
+      }
+      if (
+        /^(?:declare|typeset|local)\b/u.test(node.text) &&
+        /(?:^|\s)["']?[^=\s"']*\[/u.test(node.text)
+      ) {
+        structuralFailure =
+          'Declaration operand contains array subscript evaluation'
+        return
+      }
+    }
+    if (node.type === 'test_command') {
+      const text = node.text
+      if (
+        /(?:-v|-R)\s+["']?[^\s"']*\[/u.test(text) ||
+        /["']?[^\s"']*\[[^\s]*\s+(?:-eq|-ne|-lt|-le|-gt|-ge)\b/u.test(text) ||
+        /\b(?:-eq|-ne|-lt|-le|-gt|-ge)\s+["']?[^\s"']*\[/u.test(text)
+      ) {
+        structuralFailure = 'Test operand contains array subscript evaluation'
+        return
+      }
     }
     if (node.type === 'file_redirect') {
       const destination = node.childForFieldName('destination')
@@ -524,14 +744,22 @@ export function validateBashSemantics(source: string): BashSemanticResult {
   if (structuralFailure) return { safe: false, reason: structuralFailure }
 
   for (const command of commands) {
-    const parsed = commandArgv(command)
+    const scope = variableScopeForCommand(tree.rootNode, command, source)
+    const parsed = commandArgv(command, scope)
     if (!parsed.ok || !parsed.argv) {
+      const nameNode = command.childForFieldName('name')
+      const parsedName = nameNode
+        ? staticNodeValue(nameNode, false, scope)
+        : undefined
+      const failureNode = !parsed.ok ? parsed.nodeType : command.type
       return {
         safe: false,
         reason:
-          command.childForFieldName('name') && !parsed.ok
-            ? `Command name is runtime-determined (${parsed.nodeType})`
-            : 'Command cannot be statically analyzed',
+          parsedName && !parsedName.ok
+            ? `Command name is runtime-determined (${failureNode})`
+            : failureNode === 'command_substitution'
+              ? 'Command contains bare command substitution that cannot be statically analyzed'
+              : 'Command cannot be statically analyzed',
       }
     }
     const failure = firstSemanticFailure(parsed.argv)
@@ -552,6 +780,19 @@ export function analyzeBashCommands(source: string): BashCommandAnalysis {
   if (tree.rootNode.hasError) {
     return { commands: [trimmed], parsed: false }
   }
+  const staticAnalysis = analyzeBashStructure(source)
+  const resolvedByCommand = new Map<string, string>()
+  if (staticAnalysis.parsed) {
+    rawCommandNodes(tree.rootNode).forEach((node, index) => {
+      const resolved = staticAnalysis.commands[index]
+      if (resolved && resolved.text !== node.text) {
+        resolvedByCommand.set(
+          `${node.startIndex}:${node.endIndex}`,
+          resolved.text,
+        )
+      }
+    })
+  }
   const ranges = new Map<string, SyntaxNode>()
   for (const node of commandNodes(tree.rootNode)) {
     ranges.set(`${node.startIndex}:${node.endIndex}`, node)
@@ -561,7 +802,19 @@ export function analyzeBashCommands(source: string): BashCommandAnalysis {
       (left, right) =>
         left.startIndex - right.startIndex || right.endIndex - left.endIndex,
     )
-    .map((node) => source.slice(node.startIndex, node.endIndex).trim())
+    .map((node) => {
+      const command =
+        node.type === 'command'
+          ? node
+          : rawCommandNodes(node).find(
+              (candidate) => candidate.startIndex >= node.startIndex,
+            )
+      return (
+        (command
+          ? resolvedByCommand.get(`${command.startIndex}:${command.endIndex}`)
+          : undefined) ?? source.slice(node.startIndex, node.endIndex)
+      ).trim()
+    })
     .filter(Boolean)
   if (commands.length > MAX_BASH_PERMISSION_COMMANDS) {
     return { commands: [trimmed], parsed: false }

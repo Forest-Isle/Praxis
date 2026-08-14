@@ -86,25 +86,37 @@ async function runReadProbe({ cwd, configRoot, path, expectedBehavior }) {
   }
 }
 
-async function runBashProbe({ cwd, configRoot, command }) {
-  const response = await runClaudeJson(
-    [
-      '-p',
-      '--model',
-      'haiku',
-      '--max-turns',
-      '2',
-      '--tools',
-      'Bash',
-      '--permission-mode',
-      'dontAsk',
-      '--output-format',
-      'json',
-      `Use the Bash tool exactly once with this exact command: ${command}`,
-    ],
-    cwd,
-    configRoot,
-  )
+async function runBashProbe({
+  cwd,
+  configRoot,
+  command,
+  expectedBehavior = 'allow',
+}) {
+  let response
+  try {
+    response = await runClaudeJson(
+      [
+        '-p',
+        '--model',
+        'haiku',
+        '--max-turns',
+        '2',
+        '--tools',
+        'Bash',
+        '--permission-mode',
+        'dontAsk',
+        '--output-format',
+        'json',
+        `Use the Bash tool exactly once with this exact command: ${command}`,
+      ],
+      cwd,
+      configRoot,
+    )
+  } catch (error) {
+    const stdout = String(error?.stdout ?? '').trim()
+    if (expectedBehavior === 'allow' || !stdout) throw error
+    response = JSON.parse(stdout)
+  }
   if (typeof response.session_id !== 'string') {
     throw new Error('Claude Bash permission probe returned no session ID')
   }
@@ -126,15 +138,29 @@ async function runBashProbe({ cwd, configRoot, command }) {
         block.input?.command === command,
     )
   if (!toolCall) throw new Error(`Claude did not call Bash with ${command}`)
-  const result = entries
-    .flatMap(contentBlocks)
-    .find(
+  const resultEntry = entries.find((entry) =>
+    contentBlocks(entry).some(
       (block) =>
         block.type === 'tool_result' && block.tool_use_id === toolCall.id,
-    )
-  if (!result || result.is_error === true) {
+    ),
+  )
+  const result = contentBlocks(resultEntry).find(
+    (block) =>
+      block.type === 'tool_result' && block.tool_use_id === toolCall.id,
+  )
+  const behaviorMatches =
+    expectedBehavior === 'allow'
+      ? result?.is_error !== true
+      : expectedBehavior === 'ask'
+        ? result?.is_error === true &&
+          resultEntry?.toolDenialKind === 'permission-rule' &&
+          String(result.content).includes("running in don't ask mode")
+        : result?.is_error === true &&
+          resultEntry?.toolDenialKind === 'permission-rule' &&
+          String(result.content).includes('has been denied')
+  if (!result || !behaviorMatches) {
     throw new Error(
-      `Claude Bash :* permission mismatch: ${JSON.stringify(result)}`,
+      `Claude Bash ${expectedBehavior} mismatch for ${command}: ${JSON.stringify({ resultEntry, result })}`,
     )
   }
 }
@@ -150,11 +176,18 @@ try {
   const askedPath = join(cwd, 'asked.txt')
   const deniedPath = join(cwd, 'denied.txt')
   const bashCommand = 'printf praxis-permission allowed-argument'
+  const wrappedBashCommand = 'timeout 1 sleep 0'
+  const deniedBashCommand = 'CUSTOM_ENV=value printf praxis-denied argument'
+  const redirectedPath = join(probeRoot, 'outside.txt')
+  const redirectedBashCommand = `printf praxis-redirect > ${redirectedPath}`
   const userPermissions = {
     allow: [
       `Read(${permissionPath(join(cwd, 'allowed*'))})`,
       'Bash(printf praxis-permission:*)',
+      'Bash(sleep:*)',
+      `Bash(${redirectedBashCommand})`,
     ],
+    deny: ['Bash(printf praxis-denied:*)'],
   }
   const projectPermissions = {
     ask: [`Read(${permissionPath(askedPath)})`],
@@ -195,6 +228,9 @@ try {
     ['ask', 'Read', { file_path: askedPath }],
     ['deny', 'Read', { file_path: deniedPath }],
     ['allow', 'Bash', { command: bashCommand }],
+    ['allow', 'Bash', { command: wrappedBashCommand }],
+    ['deny', 'Bash', { command: deniedBashCommand }],
+    ['ask', 'Bash', { command: redirectedBashCommand }],
   ]
   for (const [expectedBehavior, name, input] of praxisCases) {
     const decision = await praxisResolver.resolve({
@@ -227,8 +263,21 @@ try {
     expectedBehavior: 'deny',
   })
   await runBashProbe({ cwd, configRoot, command: bashCommand })
+  await runBashProbe({ cwd, configRoot, command: wrappedBashCommand })
+  await runBashProbe({
+    cwd,
+    configRoot,
+    command: deniedBashCommand,
+    expectedBehavior: 'deny',
+  })
+  await runBashProbe({
+    cwd,
+    configRoot,
+    command: redirectedBashCommand,
+    expectedBehavior: 'ask',
+  })
   console.log(
-    `Claude ${version} permission compatibility passed: user/project allow, ask, deny, // paths, glob, and Bash :*`,
+    `Claude ${version} permission compatibility passed: user/project allow, ask, deny, // paths, glob, Bash :*, wrappers, env-deny, and redirect path constraints`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

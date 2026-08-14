@@ -112,10 +112,13 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   writes, tool-specific Bash/PowerShell/file/notebook/WebFetch/Skill approval
   dialogs, editable reusable shell and Skill rules, source-root-aware Claude
   file-rule matching, atomic session permission updates, compound-shell rule
-  suggestions backed by a bounded Bash AST, live raw/resolved-path grants for
-  external directories, safe-property Skill auto-allow, interactive workspace-
-  directory add/remove controls, path confinement, credential redaction, and
-  sanitized child processes.
+  suggestions backed by a bounded Bash AST, source-shaped exact/prefix/wildcard
+  matching, wrapper and environment normalization, fail-closed Bash semantic
+  checks, argv-based command/redirection path validation, dangerous-removal and
+  sensitive-file gates, strict sed constraints, live raw/resolved-path grants
+  for external directories, safe-property Skill auto-allow, interactive
+  workspace-directory add/remove controls, path confinement, credential
+  redaction, and sanitized child processes.
 - **Durable local work** — resumable sessions, full-history forks, file
   checkpoints, tasks, foreground/background subagents, and top-level agents.
 - **Claude-compatible ecosystem** — shared instructions with recursive `@`

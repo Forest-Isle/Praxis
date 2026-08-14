@@ -346,6 +346,51 @@ describe('ClaudePermissionResolver', () => {
     ).resolves.toEqual({ behavior: 'allow' })
   })
 
+  it('uses tracked shell variables for deny matching and path validation', async () => {
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        disallowedTools: ['Bash(cat /etc/*)'],
+      }).resolve({
+        id: 'tracked-deny',
+        name: 'Bash',
+        input: { command: 'TARGET=/etc/passwd && cat $TARGET' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'acceptEdits',
+        allowedTools: ['Bash(rm:*)'],
+      }).resolve({
+        id: 'tracked-command-name',
+        name: 'Bash',
+        input: { command: 'COMMAND=rm; $COMMAND /' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('critical path'),
+    })
+
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+      }).resolve({
+        id: 'conditional-variable',
+        name: 'Bash',
+        input: { command: 'TARGET=safe || cat $TARGET' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('statically analyzed'),
+      suggestions: [],
+    })
+  })
+
   it.each(['default', 'manual'] as const)(
     'honors immediate session approvals in %s mode',
     async (permissionMode) => {

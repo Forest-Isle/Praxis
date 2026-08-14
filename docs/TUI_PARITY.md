@@ -302,13 +302,18 @@ is passed from the CLI composition root and never written to shared JSONL.
 - Tool permission choices return Claude-shaped ordered `PermissionUpdate[]`
   rather than mutating an unrelated TUI-only allowlist. A compound shell
   command applies all backend subcommand suggestions atomically; Bash command
-  units come from a bounded tree-sitter AST and fail closed on parse errors or
-  excessive fanout. A single Bash or PowerShell rule remains editable. File
-  approvals can combine `setMode(acceptEdits)` with `addDirectories`, while
-  outside reads add a session `Read(//absolute-directory/**)` rule. The
-  request-phase path parser canonicalizes targets for policy evaluation while
-  preserving source-shaped display paths, and the execution phase still
-  rejects unapproved roots.
+  units come from a bounded tree-sitter AST and fail closed on parse errors,
+  semantic ambiguity, unsafe wrapper flags, or excessive fanout. Bash rules
+  use Claude-compatible exact, legacy-prefix, and wildcard matching; deny/ask
+  checks normalize arbitrary leading environment assignments while allow
+  checks strip only the safe environment set. AST argv drives command-path and
+  output-redirection validation, including symlink representations, dangerous
+  removals, sensitive files, `cd` compounds, and strict sed constraints. A
+  single Bash or PowerShell rule remains editable. File approvals can combine
+  `setMode(acceptEdits)` with `addDirectories`, while outside reads add a
+  session `Read(//absolute-directory/**)` rule. The request-phase path parser
+  canonicalizes targets for policy evaluation while preserving source-shaped
+  display paths, and the execution phase still rejects unapproved roots.
   Session updates take effect for the current call and later calls without
   retiring the service and do not enter shared transcript JSONL.
 - The composer edits at its real Unicode code-point cursor. It supports arrow
