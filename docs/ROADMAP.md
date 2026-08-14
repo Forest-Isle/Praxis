@@ -1174,10 +1174,8 @@ Status: complete.
 - [x] SelectionMenu selection prefix + same-line description column match real
       capture (`  ❯ N. label` + fixed desc column) across theme/export/hooks
 - [x] /copy removed picker: direct copy + `Copied to clipboard (N characters, M lines)`
-- [x] /model matches real layout: "Select model" + 5-tier options + effort row
-      + Enter=default / s=session semantics via saveConfigSetting('model', ...)
-- [x] /context: no title, 5x5 usage grid, compact k-format, Memory files · /memory
-      + Skills Built-in sections
+- [x] /model matches real layout: "Select model" + 5-tier options + effort row + Enter=default / s=session semantics via saveConfigSetting('model', ...)
+- [x] /context: no title, 5x5 usage grid, compact k-format, Memory files · /memory + Skills Built-in sections
 - [x] /status: Session name, Auth token, Anthropic base URL, Proxy, Setting sources
       rows added (env-sourced), real row order
 - [x] /login: new dialog matching real title/body + 3 numbered methods + `·` desc,

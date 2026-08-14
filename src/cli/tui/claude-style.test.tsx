@@ -718,7 +718,9 @@ describe('Claude-style TUI components', () => {
       />,
     )
     expect(context.lastFrame()).toContain('Free space: 165.5k (82.8%)')
-    expect(context.lastFrame()).toContain('Autocompact buffer: 33k tokens (16.5%)')
+    expect(context.lastFrame()).toContain(
+      'Autocompact buffer: 33k tokens (16.5%)',
+    )
     expect(context.lastFrame()).toContain('Auto-compact window: 200k tokens')
     expect(context.lastFrame()).toContain('Memory files · /memory')
     expect(context.lastFrame()).toContain('Built-in')

@@ -177,12 +177,26 @@ export function WelcomePanel({
             marginTop={wide ? 0 : 1}
           >
             <Text bold>Tips for getting started</Text>
-            <Text>Run /init to create a CLAUDE.md file with instructions for Claude</Text>
+            <Text>
+              Run /init to create a CLAUDE.md file with instructions for Claude
+            </Text>
             <Text dimColor>───────────────────────</Text>
             <Text bold>What's new</Text>
-            <Text>{'Subagent forking is now on by default: a `subagent_type: "fork"` subagent inherits the full conversation and prompt cache, and non-teammate agent spawns in interactive sessions now run in the background by default'}</Text>
-            <Text>{'Type `@` in the prompt to mention another Claude session by name; Claude then uses `SendMessage` to reach that session directly'}</Text>
-            <Text>{'`SendMessage` now delivers to a bare name that exactly matches one live session, instead of asking to confirm with a ref first'}</Text>
+            <Text>
+              {
+                'Subagent forking is now on by default: a `subagent_type: "fork"` subagent inherits the full conversation and prompt cache, and non-teammate agent spawns in interactive sessions now run in the background by default'
+              }
+            </Text>
+            <Text>
+              {
+                'Type `@` in the prompt to mention another Claude session by name; Claude then uses `SendMessage` to reach that session directly'
+              }
+            </Text>
+            <Text>
+              {
+                '`SendMessage` now delivers to a bare name that exactly matches one live session, instead of asking to confirm with a ref first'
+              }
+            </Text>
             <Text dimColor>/release-notes for more</Text>
           </Box>
         </Box>

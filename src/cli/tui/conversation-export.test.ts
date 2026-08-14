@@ -35,7 +35,9 @@ describe('conversation export', () => {
     expect(text).toContain('Welcome back!')
     expect(text).toContain('fixture-model · medium effort')
     expect(text).toContain('/workspace')
-    expect(text).toContain('Tips for getting started: Run /init to create a CLAUDE.md file with instructions for Claude')
+    expect(text).toContain(
+      'Tips for getting started: Run /init to create a CLAUDE.md file with instructions for Claude',
+    )
     expect(text).toContain("What's new: Subagent forking on by default")
     expect(text).toContain('❯ Inspect this')
     expect(text).toContain('✻ Checking the files')
