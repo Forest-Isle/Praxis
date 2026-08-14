@@ -1115,4 +1115,79 @@ describe('ClaudePermissionResolver', () => {
       }),
     ).resolves.toEqual({ behavior: 'allow' })
   })
+
+  it('uses Bash AST units for nested commands, redirects, and parse failures', async () => {
+    const denied = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      disallowedTools: ['Bash(rm:*)'],
+    })
+    await expect(
+      denied.resolve({
+        id: 'nested-deny',
+        name: 'Bash',
+        input: { command: 'echo $(rm -rf build)' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+
+    const allowedPrefix = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Bash(npm test:*)', 'Bash(echo:*)'],
+    })
+    await expect(
+      allowedPrefix.resolve({
+        id: 'redirect',
+        name: 'Bash',
+        input: { command: 'npm test > output.log 2>&1' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      suggestions: [
+        {
+          type: 'addRules',
+          rules: [
+            {
+              toolName: 'Bash',
+              ruleContent: 'npm test > output.log 2>&1',
+            },
+          ],
+        },
+      ],
+    })
+    await expect(
+      allowedPrefix.resolve({
+        id: 'malformed',
+        name: 'Bash',
+        input: { command: "echo 'unterminated && rm -rf build" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it('blocks structural expansion of legacy wildcards but honors exact glob commands', async () => {
+    const legacy = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Bash(npm *)'],
+    })
+    await expect(
+      legacy.resolve({
+        id: 'legacy-compound',
+        name: 'Bash',
+        input: { command: 'npm test && rm generated.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        allowedTools: ['Bash(rm *.tmp > removed.log)'],
+      }).resolve({
+        id: 'exact-glob',
+        name: 'Bash',
+        input: { command: 'rm *.tmp > removed.log' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+  })
 })

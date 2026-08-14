@@ -68,23 +68,17 @@ export function claudeBashPermissionRuleContent(command: string): string {
   const executable = tokens[commandIndex]
   if (!executable || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(executable))
     return command
+  if (UNSAFE_BARE_SHELL_PREFIXES.has(executable)) return command
   const subcommand = tokens[commandIndex + 1]
   if (subcommand && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(subcommand)) {
     return `${executable} ${subcommand}:*`
   }
-  return UNSAFE_BARE_SHELL_PREFIXES.has(executable)
-    ? command
-    : `${executable}:*`
+  return `${executable}:*`
 }
 
 export function claudeBashPermissionSuggestionContent(command: string): string {
   const trimmed = command.trim()
-  if (trimmed.includes('\n')) {
-    const firstLine = trimmed.split('\n', 1)[0]?.trim()
-    return firstLine
-      ? claudeBashPermissionSuggestionContent(firstLine)
-      : trimmed
-  }
+  if (/[\n\r;|&<>`]|\$\(/u.test(trimmed)) return trimmed
   const tokens = trimmed.split(/\s+/u).filter(Boolean)
   let commandIndex = 0
   while (/^[A-Za-z_]\w*=/u.test(tokens[commandIndex] ?? '')) {
@@ -94,6 +88,7 @@ export function claudeBashPermissionSuggestionContent(command: string): string {
   }
   const executable = tokens[commandIndex]
   const subcommand = tokens[commandIndex + 1]
+  if (executable && UNSAFE_BARE_SHELL_PREFIXES.has(executable)) return trimmed
   if (
     executable &&
     /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(executable) &&

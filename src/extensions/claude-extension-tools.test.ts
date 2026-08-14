@@ -7,7 +7,7 @@ import {
   ClaudeExtensionToolRegistry,
 } from './claude-extension-tools.js'
 
-function catalog(disabled = false) {
+function catalog(disabled = false, extraFrontmatter = '') {
   return new ClaudeExtensionCatalog({
     agents: [],
     commands: [],
@@ -15,7 +15,7 @@ function catalog(disabled = false) {
       {
         path: '/config/skills/probe/SKILL.md',
         scope: 'user',
-        content: `---\nname: probe\ndescription: Probe skill.\ndisable-model-invocation: ${disabled}\n---\nMARKER [$ARGUMENTS]`,
+        content: `---\nname: probe\ndescription: Probe skill.\ndisable-model-invocation: ${disabled}\n${extraFrontmatter}---\nMARKER [$ARGUMENTS]`,
       },
     ],
   })
@@ -74,22 +74,45 @@ describe('ClaudeExtensionToolRegistry', () => {
 })
 
 describe('ClaudeExtensionPermissionResolver', () => {
-  it('delegates Skill and other tools to the source-aligned resolver', async () => {
+  it('auto-allows safe skills after preserving explicit base decisions', async () => {
     const base = {
+      resolve: vi.fn(() => ({ behavior: 'ask' as const })),
+    }
+    const resolver = new ClaudeExtensionPermissionResolver(base, catalog())
+    await expect(
+      resolver.resolve({
+        id: '1',
+        name: 'Skill',
+        input: { skill: 'probe' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({ id: '2', name: 'Agent', input: {} }),
+    ).resolves.toEqual({ behavior: 'ask' })
+  })
+
+  it('asks for skills with privileged properties and keeps deny precedence', async () => {
+    const ask = { resolve: vi.fn(() => ({ behavior: 'ask' as const })) }
+    const privilegedCatalog = catalog(false, 'allowed-tools: Bash\n')
+    await expect(
+      new ClaudeExtensionPermissionResolver(ask, privilegedCatalog).resolve({
+        id: 'privileged',
+        name: 'Skill',
+        input: { skill: 'probe' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      metadata: { command: { name: 'probe', permissionSafe: false } },
+    })
+    const deny = {
       resolve: vi.fn(() => ({ behavior: 'deny' as const, reason: 'x' })),
     }
-    const resolver = new ClaudeExtensionPermissionResolver(base)
-    expect(resolver.resolve({ id: '1', name: 'Skill', input: {} })).toEqual({
-      behavior: 'deny',
-      reason: 'x',
-    })
-    expect(resolver.resolve({ id: '2', name: 'Agent', input: {} })).toEqual({
-      behavior: 'deny',
-      reason: 'x',
-    })
-    expect(resolver.resolve({ id: '3', name: 'Read', input: {} })).toEqual({
-      behavior: 'deny',
-      reason: 'x',
-    })
+    await expect(
+      new ClaudeExtensionPermissionResolver(deny, catalog()).resolve({
+        id: 'denied',
+        name: 'Skill',
+        input: { skill: 'probe' },
+      }),
+    ).resolves.toEqual({ behavior: 'deny', reason: 'x' })
   })
 })

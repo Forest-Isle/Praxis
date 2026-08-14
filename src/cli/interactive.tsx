@@ -3742,9 +3742,7 @@ export function InteractiveApp({
         if (!selected) return
         if (selected.action === 'allow-once') {
           permission.resolve(
-            feedback
-              ? { behavior: 'allow', feedback }
-              : { behavior: 'allow' },
+            feedback ? { behavior: 'allow', feedback } : { behavior: 'allow' },
           )
           return
         }
@@ -3861,16 +3859,15 @@ export function InteractiveApp({
           }))
           permission.resolve({
             behavior: 'allow',
-            updatedPermissions:
-              selected.updates?.length
-                ? selected.updates
-                : [
-                    {
-                      type: 'setMode',
-                      mode: 'acceptEdits',
-                      destination: 'session',
-                    },
-                  ],
+            updatedPermissions: selected.updates?.length
+              ? selected.updates
+              : [
+                  {
+                    type: 'setMode',
+                    mode: 'acceptEdits',
+                    destination: 'session',
+                  },
+                ],
           })
           const activeSessionId = sessionIdRef.current
           if (activeSessionId && serviceRef.current?.setPermissionMode) {
@@ -3883,9 +3880,7 @@ export function InteractiveApp({
           return
         }
         permission.resolve(
-          feedback
-            ? { behavior: 'deny', message: feedback }
-            : false,
+          feedback ? { behavior: 'deny', message: feedback } : false,
         )
       }
       if (key.escape) {
@@ -3983,9 +3978,7 @@ export function InteractiveApp({
           editComposer()
         }
       } else if (key.upArrow) {
-        setPlanApprovalSelection((current) =>
-          current === 0 ? 2 : current - 1,
-        )
+        setPlanApprovalSelection((current) => (current === 0 ? 2 : current - 1))
       } else if (key.downArrow) {
         setPlanApprovalSelection((current) => (current + 1) % 3)
       } else if (key.tab) {
@@ -6544,19 +6537,12 @@ export function InteractiveApp({
                     </Text>
                   </Box>
                   <Text>Do you want to proceed?</Text>
-                  <Text
-                    inverse={!axScreenReader && permissionSelection === 0}
-                  >
+                  <Text inverse={!axScreenReader && permissionSelection === 0}>
                     {selectionPrefix(permissionSelection === 0, axScreenReader)}
                     1. Yes
                   </Text>
-                  <Text
-                    inverse={!axScreenReader && permissionSelection === 1}
-                  >
-                    {selectionPrefix(
-                      permissionSelection === 1,
-                      axScreenReader,
-                    )}
+                  <Text inverse={!axScreenReader && permissionSelection === 1}>
+                    {selectionPrefix(permissionSelection === 1, axScreenReader)}
                     2. No
                   </Text>
                   {permissionFeedbackMode ? (
@@ -6576,10 +6562,7 @@ export function InteractiveApp({
                 </DialogFrame>
               )
             ) : planApproval ? (
-              <DialogFrame
-                title="Ready to code?"
-                screenReader={axScreenReader}
-              >
+              <DialogFrame title="Ready to code?" screenReader={axScreenReader}>
                 <Text>Here is Praxis&apos;s plan:</Text>
                 {planApproval.request.plan ? (
                   <Box
@@ -6596,13 +6579,8 @@ export function InteractiveApp({
                   Praxis has written up a plan and is ready to execute. Would
                   you like to proceed?
                 </Text>
-                <Text
-                  inverse={!axScreenReader && planApprovalSelection === 0}
-                >
-                  {selectionPrefix(
-                    planApprovalSelection === 0,
-                    axScreenReader,
-                  )}
+                <Text inverse={!axScreenReader && planApprovalSelection === 0}>
+                  {selectionPrefix(planApprovalSelection === 0, axScreenReader)}
                   1.{' '}
                   {runtimeSettings.useAutoModeDuringPlan
                     ? 'Yes, and use auto mode'
@@ -6610,22 +6588,12 @@ export function InteractiveApp({
                       ? 'Yes, and bypass permissions'
                       : 'Yes, auto-accept edits'}
                 </Text>
-                <Text
-                  inverse={!axScreenReader && planApprovalSelection === 1}
-                >
-                  {selectionPrefix(
-                    planApprovalSelection === 1,
-                    axScreenReader,
-                  )}
+                <Text inverse={!axScreenReader && planApprovalSelection === 1}>
+                  {selectionPrefix(planApprovalSelection === 1, axScreenReader)}
                   2. Yes, manually approve edits
                 </Text>
-                <Text
-                  inverse={!axScreenReader && planApprovalSelection === 2}
-                >
-                  {selectionPrefix(
-                    planApprovalSelection === 2,
-                    axScreenReader,
-                  )}
+                <Text inverse={!axScreenReader && planApprovalSelection === 2}>
+                  {selectionPrefix(planApprovalSelection === 2, axScreenReader)}
                   3. No, keep planning
                 </Text>
                 {planApprovalFeedbackMode ? (

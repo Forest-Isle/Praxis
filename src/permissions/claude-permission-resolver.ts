@@ -292,6 +292,7 @@ function matchesRule(
   if (rule.pattern === null) return true
   let target = permissionTarget(call)
   if (target === null) return false
+  if (call.name === 'Bash' && rule.pattern === target) return true
   if (
     call.name === 'Bash' &&
     rule.behavior === 'allow' &&
@@ -456,7 +457,12 @@ export class ClaudePermissionResolver implements PermissionResolver {
       typeof call.input.command === 'string'
         ? call.input.command
         : undefined
-    const subcommands = command ? shellSubcommands(command) : []
+    const subcommands = command
+      ? shellSubcommands(
+          command,
+          call.name === 'PowerShell' ? 'powershell' : 'bash',
+        )
+      : []
     const subcommandCall = (subcommand: string): ModelToolCall => ({
       ...call,
       input: { ...call.input, command: subcommand },
@@ -541,6 +547,15 @@ export class ClaudePermissionResolver implements PermissionResolver {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
       }
+      const originalPath = context?.originalCall
+        ? permissionTarget(context.originalCall)
+        : null
+      const pathsToCheck = [
+        ...new Set([
+          ...(originalPath ? [resolve(cwd, originalPath)] : []),
+          absolutePath,
+        ]),
+      ]
       const write = ['Write', 'Edit', 'NotebookEdit'].includes(call.name)
       const roots = [
         cwd,
@@ -550,10 +565,15 @@ export class ClaudePermissionResolver implements PermissionResolver {
         ).map((directory) => resolve(cwd, directory)),
         ...(write ? [] : this.additionalReadDirectories),
       ]
-      const outside = !roots.some((root) => {
-        const child = relative(root, absolutePath)
-        return child === '' || (!child.startsWith('..') && !isAbsolute(child))
-      })
+      const outside = pathsToCheck.some(
+        (candidate) =>
+          !roots.some((root) => {
+            const child = relative(root, candidate)
+            return (
+              child === '' || (!child.startsWith('..') && !isAbsolute(child))
+            )
+          }),
+      )
       if (outside) {
         return annotatePermissionDecision(
           {
@@ -565,6 +585,8 @@ export class ClaudePermissionResolver implements PermissionResolver {
               write ? 'write' : 'read',
               permissionMode as PermissionMode,
               true,
+              pathsToCheck,
+              call.name === 'Glob' || call.name === 'Grep',
             ),
           },
           'default',

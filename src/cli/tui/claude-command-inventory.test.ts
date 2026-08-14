@@ -13,7 +13,10 @@ describe('Claude Code 2.1.208 external command inventory', () => {
     )
     for (const entry of CLAUDE_2_1_208_COMMAND_INVENTORY) {
       if (entry.disposition === 'excluded') {
-        expect(entry.reason, `/${entry.name} exclusion requires evidence`).toBeTruthy()
+        expect(
+          entry.reason,
+          `/${entry.name} exclusion requires evidence`,
+        ).toBeTruthy()
       }
     }
   })

@@ -8,6 +8,7 @@ import type {
   PermissionUpdateMode,
 } from '../core/runtime.js'
 import { claudeBashPermissionSuggestionContent } from './claude-shell-permission.js'
+import { analyzeBashCommands } from './bash-ast.js'
 
 export function permissionRuleValueToString(rule: PermissionRuleValue): string {
   if (!rule.ruleContent) return rule.toolName
@@ -195,8 +196,10 @@ export function effectiveAdditionalDirectories(
 export function readDirectoryPermissionUpdate(
   path: string,
   cwd: string,
-): PermissionUpdate | undefined {
-  const directory = dirname(resolve(cwd, path))
+  targetIsDirectory = false,
+): Extract<PermissionUpdate, { type: 'addRules' }> | undefined {
+  const absolute = resolve(cwd, path)
+  const directory = targetIsDirectory ? absolute : dirname(absolute)
   if (directory === dirname(directory)) return undefined
   const normalized = directory.replaceAll('\\', '/')
   return {
@@ -220,10 +223,27 @@ export function filePermissionSuggestions(
   operation: 'read' | 'write',
   mode: PermissionMode,
   outsideWorkingDirectory: boolean,
+  pathsToCheck: readonly string[] = [path],
+  targetIsDirectory = false,
 ): readonly PermissionUpdate[] {
   if (operation === 'read' && outsideWorkingDirectory) {
-    const update = readDirectoryPermissionUpdate(path, cwd)
-    return update ? [update] : []
+    const updates = pathsToCheck.flatMap((candidate) => {
+      const update = readDirectoryPermissionUpdate(
+        candidate,
+        cwd,
+        targetIsDirectory,
+      )
+      return update ? [update] : []
+    })
+    const seen = new Set<string>()
+    return updates.filter((update) => {
+      const rule = update.rules[0]
+      if (!rule) return false
+      const key = permissionRuleValueToString(rule)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
   }
   const updates: PermissionUpdate[] = []
   if (mode === 'default' || mode === 'plan') {
@@ -234,16 +254,21 @@ export function filePermissionSuggestions(
     })
   }
   if (operation === 'write' && outsideWorkingDirectory) {
+    const directories = [
+      ...new Set(
+        pathsToCheck.map((candidate) => dirname(resolve(cwd, candidate))),
+      ),
+    ]
     updates.push({
       type: 'addDirectories',
-      directories: [dirname(resolve(cwd, path))],
+      directories,
       destination: 'session',
     })
   }
   return updates
 }
 
-export function shellSubcommands(command: string): readonly string[] {
+function legacyShellSubcommands(command: string): readonly string[] {
   const commands: string[] = []
   let start = 0
   let quote: "'" | '"' | '`' | null = null
@@ -293,6 +318,15 @@ export function shellSubcommands(command: string): readonly string[] {
   return commands
 }
 
+export function shellSubcommands(
+  command: string,
+  shell: 'bash' | 'powershell' = 'bash',
+): readonly string[] {
+  return shell === 'bash'
+    ? analyzeBashCommands(command).commands
+    : legacyShellSubcommands(command)
+}
+
 const READ_ONLY_SHELL_COMMANDS = new Set([
   'cd',
   'echo',
@@ -312,6 +346,7 @@ function commandName(command: string): string {
 }
 
 export function shellCommandIsReadOnly(command: string): boolean {
+  if (/[<>`]|$\(|\|\||&&|[;|\n\r]/u.test(command)) return false
   return READ_ONLY_SHELL_COMMANDS.has(commandName(command))
 }
 
@@ -320,7 +355,10 @@ export function shellPermissionSuggestions(
   command: string,
   include: (subcommand: string) => boolean = () => true,
 ): readonly PermissionUpdate[] {
-  const parts = shellSubcommands(command)
+  const parts = shellSubcommands(
+    command,
+    toolName === 'Bash' ? 'bash' : 'powershell',
+  )
   const candidates = (parts.length > 0 ? parts : [command]).filter(
     (part) => !shellCommandIsReadOnly(part) && include(part),
   )

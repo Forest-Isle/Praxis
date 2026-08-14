@@ -64,6 +64,26 @@ describe('permission update runtime integration', () => {
       expect.objectContaining({
         behavior: 'ask',
         reason: 'Path is outside allowed working directories',
+        suggestions: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'addRules',
+            rules: [
+              {
+                toolName: 'Read',
+                ruleContent: `/${linked.replaceAll('\\', '/')}/**`,
+              },
+            ],
+          }),
+          expect.objectContaining({
+            type: 'addRules',
+            rules: [
+              {
+                toolName: 'Read',
+                ruleContent: `/${(await realpath(outside)).replaceAll('\\', '/')}/**`,
+              },
+            ],
+          }),
+        ]),
       }),
     ])
     expect(result).toMatchObject({ isError: false })
@@ -103,14 +123,18 @@ describe('permission update runtime integration', () => {
     )
     expect(read).toMatchObject({ content: '1\toutside', isError: false })
     const canonicalOutside = await realpath(outside)
-    expect(updates).toEqual([
-      {
-        type: 'addRules',
-        rules: [{ toolName: 'Read', ruleContent: `/${canonicalOutside}/**` }],
-        behavior: 'allow',
-        destination: 'session',
-      },
-    ])
+    const readRules = updates.filter((update) => update.type === 'addRules')
+    expect(readRules).toHaveLength(new Set([outside, canonicalOutside]).size)
+    expect(readRules).toEqual(
+      expect.arrayContaining(
+        [outside, canonicalOutside].map((directory) => ({
+          type: 'addRules',
+          rules: [{ toolName: 'Read', ruleContent: `/${directory}/**` }],
+          behavior: 'allow',
+          destination: 'session',
+        })),
+      ),
+    )
 
     const firstWrite = await runtime.executeDirectToolCall(
       {
@@ -135,7 +159,7 @@ describe('permission update runtime integration', () => {
     expect(firstWrite.isError).toBe(false)
     expect(updates).toContainEqual({
       type: 'addDirectories',
-      directories: [canonicalOutside],
+      directories: [...new Set([outside, canonicalOutside])],
       destination: 'session',
     })
 

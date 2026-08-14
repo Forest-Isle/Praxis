@@ -1427,6 +1427,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ...cli.additionalDirectories,
     ...(exposePlanDirectory ? [resolve(configRoot, 'plans')] : []),
   ]
+  const permissionAdditionalDirectories = [
+    ...initialAdditionalDirectories,
+    ...(memoryDirectory ? [memoryDirectory] : []),
+  ]
   const initialAdditionalReadDirectories = [claudeBackgroundTaskParent(cwd)]
   const permissionResolverForMode = (permissionMode: ClaudePermissionMode) =>
     new ClaudeExtensionPermissionResolver(
@@ -1436,7 +1440,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         settings,
         allowedTools: cli.allowedTools,
         disallowedTools: cli.disallowedTools,
-        additionalDirectories: initialAdditionalDirectories,
+        additionalDirectories: permissionAdditionalDirectories,
         additionalReadDirectories: initialAdditionalReadDirectories,
         permissionMode,
         ...(isSessionActionApproved ? { isSessionActionApproved } : {}),
@@ -1447,6 +1451,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
             }
           : {}),
       }),
+      extensions,
     )
   const permissions = permissionResolverForMode(
     cli.dangerouslySkipPermissions ? 'bypassPermissions' : cli.permissionMode,

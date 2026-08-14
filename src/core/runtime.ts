@@ -287,6 +287,7 @@ export interface ToolExecutionContext {
   messages?: readonly ModelMessage[]
   signal?: AbortSignal
   toolResultDirectory?: string
+  originalCall?: ModelToolCall
   permissionUpdates?: readonly PermissionUpdate[]
   permissionPhase?: 'request' | 'execute'
   permissionApproved?: boolean
@@ -374,6 +375,7 @@ export interface PermissionResolutionContext {
   cwd: string
   messages?: readonly ModelMessage[]
   signal?: AbortSignal
+  originalCall?: ModelToolCall
   permissionUpdates?: readonly PermissionUpdate[]
 }
 
@@ -1074,6 +1076,7 @@ export class AgentRuntime {
     const context: ToolExecutionContext = {
       cwd: request.cwd ?? '',
       messages,
+      originalCall: call,
       permissionPhase: 'request',
       permissionUpdates: request.permissionUpdates ?? [],
     }

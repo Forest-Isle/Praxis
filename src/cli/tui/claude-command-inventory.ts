@@ -97,7 +97,8 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     name: 'session',
     disposition: 'excluded',
     visibility: 'conditional',
-    reason: 'Remote-session URLs and QR codes are outside the local-only boundary.',
+    reason:
+      'Remote-session URLs and QR codes are outside the local-only boundary.',
   },
   { name: 'skills', disposition: 'included', visibility: 'visible' },
   { name: 'stats', disposition: 'included', visibility: 'visible' },
@@ -120,7 +121,8 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     name: 'feedback',
     disposition: 'excluded',
     visibility: 'conditional',
-    reason: 'Anthropic product-feedback submission is a hosted control-plane surface.',
+    reason:
+      'Anthropic product-feedback submission is a hosted control-plane surface.',
   },
   { name: 'review', disposition: 'included', visibility: 'visible' },
   {
@@ -131,24 +133,31 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
   },
   { name: 'rewind', disposition: 'included', visibility: 'visible' },
   { name: 'security-review', disposition: 'included', visibility: 'visible' },
-  { name: 'terminal-setup', disposition: 'included', visibility: 'conditional' },
+  {
+    name: 'terminal-setup',
+    disposition: 'included',
+    visibility: 'conditional',
+  },
   {
     name: 'upgrade',
     disposition: 'excluded',
     visibility: 'conditional',
-    reason: 'Claude subscription upgrades are outside the authentication boundary.',
+    reason:
+      'Claude subscription upgrades are outside the authentication boundary.',
   },
   {
     name: 'extra-usage',
     disposition: 'excluded',
     visibility: 'conditional',
-    reason: 'Claude subscription overage billing is outside the authentication boundary.',
+    reason:
+      'Claude subscription overage billing is outside the authentication boundary.',
   },
   {
     name: 'rate-limit-options',
     disposition: 'excluded',
     visibility: 'hidden',
-    reason: 'Claude subscription rate-limit purchasing is outside the authentication boundary.',
+    reason:
+      'Claude subscription rate-limit purchasing is outside the authentication boundary.',
   },
   {
     name: 'usage',
@@ -158,14 +167,29 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
   },
   { name: 'insights', disposition: 'included', visibility: 'visible' },
   { name: 'vim', disposition: 'included', visibility: 'visible' },
-  { name: 'web-setup', disposition: 'excluded', visibility: 'conditional', reason: 'Remote setup is outside the local-only boundary.' },
+  {
+    name: 'web-setup',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Remote setup is outside the local-only boundary.',
+  },
   { name: 'fork', disposition: 'included', visibility: 'conditional' },
   { name: 'buddy', disposition: 'included', visibility: 'conditional' },
   { name: 'proactive', disposition: 'included', visibility: 'conditional' },
   { name: 'brief', disposition: 'included', visibility: 'conditional' },
   { name: 'assistant', disposition: 'included', visibility: 'conditional' },
-  { name: 'remote-control', disposition: 'excluded', visibility: 'conditional', reason: 'Bridge mode is a remote-control surface.' },
-  { name: 'remote-control-server', disposition: 'excluded', visibility: 'conditional', reason: 'Remote Control is outside the local-only boundary.' },
+  {
+    name: 'remote-control',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Bridge mode is a remote-control surface.',
+  },
+  {
+    name: 'remote-control-server',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Remote Control is outside the local-only boundary.',
+  },
   { name: 'voice', disposition: 'included', visibility: 'conditional' },
   { name: 'think-back', disposition: 'included', visibility: 'conditional' },
   { name: 'thinkback-play', disposition: 'included', visibility: 'hidden' },
@@ -175,7 +199,8 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     name: 'privacy-settings',
     disposition: 'excluded',
     visibility: 'conditional',
-    reason: 'Claude subscriber privacy controls require the excluded account surface.',
+    reason:
+      'Claude subscriber privacy controls require the excluded account surface.',
   },
   { name: 'hooks', disposition: 'included', visibility: 'visible' },
   { name: 'export', disposition: 'included', visibility: 'visible' },

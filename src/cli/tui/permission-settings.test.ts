@@ -192,4 +192,60 @@ describe('TUI permission settings', () => {
       'Read',
     ])
   })
+
+  it('routes persistent destinations and ignores session-only sources', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-tui-permissions-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await persistTuiPermissionUpdates({
+      configRoot,
+      cwd,
+      updates: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Read' }],
+          behavior: 'allow',
+          destination: 'userSettings',
+        },
+        {
+          type: 'replaceRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'rm generated.txt' }],
+          behavior: 'deny',
+          destination: 'projectSettings',
+        },
+        {
+          type: 'addDirectories',
+          directories: ['/shared'],
+          destination: 'localSettings',
+        },
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Write' }],
+          behavior: 'allow',
+          destination: 'session',
+        },
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Edit' }],
+          behavior: 'allow',
+          destination: 'cliArg',
+        },
+      ],
+    })
+
+    expect(
+      JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8'))
+        .permissions,
+    ).toEqual({ allow: ['Read'] })
+    expect(
+      JSON.parse(await readFile(join(cwd, '.claude', 'settings.json'), 'utf8'))
+        .permissions,
+    ).toEqual({ deny: ['Bash(rm generated.txt)'] })
+    expect(
+      JSON.parse(
+        await readFile(join(cwd, '.claude', 'settings.local.json'), 'utf8'),
+      ).permissions,
+    ).toEqual({ additionalDirectories: ['/shared'] })
+  })
 })

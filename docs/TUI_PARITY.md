@@ -301,12 +301,14 @@ is passed from the CLI composition root and never written to shared JSONL.
   permission-mode control and writes native `permission-mode` records.
 - Tool permission choices return Claude-shaped ordered `PermissionUpdate[]`
   rather than mutating an unrelated TUI-only allowlist. A compound shell
-  command applies all backend subcommand suggestions atomically; a single Bash
-  or PowerShell rule remains editable. File approvals can combine
-  `setMode(acceptEdits)` with `addDirectories`, while outside reads add a
-  session `Read(//absolute-directory/**)` rule. The request-phase path parser
-  canonicalizes targets for policy evaluation while preserving source-shaped
-  display paths, and the execution phase still rejects unapproved roots.
+  command applies all backend subcommand suggestions atomically; Bash command
+  units come from a bounded tree-sitter AST and fail closed on parse errors or
+  excessive fanout. A single Bash or PowerShell rule remains editable. File
+  approvals can combine `setMode(acceptEdits)` with `addDirectories`, while
+  outside reads add a session `Read(//absolute-directory/**)` rule. The
+  request-phase path parser canonicalizes targets for policy evaluation while
+  preserving source-shaped display paths, and the execution phase still
+  rejects unapproved roots.
   Session updates take effect for the current call and later calls without
   retiring the service and do not enter shared transcript JSONL.
 - The composer edits at its real Unicode code-point cursor. It supports arrow

@@ -5231,6 +5231,89 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('done')
   })
 
+  it('forwards ordered permission updates across every destination', async () => {
+    const approvals: PermissionApproval[] = []
+    const suggestions = [
+      {
+        type: 'replaceRules' as const,
+        rules: [{ toolName: 'Read' }],
+        behavior: 'allow' as const,
+        destination: 'userSettings' as const,
+      },
+      {
+        type: 'removeRules' as const,
+        rules: [{ toolName: 'Bash', ruleContent: 'old:*' }],
+        behavior: 'deny' as const,
+        destination: 'projectSettings' as const,
+      },
+      {
+        type: 'addDirectories' as const,
+        directories: ['/shared'],
+        destination: 'localSettings' as const,
+      },
+      {
+        type: 'removeDirectories' as const,
+        directories: ['/old'],
+        destination: 'session' as const,
+      },
+      {
+        type: 'setMode' as const,
+        mode: 'default' as const,
+        destination: 'cliArg' as const,
+      },
+    ]
+    const call: ModelToolCall = {
+      id: 'permission-destinations',
+      name: 'Bash',
+      input: { command: 'custom-command' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool }) {
+            return {
+              async run() {
+                const approval = await approveTool?.(call, call, {
+                  behavior: 'ask',
+                  suggestions,
+                })
+                if (approval !== undefined) approvals.push(approval)
+                return {
+                  sessionId: 'session-destinations',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        display={{ cwd: '/work/project', version: 'test' }}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(approvals).toEqual([
+      { behavior: 'allow', updatedPermissions: suggestions },
+    ])
+    expect(app.lastFrame()).toContain('done')
+  })
+
   it('shows file diffs and allows all edits for the current session', async () => {
     const approvals: PermissionApproval[] = []
     const edit: ModelToolCall = {
