@@ -16,6 +16,7 @@ const entrypoints = []
 const seen = new Set()
 const retryableModelGates = new Set([
   'scripts/verify-claude-shared-resources.mjs',
+  'scripts/verify-image-compatibility.mjs',
 ])
 const maxDiagnosticsBytes = 64 * 1024
 const transientModelPatterns = [
@@ -23,6 +24,7 @@ const transientModelPatterns = [
   '"stop_reason":"tool_use"',
   'Reached maximum number of turns',
   'Claude memoryBoundary did not expose marker SHARED_MEMORY_LINE_',
+  'Claude reverse image resume did not expose marker PRAXIS_IMAGE_RESUME_OK',
 ]
 
 for (const [name, command] of Object.entries(packageDocument.scripts ?? {})) {
