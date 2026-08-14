@@ -17,8 +17,9 @@ export function conversationExportText(
     '│ Welcome back!',
     `│ ${display.model ?? 'provider default'} · ${display.effort ?? 'high'} effort`,
     `│ ${display.cwd}`,
-    '│ Tips for getting started: Run /help for commands',
-    '│ Shared with Claude Code: sessions, memory, skills',
+    '│ Tips for getting started: Run /init to create a CLAUDE.md file with instructions for Claude',
+    "│ What's new: Subagent forking on by default · Type `@` to mention another session · `SendMessage` delivers to bare names",
+    '│ /release-notes for more',
     '╰───',
     '',
   ]

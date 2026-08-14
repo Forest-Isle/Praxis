@@ -116,6 +116,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'login',
+    description: 'Choose how to sign in to Praxis',
+    source: 'builtin',
+  },
+  {
     name: 'theme',
     description: 'Change the theme',
     source: 'builtin',

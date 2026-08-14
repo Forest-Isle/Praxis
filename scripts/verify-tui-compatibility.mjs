@@ -1714,8 +1714,11 @@ send "/context"
 expect -re {Visualize current context usage}
 send "\r"
 set phase "context dialog"
-expect -re {Context Usage}
+expect -re {Free space.*\([0-9.]+%\)}
+expect -re {Autocompact buffer}
 expect -re {Auto-compact window}
+expect -re {Memory files · /memory}
+expect -re {Built-in}
 expect -re {Try.*review this project}
 after 100
 set phase "status dialog"
@@ -1724,6 +1727,9 @@ after 100
 send "\r"
 expect -re {Settings.*Status.*Config.*Usage.*Stats}
 expect -re {fixture-model}
+expect -re {Auth token:}
+expect -re {Anthropic base URL:}
+expect -re {Setting sources:}
 send "\033"
 expect -re {Try.*review this project}
 after 100
@@ -1733,6 +1739,17 @@ after 100
 send "\r"
 expect -re {Skills}
 expect -re {No skills found}
+send "\033"
+expect -re {Try.*review this project}
+after 100
+set phase "login dialog"
+send "/login"
+after 100
+send "\r"
+expect -re {Login}
+expect -re {Select login method:}
+expect -re {Claude account with subscription}
+expect -re {3rd-party platform}
 send "\033"
 expect -re {Try.*review this project}
 after 100
@@ -1950,12 +1967,7 @@ set phase "copy response"
 send "/copy"
 after 100
 send "\r"
-expect -re {Copy response}
-expect -re {Full response}
-expect -re {Enter copies.*Esc cancels}
-after 500
-send "\r"
-expect -re {Copied (last|full) response to clipboard}
+expect -re {Copied to clipboard \([0-9]+ characters, [0-9]+ lines\)}
 set phase "export conversation"
 send "/export"
 expect -re {Export the current conversation}

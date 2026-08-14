@@ -735,7 +735,8 @@ describe('InteractiveApp', () => {
     app.stdin.write('/context')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Context Usage')
+    expect(app.lastFrame()).toContain('Free space')
+    expect(app.lastFrame()).toContain('Built-in')
     expect(app.lastFrame()).toContain('review: ~')
     expect(serviceCreations).toBe(0)
 
@@ -744,6 +745,9 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Settings  Status  Config  Usage  Stats')
     expect(app.lastFrame()).toContain('fixture-model')
+    expect(app.lastFrame()).toContain('/rename to add a name')
+    expect(app.lastFrame()).toContain('Auth token:')
+    expect(app.lastFrame()).toContain('Setting sources:')
     app.stdin.write('\u001B[C')
     await flush()
     expect(app.lastFrame()).toContain('Context window:')
@@ -765,6 +769,32 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Background')
     expect(app.lastFrame()).toContain('task-1 [running] Audit TUI')
+    app.stdin.write('')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+
+    app.stdin.write('/login')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Login')
+    expect(app.lastFrame()).toContain('Select login method:')
+    expect(app.lastFrame()).toContain('Claude account with subscription')
+    expect(app.lastFrame()).toContain('3rd-party platform')
+    app.stdin.write('')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+
+    app.stdin.write('/login')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'Anthropic Console account requires a browser OAuth flow',
+    )
+
     expect(serviceCreations).toBe(1)
   })
 
@@ -1173,7 +1203,7 @@ describe('InteractiveApp', () => {
     await flush()
     expect(clipboardWriter).toHaveBeenCalledWith('older answer')
     expect(app.lastFrame()).toContain(
-      'Copied 2nd-latest response to clipboard.',
+      'Copied to clipboard (12 characters, 1 lines)',
     )
   })
 
@@ -3462,6 +3492,9 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Select model')
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\u001B[B')
     app.stdin.write('\u001B[B')
     app.stdin.write('\u001B[B')
     app.stdin.write('\r')

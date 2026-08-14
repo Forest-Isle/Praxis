@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import {
   autoUpdateTarget,
-  copyCandidates,
   externalEditorInitialContent,
   formatTurnDuration,
   questionTimeoutMilliseconds,
@@ -20,7 +19,7 @@ describe('runtime setting interaction projections', () => {
     expect(spinnerTip({ tips: false })).toBeUndefined()
   })
 
-  it('projects workflow policy and copy candidates', () => {
+  it('projects workflow policy', () => {
     expect(
       workflowRuntimeInstructions({
         workflows: true,
@@ -28,7 +27,6 @@ describe('runtime setting interaction projections', () => {
         workflowSizeGuideline: 'small',
       }),
     ).toContain('Do not infer')
-    expect(copyCandidates('text\n```ts\nconst answer = 1\n```')).toHaveLength(2)
   })
 
   it('adds the optional last response context to external-editor input and recaps sessions', () => {

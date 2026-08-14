@@ -1,12 +1,6 @@
 import type { TranscriptItem } from './claude-style.js'
 import type { PraxisRuntimeSettings } from './runtime-settings.js'
 
-export type CopyCandidate = {
-  label: string
-  description: string
-  text: string
-}
-
 const SPINNER_TIPS = [
   'Tip: use /help to browse local commands.',
   'Tip: use @ to attach a file or an agent definition.',
@@ -51,33 +45,6 @@ export function workflowRuntimeInstructions(
       ? 'No workflow size guideline is configured.'
       : `Prefer a ${settings.workflowSizeGuideline} workflow when creating a dynamic workflow unless the user explicitly asks otherwise.`
   return `Dynamic workflows are available for explicitly requested multi-step automation. ${keyword} ${size}`
-}
-
-export function copyCandidates(response: string): readonly CopyCandidate[] {
-  const candidates: CopyCandidate[] = [
-    {
-      label: 'Full response',
-      description: 'Copy the complete assistant response.',
-      text: response,
-    },
-  ]
-  const blocks = response.matchAll(/```[^\n]*\n([\s\S]*?)```/gu)
-  let index = 0
-  for (const block of blocks) {
-    const text = block[1] ?? ''
-    if (!text) continue
-    index += 1
-    candidates.push({
-      label: `Code block ${index}`,
-      description: `Copy code block ${index} only.`,
-      text,
-    })
-  }
-  return candidates
-}
-
-export function shouldShowCopyPicker(response: string): boolean {
-  return copyCandidates(response).length > 1
 }
 
 export function externalEditorInitialContent(

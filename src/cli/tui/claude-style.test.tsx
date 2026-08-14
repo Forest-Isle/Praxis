@@ -99,8 +99,9 @@ describe('Claude-style TUI components', () => {
     // Claude 2.1.208 launch parity: title lives in the top border row,
     // not in a separate title line inside the card.
     expect(frame.split('\n')[0]).toContain('╭───Praxis Code v0.1.2')
-    // No status line between card and composer; left column is 11 rows tall.
-    expect(frame.split('\n').length).toBe(11)
+    // No status line between card and composer; card is 19 rows tall with
+    // the Claude 2.1.208 "What's new" right column.
+    expect(frame.split('\n').length).toBe(19)
     expect(frame).toContain('/Users/test/dev/Praxis')
     expect(frame.split('\n')[0]?.length).toBeLessThanOrEqual(100)
   })
@@ -637,7 +638,7 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('6. Dark mode (ANSI colors only)')
     expect(frame).toContain('1 function greet()')
     expect(frame).toContain('2 -  console.log("Hello, World!");')
-    expect(frame).toContain('2 +  console.log("Hello, Praxis!");')
+    expect(frame).toContain('2 +  console.log("Hello, Claude!");')
     expect(frame).toContain(
       'Syntax theme: Monokai Extended (ctrl+t to disable)',
     )
@@ -711,13 +712,16 @@ describe('Claude-style TUI components', () => {
             usedTokens: 1_500,
             contextWindowTokens: 200_000,
             skills: [{ name: 'review', tokens: 290 }],
+            memoryFiles: [],
           },
         ]}
       />,
     )
-    expect(context.lastFrame()).toContain('Context Usage')
-    expect(context.lastFrame()).toContain('1,500/200,000 tokens')
-    expect(context.lastFrame()).toContain('Autocompact buffer: 33,000 tokens')
+    expect(context.lastFrame()).toContain('Free space: 165.5k (82.8%)')
+    expect(context.lastFrame()).toContain('Autocompact buffer: 33k tokens (16.5%)')
+    expect(context.lastFrame()).toContain('Auto-compact window: 200k tokens')
+    expect(context.lastFrame()).toContain('Memory files · /memory')
+    expect(context.lastFrame()).toContain('Built-in')
     expect(context.lastFrame()).toContain('review: ~290 tokens')
 
     const accessibleContext = render(
@@ -730,6 +734,7 @@ describe('Claude-style TUI components', () => {
             usedTokens: 1_500,
             contextWindowTokens: 200_000,
             skills: [{ name: 'review', tokens: 290 }],
+            memoryFiles: [],
           },
         ]}
       />,
@@ -741,8 +746,13 @@ describe('Claude-style TUI components', () => {
       <StatusDashboard
         tabIndex={1}
         version="0.2.0"
+        sessionName={null}
         sessionId="session-1"
         display={display}
+        authToken="none"
+        baseUrl="https://api.anthropic.com/v1"
+        proxy="none"
+        settingSources="User settings"
         usage={{ inputTokens: 12, outputTokens: 3 }}
         costUsd={0.01}
         turnCount={2}
@@ -757,7 +767,12 @@ describe('Claude-style TUI components', () => {
       'Settings  Status  Config  Usage  Stats',
     )
     expect(status.lastFrame()).toContain('Version:')
+    expect(status.lastFrame()).toContain('/rename to add a name')
     expect(status.lastFrame()).toContain('session-1')
+    expect(status.lastFrame()).toContain('Auth token:')
+    expect(status.lastFrame()).toContain('Anthropic base URL:')
+    expect(status.lastFrame()).toContain('Proxy:')
+    expect(status.lastFrame()).toContain('Setting sources:')
     expect(status.lastFrame()).toContain('test-model')
   })
 

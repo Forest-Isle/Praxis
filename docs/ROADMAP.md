@@ -1169,8 +1169,26 @@ Status: complete.
 
 ## Stage 132 - command-specific dialogs and layout behavior
 
+Status: complete.
+
+- [x] SelectionMenu selection prefix + same-line description column match real
+      capture (`  ❯ N. label` + fixed desc column) across theme/export/hooks
+- [x] /copy removed picker: direct copy + `Copied to clipboard (N characters, M lines)`
+- [x] /model matches real layout: "Select model" + 5-tier options + effort row
+      + Enter=default / s=session semantics via saveConfigSetting('model', ...)
+- [x] /context: no title, 5x5 usage grid, compact k-format, Memory files · /memory
+      + Skills Built-in sections
+- [x] /status: Session name, Auth token, Anthropic base URL, Proxy, Setting sources
+      rows added (env-sourced), real row order
+- [x] /login: new dialog matching real title/body + 3 numbered methods + `·` desc,
+      Esc cancels, selection reports Praxis PRAXIS_API_KEY auth model
+- [x] probe gates for status rows + login dialog; vitest + build green
+
+## Stage 133 - leftover dialog surfaces and final divergence audit
+
 Status: pending.
 
-- [ ] enumerate command-specific dialogs in Claude 2.1.208 vs Praxis
-- [ ] align exact dialog layout/behavior for each included command
+- [ ] enumerate remaining 2.1.208 dialogs not yet aligned (permission prompts,
+      plan approval, MCP elicitation — credential-free subset)
+- [ ] align exact dialog layout/behavior for each included dialog
 - [ ] focused TTY/Ink gates per dialog

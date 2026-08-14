@@ -39,6 +39,7 @@ export type TranscriptItem =
       usedTokens: number
       contextWindowTokens: number
       skills: readonly { name: string; tokens: number }[]
+      memoryFiles: readonly { path: string; tokens: number }[]
     }
   | { kind: 'tool'; call: ModelToolCall; detail: string }
   | {
@@ -108,8 +109,8 @@ function permissionLabel(mode?: string): string {
 }
 
 function selectionPrefix(selected: boolean, screenReader: boolean): string {
-  if (selected) return screenReader ? 'Selected: ' : '❯ '
-  return screenReader ? '' : '  '
+  if (selected) return screenReader ? 'Selected: ' : '  ❯ '
+  return screenReader ? '' : '    '
 }
 
 export function WelcomePanel({
@@ -176,10 +177,13 @@ export function WelcomePanel({
             marginTop={wide ? 0 : 1}
           >
             <Text bold>Tips for getting started</Text>
-            <Text>Run /help for commands</Text>
+            <Text>Run /init to create a CLAUDE.md file with instructions for Claude</Text>
             <Text dimColor>───────────────────────</Text>
-            <Text bold>Shared with Claude Code</Text>
-            <Text>Sessions, memory, skills</Text>
+            <Text bold>What's new</Text>
+            <Text>{'Subagent forking is now on by default: a `subagent_type: "fork"` subagent inherits the full conversation and prompt cache, and non-teammate agent spawns in interactive sessions now run in the background by default'}</Text>
+            <Text>{'Type `@` in the prompt to mention another Claude session by name; Claude then uses `SendMessage` to reach that session directly'}</Text>
+            <Text>{'`SendMessage` now delivers to a bare name that exactly matches one live session, instead of asking to confirm with a ref first'}</Text>
+            <Text dimColor>/release-notes for more</Text>
           </Box>
         </Box>
       </Box>
@@ -523,10 +527,23 @@ function ThinkingBlock({
   )
 }
 
+function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000)
+    return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, '')}m`
+  if (tokens >= 1_000)
+    return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, '')}k`
+  return String(tokens)
+}
+
+function percent(tokens: number, total: number): string {
+  return `${Math.round((tokens / Math.max(1, total)) * 100 * 10) / 10}%`
+}
+
 function ContextUsageBlock({
   usedTokens,
   contextWindowTokens,
   skills,
+  memoryFiles,
   screenReader,
 }: Extract<TranscriptItem, { kind: 'context' }> & { screenReader: boolean }) {
   const totalTokens = Math.max(1, contextWindowTokens)
@@ -546,50 +563,51 @@ function ContextUsageBlock({
       </Box>
     )
   }
-  const usedCells = Math.min(100, Math.ceil((usedTokens / totalTokens) * 100))
+  const usedCells = Math.min(25, Math.round((usedTokens / totalTokens) * 25))
   const bufferCells = Math.min(
-    100 - usedCells,
-    Math.ceil((compactBuffer / totalTokens) * 100),
+    25 - usedCells,
+    Math.round((compactBuffer / totalTokens) * 25),
   )
-  const cells = Array.from({ length: 100 }, (_, index) =>
-    index < usedCells ? '⛁' : index >= 100 - bufferCells ? '⛝' : '⛶',
+  const cells = Array.from({ length: 25 }, (_, index) =>
+    index < usedCells ? '⛁' : index >= 25 - bufferCells ? '⛝' : '⛶',
   )
   return (
     <Box flexDirection="column" marginTop={1} marginLeft={2}>
-      <Text bold>Context Usage</Text>
       <Box>
         <Box flexDirection="column" marginRight={2}>
-          {Array.from({ length: 10 }, (_, row) => (
-            <Text key={row}>
-              {cells.slice(row * 10, row * 10 + 10).join(' ')}
-            </Text>
+          {Array.from({ length: 5 }, (_, row) => (
+            <Text key={row}>{cells.slice(row * 5, row * 5 + 5).join(' ')}</Text>
           ))}
         </Box>
         <Box flexDirection="column">
-          <Text bold>
-            {usedTokens.toLocaleString()}/{totalTokens.toLocaleString()} tokens
-          </Text>
-          <Text> </Text>
-          <Text bold>Estimated usage by category</Text>
           <Text>
-            ⛁ Skills:{' '}
-            {skills
-              .reduce((total, skill) => total + skill.tokens, 0)
-              .toLocaleString()}{' '}
-            tokens
+            ⛶ Free space: {compactTokens(Math.max(0, usable - usedTokens))} (
+            {percent(Math.max(0, usable - usedTokens), totalTokens)})
           </Text>
           <Text>
-            ⛶ Free space: {Math.max(0, usable - usedTokens).toLocaleString()}
-          </Text>
-          <Text>
-            ⛝ Autocompact buffer: {compactBuffer.toLocaleString()} tokens
+            ⛝ Autocompact buffer: {compactTokens(compactBuffer)} tokens (
+            {percent(compactBuffer, totalTokens)})
           </Text>
         </Box>
       </Box>
       <Text> </Text>
-      <Text>Auto-compact window: {totalTokens.toLocaleString()} tokens</Text>
+      <Text>Auto-compact window: {compactTokens(totalTokens)} tokens</Text>
+      <Text> </Text>
+      <Text bold>Memory files · /memory</Text>
+      {memoryFiles.length === 0 ? (
+        <Text dimColor>└ No memory files</Text>
+      ) : (
+        memoryFiles.map((file, index) => (
+          <Text key={file.path} dimColor>
+            {index === memoryFiles.length - 1 ? '└' : '├'} {file.path}:{' '}
+            {file.tokens} tokens
+          </Text>
+        ))
+      )}
       <Text> </Text>
       <Text bold>Skills · /skills</Text>
+      <Text> </Text>
+      <Text>Built-in</Text>
       {skills.length === 0 ? (
         <Text dimColor>└ No skills loaded</Text>
       ) : (
@@ -1320,7 +1338,7 @@ export function ThemePicker({
                   ? {}
                   : { backgroundColor: syntax.addedHighlight })}
               >
-                Praxis
+                Claude
               </Text>
               <Text {...syntaxColor(syntax.string)}>!&quot;</Text>
               {'); '}
@@ -1407,8 +1425,13 @@ export function CustomThemeEditor({
 export function StatusDashboard({
   tabIndex,
   version,
+  sessionName,
   sessionId,
   display,
+  authToken,
+  baseUrl,
+  proxy,
+  settingSources,
   usage,
   costUsd,
   turnCount,
@@ -1420,8 +1443,13 @@ export function StatusDashboard({
 }: {
   tabIndex: number
   version: string
+  sessionName: string | null
   sessionId: string | null
   display: TuiDisplayMetadata
+  authToken: string
+  baseUrl: string
+  proxy: string
+  settingSources: string
   usage?: ModelUsage
   costUsd?: number
   turnCount: number
@@ -1444,9 +1472,14 @@ export function StatusDashboard({
       : tabIndex === 1
         ? [
             ['Version', version],
+            ['Session name', sessionName ?? '/rename to add a name'],
             ['Session ID', sessionId ?? 'new session'],
             ['cwd', display.cwd],
+            ['Auth token', authToken],
+            ['Anthropic base URL', baseUrl],
+            ['Proxy', proxy],
             ['Model', display.model ?? 'provider default'],
+            ['Setting sources', settingSources],
             ['Permission mode', permissionLabel(display.permissionMode)],
           ]
         : tabIndex === 2
@@ -2288,6 +2321,11 @@ export function SelectionMenu({
   )
   const visible = options.slice(start, start + maxVisible)
   const current = options.find((option) => option.selected)
+  const maxLabelWidth = options.reduce(
+    (max, option, index) =>
+      Math.max(max, `${index + 1}. ${option.label}`.length),
+    0,
+  )
   return (
     <Box
       borderStyle={screenReader ? undefined : 'round'}
@@ -2303,6 +2341,7 @@ export function SelectionMenu({
       {visible.map((option, visibleIndex) => {
         const index = start + visibleIndex
         const selected = index === selectedIndex
+        const rowLabel = `${index + 1}. ${option.label}`
         return (
           <Box
             key={`${index}-${option.label}`}
@@ -2315,12 +2354,22 @@ export function SelectionMenu({
                 : {})}
             >
               {selectionPrefix(selected, screenReader)}
-              {index + 1}. {option.label}
+              {rowLabel}
               {!screenReader && option.selected ? ' ✔' : ''}
+              {option.description ? (
+                <Text dimColor>
+                  {' '.repeat(
+                    Math.max(
+                      2,
+                      maxLabelWidth -
+                        rowLabel.length -
+                        (option.selected && !screenReader ? 2 : 0),
+                    ),
+                  )}
+                  {option.description}
+                </Text>
+              ) : null}
             </Text>
-            {option.description ? (
-              <Text dimColor> {option.description}</Text>
-            ) : null}
           </Box>
         )
       })}
@@ -2334,6 +2383,92 @@ export function SelectionMenu({
         </Text>
       ) : null}
       <Text dimColor>{footer}</Text>
+    </Box>
+  )
+}
+
+export function ModelMenu({
+  options,
+  effort,
+  selectedIndex,
+  width,
+  screenReader,
+}: {
+  options: readonly TuiSelectionOption[]
+  effort: string
+  selectedIndex: number
+  width: number
+  screenReader: boolean
+}) {
+  const palette = useTuiPalette()
+  const current = options.find((option) => option.selected)
+  const maxLabelWidth = options.reduce(
+    (max, option, index) =>
+      Math.max(max, `${index + 1}. ${option.label}`.length),
+    0,
+  )
+  return (
+    <Box
+      borderStyle={screenReader ? undefined : 'round'}
+      borderColor={palette.muted}
+      flexDirection="column"
+      marginTop={1}
+      paddingX={screenReader ? 0 : 1}
+      width={screenReader ? undefined : Math.min(80, width)}
+    >
+      <Text bold>Select model</Text>
+      <Text dimColor>
+        {
+          'Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.'
+        }
+      </Text>
+      {screenReader && current ? <Text>Current: {current.label}</Text> : null}
+      {options.map((option, index) => {
+        const selected = index === selectedIndex
+        const rowLabel = `${index + 1}. ${option.label}`
+        return (
+          <Box
+            key={`${index}-${option.label}`}
+            flexDirection="column"
+            marginTop={1}
+          >
+            <Text
+              {...(!screenReader && selected
+                ? { color: palette.brand, bold: true }
+                : {})}
+            >
+              {selectionPrefix(selected, screenReader)}
+              {rowLabel}
+              {!screenReader && option.selected ? ' ✔' : ''}
+              {option.description ? (
+                <Text dimColor>
+                  {' '.repeat(
+                    Math.max(
+                      2,
+                      maxLabelWidth -
+                        rowLabel.length -
+                        (option.selected && !screenReader ? 2 : 0),
+                    ),
+                  )}
+                  {option.description}
+                </Text>
+              ) : null}
+            </Text>
+          </Box>
+        )
+      })}
+      <Box marginTop={1}>
+        <Text>
+          <Text color={palette.accent}>● </Text>
+          {effort.charAt(0).toUpperCase() + effort.slice(1)} effort (default)
+          <Text dimColor> ←/→ to adjust</Text>
+        </Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>
+          Enter to set as default · s to use this session only · Esc to cancel
+        </Text>
+      </Box>
     </Box>
   )
 }
