@@ -9,6 +9,7 @@ import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ModelToolCall, PermissionApproval } from '../core/runtime.js'
+import type { ClaudePlanApprovalResult } from '../tools/claude-interactive-tools.js'
 import {
   InteractiveApp,
   type InteractiveServiceFactory,
@@ -5434,7 +5435,7 @@ describe('InteractiveApp', () => {
   })
 
   it('shows plan content and forwards plan approval', async () => {
-    let approval: boolean | undefined
+    let approval: ClaudePlanApprovalResult | undefined
     const factory: InteractiveServiceFactory = {
       async createService({ approvePlan }) {
         return {
@@ -5443,6 +5444,7 @@ describe('InteractiveApp', () => {
               action: 'exit',
               planPath: '/tmp/plan.md',
               plan: '# Plan\n\n1. Implement.',
+              previousMode: 'default',
             })
             return {
               sessionId: 'session-1',
@@ -5469,24 +5471,30 @@ describe('InteractiveApp', () => {
     app.stdin.write('start')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Approve this plan')
+    expect(app.lastFrame()).toContain('Ready to code?')
     expect(app.lastFrame()).toContain('1. Implement.')
-    expect(app.lastFrame()).toContain('Selected: 1. Yes, implement the plan')
+    expect(app.lastFrame()).toContain('Selected: 1. Yes, and use auto mode')
+    expect(app.lastFrame()).toContain('2. Yes, manually approve edits')
+    expect(app.lastFrame()).toContain('3. No, keep planning')
     expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('y')
     await flush()
-    expect(approval).toBe(true)
+    expect(approval).toEqual({ behavior: 'allow', permissionMode: 'auto' })
   })
 
   it('declines plan approval when the tool signal aborts', async () => {
     const controller = new AbortController()
-    let approval: boolean | undefined
+    let approval: ClaudePlanApprovalResult | undefined
     const factory: InteractiveServiceFactory = {
       async createService({ approvePlan }) {
         return {
           async run() {
             approval = await approvePlan?.(
-              { action: 'exit', planPath: '/tmp/plan.md' },
+              {
+                action: 'exit',
+                planPath: '/tmp/plan.md',
+                previousMode: 'default',
+              },
               controller.signal,
             )
             return {
@@ -5514,11 +5522,64 @@ describe('InteractiveApp', () => {
     app.stdin.write('start')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Approve this plan')
+    expect(app.lastFrame()).toContain('Ready to code?')
     controller.abort()
     await flush()
-    expect(approval).toBe(false)
+    expect(approval).toEqual({ behavior: 'deny' })
     expect(app.lastFrame()).toContain('done')
+  })
+
+  it('returns the manually-approved plan mode with implementation feedback', async () => {
+    let approval: ClaudePlanApprovalResult | undefined
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approvePlan }) {
+            return {
+              async run() {
+                approval = await approvePlan?.({
+                  action: 'exit',
+                  planPath: '/tmp/plan.md',
+                  plan: '# Plan',
+                  previousMode: 'default',
+                })
+                return {
+                  sessionId: 'session-plan-feedback',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\t')
+    await flush()
+    app.stdin.write('also update docs')
+    app.stdin.write('\r')
+    await flush()
+    expect(approval).toEqual({
+      behavior: 'allow',
+      permissionMode: 'default',
+      feedback: 'also update docs',
+    })
   })
 
   it('round-trips interactive MCP elicitation form data', async () => {

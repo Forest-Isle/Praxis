@@ -209,6 +209,9 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
   { name: 'torch', disposition: 'included', visibility: 'conditional' },
 ] as const satisfies readonly ClaudeCommandInventoryEntry[]
 
-export const CLAUDE_2_1_208_COMMAND_BY_NAME = new Map(
+export const CLAUDE_2_1_208_COMMAND_BY_NAME: ReadonlyMap<
+  string,
+  ClaudeCommandInventoryEntry
+> = new Map(
   CLAUDE_2_1_208_COMMAND_INVENTORY.map((entry) => [entry.name, entry]),
 )

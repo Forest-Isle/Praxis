@@ -36,6 +36,7 @@ import type {
 import type {
   ClaudeInteractiveToolCallbacks,
   ClaudePlanApprovalRequest,
+  ClaudePlanApprovalResult,
   ClaudeQuestion,
   ClaudeQuestionResult,
 } from '../tools/claude-interactive-tools.js'
@@ -491,7 +492,7 @@ type PendingQuestion = {
 
 type PendingPlanApproval = {
   request: ClaudePlanApprovalRequest
-  resolve: (approved: boolean) => void
+  resolve: (approval: ClaudePlanApprovalResult) => void
 }
 
 const EMPTY_SLASH_COMMANDS: readonly TuiSlashCommand[] = []
@@ -1188,6 +1189,9 @@ export function InteractiveApp({
     null,
   )
   const planApprovalRef = useRef<PendingPlanApproval | null>(null)
+  const [planApprovalSelection, setPlanApprovalSelection] = useState(0)
+  const [planApprovalFeedbackMode, setPlanApprovalFeedbackMode] =
+    useState(false)
   const serviceRef = useRef<InteractiveSessionCommands | null>(null)
   const serviceCreationRef = useRef<
     Promise<InteractiveSessionCommands> | undefined
@@ -1414,7 +1418,7 @@ export function InteractiveApp({
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
-      planApprovalRef.current?.resolve(false)
+      planApprovalRef.current?.resolve({ behavior: 'deny' })
       exit()
     }
     if (signal.aborted) cancel()
@@ -1428,7 +1432,7 @@ export function InteractiveApp({
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
-      planApprovalRef.current?.resolve(false)
+      planApprovalRef.current?.resolve({ behavior: 'deny' })
       if (exitConfirmationTimerRef.current)
         clearTimeout(exitConfirmationTimerRef.current)
       if (btwCopiedTimerRef.current) clearTimeout(btwCopiedTimerRef.current)
@@ -1867,7 +1871,7 @@ export function InteractiveApp({
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
-      planApprovalRef.current?.resolve(false)
+      planApprovalRef.current?.resolve({ behavior: 'deny' })
       onCancel?.()
       exit()
       return
@@ -2172,9 +2176,9 @@ export function InteractiveApp({
     request,
     signal,
   ) =>
-    new Promise<boolean>((resolveApproval) => {
+    new Promise<ClaudePlanApprovalResult>((resolveApproval) => {
       let settled = false
-      const abort = () => pending.resolve(false)
+      const abort = () => pending.resolve({ behavior: 'deny' })
       const pending: PendingPlanApproval = {
         request,
         resolve: (approved) => {
@@ -2188,10 +2192,13 @@ export function InteractiveApp({
         },
       }
       if (signal?.aborted) {
-        pending.resolve(false)
+        pending.resolve({ behavior: 'deny' })
         return
       }
       signal?.addEventListener('abort', abort, { once: true })
+      clearComposerInput()
+      setPlanApprovalSelection(0)
+      setPlanApprovalFeedbackMode(false)
       planApprovalRef.current = pending
       setPlanApproval(pending)
     })
@@ -3689,10 +3696,57 @@ export function InteractiveApp({
     }
 
     if (planApproval) {
-      if (lower === 'y' || value === '1') {
-        planApproval.resolve(true)
-      } else if (lower === 'n' || value === '2' || key.return || key.escape) {
-        planApproval.resolve(false)
+      const elevatedMode: ClaudePermissionMode = runtimeSettingsRef.current
+        .useAutoModeDuringPlan
+        ? 'auto'
+        : allowDangerouslySkipPermissions
+          ? 'bypassPermissions'
+          : 'acceptEdits'
+      const resolvePlanApproval = (selectedIndex: number) => {
+        const feedback = inputRef.current.trim() || undefined
+        clearComposerInput()
+        setPlanApprovalFeedbackMode(false)
+        if (selectedIndex === 2) {
+          planApproval.resolve({
+            behavior: 'deny',
+            ...(feedback ? { feedback } : {}),
+          })
+          return
+        }
+        planApproval.resolve({
+          behavior: 'allow',
+          permissionMode: selectedIndex === 0 ? elevatedMode : 'default',
+          ...(feedback ? { feedback } : {}),
+        })
+      }
+      if (key.escape) {
+        planApproval.resolve({ behavior: 'deny' })
+      } else if (planApprovalFeedbackMode) {
+        if (key.tab) {
+          clearComposerInput()
+          setPlanApprovalFeedbackMode(false)
+        } else if (key.return) {
+          resolvePlanApproval(planApprovalSelection)
+        } else {
+          editComposer()
+        }
+      } else if (key.upArrow) {
+        setPlanApprovalSelection((current) =>
+          current === 0 ? 2 : current - 1,
+        )
+      } else if (key.downArrow) {
+        setPlanApprovalSelection((current) => (current + 1) % 3)
+      } else if (key.tab) {
+        clearComposerInput()
+        setPlanApprovalFeedbackMode(true)
+      } else if (lower === 'y') {
+        resolvePlanApproval(0)
+      } else if (lower === 'n') {
+        resolvePlanApproval(2)
+      } else if (/^[1-3]$/u.test(value)) {
+        resolvePlanApproval(Number(value) - 1)
+      } else if (key.return) {
+        resolvePlanApproval(planApprovalSelection)
       }
       return
     }
@@ -6190,20 +6244,72 @@ export function InteractiveApp({
               </DialogFrame>
             ) : planApproval ? (
               <DialogFrame
-                title="Approve this plan and begin implementation?"
+                title="Ready to code?"
                 screenReader={axScreenReader}
               >
-                <Text dimColor>{planApproval.request.planPath}</Text>
+                <Text>Here is Praxis&apos;s plan:</Text>
                 {planApproval.request.plan ? (
-                  <Box marginY={1}>
+                  <Box
+                    borderStyle={axScreenReader ? undefined : 'classic'}
+                    borderLeft={false}
+                    borderRight={false}
+                    paddingX={axScreenReader ? 0 : 1}
+                    marginY={1}
+                  >
                     <Text>{planApproval.request.plan}</Text>
                   </Box>
                 ) : null}
-                <Text>
-                  {selectionPrefix(true, axScreenReader)}1. Yes, implement the
-                  plan
+                <Text dimColor>
+                  Praxis has written up a plan and is ready to execute. Would
+                  you like to proceed?
                 </Text>
-                <Text> 2. No, keep planning</Text>
+                <Text
+                  inverse={!axScreenReader && planApprovalSelection === 0}
+                >
+                  {selectionPrefix(
+                    planApprovalSelection === 0,
+                    axScreenReader,
+                  )}
+                  1.{' '}
+                  {runtimeSettings.useAutoModeDuringPlan
+                    ? 'Yes, and use auto mode'
+                    : allowDangerouslySkipPermissions
+                      ? 'Yes, and bypass permissions'
+                      : 'Yes, auto-accept edits'}
+                </Text>
+                <Text
+                  inverse={!axScreenReader && planApprovalSelection === 1}
+                >
+                  {selectionPrefix(
+                    planApprovalSelection === 1,
+                    axScreenReader,
+                  )}
+                  2. Yes, manually approve edits
+                </Text>
+                <Text
+                  inverse={!axScreenReader && planApprovalSelection === 2}
+                >
+                  {selectionPrefix(
+                    planApprovalSelection === 2,
+                    axScreenReader,
+                  )}
+                  3. No, keep planning
+                </Text>
+                {planApprovalFeedbackMode ? (
+                  <Text>
+                    ›{' '}
+                    {input ||
+                      (planApprovalSelection === 2
+                        ? 'Tell Praxis what to change'
+                        : 'Add feedback for implementation')}
+                  </Text>
+                ) : null}
+                <Text dimColor>{planApproval.request.planPath}</Text>
+                <Text dimColor>
+                  {planApprovalFeedbackMode
+                    ? 'Enter to submit · Tab to collapse · Esc to cancel'
+                    : 'Enter to confirm · Tab to add feedback · Esc to cancel'}
+                </Text>
               </DialogFrame>
             ) : question ? (
               <DialogFrame
