@@ -267,8 +267,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   actionable diagnostic with the backslash+Return fallback. Apple Terminal on
   macOS is handled with a preferences backup, default/startup profile updates,
   visual-bell configuration, and interrupted-setup recovery state.
-- `/permissions` loads Claude-native permission arrays into Recently denied,
-  Allow, Ask, Deny, and Workspace tabs, opening on Allow like 2.1.208. Rule
+- `/permissions` loads Claude-native permission arrays into Allow, Ask, Deny,
+  and Workspace tabs. Recently denied is a process-local list of actual
+  `automode-blocked` actions (newest first, duplicates retained); it opens
+  first when non-empty and supports the native approve/retry footer. Rule
   search is local; adding a rule chooses `.claude/settings.local.json`,
   checked-in `.claude/settings.json`, or user `settings.json`. Selecting an
   existing rule opens the observed allowed/ask/denied deletion confirmation.

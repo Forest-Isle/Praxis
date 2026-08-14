@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AgentRunCancelledError,
   AgentRuntime,
+  annotateAutoModePermissionOutcome,
   annotatePermissionDecision,
   ModelProviderError,
   type ModelToolCall,
@@ -1082,9 +1083,12 @@ describe('AgentRuntime', () => {
         },
         permissions: {
           resolve: () =>
-            annotatePermissionDecision(
-              { behavior: 'deny', reason: 'classifier policy' },
-              'auto-classifier',
+            annotateAutoModePermissionOutcome(
+              annotatePermissionDecision(
+                { behavior: 'deny', reason: 'classifier policy' },
+                'auto-classifier',
+              ),
+              'blocked',
             ),
         },
       },
@@ -1099,6 +1103,7 @@ describe('AgentRuntime', () => {
       behavior: 'deny',
       reason: 'classifier policy',
       source: 'auto-classifier',
+      autoModeOutcome: 'blocked',
     })
   })
 

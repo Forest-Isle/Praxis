@@ -1028,7 +1028,6 @@ remain partial.
       coverage (exact terminal PTY layout remains tracked separately)
 - [x] `/tui` default/fullscreen renderer switching with persisted runtime
       settings and active-session resume
-- [ ] exact Recently denied selection, reset, deduplication, and lifetime
-      behavior against the pinned Claude 2.1.208 black-box flow; the local
-      sidecar, source filtering, cleanup, and focused interaction coverage are
-      implemented
+- [x] exact Recently denied selection, source filtering, duplicate retention,
+      process lifetime, approve/retry actions, and Claude-native grant
+      transcript behavior against the pinned Claude 2.1.208 black-box flow

@@ -950,6 +950,12 @@ interface SessionCommands {
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
   changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
   recordCdUsage?(sessionId: string): Promise<void>
+  approveRecentlyDenied?(sessionId: string, display: string): Promise<void>
+  retryRecentlyDenied?(
+    sessionId: string,
+    display: string,
+    signal?: AbortSignal,
+  ): Promise<SessionRunResult>
   answerSideQuestion?(
     sessionId: string | undefined,
     question: string,
@@ -1044,6 +1050,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     model?: string
     effort?: CliControls['effort']
     permissionMode?: ClaudePermissionMode
+    isSessionActionApproved?: (call: ModelToolCall) => boolean
     controls?: CliControls
     interactive?: boolean
     sessionKind?: 'bg'
@@ -1102,6 +1109,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   model: interactiveModel,
   effort: interactiveEffort,
   permissionMode: interactivePermissionMode,
+  isSessionActionApproved,
   controls = DEFAULT_CLI_CONTROLS,
   interactive = false,
   sessionKind,
@@ -1410,6 +1418,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         allowedTools: cli.allowedTools,
         disallowedTools: cli.disallowedTools,
         permissionMode,
+        ...(isSessionActionApproved ? { isSessionActionApproved } : {}),
         ...(permissionMode === 'auto'
           ? {
               autoClassifier:
@@ -1820,6 +1829,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
       rewindPoints: (sessionId) => service.rewindPoints(sessionId),
       changeCwd: (sessionId, cwd) => service.changeCwd(sessionId, cwd),
       recordCdUsage: (sessionId) => service.recordCdUsage(sessionId),
+      approveRecentlyDenied: (sessionId, display) =>
+        service.approveRecentlyDenied(sessionId, display),
+      retryRecentlyDenied: (sessionId, display, retrySignal) =>
+        service.retryRecentlyDenied(sessionId, display, retrySignal),
       answerSideQuestion: (
         sessionId,
         question,

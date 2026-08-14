@@ -2,7 +2,10 @@ import { isAbsolute, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
-import { annotatePermissionDecision } from '../core/runtime.js'
+import {
+  annotateAutoModePermissionOutcome,
+  annotatePermissionDecision,
+} from '../core/runtime.js'
 import type {
   ModelToolCall,
   PermissionBehavior,
@@ -32,6 +35,7 @@ export interface ClaudePermissionResolverOptions {
   permissionMode?: ClaudePermissionMode
   autoClassifier?: ClaudeAutoClassifier
   autoModeConfig?: ClaudeAutoModeConfig
+  isSessionActionApproved?: (call: ModelToolCall) => boolean
 }
 
 export type ClaudePermissionMode =
@@ -87,6 +91,20 @@ const FILE_TOOLS = new Set([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue)
+  if (!isRecord(value)) return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, canonicalValue(item)]),
+  )
+}
+
+export function claudePermissionActionKey(call: ModelToolCall): string {
+  return JSON.stringify({ name: call.name, input: canonicalValue(call.input) })
 }
 
 function readRuleStrings(
@@ -269,6 +287,8 @@ export class ClaudePermissionResolver implements PermissionResolver {
   private readonly permissionMode: ClaudePermissionMode
   private readonly autoClassifier: ClaudeAutoClassifier | undefined
   private readonly autoModeConfig: ClaudeAutoModeConfig
+  private readonly isSessionActionApproved:
+    ((call: ModelToolCall) => boolean) | undefined
 
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
@@ -283,6 +303,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
     this.autoModeConfig =
       options.autoModeConfig ?? loadClaudeAutoModeConfig(options.settings)
     this.autoClassifier = options.autoClassifier
+    this.isSessionActionApproved = options.isSessionActionApproved
     if (this.permissionMode === 'auto') {
       if (!this.autoClassifier) {
         throw new Error('Permission mode auto requires a classifier')
@@ -351,6 +372,9 @@ export class ClaudePermissionResolver implements PermissionResolver {
       this.shouldClassify(call) &&
       this.autoClassifier
     ) {
+      if (this.isSessionActionApproved?.(call)) {
+        return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
+      }
       try {
         const decision = await this.autoClassifier({
           call,
@@ -358,14 +382,23 @@ export class ClaudePermissionResolver implements PermissionResolver {
           messages: context?.messages ?? [],
           config: this.autoModeConfig,
         })
-        return annotatePermissionDecision(decision, 'auto-classifier')
-      } catch (error) {
-        return annotatePermissionDecision(
-          {
-            behavior: 'deny',
-            reason: `Auto mode classifier failed: ${error instanceof Error ? error.message : String(error)}`,
-          },
+        const annotated = annotatePermissionDecision(
+          decision,
           'auto-classifier',
+        )
+        return decision.behavior === 'deny'
+          ? annotateAutoModePermissionOutcome(annotated, 'blocked')
+          : annotated
+      } catch (error) {
+        return annotateAutoModePermissionOutcome(
+          annotatePermissionDecision(
+            {
+              behavior: 'deny',
+              reason: `Auto mode classifier failed: ${error instanceof Error ? error.message : String(error)}`,
+            },
+            'auto-classifier',
+          ),
+          'unavailable',
         )
       }
     }

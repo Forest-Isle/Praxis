@@ -79,6 +79,128 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('approves a recently denied action without invoking the provider', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const run = await service.run('start')
+
+    await service.approveRecentlyDenied(run.sessionId, 'Delete target')
+
+    const entries = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: run.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const tail = entries.slice(-4)
+    expect(tail.map((entry) => entry.type)).toEqual([
+      'user',
+      'user',
+      'user',
+      'user',
+    ])
+    expect((tail[0]?.message as { content: string }).content).toContain(
+      '<local-command-caveat>',
+    )
+    expect((tail[1]?.message as { content: string }).content).toContain(
+      '<command-name>/permissions</command-name>',
+    )
+    expect((tail[2]?.message as { content: string }).content).toBe(
+      '<local-command-stdout>Approved Delete target</local-command-stdout>',
+    )
+    expect(tail[3]).toMatchObject({
+      isMeta: true,
+      message: {
+        content:
+          'Permission granted for: Delete target. You may now retry this command if you would like.',
+      },
+    })
+  })
+
+  it('retries through permission_retry without appending a normal prompt', async () => {
+    const requests: ModelRequest[] = []
+    const root = await mkdtemp(join(tmpdir(), 'praxis-permission-retry-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let turn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        yield {
+          type: 'text-delta',
+          delta: turn++ === 0 ? 'first answer' : 'retried answer',
+        }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 3, outputTokens: 2 },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+    })
+    const run = await service.run('start')
+
+    await expect(
+      service.retryRecentlyDenied(run.sessionId, 'Delete target'),
+    ).resolves.toMatchObject({ text: 'retried answer' })
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.messages.slice(-3)).toEqual([
+      {
+        role: 'user',
+        content:
+          '<command-name>/permissions</command-name>\n            <command-message>permissions</command-message>\n            <command-args></command-args>',
+      },
+      {
+        role: 'user',
+        content: '<local-command-stdout>(no content)</local-command-stdout>',
+      },
+      {
+        role: 'user',
+        content:
+          'Permission granted for: Delete target. You may now retry this command if you would like.',
+      },
+    ])
+    const entries = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: run.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        type: 'system',
+        subtype: 'permission_retry',
+        content: 'Allowed Delete target',
+        commands: ['Delete target'],
+      }),
+    )
+    expect(
+      entries.some(
+        (entry) =>
+          entry.type === 'last-prompt' && entry.lastPrompt === '/permissions',
+      ),
+    ).toBe(false)
+  })
+
   it('exposes the typed MCP runtime management API', async () => {
     const inspect = vi.fn(async () => [
       { name: 'fixture', status: 'connected' as const, toolCount: 1 },

@@ -8,7 +8,6 @@ export type ClaudeDataResource =
   | 'instructions'
   | 'mcp'
   | 'provider-payload'
-  | 'recently-denied'
   | 'search-index'
   | 'scheduled-prompts'
   | 'session-lock'
@@ -105,12 +104,6 @@ export const CLAUDE_DATA_OWNERSHIP = [
     plane: 'praxis-sidecar',
     praxisAccess: 'read-write',
     location: 'praxis/providers/',
-  },
-  {
-    resource: 'recently-denied',
-    plane: 'praxis-sidecar',
-    praxisAccess: 'read-write',
-    location: 'praxis/permissions/recently-denied.json',
   },
   {
     resource: 'search-index',

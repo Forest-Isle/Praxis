@@ -4392,6 +4392,115 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Hook response · PreToolUse:Bash · error')
   })
 
+  it('approves and retries only blocked auto-mode actions from Recently denied', async () => {
+    const approved: Array<{ sessionId: string; display: string }> = []
+    const retried: Array<{ sessionId: string; display: string }> = []
+    const sessionId = 'session-1'
+    let isApproved: ((call: ModelToolCall) => boolean) | undefined
+    const deniedCall: ModelToolCall = {
+      id: 'blocked-call',
+      name: 'Bash',
+      input: {
+        command: 'rm -rf /tmp/target',
+        description: 'Delete target',
+      },
+    }
+    const deniedAction = {
+      id: 'denied-1',
+      call: deniedCall,
+      display: 'Delete target',
+      reason: 'Classifier policy',
+      sessionId,
+    }
+    let deniedEntries = [deniedAction]
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            isApproved = options.isSessionActionApproved
+            return {
+              async run() {
+                return {
+                  sessionId,
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async retryRecentlyDenied(retrySessionId, display) {
+                retried.push({ sessionId: retrySessionId, display })
+                return {
+                  sessionId: retrySessionId,
+                  text: 'retried',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async approveRecentlyDenied(approveSessionId, display) {
+                approved.push({ sessionId: approveSessionId, display })
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        axScreenReader
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add() {},
+        }}
+        recentlyDeniedStore={{
+          async load() {
+            return deniedEntries
+          },
+          async record(action) {
+            deniedEntries = [action, ...deniedEntries]
+            return deniedEntries
+          },
+          async remove(id) {
+            deniedEntries = deniedEntries.filter((action) => action.id !== id)
+            return deniedEntries
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/permissions')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Current tab: Recently denied')
+    expect(app.lastFrame()).toContain('1. ✘ Delete target  Classifier policy')
+    expect(app.lastFrame()).not.toContain('rm -rf /tmp/other')
+
+    app.stdin.write('r')
+    await flush()
+    expect(retried).toEqual([{ sessionId, display: 'Delete target' }])
+    expect(isApproved?.(deniedCall)).toBe(true)
+    expect(
+      isApproved?.({
+        ...deniedCall,
+        input: { ...deniedCall.input, command: 'rm -rf /tmp/different' },
+      }),
+    ).toBe(false)
+
+    app.stdin.write('/permissions')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(approved).toEqual([{ sessionId, display: 'Delete target' }])
+    expect(app.lastFrame()).toContain('Current tab: Allow')
+    expect(app.lastFrame()).not.toContain('1. ✘ Delete target')
+  })
+
   it('interrupts a busy turn with escape and restores the composer', async () => {
     const factory: InteractiveServiceFactory = {
       async createService() {

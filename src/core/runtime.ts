@@ -167,6 +167,7 @@ export type RuntimeEvent =
       behavior: PermissionBehavior
       reason?: string
       source?: 'auto-classifier' | 'rule' | 'mode' | 'default'
+      autoModeOutcome?: AutoModePermissionOutcome
     }
   | {
       type: 'tool-result'
@@ -316,6 +317,8 @@ export interface PermissionResolutionContext {
 export type PermissionDecisionSource =
   'auto-classifier' | 'rule' | 'mode' | 'default'
 
+export type AutoModePermissionOutcome = 'blocked' | 'unavailable'
+
 export type PermissionDecision =
   | {
       behavior: 'allow'
@@ -343,6 +346,10 @@ const permissionDecisionSources = new WeakMap<
   object,
   PermissionDecisionSource
 >()
+const autoModePermissionOutcomes = new WeakMap<
+  object,
+  AutoModePermissionOutcome
+>()
 
 export function annotatePermissionDecision<T extends PermissionDecision>(
   decision: T,
@@ -357,6 +364,20 @@ export function permissionDecisionSource(
   decision: PermissionDecision,
 ): PermissionDecisionSource | undefined {
   return decision.source ?? permissionDecisionSources.get(decision)
+}
+
+export function annotateAutoModePermissionOutcome<T extends PermissionDecision>(
+  decision: T,
+  outcome: AutoModePermissionOutcome,
+): T {
+  autoModePermissionOutcomes.set(decision, outcome)
+  return decision
+}
+
+export function autoModePermissionOutcome(
+  decision: PermissionDecision,
+): AutoModePermissionOutcome | undefined {
+  return autoModePermissionOutcomes.get(decision)
 }
 
 export interface AgentRunObserver {
@@ -994,6 +1015,7 @@ export class AgentRuntime {
 
     const decision = await permissions.resolve(prepared, context)
     const source = permissionDecisionSource(decision)
+    const autoModeOutcome = autoModePermissionOutcome(decision)
     this.emit({
       type: 'permission-decision',
       callId: call.id,
@@ -1002,6 +1024,7 @@ export class AgentRuntime {
         ? { reason: decision.reason }
         : {}),
       ...(source === undefined ? {} : { source }),
+      ...(autoModeOutcome === undefined ? {} : { autoModeOutcome }),
     })
     let allowed = decision.behavior === 'allow'
     let denialReason: string | undefined

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 
@@ -35,7 +36,10 @@ import type {
   ClaudeQuestion,
   ClaudeQuestionResult,
 } from '../tools/claude-interactive-tools.js'
-import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
+import {
+  claudePermissionActionKey,
+  type ClaudePermissionMode,
+} from '../permissions/claude-permission-resolver.js'
 import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
@@ -85,6 +89,7 @@ import {
 } from './tui/permission-settings.js'
 import {
   createRecentlyDeniedStore,
+  type RecentlyDeniedAction,
   type RecentlyDeniedStore,
 } from './tui/recently-denied.js'
 import type { ClaudeResourceScope } from '../compatibility/claude/shared-resources.js'
@@ -246,7 +251,12 @@ interface InteractiveSessionCommands {
     name?: string,
     images?: readonly ModelImage[],
   ): Promise<SessionRunResult>
-  runShell?(command: string, signal?: AbortSignal): Promise<SessionRunResult>
+  runShell?(
+    command: string,
+    signal?: AbortSignal,
+    sessionId?: string,
+    name?: string,
+  ): Promise<SessionRunResult>
   resumeShell?(
     sessionId: string,
     command: string,
@@ -268,6 +278,12 @@ interface InteractiveSessionCommands {
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
   changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
   recordCdUsage?(sessionId: string): Promise<void>
+  approveRecentlyDenied?(sessionId: string, display: string): Promise<void>
+  retryRecentlyDenied?(
+    sessionId: string,
+    display: string,
+    signal?: AbortSignal,
+  ): Promise<SessionRunResult>
   answerSideQuestion?(
     sessionId: string | undefined,
     question: string,
@@ -333,6 +349,7 @@ export interface InteractiveServiceFactory {
     model?: string
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
     permissionMode?: ClaudePermissionMode
+    isSessionActionApproved?: (call: ModelToolCall) => boolean
     additionalDirectories?: readonly string[]
     cwd?: string
     signal?: AbortSignal
@@ -537,12 +554,6 @@ type InteractiveMenu =
   | {
       kind: 'permission-delete'
       rule: TuiPermissionRule
-      rules: readonly TuiPermissionRule[]
-      selectedIndex: number
-    }
-  | {
-      kind: 'recently-denied-delete'
-      display: string
       rules: readonly TuiPermissionRule[]
       selectedIndex: number
     }
@@ -786,6 +797,16 @@ function describeTool(
   return `${name} ${describeToolInput(call, sensitiveValues)}`
 }
 
+function describeRecentlyDeniedAction(
+  call: ModelToolCall,
+  sensitiveValues: readonly string[],
+): string {
+  const description = call.input.description
+  return typeof description === 'string' && description.trim()
+    ? redactSensitiveText(description.trim(), sensitiveValues)
+    : describeTool(call, sensitiveValues)
+}
+
 function redactToolCall(
   call: ModelToolCall,
   sensitiveValues: readonly string[],
@@ -952,10 +973,8 @@ export function InteractiveApp({
     [permissionRuleStore, runtimeCwd],
   )
   const recentDeniedStore = useMemo(
-    () =>
-      suppliedRecentlyDeniedStore ??
-      createRecentlyDeniedStore(configTarget.configRoot),
-    [suppliedRecentlyDeniedStore, configTarget.configRoot],
+    () => suppliedRecentlyDeniedStore ?? createRecentlyDeniedStore(),
+    [suppliedRecentlyDeniedStore],
   )
   const presentationThemeStore = useMemo(
     () =>
@@ -1022,6 +1041,8 @@ export function InteractiveApp({
   const [sessionId, setSessionId] = useState<string | null>(
     resume?.sessionId ?? null,
   )
+  const sessionIdRef = useRef<string | null>(resume?.sessionId ?? null)
+  sessionIdRef.current = sessionId
   const [activeSessionSummary, setActiveSessionSummary] = useState<
     SessionSummary | undefined
   >(() =>
@@ -1118,9 +1139,13 @@ export function InteractiveApp({
   >([])
   const turnNumberRef = useRef(0)
   const turnMutatedFilesRef = useRef(false)
-  const permissionCallsRef = useRef(new Map<string, string>())
-  const [recentDenied, setRecentDenied] = useState<readonly string[]>([])
-  const recentDeniedRef = useRef<readonly string[]>([])
+  const permissionCallsRef = useRef(new Map<string, ModelToolCall>())
+  const approvedSessionActionsRef = useRef(new Map<string, Set<string>>())
+  const [recentDenied, setRecentDenied] = useState<
+    readonly RecentlyDeniedAction[]
+  >([])
+  const [retryingDeniedId, setRetryingDeniedId] = useState<string | null>(null)
+  const recentDeniedRef = useRef<readonly RecentlyDeniedAction[]>([])
   recentDeniedRef.current = recentDenied
   const [exitConfirmation, setExitConfirmation] = useState(false)
   const exitConfirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -1852,10 +1877,7 @@ export function InteractiveApp({
       case 'tool-call':
         if (['Edit', 'Write', 'NotebookEdit'].includes(event.call.name))
           turnMutatedFilesRef.current = true
-        permissionCallsRef.current.set(
-          event.call.id,
-          describeTool(event.call, sensitiveValues),
-        )
+        permissionCallsRef.current.set(event.call.id, event.call)
         append({
           kind: 'tool',
           call: redactToolCall(event.call, sensitiveValues),
@@ -1863,19 +1885,26 @@ export function InteractiveApp({
         })
         break
       case 'permission-decision':
-        if (event.behavior === 'deny' && event.source === 'auto-classifier') {
-          const denied =
-            permissionCallsRef.current.get(event.callId) ?? event.callId
-          void recentDeniedStore.record(denied).then(
-            (entries) => setRecentDenied(entries),
-            (error: unknown) =>
-              append({
-                kind: 'warning',
-                text: `Unable to save recently denied action: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              }),
-          )
+        if (
+          event.behavior === 'deny' &&
+          event.source === 'auto-classifier' &&
+          event.autoModeOutcome === 'blocked'
+        ) {
+          const denied = permissionCallsRef.current.get(event.callId)
+          const deniedSessionId = sessionIdRef.current
+          if (denied && deniedSessionId) {
+            const action: RecentlyDeniedAction = {
+              id: `${event.callId}:${randomUUID()}`,
+              call: denied,
+              display: describeRecentlyDeniedAction(denied, sensitiveValues),
+              reason: event.reason ?? '',
+              sessionId: deniedSessionId,
+            }
+            void recentDeniedStore.record(action).then(
+              (entries) => setRecentDenied(entries),
+              (error: unknown) => warn(error),
+            )
+          }
         }
         append({
           kind: event.behavior === 'deny' ? 'warning' : 'notice',
@@ -2132,6 +2161,15 @@ export function InteractiveApp({
     return next
   }
 
+  const isSessionActionApproved = (call: ModelToolCall): boolean => {
+    const activeSessionId = sessionIdRef.current
+    return activeSessionId
+      ? (approvedSessionActionsRef.current
+          .get(activeSessionId)
+          ?.has(claudePermissionActionKey(call)) ?? false)
+      : false
+  }
+
   const service = async () => {
     if (serviceRef.current) return serviceRef.current
     let pending = serviceCreationRef.current
@@ -2154,6 +2192,7 @@ export function InteractiveApp({
             : { model: preferences.model }),
           effort: preferences.effort,
           permissionMode: preferences.permissionMode,
+          isSessionActionApproved,
           additionalDirectories: preferences.additionalDirectories,
           cwd: runtimeCwdRef.current,
           ...(signal ? { signal } : {}),
@@ -2212,6 +2251,7 @@ export function InteractiveApp({
       ...(preferences.model === undefined ? {} : { model: preferences.model }),
       effort: preferences.effort,
       permissionMode: preferences.permissionMode,
+      isSessionActionApproved,
       additionalDirectories: preferences.additionalDirectories,
       cwd: runtimeCwdRef.current,
       ...(signal ? { signal } : {}),
@@ -2224,6 +2264,7 @@ export function InteractiveApp({
   }
 
   const openSession = (nextSessionId: string | null) => {
+    sessionIdRef.current = nextSessionId
     setSessionId(nextSessionId)
     setActiveSessionSummary(
       nextSessionId === null
@@ -3094,6 +3135,11 @@ export function InteractiveApp({
       commands = await service()
       let activeSessionId = sessionId
       const startedNewSession = activeSessionId === null
+      if (activeSessionId === null) {
+        activeSessionId = randomUUID()
+        sessionIdRef.current = activeSessionId
+        setSessionId(activeSessionId)
+      }
       if (activeSessionId && pendingFork) {
         const fork = await commands.fork(activeSessionId, resume?.forkSessionId)
         activeSessionId = fork.sessionId
@@ -3102,23 +3148,32 @@ export function InteractiveApp({
       }
       const result =
         shellCommand === undefined
-          ? activeSessionId
-            ? await commands.resume(
+          ? startedNewSession
+            ? await commands.run(
+                prompt,
+                turnSignal,
+                activeSessionId,
+                undefined,
+                images,
+              )
+            : await commands.resume(
                 activeSessionId,
                 prompt,
                 turnSignal,
                 undefined,
                 images,
               )
-            : await commands.run(
-                prompt,
-                turnSignal,
-                undefined,
-                undefined,
-                images,
-              )
-          : activeSessionId
-            ? commands.resumeShell
+          : startedNewSession
+            ? commands.runShell
+              ? await commands.runShell(
+                  shellCommand,
+                  turnSignal,
+                  activeSessionId,
+                )
+              : (() => {
+                  throw new Error('Interactive shell mode is unavailable')
+                })()
+            : commands.resumeShell
               ? await commands.resumeShell(
                   activeSessionId,
                   shellCommand,
@@ -3127,11 +3182,7 @@ export function InteractiveApp({
               : (() => {
                   throw new Error('Interactive shell mode is unavailable')
                 })()
-            : commands.runShell
-              ? await commands.runShell(shellCommand, turnSignal)
-              : (() => {
-                  throw new Error('Interactive shell mode is unavailable')
-                })()
+      sessionIdRef.current = result.sessionId
       setSessionId(result.sessionId)
       if (
         startedNewSession &&
@@ -4366,65 +4417,6 @@ export function InteractiveApp({
         return
       }
 
-      if (activeMenu.kind === 'recently-denied-delete') {
-        if (key.escape || value === '\u001B') {
-          updateMenu({
-            kind: 'permission-dashboard',
-            tabIndex: 0,
-            selectedIndex: -1,
-            query: '',
-            rules: activeMenu.rules,
-          })
-          return
-        }
-        if (key.upArrow || key.downArrow) {
-          updateMenu({
-            ...activeMenu,
-            selectedIndex: key.upArrow ? 0 : 1,
-          })
-          return
-        }
-        const confirmed =
-          (key.return && activeMenu.selectedIndex === 0) ||
-          value.toLowerCase() === 'y' ||
-          value === '1'
-        const declined =
-          (key.return && activeMenu.selectedIndex === 1) ||
-          value.toLowerCase() === 'n' ||
-          value === '2'
-        if (!confirmed && !declined) return
-        if (declined) {
-          updateMenu({
-            kind: 'permission-dashboard',
-            tabIndex: 0,
-            selectedIndex: -1,
-            query: '',
-            rules: activeMenu.rules,
-          })
-          return
-        }
-        const removal = (async () => {
-          setBusy(true)
-          try {
-            setRecentDenied(await recentDeniedStore.remove(activeMenu.display))
-            updateMenu({
-              kind: 'permission-dashboard',
-              tabIndex: 0,
-              selectedIndex: -1,
-              query: '',
-              rules: activeMenu.rules,
-            })
-          } catch (error) {
-            warn(error)
-          } finally {
-            setBusy(false)
-          }
-        })()
-        onTurnChange?.(removal)
-        void removal.finally(() => onTurnChange?.(null))
-        return
-      }
-
       if (activeMenu.kind === 'permission-scope') {
         if (key.escape || value === '\u001B') {
           updateMenu({
@@ -4511,7 +4503,7 @@ export function InteractiveApp({
           : []
         const rowCount =
           activeMenu.tabIndex === 0
-            ? recentDenied.length + 1
+            ? recentDenied.length
             : activeMenu.tabIndex === 4
               ? runtimePreferences.additionalDirectories.length + 1
               : matchingRules.length + 1
@@ -4543,36 +4535,71 @@ export function InteractiveApp({
             selectedIndex: -1,
           })
         } else if (
-          key.return &&
           activeMenu.tabIndex === 0 &&
-          activeMenu.selectedIndex === 0
+          activeMenu.selectedIndex >= 0 &&
+          (key.return || value.toLowerCase() === 'r')
         ) {
-          const clearing = (async () => {
+          const action = recentDenied[activeMenu.selectedIndex]
+          if (!action) return
+          const operation = (async () => {
             setBusy(true)
+            const approvals =
+              approvedSessionActionsRef.current.get(action.sessionId) ??
+              new Set<string>()
+            const actionKey = claudePermissionActionKey(action.call)
+            const wasApproved = approvals.has(actionKey)
+            approvals.add(actionKey)
+            approvedSessionActionsRef.current.set(action.sessionId, approvals)
             try {
-              await recentDeniedStore.clear()
-              setRecentDenied([])
+              const commands = await service()
+              if (value.toLowerCase() === 'r') {
+                if (!commands.retryRecentlyDenied) {
+                  throw new Error('Recently denied retry is unavailable.')
+                }
+                setRetryingDeniedId(action.id)
+                const result = await commands.retryRecentlyDenied(
+                  action.sessionId,
+                  action.display,
+                  signal,
+                )
+                sessionIdRef.current = result.sessionId
+                setSessionId(result.sessionId)
+                setUsage(result.usage)
+                setCostUsd(result.costUsd)
+                append({ kind: 'assistant', text: result.text })
+                updateMenu(null)
+              } else {
+                if (!commands.approveRecentlyDenied) {
+                  throw new Error('Recently denied approval is unavailable.')
+                }
+                await commands.approveRecentlyDenied(
+                  action.sessionId,
+                  action.display,
+                )
+                const entries = await recentDeniedStore.remove(action.id)
+                setRecentDenied(entries)
+                append({
+                  kind: 'notice',
+                  text: `Approved ${action.display}`,
+                })
+                updateMenu({
+                  kind: 'permission-dashboard',
+                  tabIndex: entries.length > 0 ? 0 : 1,
+                  selectedIndex: entries.length > 0 ? 0 : -1,
+                  query: '',
+                  rules: activeMenu.rules,
+                })
+              }
             } catch (error) {
+              if (!wasApproved) approvals.delete(actionKey)
               warn(error)
             } finally {
+              setRetryingDeniedId(null)
               setBusy(false)
             }
           })()
-          onTurnChange?.(clearing)
-          void clearing.finally(() => onTurnChange?.(null))
-        } else if (
-          key.return &&
-          activeMenu.tabIndex === 0 &&
-          activeMenu.selectedIndex > 0
-        ) {
-          const display = recentDenied[activeMenu.selectedIndex - 1]
-          if (display)
-            updateMenu({
-              kind: 'recently-denied-delete',
-              display,
-              rules: activeMenu.rules,
-              selectedIndex: 0,
-            })
+          onTurnChange?.(operation)
+          void operation.finally(() => onTurnChange?.(null))
         } else if (key.return && behavior && activeMenu.selectedIndex === 0) {
           clearComposerInput()
           updateMenu({
@@ -5575,14 +5602,15 @@ export function InteractiveApp({
         const loading = (async () => {
           setBusy(true)
           try {
+            const entries = await recentDeniedStore.load()
+            setRecentDenied(entries)
             updateMenu({
               kind: 'permission-dashboard',
-              tabIndex: 1,
-              selectedIndex: -1,
+              tabIndex: entries.length > 0 ? 0 : 1,
+              selectedIndex: entries.length > 0 ? 0 : -1,
               query: '',
               rules: await permissionStore.load(),
             })
-            setRecentDenied(await recentDeniedStore.load())
           } catch (error) {
             warn(error)
           } finally {
@@ -6193,23 +6221,8 @@ export function InteractiveApp({
                   query={menu.query}
                   rules={menu.rules}
                   recentDenied={recentDenied}
+                  retryingDeniedId={retryingDeniedId}
                   workspaceDirectories={workspaceDirectories}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'recently-denied-delete' ? (
-                <SelectionMenu
-                  title="Delete recently denied action?"
-                  description={menu.display}
-                  options={[
-                    {
-                      label: 'Yes',
-                      description: 'Remove this action from Recently denied.',
-                    },
-                    { label: 'No', description: 'Keep this action.' },
-                  ]}
-                  selectedIndex={menu.selectedIndex}
-                  footer="Enter to confirm · Esc to cancel"
                   width={width}
                   screenReader={axScreenReader}
                 />

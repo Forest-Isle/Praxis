@@ -1279,6 +1279,33 @@ export class ClaudeSessionService {
     }
   }
 
+  async approveRecentlyDenied(
+    sessionId: string,
+    display: string,
+  ): Promise<void> {
+    await this.appendPermissionGrant(sessionId, display, false)
+  }
+
+  async retryRecentlyDenied(
+    sessionId: string,
+    display: string,
+    signal?: AbortSignal,
+  ): Promise<SessionRunResult> {
+    await this.appendPermissionGrant(sessionId, display, true)
+    return this.executeTurn(
+      sessionId,
+      '/permissions',
+      true,
+      signal,
+      undefined,
+      [],
+      [],
+      undefined,
+      undefined,
+      true,
+    )
+  }
+
   async recordBtwUsage(
     sessionId: string | undefined,
     permissionMode: ClaudePermissionMode = 'default',
@@ -1781,6 +1808,7 @@ export class ClaudeSessionService {
     documents: readonly ModelDocument[] = [],
     resumeSessionAt?: string,
     shellCommand?: string,
+    skipUserPrompt = false,
   ): Promise<SessionRunResult> {
     this.assertWritable()
     if (prompt.length === 0 && images.length === 0 && documents.length === 0)
@@ -2506,8 +2534,9 @@ export class ClaudeSessionService {
             : []),
         ]
 
-        const expansion =
-          shellCommand === undefined
+        const expansion = skipUserPrompt
+          ? { userMessages: [] as string[] }
+          : shellCommand === undefined
             ? this.options.extensions
               ? await this.options.extensions.expandPromptAsync(
                   prompt,
@@ -2556,7 +2585,7 @@ export class ClaudeSessionService {
             : {}),
         }))
         const agentMentionMessages =
-          shellCommand === undefined
+          shellCommand === undefined && !skipUserPrompt
             ? (this.options.extensions?.agentMentionMessages(prompt) ?? [])
             : []
         const injectAgentMentionContext = (
@@ -2825,7 +2854,7 @@ export class ClaudeSessionService {
           }
         }
 
-        if (this.options.hooks) {
+        if (this.options.hooks && !skipUserPrompt) {
           const outcome = await this.options.hooks.run(
             {
               ...hookSession,
@@ -3035,15 +3064,17 @@ export class ClaudeSessionService {
         if (!finalLeafUuid) {
           throw new Error('Could not locate final assistant response')
         }
-        await this.append(
-          lease,
-          snapshot.tail,
-          createClaudeLastPromptEntry({
-            sessionId,
-            lastPrompt: prompt,
-            leafUuid: finalLeafUuid,
-          }),
-        )
+        if (!skipUserPrompt) {
+          await this.append(
+            lease,
+            snapshot.tail,
+            createClaudeLastPromptEntry({
+              sessionId,
+              lastPrompt: prompt,
+              leafUuid: finalLeafUuid,
+            }),
+          )
+        }
         const totalUsage = mergeUsage(
           mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
           result.usage,
@@ -3470,6 +3501,133 @@ export class ClaudeSessionService {
       })}\n`,
       'utf8',
     )
+  }
+
+  private async appendPermissionGrant(
+    sessionId: string,
+    display: string,
+    retry: boolean,
+  ): Promise<void> {
+    this.assertWritable()
+    const normalized = display.trim()
+    if (!normalized) throw new Error('Permission action must not be empty')
+    while (true) {
+      const result = await this.turnStore(sessionId).withLease(
+        async (lease) => {
+          const snapshot = await lease.load()
+          if (snapshot.entries.length === 0) {
+            throw new Error(`Claude session not found: ${sessionId}`)
+          }
+          const timestamp = new Date().toISOString()
+          const promptId = randomUUID()
+          const commandUuid = randomUUID()
+          const common = {
+            isSidechain: false,
+            promptId,
+            timestamp,
+            userType: 'external',
+            entrypoint: 'cli',
+            cwd: this.activeCwd(),
+            sessionId,
+            version: this.options.claudeVersion,
+            gitBranch: null,
+          }
+          let parentUuid = this.logicalTailUuid(snapshot.tail)
+          const entries: ClaudeTranscriptEntry[] = []
+          if (
+            this.options.fileCheckpointing &&
+            this.options.sessionPersistence !== false
+          ) {
+            const fileHistory = new ClaudeFileHistory(
+              this.options.configRoot,
+              sessionId,
+              [this.activeCwd(), ...(this.options.fileRewindRoots ?? [])],
+            )
+            entries.push(
+              await fileHistory.snapshot(snapshot.entries, commandUuid),
+            )
+          }
+          if (retry) {
+            const retryUuid = randomUUID()
+            entries.push({
+              parentUuid,
+              isSidechain: false,
+              type: 'system',
+              subtype: 'permission_retry',
+              content: `Allowed ${normalized}`,
+              commands: [normalized],
+              level: 'info',
+              isMeta: false,
+              timestamp,
+              uuid: retryUuid,
+              userType: 'external',
+              entrypoint: 'cli',
+              cwd: this.activeCwd(),
+              sessionId,
+              version: this.options.claudeVersion,
+              gitBranch: null,
+            })
+            parentUuid = retryUuid
+          } else {
+            const caveatUuid = randomUUID()
+            entries.push({
+              ...common,
+              parentUuid,
+              type: 'user',
+              message: {
+                role: 'user',
+                content:
+                  '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>',
+              },
+              isMeta: true,
+              uuid: caveatUuid,
+            })
+            parentUuid = caveatUuid
+          }
+          entries.push({
+            ...common,
+            parentUuid,
+            type: 'user',
+            message: {
+              role: 'user',
+              content:
+                '<command-name>/permissions</command-name>\n            <command-message>permissions</command-message>\n            <command-args></command-args>',
+            },
+            uuid: commandUuid,
+          })
+          const outputUuid = randomUUID()
+          entries.push({
+            ...common,
+            parentUuid: commandUuid,
+            type: 'user',
+            message: {
+              role: 'user',
+              content: `<local-command-stdout>${retry ? '(no content)' : `Approved ${normalized}`}</local-command-stdout>`,
+            },
+            uuid: outputUuid,
+          })
+          entries.push({
+            ...common,
+            parentUuid: outputUuid,
+            type: 'user',
+            message: {
+              role: 'user',
+              content: `Permission granted for: ${normalized}. You may now retry this command if you would like.`,
+            },
+            isMeta: true,
+            uuid: randomUUID(),
+          })
+          const appended = await lease.appendMany(snapshot.tail, entries)
+          if (appended.status === 'conflict') {
+            throw new Error(
+              `Claude permission grant append conflict: ${appended.reason}`,
+            )
+          }
+        },
+      )
+      if (result.status === 'completed') return
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+    }
   }
 
   private async appendBackgroundNotification(

@@ -576,6 +576,42 @@ describe('Claude-style TUI components', () => {
     expect(`${addRule}${existingRule}`).not.toContain('⌕')
   })
 
+  it('renders the native Recently denied action and controls', () => {
+    const frame = render(
+      <PermissionDashboard
+        tabIndex={0}
+        selectedIndex={0}
+        query=""
+        rules={[]}
+        recentDenied={[
+          {
+            id: 'denied-1',
+            call: {
+              id: 'call-1',
+              name: 'Bash',
+              input: { command: 'rm /tmp/target' },
+            },
+            display: 'Delete target',
+            reason: 'Classifier policy',
+            sessionId: 'session-1',
+          },
+        ]}
+        workspaceDirectories={[]}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+
+    expect(frame).toContain(
+      'Commands recently denied by the auto mode classifier.',
+    )
+    expect(frame).toContain('1. ✘ Delete target  Classifier policy')
+    expect(frame).toContain(
+      'Enter to approve · r to retry · ↑/↓ to navigate · Esc to cancel',
+    )
+    expect(frame).not.toContain('Clear recently denied')
+  })
+
   it('renders the observed built-in theme choices and active profile', () => {
     const app = render(
       <ThemePicker

@@ -9,6 +9,7 @@ import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { TuiPermissionRule } from './permission-settings.js'
+import type { RecentlyDeniedAction } from './recently-denied.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
 import type { TuiSlashCommand } from './slash-commands.js'
 import {
@@ -1029,6 +1030,7 @@ export function PermissionDashboard({
   query,
   rules,
   recentDenied,
+  retryingDeniedId,
   workspaceDirectories,
   width,
   screenReader,
@@ -1037,7 +1039,8 @@ export function PermissionDashboard({
   selectedIndex: number
   query: string
   rules: readonly TuiPermissionRule[]
-  recentDenied: readonly string[]
+  recentDenied: readonly RecentlyDeniedAction[]
+  retryingDeniedId?: string | null
   workspaceDirectories: readonly { path: string; original: boolean }[]
   width: number
   screenReader: boolean
@@ -1054,8 +1057,7 @@ export function PermissionDashboard({
             rule.scope.includes(normalizedQuery)),
       )
     : []
-  const rows =
-    tabIndex === 0 ? recentDenied : matchingRules.map((rule) => rule.rule)
+  const rows = matchingRules.map((rule) => rule.rule)
   const originalWorkspace = workspaceDirectories.find(
     (directory) => directory.original,
   )
@@ -1066,7 +1068,7 @@ export function PermissionDashboard({
     tabIndex === 0
       ? recentDenied.length === 0
         ? 'No recent denials. Commands denied by the auto mode classifier will appear here.'
-        : 'Commands denied by the auto mode classifier appear here.'
+        : 'Commands recently denied by the auto mode classifier.'
       : tabIndex === 1
         ? "Praxis Code won't ask before using allowed tools."
         : tabIndex === 2
@@ -1116,13 +1118,16 @@ export function PermissionDashboard({
           </Text>
         ))
       ) : tabIndex === 0 ? (
-        ['Clear recently denied…', ...rows].map((row, index) => (
+        recentDenied.map((action, index) => (
           <Text
-            key={`${index}-${row}`}
+            key={action.id}
             inverse={!screenReader && index === selectedIndex}
           >
             {selectionPrefix(index === selectedIndex, screenReader)}
-            {index + 1}. {row}
+            {index + 1}. {action.id === retryingDeniedId ? '✔' : '✘'}{' '}
+            {action.display}
+            {action.id === retryingDeniedId ? ' (retry)' : ''}
+            {action.reason ? `  ${action.reason}` : ''}
           </Text>
         ))
       ) : tabIndex === 4 ? (
@@ -1167,9 +1172,11 @@ export function PermissionDashboard({
       ) : null}
       <Text> </Text>
       <Text dimColor>
-        {selectedIndex >= 0
-          ? '↑/↓ navigate · Enter to select · ←/→ to switch · Esc to cancel'
-          : '←/→ to switch · ↓ to select · Esc to cancel'}
+        {tabIndex === 0 && recentDenied.length > 0
+          ? 'Enter to approve · r to retry · ↑/↓ to navigate · Esc to cancel'
+          : selectedIndex >= 0
+            ? '↑/↓ navigate · Enter to select · ←/→ to switch · Esc to cancel'
+            : '←/→ to switch · ↓ to select · Esc to cancel'}
       </Text>
     </Box>
   )
