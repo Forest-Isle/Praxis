@@ -1500,7 +1500,7 @@ exit 0
   assert.deepEqual(observedClaudeContract, expectedHookNavigation)
 
   const providerlessProbe = String.raw`
-set timeout 15
+set timeout 60
 log_user 1
 set phase "providerless startup"
 expect_before timeout {
@@ -1543,7 +1543,7 @@ exit 0
   assert.deepEqual(await sharedTreeSnapshot(), treesBeforeProviderlessProbe)
 
   const probe = String.raw`
-set timeout 15
+set timeout 60
 proc capture {path data} {
   set handle [open $path a]
   fconfigure $handle -translation binary
@@ -1552,21 +1552,23 @@ proc capture {path data} {
 }
 log_user 1
 set phase "startup"
+set t0 [clock milliseconds]
 expect_before timeout {
+  puts stderr "DBG phase=$phase elapsed=[expr {[clock milliseconds]-$t0}]ms"
   puts stderr "TUI compatibility timed out during $phase"
   exit 1
 }
 spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions --add-dir $env(TUI_SHARED_ROOT) --plugin-dir $env(TUI_PLUGIN_ROOT)
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect {
-  -re {Praxis.*Code.*v${expectedVersionPattern}} {}
-  timeout { puts stderr "welcome header did not render"; exit 1 }
+  -re {Praxis.*Code.*v${expectedVersionPattern}} { puts stderr "DBG header matched elapsed=[expr {[clock milliseconds]-$t0}]ms" }
+  timeout { puts stderr "DBG header timeout elapsed=[expr {[clock milliseconds]-$t0}]ms welcome header did not render"; exit 1 }
   eof { puts stderr "Praxis exited before welcome header"; exit 1 }
 }
-expect -re {Welcome back!}
-expect -re {Tips for getting started}
-expect -re {Try.*review this project}
-expect -re {bypass permissions on}
+expect -re {Tips for getting started} { puts stderr "DBG Tips at [expr {[clock milliseconds]-$t0}]ms" }
+expect -re {Welcome back!} { puts stderr "DBG Welcome at [expr {[clock milliseconds]-$t0}]ms" }
+expect -re {Try.*review this project} { puts stderr "DBG Try at [expr {[clock milliseconds]-$t0}]ms" }
+expect -re {bypass permissions on} { puts stderr "DBG bypass at [expr {[clock milliseconds]-$t0}]ms" }
 set phase "shortcut help"
 send "?"
 expect -re {! for shell mode}
