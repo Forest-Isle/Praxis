@@ -67,6 +67,7 @@ import {
   type ModelProvider,
   type ModelUsage,
   type PermissionApproval,
+  type PermissionDecision,
   type PermissionResolver,
   type RuntimeEventSink,
   type ToolRegistry,
@@ -148,6 +149,7 @@ export interface ClaudeSessionServiceOptions {
   approveTool?: (
     call: ModelToolCall,
     originalCall?: ModelToolCall,
+    decision?: PermissionDecision,
   ) => PermissionApproval | Promise<PermissionApproval>
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
   contextAssembler?: ContextAssembler

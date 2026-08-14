@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
@@ -18,11 +18,13 @@ import {
   type ClaudeAutoClassifier,
   type ClaudeAutoModeConfig,
 } from './claude-auto-classifier.js'
+import { stripClaudeSafeShellEnvironment } from './claude-shell-permission.js'
 
 interface PermissionRule {
   behavior: PermissionBehavior
   toolName: string
   pattern: string | null
+  root?: string
 }
 
 export interface ClaudePermissionResolverOptions {
@@ -110,6 +112,7 @@ export function claudePermissionActionKey(call: ModelToolCall): string {
 function readRuleStrings(
   value: unknown,
   behavior: PermissionBehavior,
+  root?: string,
 ): PermissionRule[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((item) => {
@@ -122,6 +125,7 @@ function readRuleStrings(
         behavior,
         toolName,
         pattern: match[2] ?? null,
+        ...(root ? { root } : {}),
       },
     ]
   })
@@ -132,10 +136,14 @@ function loadRules(settings: readonly ClaudeJsonResource[]): PermissionRule[] {
     if (!isRecord(resource.value)) return []
     const permissions = resource.value.permissions
     if (!isRecord(permissions)) return []
+    const root =
+      resource.scope === 'user'
+        ? dirname(resource.path)
+        : resolve(dirname(resource.path), '..')
     return [
-      ...readRuleStrings(permissions.deny, 'deny'),
-      ...readRuleStrings(permissions.ask, 'ask'),
-      ...readRuleStrings(permissions.allow, 'allow'),
+      ...readRuleStrings(permissions.deny, 'deny', root),
+      ...readRuleStrings(permissions.ask, 'ask', root),
+      ...readRuleStrings(permissions.allow, 'allow', root),
     ]
   })
 }
@@ -242,7 +250,12 @@ function matchesRule(
   cwd: string,
   homeDirectory: string,
 ): boolean {
-  if (rule.toolName !== call.name) return false
+  const toolMatches =
+    rule.toolName === call.name ||
+    (rule.toolName === 'Edit' &&
+      ['Edit', 'Write', 'NotebookEdit'].includes(call.name)) ||
+    (rule.toolName === 'Read' && ['Read', 'Glob', 'Grep'].includes(call.name))
+  if (!toolMatches) return false
   if (rule.pattern === null) return true
   let target = permissionTarget(call)
   if (target === null) return false
@@ -254,8 +267,12 @@ function matchesRule(
   ) {
     return false
   }
-  if (call.name === 'Bash' && rule.pattern.endsWith(':*')) {
+  if (
+    ['Bash', 'PowerShell', 'Skill'].includes(call.name) &&
+    rule.pattern.endsWith(':*')
+  ) {
     const commandPrefix = rule.pattern.slice(0, -2)
+    if (call.name === 'Bash') target = stripClaudeSafeShellEnvironment(target)
     return target === commandPrefix || target.startsWith(`${commandPrefix} `)
   }
   if (call.name === 'WebFetch' && rule.pattern.startsWith('domain:')) {
@@ -275,6 +292,8 @@ function matchesRule(
       permissionPattern = homeDirectory
     } else if (permissionPattern.startsWith('~/')) {
       permissionPattern = resolve(homeDirectory, permissionPattern.slice(2))
+    } else if (permissionPattern.startsWith('/')) {
+      permissionPattern = resolve(rule.root ?? cwd, permissionPattern.slice(1))
     } else if (!isAbsolute(permissionPattern)) {
       permissionPattern = resolve(cwd, permissionPattern)
     }

@@ -438,15 +438,34 @@ describe('AgentRuntime', () => {
       },
       permissions: { resolve: () => ({ behavior: 'ask' }) },
     })
+    const prompts: unknown[] = []
 
     await runtime.run({
       messages: [{ role: 'user', content: 'run' }],
-      approveTool: async () => ({
-        behavior: 'allow',
-        updatedInput: { command: 'updated' },
-      }),
+      approveTool: async (call, originalCall, decision) => {
+        prompts.push({ call, originalCall, decision })
+        return {
+          behavior: 'allow',
+          updatedInput: { command: 'updated' },
+        }
+      },
     })
 
+    expect(prompts).toEqual([
+      {
+        call: {
+          id: 'call_permission',
+          name: 'Bash',
+          input: { command: 'original' },
+        },
+        originalCall: {
+          id: 'call_permission',
+          name: 'Bash',
+          input: { command: 'original' },
+        },
+        decision: { behavior: 'ask' },
+      },
+    ])
     expect(executed).toEqual([
       {
         id: 'call_permission',

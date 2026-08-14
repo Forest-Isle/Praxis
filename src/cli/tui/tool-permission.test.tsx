@@ -20,7 +20,7 @@ const call = (name: string, input: Record<string, unknown>): ModelToolCall => ({
 afterEach(cleanup)
 
 describe('tool permission projection', () => {
-  it('projects Bash commands and exact persisted rules', () => {
+  it('projects Bash commands and reusable prefix rules', () => {
     const model = projectTuiToolPermission(
       call('Bash', { command: 'npm test', description: 'Run tests' }),
       '/workspace',
@@ -35,8 +35,35 @@ describe('tool permission projection', () => {
     })
     expect(model.options[1]).toMatchObject({
       action: 'persist-rule',
-      rule: 'Bash(npm test)',
+      rule: 'Bash(npm test:*)',
     })
+
+    expect(
+      projectTuiToolPermission(
+        call('Bash', { command: 'NODE_ENV=test npm run build' }),
+        '/workspace',
+        [],
+      ).options[1],
+    ).toMatchObject({ rule: 'Bash(npm run:*)' })
+    expect(
+      projectTuiToolPermission(
+        call('Bash', { command: 'CUSTOM_TARGET=test npm run build' }),
+        '/workspace',
+        [],
+      ).options[1],
+    ).toMatchObject({ rule: 'Bash(CUSTOM_TARGET=test npm run build)' })
+  })
+
+  it('does not persist one-off multiline PowerShell literals', () => {
+    const model = projectTuiToolPermission(
+      call('PowerShell', { command: "Get-ChildItem\nWrite-Output 'done'" }),
+      '/workspace',
+      [],
+    )
+    expect(model.options.map(({ action }) => action)).toEqual([
+      'allow-once',
+      'deny',
+    ])
   })
 
   it('projects Edit and Write diffs with source-relative paths', () => {
@@ -138,7 +165,7 @@ describe('tool permission projection', () => {
     expect(read.options[1]).toEqual({
       action: 'allow-session-action',
       label: 'Yes, allow reading from shared/ during this session',
-      rule: 'Read(/shared/config.json)',
+      rule: 'Read(//shared/**)',
     })
   })
 
@@ -150,9 +177,18 @@ describe('tool permission projection', () => {
     )
     expect(skill).toMatchObject({
       kind: 'skill',
-      title: 'Use Skill: reviewer',
+      title: 'Use skill "reviewer"?',
     })
     expect(skill.options[1]).toMatchObject({ rule: 'Skill(reviewer)' })
+
+    const skillCommand = projectTuiToolPermission(
+      call('Skill', { skill: 'reviewer strict' }),
+      '/workspace',
+      [],
+    )
+    expect(skillCommand.options[2]).toMatchObject({
+      rule: 'Skill(reviewer:*)',
+    })
 
     const generic = projectTuiToolPermission(
       call('CustomTool', { token: 'secret-value' }),
@@ -161,6 +197,22 @@ describe('tool permission projection', () => {
     )
     expect(generic.kind).toBe('generic')
     expect(generic.detail[0]?.text).not.toContain('secret-value')
+  })
+
+  it('offers a session-scoped rule for project .claude edits', () => {
+    const model = projectTuiToolPermission(
+      call('Write', {
+        file_path: '/workspace/.claude/settings.local.json',
+        content: '{}',
+      }),
+      '/workspace',
+      [],
+    )
+    expect(model.options[1]).toEqual({
+      action: 'allow-session-action',
+      label: 'Yes, and allow Claude to edit its own settings for this session',
+      rule: 'Edit(/.claude/**)',
+    })
   })
 
   it('renders the source-shaped selected option and diff', () => {
@@ -188,5 +240,27 @@ describe('tool permission projection', () => {
     expect(app.lastFrame()).toContain(
       'Selected: 2. Yes, allow all edits during this session',
     )
+  })
+
+  it('renders the permission decision explanation', () => {
+    const model = projectTuiToolPermission(
+      call('Bash', { command: 'npm test' }),
+      '/workspace',
+      [],
+      {
+        behavior: 'ask',
+        reason: 'A project rule requires confirmation.',
+      },
+    )
+    const app = render(
+      <ToolPermissionDialog
+        model={model}
+        selection={0}
+        feedbackMode={false}
+        feedback=""
+        screenReader
+      />,
+    )
+    expect(app.lastFrame()).toContain('A project rule requires confirmation.')
   })
 })

@@ -27,6 +27,28 @@ describe('ClaudePermissionResolver', () => {
     ).toBe(false)
     expect(
       claudePermissionRuleMatches(
+        'Bash(npm run:*)',
+        {
+          id: 'bash-safe-env',
+          name: 'Bash',
+          input: { command: 'NODE_ENV=test npm run build' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Bash(npm run:*)',
+        {
+          id: 'bash-unsafe-env',
+          name: 'Bash',
+          input: { command: 'CUSTOM_TARGET=test npm run build' },
+        },
+        '/workspace',
+      ),
+    ).toBe(false)
+    expect(
+      claudePermissionRuleMatches(
         'WebFetch(domain:*.example.com)',
         {
           id: 'fetch',
@@ -65,6 +87,39 @@ describe('ClaudePermissionResolver', () => {
           id: 'skill',
           name: 'Skill',
           input: { skill: 'reviewer' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Skill(reviewer:*)',
+        {
+          id: 'skill-prefix',
+          name: 'Skill',
+          input: { skill: 'reviewer strict' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Edit(/.claude/**)',
+        {
+          id: 'write-settings',
+          name: 'Write',
+          input: { file_path: '/workspace/.claude/settings.local.json' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Read(//shared/**)',
+        {
+          id: 'grep-shared',
+          name: 'Grep',
+          input: { path: '/shared/src', pattern: 'TODO' },
         },
         '/workspace',
       ),
@@ -117,6 +172,43 @@ describe('ClaudePermissionResolver', () => {
         input: { file_path: '/workspace/output.txt', content: 'value' },
       }),
     ).resolves.toMatchObject({ behavior: 'deny' })
+  })
+
+  it('resolves leading-slash file rules from their settings source root', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace/project',
+      homeDirectory: '/home/fixture',
+      settings: [
+        {
+          path: '/home/fixture/.claude/settings.json',
+          scope: 'user',
+          value: { permissions: { deny: ['Read(/skills/**)'] } },
+        },
+        {
+          path: '/workspace/project/.claude/settings.local.json',
+          scope: 'local',
+          value: { permissions: { allow: ['Edit(/.claude/**)'] } },
+        },
+      ],
+    })
+
+    await expect(
+      resolver.resolve({
+        id: 'read-user-skill',
+        name: 'Read',
+        input: { file_path: '/home/fixture/.claude/skills/reviewer/SKILL.md' },
+      }),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule Read(/skills/**)',
+    })
+    await expect(
+      resolver.resolve({
+        id: 'write-project-settings',
+        name: 'Write',
+        input: { file_path: '/workspace/project/.claude/settings.local.json' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
   })
 
   it('allows Agent by default while preserving explicit deny rules', async () => {
@@ -293,7 +385,7 @@ describe('ClaudePermissionResolver', () => {
       new ClaudePermissionResolver({
         cwd: '/workspace',
         settings: [],
-        disallowedTools: ['Glob(/workspace/private/**)'],
+        disallowedTools: ['Glob(//workspace/private/**)'],
       }).resolve({
         id: 'glob-private',
         name: 'Glob',
@@ -301,7 +393,7 @@ describe('ClaudePermissionResolver', () => {
       }),
     ).resolves.toEqual({
       behavior: 'deny',
-      reason: 'Denied by Claude permission rule Glob(/workspace/private/**)',
+      reason: 'Denied by Claude permission rule Glob(//workspace/private/**)',
     })
     const notebookEdit = {
       id: 'notebook-edit',
@@ -317,12 +409,12 @@ describe('ClaudePermissionResolver', () => {
       new ClaudePermissionResolver({
         cwd: '/workspace',
         settings: [],
-        disallowedTools: ['NotebookEdit(/workspace/*.ipynb)'],
+        disallowedTools: ['NotebookEdit(//workspace/*.ipynb)'],
       }).resolve(notebookEdit),
     ).resolves.toEqual({
       behavior: 'deny',
       reason:
-        'Denied by Claude permission rule NotebookEdit(/workspace/*.ipynb)',
+        'Denied by Claude permission rule NotebookEdit(//workspace/*.ipynb)',
     })
     await expect(
       new ClaudePermissionResolver({

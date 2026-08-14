@@ -80,7 +80,7 @@ are registered CLI commands in the authoritative source snapshot.
 | Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures                    |
 | Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures                     |
 | Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures                     |
-| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests                           |
+| Decision      | tool-specific bordered, numbered choices | permission/question/plan/MCP tests                           |
 | Resume        | selectable list plus active history      | projection, picker, interaction, and Ink tests               |
 | Export        | clipboard/file method and filename flow  | formatter, interaction, and PTY fixtures                     |
 | Compact       | progress, marker, expandable summary     | service, projection, interaction, and PTY gates              |
@@ -152,6 +152,10 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
   scoped rule search and atomic creation/removal; original/additional workspace
   directory presentation; and session-local directory add/remove controls.
+- `ToolPermissionDialog`: source-dispatched Bash/PowerShell, edit/write,
+  notebook, filesystem, WebFetch, Skill, and fallback views; inline diffs,
+  permission explanations, reusable command/Skill rules, `.claude` session
+  grants, accept/reject feedback, and screen-reader selection text.
 - `/tui` switches between the default and fullscreen renderers, persists the
   Claude-compatible `tui` runtime setting, and resumes the active session after
   the renderer restart.
@@ -172,8 +176,8 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `BtwPanel`: session-local side-question history with bounded answer scrolling,
   clipboard copy, history pruning, cancellation, and native background-Agent
   handoff.
-- `DialogFrame`: shared bordered surface used by permission, question, plan,
-  recovery, and elicitation decisions.
+- `DialogFrame`: shared bordered surface used by question, plan, recovery, and
+  elicitation decisions; tool permissions use their source-specific dialog.
 - screen-reader branches: semantic text-only rendering through the same state.
 
 ## Interaction rules

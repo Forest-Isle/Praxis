@@ -50,6 +50,7 @@ import {
   type ModelProvider,
   type ModelToolCall,
   type PermissionApproval,
+  type PermissionDecision,
   type ToolRegistry,
   type RuntimeEventSink,
 } from './core/runtime.js'
@@ -1045,6 +1046,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     approveTool?: (
       call: ModelToolCall,
       originalCall?: ModelToolCall,
+      decision?: PermissionDecision,
     ) => PermissionApproval | Promise<PermissionApproval>
     agent?: string
     model?: string

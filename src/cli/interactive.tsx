@@ -24,6 +24,7 @@ import type {
   ModelToolCall,
   ModelUsage,
   PermissionApproval,
+  PermissionDecision,
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
@@ -370,6 +371,8 @@ export interface InteractiveServiceFactory {
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
     approveTool?: (
       call: ModelToolCall,
+      originalCall?: ModelToolCall,
+      decision?: PermissionDecision,
     ) => PermissionApproval | Promise<PermissionApproval>
     onElicitation?: (
       request: CliElicitationRequest,
@@ -500,6 +503,7 @@ interface InteractiveAppProps {
 type PendingPermission = {
   kind: 'tool' | 'recovery'
   call: ModelToolCall
+  decision?: PermissionDecision
   resolve: (approval: PermissionApproval) => void
 }
 
@@ -1213,6 +1217,7 @@ export function InteractiveApp({
             permission.call,
             runtimeCwd,
             sensitiveValues,
+            permission.decision,
           )
         : null,
     [permission, runtimeCwd, sensitiveValues],
@@ -2135,12 +2140,14 @@ export function InteractiveApp({
   const requestApproval = (
     call: ModelToolCall,
     kind: PendingPermission['kind'],
+    decision?: PermissionDecision,
   ) =>
     new Promise<PermissionApproval>((resolveApproval) => {
       let settled = false
       const pending: PendingPermission = {
         kind,
         call,
+        ...(decision ? { decision } : {}),
         resolve: (approved) => {
           if (settled) return
           settled = true
@@ -2155,7 +2162,11 @@ export function InteractiveApp({
       permissionRef.current = pending
       setPermission(pending)
     })
-  const approveTool = (call: ModelToolCall) => requestApproval(call, 'tool')
+  const approveTool = (
+    call: ModelToolCall,
+    _originalCall?: ModelToolCall,
+    decision?: PermissionDecision,
+  ) => requestApproval(call, 'tool', decision)
 
   const requestElicitation = (request: CliElicitationRequest) =>
     new Promise<CliElicitationResult>((resolveResult) => {

@@ -1,9 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { basename, dirname, relative } from 'node:path'
+import { homedir } from 'node:os'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 
 import { Box, Text } from 'ink'
 
-import type { ModelToolCall } from '../../core/runtime.js'
+import type { ModelToolCall, PermissionDecision } from '../../core/runtime.js'
+import { claudeBashPermissionRuleContent } from '../../permissions/claude-shell-permission.js'
 import { redactSensitiveText } from '../../platform/sensitive-data.js'
 
 export type TuiToolPermissionAction =
@@ -31,6 +33,7 @@ export interface TuiToolPermissionModel {
   title: string
   subtitle?: string
   description?: string
+  explanation?: string
   question: string
   detail: readonly { prefix?: '+' | '-'; text: string }[]
   options: readonly TuiToolPermissionOption[]
@@ -51,8 +54,28 @@ function visibleLines(value: string, limit = 20): readonly string[] {
   return [...lines.slice(0, limit), `… ${lines.length - limit} more lines`]
 }
 
-function ruleForExactCommand(command: string): string {
-  return `Bash(${command})`
+function pathIsWithin(root: string, path: string): boolean {
+  const child = relative(resolve(root), resolve(path))
+  return child === '' || (!child.startsWith('..') && !isAbsolute(child))
+}
+
+function claudeFolderSessionOption(
+  path: string,
+  cwd: string,
+): TuiToolPermissionOption | undefined {
+  const projectClaude = resolve(cwd, '.claude')
+  const globalClaude = resolve(homedir(), '.claude')
+  const pattern = pathIsWithin(globalClaude, path)
+    ? '~/.claude/**'
+    : pathIsWithin(projectClaude, path)
+      ? '/.claude/**'
+      : undefined
+  if (!pattern) return undefined
+  return {
+    action: 'allow-session-action',
+    label: 'Yes, and allow Claude to edit its own settings for this session',
+    rule: `Edit(${pattern})`,
+  }
 }
 
 function fileSessionLabel(
@@ -72,18 +95,28 @@ function fileSessionLabel(
     : `Yes, allow all edits in ${directory}/ during this session (shift+tab)`
 }
 
+function readSessionRule(path: string, cwd: string): string {
+  const absolutePath = resolve(cwd, path)
+  const target = pathIsWithin(cwd, absolutePath)
+    ? absolutePath
+    : `${dirname(absolutePath)}/**`
+  return `Read(/${target})`
+}
+
 function fileOptions(
-  call: ModelToolCall,
   path: string,
   cwd: string,
   readOnly: boolean,
 ): readonly TuiToolPermissionOption[] {
+  const claudeFolderOption = readOnly
+    ? undefined
+    : claudeFolderSessionOption(path, cwd)
   return [
     { action: 'allow-once', label: 'Yes' },
-    {
+    claudeFolderOption ?? {
       action: readOnly ? 'allow-session-action' : 'allow-session-edits',
       label: fileSessionLabel(path, cwd, readOnly),
-      ...(readOnly ? { rule: `${call.name}(${path})` } : {}),
+      ...(readOnly ? { rule: readSessionRule(path, cwd) } : {}),
     },
     { action: 'deny', label: 'No' },
   ]
@@ -122,7 +155,7 @@ function fileModel(
           text,
         })),
       ],
-      options: fileOptions(call, path, cwd, false),
+      options: fileOptions(path, cwd, false),
     }
   }
   if (call.name === 'Write') {
@@ -153,7 +186,7 @@ function fileModel(
           text,
         })),
       ],
-      options: fileOptions(call, path, cwd, false),
+      options: fileOptions(path, cwd, false),
     }
   }
   return undefined
@@ -184,7 +217,7 @@ function notebookModel(
       prefix: mode === 'delete' ? '-' : '+',
       text,
     })),
-    options: fileOptions(call, path, cwd, false),
+    options: fileOptions(path, cwd, false),
   }
 }
 
@@ -208,7 +241,7 @@ function filesystemModel(
     title: 'Read file',
     question: 'Do you want to proceed?',
     detail: [{ text: `${call.name}(${redact(argument, sensitiveValues)})` }],
-    options: fileOptions(call, path, cwd, true),
+    options: fileOptions(path, cwd, true),
   }
 }
 
@@ -249,17 +282,23 @@ function webFetchModel(
 
 function bashModel(
   call: ModelToolCall,
-  cwd: string,
   sensitiveValues: readonly string[],
 ): TuiToolPermissionModel | undefined {
   if (call.name !== 'Bash' && call.name !== 'PowerShell') return undefined
   const command = stringInput(call, 'command') ?? ''
   const description = stringInput(call, 'description')
   const displayCommand = redact(command, sensitiveValues)
-  const rule =
-    call.name === 'Bash'
-      ? ruleForExactCommand(command)
-      : `${call.name}(${command})`
+  const ruleContent =
+    call.name === 'Bash' ? claudeBashPermissionRuleContent(command) : command
+  const rule = `${call.name}(${ruleContent})`
+  const persistentOption: TuiToolPermissionOption | undefined =
+    call.name === 'PowerShell' && command.includes('\n')
+      ? undefined
+      : {
+          action: 'persist-rule',
+          label: `Yes, and don’t ask again for: ${redact(ruleContent, sensitiveValues)}`,
+          rule,
+        }
   return {
     kind: 'bash',
     title: call.name === 'Bash' ? 'Bash command' : 'PowerShell command',
@@ -270,11 +309,7 @@ function bashModel(
     detail: visibleLines(displayCommand).map((text) => ({ text })),
     options: [
       { action: 'allow-once', label: 'Yes' },
-      {
-        action: 'persist-rule',
-        label: `Yes, and don't ask again for ${displayCommand || call.name} in ${cwd}`,
-        rule,
-      },
+      ...(persistentOption ? [persistentOption] : []),
       { action: 'deny', label: 'No' },
     ],
   }
@@ -284,20 +319,31 @@ export function projectTuiToolPermission(
   call: ModelToolCall,
   cwd: string,
   sensitiveValues: readonly string[],
+  decision?: PermissionDecision,
 ): TuiToolPermissionModel {
+  const explain = (model: TuiToolPermissionModel): TuiToolPermissionModel =>
+    decision?.behavior === 'ask' && decision.reason
+      ? {
+          ...model,
+          explanation: redact(decision.reason, sensitiveValues),
+        }
+      : model
   const specialized =
-    bashModel(call, cwd, sensitiveValues) ??
+    bashModel(call, sensitiveValues) ??
     fileModel(call, cwd, sensitiveValues) ??
     notebookModel(call, cwd, sensitiveValues) ??
     filesystemModel(call, cwd, sensitiveValues) ??
     webFetchModel(call, sensitiveValues)
-  if (specialized) return specialized
+  if (specialized) return explain(specialized)
 
   const skill = stringInput(call, 'skill') ?? stringInput(call, 'name')
   if (call.name === 'Skill' && skill) {
-    return {
+    const spaceIndex = skill.indexOf(' ')
+    const commandPrefix =
+      spaceIndex > 0 ? skill.slice(0, spaceIndex) : undefined
+    return explain({
       kind: 'skill',
-      title: `Use Skill: ${redact(skill, sensitiveValues)}`,
+      title: `Use skill "${redact(skill, sensitiveValues)}"?`,
       question: 'Claude may use instructions, code, or files from this Skill.',
       detail: [],
       options: [
@@ -307,13 +353,22 @@ export function projectTuiToolPermission(
           label: `Yes, and don't ask again for ${skill} in ${cwd}`,
           rule: `Skill(${skill})`,
         },
+        ...(commandPrefix
+          ? [
+              {
+                action: 'persist-rule' as const,
+                label: `Yes, and don't ask again for ${commandPrefix}:* commands in ${cwd}`,
+                rule: `Skill(${commandPrefix}:*)`,
+              },
+            ]
+          : []),
         { action: 'deny', label: 'No' },
       ],
-    }
+    })
   }
 
   const serialized = redact(JSON.stringify(call.input), sensitiveValues)
-  return {
+  return explain({
     kind: 'generic',
     title: 'Tool use',
     question: 'Do you want to proceed?',
@@ -327,7 +382,7 @@ export function projectTuiToolPermission(
       },
       { action: 'deny', label: 'No' },
     ],
-  }
+  })
 }
 
 export function ToolPermissionDialog({
@@ -369,6 +424,7 @@ export function ToolPermissionDialog({
         })}
         {model.description ? <Text dimColor>{model.description}</Text> : null}
       </Box>
+      {model.explanation ? <Text dimColor>{model.explanation}</Text> : null}
       <Text>{model.question}</Text>
       {model.options.map((option, index) => (
         <Text key={`${option.action}-${index}`} bold={selection === index}>

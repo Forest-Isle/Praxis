@@ -5088,7 +5088,10 @@ describe('InteractiveApp', () => {
       async createService({ approveTool }) {
         return {
           async run() {
-            approval = await approveTool?.(call)
+            approval = await approveTool?.(call, call, {
+              behavior: 'ask',
+              reason: 'Command requires confirmation.',
+            })
             return {
               sessionId: 'session-1',
               text: 'done',
@@ -5123,9 +5126,10 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Bash command')
     expect(app.lastFrame()).toContain('npm test')
+    expect(app.lastFrame()).toContain('Command requires confirmation.')
     expect(app.lastFrame()).toContain('Selected: 1. Yes')
     expect(app.lastFrame()).toContain(
-      "Yes, and don't ask again for npm test",
+      'Yes, and don’t ask again for: npm test:*',
     )
     expect(app.lastFrame()).not.toContain('❯')
 
@@ -5141,7 +5145,7 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('done')
   })
 
-  it('persists an exact Bash rule and applies it immediately', async () => {
+  it('persists a Bash prefix rule and applies it immediately', async () => {
     const added: unknown[] = []
     const approvals: PermissionApproval[] = []
     const call: ModelToolCall = {
@@ -5161,6 +5165,7 @@ describe('InteractiveApp', () => {
                   isSessionActionApproved?.({
                     ...call,
                     id: 'call-later',
+                    input: { command: 'npm test -- --run changed.test.ts' },
                   }),
                 ).toBe(true)
                 return {
@@ -5200,7 +5205,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('2')
     await flush()
     expect(added).toEqual([
-      { behavior: 'allow', rule: 'Bash(npm test)', scope: 'local' },
+      { behavior: 'allow', rule: 'Bash(npm test:*)', scope: 'local' },
     ])
     expect(approvals).toEqual([{ behavior: 'allow' }])
     expect(app.lastFrame()).toContain('done')

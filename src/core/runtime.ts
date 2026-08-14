@@ -424,6 +424,7 @@ export interface AgentRunRequest {
   approveTool?: (
     call: ModelToolCall,
     originalCall?: ModelToolCall,
+    decision?: PermissionDecision,
   ) => PermissionApproval | Promise<PermissionApproval>
   onStop?: (
     text: string,
@@ -1037,7 +1038,7 @@ export class AgentRuntime {
     if (decision.behavior === 'ask') {
       this.emit({ type: 'state', state: 'awaiting-permission' })
       const approval = request.approveTool
-        ? await request.approveTool(prepared, call)
+        ? await request.approveTool(prepared, call, decision)
         : false
       if (typeof approval === 'boolean') {
         allowed = approval
