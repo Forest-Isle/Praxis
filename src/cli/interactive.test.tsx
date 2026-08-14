@@ -1,5 +1,6 @@
 import { Console as NodeConsole } from 'node:console'
 import { setImmediate } from 'node:timers/promises'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -20,6 +21,16 @@ afterEach(() => cleanup())
 const flush = async () => {
   await setImmediate()
   await setImmediate()
+}
+
+async function waitFor<T>(read: () => T | undefined): Promise<T> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const value = read()
+    if (value !== undefined) return value
+    await delay(25)
+    await flush()
+  }
+  throw new Error('Timed out waiting for test condition')
 }
 
 describe('InteractiveApp', () => {
@@ -236,8 +247,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('/tui fullscreen')
     app.stdin.write('\r')
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    await flush()
+    await waitFor(() => rendererChanges[0])
     expect(rendererChanges).toEqual([{ mode: 'fullscreen', sessionId: null }])
   })
 
