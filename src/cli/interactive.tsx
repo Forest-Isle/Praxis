@@ -5628,6 +5628,40 @@ export function InteractiveApp({
                 ),
           ),
         })
+      } else if (prompt === '/vim') {
+        const saving = (async () => {
+          setBusy(true)
+          try {
+            const mode =
+              runtimeSettingsRef.current.editor === 'vim' ? 'normal' : 'vim'
+            const snapshot = await saveConfigSetting(
+              'editor',
+              mode,
+              configTarget,
+            )
+            await reloadRuntimeSettings(snapshot)
+            setVimInsertMode(true)
+            append({
+              kind: 'local-result',
+              text: `Editor mode set to ${mode}. ${
+                mode === 'vim'
+                  ? 'Use Escape key to toggle between INSERT and NORMAL modes.'
+                  : 'Using standard (readline) keyboard bindings.'
+              }`,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(saving)
+        void saving.finally(() => onTurnChange?.(null))
+      } else if (prompt === '/output-style') {
+        append({
+          kind: 'local-result',
+          text: '/output-style has been deprecated. Use /config to change your output style, or set it in your settings file. Changes take effect on the next session.',
+        })
       } else if (prompt === '/terminal-setup') {
         const setup = (async () => {
           setBusy(true)

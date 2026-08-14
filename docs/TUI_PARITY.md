@@ -3,14 +3,17 @@
 ## Goal
 
 Reproduce Claude Code 2.1.208's observable single-user terminal presentation
-and interaction in Praxis without reading or copying Claude Code source. Keep
+and interaction in Praxis without copying Claude Code source. Keep
 Praxis branding, provider neutrality, shared transcript compatibility, and
 screen-reader output. Visual resemblance alone is not sufficient evidence for
 interactive parity.
 
 ## Evidence baseline
 
-Black-box capture at 100 x 32 columns establishes these stable visual rules:
+The `~/dev/claude-code` 2.1.208 source snapshot is the authoritative command
+and design inventory. Black-box captures from the pinned 2.1.208 executable
+validate observable behavior, but do not define or limit the required surface.
+Together they establish these stable rules:
 
 - full terminal-width (up to 100 columns) bordered welcome card with
   product/version, identity, cwd, and a concise help area;
@@ -51,8 +54,9 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
 - narrow terminals collapse optional welcome content before core controls;
 - screen-reader mode removes decorative boxes, animation, and visual-only help.
 
-Dynamic release notes, account/billing text, hosted features, and user-provided
-status-line plugins are not native parity requirements.
+Account/billing text and hosted features are not native parity requirements.
+Local release notes and status-line configuration remain in scope because they
+are registered CLI commands in the authoritative source snapshot.
 
 ## State matrix
 

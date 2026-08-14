@@ -222,6 +222,64 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual([])
   })
 
+  it('toggles the shared editor mode with /vim without creating a model turn', async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), 'praxis-vim-settings-'))
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            calls.push('service')
+            throw new Error('vim must not require a provider')
+          },
+        }}
+        initialSessions={[]}
+        runtimeSettingsTarget={configRoot}
+      />,
+    )
+
+    app.stdin.write('/vim')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Editor mode set to vim.') ? true : undefined,
+    )
+    expect(
+      JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')),
+    ).toMatchObject({ editorMode: 'vim' })
+
+    app.stdin.write('/vim')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Editor mode set to normal.') ? true : undefined,
+    )
+    expect(
+      JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')),
+    ).toMatchObject({ editorMode: 'normal' })
+    expect(calls).toEqual([])
+    await rm(configRoot, { recursive: true, force: true })
+  })
+
+  it('keeps hidden /output-style compatibility local and out of the palette', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            calls.push('service')
+            throw new Error('output-style must not require a provider')
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('/output-style')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('/output-style has been deprecated.')
+    expect(calls).toEqual([])
+  })
+
   it('reports the current renderer and restarts after switching it', async () => {
     const rendererChanges: Array<{
       mode: 'default' | 'fullscreen'

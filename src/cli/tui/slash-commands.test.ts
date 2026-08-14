@@ -38,6 +38,7 @@ describe('TUI slash command catalog', () => {
         'context',
         'status',
         'theme',
+        'vim',
         'skills',
         'tasks',
         'plan',
@@ -50,6 +51,9 @@ describe('TUI slash command catalog', () => {
       description: 'Send this session to the background and free the terminal',
       source: 'builtin',
     })
+    expect(
+      commands.find((command) => command.name === 'output-style'),
+    ).toBeUndefined()
   })
 
   it('filters a palette query until the user starts command arguments', () => {

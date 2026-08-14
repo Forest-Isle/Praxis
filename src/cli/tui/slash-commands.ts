@@ -121,6 +121,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'vim',
+    description: 'Toggle between Vim and Normal editing modes',
+    source: 'builtin',
+  },
+  {
     name: 'skills',
     description: 'List available skills',
     source: 'builtin',
