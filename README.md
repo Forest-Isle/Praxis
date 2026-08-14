@@ -82,11 +82,12 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   slash palette, tabbed help and shortcut surfaces, searchable resume picker,
   restored active-branch conversation history, streaming and expandable
   thinking, grouped multi-file reads, globally expandable tool results,
-  command-specific `/add-dir`, `/copy`, `/branch`, `/rename`, `/export`,
+  command-specific `/add-dir`, code-aware `/copy`, `/branch`, `/rename`, `/export`,
   provider-free read-only shared `/hooks`, provider-backed `/compact`, native
   `/rewind`, runtime `/cd`, transcript-free
   `/btw` side questions with background-Agent handoff, interactive
-  `/background` terminal handoff, `/config`, `/usage`, `/mcp`, `/memory` shared
+  `/background` terminal handoff, unified `/status`/`/config`/`/usage` settings
+  tabs, `/mcp`, `/memory` shared
   instruction and auto-memory access, and live extension-reload controls,
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,

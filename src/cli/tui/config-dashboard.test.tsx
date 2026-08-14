@@ -55,7 +55,7 @@ describe('Claude-style config dashboard', () => {
       />,
     )
     const frame = app.lastFrame() ?? ''
-    expect(frame).toMatch(/Settings\s+Status\s+Config\s+Usage\s+Stats/u)
+    expect(frame).toMatch(/Status\s+Config\s+Usage/u)
     expect(frame).toContain('⌕ Search settings…')
     expect(frame).toContain('Auto-compact')
     expect(frame).toContain('❯ Show tips')
@@ -104,7 +104,7 @@ describe('Claude-style config dashboard', () => {
     expect(frame.split('\n').every((line) => line.length <= 32)).toBe(true)
   })
 
-  it('renders measured status, usage, and provider-free empty stats', () => {
+  it('renders measured status and usage', () => {
     const status = render(
       <ConfigDashboard
         tab="status"
@@ -152,59 +152,9 @@ describe('Claude-style config dashboard', () => {
     expect(usage.lastFrame()).toContain(
       '10 input, 5 output, 3 cache read, 2 cache write',
     )
-
-    const stats = render(
-      <ConfigDashboard
-        tab="stats"
-        snapshot={snapshot}
-        stats={[]}
-        width={100}
-        screenReader={false}
-      />,
-    )
-    expect(stats.lastFrame()).toContain(
-      'No stats available yet. Start using Praxis Code!',
-    )
-
-    const populatedStats = render(
-      <ConfigDashboard
-        tab="stats"
-        snapshot={snapshot}
-        stats={[{ label: 'Sessions', value: '4' }]}
-        width={100}
-        screenReader={false}
-      />,
-    )
-    expect(populatedStats.lastFrame()).toContain('Sessions:')
-    expect(populatedStats.lastFrame()).toContain('4')
   })
 
-  it('renders all five tabs explicitly and rejects missing measured data', async () => {
-    const fixture = JSON.parse(
-      await readFile(
-        new URL(
-          '../../../test/fixtures/claude-code/2.1.208/config-dashboard.json',
-          import.meta.url,
-        ),
-        'utf8',
-      ),
-    ) as {
-      tabs: string[]
-      statusLabels: string[]
-      usageLabels: string[]
-      emptyStats: string
-    }
-    const settings = render(
-      <ConfigDashboard
-        tab="settings"
-        snapshot={snapshot}
-        settings={[{ label: 'Thinking mode', value: 'provider controlled' }]}
-        width={100}
-        screenReader={false}
-      />,
-    )
-    expect(settings.lastFrame()).toContain('Thinking mode:')
-
+  it('renders the three source tabs and rejects missing measured data', () => {
     const status = render(
       <ConfigDashboard
         tab="status"
@@ -223,7 +173,14 @@ describe('Claude-style config dashboard', () => {
         screenReader={false}
       />,
     )
-    for (const label of fixture.statusLabels)
+    expect(status.lastFrame()).toMatch(/Status\s+Config\s+Usage/u)
+    for (const label of [
+      'Version',
+      'Session name',
+      'Session ID',
+      'cwd',
+      'Model',
+    ])
       expect(status.lastFrame()).toContain(`${label}:`)
 
     const usage = render(
@@ -242,35 +199,14 @@ describe('Claude-style config dashboard', () => {
         screenReader={false}
       />,
     )
-    for (const label of fixture.usageLabels)
-      expect(usage.lastFrame()).toContain(`${label}:`)
-
-    const stats = render(
-      <ConfigDashboard
-        tab="stats"
-        snapshot={snapshot}
-        stats={[]}
-        width={100}
-        screenReader={false}
-      />,
-    )
-    expect(stats.lastFrame()).toContain(fixture.emptyStats)
-    expect(fixture.tabs).toEqual([
-      'Settings',
-      'Status',
-      'Config',
+    for (const label of [
+      'Total cost',
+      'Total duration (API)',
+      'Total duration (wall)',
+      'Total code changes',
       'Usage',
-      'Stats',
     ])
-
-    expect(() =>
-      ConfigDashboard({
-        tab: 'settings',
-        snapshot,
-        width: 100,
-        screenReader: false,
-      }),
-    ).toThrow('requires measured settings data')
+      expect(usage.lastFrame()).toContain(`${label}:`)
     expect(() =>
       ConfigDashboard({
         tab: 'status',
@@ -287,14 +223,6 @@ describe('Claude-style config dashboard', () => {
         screenReader: false,
       }),
     ).toThrow('requires measured usage data')
-    expect(() =>
-      ConfigDashboard({
-        tab: 'stats',
-        snapshot,
-        width: 100,
-        screenReader: false,
-      }),
-    ).toThrow('requires measured stats data')
   })
 
   it('requires measured context categories and never invents capacity', () => {
@@ -323,4 +251,3 @@ describe('Claude-style config dashboard', () => {
     ).toThrow('exceed the context window')
   })
 })
-import { readFile } from 'node:fs/promises'

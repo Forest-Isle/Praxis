@@ -512,7 +512,7 @@ function validValue(
   definition: ConfigSettingDefinition,
   value: unknown,
 ): value is ConfigValue {
-  if (definition.values === 'language')
+  if (definition.values === 'language' || definition.id === 'model')
     return (
       typeof value === 'string' &&
       value.trim().length > 0 &&

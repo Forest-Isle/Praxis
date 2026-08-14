@@ -10,8 +10,7 @@ import {
   type ConfigValue,
 } from './config-settings.js'
 
-export type ConfigDashboardTab =
-  'settings' | 'status' | 'config' | 'usage' | 'stats'
+export type ConfigDashboardTab = 'status' | 'config' | 'usage'
 
 export interface ConfigStatusData {
   version: string
@@ -20,6 +19,8 @@ export interface ConfigStatusData {
   cwd: string
   authSource?: string
   baseUrl?: string
+  proxy?: string
+  mcpSummary?: string
   model: string
   settingSources: readonly string[]
 }
@@ -43,11 +44,6 @@ export interface ConfigContextData {
   categories: readonly ContextCategory[]
 }
 
-export interface ConfigDashboardValueRow {
-  label: string
-  value: string
-}
-
 export interface ConfigRow {
   definition: ConfigSettingDefinition
   value: ConfigValue
@@ -59,11 +55,9 @@ export type ConfigEffectiveValues = Readonly<
 >
 
 const tabs: readonly { id: ConfigDashboardTab; label: string }[] = [
-  { id: 'settings', label: 'Settings' },
   { id: 'status', label: 'Status' },
   { id: 'config', label: 'Config' },
   { id: 'usage', label: 'Usage' },
-  { id: 'stats', label: 'Stats' },
 ]
 
 function displayValue(definition: ConfigSettingDefinition, value: ConfigValue) {
@@ -265,7 +259,9 @@ function StatusRows({ status }: { status: ConfigStatusData }) {
     ['cwd', status.cwd],
     ...(status.authSource ? [['Auth token', status.authSource]] : []),
     ...(status.baseUrl ? [['Provider base URL', status.baseUrl]] : []),
+    ...(status.proxy ? [['Proxy', status.proxy]] : []),
     ['Model', status.model],
+    ...(status.mcpSummary ? [['MCP servers', status.mcpSummary]] : []),
     ['Setting sources', status.settingSources.join(', ')],
   ]
   return (
@@ -309,17 +305,6 @@ function UsageRows({ usage }: { usage: ConfigUsageData }) {
   )
 }
 
-function ValueRows({ rows }: { rows: readonly ConfigDashboardValueRow[] }) {
-  return rows.map((row) => (
-    <Box key={row.label}>
-      <Box width={28}>
-        <Text>{row.label}:</Text>
-      </Box>
-      <Text>{row.value}</Text>
-    </Box>
-  ))
-}
-
 export function ConfigDashboard({
   tab,
   snapshot,
@@ -328,8 +313,6 @@ export function ConfigDashboard({
   searchFocused = true,
   status,
   usage,
-  settings,
-  stats,
   effectiveValues,
   width,
   screenReader,
@@ -342,8 +325,6 @@ export function ConfigDashboard({
   searchFocused?: boolean
   status?: ConfigStatusData
   usage?: ConfigUsageData
-  settings?: readonly ConfigDashboardValueRow[]
-  stats?: readonly ConfigDashboardValueRow[]
   effectiveValues?: ConfigEffectiveValues
   width: number
   screenReader: boolean
@@ -352,11 +333,6 @@ export function ConfigDashboard({
   const rows = projectConfigRows(snapshot, query, effectiveValues)
   let content: React.ReactNode
   switch (tab) {
-    case 'settings':
-      if (settings === undefined)
-        throw new Error('Settings tab requires measured settings data')
-      content = <ValueRows rows={settings} />
-      break
     case 'status':
       if (status === undefined)
         throw new Error('Status tab requires measured status data')
@@ -366,7 +342,6 @@ export function ConfigDashboard({
       content = (
         <>
           <Text bold>Config</Text>
-          <Text>Available commands: /config · /status · /usage</Text>
           <ConfigRows
             rows={rows}
             query={query}
@@ -386,16 +361,6 @@ export function ConfigDashboard({
       if (usage === undefined)
         throw new Error('Usage tab requires measured usage data')
       content = <UsageRows usage={usage} />
-      break
-    case 'stats':
-      if (stats === undefined)
-        throw new Error('Stats tab requires measured stats data')
-      content =
-        stats.length === 0 ? (
-          <Text>No stats available yet. Start using Praxis Code!</Text>
-        ) : (
-          <ValueRows rows={stats} />
-        )
       break
   }
   return (

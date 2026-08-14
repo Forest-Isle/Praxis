@@ -1,4 +1,7 @@
 import { Console as NodeConsole } from 'node:console'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -16,7 +19,10 @@ import type { TuiCustomTheme } from './tui/custom-themes.js'
 import type { TuiThemeSettings } from './tui/theme.js'
 import { projectRuntimeSettings } from './tui/runtime-settings.js'
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.unstubAllEnvs()
+})
 
 const flush = async () => {
   await setImmediate()
@@ -736,21 +742,20 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Free space')
-    expect(app.lastFrame()).toContain('Built-in')
+    expect(app.lastFrame()).toContain('Loaded')
     expect(app.lastFrame()).toContain('review: ~')
     expect(serviceCreations).toBe(0)
 
     app.stdin.write('/status')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Settings  Status  Config  Usage  Stats')
+    expect(app.lastFrame()).toContain('Status  Config  Usage')
     expect(app.lastFrame()).toContain('fixture-model')
     expect(app.lastFrame()).toContain('/rename to add a name')
-    expect(app.lastFrame()).toContain('Auth token:')
     expect(app.lastFrame()).toContain('Setting sources:')
     app.stdin.write('\u001B[C')
     await flush()
-    expect(app.lastFrame()).toContain('Context window:')
+    expect(app.lastFrame()).toContain('Search settings')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
@@ -772,28 +777,6 @@ describe('InteractiveApp', () => {
     app.stdin.write('')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-
-    app.stdin.write('/login')
-    app.stdin.write('\r')
-    await flush()
-    expect(app.lastFrame()).toContain('Login')
-    expect(app.lastFrame()).toContain('Select login method:')
-    expect(app.lastFrame()).toContain('Claude account with subscription')
-    expect(app.lastFrame()).toContain('3rd-party platform')
-    app.stdin.write('')
-    await new Promise((resolve) => setTimeout(resolve, 75))
-    await flush()
-
-    app.stdin.write('/login')
-    app.stdin.write('\r')
-    await flush()
-    app.stdin.write('[B')
-    await flush()
-    app.stdin.write('\r')
-    await flush()
-    expect(app.lastFrame()).toContain(
-      'Anthropic Console account requires a browser OAuth flow',
-    )
 
     expect(serviceCreations).toBe(1)
   })
@@ -861,14 +844,14 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Config')
-    expect(app.lastFrame()).toContain('Available commands:')
+    expect(app.lastFrame()).toContain('Search settings')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
 
     app.stdin.write('/usage')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Input tokens:')
+    expect(app.lastFrame()).toContain('Usage: 0 input, 0 output')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
 
@@ -1202,9 +1185,115 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(clipboardWriter).toHaveBeenCalledWith('older answer')
-    expect(app.lastFrame()).toContain(
-      'Copied to clipboard (12 characters, 1 lines)',
+    await waitFor(() =>
+      app.lastFrame()?.includes('Copied to clipboard (12 characters, 1 lines)')
+        ? true
+        : undefined,
     )
+  })
+
+  it('opens the /copy picker for fenced code and copies the selected block', async () => {
+    const clipboardWriter = vi.fn(async () => undefined)
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          {
+            kind: 'assistant',
+            text: 'Result:\n```ts\nconst answer = 42\n```',
+          },
+        ]}
+        clipboardWriter={clipboardWriter}
+      />,
+    )
+
+    app.stdin.write('/copy')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Select content to copy:')
+    expect(app.lastFrame()).toContain('Always copy full response')
+    expect(clipboardWriter).not.toHaveBeenCalled()
+
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(clipboardWriter).toHaveBeenCalledWith('const answer = 42')
+  })
+
+  it('writes the focused /copy candidate with w without using the clipboard', async () => {
+    const path = join(tmpdir(), 'claude', 'copy.praxisstage132')
+    const clipboardWriter = vi.fn(async () => undefined)
+    try {
+      const app = render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          initialHistory={[
+            {
+              kind: 'assistant',
+              text: '```praxisstage132\nwrite-only candidate\n```',
+            },
+          ]}
+          clipboardWriter={clipboardWriter}
+        />,
+      )
+
+      app.stdin.write('/copy')
+      app.stdin.write('\r')
+      await flush()
+      app.stdin.write('\u001B[B')
+      app.stdin.write('w')
+      await waitFor(() =>
+        app.lastFrame()?.includes(`Written to ${path}`) ? true : undefined,
+      )
+      expect(await readFile(path, 'utf8')).toBe('write-only candidate')
+      expect(clipboardWriter).not.toHaveBeenCalled()
+    } finally {
+      await rm(path, { force: true })
+    }
+  })
+
+  it('persists the /copy always-full preference', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-copy-settings-'))
+    try {
+      const clipboardWriter = vi.fn(async () => undefined)
+      const app = render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          initialHistory={[{ kind: 'assistant', text: '```js\nanswer()\n```' }]}
+          clipboardWriter={clipboardWriter}
+          runtimeSettingsTarget={root}
+        />,
+      )
+
+      app.stdin.write('/copy')
+      app.stdin.write('\r')
+      await flush()
+      app.stdin.write('\u001B[B\u001B[B')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Preference saved.') ? true : undefined,
+      )
+      expect(
+        JSON.parse(await readFile(join(root, '.claude.json'), 'utf8')),
+      ).toMatchObject({ copyFullResponse: true })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('exports the complete conversation to the clipboard or a file', async () => {
@@ -1731,8 +1820,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/usage')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toMatch(/Input tokens:\s+4/u)
-    expect(app.lastFrame()).toMatch(/Output tokens:\s+2/u)
+    expect(app.lastFrame()).toContain('Usage: 4 input, 2 output')
   })
 
   it('keeps a fresh /btw session for later fork and accumulates its cost', async () => {
@@ -3365,7 +3453,8 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('?')
     await flush()
-    expect(app.lastFrame()).toContain('! for shell mode')
+    expect(app.lastFrame()).toContain('! for bash mode')
+    expect(app.lastFrame()).toContain('& for background')
     expect(app.lastFrame()).toContain('ctrl + o for verbose output')
     expect(app.lastFrame()).not.toContain('❯ ?')
 
@@ -3448,6 +3537,7 @@ describe('InteractiveApp', () => {
   })
 
   it('applies slash-selected model and effort choices to the next service', async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), 'praxis-model-settings-'))
     const creates: Array<{
       model: string | undefined
       effort: string | undefined
@@ -3476,7 +3566,11 @@ describe('InteractiveApp', () => {
       },
     }
     const app = render(
-      <InteractiveApp factory={factory} initialSessions={[]} />,
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        runtimeSettingsTarget={configRoot}
+      />,
     )
 
     app.stdin.write('/effort')
@@ -3502,7 +3596,15 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Enter model ID')
     app.stdin.write('provider/model-custom')
     app.stdin.write('\r')
-    await flush()
+    await waitFor(() =>
+      app
+        .lastFrame()
+        ?.includes(
+          'provider/model-custom set as default model for new sessions.',
+        )
+        ? true
+        : undefined,
+    )
 
     app.stdin.write('run')
     app.stdin.write('\r')
@@ -3511,6 +3613,71 @@ describe('InteractiveApp', () => {
       model: 'provider/model-custom',
       effort: 'low',
     })
+    await rm(configRoot, { recursive: true, force: true })
+  })
+
+  it('presents distinct Anthropic model choices and persists Enter selection', async () => {
+    vi.stubEnv('PRAXIS_PROVIDER', 'anthropic')
+    const configRoot = await mkdtemp(join(tmpdir(), 'praxis-model-picker-'))
+    const models: Array<string | undefined> = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            models.push(options.model)
+            return {
+              async run() {
+                return {
+                  sessionId: 'session-model',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              workflows() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        runtimeSettingsTarget={configRoot}
+      />,
+    )
+
+    app.stdin.write('/model')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Opus')
+    expect(app.lastFrame()).toContain('Sonnet')
+    expect(app.lastFrame()).toContain('Haiku')
+    expect(app.lastFrame()).not.toContain('s to use this session only')
+    app.stdin.write('\u001B[B\u001B[B')
+    app.stdin.write('\r')
+    const selectedModel = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? 'sonnet'
+    await waitFor(() =>
+      app
+        .lastFrame()
+        ?.includes(`${selectedModel} set as default model for new sessions.`)
+        ? true
+        : undefined,
+    )
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    expect(models).toContain(selectedModel)
+    expect(
+      JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')),
+    ).toMatchObject({ model: selectedModel })
+    await rm(configRoot, { recursive: true, force: true })
   })
 
   it('persists a Shift+Tab-selected permission mode before the next resume', async () => {
@@ -4157,7 +4324,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('!')
     await flush()
     expect(app.lastFrame()).toContain('! Enter a shell command')
-    expect(app.lastFrame()).toContain('! for shell mode')
+    expect(app.lastFrame()).toContain('! for bash mode')
 
     app.stdin.write('pwd')
     app.stdin.write('\r')
@@ -4226,7 +4393,7 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(app.lastFrame()).toContain('! sleep 30')
-    expect(app.lastFrame()).toContain('! for shell mode')
+    expect(app.lastFrame()).toContain('! for bash mode')
     expect(app.lastFrame()).toContain('Interrupted by user.')
   })
 

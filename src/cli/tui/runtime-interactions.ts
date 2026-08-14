@@ -1,6 +1,14 @@
 import type { TranscriptItem } from './claude-style.js'
 import type { PraxisRuntimeSettings } from './runtime-settings.js'
 
+export type CopyCandidate = {
+  kind: 'full' | 'code' | 'always'
+  label: string
+  description: string
+  text: string
+  filename: string
+}
+
 const SPINNER_TIPS = [
   'Tip: use /help to browse local commands.',
   'Tip: use @ to attach a file or an agent definition.',
@@ -45,6 +53,67 @@ export function workflowRuntimeInstructions(
       ? 'No workflow size guideline is configured.'
       : `Prefer a ${settings.workflowSizeGuideline} workflow when creating a dynamic workflow unless the user explicitly asks otherwise.`
   return `Dynamic workflows are available for explicitly requested multi-step automation. ${keyword} ${size}`
+}
+
+function fencedCodeBlocks(response: string): readonly {
+  code: string
+  language: string | undefined
+}[] {
+  return [...response.matchAll(/```([^\n`]*)\n([\s\S]*?)```/gu)]
+    .map((match) => ({
+      language: match[1]?.trim() || undefined,
+      code: (match[2] ?? '').replace(/\n$/u, ''),
+    }))
+    .filter((block) => block.code.length > 0)
+}
+
+function codeFilename(language: string | undefined): string {
+  const extension = language?.replace(/[^a-zA-Z0-9]/gu, '')
+  return `copy.${extension && extension !== 'plaintext' ? extension : 'txt'}`
+}
+
+function firstLine(text: string, maxLength = 60): string {
+  const line = text.split('\n')[0] ?? ''
+  return line.length <= maxLength ? line : `${line.slice(0, maxLength - 1)}…`
+}
+
+export function copyCandidates(response: string): readonly CopyCandidate[] {
+  const lines = response.split('\n').length
+  const blocks = fencedCodeBlocks(response)
+  return [
+    {
+      kind: 'full',
+      label: 'Full response',
+      description: `${response.length} chars, ${lines} lines`,
+      text: response,
+      filename: 'response.md',
+    },
+    ...blocks.map((block) => ({
+      kind: 'code' as const,
+      label: firstLine(block.code),
+      description: [
+        block.language,
+        block.code.includes('\n')
+          ? `${block.code.split('\n').length} lines`
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join(', '),
+      text: block.code,
+      filename: codeFilename(block.language),
+    })),
+    {
+      kind: 'always',
+      label: 'Always copy full response',
+      description: 'Skip this picker in the future (revert via /config)',
+      text: response,
+      filename: 'response.md',
+    },
+  ]
+}
+
+export function shouldShowCopyPicker(response: string): boolean {
+  return fencedCodeBlocks(response).length > 0
 }
 
 export function externalEditorInitialContent(

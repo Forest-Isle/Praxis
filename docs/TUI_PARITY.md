@@ -153,8 +153,9 @@ is passed from the CLI composition root and never written to shared JSONL.
   the renderer restart.
 - `ContextUsageBlock`: transcript-native usage grid, autocompact reserve, and
   estimates for skills discovered through the shared Claude data plane.
-- `StatusDashboard`: Settings, Status, Config, Usage, and Stats tabs backed by
-  the current local runtime state.
+- `ConfigDashboard`: the shared Status, Config, and Usage pane opened at the
+  command-specific default tab by `/status`, `/config`, or `/usage`. Subscription
+  account rows and the enterprise-only Gates tab stay outside the product boundary.
 - `MemoryDashboard`: shared user/project instruction files, `@`-imported rows,
   `autoMemoryEnabled` state, and the canonical project auto-memory folder. The
   shared compatibility resolver owns recursive imports for both this view and
@@ -185,9 +186,12 @@ is passed from the CLI composition root and never written to shared JSONL.
   the same selected message used by runtime continuation. The old `/sessions`
   spelling remains accepted but is not advertised.
 - `/add-dir` opens the observed path/completion surface directly and returns a
-  command result on add or cancellation. `/copy [N]` writes the selected prior
-  assistant response through the native OS clipboard without a model turn.
-  `/config` and `/usage` open their matching status tabs; `/mcp` lists current
+  command result on add or cancellation. `/copy [N]` directly copies plain
+  responses; fenced-code responses open a Full response/code-block/Always copy
+  full response picker. Enter copies and also writes a best-effort fallback under
+  the system temp `claude` directory, while `w` writes the focused item only.
+  `/status`, `/config`, and `/usage` open the same three-tab pane at their matching
+  default tab; `/mcp` lists current
   server status; `/skill` aliases the shared skill list; `/reload-skills` and
   `/reload-plugins` rebuild the active extension-backed service in place.
 - `/hooks` opens the observed read-only event catalog. Arrow keys or 1-based
@@ -241,8 +245,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   makes restart recovery idempotent even if the source later advances. The source
   transcript remains byte-for-byte unchanged, while the new transcript is
   resumable by either Claude or Praxis.
-- `/model` retains the current model, restores the invocation default, or accepts
-  an explicit provider model ID. `/effort` selects `low`, `medium`, `high`,
+- `/model` restores the invocation default, presents distinct capability-aware
+  provider choices, or accepts an explicit provider model ID. Enter applies the
+  selection to the current session and persists it for future sessions; left/right
+  adjusts effort. `/effort` selects `low`, `medium`, `high`,
   `xhigh`, or `max`. Each change retires the idle runtime service so the next
   turn receives the selected provider controls.
 - `/theme` opens the observed built-in profile picker with Auto, dark/light,
@@ -345,8 +351,10 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `/diff` reads `git diff HEAD` without a model turn. Left/right switches
   Current and captured file-mutating-turn sources, up/down selects or scrolls,
   Enter drills into a file, and Esc returns or closes the dashboard.
-- `/context` appends a Claude-shaped context-usage block without a model turn.
-  `/status` opens tabbed local runtime details, `/skills` lists entries from the
+- `/context` appends a titled Claude-shaped context-usage block with model/token
+  summary, 5×5 grid, estimated categories, free space, autocompact reserve,
+  memory files, and skills without a model turn. `/status` opens the shared
+  Status/Config/Usage pane, `/skills` lists entries from the
   existing shared skill catalog, and `/tasks` opens the existing workflow/task
   state; `/workflows` remains a hidden legacy alias. `/plan` switches the
   existing permission runtime into plan mode.
@@ -417,9 +425,10 @@ TUI” claim. Subsequent stages close
 renderer switching with persisted runtime settings and active-session resume
 (Stage 125), and exact
 denied-history selection, duplicate retention, lifetime, approve/retry, and
-Claude-native grant-transcript behavior (Stages 126-130). The remaining
-black-box-driven work is exact
-command-specific dialogs and layout behavior. `/statusline` remains excluded as
+Claude-native grant-transcript behavior (Stages 126-130). Stage 132 revalidates
+command-specific dialogs directly against the `~/dev/claude-code` 2.1.208 source
+snapshot and then cross-checks observable behavior through Ink/PTY gates.
+`/statusline` remains excluded as
 a user-provided status-line plugin surface; 2.1.208 exposes neither `/vim` nor
 `/output-style`. Each included item needs an observed contract and a focused TTY
 or Ink gate before the matrix can return to a complete status.

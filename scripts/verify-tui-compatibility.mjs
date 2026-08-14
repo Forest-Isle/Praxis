@@ -396,14 +396,14 @@ expect -re {6 hooks configured}
 expect -re {PreToolUse[^\r\n]*\(5\)}
 expect -re {PostToolUse[^\r\n]*\(1\)}
 send "2"
-after 100
+expect -re {(❯[^\r\n]*2\. PostToolUse|Enter selection[^\r\n]*: 2)}
 send "\r"
 expect -re {\[User\][^\r\n]*05-user-post[^\r\n]*1 hook}
 puts "HOOK_TRACE|event:PostToolUse"
 send "\033"
 after 200
 send "1"
-after 100
+expect -re {(❯[^\r\n]*1\. PreToolUse|Enter selection[^\r\n]*: 1)}
 send "\r"
 puts "HOOK_TRACE|event:PreToolUse"
 expect -re {\[Local\][^\r\n]*03-local[^\r\n]*2 hooks}
@@ -415,14 +415,14 @@ puts "HOOK_TRACE|matcher:User:01-user:1"
 expect -re {\[Plugin\][^\r\n]*04-plugin[^\r\n]*1 hook}
 puts "HOOK_TRACE|matcher:Plugin:04-plugin:1"
 send "2"
-after 100
+expect -re {(❯[^\r\n]*\[Project\][^\r\n]*02-project|Enter selection[^\r\n]*: 2)}
 send "\r"
 expect -re {\[prompt\][^\r\n]*Project prompt}
 puts "HOOK_TRACE|hook:Project:prompt:Project prompt"
 send "\033"
 after 200
 send "1"
-after 100
+expect -re {(❯[^\r\n]*\[Local\][^\r\n]*03-local|Enter selection[^\r\n]*: 1)}
 send "\r"
 expect -re {\[agent\][^\r\n]*Local agent}
 puts "HOOK_TRACE|hook:Local:agent:Local agent"
@@ -439,14 +439,14 @@ after 200
 send "\033"
 after 200
 send "3"
-after 100
+expect -re {(❯[^\r\n]*\[User\][^\r\n]*01-user|Enter selection[^\r\n]*: 3)}
 send "\r"
 expect -re {\[command\][^\r\n]*User command}
 puts "HOOK_TRACE|hook:User:command:User command"
 send "\033"
 after 200
 send "4"
-after 100
+expect -re {(❯[^\r\n]*\[Plugin\][^\r\n]*04-plugin|Enter selection[^\r\n]*: 4)}
 send "\r"
 expect -re {\[http\][^\r\n]*https://fixture.test/plugin}
 puts "HOOK_TRACE|hook:Plugin:http:https://fixture.test/plugin"
@@ -1476,7 +1476,9 @@ expect {
 set phase "Claude hooks menu"
 after 300
 ${hookNavigationTrace}
-exec kill -KILL [exp_pid]
+catch {exec kill -KILL [exp_pid]}
+close
+catch {wait}
 exit 0
 `
   const claudeHooksCapture = await execFileAsync(
@@ -1512,30 +1514,45 @@ stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
 expect -re {shortcuts}
 ${hookNavigationTrace}
-exec kill -KILL [exp_pid]
+catch {exec kill -KILL [exp_pid]}
+close
+catch {wait}
 exit 0
 `
   const treesBeforeProviderlessProbe = await sharedTreeSnapshot()
   const providerlessEnvironment = { ...process.env }
   delete providerlessEnvironment.PRAXIS_API_KEY
   delete providerlessEnvironment.PRAXIS_MODEL
-  const providerlessCapture = await execFileAsync(
-    'expect',
-    ['-c', providerlessProbe],
-    {
-      cwd,
-      env: {
-        ...providerlessEnvironment,
-        CI: 'true',
-        PATH: `${binRoot}${delimiter}${dirname(claude)}${delimiter}${process.env.PATH ?? ''}`,
-        TUI_CLI: cli,
-        TUI_CONFIG_ROOT: configRoot,
-        TUI_NODE: process.execPath,
-        TUI_PLUGIN_ROOT: pluginRoot,
+  let providerlessCapture
+  try {
+    providerlessCapture = await execFileAsync(
+      'expect',
+      ['-c', providerlessProbe],
+      {
+        cwd,
+        env: {
+          ...providerlessEnvironment,
+          CI: 'true',
+          PATH: `${binRoot}${delimiter}${dirname(claude)}${delimiter}${process.env.PATH ?? ''}`,
+          TUI_CLI: cli,
+          TUI_CONFIG_ROOT: configRoot,
+          TUI_NODE: process.execPath,
+          TUI_PLUGIN_ROOT: pluginRoot,
+        },
+        // The probe has many individually bounded screen transitions. Keep each
+        // Expect assertion at 60s while allowing the complete trace to finish on
+        // loaded CI hosts.
+        timeout: 180_000,
       },
-      timeout: 60_000,
-    },
-  )
+    )
+  } catch (error) {
+    const stdout = typeof error?.stdout === 'string' ? error.stdout : ''
+    const stderr = typeof error?.stderr === 'string' ? error.stderr.trim() : ''
+    throw new Error(
+      `Providerless hooks trace stopped after: ${hookNavigationContract(stdout).join(' -> ') || '(startup)'}${stderr ? `\n${stderr}` : ''}`,
+      { cause: error },
+    )
+  }
   const providerlessContract = hookNavigationContract(
     providerlessCapture.stdout,
   )
@@ -1571,7 +1588,7 @@ expect -re {Try.*review this project} { puts stderr "DBG Try at [expr {[clock mi
 expect -re {bypass permissions on} { puts stderr "DBG bypass at [expr {[clock milliseconds]-$t0}]ms" }
 set phase "shortcut help"
 send "?"
-expect -re {! for shell mode}
+expect -re {! for bash mode}
 expect -re {ctrl.*o for verbose output}
 send "?"
 expect -re {bypass permissions on.*\? for shortcuts}
@@ -1714,21 +1731,28 @@ send "/context"
 expect -re {Visualize current context usage}
 send "\r"
 set phase "context dialog"
-expect -re {Free space.*\([0-9.]+%\)}
+expect -re {Context Usage}
+set phase "context category legend"
+expect -re {Estimated usage by category}
+set phase "context free space"
+expect -re {Free space}
+set phase "context autocompact buffer"
 expect -re {Autocompact buffer}
-expect -re {Auto-compact window}
+set phase "context memory heading"
 expect -re {Memory files · /memory}
-expect -re {Built-in}
+set phase "context skills source"
+expect -re {Loaded}
+set phase "context memory loaded"
+expect -re {~/.claude/CLAUDE.md: [0-9]+ tokens}
+set phase "context composer"
 expect -re {Try.*review this project}
 after 100
 set phase "status dialog"
 send "/status"
 after 100
 send "\r"
-expect -re {Settings.*Status.*Config.*Usage.*Stats}
+expect -re {Status.*Config.*Usage}
 expect -re {fixture-model}
-expect -re {Auth token:}
-expect -re {Anthropic base URL:}
 expect -re {Setting sources:}
 send "\033"
 expect -re {Try.*review this project}
@@ -1739,17 +1763,6 @@ after 100
 send "\r"
 expect -re {Skills}
 expect -re {No skills found}
-send "\033"
-expect -re {Try.*review this project}
-after 100
-set phase "login dialog"
-send "/login"
-after 100
-send "\r"
-expect -re {Login}
-expect -re {Select login method:}
-expect -re {Claude account with subscription}
-expect -re {3rd-party platform}
 send "\033"
 expect -re {Try.*review this project}
 after 100
@@ -1790,7 +1803,7 @@ expect -re {Try.*review this project}
 after 100
 set phase "shell mode"
 send "!"
-expect -re {! for shell mode}
+expect -re {! for bash mode}
 send "pwd"
 expect -re {!.*pwd}
 after 100
@@ -1929,7 +1942,7 @@ expect -re {Try.*review this project}
 after 300
 set phase "shell mode after cd"
 send "!"
-expect -re {! for shell mode}
+expect -re {! for bash mode}
 send "pwd"
 after 100
 send "\r"
@@ -1966,6 +1979,10 @@ expect -re {Try.*review this project}
 set phase "copy response"
 send "/copy"
 after 100
+send "\r"
+expect -re {Select content to copy:}
+expect -re {Full response}
+expect -re {Always copy full response}
 send "\r"
 expect -re {Copied to clipboard \([0-9]+ characters, [0-9]+ lines\)}
 set phase "export conversation"
@@ -2250,7 +2267,7 @@ exit 0
     )
   assert.equal(sidechainFiles.length, 1)
   const clipboard = await readFile(clipboardOutput, 'utf8')
-  assert.match(clipboard, /Praxis Code v/u)
+  assert.doesNotMatch(clipboard, /Welcome back!/u)
   assert.match(clipboard, /❯ reply briefly/u)
   assert.match(clipboard, /⏺ TUI_FAKE_OK/u)
   assert.match(clipboard, /❯ \/export/u)

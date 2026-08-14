@@ -38,6 +38,7 @@ export type TranscriptItem =
       kind: 'context'
       usedTokens: number
       contextWindowTokens: number
+      model?: string
       skills: readonly { name: string; tokens: number }[]
       memoryFiles: readonly { path: string; tokens: number }[]
     }
@@ -556,6 +557,7 @@ function percent(tokens: number, total: number): string {
 function ContextUsageBlock({
   usedTokens,
   contextWindowTokens,
+  model,
   skills,
   memoryFiles,
   screenReader,
@@ -568,7 +570,9 @@ function ContextUsageBlock({
       <Box flexDirection="column">
         <Text>Context Usage</Text>
         <Text>
-          {usedTokens.toLocaleString()} of {totalTokens.toLocaleString()} tokens
+          {model ?? 'provider default'} · {usedTokens.toLocaleString()}/
+          {totalTokens.toLocaleString()} tokens (
+          {percent(usedTokens, totalTokens)})
         </Text>
         <Text>Autocompact buffer: {compactBuffer.toLocaleString()} tokens</Text>
         <Text>
@@ -587,6 +591,7 @@ function ContextUsageBlock({
   )
   return (
     <Box flexDirection="column" marginTop={1} marginLeft={2}>
+      <Text bold>Context Usage</Text>
       <Box>
         <Box flexDirection="column" marginRight={2}>
           {Array.from({ length: 5 }, (_, row) => (
@@ -594,6 +599,19 @@ function ContextUsageBlock({
           ))}
         </Box>
         <Box flexDirection="column">
+          <Text dimColor>
+            {model ?? 'provider default'} · {compactTokens(usedTokens)}/
+            {compactTokens(totalTokens)} tokens (
+            {percent(usedTokens, totalTokens)})
+          </Text>
+          <Text> </Text>
+          <Text dimColor italic>
+            Estimated usage by category
+          </Text>
+          <Text>
+            ⛁ Messages and other context: {compactTokens(usedTokens)} tokens (
+            {percent(usedTokens, totalTokens)})
+          </Text>
           <Text>
             ⛶ Free space: {compactTokens(Math.max(0, usable - usedTokens))} (
             {percent(Math.max(0, usable - usedTokens), totalTokens)})
@@ -604,8 +622,6 @@ function ContextUsageBlock({
           </Text>
         </Box>
       </Box>
-      <Text> </Text>
-      <Text>Auto-compact window: {compactTokens(totalTokens)} tokens</Text>
       <Text> </Text>
       <Text bold>Memory files · /memory</Text>
       {memoryFiles.length === 0 ? (
@@ -621,7 +637,7 @@ function ContextUsageBlock({
       <Text> </Text>
       <Text bold>Skills · /skills</Text>
       <Text> </Text>
-      <Text>Built-in</Text>
+      <Text>Loaded</Text>
       {skills.length === 0 ? (
         <Text dimColor>└ No skills loaded</Text>
       ) : (
@@ -1436,126 +1452,6 @@ export function CustomThemeEditor({
   )
 }
 
-export function StatusDashboard({
-  tabIndex,
-  version,
-  sessionName,
-  sessionId,
-  display,
-  authToken,
-  baseUrl,
-  proxy,
-  settingSources,
-  usage,
-  costUsd,
-  turnCount,
-  toolCount,
-  commandCount,
-  detailedTranscript,
-  width,
-  screenReader,
-}: {
-  tabIndex: number
-  version: string
-  sessionName: string | null
-  sessionId: string | null
-  display: TuiDisplayMetadata
-  authToken: string
-  baseUrl: string
-  proxy: string
-  settingSources: string
-  usage?: ModelUsage
-  costUsd?: number
-  turnCount: number
-  toolCount: number
-  commandCount: number
-  detailedTranscript: boolean
-  width: number
-  screenReader: boolean
-}) {
-  const tabs = ['Settings', 'Status', 'Config', 'Usage', 'Stats'] as const
-  const rows =
-    tabIndex === 0
-      ? [
-          ['Thinking mode', 'provider controlled'],
-          ['Verbose output', detailedTranscript ? 'true' : 'false'],
-          ['Default permission mode', permissionLabel(display.permissionMode)],
-          ['Context compaction', 'automatic'],
-          ['Shared Claude data', 'enabled'],
-        ]
-      : tabIndex === 1
-        ? [
-            ['Version', version],
-            ['Session name', sessionName ?? '/rename to add a name'],
-            ['Session ID', sessionId ?? 'new session'],
-            ['cwd', display.cwd],
-            ['Auth token', authToken],
-            ['Anthropic base URL', baseUrl],
-            ['Proxy', proxy],
-            ['Model', display.model ?? 'provider default'],
-            ['Setting sources', settingSources],
-            ['Permission mode', permissionLabel(display.permissionMode)],
-          ]
-        : tabIndex === 2
-          ? [
-              ['Model', display.model ?? 'provider default'],
-              ['Effort', display.effort ?? 'high'],
-              [
-                'Context window',
-                String(display.contextWindowTokens ?? 'provider default'),
-              ],
-              ['Available commands', String(commandCount)],
-            ]
-          : tabIndex === 3
-            ? [
-                ['Input tokens', String(usage?.inputTokens ?? 0)],
-                ['Output tokens', String(usage?.outputTokens ?? 0)],
-                [
-                  'Session cost',
-                  costUsd === undefined
-                    ? 'unavailable'
-                    : `$${costUsd.toFixed(4)}`,
-                ],
-              ]
-            : [
-                ['Turns', String(turnCount)],
-                ['Tool calls', String(toolCount)],
-                [
-                  'Context used',
-                  String(
-                    (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0),
-                  ),
-                ],
-              ]
-  return (
-    <Box flexDirection="column" width={Math.min(100, width)}>
-      {!screenReader ? (
-        <Text dimColor>{'─'.repeat(Math.min(100, width))}</Text>
-      ) : null}
-      <Text>
-        {'  '}
-        {tabs.map((tab, index) => (
-          <Text key={tab} inverse={index === tabIndex}>
-            {' '}
-            {tab}{' '}
-          </Text>
-        ))}
-      </Text>
-      <Text> </Text>
-      {rows.map(([label, value]) => (
-        <Box key={label}>
-          <Box width={28}>
-            <Text>{label}:</Text>
-          </Box>
-          <Text>{value}</Text>
-        </Box>
-      ))}
-      <Text> </Text>
-      <Text dimColor>←/→/tab to switch · Esc to close</Text>
-    </Box>
-  )
-}
-
 export function ListDashboard({
   title,
   rows,
@@ -2167,16 +2063,17 @@ export function MentionPicker({
 
 const SHORTCUT_ROWS: readonly (readonly string[])[] = [
   [
-    '! for shell mode',
+    '! for bash mode',
     'double tap esc to clear input',
     'ctrl + shift + _ to undo',
   ],
-  ['/ for commands', 'shift + tab to cycle permissions', 'ctrl + z to suspend'],
+  ['/ for commands', 'shift + tab to auto-accept edits', 'ctrl + z to suspend'],
   [
     '@ for file paths',
     'ctrl + o for verbose output',
     'ctrl + v to paste images',
   ],
+  ['& for background', '', ''],
   [
     '/btw for side question',
     'ctrl + t to toggle tasks',
@@ -2433,7 +2330,7 @@ export function ModelMenu({
       <Text bold>Select model</Text>
       <Text dimColor>
         {
-          'Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.'
+          'Switch between models. Your pick applies to this and future Praxis Code sessions. For other model names, specify with --model.'
         }
       </Text>
       {screenReader && current ? <Text>Current: {current.label}</Text> : null}
@@ -2479,9 +2376,7 @@ export function ModelMenu({
         </Text>
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>
-          Enter to set as default · s to use this session only · Esc to cancel
-        </Text>
+        <Text dimColor>Enter to select · Esc to cancel</Text>
       </Box>
     </Box>
   )
@@ -2646,7 +2541,7 @@ export function Composer({
         <Box width={Math.min(100, width)}>
           <Text dimColor>
             {shellMode ? (
-              '! for shell mode'
+              '! for bash mode'
             ) : (
               <>
                 ⏵⏵ {permissionLabel(display.permissionMode)} ·{' '}

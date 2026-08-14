@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -62,7 +62,6 @@ import {
   PermissionDashboard,
   SelectionMenu,
   SessionPicker,
-  StatusDashboard,
   ThemePicker,
   CustomThemeEditor,
   Transcript,
@@ -199,11 +198,14 @@ import {
 } from './tui/runtime-settings.js'
 import {
   autoUpdateTarget,
+  copyCandidates,
   externalEditorInitialContent,
   formatTurnDuration,
   questionTimeoutMilliseconds,
   sessionRecap,
   spinnerTip,
+  shouldShowCopyPicker,
+  type CopyCandidate,
 } from './tui/runtime-interactions.js'
 import {
   notifyTerminal,
@@ -503,11 +505,6 @@ const estimateFileTokens = async (path: string): Promise<number> => {
 }
 
 const EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
-const LOGIN_METHODS = [
-  'Claude account with subscription',
-  'Anthropic Console account',
-  '3rd-party platform',
-] as const
 const PERMISSION_OPTIONS: readonly {
   mode: ClaudePermissionMode
   label: string
@@ -616,7 +613,12 @@ type InteractiveMenu =
       selectedIndex: number
     }
   | { kind: 'export'; selectedIndex: number }
-  | { kind: 'login'; selectedIndex: number }
+  | {
+      kind: 'copy'
+      candidates: readonly CopyCandidate[]
+      selectedIndex: number
+      messageAge: number
+    }
   | { kind: 'export-filename' }
   | { kind: 'compact-progress' }
   | { kind: 'btw'; selectedIndex: number; scrollOffset: number }
@@ -637,7 +639,6 @@ type InteractiveMenu =
       point: RewindPoint
       direction: 'from' | 'to'
     }
-  | { kind: 'status'; tabIndex: number }
   | {
       kind: 'agents'
       agents: readonly TuiAgentEntry[]
@@ -646,7 +647,7 @@ type InteractiveMenu =
   | {
       kind: 'config'
       snapshot: Awaited<ReturnType<typeof loadConfigSettings>>
-      tab: 'settings' | 'status' | 'config' | 'usage' | 'stats'
+      tab: ConfigDashboardTab
       selectedIndex: number
       query: string
       searchFocused: boolean
@@ -1278,24 +1279,17 @@ export function InteractiveApp({
     permissionMode: runtimePreferences.permissionMode,
     ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
   }
-  const statusAuthToken = (() => {
-    const key = process.env.PRAXIS_API_KEY ?? process.env.ANTHROPIC_API_KEY
-    if (!key) return 'none'
-    return key.length > 12
-      ? `${key.slice(0, 4)}…${key.slice(-4)}`
-      : 'configured'
-  })()
-  const statusBaseUrl =
-    process.env.PRAXIS_BASE_URL ??
-    (process.env.PRAXIS_PROVIDER === 'anthropic'
-      ? 'https://api.anthropic.com/v1'
-      : 'https://api.openai.com/v1')
+  const statusAuthSource = process.env.PRAXIS_API_KEY
+    ? 'PRAXIS_API_KEY'
+    : process.env.ANTHROPIC_API_KEY
+      ? 'ANTHROPIC_API_KEY'
+      : undefined
+  const statusBaseUrl = process.env.PRAXIS_BASE_URL
   const statusProxy =
     process.env.HTTPS_PROXY ??
     process.env.https_proxy ??
     process.env.ALL_PROXY ??
-    process.env.HTTP_PROXY ??
-    'none'
+    process.env.HTTP_PROXY
   const statusSettingSources = (() => {
     const projectSettings =
       existsSync(join(runtimeCwd, '.claude', 'settings.json')) ||
@@ -1325,37 +1319,53 @@ export function InteractiveApp({
     [allowDangerouslySkipPermissions],
   )
   const modelOptions = useMemo(() => {
-    const model = runtimeDisplay.model ?? 'provider default'
-    const custom = runtimePreferences.model !== undefined
-    return [
+    const current = runtimePreferences.model
+    const options: {
+      label: string
+      description: string
+      model?: string
+      selected?: boolean
+    }[] = [
       {
         label: 'Default (recommended)',
-        description: `Use the default model (currently ${model})`,
-        selected: !custom,
-      },
-      {
-        label: model,
-        description: 'Custom Opus model (1M context)',
-        selected: custom,
-      },
-      {
-        label: model,
-        description: 'Custom Fable model',
-      },
-      {
-        label: model,
-        description: 'Custom Sonnet model (1M context)',
-      },
-      {
-        label: model,
-        description: 'Custom Haiku model',
-      },
-      {
-        label: 'Enter a model ID…',
-        description:
-          'Use any model identifier supported by the configured provider.',
+        description: `Use the invocation default (currently ${runtimeDisplay.model ?? 'provider default'})`,
+        selected: current === undefined,
       },
     ]
+    if ((process.env.PRAXIS_PROVIDER ?? 'openai') === 'anthropic') {
+      options.push(
+        {
+          label: 'Opus',
+          model: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? 'opus',
+          description: 'Most capable for complex work',
+        },
+        {
+          label: 'Sonnet',
+          model: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? 'sonnet',
+          description: 'Best for everyday tasks',
+        },
+        {
+          label: 'Haiku',
+          model: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? 'haiku',
+          description: 'Fastest for quick answers',
+        },
+      )
+    } else if (current) {
+      options.push({
+        label: current,
+        model: current,
+        description: 'Current provider model',
+        selected: true,
+      })
+    }
+    for (const option of options)
+      option.selected = option.model === current || (!option.model && !current)
+    options.push({
+      label: 'Enter a model ID…',
+      description:
+        'Use any model identifier supported by the configured provider.',
+    })
+    return options
   }, [runtimeDisplay.model, runtimePreferences.model])
 
   useEffect(() => {
@@ -2434,6 +2444,43 @@ export function InteractiveApp({
     void loading.finally(() => onTurnChange?.(null))
   }
 
+  const writeCopyCandidate = async (candidate: CopyCandidate) => {
+    const directory = join(tmpdir(), 'claude')
+    await mkdir(directory, { recursive: true })
+    const path = join(directory, candidate.filename)
+    await writeFile(path, candidate.text, 'utf8')
+    return path
+  }
+
+  const copyCandidate = (candidate: CopyCandidate, savePreference = false) => {
+    const copying = (async () => {
+      try {
+        if (savePreference) {
+          const snapshot = await saveConfigSetting(
+            'copyFullResponse',
+            true,
+            configTarget,
+          )
+          await reloadRuntimeSettings(snapshot)
+        }
+        await clipboardWriter(candidate.text)
+        let result = `Copied to clipboard (${candidate.text.length} characters, ${candidate.text.split('\n').length} lines)`
+        try {
+          result += `\nAlso written to ${await writeCopyCandidate(candidate)}`
+        } catch {
+          // Clipboard success is authoritative; the temp file is a fallback.
+        }
+        if (savePreference)
+          result += '\nPreference saved. Use /config to change copyFullResponse'
+        append({ kind: 'local-result', text: result })
+      } catch (error) {
+        warn(error)
+      }
+    })()
+    onTurnChange?.(copying)
+    void copying.finally(() => onTurnChange?.(null))
+  }
+
   const copyResponse = (position: number) => {
     const response = [...history]
       .reverse()
@@ -2448,17 +2495,48 @@ export function InteractiveApp({
       })
       return
     }
-    const text = response.text
-    const copying = clipboardWriter(text).then(
-      () =>
-        append({
-          kind: 'local-result',
-          text: `Copied to clipboard (${text.length} characters, ${text.split('\n').length} lines)`,
-        }),
-      (error: unknown) => warn(error),
-    )
-    onTurnChange?.(copying)
-    void copying.finally(() => onTurnChange?.(null))
+    const candidates = copyCandidates(response.text)
+    const full = candidates[0]
+    if (!full) return
+    if (
+      runtimeSettingsRef.current.copyFullResponse ||
+      !shouldShowCopyPicker(response.text)
+    ) {
+      copyCandidate(full)
+      return
+    }
+    updateMenu({
+      kind: 'copy',
+      candidates,
+      selectedIndex: 0,
+      messageAge: position - 1,
+    })
+  }
+
+  const openSettings = (tab: ConfigDashboardTab) => {
+    const initial: Extract<InteractiveMenu, { kind: 'config' }> = {
+      kind: 'config',
+      snapshot: { settings: {}, state: {} },
+      tab,
+      selectedIndex: 0,
+      query: '',
+      searchFocused: tab === 'config',
+    }
+    updateMenu(initial)
+    const loading = (async () => {
+      setBusy(true)
+      try {
+        const snapshot = await loadConfigSettings(configTarget)
+        if (menuRef.current?.kind === 'config')
+          updateMenu({ ...menuRef.current, snapshot })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+      }
+    })()
+    onTurnChange?.(loading)
+    void loading.finally(() => onTurnChange?.(null))
   }
 
   const exportConversation = (method: 'clipboard' | 'file') => {
@@ -3790,11 +3868,9 @@ export function InteractiveApp({
       const rows = projectConfigRows(earlyMenu.snapshot, earlyMenu.query)
       if (key.leftArrow || key.rightArrow || key.tab) {
         const tabs: readonly ConfigDashboardTab[] = [
-          'settings',
           'status',
           'config',
           'usage',
-          'stats',
         ]
         const index = tabs.indexOf(earlyMenu.tab)
         const direction = key.leftArrow || (key.tab && key.shift) ? -1 : 1
@@ -4634,19 +4710,6 @@ export function InteractiveApp({
         return
       }
 
-      if (activeMenu.kind === 'status') {
-        if (key.escape || value === '\u001B') {
-          updateMenu(null)
-        } else if (key.leftArrow || key.rightArrow || key.tab) {
-          const direction = key.leftArrow || (key.tab && key.shift) ? -1 : 1
-          updateMenu({
-            kind: 'status',
-            tabIndex: Math.max(0, Math.min(4, activeMenu.tabIndex + direction)),
-          })
-        }
-        return
-      }
-
       if (activeMenu.kind === 'hooks') {
         const event = activeMenu.configuration.events[activeMenu.eventIndex]
         const matcher = event?.matchers[activeMenu.matcherIndex]
@@ -4883,6 +4946,14 @@ export function InteractiveApp({
             clearComposerInput()
             updateMenu(null)
             changeModel(model)
+            void saveConfigSetting('model', model, configTarget).then(
+              () =>
+                append({
+                  kind: 'local-result',
+                  text: `${model} set as default model for new sessions.`,
+                }),
+              (error: unknown) => warn(error),
+            )
           }
         } else {
           editComposer()
@@ -4907,8 +4978,8 @@ export function InteractiveApp({
         return
       }
 
-      if (activeMenu.kind === 'login') {
-        if (key.escape || value === '') {
+      if (activeMenu.kind === 'copy') {
+        if (key.escape || value === '\u001B') {
           updateMenu(null)
         } else if (key.upArrow || key.downArrow) {
           updateMenu({
@@ -4916,21 +4987,34 @@ export function InteractiveApp({
             selectedIndex: Math.max(
               0,
               Math.min(
-                LOGIN_METHODS.length - 1,
+                activeMenu.candidates.length - 1,
                 activeMenu.selectedIndex + (key.upArrow ? -1 : 1),
               ),
             ),
           })
-        } else if (value === '1' || value === '2' || value === '3') {
-          updateMenu({ ...activeMenu, selectedIndex: Number(value) - 1 })
-        } else if (key.return) {
-          const loginChoice =
-            LOGIN_METHODS[activeMenu.selectedIndex] ?? LOGIN_METHODS[0]
-          updateMenu(null)
-          append({
-            kind: 'local-result',
-            text: `${loginChoice} requires a browser OAuth flow — Praxis authenticates with the PRAXIS_API_KEY environment variable instead.`,
+        } else if (/^[1-9]$/u.test(value)) {
+          updateMenu({
+            ...activeMenu,
+            selectedIndex: Math.min(
+              activeMenu.candidates.length - 1,
+              Number(value) - 1,
+            ),
           })
+        } else if (key.return || value.toLowerCase() === 'w') {
+          const candidate = activeMenu.candidates[activeMenu.selectedIndex]
+          if (!candidate) return
+          updateMenu(null)
+          if (value.toLowerCase() === 'w') {
+            const writing = writeCopyCandidate(candidate).then(
+              (path) =>
+                append({ kind: 'local-result', text: `Written to ${path}` }),
+              (error: unknown) => warn(error),
+            )
+            onTurnChange?.(writing)
+            void writing.finally(() => onTurnChange?.(null))
+          } else {
+            copyCandidate(candidate, candidate.kind === 'always')
+          }
         }
         return
       }
@@ -5322,7 +5406,7 @@ export function InteractiveApp({
         if (nextEffort && nextEffort !== currentEffort) changeEffort(nextEffort)
         return
       }
-      if (!key.return && lower !== 's') return
+      if (!key.return) return
 
       if (activeMenu.kind === 'model') {
         if (activeMenu.selectedIndex === modelOptions.length - 1) {
@@ -5330,33 +5414,28 @@ export function InteractiveApp({
           updateMenu({ kind: 'model-input' })
           return
         }
-        const setDefault = key.return
-        const model = runtimeDisplay.model
+        const model = modelOptions[activeMenu.selectedIndex]?.model
         updateMenu(null)
         if (activeMenu.selectedIndex === 0) {
           changeModel(undefined)
-          if (setDefault) {
-            void saveConfigSetting('model', 'default').then(
-              () =>
-                append({
-                  kind: 'local-result',
-                  text: 'Default model set for new sessions.',
-                }),
-              (error: unknown) => warn(error),
-            )
-          }
+          void saveConfigSetting('model', 'default', configTarget).then(
+            () =>
+              append({
+                kind: 'local-result',
+                text: 'Default model set for new sessions.',
+              }),
+            (error: unknown) => warn(error),
+          )
         } else if (model) {
           changeModel(model)
-          if (setDefault) {
-            void saveConfigSetting('model', model).then(
-              () =>
-                append({
-                  kind: 'local-result',
-                  text: `${model} set as default model for new sessions.`,
-                }),
-              (error: unknown) => warn(error),
-            )
-          }
+          void saveConfigSetting('model', model, configTarget).then(
+            () =>
+              append({
+                kind: 'local-result',
+                text: `${model} set as default model for new sessions.`,
+              }),
+            (error: unknown) => warn(error),
+          )
         }
       } else {
         const selectedEffort = EFFORT_OPTIONS[activeMenu.selectedIndex]
@@ -5757,6 +5836,7 @@ export function InteractiveApp({
           kind: 'context',
           usedTokens: Math.max(measuredTokens, skillTokens),
           contextWindowTokens: runtimeDisplay.contextWindowTokens ?? 200_000,
+          model: runtimeDisplay.model ?? 'provider default',
           skills,
           memoryFiles: [],
         }
@@ -5794,33 +5874,9 @@ export function InteractiveApp({
         onTurnChange?.(loading)
         void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/status') {
-        updateMenu({ kind: 'status', tabIndex: 1 })
-      } else if (prompt === '/login') {
-        updateMenu({ kind: 'login', selectedIndex: 0 })
+        openSettings('status')
       } else if (prompt === '/config') {
-        const initial: Extract<InteractiveMenu, { kind: 'config' }> = {
-          kind: 'config',
-          snapshot: { settings: {}, state: {} },
-          tab: 'config',
-          selectedIndex: 0,
-          query: '',
-          searchFocused: true,
-        }
-        updateMenu(initial)
-        const loading = (async () => {
-          setBusy(true)
-          try {
-            const snapshot = await loadConfigSettings(configTarget)
-            if (menuRef.current?.kind === 'config')
-              updateMenu({ ...menuRef.current, snapshot })
-          } catch (error) {
-            warn(error)
-          } finally {
-            setBusy(false)
-          }
-        })()
-        onTurnChange?.(loading)
-        void loading.finally(() => onTurnChange?.(null))
+        openSettings('config')
       } else if (tuiCommand) {
         const mode = tuiCommand[1] as PraxisRuntimeSettings['tui'] | undefined
         if (!mode) {
@@ -5850,7 +5906,7 @@ export function InteractiveApp({
           void saving.finally(() => onTurnChange?.(null))
         }
       } else if (prompt === '/usage') {
-        updateMenu({ kind: 'status', tabIndex: 3 })
+        openSettings('usage')
       } else if (prompt === '/update') {
         append({
           kind: 'local-result',
@@ -6327,28 +6383,6 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : menu.kind === 'status' ? (
-                <StatusDashboard
-                  tabIndex={menu.tabIndex}
-                  version={runtimeDisplay.version}
-                  sessionName={sessionName}
-                  sessionId={sessionId}
-                  display={runtimeDisplay}
-                  authToken={statusAuthToken}
-                  baseUrl={statusBaseUrl}
-                  proxy={statusProxy}
-                  settingSources={statusSettingSources}
-                  {...(usage === undefined ? {} : { usage })}
-                  {...(costUsd === undefined ? {} : { costUsd })}
-                  turnCount={turnNumberRef.current}
-                  toolCount={
-                    history.filter((item) => item.kind === 'tool').length
-                  }
-                  commandCount={allSlashCommands.length}
-                  detailedTranscript={thinkingExpanded}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
               ) : menu.kind === 'agents' ? (
                 <ListDashboard
                   title="Agents"
@@ -6368,22 +6402,18 @@ export function InteractiveApp({
                   query={menu.query}
                   selectedIndex={menu.selectedIndex}
                   searchFocused={menu.searchFocused}
-                  settings={[
-                    {
-                      label: 'Provider',
-                      value: runtimeDisplay.model ?? 'default',
-                    },
-                    {
-                      label: 'Permission mode',
-                      value: runtimeDisplay.permissionMode ?? 'default',
-                    },
-                  ]}
                   status={{
                     version: runtimeDisplay.version,
+                    ...(sessionName ? { sessionName } : {}),
                     sessionId: sessionId ?? 'new',
                     cwd: runtimeCwd,
+                    ...(statusAuthSource
+                      ? { authSource: statusAuthSource }
+                      : {}),
+                    ...(statusBaseUrl ? { baseUrl: statusBaseUrl } : {}),
+                    ...(statusProxy ? { proxy: statusProxy } : {}),
                     model: runtimeDisplay.model ?? 'default',
-                    settingSources: ['user', 'project', 'local'],
+                    settingSources: statusSettingSources.split(', '),
                   }}
                   usage={{
                     costUsd: costUsd ?? 0,
@@ -6393,7 +6423,6 @@ export function InteractiveApp({
                     linesRemoved: 0,
                     usage: usage ?? { inputTokens: 0, outputTokens: 0 },
                   }}
-                  stats={[]}
                   width={width}
                   screenReader={axScreenReader}
                 />
@@ -6538,27 +6567,13 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : menu.kind === 'login' ? (
+              ) : menu.kind === 'copy' ? (
                 <SelectionMenu
-                  title="Login"
-                  description="Claude Code can be used with your Claude subscription or billed based on API usage through your Console account.\n\nSelect login method:"
-                  options={[
-                    {
-                      label: 'Claude account with subscription',
-                      description: '· Pro, Max, Team, or Enterprise',
-                    },
-                    {
-                      label: 'Anthropic Console account',
-                      description: '· API usage billing',
-                    },
-                    {
-                      label: '3rd-party platform',
-                      description:
-                        '· Amazon Bedrock, Microsoft Foundry, or Vertex AI',
-                    },
-                  ]}
+                  title="Copy"
+                  description="Select content to copy:"
+                  options={menu.candidates}
                   selectedIndex={menu.selectedIndex}
-                  footer="Esc to cancel"
+                  footer="Enter to copy · w to write to /tmp/claude · Esc to cancel"
                   width={width}
                   screenReader={axScreenReader}
                 />

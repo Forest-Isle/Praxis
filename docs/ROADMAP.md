@@ -1173,14 +1173,24 @@ Status: complete.
 
 - [x] SelectionMenu selection prefix + same-line description column match real
       capture (`  ❯ N. label` + fixed desc column) across theme/export/hooks
-- [x] /copy removed picker: direct copy + `Copied to clipboard (N characters, M lines)`
-- [x] /model matches real layout: "Select model" + 5-tier options + effort row + Enter=default / s=session semantics via saveConfigSetting('model', ...)
-- [x] /context: no title, 5x5 usage grid, compact k-format, Memory files · /memory + Skills Built-in sections
-- [x] /status: Session name, Auth token, Anthropic base URL, Proxy, Setting sources
-      rows added (env-sourced), real row order
-- [x] /login: new dialog matching real title/body + 3 numbered methods + `·` desc,
-      Esc cancels, selection reports Praxis PRAXIS_API_KEY auth model
-- [x] probe gates for status rows + login dialog; vitest + build green
+- [x] `/copy` follows the 2.1.208 source branch: plain/full-preference responses
+      copy directly; fenced code opens the Full response/code-block/Always picker;
+      Enter copies, `w` writes under the system temp `claude` directory, and the
+      always-full choice persists in shared state
+- [x] `/model` uses distinct capability-aware values, persists Enter selections
+      for current and future sessions, removes the invented `s` shortcut, and
+      retains left/right effort adjustment
+- [x] `/context` restores the `Context Usage` title, model/token summary, 5×5
+      grid, estimated category legend, free space, autocompact reserve, memory,
+      and skills sections
+- [x] `/status`, `/config`, and `/usage` open one source-shaped three-tab pane;
+      invented Settings/Stats tabs and the duplicate StatusDashboard are removed
+- [x] subscription `/login` is removed from the command catalog, runtime, tests,
+      and PTY probe under the permanent auth exclusion
+- [x] shortcut help restores `! for bash mode`, `& for background`, and
+      `shift + tab to auto-accept edits`
+- [x] `/export` no longer prepends the launch welcome card to conversation output
+- [x] full format/lint/unit/build, TUI compatibility, and performance gates
 
 ## Stage 133 - leftover dialog surfaces and final divergence audit
 

@@ -20,7 +20,6 @@ import {
   SelectionMenu,
   SessionPicker,
   ShortcutHelp,
-  StatusDashboard,
   ThemePicker,
   Transcript,
   WelcomePanel,
@@ -721,9 +720,9 @@ describe('Claude-style TUI components', () => {
     expect(context.lastFrame()).toContain(
       'Autocompact buffer: 33k tokens (16.5%)',
     )
-    expect(context.lastFrame()).toContain('Auto-compact window: 200k tokens')
+    expect(context.lastFrame()).toContain('Estimated usage by category')
     expect(context.lastFrame()).toContain('Memory files · /memory')
-    expect(context.lastFrame()).toContain('Built-in')
+    expect(context.lastFrame()).toContain('Loaded')
     expect(context.lastFrame()).toContain('review: ~290 tokens')
 
     const accessibleContext = render(
@@ -741,41 +740,10 @@ describe('Claude-style TUI components', () => {
         ]}
       />,
     )
-    expect(accessibleContext.lastFrame()).toContain('1,500 of 200,000 tokens')
+    expect(accessibleContext.lastFrame()).toContain(
+      'provider default · 1,500/200,000 tokens',
+    )
     expect(accessibleContext.lastFrame()).not.toContain('⛶')
-
-    const status = render(
-      <StatusDashboard
-        tabIndex={1}
-        version="0.2.0"
-        sessionName={null}
-        sessionId="session-1"
-        display={display}
-        authToken="none"
-        baseUrl="https://api.anthropic.com/v1"
-        proxy="none"
-        settingSources="User settings"
-        usage={{ inputTokens: 12, outputTokens: 3 }}
-        costUsd={0.01}
-        turnCount={2}
-        toolCount={1}
-        commandCount={14}
-        detailedTranscript={false}
-        width={100}
-        screenReader={false}
-      />,
-    )
-    expect(status.lastFrame()).toContain(
-      'Settings  Status  Config  Usage  Stats',
-    )
-    expect(status.lastFrame()).toContain('Version:')
-    expect(status.lastFrame()).toContain('/rename to add a name')
-    expect(status.lastFrame()).toContain('session-1')
-    expect(status.lastFrame()).toContain('Auth token:')
-    expect(status.lastFrame()).toContain('Anthropic base URL:')
-    expect(status.lastFrame()).toContain('Proxy:')
-    expect(status.lastFrame()).toContain('Setting sources:')
-    expect(status.lastFrame()).toContain('test-model')
   })
 
   it('renders empty and populated local list dashboards', () => {
@@ -980,7 +948,9 @@ describe('Claude-style TUI components', () => {
 
   it('renders the shortcut grid and tabbed help surface', () => {
     const shortcuts = render(<ShortcutHelp width={100} />)
-    expect(shortcuts.lastFrame()).toContain('! for shell mode')
+    expect(shortcuts.lastFrame()).toContain('! for bash mode')
+    expect(shortcuts.lastFrame()).toContain('& for background')
+    expect(shortcuts.lastFrame()).toContain('shift + tab to auto-accept edits')
     expect(shortcuts.lastFrame()).toContain('ctrl + o for verbose output')
     expect(shortcuts.lastFrame()).toContain('/keybindings to customize')
 
@@ -1120,7 +1090,7 @@ describe('Claude-style TUI components', () => {
       />,
     )
     expect(shell.lastFrame()).toContain('! pwd')
-    expect(shell.lastFrame()).toContain('! for shell mode')
+    expect(shell.lastFrame()).toContain('! for bash mode')
     expect(shell.lastFrame()).not.toContain('❯ pwd')
 
     const shellTranscript = render(
