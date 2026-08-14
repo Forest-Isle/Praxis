@@ -1740,10 +1740,10 @@ set phase "context autocompact buffer"
 expect -re {Autocompact buffer}
 set phase "context memory heading"
 expect -re {Memory files · /memory}
-set phase "context skills source"
-expect -re {Loaded}
 set phase "context memory loaded"
 expect -re {~/.claude/CLAUDE.md: [0-9]+ tokens}
+set phase "context skills source"
+expect -re {Loaded}
 set phase "context composer"
 expect -re {Try.*review this project}
 after 100
