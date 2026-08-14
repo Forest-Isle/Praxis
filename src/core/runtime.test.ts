@@ -456,6 +456,53 @@ describe('AgentRuntime', () => {
     ])
   })
 
+  it('adds permission approval feedback after the completed tool result', async () => {
+    let turn = 0
+    const requests: ModelRequest[] = []
+    const provider = providerFrom(async function* (request) {
+      requests.push(request)
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_feedback', name: 'Bash', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({
+          content: 'command output',
+          isError: false,
+          followUpUserMessages: ['tool follow-up'],
+        }),
+      },
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+    })
+
+    await runtime.run({
+      messages: [{ role: 'user', content: 'run' }],
+      approveTool: () => ({
+        behavior: 'allow',
+        feedback: 'use the focused test next',
+      }),
+    })
+
+    expect(requests[1]?.messages.slice(-3)).toEqual([
+      {
+        role: 'tool',
+        toolCallId: 'call_feedback',
+        content: 'command output',
+        isError: false,
+      },
+      { role: 'user', content: 'tool follow-up' },
+      { role: 'user', content: 'use the focused test next' },
+    ])
+  })
+
   it('uses permission prompt denial messages as failed tool results', async () => {
     let turn = 0
     const requests: ModelRequest[] = []

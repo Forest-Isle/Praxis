@@ -305,7 +305,11 @@ export type PermissionBehavior = 'allow' | 'ask' | 'deny'
 
 export type PermissionApproval =
   | boolean
-  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
+  | {
+      behavior: 'allow'
+      updatedInput?: Record<string, unknown>
+      feedback?: string
+    }
   | { behavior: 'deny'; message: string; interrupt?: boolean }
 
 export interface PermissionResolutionContext {
@@ -1029,6 +1033,7 @@ export class AgentRuntime {
     let allowed = decision.behavior === 'allow'
     let denialReason: string | undefined
     let interrupt = false
+    let approvalFeedback: string | undefined
     if (decision.behavior === 'ask') {
       this.emit({ type: 'state', state: 'awaiting-permission' })
       const approval = request.approveTool
@@ -1038,6 +1043,7 @@ export class AgentRuntime {
         allowed = approval
       } else if (approval.behavior === 'allow') {
         allowed = true
+        approvalFeedback = approval.feedback?.trim() || undefined
         if (approval.updatedInput) {
           try {
             prepared = await tools.prepare(
@@ -1074,7 +1080,15 @@ export class AgentRuntime {
 
     this.emit({ type: 'state', state: 'executing-tools' })
     try {
-      return await tools.execute(prepared, context)
+      const result = await tools.execute(prepared, context)
+      if (!approvalFeedback) return result
+      return {
+        ...result,
+        followUpUserMessages: [
+          ...(result.followUpUserMessages ?? []),
+          approvalFeedback,
+        ],
+      }
     } catch (error) {
       if (request.signal?.aborted) return this.cancel()
       return {

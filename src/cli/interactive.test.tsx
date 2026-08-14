@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ModelToolCall } from '../core/runtime.js'
+import type { ModelToolCall, PermissionApproval } from '../core/runtime.js'
 import {
   InteractiveApp,
   type InteractiveServiceFactory,
@@ -5072,7 +5072,7 @@ describe('InteractiveApp', () => {
   })
 
   it('asks before an ask-permission tool and forwards the decision', async () => {
-    let approval: boolean | undefined
+    let approval: PermissionApproval | undefined
     const suspendProcess = vi.fn()
     const call: ModelToolCall = {
       id: 'call-1',
@@ -5116,21 +5116,140 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Allow Bash')
+    expect(app.lastFrame()).toContain('Tool use')
     expect(app.lastFrame()).toContain('npm test')
     expect(app.lastFrame()).toContain('Selected: 1. Yes')
+    expect(app.lastFrame()).toContain(
+      "Yes, and don't ask again for Bash commands",
+    )
     expect(app.lastFrame()).not.toContain('❯')
 
     app.stdin.write('\u001a')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(suspendProcess).toHaveBeenCalledOnce()
-    expect(app.lastFrame()).toContain('Allow Bash')
+    expect(app.lastFrame()).toContain('Tool use')
 
     app.stdin.write('y')
     await flush()
-    expect(approval).toBe(true)
+    expect(approval).toEqual({ behavior: 'allow' })
     expect(app.lastFrame()).toContain('done')
+  })
+
+  it('persists the generic permission always-allow option and applies it immediately', async () => {
+    const added: unknown[] = []
+    const approvals: PermissionApproval[] = []
+    const call: ModelToolCall = {
+      id: 'call-always',
+      name: 'Bash',
+      input: { command: 'npm test' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool, isSessionActionApproved }) {
+            return {
+              async run() {
+                const approval = await approveTool?.(call)
+                if (approval !== undefined) approvals.push(approval)
+                expect(
+                  isSessionActionApproved?.({
+                    ...call,
+                    id: 'call-later',
+                    input: { command: 'npm run lint' },
+                  }),
+                ).toBe(true)
+                return {
+                  sessionId: 'session-permission',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add(input) {
+            added.push(input)
+          },
+        }}
+        display={{ cwd: '/work/project', version: 'test' }}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('2')
+    await flush()
+    expect(added).toEqual([
+      { behavior: 'allow', rule: 'Bash', scope: 'local' },
+    ])
+    expect(approvals).toEqual([{ behavior: 'allow' }])
+    expect(app.lastFrame()).toContain('done')
+  })
+
+  it('returns generic permission feedback with its selected decision', async () => {
+    let approval: PermissionApproval | undefined
+    const call: ModelToolCall = {
+      id: 'call-feedback',
+      name: 'Bash',
+      input: { command: 'npm test' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool }) {
+            return {
+              async run() {
+                approval = await approveTool?.(call)
+                return {
+                  sessionId: 'session-feedback',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\t')
+    await flush()
+    app.stdin.write('use the focused test')
+    app.stdin.write('\r')
+    await flush()
+    expect(approval).toEqual({
+      behavior: 'allow',
+      feedback: 'use the focused test',
+    })
   })
 
   it('collects interactive model questions with numbered and custom answers', async () => {
@@ -5591,7 +5710,7 @@ describe('InteractiveApp', () => {
 
   it('settles a newly-created permission prompt when cancellation races render', async () => {
     const controller = new AbortController()
-    let approval: boolean | undefined
+    let approval: PermissionApproval | undefined
     const call: ModelToolCall = {
       id: 'call-race',
       name: 'Bash',

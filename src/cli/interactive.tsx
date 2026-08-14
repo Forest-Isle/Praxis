@@ -23,6 +23,7 @@ import type {
   ModelImage,
   ModelToolCall,
   ModelUsage,
+  PermissionApproval,
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
@@ -342,7 +343,9 @@ export interface InteractiveServiceFactory {
     requireProvider: boolean
     hooksOnly?: boolean
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
-    approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
+    approveTool?: (
+      call: ModelToolCall,
+    ) => PermissionApproval | Promise<PermissionApproval>
     onElicitation?: (
       request: CliElicitationRequest,
     ) => Promise<CliElicitationResult>
@@ -471,7 +474,7 @@ interface InteractiveAppProps {
 type PendingPermission = {
   kind: 'tool' | 'recovery'
   call: ModelToolCall
-  resolve: (approved: boolean) => void
+  resolve: (approval: PermissionApproval) => void
 }
 
 type PendingElicitation = {
@@ -1170,6 +1173,9 @@ export function InteractiveApp({
   const runtimePreferencesRef = useRef(runtimePreferences)
   const [permission, setPermission] = useState<PendingPermission | null>(null)
   const permissionRef = useRef<PendingPermission | null>(null)
+  const [permissionSelection, setPermissionSelection] = useState(0)
+  const [permissionFeedbackMode, setPermissionFeedbackMode] = useState(false)
+  const alwaysAllowedToolNamesRef = useRef(new Set<string>())
   const [elicitation, setElicitation] = useState<PendingElicitation | null>(
     null,
   )
@@ -2070,7 +2076,7 @@ export function InteractiveApp({
     call: ModelToolCall,
     kind: PendingPermission['kind'],
   ) =>
-    new Promise<boolean>((resolveApproval) => {
+    new Promise<PermissionApproval>((resolveApproval) => {
       let settled = false
       const pending: PendingPermission = {
         kind,
@@ -2083,6 +2089,9 @@ export function InteractiveApp({
           resolveApproval(approved)
         },
       }
+      clearComposerInput()
+      setPermissionSelection(0)
+      setPermissionFeedbackMode(false)
       permissionRef.current = pending
       setPermission(pending)
     })
@@ -2105,7 +2114,13 @@ export function InteractiveApp({
       setElicitation(pending)
     })
   const approveRecovery = (call: ModelToolCall) =>
-    resume?.retryInterruptedTools ? true : requestApproval(call, 'recovery')
+    resume?.retryInterruptedTools
+      ? true
+      : requestApproval(call, 'recovery').then(
+          (approval) =>
+            approval === true ||
+            (typeof approval === 'object' && approval.behavior === 'allow'),
+        )
 
   const askUser: ClaudeInteractiveToolCallbacks['askUser'] = (
     questions,
@@ -2217,6 +2232,7 @@ export function InteractiveApp({
   }
 
   const isSessionActionApproved = (call: ModelToolCall): boolean => {
+    if (alwaysAllowedToolNamesRef.current.has(call.name)) return true
     const activeSessionId = sessionIdRef.current
     return activeSessionId
       ? (approvedSessionActionsRef.current
@@ -3599,10 +3615,75 @@ export function InteractiveApp({
     }
 
     if (permission) {
-      if (lower === 'y' || value === '1') {
-        permission.resolve(true)
-      } else if (lower === 'n' || value === '2' || key.return || key.escape) {
+      const optionCount = permission.kind === 'tool' ? 3 : 2
+      const resolvePermission = (selectedIndex: number) => {
+        const feedback = inputRef.current.trim()
+        clearComposerInput()
+        setPermissionFeedbackMode(false)
+        if (selectedIndex === 0) {
+          permission.resolve(
+            feedback
+              ? { behavior: 'allow', feedback }
+              : { behavior: 'allow' },
+          )
+          return
+        }
+        if (permission.kind === 'tool' && selectedIndex === 1) {
+          const saving = (async () => {
+            try {
+              await permissionStore.add({
+                behavior: 'allow',
+                rule: permission.call.name,
+                scope: 'local',
+              })
+              alwaysAllowedToolNamesRef.current.add(permission.call.name)
+              permission.resolve({ behavior: 'allow' })
+            } catch (error) {
+              warn(error)
+            }
+          })()
+          onTurnChange?.(saving)
+          void saving.finally(() => onTurnChange?.(null))
+          return
+        }
+        permission.resolve(
+          feedback
+            ? { behavior: 'deny', message: feedback }
+            : false,
+        )
+      }
+      if (key.escape) {
         permission.resolve(false)
+      } else if (permissionFeedbackMode) {
+        if (key.tab) {
+          clearComposerInput()
+          setPermissionFeedbackMode(false)
+        } else if (key.return) {
+          resolvePermission(permissionSelection)
+        } else {
+          editComposer()
+        }
+      } else if (key.upArrow) {
+        setPermissionSelection((current) =>
+          current === 0 ? optionCount - 1 : current - 1,
+        )
+      } else if (key.downArrow) {
+        setPermissionSelection((current) => (current + 1) % optionCount)
+      } else if (
+        key.tab &&
+        (permission.kind !== 'tool' || permissionSelection !== 1)
+      ) {
+        clearComposerInput()
+        setPermissionFeedbackMode(true)
+      } else if (lower === 'y') {
+        resolvePermission(0)
+      } else if (lower === 'n') {
+        resolvePermission(optionCount - 1)
+      } else if (/^[1-3]$/u.test(value)) {
+        const selectedIndex = Number(value) - 1
+        if (selectedIndex < optionCount) resolvePermission(selectedIndex)
+      } else if (key.return) {
+        resolvePermission(permissionSelection)
       }
       return
     }
@@ -6049,16 +6130,63 @@ export function InteractiveApp({
                 title={
                   permission.kind === 'recovery'
                     ? `Retry interrupted ${permission.call.name}?`
-                    : `Allow ${permission.call.name}?`
+                    : 'Tool use'
                 }
                 screenReader={axScreenReader}
               >
-                <Text bold>
-                  {describeTool(permission.call, sensitiveValues)}
+                <Box flexDirection="column" paddingX={1} paddingY={1}>
+                  <Text bold>
+                    {describeTool(permission.call, sensitiveValues)}
+                  </Text>
+                </Box>
+                <Text>Do you want to proceed?</Text>
+                <Text
+                  inverse={!axScreenReader && permissionSelection === 0}
+                >
+                  {selectionPrefix(permissionSelection === 0, axScreenReader)}
+                  1. Yes
                 </Text>
-                <Text>{selectionPrefix(true, axScreenReader)}1. Yes</Text>
-                <Text> 2. No</Text>
-                <Text dimColor>Enter/Esc declines · y/n quick response</Text>
+                {permission.kind === 'tool' ? (
+                  <Text
+                    inverse={!axScreenReader && permissionSelection === 1}
+                  >
+                    {selectionPrefix(
+                      permissionSelection === 1,
+                      axScreenReader,
+                    )}
+                    2. Yes, and don't ask again for{' '}
+                    <Text bold>{permission.call.name}</Text> commands in{' '}
+                    <Text bold>{runtimeCwd}</Text>
+                  </Text>
+                ) : null}
+                <Text
+                  inverse={
+                    !axScreenReader &&
+                    permissionSelection ===
+                      (permission.kind === 'tool' ? 2 : 1)
+                  }
+                >
+                  {selectionPrefix(
+                    permissionSelection ===
+                      (permission.kind === 'tool' ? 2 : 1),
+                    axScreenReader,
+                  )}
+                  {permission.kind === 'tool' ? '3' : '2'}. No
+                </Text>
+                {permissionFeedbackMode ? (
+                  <Text>
+                    ›{' '}
+                    {input ||
+                      (permissionSelection === 0
+                        ? 'tell Praxis what to do next'
+                        : 'tell Praxis what to do differently')}
+                  </Text>
+                ) : null}
+                <Text dimColor>
+                  {permissionFeedbackMode
+                    ? 'Enter to submit · Tab to collapse · Esc to cancel'
+                    : 'Enter to confirm · Tab to add feedback · Esc to cancel'}
+                </Text>
               </DialogFrame>
             ) : planApproval ? (
               <DialogFrame
