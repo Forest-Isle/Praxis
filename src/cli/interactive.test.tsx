@@ -5145,7 +5145,7 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('done')
   })
 
-  it('persists a Bash prefix rule and applies it immediately', async () => {
+  it('edits, persists, and immediately applies a Bash prefix rule', async () => {
     const added: unknown[] = []
     const approvals: PermissionApproval[] = []
     const call: ModelToolCall = {
@@ -5165,7 +5165,7 @@ describe('InteractiveApp', () => {
                   isSessionActionApproved?.({
                     ...call,
                     id: 'call-later',
-                    input: { command: 'npm test -- --run changed.test.ts' },
+                    input: { command: 'npm run lint' },
                   }),
                 ).toBe(true)
                 return {
@@ -5202,10 +5202,16 @@ describe('InteractiveApp', () => {
     app.stdin.write('run')
     app.stdin.write('\r')
     await flush()
-    app.stdin.write('2')
+    app.stdin.write('\u001B[B')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 2. Yes, and don’t ask again')
+    for (let index = 0; index < 10; index += 1) app.stdin.write('\u007f')
+    app.stdin.write('npm run:*')
+    await flush()
+    app.stdin.write('\r')
     await flush()
     expect(added).toEqual([
-      { behavior: 'allow', rule: 'Bash(npm test:*)', scope: 'local' },
+      { behavior: 'allow', rule: 'Bash(npm run:*)', scope: 'local' },
     ])
     expect(approvals).toEqual([{ behavior: 'allow' }])
     expect(app.lastFrame()).toContain('done')

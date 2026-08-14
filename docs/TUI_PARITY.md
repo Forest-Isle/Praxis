@@ -154,8 +154,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   directory presentation; and session-local directory add/remove controls.
 - `ToolPermissionDialog`: source-dispatched Bash/PowerShell, edit/write,
   notebook, filesystem, WebFetch, Skill, and fallback views; inline diffs,
-  permission explanations, reusable command/Skill rules, `.claude` session
-  grants, accept/reject feedback, and screen-reader selection text.
+  permission explanations, editable reusable command/Skill rules, `.claude`
+  session grants, accept/reject feedback, and screen-reader selection text.
 - `/tui` switches between the default and fullscreen renderers, persists the
   Claude-compatible `tui` runtime setting, and resumes the active session after
   the renderer restart.

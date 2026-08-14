@@ -108,10 +108,13 @@ import {
 } from './tui/slash-commands.js'
 import {
   createComposerEditor,
+  deleteComposerBackward,
+  deleteComposerForward,
   deleteComposerToEnd,
   deleteComposerToStart,
   deleteComposerWordBackward,
   insertComposerText,
+  moveComposerCursor,
   moveComposerCursorByWord,
 } from './tui/composer-editor.js'
 import {
@@ -1209,6 +1212,9 @@ export function InteractiveApp({
   const permissionRef = useRef<PendingPermission | null>(null)
   const [permissionSelection, setPermissionSelection] = useState(0)
   const [permissionFeedbackMode, setPermissionFeedbackMode] = useState(false)
+  const [permissionRuleEditor, setPermissionRuleEditor] = useState<ReturnType<
+    typeof createComposerEditor
+  > | null>(null)
   const immediatePermissionRulesRef = useRef<string[]>([])
   const toolPermissionModel = useMemo(
     () =>
@@ -2143,6 +2149,18 @@ export function InteractiveApp({
     decision?: PermissionDecision,
   ) =>
     new Promise<PermissionApproval>((resolveApproval) => {
+      const projected =
+        kind === 'tool'
+          ? projectTuiToolPermission(
+              call,
+              runtimeCwdRef.current,
+              sensitiveValues,
+              decision,
+            )
+          : null
+      const editableRule = projected?.options.find(
+        (option) => option.editableRule,
+      )?.editableRule
       let settled = false
       const pending: PendingPermission = {
         kind,
@@ -2159,6 +2177,9 @@ export function InteractiveApp({
       clearComposerInput()
       setPermissionSelection(0)
       setPermissionFeedbackMode(false)
+      setPermissionRuleEditor(
+        editableRule ? createComposerEditor(editableRule.initialValue) : null,
+      )
       permissionRef.current = pending
       setPermission(pending)
     })
@@ -3728,9 +3749,18 @@ export function InteractiveApp({
         if (
           permission.kind === 'tool' &&
           selected.action === 'persist-rule' &&
-          selected.rule
+          (selected.rule || selected.editableRule)
         ) {
-          const rule = selected.rule
+          const editedRule = permissionRuleEditor?.text.trim()
+          const rule = selected.editableRule
+            ? editedRule
+              ? `${selected.editableRule.toolName}(${editedRule})`
+              : undefined
+            : selected.rule
+          if (!rule) {
+            permission.resolve({ behavior: 'allow' })
+            return
+          }
           const saving = (async () => {
             try {
               await permissionStore.add({
@@ -3810,6 +3840,28 @@ export function InteractiveApp({
       ) {
         clearComposerInput()
         setPermissionFeedbackMode(true)
+      } else if (options[permissionSelection]?.editableRule && !key.return) {
+        if (key.leftArrow) {
+          setPermissionRuleEditor((current) =>
+            moveComposerCursor(current ?? createComposerEditor(), -1),
+          )
+        } else if (key.rightArrow) {
+          setPermissionRuleEditor((current) =>
+            moveComposerCursor(current ?? createComposerEditor(), 1),
+          )
+        } else if (key.backspace) {
+          setPermissionRuleEditor((current) =>
+            deleteComposerBackward(current ?? createComposerEditor()),
+          )
+        } else if (key.delete) {
+          setPermissionRuleEditor((current) =>
+            deleteComposerForward(current ?? createComposerEditor()),
+          )
+        } else if (value && !key.ctrl && !key.meta) {
+          setPermissionRuleEditor((current) =>
+            insertComposerText(current ?? createComposerEditor(), value),
+          )
+        }
       } else if (lower === 'y') {
         resolvePermission(0)
       } else if (lower === 'n') {
@@ -6406,6 +6458,7 @@ export function InteractiveApp({
                   selection={permissionSelection}
                   feedbackMode={permissionFeedbackMode}
                   feedback={input}
+                  ruleEditor={permissionRuleEditor}
                   screenReader={axScreenReader}
                 />
               ) : (

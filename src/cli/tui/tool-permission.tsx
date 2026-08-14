@@ -7,6 +7,10 @@ import { Box, Text } from 'ink'
 import type { ModelToolCall, PermissionDecision } from '../../core/runtime.js'
 import { claudeBashPermissionRuleContent } from '../../permissions/claude-shell-permission.js'
 import { redactSensitiveText } from '../../platform/sensitive-data.js'
+import {
+  composerEditorSegments,
+  type ComposerEditorState,
+} from './composer-editor.js'
 
 export type TuiToolPermissionAction =
   | 'allow-once'
@@ -19,6 +23,7 @@ export interface TuiToolPermissionOption {
   action: TuiToolPermissionAction
   label: string
   rule?: string
+  editableRule?: { toolName: string; initialValue: string }
 }
 
 export interface TuiToolPermissionModel {
@@ -296,8 +301,12 @@ function bashModel(
       ? undefined
       : {
           action: 'persist-rule',
-          label: `Yes, and don’t ask again for: ${redact(ruleContent, sensitiveValues)}`,
+          label: 'Yes, and don’t ask again for',
           rule,
+          editableRule: {
+            toolName: call.name,
+            initialValue: ruleContent,
+          },
         }
   return {
     kind: 'bash',
@@ -390,12 +399,14 @@ export function ToolPermissionDialog({
   selection,
   feedbackMode,
   feedback,
+  ruleEditor,
   screenReader,
 }: {
   model: TuiToolPermissionModel
   selection: number
   feedbackMode: boolean
   feedback: string
+  ruleEditor?: ComposerEditorState | null
   screenReader: boolean
 }) {
   return (
@@ -426,12 +437,33 @@ export function ToolPermissionDialog({
       </Box>
       {model.explanation ? <Text dimColor>{model.explanation}</Text> : null}
       <Text>{model.question}</Text>
-      {model.options.map((option, index) => (
-        <Text key={`${option.action}-${index}`} bold={selection === index}>
-          {selection === index ? (screenReader ? 'Selected: ' : '❯ ') : '  '}
-          {index + 1}. {option.label}
-        </Text>
-      ))}
+      {model.options.map((option, index) => {
+        const selected = selection === index
+        const editor = option.editableRule
+          ? (ruleEditor ?? {
+              text: option.editableRule.initialValue,
+              cursor: Array.from(option.editableRule.initialValue).length,
+            })
+          : null
+        const segments = editor ? composerEditorSegments(editor) : null
+        return (
+          <Text key={`${option.action}-${index}`} bold={selected}>
+            {selected ? (screenReader ? 'Selected: ' : '❯ ') : '  '}
+            {index + 1}. {option.label}
+            {segments ? (
+              screenReader || !selected ? (
+                `: ${editor?.text ?? ''}`
+              ) : (
+                <Text>
+                  : {segments.before}
+                  <Text inverse>{segments.current ?? ' '}</Text>
+                  {segments.after}
+                </Text>
+              )
+            ) : null}
+          </Text>
+        )
+      })}
       {feedbackMode ? (
         <Text>
           ›{' '}

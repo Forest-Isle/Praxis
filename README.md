@@ -110,8 +110,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 - **Permission boundary** — local allow/ask/deny rules, safe and bare modes,
   searchable scoped-rule creation/removal, local/project/user atomic settings
   writes, tool-specific Bash/PowerShell/file/notebook/WebFetch/Skill approval
-  dialogs, reusable shell and Skill rules, source-root-aware Claude file-rule
-  matching, interactive workspace-directory add/remove controls, path
+  dialogs, editable reusable shell and Skill rules, source-root-aware Claude
+  file-rule matching, interactive workspace-directory add/remove controls, path
   confinement, credential redaction, and sanitized child processes.
 - **Durable local work** — resumable sessions, full-history forks, file
   checkpoints, tasks, foreground/background subagents, and top-level agents.
