@@ -1155,3 +1155,22 @@ Status: complete.
 
 - [x] Recently denied presentation aligned to the exact Claude 2.1.208
       selection/lifetime behavior and grant-transcript flow
+
+## Stage 131 - launch-state layout parity
+
+Status: complete.
+
+- [x] WelcomePanel title embedded in top border row (╭───Praxis Code vX.Y.Z ───╮),
+      matching Claude 2.1.208 launch frame
+- [x] 11-row welcome card with blank lines framing the logo column
+- [x] No status line between card and composer (footer-right keeps effort)
+- [x] Probe startup expects updated to Tips-before-Welcome (two-column row order)
+- [x] 60s cold-start timeout headroom for slow CI runners
+
+## Stage 132 - command-specific dialogs and layout behavior
+
+Status: pending.
+
+- [ ] enumerate command-specific dialogs in Claude 2.1.208 vs Praxis
+- [ ] align exact dialog layout/behavior for each included command
+- [ ] focused TTY/Ink gates per dialog
