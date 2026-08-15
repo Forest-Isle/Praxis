@@ -6650,6 +6650,88 @@ describe('InteractiveApp', () => {
 })
 
 describe('runInteractive', () => {
+  it('prepends the selected agent initial prompt once for a fresh session', async () => {
+    const calls: string[] = []
+    const controller = new AbortController()
+    let creations = 0
+    const consoleConstructor = Object.getOwnPropertyDescriptor(
+      console,
+      'Console',
+    )
+    const stdinIsTty = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY')
+    const stdinSetRawMode = Object.getOwnPropertyDescriptor(
+      process.stdin,
+      'setRawMode',
+    )
+    Object.defineProperty(console, 'Console', {
+      configurable: true,
+      value: NodeConsole,
+    })
+    Object.defineProperty(process.stdin, 'isTTY', {
+      configurable: true,
+      value: true,
+    })
+    Object.defineProperty(process.stdin, 'setRawMode', {
+      configurable: true,
+      value: () => process.stdin,
+    })
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        creations += 1
+        return {
+          async run(prompt) {
+            calls.push(prompt)
+            controller.abort()
+            return {
+              sessionId: 'agent-session',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          initialAgentPrompt() {
+            return creations === 1 ? 'AGENT_INITIAL' : undefined
+          },
+        }
+      },
+    }
+
+    try {
+      await expect(
+        runInteractive({
+          factory,
+          initialPrompt: 'USER_INITIAL',
+          signal: controller.signal,
+        }),
+      ).resolves.toBe(130)
+      expect(calls).toEqual(['AGENT_INITIAL\n\nUSER_INITIAL'])
+    } finally {
+      if (consoleConstructor) {
+        Object.defineProperty(console, 'Console', consoleConstructor)
+      } else {
+        Reflect.deleteProperty(console, 'Console')
+      }
+      if (stdinIsTty) {
+        Object.defineProperty(process.stdin, 'isTTY', stdinIsTty)
+      } else {
+        Reflect.deleteProperty(process.stdin, 'isTTY')
+      }
+      if (stdinSetRawMode) {
+        Object.defineProperty(process.stdin, 'setRawMode', stdinSetRawMode)
+      } else {
+        Reflect.deleteProperty(process.stdin, 'setRawMode')
+      }
+    }
+  })
+
   it('loads resumed transcript history before rendering', async () => {
     let transcriptSession = ''
     let closed = 0

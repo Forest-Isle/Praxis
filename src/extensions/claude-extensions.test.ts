@@ -70,7 +70,7 @@ describe('ClaudeExtensionCatalog', () => {
           path: '/config/agents/reviewer.md',
           scope: 'user',
           content:
-            '---\nname: reviewer\ndescription: Review work.\n---\nAGENT_BODY',
+            "---\nname: reviewer\ndescription: Review work.\ntools: [Read, 'Bash(git status,git diff)', 42, Edit]\ndisallowedTools: 'Write, Bash(rm -rf *)'\nmodel: InHeRiT\neffort: MAX\npermissionMode: plan\nmaxTurns: '7'\nskills: 'review, security audit'\ninitialPrompt: '  /review  '\nmemory: local\nbackground: 'true'\nisolation: worktree\nmcpServers: [filesystem]\nhooks:\n  PreToolUse: []\n---\nAGENT_BODY",
         },
       ],
     })
@@ -78,7 +78,23 @@ describe('ClaudeExtensionCatalog', () => {
     expect(catalog.expandPrompt('/unknown value').userMessages).toEqual([
       '/unknown value',
     ])
-    expect(catalog.agent('reviewer')?.body).toBe('AGENT_BODY')
+    expect(catalog.agent('reviewer')).toMatchObject({
+      body: 'AGENT_BODY',
+      kind: 'agent',
+      tools: ['Read', 'Bash(git status,git diff)', 'Edit'],
+      disallowedTools: ['Write', 'Bash(rm -rf *)'],
+      model: 'inherit',
+      effort: 'max',
+      permissionMode: 'plan',
+      maxTurns: 7,
+      skills: ['review', 'security', 'audit'],
+      initialPrompt: '  /review  ',
+      memory: 'local',
+      background: true,
+      isolation: 'worktree',
+      mcpServers: ['filesystem'],
+      hooks: { PreToolUse: [] },
+    })
     expect(catalog.agentDefinitions()).toEqual([
       {
         name: 'general-purpose',
@@ -100,6 +116,53 @@ describe('ClaudeExtensionCatalog', () => {
     expect(
       catalog.agentMentionMessages('Read @"reviewer.md" as a file'),
     ).toEqual([])
+  })
+
+  it('normalizes wildcard and invalid agent runtime metadata tolerantly', () => {
+    const catalog = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: '/config/agents/wildcard.md',
+          scope: 'user',
+          content:
+            "---\nname: wildcard\ndescription: Wildcard agent.\ntools: 'Read, *'\ndisallowedTools: '*'\nmodel: '   '\neffort: turbo\npermissionMode: manual\nmaxTurns: '01'\nskills: []\ninitialPrompt: '   '\nmemory: session\nbackground: false\nisolation: remote\nmcpServers: []\nhooks: []\n---\nWILDCARD",
+        },
+        {
+          path: '/config/agents/none.md',
+          scope: 'project',
+          content:
+            '---\nname: none\ndescription: No tools.\ntools: false\ndisallowedTools: false\n---\nNONE',
+        },
+      ],
+    })
+
+    const wildcard = catalog.agent('wildcard')
+    expect(wildcard).toMatchObject({
+      name: 'wildcard',
+      disallowedTools: ['*'],
+    })
+    for (const field of [
+      'tools',
+      'model',
+      'effort',
+      'permissionMode',
+      'maxTurns',
+      'skills',
+      'initialPrompt',
+      'memory',
+      'background',
+      'isolation',
+      'mcpServers',
+      'hooks',
+    ]) {
+      expect(wildcard).not.toHaveProperty(field)
+    }
+    expect(catalog.agent('none')).toMatchObject({
+      tools: [],
+      disallowedTools: [],
+    })
   })
 
   it('keeps malformed bodies and gives a colliding skill precedence', () => {

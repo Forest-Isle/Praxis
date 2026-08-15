@@ -185,8 +185,8 @@ Status: complete for Claude Code 2.1.208 foreground Agent execution.
 
 - [x] synchronous `Agent` tool with strict native input and permission flow
 - [x] `general-purpose` plus shared user/project custom agent definitions
-- [x] recursive provider-neutral runtime with depth, call, turn, input, and
-      output bounds
+- [x] isolated provider-neutral runtime with call, turn, input, and output
+      bounds; external subagents reject recursive Agent calls
 - [x] shared local/MCP/Skill, permission, hook, cancellation, and redaction path
 - [x] native sidechain JSONL and `.meta.json` persistence
 - [x] native main-chain Agent result metadata and crash/failure semantics
@@ -330,7 +330,8 @@ Status: complete for Claude Code 2.1.208.
 Status: complete for background Agent tasks owned by one Praxis invocation.
 
 - [x] Claude 2.1.208 Agent, SendMessage, TaskOutput, and TaskStop schema shapes
-- [x] background-by-default Agent plus explicit foreground execution
+- [x] foreground-by-default Agent plus explicit or definition-forced background
+      execution
 - [x] concurrent native sidechain execution with independent cancellation
 - [x] bounded blocking/non-blocking output and task stop semantics
 - [x] ordered same-ID SendMessage continuation, including later-turn hydration
@@ -1200,3 +1201,18 @@ Status: pending.
       plan approval, MCP elicitation — credential-free subset)
 - [ ] align exact dialog layout/behavior for each included dialog
 - [ ] focused TTY/Ink gates per dialog
+
+## Stage 138 - agent definition runtime
+
+Status: complete for the verified Claude Code 2.1.208 definition contract.
+
+- [x] preserve tools, deny rules, model, effort, permission mode, turn bound,
+      skills, initial prompt, memory, background, isolation, hooks, and MCP
+      frontmatter metadata
+- [x] apply child model/tool/effort/turn/permission/launch controls, persistent
+      memory, skill preloads, lifecycle-scoped hooks, and additive scoped MCP
+- [x] apply main-thread system prompt, memory, first-turn prompt, model
+      precedence, final tool scoping, settings selection, and native resume
+- [x] verify the top-level request and transcript contract against the pinned
+      Claude 2.1.208 binary, including explicit model precedence and the
+      headless/interactive system-prompt precedence split

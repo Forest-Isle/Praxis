@@ -1,10 +1,11 @@
 import { randomBytes, randomUUID } from 'node:crypto'
-import { readdir, stat } from 'node:fs/promises'
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { Ajv2020 } from 'ajv/dist/2020.js'
 
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import { workflowAgentFiles } from '../compatibility/claude/workflow.js'
 import {
   createClaudeAsyncAgentToolUseResult,
@@ -48,6 +49,7 @@ import {
 } from '../core/runtime.js'
 import {
   BUILTIN_STATUSLINE_AGENT_PATH,
+  type ClaudeAgentRuntimeDefinition,
   type ClaudeExtensionCatalog,
 } from '../extensions/claude-extensions.js'
 import { ClaudeHookToolCoordinator } from '../hooks/claude-hook-tools.js'
@@ -55,6 +57,7 @@ import type {
   ClaudeHookOutcome,
   ClaudeHookRunner,
 } from '../hooks/claude-hooks.js'
+import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { ClaudeSidechainStore } from '../persistence/claude-sidechain-store.js'
 import { InMemorySidechainStore } from '../persistence/in-memory-sidechain-store.js'
 import type {
@@ -231,6 +234,190 @@ class RestrictedToolRegistry implements ToolRegistry {
   }
 }
 
+const AGENT_UNAVAILABLE_TOOLS = new Set([
+  'Agent',
+  'Task',
+  'TaskOutput',
+  'TaskStop',
+  'ExitPlanMode',
+  'EnterPlanMode',
+  'AskUserQuestion',
+  'Workflow',
+])
+
+const BACKGROUND_AGENT_TOOLS = new Set([
+  'Read',
+  'WebSearch',
+  'TodoWrite',
+  'Grep',
+  'WebFetch',
+  'Glob',
+  'Bash',
+  'Edit',
+  'Write',
+  'NotebookEdit',
+  'Skill',
+  'StructuredOutput',
+  'ToolSearch',
+  'EnterWorktree',
+  'ExitWorktree',
+])
+
+function agentToolRuleName(rule: string): string {
+  const opening = rule.indexOf('(')
+  return (opening < 0 ? rule : rule.slice(0, opening)).trim()
+}
+
+function enabledAgentToolNames(
+  base: ToolRegistry,
+  definition: ClaudeAgentRuntimeDefinition | null,
+  background: boolean,
+  additiveTools: ReadonlySet<string> = new Set(),
+): readonly string[] {
+  const requested = definition?.tools
+    ? new Set(definition.tools.map(agentToolRuleName))
+    : null
+  if (requested && definition?.memory) {
+    requested.add('Read')
+    requested.add('Edit')
+    requested.add('Write')
+  }
+  const disallowed = new Set(
+    definition?.disallowedTools?.map(agentToolRuleName) ?? [],
+  )
+  return base
+    .definitions()
+    .map(({ name }) => name)
+    .filter((name) => {
+      if (additiveTools.has(name)) return true
+      if (AGENT_UNAVAILABLE_TOOLS.has(name)) return false
+      if (
+        background &&
+        !name.startsWith('mcp__') &&
+        !BACKGROUND_AGENT_TOOLS.has(name)
+      ) {
+        return false
+      }
+      if (requested && !requested.has(name)) return false
+      return !disallowed.has(name)
+    })
+}
+
+function agentMemoryDirectory(
+  configRoot: string,
+  cwd: string,
+  agentType: string,
+  scope: NonNullable<ClaudeAgentRuntimeDefinition['memory']>,
+): string {
+  const directoryName = agentType.replaceAll(':', '-')
+  if (scope === 'user') {
+    return join(configRoot, 'agent-memory', directoryName)
+  }
+  return join(
+    cwd,
+    '.claude',
+    scope === 'project' ? 'agent-memory' : 'agent-memory-local',
+    directoryName,
+  )
+}
+
+export async function agentMemoryPrompt(
+  configRoot: string,
+  cwd: string,
+  definition: ClaudeAgentRuntimeDefinition | null,
+): Promise<string | null> {
+  if (!definition?.memory) return null
+  const directory = agentMemoryDirectory(
+    configRoot,
+    cwd,
+    definition.name,
+    definition.memory,
+  )
+  await mkdir(directory, { recursive: true }).catch(() => undefined)
+  let source = ''
+  try {
+    source = await readFile(join(directory, 'MEMORY.md'), 'utf8')
+  } catch {
+    source = ''
+  }
+  const lines = source.trim().split('\n')
+  const truncated = lines.slice(0, 200).join('\n').slice(0, 25_000)
+  const scopeGuidance =
+    definition.memory === 'user'
+      ? 'Keep entries general enough to apply across projects.'
+      : definition.memory === 'project'
+        ? 'Keep entries specific to this project and suitable for version control.'
+        : 'Keep entries specific to this project and machine; this scope is not version controlled.'
+  return [
+    '# Persistent Agent Memory',
+    '',
+    `Use the file-based memory directory at \`${directory}\`. The directory already exists.`,
+    'Keep MEMORY.md as a concise index and store detailed durable knowledge in linked Markdown files. Update existing entries instead of duplicating them, and do not save transient task state.',
+    scopeGuidance,
+    '',
+    '## MEMORY.md',
+    '',
+    truncated || 'The memory index is currently empty.',
+  ].join('\n')
+}
+
+function agentSkillMessages(
+  catalog: ClaudeExtensionCatalog | undefined,
+  definition: ClaudeAgentRuntimeDefinition | null,
+): readonly { role: 'user'; content: string }[] {
+  if (!catalog || !definition?.skills?.length) return []
+  const available = catalog.modelInvocableSkills()
+  const prefix = definition.name.split(':')[0]
+  return definition.skills.flatMap((requested) => {
+    const skill =
+      available.find(({ name }) => name === requested) ??
+      available.find(({ name }) => name === `${prefix}:${requested}`) ??
+      available.find(({ name }) => name.endsWith(`:${requested}`))
+    if (!skill) return []
+    const content = catalog.renderSkill(skill.name, '')
+    if (content === null) return []
+    return [
+      {
+        role: 'user' as const,
+        content: [
+          `<command-message>${skill.name}</command-message>`,
+          `<command-name>${skill.name}</command-name>`,
+          '<skill-format>true</skill-format>',
+          '',
+          content,
+        ].join('\n'),
+      },
+    ]
+  })
+}
+
+function agentHookSettings(
+  definition: ClaudeAgentRuntimeDefinition | null,
+): readonly ClaudeJsonResource[] {
+  if (!definition?.hooks) return []
+  const { Stop, SubagentStop, ...hooks } = definition.hooks
+  const stopHooks =
+    Stop === undefined
+      ? SubagentStop
+      : SubagentStop === undefined
+        ? Stop
+        : Array.isArray(Stop) && Array.isArray(SubagentStop)
+          ? [...SubagentStop, ...Stop]
+          : Stop
+  return [
+    {
+      path: definition.path,
+      scope: definition.scope,
+      value: {
+        hooks: {
+          ...hooks,
+          ...(stopHooks === undefined ? {} : { SubagentStop: stopHooks }),
+        },
+      },
+    },
+  ]
+}
+
 export interface ClaudeSubagentExecutorOptions {
   configRoot: string
   cwd: string
@@ -240,7 +427,9 @@ export interface ClaudeSubagentExecutorOptions {
   baseTools: ToolRegistry
   permissions: PermissionResolver
   permissionResolverForMode?: (mode: AgentPermissionMode) => PermissionResolver
+  parentPermissionMode?: () => AgentPermissionMode
   extensions?: ClaudeExtensionCatalog
+  mcp?: ClaudeMcpRuntime
   hooks?: ClaudeHookRunner
   contextAssembler?: ContextAssembler
   contextReserveTokens?: number
@@ -345,7 +534,7 @@ function parseAgentInput(call: ModelToolCall): AgentInput {
       ? {}
       : { permissionMode: permissionMode as AgentPermissionMode }),
     ...(isolation === undefined ? {} : { isolation }),
-    runInBackground: call.input.run_in_background !== false,
+    runInBackground: call.input.run_in_background === true,
   }
 }
 
@@ -381,6 +570,41 @@ export class ClaudeSubagentExecutor {
 
   private cwd(): string {
     return this.options.cwdProvider?.() ?? this.options.cwd
+  }
+
+  private agentDefinition(
+    input: Pick<AgentInput, 'subagentType'>,
+  ): ClaudeAgentRuntimeDefinition | null {
+    return this.options.extensions?.agent(input.subagentType) ?? null
+  }
+
+  private resolveAgentInput(input: AgentInput): AgentInput {
+    const definition = this.agentDefinition(input)
+    const environmentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL?.trim()
+    const configuredModel =
+      definition?.model && definition.model !== 'inherit'
+        ? definition.model
+        : undefined
+    const model = environmentModel || input.model || configuredModel
+    const parentPermissionMode = this.options.parentPermissionMode?.()
+    const definitionCanOverridePermissionMode = ![
+      'acceptEdits',
+      'auto',
+      'bypassPermissions',
+    ].includes(parentPermissionMode ?? 'default')
+    const permissionMode =
+      input.permissionMode ??
+      (definitionCanOverridePermissionMode
+        ? definition?.permissionMode
+        : parentPermissionMode)
+    const isolation = input.isolation ?? definition?.isolation
+    return {
+      ...input,
+      ...(model ? { model } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(isolation ? { isolation } : {}),
+      runInBackground: input.runInBackground || definition?.background === true,
+    }
   }
 
   registry(
@@ -521,7 +745,7 @@ export class ClaudeSubagentExecutor {
 
   prepare(call: ModelToolCall, depth: number): ModelToolCall {
     if (!this.isEnabled('Agent')) throw new Error('Tool Agent is unavailable')
-    const input = parseAgentInput(call)
+    const input = this.resolveAgentInput(parseAgentInput(call))
     if (input.runInBackground && this.options.persistence === 'memory') {
       throw new Error('Background agents require session persistence')
     }
@@ -571,7 +795,7 @@ export class ClaudeSubagentExecutor {
     if (this.calls > maxCalls) {
       throw new Error(`Agent call count exceeded ${maxCalls}`)
     }
-    const input = parseAgentInput(call)
+    const input = this.resolveAgentInput(parseAgentInput(call))
     const spawnDepth = depth + 1
     const agentId = `a${randomBytes(8).toString('hex')}`
     const paths = resolveClaudePaths({
@@ -1356,23 +1580,55 @@ export class ClaudeSubagentExecutor {
         )
       }
     }
+    const customAgent = this.agentDefinition(options.input)
     const hookSession = {
       session_id: String(options.root.sessionId),
       transcript_path: options.transcriptPath,
       cwd,
       permission_mode: options.input.permissionMode ?? 'default',
     }
+    const scopedHookSettings = agentHookSettings(customAgent)
+    const scopedHooks =
+      scopedHookSettings.length > 0
+        ? this.options.hooks?.withAdditionalSettings(scopedHookSettings)
+        : this.options.hooks
     const nestedTools = this.registry(
       String(options.root.sessionId),
       options.spawnDepth,
       () => options.promptId,
     )
+    const agentMcp = customAgent?.mcpServers?.length
+      ? await this.options.mcp?.connectAgent?.({
+          specs: customAgent.mcpServers,
+          base: nestedTools,
+          cwd,
+          ...(options.signal ? { signal: options.signal } : {}),
+        })
+      : null
+    const agentToolBase = agentMcp?.tools ?? nestedTools
+    const inheritedToolNames = new Set(
+      nestedTools.definitions().map(({ name }) => name),
+    )
+    const additiveAgentToolNames = new Set(
+      agentToolBase
+        .definitions()
+        .map(({ name }) => name)
+        .filter((name) => !inheritedToolNames.has(name)),
+    )
+    const agentScopedTools = new RestrictedToolRegistry(
+      agentToolBase,
+      enabledAgentToolNames(
+        agentToolBase,
+        customAgent,
+        options.input.runInBackground,
+        additiveAgentToolNames,
+      ),
+    )
     const builtInStatusLineAgent =
-      this.options.extensions?.agent(options.input.subagentType)?.path ===
-      BUILTIN_STATUSLINE_AGENT_PATH
+      customAgent?.path === BUILTIN_STATUSLINE_AGENT_PATH
     const scopedTools = builtInStatusLineAgent
-      ? new RestrictedToolRegistry(nestedTools, ['Read', 'Edit'])
-      : nestedTools
+      ? new RestrictedToolRegistry(agentScopedTools, ['Read', 'Edit'])
+      : agentScopedTools
     const agentTools = options.outputSchema
       ? new StructuredOutputRegistry(
           builtInStatusLineAgent
@@ -1382,16 +1638,16 @@ export class ClaudeSubagentExecutor {
           options.structuredOutput,
         )
       : scopedTools
-    const runtimeTools = this.options.hooks
+    const runtimeTools = scopedHooks
       ? new ClaudeHookToolCoordinator({
           tools: agentTools,
           permissions,
-          hooks: this.options.hooks,
+          hooks: scopedHooks,
           session: hookSession,
           recordOutcome: recordHookOutcome,
         })
       : agentTools
-    const runtimePermissions = this.options.hooks
+    const runtimePermissions = scopedHooks
       ? (runtimeTools as ClaudeHookToolCoordinator)
       : permissions
     const emit = (event: RuntimeEvent) => {
@@ -1437,7 +1693,7 @@ export class ClaudeSubagentExecutor {
     const runtime = new AgentRuntime(options.provider, emit, {
       tools: runtimeTools,
       permissions: runtimePermissions,
-      maxModelTurns: 16,
+      maxModelTurns: customAgent?.maxTurns ?? 16,
       maxModelOutputBytes:
         this.options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
       maxToolCallsPerTurn: 32,
@@ -1545,49 +1801,43 @@ export class ClaudeSubagentExecutor {
     })
 
     try {
-      if (this.options.hooks) {
-        const start = await this.options.hooks.run(
+      if (scopedHooks) {
+        const start = await scopedHooks.run(
           {
             ...hookSession,
-            hook_event_name: 'SessionStart',
-            source: 'startup',
+            hook_event_name: 'SubagentStart',
+            agent_id: options.agentId,
+            agent_type: options.input.subagentType,
           },
-          'startup',
+          options.input.subagentType,
           options.signal,
         )
         await recordHookOutcome(start)
         if (start.blockedReason) {
-          throw new Error(`SessionStart hook error: ${start.blockedReason}`)
-        }
-        const prompt = await this.options.hooks.run(
-          {
-            ...hookSession,
-            hook_event_name: 'UserPromptSubmit',
-            prompt_id: options.promptId,
-            prompt: options.input.prompt,
-          },
-          undefined,
-          options.signal,
-        )
-        await recordHookOutcome(prompt)
-        if (prompt.blockedReason) {
-          throw new Error(
-            `UserPromptSubmit hook error: ${prompt.blockedReason}`,
-          )
+          throw new Error(`SubagentStart hook error: ${start.blockedReason}`)
         }
       }
-      const customAgent = this.options.extensions?.agent(
-        options.input.subagentType,
-      )
       const baseSystem =
         options.input.subagentType === 'general-purpose'
           ? 'You are a general-purpose subagent. Complete the isolated task and return a concise result.'
           : options.input.subagentType === 'workflow-subagent'
             ? 'You are a workflow subagent. Complete the isolated task. Your final text is the raw return value consumed by the workflow, not a user-facing message.'
             : `# Agent definition: ${options.input.subagentType}\n\n${customAgent?.body ?? ''}`
-      const system = options.outputSchema
-        ? `${baseSystem}\n\nYou MUST call StructuredOutput exactly once at the end with a value matching its schema.`
+      const memoryPrompt = await agentMemoryPrompt(
+        this.options.configRoot,
+        cwd,
+        customAgent,
+      )
+      const agentSystem = memoryPrompt
+        ? `${baseSystem}\n\n${memoryPrompt}`
         : baseSystem
+      const system = options.outputSchema
+        ? `${agentSystem}\n\nYou MUST call StructuredOutput exactly once at the end with a value matching its schema.`
+        : agentSystem
+      const preloadedSkills = agentSkillMessages(
+        this.options.extensions,
+        customAgent,
+      )
       let stopHookActive = false
       const contextBudget = options.provider.capabilities.contextWindowTokens
         ? new ContextBudget({
@@ -1612,6 +1862,7 @@ export class ClaudeSubagentExecutor {
             projectClaudeModelMessages(snapshot.entries),
             assembledContext?.firstUserMessageContext,
           ),
+          ...preloadedSkills,
         ]
         if (contextBudget) {
           contextBudget.assertFits(
@@ -1620,11 +1871,14 @@ export class ClaudeSubagentExecutor {
         }
         return messages
       }
+      const configuredEffort =
+        typeof customAgent?.effort === 'string' ? customAgent.effort : undefined
+      const effectiveEffort = options.effort ?? configuredEffort
       const result = await runtime.run({
         messages: await assembleMessages(),
         reloadMessages: assembleMessages,
         cwd,
-        ...(options.effort ? { effort: options.effort } : {}),
+        ...(effectiveEffort ? { effort: effectiveEffort } : {}),
         toolResultDirectory: options.toolResultDirectory,
         observer,
         ...(this.options.approveTool
@@ -1634,25 +1888,30 @@ export class ClaudeSubagentExecutor {
         ...(this.options.onPermissionUpdates
           ? { onPermissionUpdates: this.options.onPermissionUpdates }
           : {}),
-        ...(this.options.hooks || this.options.backgroundTaskNotifications
+        ...(scopedHooks || this.options.backgroundTaskNotifications
           ? {
               onStop: async (text: string) => {
                 const messages: string[] = []
-                const outcome = await this.options.hooks?.run(
+                const outcome = await scopedHooks?.run(
                   {
                     ...hookSession,
-                    hook_event_name: 'Stop',
+                    hook_event_name: 'SubagentStop',
                     stop_hook_active: stopHookActive,
+                    agent_id: options.agentId,
+                    agent_transcript_path: options.transcriptPath,
+                    agent_type: options.input.subagentType,
                     last_assistant_message: text,
                   },
-                  undefined,
+                  options.input.subagentType,
                   options.signal,
                 )
                 if (outcome) {
                   await recordHookOutcome(outcome)
                   if (outcome.blockedReason) {
                     stopHookActive = true
-                    messages.push(`Stop hook error: ${outcome.blockedReason}`)
+                    messages.push(
+                      `SubagentStop hook error: ${outcome.blockedReason}`,
+                    )
                   }
                 }
                 const background = await this.background.notifications({
@@ -1717,29 +1976,12 @@ export class ClaudeSubagentExecutor {
       })
       throw error
     } finally {
-      try {
-        const outcome = await this.options.hooks?.run(
-          {
-            ...hookSession,
-            hook_event_name: 'SessionEnd',
-            reason: 'other',
-          },
-          'other',
-        )
-        for (const execution of outcome?.executions.filter(
-          (value) => value.exitCode !== 0,
-        ) ?? []) {
-          this.options.eventSink?.({
-            type: 'warning',
-            message: `Subagent SessionEnd hook failed: ${execution.stderr.trim() || execution.stdout.trim() || `exit code ${execution.exitCode}`}`,
-          })
-        }
-      } catch (error) {
+      await agentMcp?.close().catch((error: unknown) => {
         this.options.eventSink?.({
           type: 'warning',
-          message: `Subagent SessionEnd hook failed: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Agent MCP cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
         })
-      }
+      })
     }
   }
 }

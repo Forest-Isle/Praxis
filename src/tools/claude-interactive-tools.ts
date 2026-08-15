@@ -417,6 +417,10 @@ export class ClaudeInteractiveToolManager {
     }
   }
 
+  mode(sessionId: string): ClaudePermissionMode {
+    return this.state(sessionId).mode
+  }
+
   contextMessage(sessionId: string): string | null {
     const state = this.state(sessionId)
     if (state.mode !== 'plan') return null

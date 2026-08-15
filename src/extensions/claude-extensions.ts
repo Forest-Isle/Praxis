@@ -39,6 +39,28 @@ export interface ClaudeAgentDefinition {
   description: string
 }
 
+export type ClaudeAgentEffort = 'low' | 'medium' | 'high' | 'max' | number
+
+export type ClaudeAgentPermissionMode =
+  'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan'
+
+export interface ClaudeAgentRuntimeDefinition extends ClaudeExtensionDefinition {
+  kind: 'agent'
+  tools?: readonly string[]
+  disallowedTools?: readonly string[]
+  model?: string
+  effort?: ClaudeAgentEffort
+  permissionMode?: ClaudeAgentPermissionMode
+  maxTurns?: number
+  skills?: readonly string[]
+  initialPrompt?: string
+  memory?: 'user' | 'project' | 'local'
+  background?: boolean
+  isolation?: 'worktree'
+  mcpServers?: readonly unknown[]
+  hooks?: Readonly<Record<string, unknown>>
+}
+
 export interface ClaudePromptExpansion {
   userMessages: readonly string[]
   messages?: readonly ClaudePromptExpansionMessage[]
@@ -119,7 +141,7 @@ const BUILTIN_STATUSLINE_COMMAND: ClaudeExtensionDefinition = {
 export const BUILTIN_STATUSLINE_AGENT_PATH =
   '/__praxis_builtin__/agents/statusline-setup.md'
 
-const BUILTIN_STATUSLINE_AGENT: ClaudeExtensionDefinition = {
+const BUILTIN_STATUSLINE_AGENT: ClaudeAgentRuntimeDefinition = {
   path: BUILTIN_STATUSLINE_AGENT_PATH,
   scope: 'user',
   content: '',
@@ -182,6 +204,128 @@ function parseFrontmatter(resource: ClaudeTextResource): {
   return {
     metadata: (metadata ?? {}) as Record<string, unknown>,
     body: lines.slice(closingIndex + 1).join('\n'),
+  }
+}
+
+function parseAgentList(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  const values =
+    typeof value === 'string'
+      ? [value]
+      : Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === 'string')
+        : []
+  const parsed: string[] = []
+  for (const value of values) {
+    let current = ''
+    let depth = 0
+    for (const character of value) {
+      if (character === '(') depth += 1
+      if (character === ')' && depth > 0) depth -= 1
+      if (depth === 0 && (character === ',' || /\s/u.test(character))) {
+        if (current.trim()) parsed.push(current.trim())
+        current = ''
+      } else {
+        current += character
+      }
+    }
+    if (current.trim()) parsed.push(current.trim())
+  }
+  return parsed
+}
+
+function parseAgentEffort(value: unknown): ClaudeAgentEffort | undefined {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? value : undefined
+  }
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  const normalized = value.trim().toLowerCase()
+  if (['low', 'medium', 'high', 'max'].includes(normalized)) {
+    return normalized as Exclude<ClaudeAgentEffort, number>
+  }
+  if (!/^[+-]?\d+$/u.test(normalized)) return undefined
+  const numeric = Number(normalized)
+  return Number.isInteger(numeric) ? numeric : undefined
+}
+
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined
+  }
+  if (typeof value !== 'string' || !/^[1-9]\d*$/u.test(value)) {
+    return undefined
+  }
+  const numeric = Number(value)
+  return Number.isSafeInteger(numeric) ? numeric : undefined
+}
+
+function parseAgentDefinition(
+  resource: ClaudeTextResource,
+): ClaudeAgentRuntimeDefinition {
+  const definition = parseDefinition('agent', resource)
+  const { metadata } = parseFrontmatter(resource)
+  const parsedTools = parseAgentList(metadata.tools)
+  const tools = parsedTools?.includes('*') ? undefined : parsedTools
+  const disallowedTools = parseAgentList(metadata.disallowedTools)
+  const skills = parseAgentList(metadata.skills)
+  const model =
+    typeof metadata.model === 'string' && metadata.model.trim()
+      ? metadata.model.trim().toLowerCase() === 'inherit'
+        ? 'inherit'
+        : metadata.model.trim()
+      : undefined
+  const effort = parseAgentEffort(metadata.effort)
+  const permissionMode = [
+    'acceptEdits',
+    'auto',
+    'bypassPermissions',
+    'default',
+    'dontAsk',
+    'plan',
+  ].includes(String(metadata.permissionMode))
+    ? (metadata.permissionMode as ClaudeAgentPermissionMode)
+    : undefined
+  const maxTurns = parsePositiveInteger(metadata.maxTurns)
+  const initialPrompt =
+    typeof metadata.initialPrompt === 'string' && metadata.initialPrompt.trim()
+      ? metadata.initialPrompt
+      : undefined
+  const memory = ['user', 'project', 'local'].includes(String(metadata.memory))
+    ? (metadata.memory as ClaudeAgentRuntimeDefinition['memory'])
+    : undefined
+  const background =
+    metadata.background === true || metadata.background === 'true'
+      ? true
+      : undefined
+  const isolation =
+    metadata.isolation === 'worktree' ? ('worktree' as const) : undefined
+  const mcpServers =
+    Array.isArray(metadata.mcpServers) && metadata.mcpServers.length > 0
+      ? [...metadata.mcpServers]
+      : undefined
+  const hooks =
+    typeof metadata.hooks === 'object' &&
+    metadata.hooks !== null &&
+    !Array.isArray(metadata.hooks) &&
+    Object.keys(metadata.hooks).length > 0
+      ? { ...(metadata.hooks as Record<string, unknown>) }
+      : undefined
+  return {
+    ...definition,
+    kind: 'agent',
+    ...(tools === undefined ? {} : { tools }),
+    ...(disallowedTools === undefined ? {} : { disallowedTools }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
+    ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(maxTurns === undefined ? {} : { maxTurns }),
+    ...(skills?.length ? { skills } : {}),
+    ...(initialPrompt === undefined ? {} : { initialPrompt }),
+    ...(memory === undefined ? {} : { memory }),
+    ...(background === undefined ? {} : { background }),
+    ...(isolation === undefined ? {} : { isolation }),
+    ...(mcpServers === undefined ? {} : { mcpServers }),
+    ...(hooks === undefined ? {} : { hooks }),
   }
 }
 
@@ -299,12 +443,23 @@ function parseDefinition(
 }
 
 function indexed(
-  kind: ClaudeExtensionKind,
+  kind: Exclude<ClaudeExtensionKind, 'agent'>,
   resources: readonly ClaudeTextResource[],
 ): Map<string, ClaudeExtensionDefinition> {
   const definitions = new Map<string, ClaudeExtensionDefinition>()
   for (const resource of resources) {
     const definition = parseDefinition(kind, resource)
+    definitions.set(definition.name, definition)
+  }
+  return definitions
+}
+
+function indexedAgents(
+  resources: readonly ClaudeTextResource[],
+): Map<string, ClaudeAgentRuntimeDefinition> {
+  const definitions = new Map<string, ClaudeAgentRuntimeDefinition>()
+  for (const resource of resources) {
+    const definition = parseAgentDefinition(resource)
     definitions.set(definition.name, definition)
   }
   return definitions
@@ -330,7 +485,7 @@ function renderInvocation(
 export class ClaudeExtensionCatalog {
   private readonly commands: Map<string, ClaudeExtensionDefinition>
   private readonly skills: Map<string, ClaudeExtensionDefinition>
-  private readonly agents: Map<string, ClaudeExtensionDefinition>
+  private readonly agents: Map<string, ClaudeAgentRuntimeDefinition>
   private readonly disableSlashCommands: boolean
   private mcpPrompts = new Map<string, ClaudeMcpPromptDefinition>()
 
@@ -356,7 +511,7 @@ export class ClaudeExtensionCatalog {
       : indexed('skill', resources.skills)
     this.agents = new Map([
       ['statusline-setup', BUILTIN_STATUSLINE_AGENT],
-      ...indexed('agent', resources.agents),
+      ...indexedAgents(resources.agents),
     ])
   }
 
@@ -483,7 +638,7 @@ export class ClaudeExtensionCatalog {
     )
   }
 
-  agent(name: string): ClaudeExtensionDefinition | null {
+  agent(name: string): ClaudeAgentRuntimeDefinition | null {
     return this.agents.get(name) ?? null
   }
 

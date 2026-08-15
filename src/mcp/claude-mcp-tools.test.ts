@@ -1814,4 +1814,70 @@ process.stdin.on('data', async chunk => {
       await registry.close()
     }
   })
+
+  it('connects inline agent MCP servers without owning referenced parent servers', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-agent-mcp-runtime-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'agent-server.mjs')
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'agent-fixture', version: '1' } }
+      : request.method === 'tools/list'
+        ? { tools: [{ name: 'probe', description: 'probe', inputSchema: { type: 'object' } }] }
+        : { content: [{ type: 'text', text: 'INLINE_AGENT_MCP' }] }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+    const warnings: string[] = []
+    const parent = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [],
+      onWarning: (warning) => warnings.push(warning),
+    })
+    try {
+      const child = await parent.connectAgent({
+        specs: [
+          'missing-parent',
+          { inline: { command: process.execPath, args: [serverScript] } },
+        ],
+        base,
+        cwd: root,
+      })
+      if (!child) throw new Error('agent MCP connection missing')
+      try {
+        expect(child.tools.definitions().map(({ name }) => name)).toContain(
+          'mcp__inline__probe',
+        )
+        const call = await child.tools.prepare(
+          { id: 'call_agent_inline', name: 'mcp__inline__probe', input: {} },
+          { cwd: root },
+        )
+        await expect(
+          child.tools.execute(call, { cwd: root }),
+        ).resolves.toMatchObject({ content: 'INLINE_AGENT_MCP' })
+      } finally {
+        await child.close()
+      }
+      expect(warnings).toContain('Agent MCP server not found: missing-parent')
+    } finally {
+      await parent.close()
+    }
+  })
 })

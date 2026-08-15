@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,6 +25,7 @@ let messageNumber = 0
 let claudeId
 let praxisId
 let providerPort
+const providerRequests = []
 
 function responseText(body) {
   if (body.includes('CLAUDE_RESUMES_PRAXIS')) return 'CLAUDE_RESUME_DONE'
@@ -69,6 +77,7 @@ const provider = createServer(async (request, response) => {
   }
   let body = ''
   for await (const chunk of request) body += chunk
+  providerRequests.push(JSON.parse(body))
   await new Promise((resolveWait) => globalThis.setTimeout(resolveWait, 300))
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
@@ -94,13 +103,24 @@ function closeProvider() {
 }
 
 function claudeEnvironment(port) {
-  return {
+  const environment = {
     ...process.env,
     CLAUDE_CONFIG_DIR: configRoot,
     ANTHROPIC_API_KEY: 'fixture-key',
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   }
+  for (const name of [
+    'ANTHROPIC_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'CLAUDE_CODE_EFFORT_LEVEL',
+    'CLAUDE_CODE_SUBAGENT_MODEL',
+  ]) {
+    delete environment[name]
+  }
+  return environment
 }
 
 function praxisEnvironment(port) {
@@ -189,6 +209,22 @@ try {
     mkdir(cwd, { recursive: true }),
     listen(),
   ])
+  await mkdir(join(configRoot, 'agents'), { recursive: true })
+  await writeFile(
+    join(configRoot, 'agents', 'runtime-probe.md'),
+    [
+      '---',
+      'name: runtime-probe',
+      'description: Verify top-level agent controls.',
+      'model: claude-opus-4-1-20250805',
+      'effort: low',
+      'tools: [Read]',
+      'initialPrompt: AGENT_INITIAL_MARKER',
+      '---',
+      'AGENT_SYSTEM_MARKER',
+      '',
+    ].join('\n'),
+  )
   const address = provider.address()
   if (!address || typeof address === 'string') throw new Error('no address')
   providerPort = address.port
@@ -338,6 +374,185 @@ try {
   )
   assert.match(claudeResume.stdout, /CLAUDE_RESUME_DONE/u)
 
+  providerRequests.length = 0
+  const claudeAgentSessionId = '31313131-3131-4131-8131-313131313131'
+  await execFileAsync(
+    'claude',
+    [
+      '--print',
+      '--agent',
+      'runtime-probe',
+      '--session-id',
+      claudeAgentSessionId,
+      'CLAUDE_AGENT_USER_MARKER',
+    ],
+    { cwd, env: claudeEnvironment(providerPort), timeout: 30_000 },
+  )
+  const claudeAgentRequest = providerRequests.shift()
+  assert.ok(claudeAgentRequest)
+  assert.match(
+    JSON.stringify(claudeAgentRequest.system),
+    /AGENT_SYSTEM_MARKER/u,
+  )
+  assert.match(
+    JSON.stringify(claudeAgentRequest.messages),
+    /AGENT_INITIAL_MARKER\\n\\nCLAUDE_AGENT_USER_MARKER/u,
+  )
+  assert.deepEqual(
+    claudeAgentRequest.tools.map((tool) => tool.name),
+    ['Read'],
+  )
+  assert.match(claudeAgentRequest.model, /opus/u)
+  await execFileAsync(
+    'claude',
+    ['--print', '--resume', claudeAgentSessionId, 'CLAUDE_AGENT_RESUME_MARKER'],
+    { cwd, env: claudeEnvironment(providerPort), timeout: 30_000 },
+  )
+  const claudeAgentResumeRequest = providerRequests.shift()
+  assert.ok(claudeAgentResumeRequest)
+  assert.equal(
+    (
+      JSON.stringify(claudeAgentResumeRequest.messages).match(
+        /AGENT_INITIAL_MARKER/gu,
+      ) ?? []
+    ).length,
+    1,
+  )
+
+  const praxisAgentSessionId = '41414141-4141-4141-8141-414141414141'
+  await execFileAsync(
+    process.execPath,
+    [
+      praxisCli,
+      '--print',
+      '--agent',
+      'runtime-probe',
+      '--session-id',
+      praxisAgentSessionId,
+      'PRAXIS_AGENT_USER_MARKER',
+    ],
+    { cwd, env: praxisEnvironment(providerPort), timeout: 30_000 },
+  )
+  const praxisAgentRequest = providerRequests.shift()
+  assert.ok(praxisAgentRequest)
+  assert.match(
+    JSON.stringify(praxisAgentRequest.system),
+    /AGENT_SYSTEM_MARKER/u,
+  )
+  assert.match(
+    JSON.stringify(praxisAgentRequest.messages),
+    /AGENT_INITIAL_MARKER\\n\\nPRAXIS_AGENT_USER_MARKER/u,
+  )
+  assert.deepEqual(
+    praxisAgentRequest.tools.map((tool) => tool.name),
+    ['Read'],
+  )
+  assert.equal(praxisAgentRequest.model, 'claude-opus-4-1-20250805')
+  await execFileAsync(
+    process.execPath,
+    [
+      praxisCli,
+      '--print',
+      '--resume',
+      praxisAgentSessionId,
+      'PRAXIS_AGENT_RESUME_MARKER',
+    ],
+    { cwd, env: praxisEnvironment(providerPort), timeout: 30_000 },
+  )
+  const praxisAgentResumeRequest = providerRequests.shift()
+  assert.ok(praxisAgentResumeRequest)
+  assert.equal(
+    (
+      JSON.stringify(praxisAgentResumeRequest.messages).match(
+        /AGENT_INITIAL_MARKER/gu,
+      ) ?? []
+    ).length,
+    1,
+  )
+
+  for (const [executable, environment, userMarker] of [
+    ['claude', claudeEnvironment(providerPort), 'CLAUDE_EXPLICIT_USER'],
+    [process.execPath, praxisEnvironment(providerPort), 'PRAXIS_EXPLICIT_USER'],
+  ]) {
+    const args = [
+      ...(executable === process.execPath ? [praxisCli] : []),
+      '--print',
+      '--agent',
+      'runtime-probe',
+      '--model',
+      'claude-sonnet-4-5-20250929',
+      '--system-prompt',
+      'EXPLICIT_SYSTEM_MARKER',
+      userMarker,
+    ]
+    await execFileAsync(executable, args, {
+      cwd,
+      env: environment,
+      timeout: 30_000,
+    })
+    const explicitRequest = providerRequests.shift()
+    assert.ok(explicitRequest)
+    assert.equal(explicitRequest.model, 'claude-sonnet-4-5-20250929')
+    assert.match(
+      JSON.stringify(explicitRequest.system),
+      /EXPLICIT_SYSTEM_MARKER/u,
+    )
+    assert.doesNotMatch(
+      JSON.stringify(explicitRequest.system),
+      /AGENT_SYSTEM_MARKER/u,
+    )
+    assert.match(
+      JSON.stringify(explicitRequest.messages),
+      /AGENT_INITIAL_MARKER/u,
+    )
+  }
+
+  await writeFile(
+    join(configRoot, 'settings.json'),
+    JSON.stringify({ agent: 'runtime-probe' }),
+  )
+  const settingsSessions = [
+    {
+      executable: 'claude',
+      environment: claudeEnvironment(providerPort),
+      sessionId: '51515151-5151-4151-8151-515151515151',
+      marker: 'CLAUDE_SETTINGS_AGENT',
+    },
+    {
+      executable: process.execPath,
+      environment: praxisEnvironment(providerPort),
+      sessionId: '61616161-6161-4161-8161-616161616161',
+      marker: 'PRAXIS_SETTINGS_AGENT',
+    },
+  ]
+  for (const entry of settingsSessions) {
+    await execFileAsync(
+      entry.executable,
+      [
+        ...(entry.executable === process.execPath ? [praxisCli] : []),
+        '--print',
+        '--session-id',
+        entry.sessionId,
+        '--model',
+        'claude-sonnet-4-5-20250929',
+        entry.marker,
+      ],
+      { cwd, env: entry.environment, timeout: 30_000 },
+    )
+    const settingsRequest = providerRequests.shift()
+    assert.ok(settingsRequest)
+    assert.match(JSON.stringify(settingsRequest.system), /AGENT_SYSTEM_MARKER/u)
+    assert.match(
+      await findTranscript(entry.sessionId),
+      /"agentSetting":"runtime-probe"/u,
+    )
+  }
+  await rm(join(configRoot, 'settings.json'), { force: true })
+
+  for (const sessionId of [claudeAgentSessionId, praxisAgentSessionId]) {
+    assert.match(await findTranscript(sessionId), /"type":"agent-setting"/u)
+  }
+
   console.log(
     JSON.stringify({
       version,
@@ -357,6 +572,15 @@ try {
         backgroundTranscriptMetadata: true,
       },
       crossResume: { claudeToPraxis: true, praxisToClaude: true },
+      mainThreadAgent: {
+        systemPrompt: true,
+        initialPrompt: true,
+        resume: true,
+        modelPrecedence: true,
+        toolControls: true,
+        agentSetting: true,
+        sharedSetting: true,
+      },
     }),
   )
 } finally {

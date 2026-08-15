@@ -365,6 +365,7 @@ interface InteractiveSessionCommands {
   slashCommands?(): readonly TuiSlashCommand[]
   agentDefinitions?(): readonly TuiAgentEntry[]
   runtimeInfo?(): CliRuntimeInfo
+  initialAgentPrompt?(): string | undefined
   setPermissionMode?(
     sessionId: string,
     mode: ClaudePermissionMode,
@@ -7511,6 +7512,7 @@ export async function runInteractive(options: {
     : controller.signal
   let currentResume = options.resume
   let currentInitialPrompt = options.initialPrompt
+  let initialAgentPromptResolved = false
   let currentRuntimeSettings =
     options.runtimeSettings ?? (await loadRuntimeSettings())
   let currentRenderer = currentRuntimeSettings.tui
@@ -7570,6 +7572,16 @@ export async function runInteractive(options: {
     const resume = canonicalResumeSession
       ? { ...currentResume, sessionId: canonicalResumeSession.sessionId }
       : currentResume
+    if (!initialAgentPromptResolved) {
+      const agentInitialPrompt =
+        resume === undefined ? listing.initialAgentPrompt?.() : undefined
+      if (agentInitialPrompt) {
+        currentInitialPrompt = currentInitialPrompt
+          ? `${agentInitialPrompt}\n\n${currentInitialPrompt}`
+          : agentInitialPrompt
+      }
+      initialAgentPromptResolved = true
+    }
     let initialHistory: readonly TranscriptItem[] = []
     try {
       initialHistory =

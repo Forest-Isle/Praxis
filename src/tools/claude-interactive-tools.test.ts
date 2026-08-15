@@ -218,6 +218,7 @@ describe('ClaudeInteractiveToolManager', () => {
 
     await manager.setMode(sessionId, 'plan')
 
+    expect(manager.mode(sessionId)).toBe('plan')
     expect(manager.contextMessage(sessionId)).toContain('Plan mode')
     await expect(
       manager.permissions(sessionId).resolve({
@@ -228,6 +229,7 @@ describe('ClaudeInteractiveToolManager', () => {
     ).resolves.toEqual({ behavior: 'allow' })
 
     await manager.setMode(sessionId, 'acceptEdits')
+    expect(manager.mode(sessionId)).toBe('acceptEdits')
     expect(manager.contextMessage(sessionId)).toBeNull()
   })
 
