@@ -26,6 +26,7 @@ src/
 ├── hooks/         shared hook parsing, execution, and tool coordination
 ├── mcp/           shared Claude MCP config, clients, and tool adapter
 ├── persistence/   Claude-compatible JSONL and local sidecar indexes
+├── sandbox/       Claude settings conversion and OS sandbox runtime adapter
 └── platform/      filesystem, process, keychain, and OS adapters
 ```
 
@@ -38,6 +39,9 @@ src/
 - Provider adapters expose capabilities instead of flattening every model to a
   lowest-common-denominator API.
 - Tool permissions are local `allow`, `ask`, or `deny` decisions.
+- Sandbox auto-allow is available only after the execution adapter confirms the
+  same Bash call will run under an active OS sandbox; explicit deny and ask rules
+  remain authoritative.
 - Child-process adapters share one ambient-environment sanitizer and one exact
   credential redactor; shell startup files cannot repopulate stripped values.
 - No tenant, organization, role, entitlement, billing, remote-control, or

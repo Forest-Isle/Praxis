@@ -134,6 +134,11 @@ import { FilteredToolRegistry } from './tools/filtered-tool-registry.js'
 import { WebToolRegistry } from './tools/web.js'
 import { WorkspaceContext } from './application/session-worktree.js'
 import { launchTmuxWorktree } from './platform/tmux-worktree.js'
+import { claudeSandboxRuntime } from './sandbox/claude-sandbox-runtime.js'
+import {
+  claudeSandboxTempDirectory,
+  loadClaudeSandboxSettings,
+} from './sandbox/claude-sandbox-settings.js'
 import {
   createErrorResult,
   createSuccessResult,
@@ -1061,6 +1066,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     exposeToolRegistry?: boolean
     emitToolUseSummaries?: boolean
     cwd?: string
+    sandboxOriginalCwd?: string
     configRoot?: string
     environment?: Readonly<Record<string, string>>
     providerEnvironment?: NodeJS.ProcessEnv
@@ -1123,11 +1129,13 @@ const createDefaultService: CliDependencies['createService'] = async ({
   approvePlan,
   emitToolUseSummaries = false,
   cwd: requestedCwd,
+  sandboxOriginalCwd,
   configRoot: requestedConfigRoot,
   environment,
   providerEnvironment: requestedProviderEnvironment,
 }) => {
   const runtimeEnvironment = requestedProviderEnvironment ?? process.env
+  const sandboxEnvironment = { ...runtimeEnvironment, ...environment }
   const claudeVersion = await detectInstalledClaudeVersion()
   const cwd = requestedCwd ?? process.cwd()
   const workspace = new WorkspaceContext(cwd)
@@ -1427,9 +1435,27 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ...cli.additionalDirectories,
     ...(exposePlanDirectory ? [resolve(configRoot, 'plans')] : []),
   ]
+  const sandboxSettings = loadClaudeSandboxSettings({
+    resources: settings.filter((resource) => resource.plugin !== true),
+    cwd: workspace.cwd(),
+    originalCwd: sandboxOriginalCwd ?? workspace.cwd(),
+    configRoot,
+    homeDirectory:
+      sandboxEnvironment.HOME ?? sandboxEnvironment.USERPROFILE ?? homedir(),
+    additionalDirectories: initialAdditionalDirectories,
+    tempDirectory: claudeSandboxTempDirectory(sandboxEnvironment),
+  })
+  await claudeSandboxRuntime.initialize(sandboxSettings)
+  const sandboxUnavailableReason = claudeSandboxRuntime.unavailableReason()
+  if (sandboxUnavailableReason && !sandboxSettings.failIfUnavailable) {
+    runtimeEventSink({ type: 'warning', message: sandboxUnavailableReason })
+  }
   const permissionAdditionalDirectories = [
-    ...initialAdditionalDirectories,
-    ...(memoryDirectory ? [memoryDirectory] : []),
+    ...new Set([
+      ...initialAdditionalDirectories,
+      ...controls.addDirectories.map((directory) => resolve(cwd, directory)),
+      ...(memoryDirectory ? [memoryDirectory] : []),
+    ]),
   ]
   const initialAdditionalReadDirectories = [claudeBackgroundTaskParent(cwd)]
   const permissionResolverForMode = (permissionMode: ClaudePermissionMode) =>
@@ -1443,6 +1469,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         disallowedTools: cli.disallowedTools,
         additionalDirectories: permissionAdditionalDirectories,
         additionalReadDirectories: initialAdditionalReadDirectories,
+        sandbox: claudeSandboxRuntime,
         permissionMode,
         ...(isSessionActionApproved ? { isSessionActionApproved } : {}),
         ...(permissionMode === 'auto'
@@ -1464,6 +1491,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
     additionalDirectories: initialAdditionalDirectories,
     additionalReadDirectories: initialAdditionalReadDirectories,
+    sandbox: claudeSandboxRuntime,
     ...(environment ? { environment } : {}),
   })
   const runtimeMcpResources = async (
@@ -2057,6 +2085,8 @@ const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] 
           USERPROFILE: options.home,
         },
         providerEnvironment: process.env,
+        isSessionActionApproved: (call) =>
+          options.allowedTools.includes(call.name),
         controls: {
           ...DEFAULT_CLI_CONTROLS,
           sessionPersistence: false,
@@ -2182,6 +2212,7 @@ const defaultDependencies: CliDependencies = {
           createDefaultService({
             ...options,
             ...(cwd === undefined ? {} : { cwd }),
+            sandboxOriginalCwd: process.cwd(),
             ...(agent === undefined ? {} : { agent }),
             controls: {
               ...interactiveControls,

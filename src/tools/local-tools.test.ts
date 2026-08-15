@@ -14,7 +14,7 @@ import { join } from 'node:path'
 
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LocalToolRegistry } from './local-tools.js'
 
@@ -197,6 +197,77 @@ describe('LocalToolRegistry', () => {
       content: `${await realpath(isolated)}\n`,
       isError: false,
     })
+  })
+
+  it('executes Bash through the sandbox lifecycle and preserves overrides', async () => {
+    const { cwd } = await workspace()
+    const sandbox = {
+      shouldUseSandbox: vi.fn(() => true),
+      wrapCommand: vi.fn(async () => "printf 'wrapped-error' >&2"),
+      annotateStderr: vi.fn(
+        (commandId: string, stderr: string) =>
+          `${stderr}\nviolation:${commandId}`,
+      ),
+      cleanupAfterCommand: vi.fn(),
+    }
+    const registry = new LocalToolRegistry({ cwd, sandbox })
+    const context = { cwd }
+    const call = await registry.prepare(
+      {
+        id: 'sandboxed-bash',
+        name: 'Bash',
+        input: {
+          command: "printf 'raw-output'",
+          dangerouslyDisableSandbox: true,
+        },
+      },
+      context,
+    )
+
+    expect(call.input).toMatchObject({
+      command: "printf 'raw-output'",
+      dangerouslyDisableSandbox: true,
+    })
+    await expect(registry.execute(call, context)).resolves.toMatchObject({
+      content: 'wrapped-error\nviolation:sandboxed-bash',
+      processOutput: {
+        stderr: 'wrapped-error\nviolation:sandboxed-bash',
+      },
+    })
+    expect(sandbox.shouldUseSandbox).toHaveBeenCalledWith({
+      command: "printf 'raw-output'",
+      dangerouslyDisableSandbox: true,
+    })
+    expect(sandbox.wrapCommand).toHaveBeenCalledWith(
+      {
+        command: "printf 'raw-output'",
+        dangerouslyDisableSandbox: true,
+      },
+      expect.objectContaining({ commandId: 'sandboxed-bash' }),
+    )
+    expect(sandbox.cleanupAfterCommand).toHaveBeenCalledOnce()
+  })
+
+  it('cleans up sandbox state when command wrapping fails', async () => {
+    const { cwd } = await workspace()
+    const sandbox = {
+      shouldUseSandbox: vi.fn(() => true),
+      wrapCommand: vi.fn(async () => {
+        throw new Error('sandbox wrapper failed')
+      }),
+      annotateStderr: vi.fn(),
+      cleanupAfterCommand: vi.fn(),
+    }
+    const registry = new LocalToolRegistry({ cwd, sandbox })
+    const call = await registry.prepare(
+      { id: 'failed-wrap', name: 'Bash', input: { command: 'pwd' } },
+      { cwd },
+    )
+
+    await expect(registry.execute(call, { cwd })).rejects.toThrow(
+      'sandbox wrapper failed',
+    )
+    expect(sandbox.cleanupAfterCommand).toHaveBeenCalledOnce()
   })
 
   it('reads supported images as bounded native multimodal results', async () => {

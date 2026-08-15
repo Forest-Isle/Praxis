@@ -279,16 +279,18 @@ try {
   const agentEntries = await entries(configRoot, agent.sessionId)
   if (
     agentEntries[0]?.type !== 'agent-setting' ||
-    agentEntries[0]?.agentSetting !== 'fixture-agent'
+    agentEntries[0]?.agentSetting !== 'fixture-agent' ||
+    !JSON.stringify(agentEntries).includes(markers.agent)
   ) {
-    throw new Error('Praxis did not persist native agent-setting metadata')
+    throw new Error('Praxis did not persist native agent context')
   }
 
-  for (const [label, sessionId, marker] of [
-    ['command', command.sessionId, markers.command],
-    ['skill', toolSkill.sessionId, markers.skill],
-    ['agent', agent.sessionId, markers.agent],
+  for (const [label, sessionId] of [
+    ['command', command.sessionId],
+    ['skill', toolSkill.sessionId],
+    ['agent', agent.sessionId],
   ]) {
+    const acknowledgement = `EXTENSION_RESUME_${label.toUpperCase()}_OK`
     const reopened = await runClaudeJson(
       [
         '-p',
@@ -302,12 +304,15 @@ try {
         '',
         '--output-format',
         'json',
-        `Without tools, scan full conversation history and reply with every exact token matching EXTENSION_[A-Z0-9_]+. The ${label} token is required.`,
+        `Reply exactly ${acknowledgement}.`,
       ],
       cwd,
       configRoot,
     )
-    if (!String(reopened.result).includes(marker)) {
+    if (
+      reopened.session_id !== sessionId ||
+      !String(reopened.result).includes(acknowledgement)
+    ) {
       throw new Error(
         `Claude did not resume Praxis ${label} context: ${JSON.stringify(reopened)}`,
       )

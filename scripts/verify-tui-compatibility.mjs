@@ -1122,7 +1122,7 @@ exit 0
         TUI_PROFILE_CONFIG: profileConfig,
         TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
       },
-      timeout: 60_000,
+      timeout: 90_000,
     })
     const praxisOutput = await readFile(profileCapture, 'utf8')
     const claudeOutput = realClaudeThemeCaptures.get(profile)

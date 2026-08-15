@@ -216,6 +216,12 @@ import {
   ToolPermissionDialog,
 } from './tui/tool-permission.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
+import { SandboxDashboard, tuiSandboxTabs } from './tui/sandbox-dashboard.js'
+import {
+  createTuiSandboxStore,
+  type TuiSandboxStore,
+  type TuiSandboxTab,
+} from './tui/sandbox-settings.js'
 import {
   loadConfigSettings,
   saveConfigSetting,
@@ -478,6 +484,7 @@ interface InteractiveAppProps {
     }): Promise<void>
     remove?(rule: TuiPermissionRule): Promise<void>
   }
+  sandboxStore?: TuiSandboxStore
   recentlyDeniedStore?: RecentlyDeniedStore
   themeStore?: {
     load(): Promise<TuiThemeSettings>
@@ -599,6 +606,12 @@ type InteractiveMenu =
       selectedIndex: number
       query: string
       rules: readonly TuiPermissionRule[]
+    }
+  | {
+      kind: 'sandbox'
+      tab: TuiSandboxTab
+      selectedIndex: number
+      snapshot: Awaited<ReturnType<TuiSandboxStore['load']>>
     }
   | {
       kind: 'permission-rule-input'
@@ -926,6 +939,18 @@ function ordinal(value: number): string {
   }
 }
 
+const HIDDEN_TUI_SLASH_COMMANDS = new Set([
+  'background',
+  'new',
+  'output-style',
+  'reload-skills',
+  'sessions',
+  'skill',
+  'terminal-setup',
+  'update',
+  'usage',
+])
+
 export function InteractiveApp({
   factory,
   initialSessions,
@@ -963,6 +988,7 @@ export function InteractiveApp({
   sideQuestionClipboardWriter = writeTuiOsc52Clipboard,
   exportWriter = writeConversationExport,
   permissionRuleStore,
+  sandboxStore: suppliedSandboxStore,
   recentlyDeniedStore: suppliedRecentlyDeniedStore,
   terminalSetup: terminalSetupOverride,
   themeStore,
@@ -1209,6 +1235,22 @@ export function InteractiveApp({
       permissionMode: permissionMode(display.permissionMode),
       additionalDirectories: [...new Set(additionalDirectories)],
     }))
+  const sandboxStore = useMemo(
+    () =>
+      suppliedSandboxStore ??
+      createTuiSandboxStore({
+        configRoot: keybindingsRoot,
+        cwd: runtimeCwd,
+        homeDirectory: homedir(),
+        additionalDirectories: runtimePreferences.additionalDirectories,
+      }),
+    [
+      keybindingsRoot,
+      runtimeCwd,
+      runtimePreferences.additionalDirectories,
+      suppliedSandboxStore,
+    ],
+  )
   const runtimePreferencesRef = useRef(runtimePreferences)
   const [permission, setPermission] = useState<PendingPermission | null>(null)
   const permissionRef = useRef<PendingPermission | null>(null)
@@ -4328,6 +4370,75 @@ export function InteractiveApp({
       }
       return
     }
+    if (earlyMenu?.kind === 'sandbox') {
+      if (key.escape || value === '\u001B') {
+        updateMenu(null)
+        return
+      }
+      const tabs = tuiSandboxTabs(earlyMenu.snapshot)
+      if (key.leftArrow || key.rightArrow || key.tab) {
+        const index = tabs.indexOf(earlyMenu.tab)
+        const direction = key.leftArrow || (key.tab && key.shift) ? -1 : 1
+        const tab =
+          tabs[Math.max(0, Math.min(tabs.length - 1, index + direction))] ??
+          earlyMenu.tab
+        updateMenu({ ...earlyMenu, tab, selectedIndex: 0 })
+        return
+      }
+      const rowCount =
+        earlyMenu.tab === 'mode'
+          ? 3
+          : earlyMenu.tab === 'overrides' && earlyMenu.snapshot.settings.enabled
+            ? 2
+            : 0
+      if (rowCount > 0 && (key.upArrow || key.downArrow)) {
+        updateMenu({
+          ...earlyMenu,
+          selectedIndex: Math.max(
+            0,
+            Math.min(
+              rowCount - 1,
+              earlyMenu.selectedIndex + (key.upArrow ? -1 : 1),
+            ),
+          ),
+        })
+        return
+      }
+      if (rowCount > 0 && key.return) {
+        const saving = (async () => {
+          setBusy(true)
+          try {
+            const snapshot =
+              earlyMenu.tab === 'mode'
+                ? await sandboxStore.setMode(
+                    (['auto-allow', 'regular', 'disabled'] as const)[
+                      earlyMenu.selectedIndex
+                    ] ?? 'auto-allow',
+                  )
+                : await sandboxStore.setAllowUnsandboxedCommands(
+                    earlyMenu.selectedIndex === 0,
+                  )
+            await retireService()
+            const tabs = tuiSandboxTabs(snapshot)
+            updateMenu({
+              kind: 'sandbox',
+              tab: tabs.includes(earlyMenu.tab)
+                ? earlyMenu.tab
+                : (tabs[0] ?? 'dependencies'),
+              selectedIndex: earlyMenu.selectedIndex,
+              snapshot,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(saving)
+        void saving.finally(() => onTurnChange?.(null))
+      }
+      return
+    }
     if (earlyMenu?.kind === 'config') {
       if (key.escape || value === '\u001B') {
         if (earlyMenu.searchFocused && earlyMenu.query) {
@@ -6022,10 +6133,14 @@ export function InteractiveApp({
       const selectedCommandMatchesName =
         selectedCommand !== undefined &&
         selectedCommand.name.toLocaleLowerCase().startsWith(commandNameQuery)
+      const exactHiddenCommand = HIDDEN_TUI_SLASH_COMMANDS.has(commandNameQuery)
       if (
         selectedCommand &&
         (key.tab ||
-          (key.return && !exactSelectedCommand && selectedCommandMatchesName))
+          (key.return &&
+            !exactSelectedCommand &&
+            !exactHiddenCommand &&
+            selectedCommandMatchesName))
       ) {
         updateComposerInput(`/${selectedCommand.name} `)
         setCommandPaletteOpen(false)
@@ -6057,6 +6172,7 @@ export function InteractiveApp({
       composerImagesRef.current.clear()
       if (!prompt || prompt === '!') return
       const copyCommand = /^\/copy(?:\s+(\d+))?$/u.exec(prompt)
+      const sandboxCommand = /^\/sandbox(?:\s+([\s\S]+))?$/u.exec(prompt)
       const tuiCommand = /^\/tui(?:\s+(default|fullscreen))?$/u.exec(prompt)
       const renameCommand = /^\/rename(?:\s+(.+))?$/u.exec(prompt)
       const cdCommand = /^\/cd(?:\s+(.+))?$/u.exec(prompt)
@@ -6229,6 +6345,59 @@ export function InteractiveApp({
       } else if (prompt === '/export') {
         append({ kind: 'user', text: prompt })
         updateMenu({ kind: 'export', selectedIndex: 0 })
+      } else if (sandboxCommand) {
+        const operation = (async () => {
+          setBusy(true)
+          try {
+            const args = sandboxCommand[1]?.trim()
+            if (args) {
+              const exclude = /^exclude(?:\s+([\s\S]+))?$/u.exec(args)
+              if (!exclude) {
+                throw new Error(
+                  `Unknown subcommand "${args.split(/\s+/u)[0] ?? args}". Available subcommand: exclude`,
+                )
+              }
+              if (!exclude[1]?.trim()) {
+                throw new Error(
+                  'Please provide a command pattern to exclude (e.g. /sandbox exclude "npm run test:*")',
+                )
+              }
+              const result = await sandboxStore.exclude(exclude[1])
+              await retireService()
+              append({
+                kind: 'local-result',
+                text: `Added "${result.pattern}" to excluded commands in ${result.settingsPath}`,
+              })
+              return
+            }
+            const snapshot = await sandboxStore.load()
+            if (!snapshot.supported) {
+              throw new Error(
+                'Sandboxing is currently only supported on macOS, Linux, and WSL2.',
+              )
+            }
+            if (
+              snapshot.unavailableReason?.includes(
+                'not in sandbox.enabledPlatforms',
+              )
+            ) {
+              throw new Error(snapshot.unavailableReason)
+            }
+            const tabs = tuiSandboxTabs(snapshot)
+            updateMenu({
+              kind: 'sandbox',
+              tab: tabs[0] ?? 'dependencies',
+              selectedIndex: 0,
+              snapshot,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(operation)
+        void operation.finally(() => onTurnChange?.(null))
       } else if (prompt === '/permissions') {
         const loading = (async () => {
           setBusy(true)
@@ -6936,6 +7105,14 @@ export function InteractiveApp({
                   recentDenied={recentDenied}
                   retryingDeniedId={retryingDeniedId}
                   workspaceDirectories={workspaceDirectories}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'sandbox' ? (
+                <SandboxDashboard
+                  snapshot={menu.snapshot}
+                  tab={menu.tab}
+                  selectedIndex={menu.selectedIndex}
                   width={width}
                   screenReader={axScreenReader}
                 />

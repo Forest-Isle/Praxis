@@ -51,6 +51,8 @@ praxis stop <agent-id>
 /background
 # Moves a completed conversation to a new persistent job and frees the terminal.
 # Use the printed praxis attach/logs/stop commands with its eight-hex job ID.
+/sandbox
+/sandbox exclude "docker:*"
 
 # MCP and plugins
 praxis mcp list
@@ -101,6 +103,25 @@ controls include:
 - `--add-dir` for additional canonical filesystem roots;
 - `--allowed-tools`, `--disallowed-tools`, and `--permission-mode` for local
   permission behavior.
+
+Claude-compatible `sandbox` settings enable OS-level isolation for Bash:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": true,
+    "excludedCommands": ["docker:*"]
+  }
+}
+```
+
+Use `/sandbox` for the Mode, Dependencies, Overrides, and Config panels. Use
+`/sandbox exclude "pattern"` to append an exclusion to
+`.claude/settings.local.json`. Explicit `Bash(...)` deny and ask rules remain
+stronger than sandbox auto-allow. `dangerouslyDisableSandbox` only bypasses
+isolation when `allowUnsandboxedCommands` is true.
 
 See [COMPATIBILITY.md](COMPATIBILITY.md) for precedence and shared file layouts.
 

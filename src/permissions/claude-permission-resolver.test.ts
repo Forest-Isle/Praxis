@@ -10,6 +10,65 @@ import {
 } from './claude-permission-resolver.js'
 
 describe('ClaudePermissionResolver', () => {
+  it('auto-allows only commands that will actually run inside the sandbox', async () => {
+    const sandbox = {
+      autoAllowsBash: () => true,
+      shouldUseSandbox: (input: {
+        command: string
+        dangerouslyDisableSandbox?: boolean
+      }) => input.dangerouslyDisableSandbox !== true,
+      getFsWriteConfig: () => undefined,
+    }
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [
+        {
+          path: '/workspace/.claude/settings.json',
+          scope: 'project',
+          value: {
+            permissions: {
+              deny: ['Bash(rm:*)'],
+              ask: ['Bash(npm publish:*)'],
+            },
+          },
+        },
+      ],
+      sandbox,
+    })
+
+    await expect(
+      resolver.resolve({
+        id: 'sandbox-auto',
+        name: 'Bash',
+        input: { command: 'npm test' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'sandbox-deny',
+        name: 'Bash',
+        input: { command: 'echo ready && rm target' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(
+      resolver.resolve({
+        id: 'sandbox-ask',
+        name: 'Bash',
+        input: { command: 'npm publish --tag next' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      resolver.resolve({
+        id: 'sandbox-override',
+        name: 'Bash',
+        input: {
+          command: 'npm test',
+          dangerouslyDisableSandbox: true,
+        },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
   it('matches exact command, domain, and filesystem permission rules', () => {
     expect(
       claudePermissionRuleMatches(

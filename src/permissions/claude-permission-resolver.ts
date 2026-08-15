@@ -2,6 +2,8 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { realpath } from 'node:fs/promises'
 
+import type { FsWriteRestrictionConfig } from '@anthropic-ai/sandbox-runtime'
+
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
 import {
@@ -64,6 +66,16 @@ export interface ClaudePermissionResolverOptions {
   isSessionActionApproved?: (call: ModelToolCall) => boolean
   additionalDirectories?: readonly string[]
   additionalReadDirectories?: readonly string[]
+  sandbox?: ClaudePermissionSandbox
+}
+
+export interface ClaudePermissionSandbox {
+  autoAllowsBash(): boolean
+  shouldUseSandbox(input: {
+    command: string
+    dangerouslyDisableSandbox?: boolean
+  }): boolean
+  getFsWriteConfig(): FsWriteRestrictionConfig | undefined
 }
 
 export type ClaudePermissionMode =
@@ -411,6 +423,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
     ((call: ModelToolCall) => boolean) | undefined
   private readonly additionalDirectories: readonly string[]
   private readonly additionalReadDirectories: readonly string[]
+  private readonly sandbox: ClaudePermissionSandbox | undefined
 
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
@@ -445,6 +458,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
     this.additionalReadDirectories = (
       options.additionalReadDirectories ?? []
     ).map((directory) => resolve(directory))
+    this.sandbox = options.sandbox
     if (this.permissionMode === 'auto') {
       if (!this.autoClassifier) {
         throw new Error('Permission mode auto requires a classifier')
@@ -602,7 +616,21 @@ export class ClaudePermissionResolver implements PermissionResolver {
         undefined,
         true,
       )
+    if (
+      command &&
+      call.name === 'Bash' &&
+      this.sandbox?.autoAllowsBash() &&
+      this.sandbox.shouldUseSandbox({
+        command,
+        ...(call.input.dangerouslyDisableSandbox === true
+          ? { dangerouslyDisableSandbox: true }
+          : {}),
+      })
+    ) {
+      return annotatePermissionDecision({ behavior: 'allow' }, 'default')
+    }
     if (command && call.name === 'Bash') {
+      const sandboxWriteConfig = this.sandbox?.getFsWriteConfig()
       const writeRoots = [
         cwd,
         ...effectiveAdditionalDirectories(
@@ -620,6 +648,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
               readRoots: [...writeRoots, ...this.additionalReadDirectories],
               internalEditableRoots,
               internalReadableRoots,
+              ...(sandboxWriteConfig ? { sandboxWriteConfig } : {}),
               permissionMode,
               fileRule: (operation, absolutePath) => {
                 const candidate: ModelToolCall = {

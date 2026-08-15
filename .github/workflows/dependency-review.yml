@@ -30,6 +30,8 @@ jobs:
           fail-on-severity: high
           license-check: true
           deny-licenses: GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0
+          # node-forge is dual-licensed; Praxis consumes it under BSD-3-Clause.
+          allow-dependencies-licenses: pkg:npm/node-forge@1.4.0
       - name: Review dispatched dependency changes
         if: github.event_name == 'workflow_dispatch'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
@@ -39,3 +41,5 @@ jobs:
           fail-on-severity: high
           license-check: true
           deny-licenses: GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0
+          # Keep dispatched release checks identical to pull-request checks.
+          allow-dependencies-licenses: pkg:npm/node-forge@1.4.0

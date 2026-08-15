@@ -75,6 +75,31 @@ describe('Claude Bash path safety', () => {
     ).toMatchObject({ safe: false, behavior: 'ask', operation: 'write' })
   })
 
+  it('uses the active sandbox write allowlist without bypassing nested denies', () => {
+    const sandboxWriteConfig = {
+      allowOnly: ['/workspace/project', '/tmp/claude'],
+      denyWithinAllow: ['/tmp/claude/protected'],
+    }
+    expect(
+      validateBashPathSafety('touch /tmp/claude/result.txt', {
+        ...base,
+        sandboxWriteConfig,
+      }),
+    ).toEqual({ safe: true })
+    expect(
+      validateBashPathSafety('touch /tmp/claude/protected/result.txt', {
+        ...base,
+        sandboxWriteConfig,
+      }),
+    ).toMatchObject({ safe: false, behavior: 'ask' })
+    expect(
+      validateBashPathSafety('touch output.txt', {
+        ...base,
+        sandboxWriteConfig,
+      }),
+    ).toMatchObject({ safe: false, behavior: 'ask' })
+  })
+
   it('orders internal path grants between deny rules and safety/root checks', () => {
     const memoryRoot = '/config/projects/-workspace/memory'
     expect(

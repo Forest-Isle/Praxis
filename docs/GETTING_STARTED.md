@@ -129,6 +129,23 @@ praxis -p --no-session-persistence "Answer without writing a session"
 `--dangerously-skip-permissions` intentionally bypasses normal checks except
 explicit deny rules. Do not use it as a routine setup shortcut.
 
+To run Bash commands inside the Claude-compatible OS sandbox, open `/sandbox`
+and select an isolated mode, or add this to `.claude/settings.local.json`:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  }
+}
+```
+
+Auto-allow applies only when the command will actually run inside the sandbox;
+explicit ask and deny rules still win. The sandbox restricts filesystem writes
+and network access according to shared Claude settings. Use `/sandbox` to check
+dependencies and inspect the effective configuration.
+
 ## Update or remove Praxis
 
 ```sh

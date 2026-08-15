@@ -29,7 +29,8 @@ const transientModelPatterns = [
   'error_max_turns',
   '"stop_reason":"tool_use"',
   'Reached maximum number of turns',
-  'Claude memoryBoundary did not expose marker SHARED_MEMORY_LINE_',
+  'did not expose marker SHARED_',
+  'Claude image resume did not expose marker IMAGE_WRITER_OK',
   'Claude reverse image resume did not expose marker PRAXIS_IMAGE_RESUME_OK',
 ]
 

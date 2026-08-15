@@ -50,14 +50,25 @@ async function runReadProbe({ cwd, configRoot, path, expectedBehavior }) {
     .trimEnd()
     .split('\n')
     .map((line) => JSON.parse(line))
-  const toolCall = entries
+  const toolCalls = entries
     .flatMap(contentBlocks)
-    .find(
+    .filter(
       (block) =>
         block.type === 'tool_use' &&
         block.name === 'Read' &&
-        block.input?.file_path === path,
+        typeof block.input?.file_path === 'string',
     )
+  const expectedPath = await realpath(path)
+  let toolCall
+  for (const candidate of toolCalls) {
+    const candidatePath = await realpath(candidate.input.file_path).catch(
+      () => candidate.input.file_path,
+    )
+    if (candidatePath === expectedPath) {
+      toolCall = candidate
+      break
+    }
+  }
   if (!toolCall) {
     throw new Error(
       `Claude did not call Read for ${path}: ${JSON.stringify(response)}`,
