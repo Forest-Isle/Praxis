@@ -6015,13 +6015,17 @@ export function InteractiveApp({
         return
       }
       const selectedCommand = matchingSlashCommands[selectedSlashCommandIndex]
+      const commandNameQuery = inputRef.current.slice(1).toLocaleLowerCase()
       const exactSelectedCommand =
         selectedCommand !== undefined &&
-        inputRef.current.toLocaleLowerCase() ===
-          `/${selectedCommand.name}`.toLocaleLowerCase()
+        commandNameQuery === selectedCommand.name.toLocaleLowerCase()
+      const selectedCommandMatchesName =
+        selectedCommand !== undefined &&
+        selectedCommand.name.toLocaleLowerCase().startsWith(commandNameQuery)
       if (
         selectedCommand &&
-        (key.tab || (key.return && !exactSelectedCommand))
+        (key.tab ||
+          (key.return && !exactSelectedCommand && selectedCommandMatchesName))
       ) {
         updateComposerInput(`/${selectedCommand.name} `)
         setCommandPaletteOpen(false)

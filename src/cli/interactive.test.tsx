@@ -1626,6 +1626,7 @@ describe('InteractiveApp', () => {
     )
 
     app.stdin.write('/background')
+    await flush()
     app.stdin.write('\r')
     await flush()
 
@@ -5691,10 +5692,11 @@ describe('InteractiveApp', () => {
       await vi.runAllTimersAsync()
       app.stdin.write('start')
       app.stdin.write('\r')
-      await vi.runAllTimersAsync()
+      await vi.advanceTimersByTimeAsync(0)
       expect(app.lastFrame()).toContain('Confirm: Continue?')
       await vi.advanceTimersByTimeAsync(60_000)
       expect(answer).toBeNull()
+      await vi.advanceTimersByTimeAsync(0)
       expect(app.lastFrame()).toContain('done')
     } finally {
       vi.useRealTimers()
