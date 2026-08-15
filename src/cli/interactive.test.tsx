@@ -5888,12 +5888,14 @@ describe('InteractiveApp', () => {
       await vi.runAllTimersAsync()
       app.stdin.write('start')
       app.stdin.write('\r')
-      await vi.advanceTimersByTimeAsync(0)
-      expect(app.lastFrame()).toContain('Confirm: Continue?')
+      await vi.waitFor(() => {
+        expect(app.lastFrame()).toContain('Confirm: Continue?')
+      })
       await vi.advanceTimersByTimeAsync(60_000)
       expect(answer).toBeNull()
-      await vi.advanceTimersByTimeAsync(0)
-      expect(app.lastFrame()).toContain('done')
+      await vi.waitFor(() => {
+        expect(app.lastFrame()).toContain('done')
+      })
     } finally {
       vi.useRealTimers()
     }
