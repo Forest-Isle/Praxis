@@ -15,12 +15,14 @@ import {
 export type ClaudeHookEventName =
   | 'Setup'
   | 'SessionStart'
+  | 'SubagentStart'
   | 'UserPromptSubmit'
   | 'PreToolUse'
   | 'PermissionRequest'
   | 'PostToolUse'
   | 'PostToolUseFailure'
   | 'Stop'
+  | 'SubagentStop'
   | 'SessionEnd'
 
 export interface ClaudeHookInput extends Record<string, unknown> {
@@ -131,12 +133,14 @@ const KILL_GRACE_MS = 250
 const HOOK_EVENTS: readonly ClaudeHookEventName[] = [
   'Setup',
   'SessionStart',
+  'SubagentStart',
   'UserPromptSubmit',
   'PreToolUse',
   'PermissionRequest',
   'PostToolUse',
   'PostToolUseFailure',
   'Stop',
+  'SubagentStop',
   'SessionEnd',
 ]
 
@@ -289,6 +293,7 @@ export class ClaudeHookRunner {
   private readonly maxTimeoutMs: number
   private readonly executeCommand: ClaudeHookCommandExecutor
   private readonly onEvent: ((event: ClaudeHookStreamEvent) => void) | undefined
+  private readonly cwd: string
 
   constructor(options: ClaudeHookRunnerOptions) {
     this.settings = options.settings
@@ -296,6 +301,20 @@ export class ClaudeHookRunner {
     this.maxTimeoutMs = options.maxTimeoutMs ?? DEFAULT_TIMEOUT_MS
     this.executeCommand = options.executeCommand ?? this.runCommand.bind(this)
     this.onEvent = options.onEvent
+    this.cwd = options.cwd
+  }
+
+  withAdditionalSettings(
+    settings: readonly ClaudeJsonResource[],
+  ): ClaudeHookRunner {
+    return new ClaudeHookRunner({
+      settings: [...this.settings, ...settings],
+      maxOutputBytes: this.maxOutputBytes,
+      maxTimeoutMs: this.maxTimeoutMs,
+      executeCommand: this.executeCommand,
+      ...(this.onEvent ? { onEvent: this.onEvent } : {}),
+      cwd: this.cwd,
+    })
   }
 
   async run(

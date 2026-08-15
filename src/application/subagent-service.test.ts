@@ -24,7 +24,7 @@ import type {
 } from '../core/runtime.js'
 import { AgentRunCancelledError } from '../core/runtime.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
-import type { ClaudeHookRunner } from '../hooks/claude-hooks.js'
+import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
@@ -762,6 +762,134 @@ describe('foreground Claude Agent execution', () => {
     expect(JSON.stringify(childRequest?.messages)).not.toContain(
       '<command-name>missing</command-name>',
     )
+  })
+
+  it('scopes frontmatter hooks to the custom agent lifecycle', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-hooks-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const hookCalls: { command: string; event: string }[] = []
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              SubagentStart: [
+                { hooks: [{ type: 'command', command: 'global-start' }] },
+              ],
+              PreToolUse: [
+                {
+                  matcher: 'Read',
+                  hooks: [{ type: 'command', command: 'global-pre' }],
+                },
+              ],
+              SubagentStop: [
+                { hooks: [{ type: 'command', command: 'global-stop' }] },
+              ],
+              SessionStart: [
+                { hooks: [{ type: 'command', command: 'wrong-start' }] },
+              ],
+              UserPromptSubmit: [
+                { hooks: [{ type: 'command', command: 'wrong-prompt' }] },
+              ],
+              SessionEnd: [
+                { hooks: [{ type: 'command', command: 'wrong-end' }] },
+              ],
+            },
+          },
+        },
+      ],
+      async executeCommand(command, input) {
+        hookCalls.push({ command, event: input.hook_event_name })
+        return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+      },
+    })
+    let mainTurn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        const child = request.messages.some(
+          (message) =>
+            message.role === 'system' &&
+            message.content.includes('HOOK_AGENT_POLICY'),
+        )
+        const hasToolResult = request.messages.some(
+          (message) => message.role === 'tool',
+        )
+        if (child && !hasToolResult) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_read', name: 'Read', input: {} },
+          }
+        } else if (child) {
+          yield { type: 'text-delta', delta: 'HOOK_CHILD_DONE' }
+        } else if (mainTurn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_hook_agent',
+              name: 'Agent',
+              input: {
+                description: 'Run hooks',
+                prompt: 'Read once',
+                subagent_type: 'hook-agent',
+                run_in_background: false,
+              },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'HOOK_MAIN_DONE' }
+        }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        { name: 'Read', description: 'Read', inputSchema: { type: 'object' } },
+      ],
+      prepare: async (call) => call,
+      execute: async () => ({ content: 'READ', isError: false }),
+    }
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'hook-agent.md'),
+          scope: 'user',
+          content:
+            '---\nname: hook-agent\ndescription: Exercise hooks.\ntools: [Read]\nhooks:\n  PreToolUse:\n    - matcher: Read\n      hooks:\n        - type: command\n          command: agent-pre\n  Stop:\n    - hooks:\n        - type: command\n          command: agent-stop\n---\nHOOK_AGENT_POLICY',
+        },
+      ],
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      extensions,
+      hooks,
+      enableSubagents: true,
+      sessionPersistence: false,
+    })
+
+    await expect(service.run('Delegate with hooks.')).resolves.toMatchObject({
+      text: 'HOOK_MAIN_DONE',
+    })
+    expect(
+      hookCalls.filter(({ command }) => !command.startsWith('wrong-')),
+    ).toEqual([
+      { command: 'global-start', event: 'SubagentStart' },
+      { command: 'global-pre', event: 'PreToolUse' },
+      { command: 'agent-pre', event: 'PreToolUse' },
+      { command: 'global-stop', event: 'SubagentStop' },
+      { command: 'agent-stop', event: 'SubagentStop' },
+    ])
   })
 
   it('limits the built-in statusline setup agent to Read and Edit', async () => {

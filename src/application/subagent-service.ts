@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { Ajv2020 } from 'ajv/dist/2020.js'
 
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import { workflowAgentFiles } from '../compatibility/claude/workflow.js'
 import {
   createClaudeAsyncAgentToolUseResult,
@@ -385,6 +386,33 @@ function agentSkillMessages(
       },
     ]
   })
+}
+
+function agentHookSettings(
+  definition: ClaudeAgentRuntimeDefinition | null,
+): readonly ClaudeJsonResource[] {
+  if (!definition?.hooks) return []
+  const { Stop, SubagentStop, ...hooks } = definition.hooks
+  const stopHooks =
+    Stop === undefined
+      ? SubagentStop
+      : SubagentStop === undefined
+        ? Stop
+        : Array.isArray(Stop) && Array.isArray(SubagentStop)
+          ? [...SubagentStop, ...Stop]
+          : Stop
+  return [
+    {
+      path: definition.path,
+      scope: definition.scope,
+      value: {
+        hooks: {
+          ...hooks,
+          ...(stopHooks === undefined ? {} : { SubagentStop: stopHooks }),
+        },
+      },
+    },
+  ]
 }
 
 export interface ClaudeSubagentExecutorOptions {
@@ -1548,18 +1576,23 @@ export class ClaudeSubagentExecutor {
         )
       }
     }
+    const customAgent = this.agentDefinition(options.input)
     const hookSession = {
       session_id: String(options.root.sessionId),
       transcript_path: options.transcriptPath,
       cwd,
       permission_mode: options.input.permissionMode ?? 'default',
     }
+    const scopedHookSettings = agentHookSettings(customAgent)
+    const scopedHooks =
+      scopedHookSettings.length > 0
+        ? this.options.hooks?.withAdditionalSettings(scopedHookSettings)
+        : this.options.hooks
     const nestedTools = this.registry(
       String(options.root.sessionId),
       options.spawnDepth,
       () => options.promptId,
     )
-    const customAgent = this.agentDefinition(options.input)
     const agentScopedTools = new RestrictedToolRegistry(
       nestedTools,
       enabledAgentToolNames(
@@ -1582,16 +1615,16 @@ export class ClaudeSubagentExecutor {
           options.structuredOutput,
         )
       : scopedTools
-    const runtimeTools = this.options.hooks
+    const runtimeTools = scopedHooks
       ? new ClaudeHookToolCoordinator({
           tools: agentTools,
           permissions,
-          hooks: this.options.hooks,
+          hooks: scopedHooks,
           session: hookSession,
           recordOutcome: recordHookOutcome,
         })
       : agentTools
-    const runtimePermissions = this.options.hooks
+    const runtimePermissions = scopedHooks
       ? (runtimeTools as ClaudeHookToolCoordinator)
       : permissions
     const emit = (event: RuntimeEvent) => {
@@ -1749,31 +1782,16 @@ export class ClaudeSubagentExecutor {
         const start = await this.options.hooks.run(
           {
             ...hookSession,
-            hook_event_name: 'SessionStart',
-            source: 'startup',
+            hook_event_name: 'SubagentStart',
+            agent_id: options.agentId,
+            agent_type: options.input.subagentType,
           },
-          'startup',
+          options.input.subagentType,
           options.signal,
         )
         await recordHookOutcome(start)
         if (start.blockedReason) {
-          throw new Error(`SessionStart hook error: ${start.blockedReason}`)
-        }
-        const prompt = await this.options.hooks.run(
-          {
-            ...hookSession,
-            hook_event_name: 'UserPromptSubmit',
-            prompt_id: options.promptId,
-            prompt: options.input.prompt,
-          },
-          undefined,
-          options.signal,
-        )
-        await recordHookOutcome(prompt)
-        if (prompt.blockedReason) {
-          throw new Error(
-            `UserPromptSubmit hook error: ${prompt.blockedReason}`,
-          )
+          throw new Error(`SubagentStart hook error: ${start.blockedReason}`)
         }
       }
       const baseSystem =
@@ -1847,25 +1865,30 @@ export class ClaudeSubagentExecutor {
         ...(this.options.onPermissionUpdates
           ? { onPermissionUpdates: this.options.onPermissionUpdates }
           : {}),
-        ...(this.options.hooks || this.options.backgroundTaskNotifications
+        ...(scopedHooks || this.options.backgroundTaskNotifications
           ? {
               onStop: async (text: string) => {
                 const messages: string[] = []
-                const outcome = await this.options.hooks?.run(
+                const outcome = await scopedHooks?.run(
                   {
                     ...hookSession,
-                    hook_event_name: 'Stop',
+                    hook_event_name: 'SubagentStop',
                     stop_hook_active: stopHookActive,
+                    agent_id: options.agentId,
+                    agent_transcript_path: options.transcriptPath,
+                    agent_type: options.input.subagentType,
                     last_assistant_message: text,
                   },
-                  undefined,
+                  options.input.subagentType,
                   options.signal,
                 )
                 if (outcome) {
                   await recordHookOutcome(outcome)
                   if (outcome.blockedReason) {
                     stopHookActive = true
-                    messages.push(`Stop hook error: ${outcome.blockedReason}`)
+                    messages.push(
+                      `SubagentStop hook error: ${outcome.blockedReason}`,
+                    )
                   }
                 }
                 const background = await this.background.notifications({
@@ -1929,30 +1952,6 @@ export class ClaudeSubagentExecutor {
         },
       })
       throw error
-    } finally {
-      try {
-        const outcome = await this.options.hooks?.run(
-          {
-            ...hookSession,
-            hook_event_name: 'SessionEnd',
-            reason: 'other',
-          },
-          'other',
-        )
-        for (const execution of outcome?.executions.filter(
-          (value) => value.exitCode !== 0,
-        ) ?? []) {
-          this.options.eventSink?.({
-            type: 'warning',
-            message: `Subagent SessionEnd hook failed: ${execution.stderr.trim() || execution.stdout.trim() || `exit code ${execution.exitCode}`}`,
-          })
-        }
-      } catch (error) {
-        this.options.eventSink?.({
-          type: 'warning',
-          message: `Subagent SessionEnd hook failed: ${error instanceof Error ? error.message : String(error)}`,
-        })
-      }
     }
   }
 }
