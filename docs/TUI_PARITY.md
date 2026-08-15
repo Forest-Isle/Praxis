@@ -462,7 +462,10 @@ command-specific dialogs directly against the `~/dev/claude-code` 2.1.208 source
 snapshot and then cross-checks observable behavior through Ink/PTY gates.
 Stage 135 adds the source-registered `/release-notes` local command and
 `/statusline` prompt command, its Read/Edit-scoped setup agent, and the runtime
-status-line renderer over shared settings. Every remaining required command
+status-line renderer over shared settings. Stage 136 adds `/init` as a built-in
+prompt command with the public 2.1.208 repository-analysis flow, the
+`CLAUDE_CODE_NEW_INIT` skills/hooks flow, same-name user override behavior, and
+the `analyzing your codebase` progress state. Every remaining required command
 still needs an observed contract and focused TTY or Ink gate. Every deferred
 single-user CLI command remains a completion blocker; only the explicitly
 agreed enterprise, multi-user, subscription-auth, Desktop/IDE/mobile, Remote

@@ -57,7 +57,7 @@ describe('ClaudeExtensionToolRegistry', () => {
     })
   })
 
-  it('excludes model-disabled skills while retaining built-in commands', () => {
+  it('excludes built-in prompt commands while retaining bundled skills', () => {
     const registry = new ClaudeExtensionToolRegistry(
       baseRegistry(),
       catalog(true),
@@ -70,7 +70,7 @@ describe('ClaudeExtensionToolRegistry', () => {
     expect(
       definitions.find(({ name }) => name === 'Skill')?.inputSchema,
     ).toMatchObject({
-      properties: { skill: { enum: ['loop', 'statusline'] } },
+      properties: { skill: { enum: ['loop'] } },
     })
   })
 })

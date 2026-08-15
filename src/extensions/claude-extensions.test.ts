@@ -58,7 +58,6 @@ describe('ClaudeExtensionCatalog', () => {
     )
     expect(catalog.modelInvocableSkills().map(({ name }) => name)).toEqual([
       'loop',
-      'statusline',
     ])
   })
 
@@ -142,7 +141,6 @@ describe('ClaudeExtensionCatalog', () => {
     )
     expect(catalog.modelInvocableSkills().map((item) => item.name)).toEqual([
       'loop',
-      'statusline',
       'probe',
       'broken',
       'invalid-description',
@@ -172,6 +170,52 @@ describe('ClaudeExtensionCatalog', () => {
     )
     expect(expanded[1]).toContain('Input:\n5m check build')
     expect(catalog.skill('loop')?.kind).toBe('command')
+  })
+
+  it('expands init as a provider prompt with Claude command metadata', () => {
+    const catalog = new ClaudeExtensionCatalog({
+      agents: [],
+      commands: [],
+      skills: [],
+    })
+
+    expect(catalog.expandPrompt('/init').userMessages[0]).toBe(
+      '<command-message>init</command-message>\n<command-name>/init</command-name>',
+    )
+    expect(catalog.expandPrompt('/init').userMessages[1]).toContain(
+      'Analyze this repository',
+    )
+    expect(catalog.slashCommandDefinitions()).toContainEqual({
+      name: 'init',
+      description:
+        'Initialize a new CLAUDE.md file with codebase documentation',
+      kind: 'command',
+      progressMessage: 'analyzing your codebase',
+      builtin: true,
+    })
+  })
+
+  it('lets a shared init command replace the built-in prompt', () => {
+    const catalog = new ClaudeExtensionCatalog({
+      agents: [],
+      skills: [],
+      commands: [
+        {
+          path: '/config/commands/init.md',
+          scope: 'user',
+          content: 'CUSTOM_INIT',
+        },
+      ],
+    })
+
+    expect(catalog.expandPrompt('/init').userMessages.at(-1)).toBe(
+      'CUSTOM_INIT',
+    )
+    expect(
+      catalog
+        .slashCommandDefinitions()
+        .find((definition) => definition.name === 'init'),
+    ).not.toHaveProperty('progressMessage')
   })
 
   it('expands statusline through its dedicated built-in agent', () => {

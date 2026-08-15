@@ -8,6 +8,10 @@ import type {
   ClaudeSharedResources,
   ClaudeTextResource,
 } from '../compatibility/claude/shared-resources.js'
+import {
+  claudeInitDescription,
+  claudeInitPrompt,
+} from './claude-init-command.js'
 
 export type ClaudeExtensionKind = 'agent' | 'command' | 'skill'
 
@@ -18,12 +22,16 @@ export interface ClaudeExtensionDefinition extends ClaudeTextResource {
   body: string
   modelInvocable: boolean
   permissionSafe: boolean
+  progressMessage?: string
+  builtin?: boolean
 }
 
 export interface ClaudeSlashCommandDefinition {
   name: string
   description: string
   kind: 'command' | 'skill' | 'mcp'
+  progressMessage?: string
+  builtin?: boolean
 }
 
 export interface ClaudeAgentDefinition {
@@ -52,6 +60,7 @@ const BUILTIN_LOOP: ClaudeExtensionDefinition = {
     'Run a prompt or slash command on a recurring interval; defaults to 10 minutes.',
   modelInvocable: true,
   permissionSafe: true,
+  builtin: true,
   body: `# /loop — schedule a recurring prompt
 
 Parse the input into an optional interval followed by a prompt, then schedule it with CronCreate.
@@ -78,6 +87,22 @@ Input:
 $ARGUMENTS`,
 }
 
+function builtinInitCommand(): ClaudeExtensionDefinition {
+  return {
+    path: '/__praxis_builtin__/commands/init.md',
+    scope: 'user',
+    content: '',
+    kind: 'command',
+    name: 'init',
+    description: claudeInitDescription(),
+    modelInvocable: false,
+    permissionSafe: true,
+    progressMessage: 'analyzing your codebase',
+    builtin: true,
+    body: claudeInitPrompt(),
+  }
+}
+
 const BUILTIN_STATUSLINE_COMMAND: ClaudeExtensionDefinition = {
   path: '/__praxis_builtin__/commands/statusline.md',
   scope: 'user',
@@ -85,8 +110,9 @@ const BUILTIN_STATUSLINE_COMMAND: ClaudeExtensionDefinition = {
   kind: 'command',
   name: 'statusline',
   description: "Set up Claude Code's status line UI",
-  modelInvocable: true,
+  modelInvocable: false,
   permissionSafe: true,
+  builtin: true,
   body: `Create an Agent with subagent_type "statusline-setup" and the prompt "$ARGUMENTS"`,
 }
 
@@ -317,6 +343,7 @@ export class ClaudeExtensionCatalog {
       ? new Map()
       : new Map([
           ['loop', BUILTIN_LOOP],
+          ['init', builtinInitCommand()],
           ['statusline', BUILTIN_STATUSLINE_COMMAND],
         ])
     if (!options.disableSlashCommands) {
@@ -430,6 +457,10 @@ export class ClaudeExtensionCatalog {
           name: definition.name,
           description: definition.description,
           kind: definition.kind === 'skill' ? 'skill' : 'command',
+          ...(definition.progressMessage === undefined
+            ? {}
+            : { progressMessage: definition.progressMessage }),
+          ...(definition.builtin === true ? { builtin: true } : {}),
         }),
       ),
       ...[...this.mcpPrompts.values()].map((prompt) => ({

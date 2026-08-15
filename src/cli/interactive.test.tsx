@@ -6792,4 +6792,58 @@ describe('runInteractive', () => {
     ).rejects.toThrow('No conversation linked')
     expect(closed).toBe(1)
   })
+
+  it('shows a slash command progress message instead of a generic spinner tip', async () => {
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(_prompt, signal) {
+            await new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener(
+                'abort',
+                () => reject(new Error('provider aborted')),
+                { once: true },
+              )
+            })
+            throw new Error('unreachable')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        slashCommands={[
+          {
+            name: 'init',
+            description: 'Initialize project instructions',
+            source: 'command',
+            progressMessage: 'analyzing your codebase',
+          },
+        ]}
+        runtimeSettings={projectRuntimeSettings({
+          settings: { spinnerTipsEnabled: true },
+          state: {},
+        })}
+      />,
+    )
+
+    app.stdin.write('/init')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('analyzing your codebase')
+    app.stdin.write('\u001B')
+    await delay(75)
+    await flush()
+  })
 })

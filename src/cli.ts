@@ -1947,7 +1947,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
         extensions.slashCommandDefinitions().map((definition) => ({
           name: definition.name,
           description: definition.description,
-          source: definition.kind,
+          source: definition.builtin === true ? 'builtin' : definition.kind,
+          ...(definition.progressMessage === undefined
+            ? {}
+            : { progressMessage: definition.progressMessage }),
         })),
       hookConfiguration: async () => projectTuiHooks(settings),
       mcpInspect: () => service.mcpInspect(),
