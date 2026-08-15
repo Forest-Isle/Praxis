@@ -71,8 +71,6 @@ function linePrintIsSafe(invocation: SedInvocation): boolean {
     '--regexp-extended',
     '--zero-terminated',
     '--posix',
-    '-e',
-    '--expression',
   ])
   if (
     invocation.flags.some(
@@ -119,6 +117,34 @@ function substitutionFlags(expression: string): string | undefined {
     : expression.slice(lastDelimiter + 1)
 }
 
+function expressionHasDangerousSyntax(expression: string): boolean {
+  if (
+    expression.includes('\n') ||
+    expression.includes('{') ||
+    expression.includes('}') ||
+    [...expression].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint < 1 || codePoint > 127
+    })
+  ) {
+    return true
+  }
+  const hashIndex = expression.indexOf('#')
+  if (hashIndex >= 0 && !(hashIndex > 0 && expression[hashIndex - 1] === 's')) {
+    return true
+  }
+  return (
+    /^!/u.test(expression) ||
+    /[/\d$]!/u.test(expression) ||
+    /\d\s*~\s*\d|,\s*~\s*\d|\$\s*~\s*\d/u.test(expression) ||
+    /^,/u.test(expression) ||
+    /,\s*[+-]/u.test(expression) ||
+    /s\\|\\[|#%@]/u.test(expression) ||
+    /\\\/.*[wW]/u.test(expression) ||
+    /\/[^/]*\s+[wWeE]/u.test(expression)
+  )
+}
+
 function substitutionIsSafe(
   invocation: SedInvocation,
   allowFileWrites: boolean,
@@ -127,8 +153,6 @@ function substitutionIsSafe(
   const long = new Set([
     '--regexp-extended',
     '--posix',
-    '-e',
-    '--expression',
     ...(allowFileWrites ? ['--in-place'] : []),
   ])
   if (
@@ -140,17 +164,20 @@ function substitutionIsSafe(
   }
   if (!allowFileWrites && invocation.files.length > 0) return false
   if (invocation.expressions.length !== 1) return false
-  const expression = invocation.expressions[0] ?? ''
-  if (
-    expression.includes(';') ||
-    [...expression].some((character) => {
-      const codePoint = character.codePointAt(0) ?? 0
-      return codePoint < 1 || codePoint > 127
-    })
-  )
+  const expression = (invocation.expressions[0] ?? '').trim()
+  if (expression.includes(';') || expressionHasDangerousSyntax(expression))
     return false
   const flags = substitutionFlags(expression)
   return flags !== undefined && /^[gpimIM]*[1-9]?[gpimIM]*$/u.test(flags)
+}
+
+export function sedArgvIsReadOnly(argv: readonly string[]): boolean {
+  if (argv[0] !== 'sed') return false
+  const invocation = parseSedInvocation(argv.slice(1))
+  return (
+    !invocation.unsupported &&
+    (linePrintIsSafe(invocation) || substitutionIsSafe(invocation, false))
+  )
 }
 
 export function validateSedSafety(
@@ -164,11 +191,10 @@ export function validateSedSafety(
     if (!normalized.ok) return { safe: false, reason: normalized.reason }
     if (normalized.argv[0] !== 'sed') continue
     const invocation = parseSedInvocation(normalized.argv.slice(1))
-    if (
-      invocation.unsupported ||
-      (!linePrintIsSafe(invocation) &&
-        !substitutionIsSafe(invocation, allowFileWrites))
-    ) {
+    const allowed = allowFileWrites
+      ? substitutionIsSafe(invocation, true)
+      : linePrintIsSafe(invocation) || substitutionIsSafe(invocation, false)
+    if (invocation.unsupported || !allowed) {
       return {
         safe: false,
         reason:

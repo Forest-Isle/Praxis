@@ -235,6 +235,55 @@ describe('ClaudePermissionResolver', () => {
     })
   })
 
+  it('keeps explicit ask and sed constraints ahead of bypass mode', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      permissionMode: 'bypassPermissions',
+      settings: [
+        {
+          path: '/workspace/.claude/settings.json',
+          scope: 'project',
+          value: { permissions: { ask: ['Bash(npm publish)'] } },
+        },
+      ],
+    })
+    const asked = await resolver.resolve({
+      id: 'bypass-ask',
+      name: 'Bash',
+      input: { command: 'npm publish' },
+    })
+    expect(asked).toMatchObject({ behavior: 'ask' })
+    expect(permissionDecisionSource(asked)).toBe('rule')
+    await expect(
+      resolver.resolve({
+        id: 'bypass-sed',
+        name: 'Bash',
+        input: { command: "sed 'e id'" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it('lets an exact ask rule outrank an exact allow on semantic failure', async () => {
+    const command = '$COMMAND output.txt'
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        allowedTools: [`Bash(${command})`],
+        settings: [
+          {
+            path: '/workspace/.claude/settings.json',
+            scope: 'project',
+            value: { permissions: { ask: [`Bash(${command})`] } },
+          },
+        ],
+      }).resolve({
+        id: 'semantic-ask-over-allow',
+        name: 'Bash',
+        input: { command },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
   it('applies Bash path and redirection constraints before shell allow rules', async () => {
     const allowed = (permissionMode: 'default' | 'acceptEdits' = 'default') =>
       new ClaudePermissionResolver({
@@ -389,6 +438,63 @@ describe('ClaudePermissionResolver', () => {
       reason: expect.stringContaining('statically analyzed'),
       suggestions: [],
     })
+  })
+
+  it('uses AST command boundaries instead of treating quoted operators as compounds', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Bash(echo:*)'],
+    })
+    await expect(
+      resolver.resolve({
+        id: 'quoted-operators',
+        name: 'Bash',
+        input: { command: "echo 'a>b;$(not-executed)'" },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'actual-compound',
+        name: 'Bash',
+        input: { command: 'echo safe && rm output.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it('applies sed constraints before read-only auto approval but after shell allow rules', async () => {
+    const constrained = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      permissionMode: 'acceptEdits',
+    })
+    await expect(
+      constrained.resolve({
+        id: 'sed-line-print',
+        name: 'Bash',
+        input: { command: "sed -n '1p' input.txt" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      constrained.resolve({
+        id: 'sed-execute',
+        name: 'Bash',
+        input: { command: "sed '1e id' input.txt" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+
+    const explicitlyAllowed = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Bash(sed:*)'],
+    })
+    await expect(
+      explicitlyAllowed.resolve({
+        id: 'sed-prefix-allow',
+        name: 'Bash',
+        input: { command: "sed 'e id'" },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
   })
 
   it.each(['default', 'manual'] as const)(

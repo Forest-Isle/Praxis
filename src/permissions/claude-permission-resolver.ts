@@ -21,7 +21,7 @@ import {
   type ClaudeAutoClassifier,
   type ClaudeAutoModeConfig,
 } from './claude-auto-classifier.js'
-import { validateBashSemantics } from './bash-ast.js'
+import { analyzeBashCommands, validateBashSemantics } from './bash-ast.js'
 import { shellPermissionMatchCandidates } from './bash-normalization.js'
 import { validateBashPathSafety } from './bash-path-safety.js'
 import { validateSedSafety } from './sed-safety.js'
@@ -307,10 +307,10 @@ function matchesRule(
       if (
         call.name === 'Bash' &&
         rule.behavior === 'allow' &&
-        parsed.type !== 'exact' &&
-        /[\n\r;|&<>`]|\$\(/.test(candidate)
+        parsed.type !== 'exact'
       ) {
-        return false
+        const analysis = analyzeBashCommands(candidate)
+        if (!analysis.parsed || analysis.commands.length > 1) return false
       }
       if (shellRuleMatches(parsed, candidate, call.name === 'PowerShell')) {
         return true
@@ -539,8 +539,11 @@ export class ClaudePermissionResolver implements PermissionResolver {
       const explicitlyAllowed = effectiveRules('allow').some((rule) =>
         matchesExactBashRule(rule, call),
       )
+      const explicitlyAsked = effectiveRules('ask').some((rule) =>
+        matchesExactBashRule(rule, call),
+      )
       if (!semantics.safe) {
-        return explicitlyAllowed
+        return explicitlyAllowed && !explicitlyAsked
           ? annotatePermissionDecision({ behavior: 'allow' }, 'rule')
           : annotatePermissionDecision(
               {
@@ -551,6 +554,23 @@ export class ClaudePermissionResolver implements PermissionResolver {
               'default',
             )
       }
+    }
+    const asked =
+      matchingRule('ask') ??
+      subcommands
+        .map((subcommand) => matchingRule('ask', subcommandCall(subcommand)))
+        .find((rule) => rule !== undefined)
+    if (asked)
+      return this.askDecision(
+        call,
+        cwd,
+        permissionMode,
+        context,
+        'rule',
+        undefined,
+        true,
+      )
+    if (command && call.name === 'Bash') {
       const writeRoots = [
         cwd,
         ...effectiveAdditionalDirectories(
@@ -607,29 +627,33 @@ export class ClaudePermissionResolver implements PermissionResolver {
         )
       }
     }
-    if (permissionMode === 'bypassPermissions') {
-      return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
-    }
-    const asked =
-      matchingRule('ask') ??
-      subcommands
-        .map((subcommand) => matchingRule('ask', subcommandCall(subcommand)))
-        .find((rule) => rule !== undefined)
-    if (asked)
-      return this.askDecision(
-        call,
-        cwd,
-        permissionMode,
-        context,
-        'rule',
-        undefined,
-        true,
-      )
     if (
       matchingRule('allow') &&
       (permissionMode !== 'auto' || !this.shouldClassify(call))
     ) {
       return annotatePermissionDecision({ behavior: 'allow' }, 'rule')
+    }
+    if (command && call.name === 'Bash') {
+      for (const subcommand of subcommands) {
+        if (matchingRule('allow', subcommandCall(subcommand))) continue
+        const sedSafety = validateSedSafety(
+          subcommand,
+          permissionMode === 'acceptEdits',
+        )
+        if (!sedSafety.safe) {
+          return annotatePermissionDecision(
+            {
+              behavior: 'ask',
+              reason: sedSafety.reason,
+              suggestions: [],
+            },
+            'default',
+          )
+        }
+      }
+    }
+    if (permissionMode === 'bypassPermissions') {
+      return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
     }
     if (
       command &&
@@ -643,23 +667,6 @@ export class ClaudePermissionResolver implements PermissionResolver {
     ) {
       return annotatePermissionDecision({ behavior: 'allow' }, 'rule')
     }
-    if (command && call.name === 'Bash') {
-      const sedSafety = validateSedSafety(
-        command,
-        permissionMode === 'acceptEdits',
-      )
-      if (!sedSafety.safe) {
-        return annotatePermissionDecision(
-          {
-            behavior: 'ask',
-            reason: sedSafety.reason,
-            suggestions: [],
-          },
-          'default',
-        )
-      }
-    }
-
     const filePath = FILE_TOOLS.has(call.name) ? permissionTarget(call) : null
     if (filePath) {
       let absolutePath = resolve(cwd, filePath)

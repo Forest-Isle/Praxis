@@ -67,6 +67,12 @@ describe('Claude Bash path safety', () => {
         permissionMode: 'acceptEdits',
       }),
     ).toEqual({ safe: true })
+    expect(
+      validateBashPathSafety("sed -n -e '1p' /outside/input.txt", {
+        ...base,
+        readRoots: [...base.readRoots, '/outside'],
+      }),
+    ).toMatchObject({ safe: false, behavior: 'ask', operation: 'write' })
   })
 
   it('keeps sensitive files outside accept-edits auto approval', () => {
@@ -86,6 +92,12 @@ describe('Claude Bash path safety', () => {
         permissionMode: 'acceptEdits',
       }),
     ).toMatchObject({ safe: false, behavior: 'ask' })
+    expect(
+      validateBashPathSafety('touch .claude/worktrees/feature/output.txt', {
+        ...base,
+        permissionMode: 'acceptEdits',
+      }),
+    ).toEqual({ safe: true })
   })
 
   it('fails closed on path-affecting flags, expansion, and cd compounds', () => {

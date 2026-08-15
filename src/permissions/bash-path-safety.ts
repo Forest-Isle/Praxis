@@ -7,6 +7,7 @@ import {
   normalizeBashWrapperArgv,
   type BashStaticRedirect,
 } from './bash-ast.js'
+import { sedArgvIsReadOnly } from './sed-safety.js'
 
 type FileOperation = 'read' | 'write' | 'create'
 type RuleOutcome = 'allow' | 'deny' | null
@@ -339,7 +340,10 @@ function sensitivePath(path: string): boolean {
     .split(sep)
     .filter(Boolean)
     .map((segment) => segment.toLocaleLowerCase())
-  if (segments.some((segment) => SENSITIVE_DIRECTORIES.has(segment))) {
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index] ?? ''
+    if (!SENSITIVE_DIRECTORIES.has(segment)) continue
+    if (segment === '.claude' && segments[index + 1] === 'worktrees') continue
     return true
   }
   return SENSITIVE_FILES.has(segments.at(-1) ?? '')
@@ -515,10 +519,7 @@ export function validateBashPathSafety(
       }
     }
     const operation =
-      command === 'sed' &&
-      /^sed\s+(?:-[nErz]+\s+)*['"]?(?:\d+|\d+,\d+)?p/u.test(
-        wrapper.argv.join(' '),
-      )
+      command === 'sed' && sedArgvIsReadOnly(wrapper.argv)
         ? 'read'
         : OPERATIONS[command]
     if (hasCd && operation !== 'read') {

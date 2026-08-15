@@ -140,6 +140,12 @@ describe('Bash AST permission analysis', () => {
     ['VAR=safe cmd && rm $VAR', 'statically analyzed'],
     ['A=x || rm $A', 'statically analyzed'],
     ["ARGS='-rf /'; rm $ARGS", 'statically analyzed'],
+    ['IFS=:; VALUE=a:b; rm $VALUE', 'IFS assignment'],
+    ["PS4='$(id)'; set -x; true", 'PS4 value'],
+    ['TARGET=~/outside; cat $TARGET', 'Tilde in assignment'],
+    ['VALUE=$(date); rm $VALUE', 'statically analyzed'],
+    ['cat <<< $(id)', 'Here-string expansion'],
+    ["unset 'arr[$(id)]'", 'array subscript'],
   ])('fails closed for semantic hazard %s', (source, reason) => {
     expect(validateBashSemantics(source)).toMatchObject({
       safe: false,
@@ -160,7 +166,111 @@ describe('Bash AST permission analysis', () => {
     'TARGET=/etc/passwd && cat $TARGET',
     'V=printf; $V value',
     "read -p '[safe prompt]' name",
+    "PS4='+ '; set -x; true",
+    'echo "home=$HOME"',
+    "cat <<< 'literal input'",
   ])('accepts statically modeled command %s', (source) => {
     expect(validateBashSemantics(source)).toEqual({ safe: true })
+  })
+
+  it('applies static append assignments in sequential scope', () => {
+    expect(analyzeBashCommands('VALUE=foo; VALUE+=bar; echo $VALUE')).toEqual({
+      parsed: true,
+      commands: ['echo foobar'],
+    })
+  })
+
+  it('preserves incoming scope across conditional and pipeline barriers', () => {
+    expect(
+      analyzeBashCommands(
+        'X=outer; false || X=conditional; echo $X; echo x | X=pipeline; echo $X',
+      ),
+    ).toEqual({
+      parsed: true,
+      commands: ['false', 'echo outer', 'echo x', 'echo outer'],
+    })
+  })
+
+  it('isolates subshell and conditional-body assignments', () => {
+    expect(
+      analyzeBashCommands(
+        'X=outer; (X=inner; echo $X); if true; then X=branch; fi; echo $X',
+      ),
+    ).toEqual({
+      parsed: true,
+      commands: ['echo inner', 'true', 'echo outer'],
+    })
+  })
+
+  it('tracks runtime-unknown loop and read variables only inside strings', () => {
+    expect(
+      validateBashSemantics(
+        'while read V; do echo "item: $V"; done; echo "after: $V"',
+      ),
+    ).toEqual({ safe: true })
+    expect(
+      validateBashSemantics(
+        'for item in one two; do echo "item: $item"; done; echo "after: $item"',
+      ),
+    ).toEqual({ safe: true })
+    expect(validateBashSemantics('while read V; do rm $V; done')).toMatchObject(
+      { safe: false },
+    )
+    expect(
+      validateBashSemantics('for item in one two; do rm $item; done'),
+    ).toMatchObject({ safe: false })
+    expect(
+      validateBashSemantics(
+        'V=literal; while read V; do echo "item: $V"; done',
+      ),
+    ).toMatchObject({ safe: false, reason: expect.stringContaining('read V') })
+    expect(
+      validateBashSemantics('if true || read V; then echo "item: $V"; fi'),
+    ).toEqual({ safe: true })
+  })
+
+  it('allows shell-controlled special values only when embedded in strings', () => {
+    expect(validateBashSemantics('echo "status=$? pid=$$ arg=$1"')).toEqual({
+      safe: true,
+    })
+    expect(validateBashSemantics('cat "$1"')).toMatchObject({ safe: false })
+    expect(validateBashSemantics('echo "args=$@"')).toMatchObject({
+      safe: false,
+    })
+  })
+
+  it.each(['for IFS in x; do true; done', 'for PS4 in x; do set -x; done'])(
+    'rejects assignment-sensitive loop variable %s',
+    (source) => {
+      expect(validateBashSemantics(source)).toMatchObject({ safe: false })
+    },
+  )
+
+  it('keeps escaped operators literal and extracts nested substitutions', () => {
+    expect(
+      analyzeBashCommands('echo a\\;b && echo "sha: $(git rev-parse HEAD)"'),
+    ).toEqual({
+      parsed: true,
+      commands: [
+        'echo a\\;b',
+        'echo "sha: $(git rev-parse HEAD)"',
+        'git rev-parse HEAD',
+      ],
+    })
+  })
+
+  it.each([
+    ['echo escaped\\ whitespace', 'Backslash-escaped whitespace'],
+    ['echo continued\\\ncommand', 'Backslash-escaped whitespace'],
+    ['echo "visible\n# hidden"', 'hide arguments'],
+    ['FLAG="-rf /" rm $FLAG', 'statically analyzed'],
+    ['echo <(printf hidden)', 'statically analyzed'],
+    ['echo {one,two}', 'brace expansion'],
+    ['echo\u2028hidden', 'Unicode whitespace'],
+  ])('fails closed for legacy parser differential %s', (source, reason) => {
+    expect(validateBashSemantics(source)).toMatchObject({
+      safe: false,
+      reason: expect.stringContaining(reason),
+    })
   })
 })
