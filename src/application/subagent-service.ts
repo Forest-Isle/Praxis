@@ -48,6 +48,7 @@ import {
 } from '../core/runtime.js'
 import {
   BUILTIN_STATUSLINE_AGENT_PATH,
+  type ClaudeAgentRuntimeDefinition,
   type ClaudeExtensionCatalog,
 } from '../extensions/claude-extensions.js'
 import { ClaudeHookToolCoordinator } from '../hooks/claude-hook-tools.js'
@@ -231,6 +232,68 @@ class RestrictedToolRegistry implements ToolRegistry {
   }
 }
 
+const AGENT_UNAVAILABLE_TOOLS = new Set([
+  'Agent',
+  'Task',
+  'TaskOutput',
+  'TaskStop',
+  'ExitPlanMode',
+  'EnterPlanMode',
+  'AskUserQuestion',
+  'Workflow',
+])
+
+const BACKGROUND_AGENT_TOOLS = new Set([
+  'Read',
+  'WebSearch',
+  'TodoWrite',
+  'Grep',
+  'WebFetch',
+  'Glob',
+  'Bash',
+  'Edit',
+  'Write',
+  'NotebookEdit',
+  'Skill',
+  'StructuredOutput',
+  'ToolSearch',
+  'EnterWorktree',
+  'ExitWorktree',
+])
+
+function agentToolRuleName(rule: string): string {
+  const opening = rule.indexOf('(')
+  return (opening < 0 ? rule : rule.slice(0, opening)).trim()
+}
+
+function enabledAgentToolNames(
+  base: ToolRegistry,
+  definition: ClaudeAgentRuntimeDefinition | null,
+  background: boolean,
+): readonly string[] {
+  const requested = definition?.tools
+    ? new Set(definition.tools.map(agentToolRuleName))
+    : null
+  const disallowed = new Set(
+    definition?.disallowedTools?.map(agentToolRuleName) ?? [],
+  )
+  return base
+    .definitions()
+    .map(({ name }) => name)
+    .filter((name) => {
+      if (AGENT_UNAVAILABLE_TOOLS.has(name)) return false
+      if (
+        background &&
+        !name.startsWith('mcp__') &&
+        !BACKGROUND_AGENT_TOOLS.has(name)
+      ) {
+        return false
+      }
+      if (requested && !requested.has(name)) return false
+      return !disallowed.has(name)
+    })
+}
+
 export interface ClaudeSubagentExecutorOptions {
   configRoot: string
   cwd: string
@@ -383,6 +446,26 @@ export class ClaudeSubagentExecutor {
     return this.options.cwdProvider?.() ?? this.options.cwd
   }
 
+  private agentDefinition(
+    input: Pick<AgentInput, 'subagentType'>,
+  ): ClaudeAgentRuntimeDefinition | null {
+    return this.options.extensions?.agent(input.subagentType) ?? null
+  }
+
+  private resolveAgentInput(input: AgentInput): AgentInput {
+    const definition = this.agentDefinition(input)
+    const environmentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL?.trim()
+    const configuredModel =
+      definition?.model && definition.model !== 'inherit'
+        ? definition.model
+        : undefined
+    const model = environmentModel || input.model || configuredModel
+    return {
+      ...input,
+      ...(model ? { model } : {}),
+    }
+  }
+
   registry(
     sessionId: string,
     depth: number,
@@ -521,7 +604,7 @@ export class ClaudeSubagentExecutor {
 
   prepare(call: ModelToolCall, depth: number): ModelToolCall {
     if (!this.isEnabled('Agent')) throw new Error('Tool Agent is unavailable')
-    const input = parseAgentInput(call)
+    const input = this.resolveAgentInput(parseAgentInput(call))
     if (input.runInBackground && this.options.persistence === 'memory') {
       throw new Error('Background agents require session persistence')
     }
@@ -571,7 +654,7 @@ export class ClaudeSubagentExecutor {
     if (this.calls > maxCalls) {
       throw new Error(`Agent call count exceeded ${maxCalls}`)
     }
-    const input = parseAgentInput(call)
+    const input = this.resolveAgentInput(parseAgentInput(call))
     const spawnDepth = depth + 1
     const agentId = `a${randomBytes(8).toString('hex')}`
     const paths = resolveClaudePaths({
@@ -1367,12 +1450,20 @@ export class ClaudeSubagentExecutor {
       options.spawnDepth,
       () => options.promptId,
     )
+    const customAgent = this.agentDefinition(options.input)
+    const agentScopedTools = new RestrictedToolRegistry(
+      nestedTools,
+      enabledAgentToolNames(
+        nestedTools,
+        customAgent,
+        options.input.runInBackground,
+      ),
+    )
     const builtInStatusLineAgent =
-      this.options.extensions?.agent(options.input.subagentType)?.path ===
-      BUILTIN_STATUSLINE_AGENT_PATH
+      customAgent?.path === BUILTIN_STATUSLINE_AGENT_PATH
     const scopedTools = builtInStatusLineAgent
-      ? new RestrictedToolRegistry(nestedTools, ['Read', 'Edit'])
-      : nestedTools
+      ? new RestrictedToolRegistry(agentScopedTools, ['Read', 'Edit'])
+      : agentScopedTools
     const agentTools = options.outputSchema
       ? new StructuredOutputRegistry(
           builtInStatusLineAgent
@@ -1437,7 +1528,7 @@ export class ClaudeSubagentExecutor {
     const runtime = new AgentRuntime(options.provider, emit, {
       tools: runtimeTools,
       permissions: runtimePermissions,
-      maxModelTurns: 16,
+      maxModelTurns: customAgent?.maxTurns ?? 16,
       maxModelOutputBytes:
         this.options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
       maxToolCallsPerTurn: 32,
@@ -1576,9 +1667,6 @@ export class ClaudeSubagentExecutor {
           )
         }
       }
-      const customAgent = this.options.extensions?.agent(
-        options.input.subagentType,
-      )
       const baseSystem =
         options.input.subagentType === 'general-purpose'
           ? 'You are a general-purpose subagent. Complete the isolated task and return a concise result.'
@@ -1620,11 +1708,14 @@ export class ClaudeSubagentExecutor {
         }
         return messages
       }
+      const configuredEffort =
+        typeof customAgent?.effort === 'string' ? customAgent.effort : undefined
+      const effectiveEffort = options.effort ?? configuredEffort
       const result = await runtime.run({
         messages: await assembleMessages(),
         reloadMessages: assembleMessages,
         cwd,
-        ...(options.effort ? { effort: options.effort } : {}),
+        ...(effectiveEffort ? { effort: effectiveEffort } : {}),
         toolResultDirectory: options.toolResultDirectory,
         observer,
         ...(this.options.approveTool

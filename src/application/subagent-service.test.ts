@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import type {
@@ -34,6 +34,7 @@ import {
 
 const roots: string[] = []
 const execFileAsync = promisify(execFile)
+const originalSubagentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL
 
 const emptyTools: ToolRegistry = {
   definitions: () => [],
@@ -89,10 +90,19 @@ describe('StructuredOutputRegistry', () => {
   })
 })
 
+beforeEach(() => {
+  delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+})
+
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true })),
   )
+  if (originalSubagentModel === undefined) {
+    delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+  } else {
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = originalSubagentModel
+  }
 })
 
 async function gitRepository(prefix: string) {
@@ -124,7 +134,7 @@ function entries(source: string): Record<string, unknown>[] {
 }
 
 describe('foreground Claude Agent execution', () => {
-  it('keeps foreground and nested Agent transcripts in memory without disk sidechains', async () => {
+  it('keeps foreground Agent transcripts in memory without disk sidechains', async () => {
     const root = await mkdtemp(
       join(tmpdir(), 'praxis-subagent-ephemeral-test-'),
     )
@@ -137,36 +147,24 @@ describe('foreground Claude Agent execution', () => {
       capabilities: { streaming: true, usage: true, tools: true },
       async *complete(request) {
         requests.push(request)
-        const serialized = JSON.stringify(request.messages)
-        if (serialized.includes('NESTED_CHILD_RESULT')) {
+        const child = request.messages.some(
+          (message) =>
+            message.role === 'system' &&
+            message.content.includes('general-purpose subagent'),
+        )
+        if (child) {
           yield { type: 'text-delta', delta: 'FOREGROUND_CHILD_RESULT' }
           yield {
             type: 'usage',
             usage: { inputTokens: 4, outputTokens: 2 },
           }
-        } else if (serialized.includes('Run nested child')) {
-          yield { type: 'text-delta', delta: 'NESTED_CHILD_RESULT' }
+        } else if (
+          request.messages.some((message) => message.role === 'tool')
+        ) {
+          yield { type: 'text-delta', delta: 'MAIN_DONE' }
           yield {
             type: 'usage',
             usage: { inputTokens: 2, outputTokens: 1 },
-          }
-        } else if (serialized.includes('foreground child')) {
-          yield {
-            type: 'tool-call',
-            call: {
-              id: 'nested_agent',
-              name: 'Agent',
-              input: {
-                description: 'Nested child',
-                prompt: 'Run nested child',
-                subagent_type: 'general-purpose',
-                run_in_background: false,
-              },
-            },
-          }
-          yield {
-            type: 'usage',
-            usage: { inputTokens: 3, outputTokens: 1 },
           }
         } else {
           yield {
@@ -204,10 +202,10 @@ describe('foreground Claude Agent execution', () => {
 
     const result = await service.run('Delegate ephemerally.')
 
-    expect(result.text).toBe('FOREGROUND_CHILD_RESULT')
+    expect(result.text).toBe('MAIN_DONE')
     expect(result.usage.inputTokens).toBeGreaterThan(0)
     expect(result.usage.outputTokens).toBeGreaterThan(0)
-    expect(requests.length).toBeGreaterThanOrEqual(4)
+    expect(requests).toHaveLength(3)
     expect(runtimeEvents).toContainEqual(
       expect.objectContaining({
         type: 'task-started',
@@ -418,14 +416,14 @@ describe('foreground Claude Agent execution', () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-custom-agent-test-'))
     roots.push(root)
     const requests: ModelRequest[] = []
+    const selectedModels: string[] = []
     let mainTurn = 0
     const provider: ModelProvider = {
+      model: 'parent-model',
       capabilities: { streaming: true, usage: true, tools: true },
       async *complete(request) {
         requests.push(request)
-        if (JSON.stringify(request.messages).includes('CUSTOM_REVIEW_POLICY')) {
-          yield { type: 'text-delta', delta: 'CUSTOM_DONE' }
-        } else if (mainTurn++ === 0) {
+        if (mainTurn++ === 0) {
           yield {
             type: 'tool-call',
             call: {
@@ -444,6 +442,14 @@ describe('foreground Claude Agent execution', () => {
         }
       },
     }
+    const childProvider: ModelProvider = {
+      model: 'agent-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        yield { type: 'text-delta', delta: 'CUSTOM_DONE' }
+      },
+    }
     const extensions = new ClaudeExtensionCatalog({
       commands: [],
       skills: [],
@@ -452,16 +458,33 @@ describe('foreground Claude Agent execution', () => {
           path: join(root, 'config', 'agents', 'reviewer.md'),
           scope: 'user',
           content:
-            '---\nname: reviewer\ndescription: Review code\n---\nCUSTOM_REVIEW_POLICY',
+            "---\nname: reviewer\ndescription: Review code\ntools: [Read, Bash, Edit, TaskOutput]\ndisallowedTools: 'Bash(git:*)'\nmodel: agent-model\neffort: high\n---\nCUSTOM_REVIEW_POLICY",
         },
       ],
     })
+    const tools: ToolRegistry = {
+      definitions: () =>
+        ['Read', 'Bash', 'Edit', 'TaskOutput'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+      prepare: async (call) => call,
+      execute: async (call) => ({
+        content: call.name,
+        isError: false,
+      }),
+    }
     const service = new ClaudeSessionService({
       configRoot: join(root, 'config'),
       cwd: join(root, 'project'),
       claudeVersion: '2.1.208',
       provider,
-      tools: emptyTools,
+      providerForModel(model) {
+        selectedModels.push(model)
+        return childProvider
+      },
+      tools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
       extensions,
       enableSubagents: true,
@@ -473,6 +496,85 @@ describe('foreground Claude Agent execution', () => {
         JSON.stringify(request.messages).includes('CUSTOM_REVIEW_POLICY'),
       ),
     ).toBe(true)
+    const childRequest = requests.find((request) =>
+      JSON.stringify(request.messages).includes('CUSTOM_REVIEW_POLICY'),
+    )
+    expect(selectedModels).toEqual(['agent-model'])
+    expect(childRequest?.tools?.map(({ name }) => name)).toEqual([
+      'Read',
+      'Edit',
+    ])
+    expect(childRequest?.effort).toBe('high')
+  })
+
+  it('uses a custom agent maxTurns limit for the child loop', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-turn-limit-test-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    let requests = 0
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async () => ({ content: 'READ', isError: false }),
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          requests += 1
+          yield {
+            type: 'tool-call',
+            call: { id: `read_${requests}`, name: 'Read', input: {} },
+          }
+        },
+      },
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      extensions: new ClaudeExtensionCatalog({
+        commands: [],
+        skills: [],
+        agents: [
+          {
+            path: join(root, 'config', 'agents', 'bounded.md'),
+            scope: 'user',
+            content:
+              '---\nname: bounded\ndescription: Stop promptly.\ntools: [Read]\nmaxTurns: 2\n---\nBOUNDED_AGENT',
+          },
+        ],
+      }),
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const prepared = await registry.prepare(
+      {
+        id: 'call_bounded',
+        name: 'Agent',
+        input: {
+          description: 'Bounded child',
+          prompt: 'Keep reading',
+          subagent_type: 'bounded',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+
+    await expect(registry.execute(prepared, { cwd })).rejects.toThrow(
+      'exceeded 2 model turns',
+    )
+    expect(requests).toBe(2)
   })
 
   it('limits the built-in statusline setup agent to Read and Edit', async () => {
@@ -938,6 +1040,27 @@ describe('foreground Claude Agent execution', () => {
     await expect(executor.notifications(true)).resolves.toMatchObject({
       messages: [expect.stringContaining('OVERRIDE')],
     })
+
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'environment-model'
+    const environmentPrepared = await registry.prepare(
+      {
+        id: 'call_environment_model',
+        name: 'Agent',
+        input: {
+          description: 'Environment model',
+          prompt: 'Use environment model',
+          model: 'opus',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+    expect(environmentPrepared.input.model).toBe('environment-model')
+    await expect(
+      registry.execute(environmentPrepared, { cwd }),
+    ).resolves.toMatchObject({ content: expect.stringContaining('OVERRIDE') })
+    expect(selectedModels).toEqual(['haiku', 'environment-model'])
+    delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
 
     await expect(
       registry.prepare(
@@ -1420,7 +1543,7 @@ describe('foreground Claude Agent execution', () => {
     expect(resolved).toEqual(['Agent', 'Probe'])
   })
 
-  it('aggregates nested usage and tool counts while enforcing maximum depth', async () => {
+  it('rejects recursive Agent calls inside an external subagent', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-nested-agent-test-'))
     roots.push(root)
     const configRoot = join(root, 'config')
@@ -1430,27 +1553,23 @@ describe('foreground Claude Agent execution', () => {
       capabilities: { streaming: true, usage: true, tools: true },
       async *complete(request) {
         requests.push(request)
-        const scope =
-          [...request.messages]
-            .reverse()
-            .find(
-              (message) =>
-                message.role === 'user' &&
-                /^DEPTH_[1-4]$/u.test(message.content),
-            )?.content ?? 'MAIN'
+        const child = request.messages.some(
+          (message) =>
+            message.role === 'system' &&
+            message.content.includes('general-purpose subagent'),
+        )
         const hasToolResult = request.messages.some(
           (message) => message.role === 'tool',
         )
         if (!hasToolResult) {
-          const nextDepth = scope === 'MAIN' ? 1 : Number(scope.slice(-1)) + 1
           yield {
             type: 'tool-call',
             call: {
-              id: `call_depth_${nextDepth}`,
+              id: child ? 'nested_agent' : 'root_agent',
               name: 'Agent',
               input: {
-                description: `Spawn depth ${nextDepth}`,
-                prompt: `DEPTH_${nextDepth}`,
+                description: child ? 'Nested child' : 'Root child',
+                prompt: child ? 'DEPTH_2' : 'DEPTH_1',
                 subagent_type: 'general-purpose',
                 run_in_background: false,
               },
@@ -1459,7 +1578,7 @@ describe('foreground Claude Agent execution', () => {
         } else {
           yield {
             type: 'text-delta',
-            delta: scope === 'MAIN' ? 'NESTED_MAIN_DONE' : `${scope}_DONE`,
+            delta: child ? 'CHILD_DONE' : 'MAIN_DONE',
           }
         }
         yield {
@@ -1478,28 +1597,18 @@ describe('foreground Claude Agent execution', () => {
       enableSubagents: true,
     })
 
-    const result = await service.run('Exercise nested Agents.')
+    const result = await service.run('Exercise recursive Agent rejection.')
 
-    expect(result.text).toBe('NESTED_MAIN_DONE')
-    expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 10 })
-    expect(requests).toHaveLength(10)
+    expect(result.text).toBe('MAIN_DONE')
+    expect(requests).toHaveLength(4)
+    const childRequest = requests.find((request) =>
+      JSON.stringify(request.messages).includes('DEPTH_1'),
+    )
+    expect(childRequest?.tools?.map(({ name }) => name)).not.toContain('Agent')
     const paths = resolveClaudePaths({
       configDir: configRoot,
       cwd,
       sessionId: result.sessionId,
-    })
-    const mainEntries = entries(await readFile(paths.sessionFile, 'utf8'))
-    const mainAgentResult = mainEntries.find(
-      (entry) =>
-        entry.type === 'user' &&
-        typeof entry.toolUseResult === 'object' &&
-        entry.toolUseResult !== null &&
-        (entry.toolUseResult as Record<string, unknown>).agentId,
-    )?.toolUseResult as Record<string, unknown>
-    expect(mainAgentResult).toMatchObject({
-      totalTokens: 16,
-      totalToolUseCount: 4,
-      usage: { input_tokens: 8, output_tokens: 8 },
     })
     const sidechainDirectory = join(
       paths.projectRoot,
@@ -1509,19 +1618,7 @@ describe('foreground Claude Agent execution', () => {
     const sidechainFiles = await readdir(sidechainDirectory)
     expect(
       sidechainFiles.filter((name) => name.endsWith('.jsonl')),
-    ).toHaveLength(4)
-    const metadata = await Promise.all(
-      sidechainFiles
-        .filter((name) => name.endsWith('.meta.json'))
-        .map(async (name) =>
-          JSON.parse(await readFile(join(sidechainDirectory, name), 'utf8')),
-        ),
-    )
-    expect(
-      metadata
-        .map((value) => (value as Record<string, unknown>).spawnDepth)
-        .sort(),
-    ).toEqual([1, 2, 3, 4])
+    ).toHaveLength(1)
     const sidechainSource = (
       await Promise.all(
         sidechainFiles
@@ -1529,7 +1626,7 @@ describe('foreground Claude Agent execution', () => {
           .map((name) => readFile(join(sidechainDirectory, name), 'utf8')),
       )
     ).join('\n')
-    expect(sidechainSource).toContain('Agent spawn depth exceeded 4')
+    expect(sidechainSource).toContain('Tool Agent is unavailable to this agent')
   })
 
   it('propagates cancellation into the active subagent without a fake result', async () => {

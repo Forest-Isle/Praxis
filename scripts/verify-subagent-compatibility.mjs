@@ -91,7 +91,18 @@ try {
     permissions: { resolve: () => ({ behavior: 'allow' }) },
     enableSubagents: true,
   })
-  const result = await service.run('Delegate the compatibility marker.')
+  const originalSubagentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL
+  delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+  let result
+  try {
+    result = await service.run('Delegate the compatibility marker.')
+  } finally {
+    if (originalSubagentModel === undefined) {
+      delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+    } else {
+      process.env.CLAUDE_CODE_SUBAGENT_MODEL = originalSubagentModel
+    }
+  }
   if (result.text !== 'PRAXIS_S11_MAIN_MARKER') {
     throw new Error(`Praxis returned unexpected main result: ${result.text}`)
   }
