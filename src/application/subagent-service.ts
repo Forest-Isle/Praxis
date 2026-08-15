@@ -57,6 +57,7 @@ import type {
   ClaudeHookOutcome,
   ClaudeHookRunner,
 } from '../hooks/claude-hooks.js'
+import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { ClaudeSidechainStore } from '../persistence/claude-sidechain-store.js'
 import { InMemorySidechainStore } from '../persistence/in-memory-sidechain-store.js'
 import type {
@@ -271,6 +272,7 @@ function enabledAgentToolNames(
   base: ToolRegistry,
   definition: ClaudeAgentRuntimeDefinition | null,
   background: boolean,
+  additiveTools: ReadonlySet<string> = new Set(),
 ): readonly string[] {
   const requested = definition?.tools
     ? new Set(definition.tools.map(agentToolRuleName))
@@ -287,6 +289,7 @@ function enabledAgentToolNames(
     .definitions()
     .map(({ name }) => name)
     .filter((name) => {
+      if (additiveTools.has(name)) return true
       if (AGENT_UNAVAILABLE_TOOLS.has(name)) return false
       if (
         background &&
@@ -426,6 +429,7 @@ export interface ClaudeSubagentExecutorOptions {
   permissionResolverForMode?: (mode: AgentPermissionMode) => PermissionResolver
   parentPermissionMode?: () => AgentPermissionMode
   extensions?: ClaudeExtensionCatalog
+  mcp?: ClaudeMcpRuntime
   hooks?: ClaudeHookRunner
   contextAssembler?: ContextAssembler
   contextReserveTokens?: number
@@ -1593,12 +1597,31 @@ export class ClaudeSubagentExecutor {
       options.spawnDepth,
       () => options.promptId,
     )
+    const agentMcp = customAgent?.mcpServers?.length
+      ? await this.options.mcp?.connectAgent?.({
+          specs: customAgent.mcpServers,
+          base: nestedTools,
+          cwd,
+          ...(options.signal ? { signal: options.signal } : {}),
+        })
+      : null
+    const agentToolBase = agentMcp?.tools ?? nestedTools
+    const inheritedToolNames = new Set(
+      nestedTools.definitions().map(({ name }) => name),
+    )
+    const additiveAgentToolNames = new Set(
+      agentToolBase
+        .definitions()
+        .map(({ name }) => name)
+        .filter((name) => !inheritedToolNames.has(name)),
+    )
     const agentScopedTools = new RestrictedToolRegistry(
-      nestedTools,
+      agentToolBase,
       enabledAgentToolNames(
-        nestedTools,
+        agentToolBase,
         customAgent,
         options.input.runInBackground,
+        additiveAgentToolNames,
       ),
     )
     const builtInStatusLineAgent =
@@ -1952,6 +1975,13 @@ export class ClaudeSubagentExecutor {
         },
       })
       throw error
+    } finally {
+      await agentMcp?.close().catch((error: unknown) => {
+        this.options.eventSink?.({
+          type: 'warning',
+          message: `Agent MCP cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      })
     }
   }
 }

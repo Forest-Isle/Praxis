@@ -547,6 +547,7 @@ export class ClaudeSessionService {
             ...(this.options.extensions
               ? { extensions: this.options.extensions }
               : {}),
+            ...(this.options.mcp ? { mcp: this.options.mcp } : {}),
             ...(this.options.hooks ? { hooks: this.options.hooks } : {}),
             ...(this.options.contextAssembler
               ? { contextAssembler: this.options.contextAssembler }
@@ -2103,6 +2104,7 @@ export class ClaudeSessionService {
               ...(this.options.extensions
                 ? { extensions: this.options.extensions }
                 : {}),
+              ...(this.options.mcp ? { mcp: this.options.mcp } : {}),
               ...(this.options.hooks ? { hooks: this.options.hooks } : {}),
               ...(this.options.contextAssembler
                 ? { contextAssembler: this.options.contextAssembler }

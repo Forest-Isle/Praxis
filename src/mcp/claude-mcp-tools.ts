@@ -139,6 +139,12 @@ export interface ClaudeMcpRuntime {
   authenticate(name: string): Promise<void>
   reload(): Promise<void>
   tools(name: string): Promise<readonly ClaudeMcpToolInspection[]>
+  connectAgent?(options: {
+    specs: readonly unknown[]
+    base: ToolRegistry
+    cwd: string
+    signal?: AbortSignal
+  }): Promise<{ tools: ToolRegistry; close(): Promise<void> } | null>
   /** Release MCP transports and child processes owned by this runtime. */
   close?(): Promise<void>
 }
@@ -1114,6 +1120,57 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
           : {}),
       }))
       .sort((left, right) => left.name.localeCompare(right.name))
+  }
+
+  async connectAgent(options: {
+    specs: readonly unknown[]
+    base: ToolRegistry
+    cwd: string
+    signal?: AbortSignal
+  }): Promise<{ tools: ToolRegistry; close(): Promise<void> } | null> {
+    const resources: ClaudeJsonResource[] = []
+    for (const spec of options.specs) {
+      if (typeof spec === 'string') {
+        if (!this.statuses.has(spec)) {
+          this.options.onWarning?.(`Agent MCP server not found: ${spec}`)
+        }
+        continue
+      }
+      if (!isRecord(spec)) continue
+      const entries = Object.entries(spec)
+      if (entries.length !== 1) {
+        this.options.onWarning?.(
+          'Agent MCP server definitions must contain exactly one server',
+        )
+        continue
+      }
+      const [name, config] = entries[0] as [string, unknown]
+      if (this.statuses.has(name)) continue
+      resources.push({
+        path: `agent-mcp:${name}`,
+        scope: 'local',
+        value: { mcpServers: { [name]: config } },
+      })
+    }
+    if (resources.length === 0) return null
+    const tools = await ClaudeMcpToolRegistry.connect({
+      base: options.base,
+      resources,
+      cwd: options.cwd,
+      ...(this.options.configRoot
+        ? { configRoot: this.options.configRoot }
+        : {}),
+      ...(this.options.onWarning ? { onWarning: this.options.onWarning } : {}),
+      ...(this.options.eventSink ? { eventSink: this.options.eventSink } : {}),
+      ...(this.options.authenticateServer
+        ? { authenticateServer: this.options.authenticateServer }
+        : {}),
+      ...(this.options.onElicitation
+        ? { onElicitation: this.options.onElicitation }
+        : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    })
+    return { tools, close: () => tools.close() }
   }
 
   private runtimeStatuses(): readonly ClaudeMcpServerStatus[] {

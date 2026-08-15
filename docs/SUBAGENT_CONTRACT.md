@@ -48,7 +48,9 @@ use the same precedence as other Claude-compatible tool permissions.
    `.claude/agent-memory-local/<agent>/`; its index is added to the child
    system context, and explicit tool lists receive `Read`, `Edit`, and `Write`.
 7. Global `SubagentStart`/`SubagentStop` hooks and agent frontmatter tool/stop
-   hooks run only for that child lifecycle. Local, MCP, Skill, permission,
+   hooks run only for that child lifecycle. Referenced MCP servers reuse parent
+   connections; inline agent MCP servers add their tools for the child and
+   close on completion or failure. Local tools, Skill, permission,
    cancellation, and redaction behavior is reused from the main runtime.
 8. Completed assistant and tool-result records append immediately to sidechain.
    Validated local `Read` image results retain the same native image envelope as

@@ -26,6 +26,7 @@ import { AgentRunCancelledError } from '../core/runtime.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
+import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
 import {
@@ -890,6 +891,127 @@ describe('foreground Claude Agent execution', () => {
       { command: 'global-stop', event: 'SubagentStop' },
       { command: 'agent-stop', event: 'SubagentStop' },
     ])
+  })
+
+  it('adds and closes agent-specific MCP tools', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-mcp-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const connections: unknown[][] = []
+    let closed = 0
+    const mcp: ClaudeMcpRuntime = {
+      inspect: async () => [],
+      reconnect: async () => undefined,
+      authenticate: async () => undefined,
+      reload: async () => undefined,
+      tools: async () => [],
+      async connectAgent({ specs, base }) {
+        connections.push([...specs])
+        const tools: ToolRegistry = {
+          definitions: () => [
+            ...base.definitions(),
+            {
+              name: 'mcp__agent_fixture__probe',
+              description: 'Agent MCP probe',
+              inputSchema: { type: 'object' },
+            },
+          ],
+          prepare: async (call, context) =>
+            call.name === 'mcp__agent_fixture__probe'
+              ? call
+              : base.prepare(call, context),
+          execute: async (call, context) =>
+            call.name === 'mcp__agent_fixture__probe'
+              ? { content: 'AGENT_MCP_RESULT', isError: false }
+              : base.execute(call, context),
+        }
+        return {
+          tools,
+          async close() {
+            closed += 1
+          },
+        }
+      },
+    }
+    let mainTurn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        const child = request.messages.some(
+          (message) =>
+            message.role === 'system' &&
+            message.content.includes('MCP_AGENT_POLICY'),
+        )
+        const hasToolResult = request.messages.some(
+          (message) => message.role === 'tool',
+        )
+        if (child && !hasToolResult) {
+          expect(request.tools?.map(({ name }) => name)).toContain(
+            'mcp__agent_fixture__probe',
+          )
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_agent_mcp',
+              name: 'mcp__agent_fixture__probe',
+              input: {},
+            },
+          }
+        } else if (child) {
+          expect(JSON.stringify(request.messages)).toContain('AGENT_MCP_RESULT')
+          yield { type: 'text-delta', delta: 'MCP_CHILD_DONE' }
+        } else if (mainTurn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_mcp_agent',
+              name: 'Agent',
+              input: {
+                description: 'Use MCP',
+                prompt: 'Call the agent MCP tool',
+                subagent_type: 'mcp-agent',
+                run_in_background: false,
+              },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'MCP_MAIN_DONE' }
+        }
+      },
+    }
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'mcp-agent.md'),
+          scope: 'user',
+          content:
+            '---\nname: mcp-agent\ndescription: Use a private MCP server.\ntools: [Read]\ndisallowedTools: [mcp__agent_fixture__probe]\nmcpServers:\n  - agent-fixture\n  - agent-inline:\n      command: fixture\n---\nMCP_AGENT_POLICY',
+        },
+      ],
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      extensions,
+      mcp,
+      enableSubagents: true,
+      sessionPersistence: false,
+    })
+
+    await expect(service.run('Delegate with MCP.')).resolves.toMatchObject({
+      text: 'MCP_MAIN_DONE',
+    })
+    expect(connections).toEqual([
+      ['agent-fixture', { 'agent-inline': { command: 'fixture' } }],
+    ])
+    expect(closed).toBe(1)
   })
 
   it('limits the built-in statusline setup agent to Read and Edit', async () => {
