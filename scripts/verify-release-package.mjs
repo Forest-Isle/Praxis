@@ -1157,7 +1157,10 @@ async function startSubagentProviderProbe(provider) {
           : Array.isArray(body.tools) &&
             hasToolSchema(body.tools, 'Agent', 'prompt') &&
             hasToolSchema(body.tools, 'Agent', 'subagent_type', false)
-      if (!hasAgentSchema) {
+      if (requests.length === 2 && hasAgentSchema) {
+        throw new Error('Installed CLI exposed Agent tool to a subagent')
+      }
+      if (requests.length !== 2 && !hasAgentSchema) {
         const agentSchema =
           provider === 'anthropic'
             ? body.tools?.find((tool) => tool.name === 'Agent')

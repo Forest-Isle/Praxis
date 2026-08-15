@@ -35,6 +35,7 @@ describe('TUI slash command catalog', () => {
     })
     expect(commands.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
+        'agents',
         'context',
         'status',
         'theme',
@@ -45,6 +46,12 @@ describe('TUI slash command catalog', () => {
         'hooks',
       ]),
     )
+    expect(commands.find((command) => command.name === 'agents')).toEqual({
+      name: 'agents',
+      description:
+        '(removed) Ask Claude to create/manage subagents, or edit .claude/agents/',
+      source: 'builtin',
+    })
     for (const command of commands.filter(
       (candidate) => candidate.source === 'builtin',
     )) {
