@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import {
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -649,6 +650,118 @@ describe('foreground Claude Agent execution', () => {
     await expect(
       prepare(createExecutor(), 'general-purpose'),
     ).resolves.toMatchObject({ input: { run_in_background: false } })
+  })
+
+  it('loads custom agent memory and preloads declared skills', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-memory-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const memoryDirectory = join(cwd, '.claude', 'agent-memory', 'rememberer')
+    await mkdir(memoryDirectory, { recursive: true })
+    await writeFile(join(memoryDirectory, 'MEMORY.md'), 'AGENT_MEMORY_MARKER')
+    const requests: ModelRequest[] = []
+    let mainTurn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        const child = request.messages.some(
+          (message) =>
+            message.role === 'system' &&
+            message.content.includes('REMEMBERER_POLICY'),
+        )
+        if (child) {
+          yield { type: 'text-delta', delta: 'MEMORY_DONE' }
+        } else if (mainTurn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_rememberer',
+              name: 'Agent',
+              input: {
+                description: 'Use memory',
+                prompt: 'Recall the marker',
+                subagent_type: 'rememberer',
+                run_in_background: false,
+              },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'MAIN_DONE' }
+        }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () =>
+        ['Bash', 'Read', 'Edit', 'Write'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+      prepare: async (call) => call,
+      execute: async (call) => ({ content: call.name, isError: false }),
+    }
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [
+        {
+          path: join(configRoot, 'skills', 'review', 'SKILL.md'),
+          scope: 'user',
+          content:
+            '---\nname: review\ndescription: Review remembered facts.\n---\nSKILL_PRELOAD_MARKER',
+        },
+      ],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'rememberer.md'),
+          scope: 'user',
+          content:
+            '---\nname: rememberer\ndescription: Remember facts.\ntools: [Bash]\nskills: [review, missing]\nmemory: project\n---\nREMEMBERER_POLICY',
+        },
+      ],
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      extensions,
+      enableSubagents: true,
+      sessionPersistence: false,
+    })
+
+    await expect(service.run('Delegate with memory.')).resolves.toMatchObject({
+      text: 'MAIN_DONE',
+    })
+    const childRequest = requests.find((request) =>
+      request.messages.some(
+        (message) =>
+          message.role === 'system' &&
+          message.content.includes('REMEMBERER_POLICY'),
+      ),
+    )
+    expect(childRequest?.tools?.map(({ name }) => name)).toEqual([
+      'Bash',
+      'Read',
+      'Edit',
+      'Write',
+    ])
+    expect(JSON.stringify(childRequest?.messages)).toContain(
+      'AGENT_MEMORY_MARKER',
+    )
+    expect(JSON.stringify(childRequest?.messages)).toContain(memoryDirectory)
+    expect(JSON.stringify(childRequest?.messages)).toContain(
+      '<skill-format>true</skill-format>',
+    )
+    expect(JSON.stringify(childRequest?.messages)).toContain(
+      'SKILL_PRELOAD_MARKER',
+    )
+    expect(JSON.stringify(childRequest?.messages)).not.toContain(
+      '<command-name>missing</command-name>',
+    )
   })
 
   it('limits the built-in statusline setup agent to Read and Edit', async () => {

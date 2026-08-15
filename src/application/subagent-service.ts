@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
-import { readdir, stat } from 'node:fs/promises'
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { Ajv2020 } from 'ajv/dist/2020.js'
@@ -274,6 +274,11 @@ function enabledAgentToolNames(
   const requested = definition?.tools
     ? new Set(definition.tools.map(agentToolRuleName))
     : null
+  if (requested && definition?.memory) {
+    requested.add('Read')
+    requested.add('Edit')
+    requested.add('Write')
+  }
   const disallowed = new Set(
     definition?.disallowedTools?.map(agentToolRuleName) ?? [],
   )
@@ -292,6 +297,94 @@ function enabledAgentToolNames(
       if (requested && !requested.has(name)) return false
       return !disallowed.has(name)
     })
+}
+
+function agentMemoryDirectory(
+  configRoot: string,
+  cwd: string,
+  agentType: string,
+  scope: NonNullable<ClaudeAgentRuntimeDefinition['memory']>,
+): string {
+  const directoryName = agentType.replaceAll(':', '-')
+  if (scope === 'user') {
+    return join(configRoot, 'agent-memory', directoryName)
+  }
+  return join(
+    cwd,
+    '.claude',
+    scope === 'project' ? 'agent-memory' : 'agent-memory-local',
+    directoryName,
+  )
+}
+
+async function agentMemoryPrompt(
+  configRoot: string,
+  cwd: string,
+  definition: ClaudeAgentRuntimeDefinition | null,
+): Promise<string | null> {
+  if (!definition?.memory) return null
+  const directory = agentMemoryDirectory(
+    configRoot,
+    cwd,
+    definition.name,
+    definition.memory,
+  )
+  await mkdir(directory, { recursive: true }).catch(() => undefined)
+  let source = ''
+  try {
+    source = await readFile(join(directory, 'MEMORY.md'), 'utf8')
+  } catch {
+    source = ''
+  }
+  const lines = source.trim().split('\n')
+  const truncated = lines.slice(0, 200).join('\n').slice(0, 25_000)
+  const scopeGuidance =
+    definition.memory === 'user'
+      ? 'Keep entries general enough to apply across projects.'
+      : definition.memory === 'project'
+        ? 'Keep entries specific to this project and suitable for version control.'
+        : 'Keep entries specific to this project and machine; this scope is not version controlled.'
+  return [
+    '# Persistent Agent Memory',
+    '',
+    `Use the file-based memory directory at \`${directory}\`. The directory already exists.`,
+    'Keep MEMORY.md as a concise index and store detailed durable knowledge in linked Markdown files. Update existing entries instead of duplicating them, and do not save transient task state.',
+    scopeGuidance,
+    '',
+    '## MEMORY.md',
+    '',
+    truncated || 'The memory index is currently empty.',
+  ].join('\n')
+}
+
+function agentSkillMessages(
+  catalog: ClaudeExtensionCatalog | undefined,
+  definition: ClaudeAgentRuntimeDefinition | null,
+): readonly { role: 'user'; content: string }[] {
+  if (!catalog || !definition?.skills?.length) return []
+  const available = catalog.modelInvocableSkills()
+  const prefix = definition.name.split(':')[0]
+  return definition.skills.flatMap((requested) => {
+    const skill =
+      available.find(({ name }) => name === requested) ??
+      available.find(({ name }) => name === `${prefix}:${requested}`) ??
+      available.find(({ name }) => name.endsWith(`:${requested}`))
+    if (!skill) return []
+    const content = catalog.renderSkill(skill.name, '')
+    if (content === null) return []
+    return [
+      {
+        role: 'user' as const,
+        content: [
+          `<command-message>${skill.name}</command-message>`,
+          `<command-name>${skill.name}</command-name>`,
+          '<skill-format>true</skill-format>',
+          '',
+          content,
+        ].join('\n'),
+      },
+    ]
+  })
 }
 
 export interface ClaudeSubagentExecutorOptions {
@@ -1689,9 +1782,21 @@ export class ClaudeSubagentExecutor {
           : options.input.subagentType === 'workflow-subagent'
             ? 'You are a workflow subagent. Complete the isolated task. Your final text is the raw return value consumed by the workflow, not a user-facing message.'
             : `# Agent definition: ${options.input.subagentType}\n\n${customAgent?.body ?? ''}`
-      const system = options.outputSchema
-        ? `${baseSystem}\n\nYou MUST call StructuredOutput exactly once at the end with a value matching its schema.`
+      const memoryPrompt = await agentMemoryPrompt(
+        this.options.configRoot,
+        cwd,
+        customAgent,
+      )
+      const agentSystem = memoryPrompt
+        ? `${baseSystem}\n\n${memoryPrompt}`
         : baseSystem
+      const system = options.outputSchema
+        ? `${agentSystem}\n\nYou MUST call StructuredOutput exactly once at the end with a value matching its schema.`
+        : agentSystem
+      const preloadedSkills = agentSkillMessages(
+        this.options.extensions,
+        customAgent,
+      )
       let stopHookActive = false
       const contextBudget = options.provider.capabilities.contextWindowTokens
         ? new ContextBudget({
@@ -1716,6 +1821,7 @@ export class ClaudeSubagentExecutor {
             projectClaudeModelMessages(snapshot.entries),
             assembledContext?.firstUserMessageContext,
           ),
+          ...preloadedSkills,
         ]
         if (contextBudget) {
           contextBudget.assertFits(

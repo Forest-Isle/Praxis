@@ -18,7 +18,8 @@ Claude and Praxis can reopen the resulting main session without conversion.
   Praxis keeps one implicit local team;
 - `mode`: optional child permission mode (`acceptEdits`, `auto`,
   `bypassPermissions`, `default`, `dontAsk`, or `plan`);
-- `run_in_background`: optional; defaults to `true`;
+- `run_in_background`: optional; foreground by default; an agent definition
+  with `background: true` forces asynchronous execution;
 - `isolation`: optional `worktree`, which runs child tools in a temporary Git
   checkout; remote execution stays outside the local product boundary.
 
@@ -34,25 +35,35 @@ use the same precedence as other Claude-compatible tool permissions.
 2. Agent tool creates a unique 16-hex agent ID and exclusive native sidechain.
 3. Sidechain root contains requested prompt, main prompt ID, and worktree cwd
    when isolation is enabled.
-4. Subagent runs with shared base context plus its selected agent definition and
-   mode-specific permission resolver.
-5. Local, MCP, Skill, hook, permission, cancellation, and redaction behavior is
-   reused from the main runtime. Nested Agent calls use the same
-   path with incremented spawn depth.
-6. Completed assistant and tool-result records append immediately to sidechain.
+4. Subagent runs with shared base context plus its selected agent definition.
+   Environment, call-site, definition, and parent model selection use Claude's
+   precedence; definition permission mode cannot weaken a parent
+   `bypassPermissions`, `acceptEdits`, or `auto` mode.
+5. Definition tool allow/deny rules, async restrictions, effort, and `maxTurns`
+   apply inside the child. External custom agents cannot recursively invoke
+   Agent or main-thread coordination tools.
+6. Definition skills are preloaded as meta user messages. Persistent agent
+   memory uses `<config>/agent-memory/<agent>/`,
+   `.claude/agent-memory/<agent>/`, or
+   `.claude/agent-memory-local/<agent>/`; its index is added to the child
+   system context, and explicit tool lists receive `Read`, `Edit`, and `Write`.
+7. Local, MCP, Skill, hook, permission, cancellation, and redaction behavior is
+   reused from the main runtime.
+8. Completed assistant and tool-result records append immediately to sidechain.
    Validated local `Read` image results retain the same native image envelope as
    the main chain.
-7. Foreground results contain returned text and completed native metadata.
+9. Foreground results contain returned text and completed native metadata.
    Background results return `async_launched` metadata immediately while an
    independent abort controller owns execution.
-8. `TaskOutput` performs bounded blocking or non-blocking reads; `TaskStop`
-   cancels only its selected task. `SendMessage` queues ordered continuation
-   turns and can hydrate a completed sidechain in a later main-session turn.
-9. At main-loop stop, completed work becomes a persisted
-   `<task-notification>` follow-up and its usage is added to main run totals.
+10. `TaskOutput` performs bounded blocking or non-blocking reads; `TaskStop`
+    cancels only its selected task. `SendMessage` queues ordered continuation
+    turns and can hydrate a completed sidechain in a later main-session turn.
+11. At main-loop stop, completed work becomes a persisted
+    `<task-notification>` follow-up and its usage is added to main run totals.
 
 Bounds are explicit: maximum spawn depth 4, 16 subagent calls per main turn,
-16 model turns per subagent, 32 tool calls per model turn, 1 MiB model output,
+16 model turns per subagent unless its definition supplies `maxTurns`, 32 tool
+calls per model turn, 1 MiB model output,
 1 MiB tool input, and 1 MiB final returned text. Cancellation aborts active
 provider and child-tool work and produces an interrupted main run, not a fake
 successful Agent result.
