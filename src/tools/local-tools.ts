@@ -37,6 +37,7 @@ import {
 import {
   BoundedProcessRunner,
   joinedProcessOutput,
+  type ProcessResult,
 } from '../platform/bounded-process-runner.js'
 import { globFiles } from './glob.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
@@ -54,6 +55,20 @@ export interface LocalToolRegistryOptions {
   maxShellTimeoutMs?: number
   enableReportFindings?: boolean
   environment?: Readonly<Record<string, string>>
+  sandbox?: BashSandboxRuntime
+}
+
+export interface BashSandboxRuntime {
+  shouldUseSandbox(input: {
+    command: string
+    dangerouslyDisableSandbox?: boolean
+  }): boolean
+  wrapCommand(
+    input: { command: string; dangerouslyDisableSandbox?: boolean },
+    options?: { shell?: string; signal?: AbortSignal; commandId?: string },
+  ): Promise<string>
+  annotateStderr(commandId: string, stderr: string): string
+  cleanupAfterCommand(): void
 }
 
 const REPORT_FINDINGS_DEFINITION: ModelToolDefinition = {
@@ -552,6 +567,7 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly processRunner: BoundedProcessRunner
   private readonly enableReportFindings: boolean
   private readonly environment: Readonly<Record<string, string>> | undefined
+  private readonly sandbox: BashSandboxRuntime | undefined
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
@@ -570,6 +586,7 @@ export class LocalToolRegistry implements ToolRegistry {
     this.maxShellTimeoutMs = options.maxShellTimeoutMs ?? 120_000
     this.enableReportFindings = options.enableReportFindings ?? false
     this.environment = options.environment
+    this.sandbox = options.sandbox
     this.processRunner = new BoundedProcessRunner({
       cwd: this.cwd,
       maxOutputBytes: this.maxOutputBytes,
@@ -761,6 +778,13 @@ export class LocalToolRegistry implements ToolRegistry {
       }
       case 'Bash': {
         const requestedTimeout = optionalPositiveInteger(call.input, 'timeout')
+        const dangerouslyDisableSandbox = call.input.dangerouslyDisableSandbox
+        if (
+          dangerouslyDisableSandbox !== undefined &&
+          typeof dangerouslyDisableSandbox !== 'boolean'
+        ) {
+          throw new Error('dangerouslyDisableSandbox must be a boolean')
+        }
         return {
           ...call,
           input: {
@@ -769,6 +793,9 @@ export class LocalToolRegistry implements ToolRegistry {
               requestedTimeout ?? this.maxShellTimeoutMs,
               this.maxShellTimeoutMs,
             ),
+            ...(dangerouslyDisableSandbox === undefined
+              ? {}
+              : { dangerouslyDisableSandbox }),
           },
         }
       }
@@ -1354,14 +1381,41 @@ export class LocalToolRegistry implements ToolRegistry {
     const timeout = optionalPositiveInteger(call.input, 'timeout')
     if (timeout === undefined)
       throw new Error('Prepared Bash call has no timeout')
-    const result = await this.processRunner.run({
-      command: commandShell(),
-      args: commandShellArguments(stringInput(call.input, 'command')),
-      timeoutMs: timeout,
-      cwd: this.currentCwd(context),
-      ...(this.environment ? { env: this.environment } : {}),
-      ...(context.signal ? { signal: context.signal } : {}),
-    })
+    const rawCommand = stringInput(call.input, 'command')
+    const sandboxInput = {
+      command: rawCommand,
+      ...(call.input.dangerouslyDisableSandbox === true
+        ? { dangerouslyDisableSandbox: true }
+        : {}),
+    }
+    const sandboxed = this.sandbox?.shouldUseSandbox(sandboxInput) ?? false
+    const shell = commandShell()
+    let result: ProcessResult
+    try {
+      const command = sandboxed
+        ? await this.sandbox?.wrapCommand(sandboxInput, {
+            shell,
+            ...(context.signal ? { signal: context.signal } : {}),
+            commandId: call.id,
+          })
+        : rawCommand
+      result = await this.processRunner.run({
+        command: shell,
+        args: commandShellArguments(command ?? rawCommand),
+        timeoutMs: timeout,
+        cwd: this.currentCwd(context),
+        ...(this.environment ? { env: this.environment } : {}),
+        ...(context.signal ? { signal: context.signal } : {}),
+      })
+    } finally {
+      if (sandboxed) this.sandbox?.cleanupAfterCommand()
+    }
+    if (sandboxed && this.sandbox) {
+      result = {
+        ...result,
+        stderr: this.sandbox.annotateStderr(call.id, result.stderr),
+      }
+    }
     if (result.timedOut) {
       return {
         content: `Command timed out after ${timeout}ms`,

@@ -1,6 +1,8 @@
 import { lstatSync, readlinkSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 
+import type { FsWriteRestrictionConfig } from '@anthropic-ai/sandbox-runtime'
+
 import type { PermissionUpdate } from '../core/runtime.js'
 import {
   analyzeBashStructure,
@@ -19,6 +21,7 @@ export interface BashPathSafetyOptions {
   writeRoots: readonly string[]
   internalEditableRoots?: readonly string[]
   internalReadableRoots?: readonly string[]
+  sandboxWriteConfig?: FsWriteRestrictionConfig
   permissionMode:
     | 'acceptEdits'
     | 'auto'
@@ -601,6 +604,18 @@ function pathFailure(
   if (
     operation === 'read' &&
     pathIsInsideRoots(absolutePath, options.internalReadableRoots ?? [])
+  ) {
+    return { safe: true }
+  }
+  if (
+    operation !== 'read' &&
+    !inRoot &&
+    options.sandboxWriteConfig &&
+    !pathIsInsideRoots(
+      absolutePath,
+      options.sandboxWriteConfig.denyWithinAllow,
+    ) &&
+    pathIsInsideRoots(absolutePath, options.sandboxWriteConfig.allowOnly)
   ) {
     return { safe: true }
   }

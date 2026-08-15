@@ -117,7 +117,10 @@ const server = createServer(async (request, response) => {
     ])
     return
   }
-  assert(serialized.includes('ISOLATED_ENV'), 'case EVAL_ environment missing')
+  assert(
+    serialized.includes('ISOLATED_ENV'),
+    `case EVAL_ environment missing: ${JSON.stringify(toolResults.at(-1))}`,
+  )
   assert(
     !serialized.includes('SECRET_VALUE'),
     'ambient secret reached eval tool',

@@ -476,7 +476,11 @@ try {
     },
     'Praxis plan-mode round trip',
     [
-      { waitFor: 'Approve this plan', input: 'y' },
+      {
+        waitFor: '2. Yes, manually approve edits',
+        input: '\u001B[B',
+      },
+      { waitFor: '❯ 2. Yes, manually approve edits', input: '\r' },
       { waitFor: planMarker, input: '' },
       { waitFor: 'Try "review this project"', input: '/exit\r' },
     ],
@@ -518,5 +522,10 @@ try {
   )
 } finally {
   await new Promise((resolve) => provider.close(resolve))
-  await rm(root, { recursive: true, force: true })
+  await rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  })
 }

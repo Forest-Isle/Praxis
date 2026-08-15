@@ -111,6 +111,7 @@
     "provenance": true
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.73",
     "@anthropic-ai/tokenizer": "^0.0.4",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "acorn": "^8.18.0",

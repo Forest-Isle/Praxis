@@ -75,6 +75,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'sandbox',
+    description: 'Configure sandbox mode and command isolation',
+    source: 'builtin',
+  },
+  {
     name: 'resume',
     description: 'Resume a previous conversation',
     source: 'builtin',

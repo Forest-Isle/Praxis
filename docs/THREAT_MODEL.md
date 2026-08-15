@@ -21,6 +21,7 @@ Protected assets:
 | Prompt injection requests unsafe tools         | Model text never grants permission; normalized tool input is evaluated by local allow/ask/deny rules                                                      |
 | Path traversal or symlink escape               | Resolve and validate filesystem targets at execution time; session IDs must be UUIDs                                                                      |
 | Shell injection                                | Execute explicit argv when possible; display exact shell command before approval                                                                          |
+| Sandboxed Bash escape                          | Official sandbox runtime, settings-file/extension write denies, explicit rule precedence, bare-repository file cleanup, and fail-closed required mode     |
 | Secret disclosure                              | Strip credential-named ambient variables from child processes; disable shell startup files; redact exact configured values before diagnostics/transcripts |
 | Malicious hook, skill, or MCP server           | Treat as user-installed executable code; show origin, preserve Claude scopes, require the applicable permission policy                                    |
 | Transcript corruption or confused parent chain | Append-only writes, advisory lock, tail fingerprint, `parentUuid` check, no auto-repair                                                                   |
@@ -38,9 +39,11 @@ Protected assets:
 - Explicit MCP `env` and sensitive HTTP headers grant that credential to the
   configured server. Exact values and common auth/cookie payloads are redacted
   on return; transformed or encoded values are the server's responsibility.
-- Environment filtering is not a process sandbox. Approved shell commands,
-  hooks, and MCP servers still run as the local user and may access files or OS
-  credential services available to that user.
+- Environment filtering alone is not a process sandbox. Bash uses OS isolation
+  only when shared `sandbox.enabled` settings activate a supported runtime;
+  excluded or explicitly overridden Bash commands, hooks, and MCP servers still
+  run as the local user and may access files or OS credential services available
+  to that user.
 - Claude Code does not honor Praxis locks; optimistic checks reduce but cannot
   eliminate a simultaneous append race from an uncooperative process.
 - Claude Code also does not honor the Praxis scheduled-task lease. Physical
@@ -83,6 +86,10 @@ Protected assets:
   runner; redact before temporary output persistence, atomically replace and
   validate resumable sidecars, XML-escape notifications, and expose temporary
   output to `Read` only.
+- when sandboxing is enabled, run foreground Bash through the official runtime,
+  keep explicit deny/ask rules ahead of auto-allow, enforce filesystem/network
+  policy on macOS, honor closed override mode, annotate violations, and remove
+  planted bare-repository control files before later unsandboxed Git activity;
 - validate eight-hex top-level job IDs before path resolution; publish state and
   dispatch exclusively, authenticate local attach/stop requests, verify worker
   PID records before signaling, bound wire lines and recent output, repair dead

@@ -87,7 +87,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   `/rewind`, runtime `/cd`, transcript-free
   `/btw` side questions with background-Agent handoff, interactive
   `/background` terminal handoff, unified `/status`/`/config`/`/usage` settings
-  tabs, `/mcp`, `/memory` shared
+  tabs, `/sandbox` mode/dependency/override/config controls, `/mcp`, `/memory` shared
   instruction and auto-memory access, and live extension-reload controls,
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
@@ -121,6 +121,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   constraints, internal auto-memory/session/task path handling, compound `cd` +
   Git protection, mode-ordered `acceptEdits` handling, live raw/resolved-path
   grants for external directories,
+  Claude-compatible opt-in Bash sandboxing with filesystem and network
+  isolation, explicit ask/deny precedence, sandbox-only auto-allow,
+  write-allowlist/deny-within-allow enforcement, per-command overrides and
+  exclusions, violation reporting, and bare-repository control-file cleanup,
   safe-property Skill auto-allow, interactive
   workspace-directory add/remove controls, path confinement, credential
   redaction, and sanitized child processes.

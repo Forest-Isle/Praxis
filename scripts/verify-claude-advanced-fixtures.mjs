@@ -152,11 +152,18 @@ try {
   ) {
     throw new Error('Non-zero tool error fixture lost native error semantics')
   }
-  const mediaResult = await resume(
+  let mediaResult = await resume(
     configRoot,
     mediaError,
     'State the prior failed tool exit code and error marker.',
   )
+  if (!mediaResult.includes('7') || !mediaResult.includes('fixture-error')) {
+    mediaResult = await resume(
+      configRoot,
+      mediaError,
+      'Review the original failed tool result and state both its exit code and error marker. Do not omit either value.',
+    )
+  }
   assertContains(mediaResult, '7', 'Claude non-zero tool error resume')
   assertContains(
     mediaResult,

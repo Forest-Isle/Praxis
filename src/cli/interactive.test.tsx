@@ -23,6 +23,7 @@ import { projectTuiHooks } from './tui/hook-settings.js'
 import type { TuiCustomTheme } from './tui/custom-themes.js'
 import type { TuiThemeSettings } from './tui/theme.js'
 import { projectRuntimeSettings } from './tui/runtime-settings.js'
+import type { TuiSandboxSnapshot } from './tui/sandbox-settings.js'
 
 afterEach(() => {
   cleanup()
@@ -45,6 +46,142 @@ async function waitFor<T>(read: () => T | undefined): Promise<T> {
 }
 
 describe('InteractiveApp', () => {
+  it('configures sandbox mode, overrides, and config through /sandbox', async () => {
+    let snapshot: TuiSandboxSnapshot = {
+      settings: {
+        enabled: false,
+        failIfUnavailable: false,
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: true,
+        excludedCommands: ['docker:*'],
+        runtimeConfig: {
+          network: {
+            allowedDomains: ['api.example.com'],
+            deniedDomains: ['blocked.example.com'],
+          },
+          filesystem: {
+            allowWrite: ['.'],
+            denyWrite: ['.claude/settings.local.json'],
+            denyRead: ['/secrets'],
+            allowRead: [],
+          },
+        },
+      },
+      dependencies: { errors: [], warnings: [] },
+      supported: true,
+      platform: 'macos',
+    }
+    const modes: string[] = []
+    const overrides: boolean[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        sandboxStore={{
+          async load() {
+            return snapshot
+          },
+          async setMode(mode) {
+            modes.push(mode)
+            snapshot = {
+              ...snapshot,
+              settings: {
+                ...snapshot.settings,
+                enabled: mode !== 'disabled',
+                autoAllowBashIfSandboxed: mode === 'auto-allow',
+              },
+            }
+            return snapshot
+          },
+          async setAllowUnsandboxedCommands(allow) {
+            overrides.push(allow)
+            snapshot = {
+              ...snapshot,
+              settings: {
+                ...snapshot.settings,
+                allowUnsandboxedCommands: allow,
+              },
+            }
+            return snapshot
+          },
+          async exclude() {
+            throw new Error('unused')
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/sandbox')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Sandbox:')
+    expect(app.lastFrame()).toContain('Sandbox BashTool, with auto-allow')
+    expect(app.lastFrame()).toContain('No Sandbox (current)')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(modes).toEqual(['auto-allow'])
+    expect(app.lastFrame()).toContain('auto-allow (current)')
+
+    app.stdin.write('\u001B[C')
+    await flush()
+    expect(app.lastFrame()).toContain('Allow unsandboxed fallback')
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(overrides).toEqual([false])
+    expect(app.lastFrame()).toContain('Strict sandbox mode (current)')
+
+    app.stdin.write('\u001B[C')
+    await flush()
+    expect(app.lastFrame()).toContain('Excluded Commands:')
+    expect(app.lastFrame()).toContain('docker:*')
+    expect(app.lastFrame()).toContain('api.example.com')
+    expect(app.lastFrame()).toContain('blocked.example.com')
+  })
+
+  it('persists /sandbox exclude without opening the panel', async () => {
+    const exclude = vi.fn(async (pattern: string) => ({
+      pattern: pattern.replaceAll('"', ''),
+      settingsPath: '.claude/settings.local.json',
+      snapshot: {} as TuiSandboxSnapshot,
+    }))
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        sandboxStore={{
+          async load() {
+            throw new Error('unused')
+          },
+          async setMode() {
+            throw new Error('unused')
+          },
+          async setAllowUnsandboxedCommands() {
+            throw new Error('unused')
+          },
+          exclude,
+        }}
+      />,
+    )
+
+    app.stdin.write('/sandbox exclude "npm run test:*"')
+    app.stdin.write('\r')
+    await flush()
+    expect(exclude).toHaveBeenCalledWith('"npm run test:*"')
+    expect(app.lastFrame()).toContain(
+      'Added "npm run test:*" to excluded commands in .claude/settings.local.json',
+    )
+  })
+
   it('creates, selects, edits, resets, and deletes a custom theme from /theme', async () => {
     const customThemes: TuiCustomTheme[] = []
     let settings: TuiThemeSettings = {
@@ -1621,6 +1758,13 @@ describe('InteractiveApp', () => {
           },
         }}
         initialSessions={[]}
+        slashCommands={[
+          {
+            name: 'tasks',
+            description: 'View background work',
+            source: 'builtin',
+          },
+        ]}
         onBackground={onBackground}
       />,
     )
