@@ -3412,10 +3412,16 @@ export function InteractiveApp({
     setBusy(true)
     setTurnDuration(undefined)
     setCommandPaletteOpen(false)
-    setStatus('assembling-context')
+    const submittedCommandName = /^\/([^\s]+)/u.exec(prompt)?.[1]?.toLowerCase()
+    const commandProgressMessage = submittedCommandName
+      ? allSlashCommands.find(
+          (command) => command.name.toLowerCase() === submittedCommandName,
+        )?.progressMessage
+      : undefined
+    setStatus(commandProgressMessage ?? 'assembling-context')
     setActiveText('')
     setActiveThinking('')
-    if (runtimeSettingsRef.current.tips) {
+    if (runtimeSettingsRef.current.tips && !commandProgressMessage) {
       setStatus(spinnerTip(runtimeSettingsRef.current) ?? 'assembling-context')
     }
     if (shellCommand === undefined) append({ kind: 'user', text: prompt })

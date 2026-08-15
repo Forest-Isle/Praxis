@@ -46,6 +46,10 @@ praxis attach <agent-id>
 praxis stop <agent-id>
 
 # Inside the interactive TUI
+/init
+# Analyze the repository and create or improve its shared CLAUDE.md guidance.
+# Set CLAUDE_CODE_NEW_INIT=1 before launch to enable the source-gated
+# CLAUDE.md + CLAUDE.local.md + skills/hooks onboarding flow.
 /btw Explain this result without changing the conversation
 # Press f in the answer panel to continue it as a background Agent.
 /background

@@ -19,6 +19,7 @@ const markers = {
   skill: 'EXTENSION_SKILL_3258',
   invalidMetadata: 'EXTENSION_INVALID_METADATA_3271',
   agent: 'EXTENSION_AGENT_4369',
+  init: 'EXTENSION_INIT_5813',
 }
 
 function sse(response, payloads) {
@@ -101,6 +102,14 @@ const server = createServer(async (request, response) => {
   else if (serialized.includes(markers.invalidMetadata))
     expected = markers.invalidMetadata
   else if (serialized.includes(markers.agent)) expected = markers.agent
+  else if (
+    serialized.includes('CLAUDE.md') &&
+    (serialized.includes('run a single test') ||
+      serialized.includes('run one focused test')) &&
+    (serialized.includes('Please analyze this codebase') ||
+      serialized.includes('Analyze this repository'))
+  )
+    expected = markers.init
   if (!expected) {
     response.writeHead(500, { 'content-type': 'application/json' })
     response.end(
@@ -218,6 +227,22 @@ try {
     )
   ) {
     throw new Error('Praxis command transcript does not match Claude expansion')
+  }
+
+  const init = await runPraxis(['run', '--json', '/init'])
+  const initEntries = await entries(configRoot, init.sessionId)
+  const initUsers = initEntries.filter((entry) => entry.type === 'user')
+  const serializedInitUsers = JSON.stringify(initUsers)
+  if (
+    !String(init.text).includes(markers.init) ||
+    initUsers.length !== 2 ||
+    !serializedInitUsers.includes('<command-name>/init</command-name>') ||
+    !serializedInitUsers.includes('run one focused test') ||
+    !serializedInitUsers.includes('Cursor') ||
+    !serializedInitUsers.includes('README') ||
+    !serializedInitUsers.includes('# CLAUDE.md')
+  ) {
+    throw new Error('Praxis built-in init expansion is incomplete')
   }
 
   const slashSkill = await runPraxis([
@@ -343,6 +368,36 @@ try {
     throw new Error('Praxis did not resume Claude command expansion')
   }
 
+  const nativeInit = await runClaudeJson(
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--tools',
+      '',
+      '--output-format',
+      'json',
+      '/init',
+    ],
+    cwd,
+    configRoot,
+  )
+  const nativeInitEntries = await entries(configRoot, nativeInit.session_id)
+  const serializedNativeInit = JSON.stringify(
+    nativeInitEntries.filter((entry) => entry.type === 'user'),
+  )
+  if (
+    !serializedNativeInit.includes('<command-name>/init</command-name>') ||
+    !serializedNativeInit.includes('run a single test') ||
+    !serializedNativeInit.includes('Cursor') ||
+    !serializedNativeInit.includes('README') ||
+    !serializedNativeInit.includes('# CLAUDE.md')
+  ) {
+    throw new Error('Claude built-in init expansion contract changed')
+  }
+
   const nativeInvalidMetadata = await runClaudeJson(
     [
       '-p',
@@ -390,7 +445,7 @@ try {
   }
 
   console.log(
-    `Claude ${version} extension compatibility passed: commands, slash/model skills, agent-setting, Praxis→Claude resume, and Claude→Praxis resume`,
+    `Claude ${version} extension compatibility passed: commands, init, slash/model skills, agent-setting, Praxis→Claude resume, and Claude→Praxis resume`,
   )
 } finally {
   if (server.listening) await closeServer()

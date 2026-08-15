@@ -4275,6 +4275,63 @@ describe('ClaudeSessionService', () => {
     ])
   })
 
+  it('sends and persists the built-in init analysis prompt as two Claude user messages', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-init-command-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        yield { type: 'text-delta', delta: 'initialized' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      extensions: new ClaudeExtensionCatalog({
+        agents: [],
+        commands: [],
+        skills: [],
+      }),
+    })
+
+    const result = await service.run('/init')
+
+    expect(requests[0]?.messages).toHaveLength(2)
+    expect(requests[0]?.messages[0]).toEqual({
+      role: 'user',
+      content:
+        '<command-message>init</command-message>\n<command-name>/init</command-name>',
+    })
+    expect(requests[0]?.messages[1]).toMatchObject({ role: 'user' })
+    expect(String(requests[0]?.messages[1]?.content)).toContain(
+      'Analyze this repository',
+    )
+
+    const entries = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: result.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(entries.filter((entry) => entry.type === 'user')).toHaveLength(2)
+    expect(JSON.stringify(entries)).toContain(
+      'This file provides guidance to Claude Code',
+    )
+  })
+
   it('injects selected @ agent reminders without persisting them', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-agent-mention-'))
     roots.push(root)

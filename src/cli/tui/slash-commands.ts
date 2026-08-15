@@ -4,6 +4,7 @@ export interface TuiSlashCommand {
   name: string
   description: string
   source: TuiSlashCommandSource
+  progressMessage?: string
 }
 
 export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [

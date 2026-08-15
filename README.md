@@ -94,8 +94,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   `/background` terminal handoff, unified `/status`/`/config`/`/usage` settings
   tabs, `/sandbox` mode/dependency/override/config controls, local cached
   `/release-notes`, Claude-compatible `/statusline` command execution and setup
-  agent, `/mcp`, `/memory` shared instruction and auto-memory access, and live
-  extension-reload controls,
+  agent, source-aligned `/init` project-instruction onboarding with its enhanced
+  skills/hooks flow, `/mcp`, `/memory` shared instruction and auto-memory
+  access, and live extension-reload controls,
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external
@@ -184,8 +185,9 @@ for exact shared data, version boundaries, exclusions, and verification gates.
 
 Praxis targets one local OS user working across multiple repositories and
 sessions. It is CLI-only and provider-capability-aware. Organization, tenant,
-RBAC, billing, enterprise gateway, IDE, Chrome, Remote Control, Claude Desktop
-import, and hosted review-product surfaces are permanent non-goals.
+RBAC, subscription authentication and billing, enterprise gateway,
+IDE/Desktop/mobile clients, Remote Control, Claude Desktop import, and hosted
+review-product surfaces are permanent non-goals.
 
 ## Security and support
 
