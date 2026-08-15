@@ -1,5 +1,5 @@
 {
-  "tabs": ["Settings", "Status", "Config", "Usage", "Stats"],
+  "tabs": ["Status", "Config", "Usage"],
   "settings": [
     {
       "nativeKey": "autoCompact",

@@ -1155,3 +1155,48 @@ Status: complete.
 
 - [x] Recently denied presentation aligned to the exact Claude 2.1.208
       selection/lifetime behavior and grant-transcript flow
+
+## Stage 131 - launch-state layout parity
+
+Status: complete.
+
+- [x] WelcomePanel title embedded in top border row (╭───Praxis Code vX.Y.Z ───╮),
+      matching Claude 2.1.208 launch frame
+- [x] 11-row welcome card with blank lines framing the logo column
+- [x] No status line between card and composer (footer-right keeps effort)
+- [x] Probe startup expects updated to Tips-before-Welcome (two-column row order)
+- [x] 60s cold-start timeout headroom for slow CI runners
+
+## Stage 132 - command-specific dialogs and layout behavior
+
+Status: complete.
+
+- [x] SelectionMenu selection prefix + same-line description column match real
+      capture (`  ❯ N. label` + fixed desc column) across theme/export/hooks
+- [x] `/copy` follows the 2.1.208 source branch: plain/full-preference responses
+      copy directly; fenced code opens the Full response/code-block/Always picker;
+      Enter copies, `w` writes under the system temp `claude` directory, and the
+      always-full choice persists in shared state
+- [x] `/model` uses distinct capability-aware values, persists Enter selections
+      for current and future sessions, removes the invented `s` shortcut, and
+      retains left/right effort adjustment
+- [x] `/context` restores the `Context Usage` title, model/token summary, 5×5
+      grid, estimated category legend, free space, autocompact reserve, memory,
+      and skills sections
+- [x] `/status`, `/config`, and `/usage` open one source-shaped three-tab pane;
+      invented Settings/Stats tabs and the duplicate StatusDashboard are removed
+- [x] subscription `/login` is removed from the command catalog, runtime, tests,
+      and PTY probe under the permanent auth exclusion
+- [x] shortcut help restores `! for bash mode`, `& for background`, and
+      `shift + tab to auto-accept edits`
+- [x] `/export` no longer prepends the launch welcome card to conversation output
+- [x] full format/lint/unit/build, TUI compatibility, and performance gates
+
+## Stage 133 - leftover dialog surfaces and final divergence audit
+
+Status: pending.
+
+- [ ] enumerate remaining 2.1.208 dialogs not yet aligned (permission prompts,
+      plan approval, MCP elicitation — credential-free subset)
+- [ ] align exact dialog layout/behavior for each included dialog
+- [ ] focused TTY/Ink gates per dialog

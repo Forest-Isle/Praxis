@@ -203,6 +203,14 @@ describe('Claude 2.1.208 config settings contract', () => {
     ).toEqual({ theme: 'dark', tui: 'fullscreen', unknown: true })
   })
 
+  it('persists an explicit provider model ID outside the config picker aliases', async () => {
+    const configRoot = await root()
+    await saveConfigSetting('model', 'provider/model-custom', configRoot)
+    expect(
+      JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')),
+    ).toMatchObject({ model: 'provider/model-custom' })
+  })
+
   it('uses an explicit Claude state path independently of the config root', async () => {
     const container = await root()
     const configRoot = join(container, 'config')

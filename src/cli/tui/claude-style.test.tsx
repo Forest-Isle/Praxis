@@ -20,7 +20,6 @@ import {
   SelectionMenu,
   SessionPicker,
   ShortcutHelp,
-  StatusDashboard,
   ThemePicker,
   Transcript,
   WelcomePanel,
@@ -99,8 +98,9 @@ describe('Claude-style TUI components', () => {
     // Claude 2.1.208 launch parity: title lives in the top border row,
     // not in a separate title line inside the card.
     expect(frame.split('\n')[0]).toContain('╭───Praxis Code v0.1.2')
-    // No status line between card and composer; left column is 11 rows tall.
-    expect(frame.split('\n').length).toBe(11)
+    // No status line between card and composer; card is 19 rows tall with
+    // the Claude 2.1.208 "What's new" right column.
+    expect(frame.split('\n').length).toBe(19)
     expect(frame).toContain('/Users/test/dev/Praxis')
     expect(frame.split('\n')[0]?.length).toBeLessThanOrEqual(100)
   })
@@ -637,7 +637,7 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('6. Dark mode (ANSI colors only)')
     expect(frame).toContain('1 function greet()')
     expect(frame).toContain('2 -  console.log("Hello, World!");')
-    expect(frame).toContain('2 +  console.log("Hello, Praxis!");')
+    expect(frame).toContain('2 +  console.log("Hello, Claude!");')
     expect(frame).toContain(
       'Syntax theme: Monokai Extended (ctrl+t to disable)',
     )
@@ -711,13 +711,18 @@ describe('Claude-style TUI components', () => {
             usedTokens: 1_500,
             contextWindowTokens: 200_000,
             skills: [{ name: 'review', tokens: 290 }],
+            memoryFiles: [],
           },
         ]}
       />,
     )
-    expect(context.lastFrame()).toContain('Context Usage')
-    expect(context.lastFrame()).toContain('1,500/200,000 tokens')
-    expect(context.lastFrame()).toContain('Autocompact buffer: 33,000 tokens')
+    expect(context.lastFrame()).toContain('Free space: 165.5k (82.8%)')
+    expect(context.lastFrame()).toContain(
+      'Autocompact buffer: 33k tokens (16.5%)',
+    )
+    expect(context.lastFrame()).toContain('Estimated usage by category')
+    expect(context.lastFrame()).toContain('Memory files · /memory')
+    expect(context.lastFrame()).toContain('Loaded')
     expect(context.lastFrame()).toContain('review: ~290 tokens')
 
     const accessibleContext = render(
@@ -730,35 +735,15 @@ describe('Claude-style TUI components', () => {
             usedTokens: 1_500,
             contextWindowTokens: 200_000,
             skills: [{ name: 'review', tokens: 290 }],
+            memoryFiles: [],
           },
         ]}
       />,
     )
-    expect(accessibleContext.lastFrame()).toContain('1,500 of 200,000 tokens')
+    expect(accessibleContext.lastFrame()).toContain(
+      'provider default · 1,500/200,000 tokens',
+    )
     expect(accessibleContext.lastFrame()).not.toContain('⛶')
-
-    const status = render(
-      <StatusDashboard
-        tabIndex={1}
-        version="0.2.0"
-        sessionId="session-1"
-        display={display}
-        usage={{ inputTokens: 12, outputTokens: 3 }}
-        costUsd={0.01}
-        turnCount={2}
-        toolCount={1}
-        commandCount={14}
-        detailedTranscript={false}
-        width={100}
-        screenReader={false}
-      />,
-    )
-    expect(status.lastFrame()).toContain(
-      'Settings  Status  Config  Usage  Stats',
-    )
-    expect(status.lastFrame()).toContain('Version:')
-    expect(status.lastFrame()).toContain('session-1')
-    expect(status.lastFrame()).toContain('test-model')
   })
 
   it('renders empty and populated local list dashboards', () => {
@@ -963,7 +948,9 @@ describe('Claude-style TUI components', () => {
 
   it('renders the shortcut grid and tabbed help surface', () => {
     const shortcuts = render(<ShortcutHelp width={100} />)
-    expect(shortcuts.lastFrame()).toContain('! for shell mode')
+    expect(shortcuts.lastFrame()).toContain('! for bash mode')
+    expect(shortcuts.lastFrame()).toContain('& for background')
+    expect(shortcuts.lastFrame()).toContain('shift + tab to auto-accept edits')
     expect(shortcuts.lastFrame()).toContain('ctrl + o for verbose output')
     expect(shortcuts.lastFrame()).toContain('/keybindings to customize')
 
@@ -1103,7 +1090,7 @@ describe('Claude-style TUI components', () => {
       />,
     )
     expect(shell.lastFrame()).toContain('! pwd')
-    expect(shell.lastFrame()).toContain('! for shell mode')
+    expect(shell.lastFrame()).toContain('! for bash mode')
     expect(shell.lastFrame()).not.toContain('❯ pwd')
 
     const shellTranscript = render(

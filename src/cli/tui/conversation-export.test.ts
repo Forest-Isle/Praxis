@@ -31,12 +31,7 @@ describe('conversation export', () => {
       ],
     )
 
-    expect(text).toContain('Praxis Code v0.2.0')
-    expect(text).toContain('Welcome back!')
-    expect(text).toContain('fixture-model · medium effort')
-    expect(text).toContain('/workspace')
-    expect(text).toContain('Tips for getting started: Run /help for commands')
-    expect(text).toContain('Shared with Claude Code: sessions, memory, skills')
+    expect(text).not.toContain('Welcome back!')
     expect(text).toContain('❯ Inspect this')
     expect(text).toContain('✻ Checking the files')
     expect(text).toContain('⏺ Done')

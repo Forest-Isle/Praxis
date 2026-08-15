@@ -38,7 +38,9 @@ export type TranscriptItem =
       kind: 'context'
       usedTokens: number
       contextWindowTokens: number
+      model?: string
       skills: readonly { name: string; tokens: number }[]
+      memoryFiles: readonly { path: string; tokens: number }[]
     }
   | { kind: 'tool'; call: ModelToolCall; detail: string }
   | {
@@ -108,8 +110,8 @@ function permissionLabel(mode?: string): string {
 }
 
 function selectionPrefix(selected: boolean, screenReader: boolean): string {
-  if (selected) return screenReader ? 'Selected: ' : '❯ '
-  return screenReader ? '' : '  '
+  if (selected) return screenReader ? 'Selected: ' : '  ❯ '
+  return screenReader ? '' : '    '
 }
 
 export function WelcomePanel({
@@ -176,10 +178,27 @@ export function WelcomePanel({
             marginTop={wide ? 0 : 1}
           >
             <Text bold>Tips for getting started</Text>
-            <Text>Run /help for commands</Text>
+            <Text>
+              Run /init to create a CLAUDE.md file with instructions for Claude
+            </Text>
             <Text dimColor>───────────────────────</Text>
-            <Text bold>Shared with Claude Code</Text>
-            <Text>Sessions, memory, skills</Text>
+            <Text bold>What's new</Text>
+            <Text>
+              {
+                'Subagent forking is now on by default: a `subagent_type: "fork"` subagent inherits the full conversation and prompt cache, and non-teammate agent spawns in interactive sessions now run in the background by default'
+              }
+            </Text>
+            <Text>
+              {
+                'Type `@` in the prompt to mention another Claude session by name; Claude then uses `SendMessage` to reach that session directly'
+              }
+            </Text>
+            <Text>
+              {
+                '`SendMessage` now delivers to a bare name that exactly matches one live session, instead of asking to confirm with a ref first'
+              }
+            </Text>
+            <Text dimColor>/release-notes for more</Text>
           </Box>
         </Box>
       </Box>
@@ -523,10 +542,24 @@ function ThinkingBlock({
   )
 }
 
+function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000)
+    return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, '')}m`
+  if (tokens >= 1_000)
+    return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, '')}k`
+  return String(tokens)
+}
+
+function percent(tokens: number, total: number): string {
+  return `${Math.round((tokens / Math.max(1, total)) * 100 * 10) / 10}%`
+}
+
 function ContextUsageBlock({
   usedTokens,
   contextWindowTokens,
+  model,
   skills,
+  memoryFiles,
   screenReader,
 }: Extract<TranscriptItem, { kind: 'context' }> & { screenReader: boolean }) {
   const totalTokens = Math.max(1, contextWindowTokens)
@@ -537,7 +570,9 @@ function ContextUsageBlock({
       <Box flexDirection="column">
         <Text>Context Usage</Text>
         <Text>
-          {usedTokens.toLocaleString()} of {totalTokens.toLocaleString()} tokens
+          {model ?? 'provider default'} · {usedTokens.toLocaleString()}/
+          {totalTokens.toLocaleString()} tokens (
+          {percent(usedTokens, totalTokens)})
         </Text>
         <Text>Autocompact buffer: {compactBuffer.toLocaleString()} tokens</Text>
         <Text>
@@ -546,50 +581,63 @@ function ContextUsageBlock({
       </Box>
     )
   }
-  const usedCells = Math.min(100, Math.ceil((usedTokens / totalTokens) * 100))
+  const usedCells = Math.min(25, Math.round((usedTokens / totalTokens) * 25))
   const bufferCells = Math.min(
-    100 - usedCells,
-    Math.ceil((compactBuffer / totalTokens) * 100),
+    25 - usedCells,
+    Math.round((compactBuffer / totalTokens) * 25),
   )
-  const cells = Array.from({ length: 100 }, (_, index) =>
-    index < usedCells ? '⛁' : index >= 100 - bufferCells ? '⛝' : '⛶',
+  const cells = Array.from({ length: 25 }, (_, index) =>
+    index < usedCells ? '⛁' : index >= 25 - bufferCells ? '⛝' : '⛶',
   )
   return (
     <Box flexDirection="column" marginTop={1} marginLeft={2}>
       <Text bold>Context Usage</Text>
       <Box>
         <Box flexDirection="column" marginRight={2}>
-          {Array.from({ length: 10 }, (_, row) => (
-            <Text key={row}>
-              {cells.slice(row * 10, row * 10 + 10).join(' ')}
-            </Text>
+          {Array.from({ length: 5 }, (_, row) => (
+            <Text key={row}>{cells.slice(row * 5, row * 5 + 5).join(' ')}</Text>
           ))}
         </Box>
         <Box flexDirection="column">
-          <Text bold>
-            {usedTokens.toLocaleString()}/{totalTokens.toLocaleString()} tokens
+          <Text dimColor>
+            {model ?? 'provider default'} · {compactTokens(usedTokens)}/
+            {compactTokens(totalTokens)} tokens (
+            {percent(usedTokens, totalTokens)})
           </Text>
           <Text> </Text>
-          <Text bold>Estimated usage by category</Text>
-          <Text>
-            ⛁ Skills:{' '}
-            {skills
-              .reduce((total, skill) => total + skill.tokens, 0)
-              .toLocaleString()}{' '}
-            tokens
+          <Text dimColor italic>
+            Estimated usage by category
           </Text>
           <Text>
-            ⛶ Free space: {Math.max(0, usable - usedTokens).toLocaleString()}
+            ⛁ Messages and other context: {compactTokens(usedTokens)} tokens (
+            {percent(usedTokens, totalTokens)})
           </Text>
           <Text>
-            ⛝ Autocompact buffer: {compactBuffer.toLocaleString()} tokens
+            ⛶ Free space: {compactTokens(Math.max(0, usable - usedTokens))} (
+            {percent(Math.max(0, usable - usedTokens), totalTokens)})
+          </Text>
+          <Text>
+            ⛝ Autocompact buffer: {compactTokens(compactBuffer)} tokens (
+            {percent(compactBuffer, totalTokens)})
           </Text>
         </Box>
       </Box>
       <Text> </Text>
-      <Text>Auto-compact window: {totalTokens.toLocaleString()} tokens</Text>
+      <Text bold>Memory files · /memory</Text>
+      {memoryFiles.length === 0 ? (
+        <Text dimColor>└ No memory files</Text>
+      ) : (
+        memoryFiles.map((file, index) => (
+          <Text key={file.path} dimColor>
+            {index === memoryFiles.length - 1 ? '└' : '├'} {file.path}:{' '}
+            {file.tokens} tokens
+          </Text>
+        ))
+      )}
       <Text> </Text>
       <Text bold>Skills · /skills</Text>
+      <Text> </Text>
+      <Text>Loaded</Text>
       {skills.length === 0 ? (
         <Text dimColor>└ No skills loaded</Text>
       ) : (
@@ -1320,7 +1368,7 @@ export function ThemePicker({
                   ? {}
                   : { backgroundColor: syntax.addedHighlight })}
               >
-                Praxis
+                Claude
               </Text>
               <Text {...syntaxColor(syntax.string)}>!&quot;</Text>
               {'); '}
@@ -1400,111 +1448,6 @@ export function CustomThemeEditor({
         </>
       )}
       {screenReader ? <Text>Editing custom theme token</Text> : null}
-    </Box>
-  )
-}
-
-export function StatusDashboard({
-  tabIndex,
-  version,
-  sessionId,
-  display,
-  usage,
-  costUsd,
-  turnCount,
-  toolCount,
-  commandCount,
-  detailedTranscript,
-  width,
-  screenReader,
-}: {
-  tabIndex: number
-  version: string
-  sessionId: string | null
-  display: TuiDisplayMetadata
-  usage?: ModelUsage
-  costUsd?: number
-  turnCount: number
-  toolCount: number
-  commandCount: number
-  detailedTranscript: boolean
-  width: number
-  screenReader: boolean
-}) {
-  const tabs = ['Settings', 'Status', 'Config', 'Usage', 'Stats'] as const
-  const rows =
-    tabIndex === 0
-      ? [
-          ['Thinking mode', 'provider controlled'],
-          ['Verbose output', detailedTranscript ? 'true' : 'false'],
-          ['Default permission mode', permissionLabel(display.permissionMode)],
-          ['Context compaction', 'automatic'],
-          ['Shared Claude data', 'enabled'],
-        ]
-      : tabIndex === 1
-        ? [
-            ['Version', version],
-            ['Session ID', sessionId ?? 'new session'],
-            ['cwd', display.cwd],
-            ['Model', display.model ?? 'provider default'],
-            ['Permission mode', permissionLabel(display.permissionMode)],
-          ]
-        : tabIndex === 2
-          ? [
-              ['Model', display.model ?? 'provider default'],
-              ['Effort', display.effort ?? 'high'],
-              [
-                'Context window',
-                String(display.contextWindowTokens ?? 'provider default'),
-              ],
-              ['Available commands', String(commandCount)],
-            ]
-          : tabIndex === 3
-            ? [
-                ['Input tokens', String(usage?.inputTokens ?? 0)],
-                ['Output tokens', String(usage?.outputTokens ?? 0)],
-                [
-                  'Session cost',
-                  costUsd === undefined
-                    ? 'unavailable'
-                    : `$${costUsd.toFixed(4)}`,
-                ],
-              ]
-            : [
-                ['Turns', String(turnCount)],
-                ['Tool calls', String(toolCount)],
-                [
-                  'Context used',
-                  String(
-                    (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0),
-                  ),
-                ],
-              ]
-  return (
-    <Box flexDirection="column" width={Math.min(100, width)}>
-      {!screenReader ? (
-        <Text dimColor>{'─'.repeat(Math.min(100, width))}</Text>
-      ) : null}
-      <Text>
-        {'  '}
-        {tabs.map((tab, index) => (
-          <Text key={tab} inverse={index === tabIndex}>
-            {' '}
-            {tab}{' '}
-          </Text>
-        ))}
-      </Text>
-      <Text> </Text>
-      {rows.map(([label, value]) => (
-        <Box key={label}>
-          <Box width={28}>
-            <Text>{label}:</Text>
-          </Box>
-          <Text>{value}</Text>
-        </Box>
-      ))}
-      <Text> </Text>
-      <Text dimColor>←/→/tab to switch · Esc to close</Text>
     </Box>
   )
 }
@@ -2120,16 +2063,17 @@ export function MentionPicker({
 
 const SHORTCUT_ROWS: readonly (readonly string[])[] = [
   [
-    '! for shell mode',
+    '! for bash mode',
     'double tap esc to clear input',
     'ctrl + shift + _ to undo',
   ],
-  ['/ for commands', 'shift + tab to cycle permissions', 'ctrl + z to suspend'],
+  ['/ for commands', 'shift + tab to auto-accept edits', 'ctrl + z to suspend'],
   [
     '@ for file paths',
     'ctrl + o for verbose output',
     'ctrl + v to paste images',
   ],
+  ['& for background', '', ''],
   [
     '/btw for side question',
     'ctrl + t to toggle tasks',
@@ -2288,6 +2232,11 @@ export function SelectionMenu({
   )
   const visible = options.slice(start, start + maxVisible)
   const current = options.find((option) => option.selected)
+  const maxLabelWidth = options.reduce(
+    (max, option, index) =>
+      Math.max(max, `${index + 1}. ${option.label}`.length),
+    0,
+  )
   return (
     <Box
       borderStyle={screenReader ? undefined : 'round'}
@@ -2303,6 +2252,7 @@ export function SelectionMenu({
       {visible.map((option, visibleIndex) => {
         const index = start + visibleIndex
         const selected = index === selectedIndex
+        const rowLabel = `${index + 1}. ${option.label}`
         return (
           <Box
             key={`${index}-${option.label}`}
@@ -2315,12 +2265,22 @@ export function SelectionMenu({
                 : {})}
             >
               {selectionPrefix(selected, screenReader)}
-              {index + 1}. {option.label}
+              {rowLabel}
               {!screenReader && option.selected ? ' ✔' : ''}
+              {option.description ? (
+                <Text dimColor>
+                  {' '.repeat(
+                    Math.max(
+                      2,
+                      maxLabelWidth -
+                        rowLabel.length -
+                        (option.selected && !screenReader ? 2 : 0),
+                    ),
+                  )}
+                  {option.description}
+                </Text>
+              ) : null}
             </Text>
-            {option.description ? (
-              <Text dimColor> {option.description}</Text>
-            ) : null}
           </Box>
         )
       })}
@@ -2334,6 +2294,90 @@ export function SelectionMenu({
         </Text>
       ) : null}
       <Text dimColor>{footer}</Text>
+    </Box>
+  )
+}
+
+export function ModelMenu({
+  options,
+  effort,
+  selectedIndex,
+  width,
+  screenReader,
+}: {
+  options: readonly TuiSelectionOption[]
+  effort: string
+  selectedIndex: number
+  width: number
+  screenReader: boolean
+}) {
+  const palette = useTuiPalette()
+  const current = options.find((option) => option.selected)
+  const maxLabelWidth = options.reduce(
+    (max, option, index) =>
+      Math.max(max, `${index + 1}. ${option.label}`.length),
+    0,
+  )
+  return (
+    <Box
+      borderStyle={screenReader ? undefined : 'round'}
+      borderColor={palette.muted}
+      flexDirection="column"
+      marginTop={1}
+      paddingX={screenReader ? 0 : 1}
+      width={screenReader ? undefined : Math.min(80, width)}
+    >
+      <Text bold>Select model</Text>
+      <Text dimColor>
+        {
+          'Switch between models. Your pick applies to this and future Praxis Code sessions. For other model names, specify with --model.'
+        }
+      </Text>
+      {screenReader && current ? <Text>Current: {current.label}</Text> : null}
+      {options.map((option, index) => {
+        const selected = index === selectedIndex
+        const rowLabel = `${index + 1}. ${option.label}`
+        return (
+          <Box
+            key={`${index}-${option.label}`}
+            flexDirection="column"
+            marginTop={1}
+          >
+            <Text
+              {...(!screenReader && selected
+                ? { color: palette.brand, bold: true }
+                : {})}
+            >
+              {selectionPrefix(selected, screenReader)}
+              {rowLabel}
+              {!screenReader && option.selected ? ' ✔' : ''}
+              {option.description ? (
+                <Text dimColor>
+                  {' '.repeat(
+                    Math.max(
+                      2,
+                      maxLabelWidth -
+                        rowLabel.length -
+                        (option.selected && !screenReader ? 2 : 0),
+                    ),
+                  )}
+                  {option.description}
+                </Text>
+              ) : null}
+            </Text>
+          </Box>
+        )
+      })}
+      <Box marginTop={1}>
+        <Text>
+          <Text color={palette.accent}>● </Text>
+          {effort.charAt(0).toUpperCase() + effort.slice(1)} effort (default)
+          <Text dimColor> ←/→ to adjust</Text>
+        </Text>
+      </Box>
+      <Box marginTop={1}>
+        <Text dimColor>Enter to select · Esc to cancel</Text>
+      </Box>
     </Box>
   )
 }
@@ -2497,7 +2541,7 @@ export function Composer({
         <Box width={Math.min(100, width)}>
           <Text dimColor>
             {shellMode ? (
-              '! for shell mode'
+              '! for bash mode'
             ) : (
               <>
                 ⏵⏵ {permissionLabel(display.permissionMode)} ·{' '}

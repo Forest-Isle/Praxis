@@ -9,19 +9,10 @@ function lines(text: string, prefix: string): string[] {
 }
 
 export function conversationExportText(
-  display: TuiDisplayMetadata,
+  _display: TuiDisplayMetadata,
   items: readonly TranscriptItem[],
 ): string {
-  const output = [
-    `╭─── Praxis Code v${display.version} ───╮`,
-    '│ Welcome back!',
-    `│ ${display.model ?? 'provider default'} · ${display.effort ?? 'high'} effort`,
-    `│ ${display.cwd}`,
-    '│ Tips for getting started: Run /help for commands',
-    '│ Shared with Claude Code: sessions, memory, skills',
-    '╰───',
-    '',
-  ]
+  const output: string[] = []
 
   for (const item of items) {
     if (item.kind === 'user') output.push('', ...lines(item.text, '❯ '))
