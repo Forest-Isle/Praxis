@@ -147,6 +147,7 @@ export interface ClaudeSessionServiceOptions {
   tools?: ToolRegistry
   permissions?: PermissionResolver
   permissionResolverForMode?: (mode: AgentPermissionMode) => PermissionResolver
+  permissionMode?: ClaudePermissionMode
   persistPermissionUpdates?: (
     updates: readonly PermissionUpdate[],
   ) => void | Promise<void>
@@ -197,6 +198,12 @@ export interface ClaudeSessionServiceOptions {
   fileRewindRoots?: readonly string[]
   interactiveTools?: ClaudeInteractiveToolManager
   mcp?: ClaudeMcpRuntime
+}
+
+function agentPermissionMode(
+  mode: ClaudePermissionMode | undefined,
+): AgentPermissionMode {
+  return mode === undefined || mode === 'manual' ? 'default' : mode
 }
 
 export interface SessionRunResult {
@@ -529,6 +536,11 @@ export class ClaudeSessionService {
                     this.options.permissionResolverForMode,
                 }
               : {}),
+            parentPermissionMode: () =>
+              agentPermissionMode(
+                this.options.interactiveTools?.mode(sessionId) ??
+                  this.options.permissionMode,
+              ),
             ...(this.options.subagentToolNames
               ? { toolNames: this.options.subagentToolNames }
               : {}),
@@ -2080,6 +2092,11 @@ export class ClaudeSessionService {
                       this.options.permissionResolverForMode,
                   }
                 : {}),
+              parentPermissionMode: () =>
+                agentPermissionMode(
+                  this.options.interactiveTools?.mode(sessionId) ??
+                    this.options.permissionMode,
+                ),
               ...(this.options.subagentToolNames
                 ? { toolNames: this.options.subagentToolNames }
                 : {}),

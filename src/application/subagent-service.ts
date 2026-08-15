@@ -303,6 +303,7 @@ export interface ClaudeSubagentExecutorOptions {
   baseTools: ToolRegistry
   permissions: PermissionResolver
   permissionResolverForMode?: (mode: AgentPermissionMode) => PermissionResolver
+  parentPermissionMode?: () => AgentPermissionMode
   extensions?: ClaudeExtensionCatalog
   hooks?: ClaudeHookRunner
   contextAssembler?: ContextAssembler
@@ -408,7 +409,7 @@ function parseAgentInput(call: ModelToolCall): AgentInput {
       ? {}
       : { permissionMode: permissionMode as AgentPermissionMode }),
     ...(isolation === undefined ? {} : { isolation }),
-    runInBackground: call.input.run_in_background !== false,
+    runInBackground: call.input.run_in_background === true,
   }
 }
 
@@ -460,9 +461,24 @@ export class ClaudeSubagentExecutor {
         ? definition.model
         : undefined
     const model = environmentModel || input.model || configuredModel
+    const parentPermissionMode = this.options.parentPermissionMode?.()
+    const definitionCanOverridePermissionMode = ![
+      'acceptEdits',
+      'auto',
+      'bypassPermissions',
+    ].includes(parentPermissionMode ?? 'default')
+    const permissionMode =
+      input.permissionMode ??
+      (definitionCanOverridePermissionMode
+        ? definition?.permissionMode
+        : parentPermissionMode)
+    const isolation = input.isolation ?? definition?.isolation
     return {
       ...input,
       ...(model ? { model } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(isolation ? { isolation } : {}),
+      runInBackground: input.runInBackground || definition?.background === true,
     }
   }
 

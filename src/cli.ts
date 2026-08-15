@@ -1730,6 +1730,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       mcp: mcpTools,
       permissions,
       permissionResolverForMode,
+      permissionMode: cli.dangerouslySkipPermissions
+        ? 'bypassPermissions'
+        : cli.permissionMode,
       persistPermissionUpdates: (updates) =>
         persistTuiPermissionUpdates({
           cwd: workspace.cwd(),

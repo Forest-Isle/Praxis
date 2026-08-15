@@ -1,0 +1,1 @@
+delete process.env.CLAUDE_CODE_SUBAGENT_MODEL

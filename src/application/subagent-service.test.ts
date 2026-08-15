@@ -28,6 +28,7 @@ import { ClaudePermissionResolver } from '../permissions/claude-permission-resol
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
 import {
+  type AgentPermissionMode,
   ClaudeSubagentExecutor,
   StructuredOutputRegistry,
 } from './subagent-service.js'
@@ -577,6 +578,79 @@ describe('foreground Claude Agent execution', () => {
     expect(requests).toBe(2)
   })
 
+  it('applies custom agent launch controls and preserves protected parent permission modes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-launch-test-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(root, 'config', 'agents', 'isolated.md'),
+          scope: 'user',
+          content:
+            '---\nname: isolated\ndescription: Work alone.\npermissionMode: plan\nbackground: true\nisolation: worktree\n---\nISOLATED_AGENT',
+        },
+      ],
+    })
+    const createExecutor = (parentMode: AgentPermissionMode = 'default') =>
+      new ClaudeSubagentExecutor({
+        configRoot: join(root, 'config'),
+        cwd,
+        claudeVersion: '2.1.208',
+        provider: {
+          capabilities: { streaming: true, usage: true, tools: true },
+          async *complete() {
+            yield { type: 'text-delta', delta: 'DONE' }
+          },
+        },
+        baseTools: emptyTools,
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+        permissionResolverForMode: () => ({
+          resolve: () => ({ behavior: 'allow' }),
+        }),
+        parentPermissionMode: () => parentMode,
+        extensions,
+      })
+    const prepare = (executor: ClaudeSubagentExecutor, subagentType: string) =>
+      executor
+        .registry(
+          'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          0,
+          () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        )
+        .prepare(
+          {
+            id: `call_${subagentType}`,
+            name: 'Agent',
+            input: {
+              description: 'Launch controls',
+              prompt: 'Apply launch controls',
+              subagent_type: subagentType,
+              run_in_background: false,
+            },
+          },
+          { cwd },
+        )
+
+    await expect(prepare(createExecutor(), 'isolated')).resolves.toMatchObject({
+      input: {
+        mode: 'plan',
+        isolation: 'worktree',
+        run_in_background: true,
+      },
+    })
+    await expect(
+      prepare(createExecutor('bypassPermissions'), 'isolated'),
+    ).resolves.toMatchObject({
+      input: { mode: 'bypassPermissions' },
+    })
+    await expect(
+      prepare(createExecutor(), 'general-purpose'),
+    ).resolves.toMatchObject({ input: { run_in_background: false } })
+  })
+
   it('limits the built-in statusline setup agent to Read and Edit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-agent-test-'))
     roots.push(root)
@@ -1021,6 +1095,7 @@ describe('foreground Claude Agent execution', () => {
           name: 'reviewer',
           team_name: 'deprecated-team',
           mode: 'plan',
+          run_in_background: true,
         },
       },
       { cwd },
