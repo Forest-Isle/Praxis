@@ -4348,7 +4348,7 @@ describe('ClaudeSessionService', () => {
       {
         role: 'user',
         content:
-          '<system-reminder>\nAvailable agent types for the Agent tool:\n- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.\n- reviewer: Review work.\n</system-reminder>',
+          "<system-reminder>\nAvailable agent types for the Agent tool:\n- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.\n- reviewer: Review work.\n- statusline-setup: Configure the user's Claude Code status line setting.\n</system-reminder>",
       },
       { role: 'user', content: '@"reviewer (agent)" inspect this' },
     ])

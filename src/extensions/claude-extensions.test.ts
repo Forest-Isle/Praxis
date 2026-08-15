@@ -58,6 +58,7 @@ describe('ClaudeExtensionCatalog', () => {
     )
     expect(catalog.modelInvocableSkills().map(({ name }) => name)).toEqual([
       'loop',
+      'statusline',
     ])
   })
 
@@ -86,12 +87,16 @@ describe('ClaudeExtensionCatalog', () => {
           'General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.',
       },
       { name: 'reviewer', description: 'Review work.' },
+      {
+        name: 'statusline-setup',
+        description: "Configure the user's Claude Code status line setting.",
+      },
     ])
     expect(
       catalog.agentMentionMessages('Ask @"reviewer (agent)" to inspect this'),
     ).toEqual([
       '<system-reminder>\nThe user has expressed a desire to invoke the agent "reviewer". Please invoke the agent appropriately, passing in the required context to it.\n</system-reminder>',
-      '<system-reminder>\nAvailable agent types for the Agent tool:\n- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.\n- reviewer: Review work.\n</system-reminder>',
+      "<system-reminder>\nAvailable agent types for the Agent tool:\n- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.\n- reviewer: Review work.\n- statusline-setup: Configure the user's Claude Code status line setting.\n</system-reminder>",
     ])
     expect(
       catalog.agentMentionMessages('Read @"reviewer.md" as a file'),
@@ -137,6 +142,7 @@ describe('ClaudeExtensionCatalog', () => {
     )
     expect(catalog.modelInvocableSkills().map((item) => item.name)).toEqual([
       'loop',
+      'statusline',
       'probe',
       'broken',
       'invalid-description',
@@ -166,6 +172,43 @@ describe('ClaudeExtensionCatalog', () => {
     )
     expect(expanded[1]).toContain('Input:\n5m check build')
     expect(catalog.skill('loop')?.kind).toBe('command')
+  })
+
+  it('expands statusline through its dedicated built-in agent', () => {
+    const catalog = new ClaudeExtensionCatalog({
+      agents: [],
+      commands: [],
+      skills: [],
+    })
+
+    expect(catalog.expandPrompt('/statusline').userMessages).toEqual([
+      '<command-message>statusline</command-message>\n<command-name>/statusline</command-name>',
+      'Create an Agent with subagent_type "statusline-setup" and the prompt "Configure my statusLine from my shell PS1 configuration"',
+    ])
+    expect(
+      catalog.expandPrompt('/statusline show model and cwd').userMessages[1],
+    ).toContain('the prompt "show model and cwd"')
+    expect(catalog.agent('statusline-setup')?.body).toContain(
+      '~/.claude/settings.json',
+    )
+  })
+
+  it('lets a shared statusline command replace the built-in default expansion', () => {
+    const catalog = new ClaudeExtensionCatalog({
+      agents: [],
+      skills: [],
+      commands: [
+        {
+          path: '/config/commands/statusline.md',
+          scope: 'user',
+          content: 'CUSTOM:$ARGUMENTS',
+        },
+      ],
+    })
+
+    expect(catalog.expandPrompt('/statusline').userMessages.at(-1)).toBe(
+      'CUSTOM:',
+    )
   })
 
   it('disables slash commands while retaining agent definitions', () => {

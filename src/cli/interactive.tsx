@@ -83,6 +83,8 @@ import {
   type TuiMemoryFileEntry,
   type TuiMemoryFiles,
 } from './tui/memory-files.js'
+import { loadClaudeReleaseNotes } from './tui/release-notes.js'
+import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import {
   loadGitDiff,
   visiblePatchLines,
@@ -510,6 +512,8 @@ interface InteractiveAppProps {
   runtimeSettingsTarget?: ConfigSettingsTarget
   notificationWriter?: TuiNotificationWriter
   elicitationUrlOpener?: (url: string) => void | Promise<void>
+  releaseNotesLoader?: (configRoot: string) => Promise<string>
+  settingSources?: readonly ClaudeResourceScope[]
 }
 
 type PendingPermission = {
@@ -1000,6 +1004,8 @@ export function InteractiveApp({
   runtimeSettingsTarget,
   notificationWriter,
   elicitationUrlOpener = openTuiUrl,
+  releaseNotesLoader = (configRoot) => loadClaudeReleaseNotes({ configRoot }),
+  settingSources,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const width = useTerminalWidth(terminalWidth)
@@ -1118,6 +1124,7 @@ export function InteractiveApp({
   const [sessionId, setSessionId] = useState<string | null>(
     resume?.sessionId ?? null,
   )
+  const statusLineSessionId = useRef(resume?.sessionId ?? randomUUID())
   const sessionIdRef = useRef<string | null>(resume?.sessionId ?? null)
   sessionIdRef.current = sessionId
   const [sessionName, setSessionName] = useState<string | null>(null)
@@ -6182,10 +6189,12 @@ export function InteractiveApp({
       } else if (prompt === '/help' || prompt === '?') {
         updateMenu({ kind: 'help', tabIndex: 0, selectedIndex: 0 })
       } else if (prompt === '/new') {
+        statusLineSessionId.current = randomUUID()
         setSessionId(null)
         setPendingFork(false)
         append({ kind: 'notice', text: 'Started a new session.' })
       } else if (prompt === '/clear') {
+        statusLineSessionId.current = randomUUID()
         setSessionId(null)
         setPendingFork(false)
         setHistory([])
@@ -6554,6 +6563,24 @@ export function InteractiveApp({
         void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/status') {
         openSettings('status')
+      } else if (prompt === '/release-notes') {
+        const loading = (async () => {
+          setBusy(true)
+          setStatus('loading release notes')
+          try {
+            append({
+              kind: 'local-result',
+              text: await releaseNotesLoader(keybindingsRoot),
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+            setStatus('ready')
+          }
+        })()
+        onTurnChange?.(loading)
+        void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/config') {
         openSettings('config')
       } else if (tuiCommand) {
@@ -7397,6 +7424,47 @@ export function InteractiveApp({
                     ? {}
                     : { footerMessage: editorFooterMessage })}
                 />
+                <StatusLine
+                  configRoot={keybindingsRoot}
+                  cwd={runtimeCwd}
+                  input={createClaudeStatusLineInput({
+                    configRoot: keybindingsRoot,
+                    cwd: runtimeCwd,
+                    projectDir: display.cwd,
+                    sessionId: sessionId ?? statusLineSessionId.current,
+                    sessionName,
+                    ...(runtimeDisplay.model === undefined
+                      ? {}
+                      : { model: runtimeDisplay.model }),
+                    version: runtimeDisplay.version,
+                    outputStyle: runtimeSettings.outputStyle,
+                    permissionMode: runtimePreferences.permissionMode,
+                    additionalDirectories:
+                      runtimePreferences.additionalDirectories,
+                    ...(usage === undefined ? {} : { usage }),
+                    ...(costUsd === undefined ? {} : { costUsd }),
+                    ...(runtimeDisplay.contextWindowTokens === undefined
+                      ? {}
+                      : {
+                          contextWindowTokens:
+                            runtimeDisplay.contextWindowTokens,
+                        }),
+                    ...(runtimeSettings.editor === 'vim'
+                      ? { vimMode: vimInsertMode ? 'INSERT' : 'NORMAL' }
+                      : {}),
+                  })}
+                  refreshKey={[
+                    history.length,
+                    runtimePreferences.permissionMode,
+                    runtimeDisplay.model,
+                    runtimeSettings.outputStyle,
+                    vimInsertMode,
+                    sessionName,
+                    usage?.inputTokens,
+                    usage?.outputTokens,
+                  ].join(':')}
+                  {...(settingSources === undefined ? {} : { settingSources })}
+                />
               </>
             )}
           </>
@@ -7423,6 +7491,7 @@ export async function runInteractive(options: {
   ) => Promise<InteractiveBackgroundResult>
   onBackgrounded?: (result: InteractiveBackgroundResult) => void
   runtimeSettings?: PraxisRuntimeSettings
+  settingSources?: readonly ClaudeResourceScope[]
 }): Promise<number> {
   const controller = new AbortController()
   const signal = options.signal
@@ -7525,6 +7594,9 @@ export async function runInteractive(options: {
         agents={initialAgents}
         initialHistory={history}
         runtimeSettings={currentRuntimeSettings}
+        {...(options.settingSources === undefined
+          ? {}
+          : { settingSources: options.settingSources })}
         initialThemeSettings={initialThemeSettings}
         {...(initialThemeLoadError === undefined
           ? {}

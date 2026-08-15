@@ -69,7 +69,9 @@ describe('ClaudeExtensionToolRegistry', () => {
     ])
     expect(
       definitions.find(({ name }) => name === 'Skill')?.inputSchema,
-    ).toMatchObject({ properties: { skill: { enum: ['loop'] } } })
+    ).toMatchObject({
+      properties: { skill: { enum: ['loop', 'statusline'] } },
+    })
   })
 })
 

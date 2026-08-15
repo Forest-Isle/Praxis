@@ -12,23 +12,27 @@ describe('Claude Code 2.1.208 external command inventory', () => {
       CLAUDE_2_1_208_COMMAND_INVENTORY.length,
     )
     for (const entry of CLAUDE_2_1_208_COMMAND_INVENTORY) {
-      if (entry.disposition === 'excluded') {
+      if (entry.disposition !== 'included') {
         expect(
           entry.reason,
-          `/${entry.name} exclusion requires evidence`,
+          `/${entry.name} ${entry.disposition} classification requires evidence`,
         ).toBeTruthy()
       }
     }
   })
 
-  it('retains hidden compatibility and conditional build commands in scope', () => {
+  it('keeps deferred single-user commands as explicit completion blockers', () => {
     expect(CLAUDE_2_1_208_COMMAND_BY_NAME.get('output-style')).toMatchObject({
       disposition: 'included',
       visibility: 'hidden',
     })
     expect(CLAUDE_2_1_208_COMMAND_BY_NAME.get('heapdump')).toMatchObject({
-      disposition: 'included',
+      disposition: 'deferred',
       visibility: 'hidden',
+    })
+    expect(CLAUDE_2_1_208_COMMAND_BY_NAME.get('chrome')).toMatchObject({
+      disposition: 'deferred',
+      visibility: 'conditional',
     })
     expect(CLAUDE_2_1_208_COMMAND_BY_NAME.get('workflows')).toMatchObject({
       disposition: 'included',

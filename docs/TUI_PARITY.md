@@ -27,6 +27,10 @@ Together they establish these stable rules:
   `/compact`, native `/rewind`,
   runtime `/cd`, transcript-free `/btw` side questions, persistent
   `/background` terminal handoff, and live plugin/skill reload entries;
+- `/release-notes` uses Claude's shared changelog cache and 500 ms fetch budget,
+  while `/statusline` configures and renders the shared `statusLine` command
+  beneath the composer with structured stdin, timeout, padding, ANSI, and
+  settings hot-reload behavior;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
 - entering `!` switches the composer to shell mode; submitting runs the command
@@ -456,7 +460,10 @@ denied-history selection, duplicate retention, lifetime, approve/retry, and
 Claude-native grant-transcript behavior (Stages 126-130). Stage 132 revalidates
 command-specific dialogs directly against the `~/dev/claude-code` 2.1.208 source
 snapshot and then cross-checks observable behavior through Ink/PTY gates.
-`/statusline` remains excluded as
-a user-provided status-line plugin surface; 2.1.208 exposes neither `/vim` nor
-`/output-style`. Each included item needs an observed contract and a focused TTY
-or Ink gate before the matrix can return to a complete status.
+Stage 135 adds the source-registered `/release-notes` local command and
+`/statusline` prompt command, its Read/Edit-scoped setup agent, and the runtime
+status-line renderer over shared settings. Every remaining required command
+still needs an observed contract and focused TTY or Ink gate. Every deferred
+single-user CLI command remains a completion blocker; only the explicitly
+agreed enterprise, multi-user, subscription-auth, Desktop/IDE/mobile, Remote
+Control, and hosted-only surfaces are excluded.

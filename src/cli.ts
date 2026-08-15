@@ -61,6 +61,7 @@ import type {
 } from './cli/interactive.js'
 import type { TuiSlashCommand } from './cli/tui/slash-commands.js'
 import { persistTuiPermissionUpdates } from './cli/tui/permission-settings.js'
+import { loadClaudeReleaseNotes } from './cli/tui/release-notes.js'
 import {
   projectTuiHooks,
   type TuiHookConfiguration,
@@ -1044,6 +1045,7 @@ interface TopLevelAgentCommands {
 }
 
 export interface CliDependencies extends InteractiveServiceFactory {
+  loadReleaseNotes?(configRoot: string): Promise<string>
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
@@ -2233,6 +2235,9 @@ const defaultDependencies: CliDependencies = {
         ? { allowDangerouslySkipPermissions: true }
         : {}),
       additionalDirectories: initialAdditionalDirectories,
+      ...(interactiveControls.settingSources === undefined
+        ? {}
+        : { settingSources: interactiveControls.settingSources }),
       display: {
         version: VERSION,
         cwd: process.cwd(),
@@ -4911,6 +4916,56 @@ async function execute(
           }
         : {}),
     }
+  }
+  const headlessPromptArgs =
+    command === 'resume' ? args.slice(2) : knownCommand ? args.slice(1) : args
+  const headlessPrompt =
+    inputFormat === 'text' && headlessPromptArgs.length > 0
+      ? promptFrom(headlessPromptArgs)
+      : undefined
+  if (headlessPrompt === '/release-notes' && !invocation.disableSlashCommands) {
+    const startedAt = Date.now()
+    const sessionId = invocation.sessionId ?? randomUUID()
+    const configRoot = resolve(
+      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+    )
+    const text = dependencies.loadReleaseNotes
+      ? await dependencies.loadReleaseNotes(configRoot)
+      : await loadClaudeReleaseNotes({ configRoot })
+    const result: SessionRunResult = {
+      sessionId,
+      text,
+      usage: { inputTokens: 0, outputTokens: 0 },
+    }
+    const info: CliRuntimeInfo = {
+      cwd: process.cwd(),
+      model: invocation.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
+      tools: [],
+      mcpServers: [],
+      permissionMode: invocation.permissionMode,
+      slashCommands: ['release-notes'],
+      agents: [],
+      skills: [],
+      claudeCodeVersion: '2.1.208',
+    }
+    if (outputFormat === 'stream-json') {
+      const output = new StreamJsonOutput(
+        (value) => writeJson(io, value),
+        info,
+        sessionId,
+        includePartialMessages,
+        invocation.includeHookEvents,
+      )
+      output.init()
+      output.sink({ type: 'text-delta', delta: text })
+      output.sink({ type: 'usage', usage: result.usage })
+      output.result(result, startedAt)
+    } else if (outputFormat === 'json' || invocation.legacyJson) {
+      writeJson(io, createSuccessResult(result, info, startedAt, 0))
+    } else {
+      io.stdout(`${text}\n`)
+    }
+    return 0
   }
   const service = await dependencies.createService({
     eventSink:

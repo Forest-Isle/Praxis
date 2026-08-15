@@ -15,6 +15,11 @@ Anthropic/OpenAI-compatible model access. Praxis deliberately excludes
 accounts, organizations, billing, managed enterprise policy, remote control,
 IDE surfaces, and telemetry control planes.
 
+Claude Code 2.1.208 is the compatibility, architecture, and design baseline.
+Every single-user CLI capability remains required unless it falls inside an
+explicit exclusion above. A similar Praxis surface is not a substitute for the
+corresponding Claude command or runtime contract.
+
 ## Requirements
 
 - macOS or Linux
@@ -87,8 +92,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   `/rewind`, runtime `/cd`, transcript-free
   `/btw` side questions with background-Agent handoff, interactive
   `/background` terminal handoff, unified `/status`/`/config`/`/usage` settings
-  tabs, `/sandbox` mode/dependency/override/config controls, `/mcp`, `/memory` shared
-  instruction and auto-memory access, and live extension-reload controls,
+  tabs, `/sandbox` mode/dependency/override/config controls, local cached
+  `/release-notes`, Claude-compatible `/statusline` command execution and setup
+  agent, `/mcp`, `/memory` shared instruction and auto-memory access, and live
+  extension-reload controls,
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external

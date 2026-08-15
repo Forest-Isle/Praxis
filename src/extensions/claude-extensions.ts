@@ -78,6 +78,53 @@ Input:
 $ARGUMENTS`,
 }
 
+const BUILTIN_STATUSLINE_COMMAND: ClaudeExtensionDefinition = {
+  path: '/__praxis_builtin__/commands/statusline.md',
+  scope: 'user',
+  content: '',
+  kind: 'command',
+  name: 'statusline',
+  description: "Set up Claude Code's status line UI",
+  modelInvocable: true,
+  permissionSafe: true,
+  body: `Create an Agent with subagent_type "statusline-setup" and the prompt "$ARGUMENTS"`,
+}
+
+export const BUILTIN_STATUSLINE_AGENT_PATH =
+  '/__praxis_builtin__/agents/statusline-setup.md'
+
+const BUILTIN_STATUSLINE_AGENT: ClaudeExtensionDefinition = {
+  path: BUILTIN_STATUSLINE_AGENT_PATH,
+  scope: 'user',
+  content: '',
+  kind: 'agent',
+  name: 'statusline-setup',
+  description: "Configure the user's Claude Code status line setting.",
+  modelInvocable: false,
+  permissionSafe: false,
+  body: `You configure the statusLine command in the user's shared Claude Code settings.
+
+Importing a shell prompt:
+1. Inspect shell configuration in this order: ~/.zshrc, ~/.bashrc, ~/.bash_profile, then ~/.profile.
+2. Find an exported or unexported quoted PS1 assignment. Preserve the prompt's information and colors.
+3. Translate prompt escapes into commands: user to $(whoami), short/full host to $(hostname -s)/$(hostname), working directory to $(pwd), basename to $(basename "$(pwd)"), and time/date escapes to the corresponding date command. Preserve newlines and literal prompt counters.
+4. Emit ANSI sequences with printf because the result is rendered by a terminal in dimmed colors.
+5. Remove a trailing prompt marker such as "$" or ">" from the displayed status line.
+6. If no PS1 exists and the request gives no other design, ask what information should be displayed.
+
+The status command receives one JSON document on stdin. It contains session_id, optional session_name, transcript_path, cwd, model.id and model.display_name, workspace.current_dir/project_dir/added_dirs, version, output_style.name, cost totals, context_window totals/current_usage/used_percentage/remaining_percentage, exceeds_200k_tokens, and optional vim, agent, and worktree objects. Read stdin once and reuse it when extracting multiple values. Typical jq selectors include .model.display_name, .workspace.current_dir, .output_style.name, .context_window.remaining_percentage, and .context_window.used_percentage. Optional values must be tested before printing them.
+
+Preserve every unrelated setting and update ~/.claude/settings.json with this shape:
+{
+  "statusLine": {
+    "type": "command",
+    "command": "the command"
+  }
+}
+
+Resolve a symlinked settings file and edit its target. Complex implementations may live in a script under ~/.claude and be referenced by the setting. Git commands in that script must avoid optional locks. Report the exact configuration and script path, if any. End by telling the parent agent that future status-line changes must use the statusline-setup agent and that the user can request further changes.`,
+}
+
 const GENERAL_PURPOSE_AGENT: ClaudeAgentDefinition = {
   name: 'general-purpose',
   description:
@@ -268,7 +315,10 @@ export class ClaudeExtensionCatalog {
     this.disableSlashCommands = options.disableSlashCommands === true
     this.commands = options.disableSlashCommands
       ? new Map()
-      : new Map([['loop', BUILTIN_LOOP]])
+      : new Map([
+          ['loop', BUILTIN_LOOP],
+          ['statusline', BUILTIN_STATUSLINE_COMMAND],
+        ])
     if (!options.disableSlashCommands) {
       for (const [name, command] of indexed('command', resources.commands)) {
         this.commands.set(name, command)
@@ -277,7 +327,10 @@ export class ClaudeExtensionCatalog {
     this.skills = options.disableSlashCommands
       ? new Map()
       : indexed('skill', resources.skills)
-    this.agents = indexed('agent', resources.agents)
+    this.agents = new Map([
+      ['statusline-setup', BUILTIN_STATUSLINE_AGENT],
+      ...indexed('agent', resources.agents),
+    ])
   }
 
   setMcpPrompts(prompts: readonly ClaudeMcpPromptDefinition[]): void {
@@ -302,6 +355,10 @@ export class ClaudeExtensionCatalog {
     if (!definition) {
       return { userMessages: [prompt] }
     }
+    const invocationArguments =
+      definition === BUILTIN_STATUSLINE_COMMAND && argumentsText.length === 0
+        ? 'Configure my statusLine from my shell PS1 configuration'
+        : argumentsText
     return {
       userMessages: [
         [
@@ -311,7 +368,7 @@ export class ClaudeExtensionCatalog {
             ? [`<command-args>${argumentsText}</command-args>`]
             : []),
         ].join('\n'),
-        renderInvocation(definition, argumentsText),
+        renderInvocation(definition, invocationArguments),
       ],
     }
   }
