@@ -862,7 +862,7 @@ describe('foreground Claude Agent execution', () => {
           path: join(configRoot, 'agents', 'hook-agent.md'),
           scope: 'user',
           content:
-            '---\nname: hook-agent\ndescription: Exercise hooks.\ntools: [Read]\nhooks:\n  PreToolUse:\n    - matcher: Read\n      hooks:\n        - type: command\n          command: agent-pre\n  Stop:\n    - hooks:\n        - type: command\n          command: agent-stop\n---\nHOOK_AGENT_POLICY',
+            '---\nname: hook-agent\ndescription: Exercise hooks.\ntools: [Read]\nhooks:\n  SubagentStart:\n    - hooks:\n        - type: command\n          command: agent-start\n  PreToolUse:\n    - matcher: Read\n      hooks:\n        - type: command\n          command: agent-pre\n  Stop:\n    - hooks:\n        - type: command\n          command: agent-stop\n---\nHOOK_AGENT_POLICY',
         },
       ],
     })
@@ -886,6 +886,7 @@ describe('foreground Claude Agent execution', () => {
       hookCalls.filter(({ command }) => !command.startsWith('wrong-')),
     ).toEqual([
       { command: 'global-start', event: 'SubagentStart' },
+      { command: 'agent-start', event: 'SubagentStart' },
       { command: 'global-pre', event: 'PreToolUse' },
       { command: 'agent-pre', event: 'PreToolUse' },
       { command: 'global-stop', event: 'SubagentStop' },

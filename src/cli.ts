@@ -1015,6 +1015,7 @@ interface SessionCommands {
   mcpTools?(name: string): Promise<readonly ClaudeMcpToolInspection[]>
   close?(): Promise<void>
   runtimeInfo?(): CliRuntimeInfo
+  initialAgentPrompt?(): string | undefined
   agentDefinitions?(): readonly { name: string; description: string }[]
   promptSuggestion?(
     sessionId: string,
@@ -1185,6 +1186,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const runtimeEventSink = debug?.eventSink ?? eventSink
   let provider: ModelProvider | undefined
   let providerForModel: ((model: string) => ModelProvider) | undefined
+  let providerForMainModel: ((model: string) => ModelProvider) | undefined
   const context = parseContextEnvironment(runtimeEnvironment)
   const apiKey = runtimeEnvironment.PRAXIS_API_KEY
   const model = cli.model ?? runtimeEnvironment.PRAXIS_MODEL
@@ -1219,15 +1221,19 @@ const createDefaultService: CliDependencies['createService'] = async ({
       cli,
       controls,
     )
-    const models = [model, ...(cli.fallbackModels ?? [])].filter(
-      (candidate, index, all) => all.indexOf(candidate) === index,
-    )
     const createProvider = providerForModel
-    const providers = models.map((candidate) => createProvider(candidate))
-    provider =
-      providers.length > 1
+    providerForMainModel = (primaryModel: string) => {
+      const models = [primaryModel, ...(cli.fallbackModels ?? [])].filter(
+        (candidate, index, all) => all.indexOf(candidate) === index,
+      )
+      const providers = models.map((candidate) => createProvider(candidate))
+      const selected = providers[0]
+      if (!selected) throw new Error('A primary model is required')
+      return providers.length > 1
         ? new FallbackModelProvider({ providers })
-        : providers[0]
+        : selected
+    }
+    provider = providerForMainModel(model)
   }
 
   const options = {
@@ -1236,6 +1242,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
     claudeVersion,
     eventSink: runtimeEventSink,
     sessionPersistence: cli.sessionPersistence,
+    explicitModel:
+      interactiveModel !== undefined || controls.model !== undefined,
+    explicitSystemPrompt: cli.systemPrompt !== undefined,
+    agentInitialPromptHandledExternally: interactive,
+    agentSystemPromptOverridesExplicit: interactive,
     effort: cli.effort ?? 'high',
     ...(cli.maxTurns === undefined ? {} : { maxModelTurns: cli.maxTurns }),
     ...(cli.brief && !cli.disallowedTools.includes('SendUserMessage')
@@ -1388,6 +1399,19 @@ const createDefaultService: CliDependencies['createService'] = async ({
     }
   }
   settings.push(...pluginResources.settings)
+  const configuredAgent = [...settings]
+    .reverse()
+    .map((resource) =>
+      resource.value &&
+      typeof resource.value === 'object' &&
+      !Array.isArray(resource.value)
+        ? (resource.value as Record<string, unknown>).agent
+        : undefined,
+    )
+    .find(
+      (value): value is string => typeof value === 'string' && value.length > 0,
+    )
+  const selectedMainAgent = agent ?? configuredAgent
   const resources = {
     ...loadedResources,
     commands: [...loadedResources.commands, ...pluginResources.commands],
@@ -1726,6 +1750,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...options,
       provider: hostedToolProvider,
       ...(providerForModel ? { providerForModel } : {}),
+      ...(providerForMainModel ? { providerForMainModel } : {}),
       tools: filteredTools,
       mcp: mcpTools,
       permissions,
@@ -1755,7 +1780,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : {}),
       ...(interactiveTools ? { interactiveTools } : {}),
       ...(hooks ? { hooks } : {}),
-      ...(agent ? { agent } : {}),
+      ...(selectedMainAgent ? { agent: selectedMainAgent } : {}),
       contextAssembler: new ClaudeContextAssembler({
         loadResources: loadContextResources,
         loadDynamicContext: (runtimeCwd = workspace.cwd()) =>
@@ -1965,6 +1990,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
       stopTask: (sessionId: string, taskId: string) =>
         service.stopTask(sessionId, taskId),
       agentDefinitions: () => extensions.agentDefinitions(),
+      initialAgentPrompt: () =>
+        selectedMainAgent
+          ? extensions.agent(selectedMainAgent)?.initialPrompt
+          : undefined,
       inspect: (sessionId) => service.inspect(sessionId),
       export: (sessionId) => service.export(sessionId),
       transcript: (sessionId) =>
@@ -1998,7 +2027,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
       runtimeInfo: () => ({
         ...runtimeInfo,
         cwd: workspace.cwd(),
-        model: provider?.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
+        model:
+          service.model() ??
+          provider?.model ??
+          runtimeEnvironment.PRAXIS_MODEL ??
+          'unknown',
       }),
       promptSuggestion: (sessionId, suggestionSignal) =>
         service.promptSuggestion(sessionId, suggestionSignal),

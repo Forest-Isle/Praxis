@@ -1201,3 +1201,18 @@ Status: pending.
       plan approval, MCP elicitation — credential-free subset)
 - [ ] align exact dialog layout/behavior for each included dialog
 - [ ] focused TTY/Ink gates per dialog
+
+## Stage 138 - agent definition runtime
+
+Status: complete for the verified Claude Code 2.1.208 definition contract.
+
+- [x] preserve tools, deny rules, model, effort, permission mode, turn bound,
+      skills, initial prompt, memory, background, isolation, hooks, and MCP
+      frontmatter metadata
+- [x] apply child model/tool/effort/turn/permission/launch controls, persistent
+      memory, skill preloads, lifecycle-scoped hooks, and additive scoped MCP
+- [x] apply main-thread system prompt, memory, first-turn prompt, model
+      precedence, final tool scoping, settings selection, and native resume
+- [x] verify the top-level request and transcript contract against the pinned
+      Claude 2.1.208 binary, including explicit model precedence and the
+      headless/interactive system-prompt precedence split

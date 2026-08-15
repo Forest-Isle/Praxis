@@ -94,6 +94,28 @@ Failed execution remains visible through output and notification status; any
 persisted sidechain remains available for inspection. Exclusive creation
 prevents overwriting native or Praxis output.
 
+## Main-thread agent definitions
+
+`--agent`, the effective shared `agent` setting, and resumed native
+`agent-setting` records select the same shared definition catalog. A valid
+selection is persisted as Claude's append-only `agent-setting`; if a resumed
+definition no longer exists, Praxis uses the default runtime.
+
+For a fresh main-thread session, `initialPrompt` is placed before the user's
+text so slash expansion observes the same order as Claude Code. It is not
+replayed on resume. The custom body, plus its configured persistent memory,
+becomes the agent system prompt. In print/headless mode an explicit system
+prompt takes precedence; in interactive mode the selected agent body takes
+precedence, matching Claude Code 2.1.208's interactive prompt assembly. Agent
+model selection applies only when the user did not explicitly select a model.
+Tool allow/deny rules scope the final assembled main-thread registry, including
+MCP and coordination tools.
+
+Claude Code 2.1.208 does not apply definition `effort`, `maxTurns`,
+`permissionMode`, skill preloads, scoped hooks, or private MCP connections to
+the main thread. Those fields retain the child-runtime behavior described
+above; Praxis does not silently widen them at top level.
+
 ## Extended lifecycle
 
 Top-level background sessions, `praxis agents`, background Bash, durable task

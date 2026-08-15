@@ -89,6 +89,7 @@ import {
   type ContextAssembler,
 } from '../core/context.js'
 import type {
+  ClaudeAgentRuntimeDefinition,
   ClaudeExtensionCatalog,
   ClaudePromptExpansionMessage,
 } from '../extensions/claude-extensions.js'
@@ -107,6 +108,7 @@ import {
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
 import { ModelCompactor } from './model-compactor.js'
 import {
+  agentMemoryPrompt,
   type AgentPermissionMode,
   ClaudeSubagentExecutor,
   StructuredOutputRegistry,
@@ -125,6 +127,7 @@ import type {
   WorkspaceContext,
 } from './session-worktree.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
+import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import { generateToolUseSummary } from './tool-use-summary.js'
 import {
   ClaudeUserMessageToolRegistry,
@@ -173,6 +176,11 @@ export interface ClaudeSessionServiceOptions {
   enableDynamicWakeups?: boolean
   enableWorkflows?: boolean
   providerForModel?: (model: string) => ModelProvider
+  providerForMainModel?: (model: string) => ModelProvider
+  explicitModel?: boolean
+  explicitSystemPrompt?: boolean
+  agentInitialPromptHandledExternally?: boolean
+  agentSystemPromptOverridesExplicit?: boolean
   effort?: string
   maxModelTurns?: number
   betas?: readonly string[]
@@ -204,6 +212,30 @@ function agentPermissionMode(
   mode: ClaudePermissionMode | undefined,
 ): AgentPermissionMode {
   return mode === undefined || mode === 'manual' ? 'default' : mode
+}
+
+function agentToolName(rule: string): string {
+  const opening = rule.indexOf('(')
+  return (opening < 0 ? rule : rule.slice(0, opening)).trim()
+}
+
+function mainAgentToolNames(
+  tools: ToolRegistry,
+  agent: ClaudeAgentRuntimeDefinition,
+): readonly string[] {
+  const requested = agent.tools ? new Set(agent.tools.map(agentToolName)) : null
+  if (requested && agent.memory) {
+    requested.add('Read')
+    requested.add('Edit')
+    requested.add('Write')
+  }
+  const disallowed = new Set(agent.disallowedTools?.map(agentToolName) ?? [])
+  return tools
+    .definitions()
+    .map(({ name }) => name)
+    .filter(
+      (name) => (!requested || requested.has(name)) && !disallowed.has(name),
+    )
 }
 
 export interface SessionRunResult {
@@ -361,6 +393,7 @@ export class ClaudeSessionService {
     Promise<void>
   >()
   private readonly downloadedFileResourceSessions = new Set<string>()
+  private activeProvider: ModelProvider | undefined
   private mcpClosePromise: Promise<void> | undefined
   private runtimeCwd: string
 
@@ -398,6 +431,12 @@ export class ClaudeSessionService {
               : {}),
           })
         : null
+    const configuredAgent = options.agent
+      ? (options.extensions?.agent(options.agent) ?? null)
+      : null
+    if (configuredAgent && options.provider) {
+      this.activeProvider = this.providerForAgent(configuredAgent)
+    }
   }
 
   nextScheduledPrompt(signal?: AbortSignal) {
@@ -911,7 +950,6 @@ export class ClaudeSessionService {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<string | null> {
-    const provider = this.provider()
     const loaded =
       this.options.sessionPersistence === false
         ? await this.turnStore(sessionId).withLease((lease) => lease.load())
@@ -924,20 +962,22 @@ export class ClaudeSessionService {
     this.restoreWorktree(entries.entries)
     const agentName =
       this.options.agent ?? getClaudeAgentSetting(entries.entries)
-    const agent = agentName ? this.options.extensions?.agent(agentName) : null
+    const agent = this.resolveAgent(agentName)
+    const provider = this.providerForAgent(agent)
+    this.activeProvider = provider
     const assembledContext = await this.options.contextAssembler?.assemble({
       cwd: this.activeCwd(),
     })
+    const agentSystem = await this.mainAgentSystemPrompt(agent)
+    const assembledSystemMessages = this.assembledSystemMessages(
+      agent,
+      assembledContext?.systemMessages ?? [],
+    )
     const contextMessages = [
-      ...(assembledContext?.systemMessages ?? []),
-      ...(agent
-        ? [
-            {
-              role: 'system' as const,
-              content: `# Agent definition: ${agent.name}\n\n${agent.body}`,
-            },
-          ]
+      ...(agentSystem
+        ? [{ role: 'system' as const, content: agentSystem }]
         : []),
+      ...assembledSystemMessages,
     ]
     const messages = [
       ...contextMessages,
@@ -949,11 +989,17 @@ export class ClaudeSessionService {
         assembledContext?.firstUserMessageContext,
       ),
     ]
+    const suggestionTools =
+      agent && this.options.tools
+        ? new FilteredToolRegistry(this.options.tools, {
+            tools: mainAgentToolNames(this.options.tools, agent),
+          })
+        : this.options.tools
     let suggestion = ''
     for await (const event of provider.complete({
       messages,
       ...(provider.capabilities.tools
-        ? { tools: this.options.tools?.definitions() ?? [] }
+        ? { tools: suggestionTools?.definitions() ?? [] }
         : {}),
       ...(this.options.effort ? { effort: this.options.effort } : {}),
       ...(signal ? { signal } : {}),
@@ -1953,7 +1999,19 @@ export class ClaudeSessionService {
           tail: appendResult.tail,
         }
       }
-      const provider = this.provider()
+      const agentName =
+        this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
+      const agent = this.resolveAgent(agentName)
+      const provider = this.providerForAgent(agent)
+      this.activeProvider = provider
+      const effectivePrompt =
+        !requireExisting &&
+        !skipUserPrompt &&
+        !this.options.agentInitialPromptHandledExternally &&
+        shellCommand === undefined &&
+        agent?.initialPrompt
+          ? `${agent.initialPrompt}\n\n${prompt}`
+          : prompt
       const initialPricing = this.options.pricing?.resolve(
         provider.model ?? 'praxis/provider',
       )
@@ -2158,7 +2216,7 @@ export class ClaudeSessionService {
                 currentPromptId ??
                 this.promptIdForToolCall(snapshot.entries, callId),
               defaultModel: provider.model ?? 'praxis/provider',
-              tokenBudget: workflowTokenTarget(prompt),
+              tokenBudget: workflowTokenTarget(effectivePrompt),
               enabled: true,
             })
           : agentTools
@@ -2257,14 +2315,20 @@ export class ClaudeSessionService {
       const structuredCapture = this.options.structuredOutputSchema
         ? { calls: 0, value: undefined as unknown }
         : undefined
+      const agentScopedTools =
+        agent && fileHistoryTools
+          ? new FilteredToolRegistry(fileHistoryTools, {
+              tools: mainAgentToolNames(fileHistoryTools, agent),
+            })
+          : fileHistoryTools
       const structuredTools =
         this.options.structuredOutputSchema && structuredCapture
           ? new StructuredOutputRegistry(
-              fileHistoryTools ?? this.options.tools ?? emptyToolRegistry,
+              agentScopedTools ?? this.options.tools ?? emptyToolRegistry,
               this.options.structuredOutputSchema,
               structuredCapture,
             )
-          : fileHistoryTools
+          : agentScopedTools
       const hookTools =
         this.options.hooks && structuredTools && turnPermissions
           ? new ClaudeHookToolCoordinator({
@@ -2528,16 +2592,9 @@ export class ClaudeSessionService {
           { inputTokens: 0, outputTokens: 0 },
         )
 
-        const agentName =
-          this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
-        const agent = agentName
-          ? this.options.extensions?.agent(agentName)
-          : null
-        if (agentName && !agent) {
-          throw new Error(`Unknown Claude agent ${agentName}`)
-        }
         if (
           this.options.agent &&
+          agent &&
           getClaudeAgentSetting(snapshot.entries) !== this.options.agent
         ) {
           const agentSetting = createClaudeAgentSettingEntry(
@@ -2558,10 +2615,18 @@ export class ClaudeSessionService {
         const assembledContext = await this.options.contextAssembler?.assemble({
           cwd: this.activeCwd(),
         })
+        const agentSystem = await this.mainAgentSystemPrompt(agent)
+        const assembledSystemMessages = this.assembledSystemMessages(
+          agent,
+          assembledContext?.systemMessages ?? [],
+        )
         const planModeMessage =
           this.options.interactiveTools?.contextMessage(sessionId)
         const contextMessages = [
-          ...(assembledContext?.systemMessages ?? []),
+          ...(agentSystem
+            ? [{ role: 'system' as const, content: agentSystem }]
+            : []),
+          ...assembledSystemMessages,
           ...(planModeMessage
             ? [{ role: 'system' as const, content: planModeMessage }]
             : []),
@@ -2570,14 +2635,6 @@ export class ClaudeSessionService {
                 {
                   role: 'system' as const,
                   content: CLAUDE_USER_MESSAGE_PROMPT,
-                },
-              ]
-            : []),
-          ...(agent
-            ? [
-                {
-                  role: 'system' as const,
-                  content: `# Agent definition: ${agent.name}\n\n${agent.body}`,
                 },
               ]
             : []),
@@ -2597,11 +2654,11 @@ export class ClaudeSessionService {
           : shellCommand === undefined
             ? this.options.extensions
               ? await this.options.extensions.expandPromptAsync(
-                  prompt,
+                  effectivePrompt,
                   signal,
                   toolResultDirectory,
                 )
-              : { userMessages: [prompt] }
+              : { userMessages: [effectivePrompt] }
             : {
                 userMessages: [`<bash-input>${shellCommand}</bash-input>`],
               }
@@ -2644,7 +2701,8 @@ export class ClaudeSessionService {
         }))
         const agentMentionMessages =
           shellCommand === undefined && !skipUserPrompt
-            ? (this.options.extensions?.agentMentionMessages(prompt) ?? [])
+            ? (this.options.extensions?.agentMentionMessages(effectivePrompt) ??
+              [])
             : []
         const injectAgentMentionContext = (
           messages: readonly ModelMessage[],
@@ -2657,7 +2715,7 @@ export class ClaudeSessionService {
             if (
               message?.role === 'user' &&
               typeof message.content === 'string' &&
-              message.content.endsWith(prompt)
+              message.content.endsWith(effectivePrompt)
             ) {
               insertionIndex = index
               foundPrompt = true
@@ -2918,7 +2976,7 @@ export class ClaudeSessionService {
               ...hookSession,
               hook_event_name: 'UserPromptSubmit',
               prompt_id: currentPromptId ?? randomUUID(),
-              prompt,
+              prompt: effectivePrompt,
             },
             undefined,
             signal,
@@ -3135,7 +3193,7 @@ export class ClaudeSessionService {
             snapshot.tail,
             createClaudeLastPromptEntry({
               sessionId,
-              lastPrompt: prompt,
+              lastPrompt: effectivePrompt,
               leafUuid: finalLeafUuid,
             }),
           )
@@ -3914,6 +3972,64 @@ export class ClaudeSessionService {
       throw new Error('A model provider is required for run and resume')
     }
     return this.options.provider
+  }
+
+  model(): string | undefined {
+    return this.activeProvider?.model ?? this.options.provider?.model
+  }
+
+  private providerForAgent(
+    agent: ClaudeAgentRuntimeDefinition | null,
+  ): ModelProvider {
+    const inherited = this.provider()
+    const selectProvider =
+      this.options.providerForMainModel ?? this.options.providerForModel
+    if (
+      this.options.explicitModel ||
+      !agent?.model ||
+      agent.model === 'inherit' ||
+      !selectProvider
+    ) {
+      return inherited
+    }
+    return selectProvider(agent.model)
+  }
+
+  private resolveAgent(
+    name: string | null | undefined,
+  ): ClaudeAgentRuntimeDefinition | null {
+    if (!name) return null
+    return this.options.extensions?.agent(name) ?? null
+  }
+
+  private async mainAgentSystemPrompt(
+    agent: ClaudeAgentRuntimeDefinition | null,
+  ): Promise<string | null> {
+    if (
+      !agent ||
+      (this.options.explicitSystemPrompt &&
+        !this.options.agentSystemPromptOverridesExplicit)
+    ) {
+      return null
+    }
+    const memory = await agentMemoryPrompt(
+      this.options.configRoot,
+      this.activeCwd(),
+      agent,
+    )
+    const system = memory ? `${agent.body}\n\n${memory}` : agent.body
+    return system.trim() ? system : null
+  }
+
+  private assembledSystemMessages(
+    agent: ClaudeAgentRuntimeDefinition | null,
+    messages: readonly ModelMessage[],
+  ): readonly ModelMessage[] {
+    return agent &&
+      this.options.explicitSystemPrompt &&
+      this.options.agentSystemPromptOverridesExplicit
+      ? messages.slice(1)
+      : messages
   }
 
   private contextBudget(provider: ModelProvider): ContextBudget | null {

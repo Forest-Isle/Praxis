@@ -137,7 +137,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   workspace-directory add/remove controls, path confinement, credential
   redaction, and sanitized child processes.
 - **Durable local work** — resumable sessions, full-history forks, file
-  checkpoints, tasks, foreground/background subagents, and top-level agents.
+  checkpoints, tasks, foreground/background subagents, top-level agents, and
+  Claude-compatible main-thread agent definitions with native prompt, model,
+  tool, memory, first-turn, and resume behavior.
 - **Claude-compatible ecosystem** — shared instructions with recursive `@`
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
   plugins, and transcript data.

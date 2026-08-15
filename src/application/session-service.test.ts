@@ -4235,7 +4235,7 @@ describe('ClaudeSessionService', () => {
     expect(requests[0]?.messages).toEqual([
       {
         role: 'system',
-        content: '# Agent definition: reviewer\n\nAGENT_MARKER',
+        content: 'AGENT_MARKER',
       },
       {
         role: 'user',
@@ -4246,7 +4246,7 @@ describe('ClaudeSessionService', () => {
     ])
     expect(requests[1]?.messages[0]).toEqual({
       role: 'system',
-      content: '# Agent definition: reviewer\n\nAGENT_MARKER',
+      content: 'AGENT_MARKER',
     })
 
     const { resolveClaudePaths } =
@@ -4273,6 +4273,237 @@ describe('ClaudeSessionService', () => {
     expect(entries[2]?.message.content).toEqual([
       { type: 'text', text: 'COMMAND [alpha beta] ZERO=[alpha]' },
     ])
+  })
+
+  it('applies top-level agent prompt, model, initial prompt, and tool controls', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-main-agent-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const memoryDirectory = join(
+      cwd,
+      '.claude',
+      'agent-memory-local',
+      'reviewer',
+    )
+    await mkdir(memoryDirectory, { recursive: true })
+    await writeFile(join(memoryDirectory, 'MEMORY.md'), 'DURABLE_MEMORY')
+    const requests: Array<{ model: string; request: ModelRequest }> = []
+    const provider = (model: string): ModelProvider => ({
+      model,
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push({ model, request })
+        yield { type: 'text-delta', delta: 'done' }
+      },
+    })
+    const tools: ToolRegistry = {
+      definitions: () =>
+        ['Read', 'Write', 'Bash'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' as const },
+        })),
+      prepare: async (call) => call,
+      execute: async () => ({ content: 'done', isError: false }),
+    }
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'reviewer.md'),
+          scope: 'user',
+          content:
+            '---\nname: reviewer\ndescription: Review work.\nmodel: agent-model\neffort: low\ntools: [Read, Write]\ndisallowedTools: [Write]\ninitialPrompt: INITIAL_MARKER\nmemory: local\n---\nAGENT_MARKER',
+        },
+      ],
+    })
+    const selected = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: provider('base-model'),
+      providerForModel: provider,
+      tools,
+      extensions,
+      agent: 'reviewer',
+      effort: 'high',
+    })
+    expect(selected.model()).toBe('agent-model')
+
+    const result = await selected.run('USER_MARKER')
+    const resumed = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: provider('base-model'),
+      providerForModel: provider,
+      tools,
+      extensions,
+      effort: 'high',
+    })
+    await resumed.resume(result.sessionId, 'RESUME_MARKER')
+
+    expect(requests.map(({ model }) => model)).toEqual([
+      'agent-model',
+      'agent-model',
+    ])
+    expect(requests[0]?.request.messages[0]).toMatchObject({ role: 'system' })
+    expect(String(requests[0]?.request.messages[0]?.content)).toContain(
+      'AGENT_MARKER',
+    )
+    expect(String(requests[0]?.request.messages[0]?.content)).toContain(
+      'DURABLE_MEMORY',
+    )
+    expect(requests[0]?.request.messages[1]).toEqual({
+      role: 'user',
+      content: 'INITIAL_MARKER\n\nUSER_MARKER',
+    })
+    expect(requests[1]?.request.messages).toContainEqual({
+      role: 'user',
+      content: 'RESUME_MARKER',
+    })
+    expect(
+      requests[1]?.request.messages.filter(
+        (message) =>
+          message.role === 'user' &&
+          String(message.content).includes('INITIAL_MARKER'),
+      ),
+    ).toHaveLength(1)
+    expect(requests[0]?.request.tools?.map(({ name }) => name)).toEqual([
+      'Read',
+    ])
+    expect(requests[0]?.request.effort).toBe('high')
+
+    const explicitRequests: ModelRequest[] = []
+    const explicitProvider: ModelProvider = {
+      model: 'explicit-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        explicitRequests.push(request)
+        yield { type: 'text-delta', delta: 'done' }
+      },
+    }
+    const explicit = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: explicitProvider,
+      providerForModel: provider,
+      explicitModel: true,
+      explicitSystemPrompt: true,
+      contextAssembler: {
+        assemble: async () => ({
+          systemMessages: [
+            { role: 'system', content: 'EXPLICIT_SYSTEM_MARKER' },
+          ],
+        }),
+      },
+      tools,
+      extensions,
+      agent: 'reviewer',
+    })
+    await explicit.run('EXPLICIT_USER')
+
+    expect(explicit.model()).toBe('explicit-model')
+    expect(explicitRequests[0]?.messages[0]).toEqual({
+      role: 'system',
+      content: 'EXPLICIT_SYSTEM_MARKER',
+    })
+    expect(JSON.stringify(explicitRequests[0]?.messages)).not.toContain(
+      'AGENT_MARKER',
+    )
+    expect(JSON.stringify(explicitRequests[0]?.messages)).toContain(
+      'INITIAL_MARKER\\n\\nEXPLICIT_USER',
+    )
+
+    const interactiveRequests: ModelRequest[] = []
+    const interactive = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        model: 'interactive-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          interactiveRequests.push(request)
+          yield { type: 'text-delta', delta: 'done' }
+        },
+      },
+      explicitModel: true,
+      explicitSystemPrompt: true,
+      agentInitialPromptHandledExternally: true,
+      agentSystemPromptOverridesExplicit: true,
+      contextAssembler: {
+        assemble: async () => ({
+          systemMessages: [
+            { role: 'system', content: 'EXPLICIT_SYSTEM_MARKER' },
+          ],
+        }),
+      },
+      tools,
+      extensions,
+      agent: 'reviewer',
+    })
+    await interactive.run('INTERACTIVE_USER')
+
+    expect(String(interactiveRequests[0]?.messages[0]?.content)).toContain(
+      'AGENT_MARKER',
+    )
+    expect(JSON.stringify(interactiveRequests[0]?.messages)).not.toContain(
+      'EXPLICIT_SYSTEM_MARKER',
+    )
+    expect(interactiveRequests[0]?.messages).toContainEqual({
+      role: 'user',
+      content: 'INTERACTIVE_USER',
+    })
+    expect(JSON.stringify(interactiveRequests[0]?.messages)).not.toContain(
+      'INITIAL_MARKER\\n\\nINTERACTIVE_USER',
+    )
+  })
+
+  it('uses default behavior without persisting a missing top-level agent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-missing-agent-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      model: 'base-model',
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        yield { type: 'text-delta', delta: 'done' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      extensions: new ClaudeExtensionCatalog({
+        agents: [],
+        commands: [],
+        skills: [],
+      }),
+      agent: 'removed-agent',
+    })
+
+    const result = await service.run('first')
+    await service.resume(result.sessionId, 'second')
+
+    expect(requests[0]?.messages).toEqual([{ role: 'user', content: 'first' }])
+    expect(
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: result.sessionId,
+        }).sessionFile,
+        'utf8',
+      ),
+    ).not.toContain('agent-setting')
   })
 
   it('sends and persists the built-in init analysis prompt as two Claude user messages', async () => {

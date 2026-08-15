@@ -321,7 +321,7 @@ function agentMemoryDirectory(
   )
 }
 
-async function agentMemoryPrompt(
+export async function agentMemoryPrompt(
   configRoot: string,
   cwd: string,
   definition: ClaudeAgentRuntimeDefinition | null,
@@ -1801,8 +1801,8 @@ export class ClaudeSubagentExecutor {
     })
 
     try {
-      if (this.options.hooks) {
-        const start = await this.options.hooks.run(
+      if (scopedHooks) {
+        const start = await scopedHooks.run(
           {
             ...hookSession,
             hook_event_name: 'SubagentStart',
