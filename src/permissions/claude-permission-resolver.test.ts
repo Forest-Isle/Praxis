@@ -4,9 +4,724 @@ import {
   autoModePermissionOutcome,
   permissionDecisionSource,
 } from '../core/runtime.js'
-import { ClaudePermissionResolver } from './claude-permission-resolver.js'
+import {
+  claudePermissionRuleMatches,
+  ClaudePermissionResolver,
+} from './claude-permission-resolver.js'
 
 describe('ClaudePermissionResolver', () => {
+  it('matches exact command, domain, and filesystem permission rules', () => {
+    expect(
+      claudePermissionRuleMatches(
+        'Bash(npm test)',
+        { id: 'bash', name: 'Bash', input: { command: 'npm test' } },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Bash(npm test)',
+        { id: 'bash-other', name: 'Bash', input: { command: 'npm test:e2e' } },
+        '/workspace',
+      ),
+    ).toBe(false)
+    expect(
+      claudePermissionRuleMatches(
+        'Bash(npm run:*)',
+        {
+          id: 'bash-safe-env',
+          name: 'Bash',
+          input: { command: 'NODE_ENV=test npm run build' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Bash(npm run:*)',
+        {
+          id: 'bash-unsafe-env',
+          name: 'Bash',
+          input: { command: 'CUSTOM_TARGET=test npm run build' },
+        },
+        '/workspace',
+      ),
+    ).toBe(false)
+    expect(
+      claudePermissionRuleMatches(
+        'WebFetch(domain:*.example.com)',
+        {
+          id: 'fetch',
+          name: 'WebFetch',
+          input: { url: 'https://docs.example.com/guide' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Read(src/**)',
+        {
+          id: 'read',
+          name: 'Read',
+          input: { file_path: '/workspace/src/index.ts' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'PowerShell(Get-ChildItem)',
+        {
+          id: 'powershell',
+          name: 'PowerShell',
+          input: { command: 'Get-ChildItem' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Skill(reviewer)',
+        {
+          id: 'skill',
+          name: 'Skill',
+          input: { skill: 'reviewer' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Skill(reviewer:*)',
+        {
+          id: 'skill-prefix',
+          name: 'Skill',
+          input: { skill: 'reviewer strict' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Edit(/.claude/**)',
+        {
+          id: 'write-settings',
+          name: 'Write',
+          input: { file_path: '/workspace/.claude/settings.local.json' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+    expect(
+      claudePermissionRuleMatches(
+        'Read(//shared/**)',
+        {
+          id: 'grep-shared',
+          name: 'Grep',
+          input: { path: '/shared/src', pattern: 'TODO' },
+        },
+        '/workspace',
+      ),
+    ).toBe(true)
+  })
+
+  it('normalizes safe wrappers while keeping allow and deny environment semantics distinct', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [
+        {
+          path: '/workspace/.claude/settings.json',
+          scope: 'project',
+          value: {
+            permissions: {
+              allow: ['Bash(npm test:*)'],
+              deny: ['Bash(rm:*)'],
+            },
+          },
+        },
+      ],
+    })
+
+    await expect(
+      resolver.resolve({
+        id: 'wrapped-allow',
+        name: 'Bash',
+        input: { command: 'NODE_ENV=test timeout 5 nice npm test -- --run' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'unsafe-env-allow',
+        name: 'Bash',
+        input: { command: 'CUSTOM=test npm test' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      resolver.resolve({
+        id: 'interleaved-deny',
+        name: 'Bash',
+        input: { command: 'nohup CUSTOM=test timeout 5 rm output.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(
+      resolver.resolve({
+        id: 'xargs-deny',
+        name: 'Bash',
+        input: { command: 'xargs rm output.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+  })
+
+  it('fails closed on Bash semantic hazards unless the complete command is explicitly allowed', async () => {
+    const call = {
+      id: 'eval',
+      name: 'Bash',
+      input: { command: 'eval "rm output.txt"' },
+    }
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        allowedTools: ['Bash(eval:*)'],
+      }).resolve(call),
+    ).resolves.toEqual({
+      behavior: 'ask',
+      reason: "'eval' evaluates arguments as shell code",
+      suggestions: [],
+    })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        allowedTools: ['Bash(eval "rm output.txt")'],
+      }).resolve(call),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        allowedTools: ['Bash($COMMAND output.txt)'],
+      }).resolve({
+        id: 'dynamic-exact',
+        name: 'Bash',
+        input: { command: '$COMMAND output.txt' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        disallowedTools: ['Bash(eval:*)'],
+      }).resolve(call),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+  })
+
+  it('keeps command-injection syntax checks ahead of bypass mode', async () => {
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'bypassPermissions',
+      }).resolve({
+        id: 'dynamic-command',
+        name: 'Bash',
+        input: { command: '$COMMAND output.txt' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('runtime-determined'),
+      suggestions: [],
+    })
+  })
+
+  it('keeps explicit ask and sed constraints ahead of bypass mode', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      permissionMode: 'bypassPermissions',
+      settings: [
+        {
+          path: '/workspace/.claude/settings.json',
+          scope: 'project',
+          value: { permissions: { ask: ['Bash(npm publish)'] } },
+        },
+      ],
+    })
+    const asked = await resolver.resolve({
+      id: 'bypass-ask',
+      name: 'Bash',
+      input: { command: 'npm publish' },
+    })
+    expect(asked).toMatchObject({ behavior: 'ask' })
+    expect(permissionDecisionSource(asked)).toBe('rule')
+    await expect(
+      resolver.resolve({
+        id: 'bypass-sed',
+        name: 'Bash',
+        input: { command: "sed 'e id'" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it('lets an exact ask rule outrank an exact allow on semantic failure', async () => {
+    const command = '$COMMAND output.txt'
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        allowedTools: [`Bash(${command})`],
+        settings: [
+          {
+            path: '/workspace/.claude/settings.json',
+            scope: 'project',
+            value: { permissions: { ask: [`Bash(${command})`] } },
+          },
+        ],
+      }).resolve({
+        id: 'semantic-ask-over-allow',
+        name: 'Bash',
+        input: { command },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it('applies Bash path and redirection constraints before shell allow rules', async () => {
+    const allowed = (permissionMode: 'default' | 'acceptEdits' = 'default') =>
+      new ClaudePermissionResolver({
+        cwd: '/workspace/project',
+        homeDirectory: '/home/fixture',
+        settings: [],
+        permissionMode,
+        allowedTools: ['Bash(touch:*)', 'Bash(cat:*)', 'Bash(rm:*)'],
+      })
+
+    await expect(
+      allowed().resolve({
+        id: 'touch-default',
+        name: 'Bash',
+        input: { command: 'touch output.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      allowed('acceptEdits').resolve({
+        id: 'touch-accept',
+        name: 'Bash',
+        input: { command: 'touch output.txt' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      allowed().resolve({
+        id: 'cat-outside',
+        name: 'Bash',
+        input: { command: 'cat /outside/input.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      allowed('acceptEdits').resolve({
+        id: 'redirect-outside',
+        name: 'Bash',
+        input: { command: 'touch output.txt > /outside/result.log' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      allowed('acceptEdits').resolve({
+        id: 'dangerous-rm',
+        name: 'Bash',
+        input: { command: 'rm -rf /' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('critical path'),
+      suggestions: [],
+    })
+    await expect(
+      allowed().resolve({
+        id: 'cd-git',
+        name: 'Bash',
+        input: { command: 'cd src && git status' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('bare repository'),
+    })
+  })
+
+  it('allows Bash paths through matching file rules and preserves file denies', async () => {
+    const settings = [
+      {
+        path: '/workspace/project/.claude/settings.json',
+        scope: 'project' as const,
+        value: {
+          permissions: {
+            allow: ['Bash(cat:*)', 'Read(//outside/allowed.txt)'],
+            deny: ['Read(//outside/denied.txt)'],
+          },
+        },
+      },
+    ]
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace/project',
+      settings,
+    })
+    await expect(
+      resolver.resolve({
+        id: 'read-allowed',
+        name: 'Bash',
+        input: { command: 'cat /outside/allowed.txt' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'read-denied',
+        name: 'Bash',
+        input: { command: 'cat /outside/denied.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+  })
+
+  it('enforces sed constraints before mode auto-allow but after explicit shell allow', async () => {
+    const dangerous = {
+      id: 'sed-dangerous',
+      name: 'Bash',
+      input: { command: "sed 'e id'" },
+    }
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'auto',
+        autoClassifier: async () => ({ behavior: 'allow' }),
+      }).resolve(dangerous),
+    ).resolves.toEqual({
+      behavior: 'ask',
+      reason: expect.stringContaining('sed command requires explicit approval'),
+      suggestions: [],
+    })
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        allowedTools: ['Bash(sed:*)'],
+      }).resolve(dangerous),
+    ).resolves.toEqual({ behavior: 'allow' })
+  })
+
+  it('uses tracked shell variables for deny matching and path validation', async () => {
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        disallowedTools: ['Bash(cat /etc/*)'],
+      }).resolve({
+        id: 'tracked-deny',
+        name: 'Bash',
+        input: { command: 'TARGET=/etc/passwd && cat $TARGET' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'acceptEdits',
+        allowedTools: ['Bash(rm:*)'],
+      }).resolve({
+        id: 'tracked-command-name',
+        name: 'Bash',
+        input: { command: 'COMMAND=rm; $COMMAND /' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('critical path'),
+    })
+
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+      }).resolve({
+        id: 'conditional-variable',
+        name: 'Bash',
+        input: { command: 'TARGET=safe || cat $TARGET' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('statically analyzed'),
+      suggestions: [],
+    })
+  })
+
+  it('uses AST command boundaries instead of treating quoted operators as compounds', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Bash(echo:*)'],
+    })
+    await expect(
+      resolver.resolve({
+        id: 'quoted-operators',
+        name: 'Bash',
+        input: { command: "echo 'a>b;$(not-executed)'" },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'actual-compound',
+        name: 'Bash',
+        input: { command: 'echo safe && rm output.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it('applies sed constraints before read-only auto approval but after shell allow rules', async () => {
+    const constrained = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      permissionMode: 'acceptEdits',
+    })
+    await expect(
+      constrained.resolve({
+        id: 'sed-line-print',
+        name: 'Bash',
+        input: { command: "sed -n '1p' input.txt" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      constrained.resolve({
+        id: 'sed-execute',
+        name: 'Bash',
+        input: { command: "sed '1e id' input.txt" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+
+    const explicitlyAllowed = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Bash(sed:*)'],
+    })
+    await expect(
+      explicitlyAllowed.resolve({
+        id: 'sed-prefix-allow',
+        name: 'Bash',
+        input: { command: "sed 'e id'" },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+  })
+
+  it('applies accept-edits Bash mode after rules, paths, and sed constraints', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      permissionMode: 'acceptEdits',
+    })
+    const allowed = await resolver.resolve({
+      id: 'accept-touch',
+      name: 'Bash',
+      input: { command: 'printf ready && touch output.txt' },
+    })
+    expect(allowed).toEqual({ behavior: 'allow' })
+    expect(permissionDecisionSource(allowed)).toBe('mode')
+
+    await expect(
+      resolver.resolve({
+        id: 'accept-sensitive',
+        name: 'Bash',
+        input: { command: 'touch .git/config' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('sensitive file'),
+    })
+    await expect(
+      resolver.resolve({
+        id: 'accept-cp-flags',
+        name: 'Bash',
+        input: { command: 'cp --target-directory=/outside source' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('flags'),
+    })
+    await expect(
+      resolver.resolve({
+        id: 'accept-sed-constraint',
+        name: 'Bash',
+        input: { command: "sed 'e id'" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it('keeps an explicit ask rule ahead of accept-edits Bash mode', async () => {
+    const decision = await new ClaudePermissionResolver({
+      cwd: '/workspace',
+      permissionMode: 'acceptEdits',
+      settings: [
+        {
+          path: '/workspace/.claude/settings.json',
+          scope: 'project',
+          value: { permissions: { ask: ['Bash(touch:*)'] } },
+        },
+      ],
+    }).resolve({
+      id: 'accept-ask-rule',
+      name: 'Bash',
+      input: { command: 'touch output.txt' },
+    })
+    expect(decision).toMatchObject({ behavior: 'ask' })
+    expect(permissionDecisionSource(decision)).toBe('rule')
+  })
+
+  it('allows Claude internal memory and session paths after explicit rules', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      configRoot: '/config',
+      settings: [],
+    })
+    await expect(
+      resolver.resolve({
+        id: 'memory-write',
+        name: 'Write',
+        input: {
+          file_path: '/config/projects/-workspace/memory/MEMORY.md',
+        },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'session-read',
+        name: 'Read',
+        input: {
+          file_path:
+            '/config/projects/-workspace/session/tool-results/result.txt',
+        },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'task-read',
+        name: 'Read',
+        input: { file_path: '/config/tasks/session/task.json' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+
+    const constrained = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      configRoot: '/config',
+      settings: [
+        {
+          path: '/config/settings.json',
+          scope: 'user',
+          value: {
+            permissions: {
+              deny: ['Read(//config/projects/-workspace/**)'],
+              ask: ['Write(//config/projects/-workspace/memory/**)'],
+            },
+          },
+        },
+      ],
+    })
+    await expect(
+      constrained.resolve({
+        id: 'session-deny',
+        name: 'Read',
+        input: { file_path: '/config/projects/-workspace/session.jsonl' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(
+      constrained.resolve({
+        id: 'memory-ask',
+        name: 'Write',
+        input: {
+          file_path: '/config/projects/-workspace/memory/MEMORY.md',
+        },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it.each(['default', 'manual'] as const)(
+    'honors immediate session approvals in %s mode',
+    async (permissionMode) => {
+      const call = {
+        id: 'bash-approved',
+        name: 'Bash',
+        input: { command: 'npm test' },
+      }
+      await expect(
+        new ClaudePermissionResolver({
+          cwd: '/workspace',
+          settings: [],
+          permissionMode,
+          isSessionActionApproved: (candidate) => candidate === call,
+        }).resolve(call),
+      ).resolves.toEqual({ behavior: 'allow' })
+    },
+  )
+
+  it('keeps explicit deny and plan-mode restrictions ahead of session approval', async () => {
+    const bash = {
+      id: 'bash-denied',
+      name: 'Bash',
+      input: { command: 'rm output.txt' },
+    }
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        disallowedTools: ['Bash(rm *)'],
+        isSessionActionApproved: () => true,
+      }).resolve(bash),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        permissionMode: 'plan',
+        isSessionActionApproved: () => true,
+      }).resolve({
+        id: 'write-plan',
+        name: 'Write',
+        input: { file_path: '/workspace/output.txt', content: 'value' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+  })
+
+  it('resolves leading-slash file rules from their settings source root', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace/project',
+      homeDirectory: '/home/fixture',
+      settings: [
+        {
+          path: '/home/fixture/.claude/settings.json',
+          scope: 'user',
+          value: { permissions: { deny: ['Read(/skills/**)'] } },
+        },
+        {
+          path: '/workspace/project/.claude/settings.local.json',
+          scope: 'local',
+          value: { permissions: { allow: ['Edit(/.claude/**)'] } },
+        },
+      ],
+    })
+
+    await expect(
+      resolver.resolve({
+        id: 'read-user-skill',
+        name: 'Read',
+        input: { file_path: '/home/fixture/.claude/skills/reviewer/SKILL.md' },
+      }),
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule Read(/skills/**)',
+    })
+    await expect(
+      resolver.resolve({
+        id: 'write-project-settings',
+        name: 'Write',
+        input: { file_path: '/workspace/project/.claude/settings.local.json' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+  })
+
   it('allows Agent by default while preserving explicit deny rules', async () => {
     const call = { id: 'agent', name: 'Agent', input: {} }
     await expect(
@@ -181,7 +896,7 @@ describe('ClaudePermissionResolver', () => {
       new ClaudePermissionResolver({
         cwd: '/workspace',
         settings: [],
-        disallowedTools: ['Glob(/workspace/private/**)'],
+        disallowedTools: ['Glob(//workspace/private/**)'],
       }).resolve({
         id: 'glob-private',
         name: 'Glob',
@@ -189,7 +904,7 @@ describe('ClaudePermissionResolver', () => {
       }),
     ).resolves.toEqual({
       behavior: 'deny',
-      reason: 'Denied by Claude permission rule Glob(/workspace/private/**)',
+      reason: 'Denied by Claude permission rule Glob(//workspace/private/**)',
     })
     const notebookEdit = {
       id: 'notebook-edit',
@@ -200,17 +915,26 @@ describe('ClaudePermissionResolver', () => {
       new ClaudePermissionResolver({ cwd: '/workspace', settings: [] }).resolve(
         notebookEdit,
       ),
-    ).resolves.toEqual({ behavior: 'ask' })
+    ).resolves.toEqual({
+      behavior: 'ask',
+      suggestions: [
+        {
+          type: 'setMode',
+          mode: 'acceptEdits',
+          destination: 'session',
+        },
+      ],
+    })
     await expect(
       new ClaudePermissionResolver({
         cwd: '/workspace',
         settings: [],
-        disallowedTools: ['NotebookEdit(/workspace/*.ipynb)'],
+        disallowedTools: ['NotebookEdit(//workspace/*.ipynb)'],
       }).resolve(notebookEdit),
     ).resolves.toEqual({
       behavior: 'deny',
       reason:
-        'Denied by Claude permission rule NotebookEdit(/workspace/*.ipynb)',
+        'Denied by Claude permission rule NotebookEdit(//workspace/*.ipynb)',
     })
     await expect(
       new ClaudePermissionResolver({
@@ -240,7 +964,10 @@ describe('ClaudePermissionResolver', () => {
         name: 'Bash',
         input: { command: 'npm test && rm generated.txt' },
       }),
-    ).resolves.toEqual({ behavior: 'ask' })
+    ).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'Denied by Claude permission rule Bash(rm *)',
+    })
     await expect(
       resolver.resolve({
         id: 'read_secret',
@@ -303,7 +1030,17 @@ describe('ClaudePermissionResolver', () => {
         name: 'Bash',
         input: { command: 'node script.js' },
       }),
-    ).resolves.toEqual({ behavior: 'ask' })
+    ).resolves.toEqual({
+      behavior: 'ask',
+      suggestions: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'node script.js' }],
+          behavior: 'allow',
+          destination: 'localSettings',
+        },
+      ],
+    })
     await expect(
       resolver.resolve({
         id: 'dangerous',
@@ -678,5 +1415,295 @@ describe('ClaudePermissionResolver', () => {
         disallowedTools: ['ScheduleWakeup'],
       }).resolve({ id: 'denied', name: 'ScheduleWakeup', input: {} }),
     ).resolves.toMatchObject({ behavior: 'deny' })
+  })
+
+  it('suggests and applies session updates for paths outside working roots', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+    })
+    const read = {
+      id: 'read-outside',
+      name: 'Read',
+      input: { file_path: '/shared/config.json' },
+    }
+    const readDecision = await resolver.resolve(read, { cwd: '/workspace' })
+    expect(readDecision).toEqual({
+      behavior: 'ask',
+      reason: 'Path is outside allowed working directories',
+      suggestions: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Read', ruleContent: '//shared/**' }],
+          behavior: 'allow',
+          destination: 'session',
+        },
+      ],
+    })
+    await expect(
+      resolver.resolve(read, {
+        cwd: '/workspace',
+        permissionUpdates:
+          readDecision.behavior === 'ask'
+            ? (readDecision.suggestions ?? [])
+            : [],
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+
+    const write = {
+      id: 'write-outside',
+      name: 'Write',
+      input: { file_path: '/shared/output.txt', content: 'value' },
+    }
+    const writeDecision = await resolver.resolve(write, { cwd: '/workspace' })
+    expect(writeDecision).toMatchObject({
+      behavior: 'ask',
+      suggestions: [
+        {
+          type: 'setMode',
+          mode: 'acceptEdits',
+          destination: 'session',
+        },
+        {
+          type: 'addDirectories',
+          directories: ['/shared'],
+          destination: 'session',
+        },
+      ],
+    })
+    await expect(
+      resolver.resolve(write, {
+        cwd: '/workspace',
+        permissionUpdates:
+          writeDecision.behavior === 'ask'
+            ? (writeDecision.suggestions ?? [])
+            : [],
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+  })
+
+  it('applies replace and remove rule updates to their original destination', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [
+        {
+          path: '/workspace/.claude/settings.local.json',
+          scope: 'local',
+          value: { permissions: { allow: ['Bash(npm test:*)'] } },
+        },
+      ],
+    })
+    const npmTest = {
+      id: 'npm-test',
+      name: 'Bash',
+      input: { command: 'npm test -- --run' },
+    }
+    await expect(resolver.resolve(npmTest)).resolves.toEqual({
+      behavior: 'allow',
+    })
+    await expect(
+      resolver.resolve(npmTest, {
+        cwd: '/workspace',
+        permissionUpdates: [
+          {
+            type: 'removeRules',
+            rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }],
+            behavior: 'allow',
+            destination: 'localSettings',
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    const replacement = [
+      {
+        type: 'replaceRules' as const,
+        rules: [{ toolName: 'Bash', ruleContent: 'git status:*' }],
+        behavior: 'allow' as const,
+        destination: 'localSettings' as const,
+      },
+    ]
+    await expect(
+      resolver.resolve(npmTest, {
+        cwd: '/workspace',
+        permissionUpdates: replacement,
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      resolver.resolve(
+        {
+          id: 'git-status',
+          name: 'Bash',
+          input: { command: 'git status --short' },
+        },
+        { cwd: '/workspace', permissionUpdates: replacement },
+      ),
+    ).resolves.toEqual({ behavior: 'allow' })
+  })
+
+  it('removes configured additional directories from the current context', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      additionalDirectories: ['/shared'],
+    })
+    const write = {
+      id: 'write-shared',
+      name: 'Write',
+      input: { file_path: '/shared/output.txt', content: 'value' },
+    }
+    await expect(resolver.resolve(write)).resolves.toMatchObject({
+      behavior: 'ask',
+      suggestions: [{ type: 'setMode' }],
+    })
+    await expect(
+      resolver.resolve(write, {
+        cwd: '/workspace',
+        permissionUpdates: [
+          {
+            type: 'removeDirectories',
+            directories: ['/shared'],
+            destination: 'session',
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: 'Path is outside allowed working directories',
+    })
+  })
+
+  it('builds compound Bash suggestions from non-read-only subcommands', async () => {
+    const decision = await new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+    }).resolve({
+      id: 'compound',
+      name: 'Bash',
+      input: { command: 'cd src && npm test && npm publish' },
+    })
+    expect(decision).toMatchObject({
+      behavior: 'ask',
+      suggestions: [
+        {
+          type: 'addRules',
+          rules: [
+            { toolName: 'Bash', ruleContent: 'npm test:*' },
+            { toolName: 'Bash', ruleContent: 'npm publish:*' },
+          ],
+          behavior: 'allow',
+          destination: 'localSettings',
+        },
+      ],
+    })
+  })
+
+  it('omits already allowed and read-only compound subcommands', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Bash(npm test:*)'],
+    })
+    await expect(
+      resolver.resolve({
+        id: 'partially-allowed',
+        name: 'Bash',
+        input: { command: 'cd src && npm test && npm publish' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      suggestions: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'npm publish:*' }],
+        },
+      ],
+    })
+    await expect(
+      resolver.resolve({
+        id: 'read-only',
+        name: 'Bash',
+        input: { command: 'cd src && ls -la' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+  })
+
+  it('uses Bash AST units for nested commands, redirects, and parse failures', async () => {
+    const denied = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      disallowedTools: ['Bash(rm:*)'],
+    })
+    await expect(
+      denied.resolve({
+        id: 'nested-deny',
+        name: 'Bash',
+        input: { command: 'echo $(rm -rf build)' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+
+    const allowedPrefix = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Bash(npm test:*)', 'Bash(echo:*)'],
+    })
+    await expect(
+      allowedPrefix.resolve({
+        id: 'redirect',
+        name: 'Bash',
+        input: { command: 'npm test > output.log 2>&1' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining("Write to '/workspace/output.log'"),
+      suggestions: [
+        {
+          type: 'setMode',
+          mode: 'acceptEdits',
+          destination: 'session',
+        },
+        {
+          type: 'addDirectories',
+          directories: ['/workspace'],
+          destination: 'session',
+        },
+      ],
+    })
+    await expect(
+      allowedPrefix.resolve({
+        id: 'malformed',
+        name: 'Bash',
+        input: { command: "echo 'unterminated && rm -rf build" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it('blocks structural expansion and keeps path safety ahead of exact shell rules', async () => {
+    const legacy = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      allowedTools: ['Bash(npm *)'],
+    })
+    await expect(
+      legacy.resolve({
+        id: 'legacy-compound',
+        name: 'Bash',
+        input: { command: 'npm test && rm generated.txt' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+
+    await expect(
+      new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+        allowedTools: ['Bash(rm *.tmp > removed.log)'],
+      }).resolve({
+        id: 'exact-glob',
+        name: 'Bash',
+        input: { command: 'rm *.tmp > removed.log' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining("Write to '/workspace/removed.log'"),
+    })
   })
 })

@@ -3,14 +3,17 @@
 ## Goal
 
 Reproduce Claude Code 2.1.208's observable single-user terminal presentation
-and interaction in Praxis without reading or copying Claude Code source. Keep
+and interaction in Praxis without copying Claude Code source. Keep
 Praxis branding, provider neutrality, shared transcript compatibility, and
 screen-reader output. Visual resemblance alone is not sufficient evidence for
 interactive parity.
 
 ## Evidence baseline
 
-Black-box capture at 100 x 32 columns establishes these stable visual rules:
+The `~/dev/claude-code` 2.1.208 source snapshot is the authoritative command
+and design inventory. Black-box captures from the pinned 2.1.208 executable
+validate observable behavior, but do not define or limit the required surface.
+Together they establish these stable rules:
 
 - full terminal-width (up to 100 columns) bordered welcome card with
   product/version, identity, cwd, and a concise help area;
@@ -51,8 +54,9 @@ Black-box capture at 100 x 32 columns establishes these stable visual rules:
 - narrow terminals collapse optional welcome content before core controls;
 - screen-reader mode removes decorative boxes, animation, and visual-only help.
 
-Dynamic release notes, account/billing text, hosted features, and user-provided
-status-line plugins are not native parity requirements.
+Account/billing text and hosted features are not native parity requirements.
+Local release notes and status-line configuration remain in scope because they
+are registered CLI commands in the authoritative source snapshot.
 
 ## State matrix
 
@@ -76,7 +80,7 @@ status-line plugins are not native parity requirements.
 | Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures                    |
 | Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures                     |
 | Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures                     |
-| Decision      | bordered, numbered choices               | permission/question/plan/MCP tests                           |
+| Decision      | tool-specific bordered, numbered choices | permission/question/plan/MCP tests                           |
 | Resume        | selectable list plus active history      | projection, picker, interaction, and Ink tests               |
 | Export        | clipboard/file method and filename flow  | formatter, interaction, and PTY fixtures                     |
 | Compact       | progress, marker, expandable summary     | service, projection, interaction, and PTY gates              |
@@ -97,6 +101,8 @@ RuntimeEvent -> interactive state -> transcript/dialog/composer components
 shared JSONL -> active-chain display projection -> restored transcript state
 shared extensions -> slash catalog -> command palette -> existing session service
 runtime controls -> service retirement/recreation -> existing session service
+permission decision -> ordered PermissionUpdate[] -> current session context
+session context -> resolver + path gate -> current and later tool executions
 /cd -> canonical cwd -> native session relocation -> recreated runtime service
 /btw -> contextual provider call -> local panel -> optional native Agent sidechain
 /background -> source-tail checkpoint -> blocked job -> idempotent fork on attach
@@ -148,6 +154,11 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
   scoped rule search and atomic creation/removal; original/additional workspace
   directory presentation; and session-local directory add/remove controls.
+- `ToolPermissionDialog`: source-dispatched Bash/PowerShell, edit/write,
+  notebook, filesystem, WebFetch, Skill, and fallback views; inline diffs,
+  permission explanations, editable reusable command/Skill rules, `.claude`
+  session grants, compound-shell multi-rule choices, external-directory
+  read/edit grants, accept/reject feedback, and screen-reader selection text.
 - `/tui` switches between the default and fullscreen renderers, persists the
   Claude-compatible `tui` runtime setting, and resumes the active session after
   the renderer restart.
@@ -168,8 +179,8 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `BtwPanel`: session-local side-question history with bounded answer scrolling,
   clipboard copy, history pruning, cancellation, and native background-Agent
   handoff.
-- `DialogFrame`: shared bordered surface used by permission, question, plan,
-  recovery, and elicitation decisions.
+- `DialogFrame`: shared bordered surface used by question, plan, recovery, and
+  elicitation decisions; tool permissions use their source-specific dialog.
 - screen-reader branches: semantic text-only rendering through the same state.
 
 ## Interaction rules
@@ -288,6 +299,23 @@ is passed from the CLI composition root and never written to shared JSONL.
   numbered `--add-dir` roots; Tab-completed canonical directories can be added
   or removed for the current interactive runtime. `Shift+Tab` remains the
   permission-mode control and writes native `permission-mode` records.
+- Tool permission choices return Claude-shaped ordered `PermissionUpdate[]`
+  rather than mutating an unrelated TUI-only allowlist. A compound shell
+  command applies all backend subcommand suggestions atomically; Bash command
+  units come from a bounded tree-sitter AST and fail closed on parse errors,
+  semantic ambiguity, unsafe wrapper flags, or excessive fanout. Bash rules
+  use Claude-compatible exact, legacy-prefix, and wildcard matching; deny/ask
+  checks normalize arbitrary leading environment assignments while allow
+  checks strip only the safe environment set. AST argv drives command-path and
+  output-redirection validation, including symlink representations, dangerous
+  removals, sensitive files, `cd` compounds, and strict sed constraints. A
+  single Bash or PowerShell rule remains editable. File approvals can combine
+  `setMode(acceptEdits)` with `addDirectories`, while outside reads add a
+  session `Read(//absolute-directory/**)` rule. The request-phase path parser
+  canonicalizes targets for policy evaluation while preserving source-shaped
+  display paths, and the execution phase still rejects unapproved roots.
+  Session updates take effect for the current call and later calls without
+  retiring the service and do not enter shared transcript JSONL.
 - The composer edits at its real Unicode code-point cursor. It supports arrow
   movement, Meta-word movement, `Ctrl+A/E/B/F/W/U/K`, backspace/delete,
   multiline `Shift+Enter`, submitted-prompt history, and bounded edit undo with

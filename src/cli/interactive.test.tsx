@@ -8,7 +8,12 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ModelToolCall } from '../core/runtime.js'
+import type {
+  ModelToolCall,
+  PermissionApproval,
+  RuntimeEventSink,
+} from '../core/runtime.js'
+import type { ClaudePlanApprovalResult } from '../tools/claude-interactive-tools.js'
 import {
   InteractiveApp,
   type InteractiveServiceFactory,
@@ -219,6 +224,66 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain(
       'Installed terminal Shift+Enter key binding',
     )
+    expect(calls).toEqual([])
+  })
+
+  it('toggles the shared editor mode with /vim without creating a model turn', async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), 'praxis-vim-settings-'))
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            calls.push('service')
+            throw new Error('vim must not require a provider')
+          },
+        }}
+        initialSessions={[]}
+        runtimeSettingsTarget={configRoot}
+      />,
+    )
+
+    app.stdin.write('/vim')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Editor mode set to vim.') ? true : undefined,
+    )
+    expect(
+      JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')),
+    ).toMatchObject({ editorMode: 'vim' })
+
+    app.stdin.write('/vim')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Editor mode set to normal.')
+        ? true
+        : undefined,
+    )
+    expect(
+      JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8')),
+    ).toMatchObject({ editorMode: 'normal' })
+    expect(calls).toEqual([])
+    await rm(configRoot, { recursive: true, force: true })
+  })
+
+  it('keeps hidden /output-style compatibility local and out of the palette', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            calls.push('service')
+            throw new Error('output-style must not require a provider')
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('/output-style')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('/output-style has been deprecated.')
     expect(calls).toEqual([])
   })
 
@@ -1561,6 +1626,7 @@ describe('InteractiveApp', () => {
     )
 
     app.stdin.write('/background')
+    await flush()
     app.stdin.write('\r')
     await flush()
 
@@ -5014,7 +5080,7 @@ describe('InteractiveApp', () => {
   })
 
   it('asks before an ask-permission tool and forwards the decision', async () => {
-    let approval: boolean | undefined
+    let approval: PermissionApproval | undefined
     const suspendProcess = vi.fn()
     const call: ModelToolCall = {
       id: 'call-1',
@@ -5025,7 +5091,10 @@ describe('InteractiveApp', () => {
       async createService({ approveTool }) {
         return {
           async run() {
-            approval = await approveTool?.(call)
+            approval = await approveTool?.(call, call, {
+              behavior: 'ask',
+              reason: 'Command requires confirmation.',
+            })
             return {
               sessionId: 'session-1',
               text: 'done',
@@ -5058,21 +5127,398 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Allow Bash')
+    expect(app.lastFrame()).toContain('Bash command')
     expect(app.lastFrame()).toContain('npm test')
+    expect(app.lastFrame()).toContain('Command requires confirmation.')
     expect(app.lastFrame()).toContain('Selected: 1. Yes')
+    expect(app.lastFrame()).toContain(
+      'Yes, and don’t ask again for: npm test:*',
+    )
     expect(app.lastFrame()).not.toContain('❯')
 
     app.stdin.write('\u001a')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(suspendProcess).toHaveBeenCalledOnce()
-    expect(app.lastFrame()).toContain('Allow Bash')
+    expect(app.lastFrame()).toContain('Bash command')
 
     app.stdin.write('y')
     await flush()
-    expect(approval).toBe(true)
+    expect(approval).toEqual({ behavior: 'allow' })
     expect(app.lastFrame()).toContain('done')
+  })
+
+  it('edits, persists, and immediately applies a Bash prefix rule', async () => {
+    const added: unknown[] = []
+    const approvals: PermissionApproval[] = []
+    const call: ModelToolCall = {
+      id: 'call-always',
+      name: 'Bash',
+      input: { command: 'npm test' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool, isSessionActionApproved }) {
+            return {
+              async run() {
+                const approval = await approveTool?.(call)
+                if (approval !== undefined) approvals.push(approval)
+                expect(
+                  isSessionActionApproved?.({
+                    ...call,
+                    id: 'call-later',
+                    input: { command: 'npm run lint' },
+                  }),
+                ).toBe(true)
+                return {
+                  sessionId: 'session-permission',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add(input) {
+            added.push(input)
+          },
+        }}
+        display={{ cwd: '/work/project', version: 'test' }}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ 2. Yes, and don’t ask again')
+    for (let index = 0; index < 10; index += 1) app.stdin.write('\u007f')
+    app.stdin.write('npm run:*')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(added).toEqual([
+      { behavior: 'allow', rule: 'Bash(npm run:*)', scope: 'local' },
+    ])
+    expect(approvals).toEqual([
+      {
+        behavior: 'allow',
+        updatedPermissions: [
+          {
+            type: 'addRules',
+            rules: [{ toolName: 'Bash', ruleContent: 'npm run:*' }],
+            behavior: 'allow',
+            destination: 'localSettings',
+          },
+        ],
+      },
+    ])
+    expect(app.lastFrame()).toContain('done')
+  })
+
+  it('forwards ordered permission updates across every destination', async () => {
+    const approvals: PermissionApproval[] = []
+    const suggestions = [
+      {
+        type: 'replaceRules' as const,
+        rules: [{ toolName: 'Read' }],
+        behavior: 'allow' as const,
+        destination: 'userSettings' as const,
+      },
+      {
+        type: 'removeRules' as const,
+        rules: [{ toolName: 'Bash', ruleContent: 'old:*' }],
+        behavior: 'deny' as const,
+        destination: 'projectSettings' as const,
+      },
+      {
+        type: 'addDirectories' as const,
+        directories: ['/shared'],
+        destination: 'localSettings' as const,
+      },
+      {
+        type: 'removeDirectories' as const,
+        directories: ['/old'],
+        destination: 'session' as const,
+      },
+      {
+        type: 'setMode' as const,
+        mode: 'default' as const,
+        destination: 'cliArg' as const,
+      },
+    ]
+    const call: ModelToolCall = {
+      id: 'permission-destinations',
+      name: 'Bash',
+      input: { command: 'custom-command' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool }) {
+            return {
+              async run() {
+                const approval = await approveTool?.(call, call, {
+                  behavior: 'ask',
+                  suggestions,
+                })
+                if (approval !== undefined) approvals.push(approval)
+                return {
+                  sessionId: 'session-destinations',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        display={{ cwd: '/work/project', version: 'test' }}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(approvals).toEqual([
+      { behavior: 'allow', updatedPermissions: suggestions },
+    ])
+    expect(app.lastFrame()).toContain('done')
+  })
+
+  it('shows file diffs and allows all edits for the current session', async () => {
+    const approvals: PermissionApproval[] = []
+    const edit: ModelToolCall = {
+      id: 'edit-once',
+      name: 'Edit',
+      input: {
+        file_path: '/work/project/index.ts',
+        old_string: 'const before = 1',
+        new_string: 'const after = 2',
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool, isSessionActionApproved }) {
+            return {
+              async run() {
+                const approval = await approveTool?.(edit)
+                if (approval !== undefined) approvals.push(approval)
+                expect(
+                  isSessionActionApproved?.({
+                    id: 'write-later',
+                    name: 'Write',
+                    input: {
+                      file_path: '/work/project/output.ts',
+                      content: 'export {}',
+                    },
+                  }),
+                ).toBe(true)
+                return {
+                  sessionId: 'session-edits',
+                  text: 'edited',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        display={{ cwd: '/work/project', version: 'test' }}
+      />,
+    )
+
+    app.stdin.write('edit')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Edit file')
+    expect(app.lastFrame()).toContain('- const before = 1')
+    expect(app.lastFrame()).toContain('+ const after = 2')
+    expect(app.lastFrame()).toContain('allow all edits during this session')
+
+    app.stdin.write('2')
+    await flush()
+    expect(approvals).toEqual([
+      {
+        behavior: 'allow',
+        updatedPermissions: [
+          {
+            type: 'setMode',
+            mode: 'acceptEdits',
+            destination: 'session',
+          },
+        ],
+      },
+    ])
+    expect(app.lastFrame()).toContain('edited')
+  })
+
+  it('persists WebFetch permission by domain and applies it immediately', async () => {
+    const added: unknown[] = []
+    const first: ModelToolCall = {
+      id: 'fetch-first',
+      name: 'WebFetch',
+      input: { url: 'https://docs.example.com/one', prompt: 'Read it' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool, isSessionActionApproved }) {
+            return {
+              async run() {
+                await approveTool?.(first)
+                expect(
+                  isSessionActionApproved?.({
+                    ...first,
+                    id: 'fetch-second',
+                    input: {
+                      url: 'https://docs.example.com/two',
+                      prompt: 'Read more',
+                    },
+                  }),
+                ).toBe(true)
+                expect(
+                  isSessionActionApproved?.({
+                    ...first,
+                    id: 'fetch-other',
+                    input: { url: 'https://example.net', prompt: 'No' },
+                  }),
+                ).toBe(false)
+                return {
+                  sessionId: 'session-fetch',
+                  text: 'fetched',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add(input) {
+            added.push(input)
+          },
+        }}
+        display={{ cwd: '/work/project', version: 'test' }}
+      />,
+    )
+
+    app.stdin.write('fetch')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Fetch')
+    expect(app.lastFrame()).toContain('docs.example.com')
+    app.stdin.write('2')
+    await flush()
+    expect(added).toEqual([
+      {
+        behavior: 'allow',
+        rule: 'WebFetch(domain:docs.example.com)',
+        scope: 'local',
+      },
+    ])
+    expect(app.lastFrame()).toContain('fetched')
+  })
+
+  it('returns generic permission feedback with its selected decision', async () => {
+    let approval: PermissionApproval | undefined
+    const call: ModelToolCall = {
+      id: 'call-feedback',
+      name: 'Bash',
+      input: { command: 'npm test' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool }) {
+            return {
+              async run() {
+                approval = await approveTool?.(call)
+                return {
+                  sessionId: 'session-feedback',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\t')
+    await flush()
+    app.stdin.write('use the focused test')
+    app.stdin.write('\r')
+    await flush()
+    expect(approval).toEqual({
+      behavior: 'allow',
+      feedback: 'use the focused test',
+    })
   })
 
   it('collects interactive model questions with numbered and custom answers', async () => {
@@ -5246,10 +5692,11 @@ describe('InteractiveApp', () => {
       await vi.runAllTimersAsync()
       app.stdin.write('start')
       app.stdin.write('\r')
-      await vi.runAllTimersAsync()
+      await vi.advanceTimersByTimeAsync(0)
       expect(app.lastFrame()).toContain('Confirm: Continue?')
       await vi.advanceTimersByTimeAsync(60_000)
       expect(answer).toBeNull()
+      await vi.advanceTimersByTimeAsync(0)
       expect(app.lastFrame()).toContain('done')
     } finally {
       vi.useRealTimers()
@@ -5257,7 +5704,7 @@ describe('InteractiveApp', () => {
   })
 
   it('shows plan content and forwards plan approval', async () => {
-    let approval: boolean | undefined
+    let approval: ClaudePlanApprovalResult | undefined
     const factory: InteractiveServiceFactory = {
       async createService({ approvePlan }) {
         return {
@@ -5266,6 +5713,7 @@ describe('InteractiveApp', () => {
               action: 'exit',
               planPath: '/tmp/plan.md',
               plan: '# Plan\n\n1. Implement.',
+              previousMode: 'default',
             })
             return {
               sessionId: 'session-1',
@@ -5292,24 +5740,30 @@ describe('InteractiveApp', () => {
     app.stdin.write('start')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Approve this plan')
+    expect(app.lastFrame()).toContain('Ready to code?')
     expect(app.lastFrame()).toContain('1. Implement.')
-    expect(app.lastFrame()).toContain('Selected: 1. Yes, implement the plan')
+    expect(app.lastFrame()).toContain('Selected: 1. Yes, and use auto mode')
+    expect(app.lastFrame()).toContain('2. Yes, manually approve edits')
+    expect(app.lastFrame()).toContain('3. No, keep planning')
     expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('y')
     await flush()
-    expect(approval).toBe(true)
+    expect(approval).toEqual({ behavior: 'allow', permissionMode: 'auto' })
   })
 
   it('declines plan approval when the tool signal aborts', async () => {
     const controller = new AbortController()
-    let approval: boolean | undefined
+    let approval: ClaudePlanApprovalResult | undefined
     const factory: InteractiveServiceFactory = {
       async createService({ approvePlan }) {
         return {
           async run() {
             approval = await approvePlan?.(
-              { action: 'exit', planPath: '/tmp/plan.md' },
+              {
+                action: 'exit',
+                planPath: '/tmp/plan.md',
+                previousMode: 'default',
+              },
               controller.signal,
             )
             return {
@@ -5337,11 +5791,64 @@ describe('InteractiveApp', () => {
     app.stdin.write('start')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Approve this plan')
+    expect(app.lastFrame()).toContain('Ready to code?')
     controller.abort()
     await flush()
-    expect(approval).toBe(false)
+    expect(approval).toEqual({ behavior: 'deny' })
     expect(app.lastFrame()).toContain('done')
+  })
+
+  it('returns the manually-approved plan mode with implementation feedback', async () => {
+    let approval: ClaudePlanApprovalResult | undefined
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approvePlan }) {
+            return {
+              async run() {
+                approval = await approvePlan?.({
+                  action: 'exit',
+                  planPath: '/tmp/plan.md',
+                  plan: '# Plan',
+                  previousMode: 'default',
+                })
+                return {
+                  sessionId: 'session-plan-feedback',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\t')
+    await flush()
+    app.stdin.write('also update docs')
+    app.stdin.write('\r')
+    await flush()
+    expect(approval).toEqual({
+      behavior: 'allow',
+      permissionMode: 'default',
+      feedback: 'also update docs',
+    })
   })
 
   it('round-trips interactive MCP elicitation form data', async () => {
@@ -5386,14 +5893,188 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('MCP elicitation (fixture)')
-    app.stdin.write('{"code":"ok"}')
+    expect(app.lastFrame()).toContain(
+      'MCP server “fixture” requests your input',
+    )
+    expect(app.lastFrame()).toContain('code: Type something…')
+    app.stdin.write('ok')
+    await flush()
+    app.stdin.write('\r')
     await flush()
     app.stdin.write('\r')
     await flush()
 
     expect(result).toEqual({ action: 'accept', content: { code: 'ok' } })
     expect(app.lastFrame()).toContain('done')
+  })
+
+  it('navigates boolean, enum, and required multi-select elicitation fields', async () => {
+    let result: unknown
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ onElicitation }) {
+            return {
+              async run() {
+                result = await onElicitation?.({
+                  serverName: 'fixture',
+                  message: 'Configure the task',
+                  mode: 'form',
+                  requestedSchema: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string' },
+                      enabled: { type: 'boolean' },
+                      color: {
+                        type: 'string',
+                        enum: ['red', 'blue'],
+                      },
+                      tags: {
+                        type: 'array',
+                        items: { type: 'string', enum: ['fast', 'safe'] },
+                        minItems: 1,
+                      },
+                    },
+                    required: ['name', 'enabled', 'tags'],
+                  },
+                })
+                return {
+                  sessionId: 'session-form-controls',
+                  text: 'configured',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('Ada')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write(' ')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[C')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write(' ')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[C')
+    await flush()
+    app.stdin.write(' ')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(result).toEqual({
+      action: 'accept',
+      content: {
+        name: 'Ada',
+        enabled: true,
+        color: 'blue',
+        tags: ['fast'],
+      },
+    })
+    expect(app.lastFrame()).toContain('configured')
+  })
+
+  it('opens URL elicitations and waits for the matching completion event', async () => {
+    let result: unknown
+    let eventSink: RuntimeEventSink | undefined
+    const opened: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            eventSink = options.eventSink
+            return {
+              async run() {
+                result = await options.onElicitation?.({
+                  serverName: 'browser-fixture',
+                  message: 'Authorize access',
+                  mode: 'url',
+                  url: 'https://example.com/authorize',
+                  elicitationId: 'elicit-1',
+                })
+                return {
+                  sessionId: 'session-url',
+                  text: 'accepted',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        elicitationUrlOpener={(url) => {
+          opened.push(url)
+        }}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'MCP server “browser-fixture” wants to open a URL',
+    )
+    app.stdin.write('\r')
+    await flush()
+    expect(result).toEqual({ action: 'accept' })
+    expect(opened).toEqual(['https://example.com/authorize'])
+    expect(app.lastFrame()).toContain('waiting for completion')
+    expect(app.lastFrame()).toContain('Reopen URL')
+    expect(app.lastFrame()).toContain('Skip confirmation')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(opened).toHaveLength(2)
+    eventSink?.({
+      type: 'elicitation-complete',
+      mcpServerName: 'browser-fixture',
+      elicitationId: 'different-id',
+    })
+    await flush()
+    expect(app.lastFrame()).toContain('waiting for completion')
+    eventSink?.({
+      type: 'elicitation-complete',
+      mcpServerName: 'browser-fixture',
+      elicitationId: 'elicit-1',
+    })
+    await flush()
+    expect(app.lastFrame()).not.toContain('waiting for completion')
+    expect(app.lastFrame()).toContain('MCP elicitation completed')
   })
 
   it('asks before retrying an interrupted tool during resume', async () => {
@@ -5533,7 +6214,7 @@ describe('InteractiveApp', () => {
 
   it('settles a newly-created permission prompt when cancellation races render', async () => {
     const controller = new AbortController()
-    let approval: boolean | undefined
+    let approval: PermissionApproval | undefined
     const call: ModelToolCall = {
       id: 'call-race',
       name: 'Bash',

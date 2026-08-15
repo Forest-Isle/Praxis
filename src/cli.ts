@@ -50,6 +50,7 @@ import {
   type ModelProvider,
   type ModelToolCall,
   type PermissionApproval,
+  type PermissionDecision,
   type ToolRegistry,
   type RuntimeEventSink,
 } from './core/runtime.js'
@@ -59,6 +60,7 @@ import type {
   InteractiveServiceFactory,
 } from './cli/interactive.js'
 import type { TuiSlashCommand } from './cli/tui/slash-commands.js'
+import { persistTuiPermissionUpdates } from './cli/tui/permission-settings.js'
 import {
   projectTuiHooks,
   type TuiHookConfiguration,
@@ -1045,6 +1047,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     approveTool?: (
       call: ModelToolCall,
       originalCall?: ModelToolCall,
+      decision?: PermissionDecision,
     ) => PermissionApproval | Promise<PermissionApproval>
     agent?: string
     model?: string
@@ -1409,27 +1412,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ? {}
         : { settingSources: automaticSettingSources }),
     })
-  const permissionResolverForMode = (permissionMode: ClaudePermissionMode) =>
-    new ClaudeExtensionPermissionResolver(
-      new ClaudePermissionResolver({
-        cwd,
-        cwdProvider: () => workspace.cwd(),
-        settings,
-        allowedTools: cli.allowedTools,
-        disallowedTools: cli.disallowedTools,
-        permissionMode,
-        ...(isSessionActionApproved ? { isSessionActionApproved } : {}),
-        ...(permissionMode === 'auto'
-          ? {
-              autoClassifier:
-                createClaudeModelAutoClassifier(hostedToolProvider),
-            }
-          : {}),
-      }),
-    )
-  const permissions = permissionResolverForMode(
-    cli.dangerouslySkipPermissions ? 'bypassPermissions' : cli.permissionMode,
-  )
   const exposePlanDirectory =
     interactive &&
     askUser !== undefined &&
@@ -1441,16 +1423,47 @@ const createDefaultService: CliDependencies['createService'] = async ({
           cli.tools.includes(name)) &&
         !cli.disallowedTools.includes(name),
     )
+  const initialAdditionalDirectories = [
+    ...cli.additionalDirectories,
+    ...(exposePlanDirectory ? [resolve(configRoot, 'plans')] : []),
+  ]
+  const permissionAdditionalDirectories = [
+    ...initialAdditionalDirectories,
+    ...(memoryDirectory ? [memoryDirectory] : []),
+  ]
+  const initialAdditionalReadDirectories = [claudeBackgroundTaskParent(cwd)]
+  const permissionResolverForMode = (permissionMode: ClaudePermissionMode) =>
+    new ClaudeExtensionPermissionResolver(
+      new ClaudePermissionResolver({
+        cwd,
+        cwdProvider: () => workspace.cwd(),
+        configRoot,
+        settings,
+        allowedTools: cli.allowedTools,
+        disallowedTools: cli.disallowedTools,
+        additionalDirectories: permissionAdditionalDirectories,
+        additionalReadDirectories: initialAdditionalReadDirectories,
+        permissionMode,
+        ...(isSessionActionApproved ? { isSessionActionApproved } : {}),
+        ...(permissionMode === 'auto'
+          ? {
+              autoClassifier:
+                createClaudeModelAutoClassifier(hostedToolProvider),
+            }
+          : {}),
+      }),
+      extensions,
+    )
+  const permissions = permissionResolverForMode(
+    cli.dangerouslySkipPermissions ? 'bypassPermissions' : cli.permissionMode,
+  )
   const localTools = new LocalToolRegistry({
     cwd,
     cwdProvider: () => workspace.cwd(),
     enableReportFindings: exposeToolRegistry,
     ...(memoryDirectory ? { sharedMemoryDirectory: memoryDirectory } : {}),
-    additionalDirectories: [
-      ...cli.additionalDirectories,
-      ...(exposePlanDirectory ? [resolve(configRoot, 'plans')] : []),
-    ],
-    additionalReadDirectories: [claudeBackgroundTaskParent(cwd)],
+    additionalDirectories: initialAdditionalDirectories,
+    additionalReadDirectories: initialAdditionalReadDirectories,
     ...(environment ? { environment } : {}),
   })
   const runtimeMcpResources = async (
@@ -1687,6 +1700,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
       mcp: mcpTools,
       permissions,
       permissionResolverForMode,
+      persistPermissionUpdates: (updates) =>
+        persistTuiPermissionUpdates({
+          cwd: workspace.cwd(),
+          configRoot,
+          updates,
+        }),
       extensions,
       enableSubagents,
       subagentToolNames: routedSubagentTools,

@@ -565,6 +565,90 @@ describe('LocalToolRegistry', () => {
     await expect(readFile(protectedPath, 'utf8')).resolves.toBe('keep')
   })
 
+  it('defers outside-path rejection for permission prompts and honors approved updates', async () => {
+    const { root, cwd } = await workspace()
+    const outside = join(root, 'outside-approved')
+    await mkdir(outside)
+    const secret = join(outside, 'secret.txt')
+    await writeFile(secret, 'secret')
+    const registry = new LocalToolRegistry({ cwd })
+    const prepared = await registry.prepare(
+      {
+        id: 'outside-request',
+        name: 'Read',
+        input: { file_path: secret },
+      },
+      { cwd, permissionPhase: 'request' },
+    )
+    await expect(
+      registry.execute(prepared, { cwd, permissionPhase: 'execute' }),
+    ).rejects.toThrow('outside workspace')
+    await expect(
+      registry.execute(prepared, {
+        cwd,
+        permissionPhase: 'execute',
+        permissionApproved: true,
+      }),
+    ).resolves.toMatchObject({ content: '1\tsecret' })
+
+    const output = join(outside, 'output.txt')
+    const write = await registry.prepare(
+      {
+        id: 'outside-session-directory',
+        name: 'Write',
+        input: { file_path: output, content: 'approved' },
+      },
+      { cwd, permissionPhase: 'request' },
+    )
+    await expect(
+      registry.execute(write, {
+        cwd,
+        permissionPhase: 'execute',
+        permissionUpdates: [
+          {
+            type: 'addDirectories',
+            directories: [outside],
+            destination: 'session',
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({ isError: false })
+    await expect(readFile(output, 'utf8')).resolves.toBe('approved')
+  })
+
+  it('enforces removal of an initially configured additional directory', async () => {
+    const { root, cwd } = await workspace()
+    const additional = join(root, 'additional')
+    await mkdir(additional)
+    const file = join(additional, 'value.txt')
+    await writeFile(file, 'value')
+    const registry = new LocalToolRegistry({
+      cwd,
+      additionalDirectories: [additional],
+    })
+    await expect(
+      registry.prepare(
+        { id: 'configured', name: 'Read', input: { file_path: file } },
+        { cwd },
+      ),
+    ).resolves.toMatchObject({ name: 'Read' })
+    await expect(
+      registry.prepare(
+        { id: 'removed', name: 'Read', input: { file_path: file } },
+        {
+          cwd,
+          permissionUpdates: [
+            {
+              type: 'removeDirectories',
+              directories: [additional],
+              destination: 'session',
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow('outside workspace')
+  })
+
   it('allows configured task output roots for Read only', async () => {
     const { root, cwd } = await workspace()
     const taskRoot = join(root, 'task-output')

@@ -547,7 +547,10 @@ describe('ClaudeSessionService', () => {
       enabledTools: ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'],
       callbacks: {
         askUser: async () => null,
-        approvePlan: async () => true,
+        approvePlan: async () => ({
+          behavior: 'allow',
+          permissionMode: 'default',
+        }),
       },
       permissionResolverForMode: (mode) =>
         mode === 'plan'

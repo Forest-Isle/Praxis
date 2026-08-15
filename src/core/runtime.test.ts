@@ -438,21 +438,87 @@ describe('AgentRuntime', () => {
       },
       permissions: { resolve: () => ({ behavior: 'ask' }) },
     })
+    const prompts: unknown[] = []
 
     await runtime.run({
       messages: [{ role: 'user', content: 'run' }],
-      approveTool: async () => ({
-        behavior: 'allow',
-        updatedInput: { command: 'updated' },
-      }),
+      approveTool: async (call, originalCall, decision) => {
+        prompts.push({ call, originalCall, decision })
+        return {
+          behavior: 'allow',
+          updatedInput: { command: 'updated' },
+        }
+      },
     })
 
+    expect(prompts).toEqual([
+      {
+        call: {
+          id: 'call_permission',
+          name: 'Bash',
+          input: { command: 'original' },
+        },
+        originalCall: {
+          id: 'call_permission',
+          name: 'Bash',
+          input: { command: 'original' },
+        },
+        decision: { behavior: 'ask' },
+      },
+    ])
     expect(executed).toEqual([
       {
         id: 'call_permission',
         name: 'Bash',
         input: { command: 'updated' },
       },
+    ])
+  })
+
+  it('adds permission approval feedback after the completed tool result', async () => {
+    let turn = 0
+    const requests: ModelRequest[] = []
+    const provider = providerFrom(async function* (request) {
+      requests.push(request)
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_feedback', name: 'Bash', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({
+          content: 'command output',
+          isError: false,
+          followUpUserMessages: ['tool follow-up'],
+        }),
+      },
+      permissions: { resolve: () => ({ behavior: 'ask' }) },
+    })
+
+    await runtime.run({
+      messages: [{ role: 'user', content: 'run' }],
+      approveTool: () => ({
+        behavior: 'allow',
+        feedback: 'use the focused test next',
+      }),
+    })
+
+    expect(requests[1]?.messages.slice(-3)).toEqual([
+      {
+        role: 'tool',
+        toolCallId: 'call_feedback',
+        content: 'command output',
+        isError: false,
+      },
+      { role: 'user', content: 'tool follow-up' },
+      { role: 'user', content: 'use the focused test next' },
     ])
   })
 
@@ -1172,5 +1238,64 @@ describe('AgentRuntime', () => {
       ),
     ).rejects.toThrow('recovery was declined')
     expect(approvals).toBe(1)
+  })
+
+  it('applies approved permission updates before tool execution', async () => {
+    const applied: unknown[] = []
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield* []
+      }),
+      undefined,
+      {
+        tools: {
+          definitions: () => [],
+          async prepare(call, context) {
+            expect(context.permissionPhase).toBe('request')
+            return call
+          },
+          async execute(_call, context) {
+            expect(context.permissionPhase).toBe('execute')
+            expect(context.permissionApproved).toBe(true)
+            expect(context.permissionUpdates).toEqual([
+              {
+                type: 'addDirectories',
+                directories: ['/shared'],
+                destination: 'session',
+              },
+            ])
+            return { content: 'updated', isError: false }
+          },
+        },
+        permissions: {
+          resolve: () => ({ behavior: 'ask' }),
+        },
+      },
+    )
+    await expect(
+      runtime.executeDirectToolCall(
+        { id: 'permission-update', name: 'Write', input: {} },
+        {
+          observer: {
+            async assistantCompleted() {},
+            async toolCompleted() {},
+          },
+          approveTool: () => ({
+            behavior: 'allow',
+            updatedPermissions: [
+              {
+                type: 'addDirectories',
+                directories: ['/shared'],
+                destination: 'session',
+              },
+            ],
+          }),
+          onPermissionUpdates(updates) {
+            applied.push(...updates)
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ content: 'updated', isError: false })
+    expect(applied).toHaveLength(1)
   })
 })

@@ -196,6 +196,10 @@ function parseJsonLines(output) {
     .map((line) => JSON.parse(line))
 }
 
+function permissionPath(path) {
+  return path.startsWith('/') ? `/${path}` : path
+}
+
 function resultFrom(output) {
   const result = parseJsonLines(output).findLast(
     (entry) => entry?.type === 'result',
@@ -1547,7 +1551,7 @@ try {
       permissions: {
         allow: [
           "Bash(sed -n '1p' release-permission.txt)",
-          `Write(${join(memoryDirectory, 'praxis-note.md')})`,
+          `Write(${permissionPath(join(memoryDirectory, 'praxis-note.md'))})`,
         ],
       },
     })}\n`,

@@ -36,7 +36,16 @@ export interface ClaudePlanApprovalRequest {
   action: 'exit'
   planPath: string
   plan?: string
+  previousMode: ClaudePermissionMode
 }
+
+export type ClaudePlanApprovalResult =
+  | {
+      behavior: 'allow'
+      permissionMode: ClaudePermissionMode
+      feedback?: string
+    }
+  | { behavior: 'deny'; feedback?: string }
 
 export interface ClaudeInteractiveToolCallbacks {
   askUser(
@@ -46,7 +55,7 @@ export interface ClaudeInteractiveToolCallbacks {
   approvePlan(
     request: ClaudePlanApprovalRequest,
     signal?: AbortSignal,
-  ): Promise<boolean>
+  ): Promise<ClaudePlanApprovalResult>
 }
 
 export interface ClaudeInteractiveToolSettings {
@@ -561,27 +570,33 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
         }
       } else throw error
     }
-    const approved = await this.callbacks.approvePlan(
+    const approval = await this.callbacks.approvePlan(
       {
         action: 'exit',
         planPath: state.planPath,
+        previousMode: state.previousMode,
         ...(plan === undefined ? {} : { plan }),
       },
       signal,
     )
-    if (!approved) {
+    if (approval.behavior === 'deny') {
       return {
-        content: 'User declined the plan. Remain in plan mode and revise it.',
+        content: approval.feedback
+          ? `User declined the plan with feedback: ${approval.feedback}\n\nRemain in plan mode and revise it.`
+          : 'User declined the plan. Remain in plan mode and revise it.',
         isError: true,
       }
     }
-    state.mode = state.previousMode
+    state.mode = approval.permissionMode
     this.transitions.set(call.id, state.mode)
     return {
       content: plan?.trim()
         ? `User approved the plan. Plan mode ended; implementation may begin.\n\nPlan file: ${state.planPath}\n\n## Approved Plan:\n${plan}`
         : 'User approved exiting plan mode. Plan mode ended; implementation may begin.',
       isError: false,
+      ...(approval.feedback
+        ? { followUpUserMessages: [approval.feedback] }
+        : {}),
     }
   }
 }

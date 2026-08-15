@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionResolver, ToolRegistry } from '../core/runtime.js'
 import {
   ClaudeInteractiveToolManager,
+  type ClaudePlanApprovalResult,
   type ClaudeQuestion,
 } from './claude-interactive-tools.js'
 
@@ -44,7 +45,11 @@ async function fixture(
   const askUser = vi.fn(async (questions: readonly ClaudeQuestion[]) => ({
     answers: { [questions[0]?.question ?? 'missing']: 'Option A' },
   }))
-  const approvePlan = vi.fn(async () => options.approve ?? true)
+  const approvePlan = vi.fn(async (): Promise<ClaudePlanApprovalResult> =>
+    options.approve === false
+      ? ({ behavior: 'deny' } as const)
+      : ({ behavior: 'allow', permissionMode: 'default' } as const),
+  )
   const permissionResolverForMode = vi.fn(
     (mode: string): PermissionResolver => ({
       resolve: (call) =>
@@ -164,6 +169,7 @@ describe('ClaudeInteractiveToolManager', () => {
         action: 'exit',
         planPath,
         plan: expect.any(String),
+        previousMode: 'default',
       }),
       undefined,
     )
@@ -176,6 +182,22 @@ describe('ClaudeInteractiveToolManager', () => {
       { type: 'permission-mode', permissionMode: 'plan', sessionId },
     ])
     expect(manager.contextMessage(sessionId)).toContain('Plan mode')
+  })
+
+  it('uses the permission mode and feedback selected when approving a plan', async () => {
+    const { manager, registry, approvePlan } = await fixture()
+    await execute(registry, 'EnterPlanMode', {})
+    approvePlan.mockResolvedValueOnce({
+      behavior: 'allow',
+      permissionMode: 'acceptEdits',
+      feedback: 'also update the README',
+    })
+
+    await expect(execute(registry, 'ExitPlanMode', {})).resolves.toMatchObject({
+      isError: false,
+      followUpUserMessages: ['also update the README'],
+    })
+    expect(manager.consumeTransition('call_ExitPlanMode')).toBe('acceptEdits')
   })
 
   it('keeps the active bypass permission mode on the shared resolver path', async () => {

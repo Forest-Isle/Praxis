@@ -114,7 +114,7 @@ export class ClaudeHookToolCoordinator
         tool_name: call.name,
         tool_input: prepared?.hookInput ?? call.input,
         tool_use_id: call.id,
-        permission_suggestions: [],
+        permission_suggestions: decision.suggestions ?? [],
       },
       call.name,
       prepared?.signal,

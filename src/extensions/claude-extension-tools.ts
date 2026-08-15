@@ -80,14 +80,24 @@ export class ClaudeExtensionToolRegistry implements ToolRegistry {
 }
 
 export class ClaudeExtensionPermissionResolver implements PermissionResolver {
-  constructor(private readonly base: PermissionResolver) {}
+  constructor(
+    private readonly base: PermissionResolver,
+    private readonly catalog: ClaudeExtensionCatalog,
+  ) {}
 
-  resolve(
+  async resolve(
     call: ModelToolCall,
     context?: PermissionResolutionContext,
-  ): PermissionDecision | Promise<PermissionDecision> {
-    return call.name === 'Skill'
-      ? { behavior: 'allow' }
-      : this.base.resolve(call, context)
+  ): Promise<PermissionDecision> {
+    const decision = await this.base.resolve(call, context)
+    if (call.name !== 'Skill' || decision.behavior !== 'ask') return decision
+    const input = skillInput(call)
+    const definition = this.catalog.skill(input.skill.replace(/^\//u, ''))
+    if (definition?.modelInvocable && definition.permissionSafe) {
+      return { behavior: 'allow' }
+    }
+    return definition
+      ? { ...decision, metadata: { command: definition } }
+      : decision
   }
 }

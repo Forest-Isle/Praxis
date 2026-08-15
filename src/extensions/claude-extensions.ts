@@ -17,6 +17,7 @@ export interface ClaudeExtensionDefinition extends ClaudeTextResource {
   description: string
   body: string
   modelInvocable: boolean
+  permissionSafe: boolean
 }
 
 export interface ClaudeSlashCommandDefinition {
@@ -50,6 +51,7 @@ const BUILTIN_LOOP: ClaudeExtensionDefinition = {
   description:
     'Run a prompt or slash command on a recurring interval; defaults to 10 minutes.',
   modelInvocable: true,
+  permissionSafe: true,
   body: `# /loop — schedule a recurring prompt
 
 Parse the input into an optional interval followed by a prompt, then schedule it with CronCreate.
@@ -203,6 +205,15 @@ function parseDefinition(
         : defaultName(kind, resource.path)
   const description =
     typeof metadata.description === 'string' ? metadata.description : ''
+  const allowedTools = metadata['allowed-tools']
+  const hasAllowedTools = Array.isArray(allowedTools)
+    ? allowedTools.length > 0
+    : typeof allowedTools === 'string' && allowedTools.trim().length > 0
+  const hooks = metadata.hooks
+  const hasHooks =
+    hooks !== undefined &&
+    hooks !== null &&
+    (typeof hooks !== 'object' || Object.keys(hooks).length > 0)
   return {
     ...resource,
     kind,
@@ -210,6 +221,7 @@ function parseDefinition(
     description,
     body,
     modelInvocable: metadata['disable-model-invocation'] !== true,
+    permissionSafe: !hasAllowedTools && !hasHooks,
   }
 }
 

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   addTuiPermissionRule,
   loadTuiPermissionRules,
+  persistTuiPermissionUpdates,
   removeTuiPermissionRule,
 } from './permission-settings.js'
 
@@ -123,5 +124,128 @@ describe('TUI permission settings', () => {
     })
 
     await expect(readFile(path, 'utf8')).resolves.toBe(source)
+  })
+
+  it('persists source-shaped rule, directory, and mode updates by destination', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-tui-permissions-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await persistTuiPermissionUpdates({
+      configRoot,
+      cwd,
+      updates: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }],
+          behavior: 'allow',
+          destination: 'localSettings',
+        },
+        {
+          type: 'addDirectories',
+          directories: ['/shared'],
+          destination: 'localSettings',
+        },
+        {
+          type: 'setMode',
+          mode: 'acceptEdits',
+          destination: 'localSettings',
+        },
+      ],
+    })
+    const settings = JSON.parse(
+      await readFile(join(cwd, '.claude', 'settings.local.json'), 'utf8'),
+    )
+    expect(settings.permissions).toEqual({
+      allow: ['Bash(npm test:*)'],
+      additionalDirectories: ['/shared'],
+      defaultMode: 'acceptEdits',
+    })
+  })
+
+  it('removes normalized tool-wide rules from the selected destination', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-tui-permissions-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const path = join(cwd, '.claude', 'settings.local.json')
+    await mkdir(join(cwd, '.claude'), { recursive: true })
+    await writeFile(
+      path,
+      JSON.stringify({ permissions: { allow: ['Bash(*)', 'Read'] } }),
+    )
+
+    await persistTuiPermissionUpdates({
+      configRoot,
+      cwd,
+      updates: [
+        {
+          type: 'removeRules',
+          rules: [{ toolName: 'Bash' }],
+          behavior: 'allow',
+          destination: 'localSettings',
+        },
+      ],
+    })
+
+    expect(JSON.parse(await readFile(path, 'utf8')).permissions.allow).toEqual([
+      'Read',
+    ])
+  })
+
+  it('routes persistent destinations and ignores session-only sources', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-tui-permissions-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await persistTuiPermissionUpdates({
+      configRoot,
+      cwd,
+      updates: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Read' }],
+          behavior: 'allow',
+          destination: 'userSettings',
+        },
+        {
+          type: 'replaceRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'rm generated.txt' }],
+          behavior: 'deny',
+          destination: 'projectSettings',
+        },
+        {
+          type: 'addDirectories',
+          directories: ['/shared'],
+          destination: 'localSettings',
+        },
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Write' }],
+          behavior: 'allow',
+          destination: 'session',
+        },
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Edit' }],
+          behavior: 'allow',
+          destination: 'cliArg',
+        },
+      ],
+    })
+
+    expect(
+      JSON.parse(await readFile(join(configRoot, 'settings.json'), 'utf8'))
+        .permissions,
+    ).toEqual({ allow: ['Read'] })
+    expect(
+      JSON.parse(await readFile(join(cwd, '.claude', 'settings.json'), 'utf8'))
+        .permissions,
+    ).toEqual({ deny: ['Bash(rm generated.txt)'] })
+    expect(
+      JSON.parse(
+        await readFile(join(cwd, '.claude', 'settings.local.json'), 'utf8'),
+      ).permissions,
+    ).toEqual({ additionalDirectories: ['/shared'] })
   })
 })

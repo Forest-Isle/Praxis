@@ -23,9 +23,13 @@ import type {
   ModelImage,
   ModelToolCall,
   ModelUsage,
+  PermissionApproval,
+  PermissionDecision,
+  PermissionUpdate,
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
+import { permissionRuleValueToString } from '../permissions/permission-updates.js'
 import { AgentRunCancelledError } from '../core/runtime.js'
 import type {
   CliElicitationRequest,
@@ -35,11 +39,13 @@ import type {
 import type {
   ClaudeInteractiveToolCallbacks,
   ClaudePlanApprovalRequest,
+  ClaudePlanApprovalResult,
   ClaudeQuestion,
   ClaudeQuestionResult,
 } from '../tools/claude-interactive-tools.js'
 import {
   claudePermissionActionKey,
+  claudePermissionRuleMatches,
   type ClaudePermissionMode,
 } from '../permissions/claude-permission-resolver.js'
 import {
@@ -104,10 +110,13 @@ import {
 } from './tui/slash-commands.js'
 import {
   createComposerEditor,
+  deleteComposerBackward,
+  deleteComposerForward,
   deleteComposerToEnd,
   deleteComposerToStart,
   deleteComposerWordBackward,
   insertComposerText,
+  moveComposerCursor,
   moveComposerCursorByWord,
 } from './tui/composer-editor.js'
 import {
@@ -183,6 +192,29 @@ import {
   setupTuiTerminal,
   terminalSetupTuiSlashCommand,
 } from './tui/terminal-setup.js'
+import {
+  commitElicitationText,
+  createTuiElicitationForm,
+  elicitationFormIsValid,
+  elicitationTextValue,
+  expandElicitationOptions,
+  focusedElicitationField,
+  McpElicitationForm,
+  McpElicitationUrl,
+  moveElicitationFocus,
+  moveElicitationOption,
+  selectElicitationOption,
+  toggleElicitationBoolean,
+  typeaheadElicitationOption,
+  unsetElicitationField,
+  validateTuiElicitationForm,
+  type TuiElicitationFormState,
+} from './tui/mcp-elicitation.js'
+import { openTuiUrl } from './tui/open-url.js'
+import {
+  projectTuiToolPermission,
+  ToolPermissionDialog,
+} from './tui/tool-permission.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
 import {
   loadConfigSettings,
@@ -342,7 +374,11 @@ export interface InteractiveServiceFactory {
     requireProvider: boolean
     hooksOnly?: boolean
     approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
-    approveTool?: (call: ModelToolCall) => boolean | Promise<boolean>
+    approveTool?: (
+      call: ModelToolCall,
+      originalCall?: ModelToolCall,
+      decision?: PermissionDecision,
+    ) => PermissionApproval | Promise<PermissionApproval>
     onElicitation?: (
       request: CliElicitationRequest,
     ) => Promise<CliElicitationResult>
@@ -466,17 +502,22 @@ interface InteractiveAppProps {
   runtimeSettings?: PraxisRuntimeSettings
   runtimeSettingsTarget?: ConfigSettingsTarget
   notificationWriter?: TuiNotificationWriter
+  elicitationUrlOpener?: (url: string) => void | Promise<void>
 }
 
 type PendingPermission = {
   kind: 'tool' | 'recovery'
   call: ModelToolCall
-  resolve: (approved: boolean) => void
+  decision?: PermissionDecision
+  resolve: (approval: PermissionApproval) => void
 }
 
 type PendingElicitation = {
   request: CliElicitationRequest
-  resolve: (result: CliElicitationResult) => void
+  resolve: (
+    result: CliElicitationResult,
+    options?: { keepUrlDialog?: boolean },
+  ) => void
 }
 
 type PendingQuestion = {
@@ -488,7 +529,7 @@ type PendingQuestion = {
 
 type PendingPlanApproval = {
   request: ClaudePlanApprovalRequest
-  resolve: (approved: boolean) => void
+  resolve: (approval: ClaudePlanApprovalResult) => void
 }
 
 const EMPTY_SLASH_COMMANDS: readonly TuiSlashCommand[] = []
@@ -932,6 +973,7 @@ export function InteractiveApp({
   runtimeSettings: suppliedRuntimeSettings,
   runtimeSettingsTarget,
   notificationWriter,
+  elicitationUrlOpener = openTuiUrl,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const width = useTerminalWidth(terminalWidth)
@@ -1170,10 +1212,32 @@ export function InteractiveApp({
   const runtimePreferencesRef = useRef(runtimePreferences)
   const [permission, setPermission] = useState<PendingPermission | null>(null)
   const permissionRef = useRef<PendingPermission | null>(null)
+  const [permissionSelection, setPermissionSelection] = useState(0)
+  const [permissionFeedbackMode, setPermissionFeedbackMode] = useState(false)
+  const [permissionRuleEditor, setPermissionRuleEditor] = useState<ReturnType<
+    typeof createComposerEditor
+  > | null>(null)
+  const immediatePermissionRulesRef = useRef<string[]>([])
+  const toolPermissionModel = useMemo(
+    () =>
+      permission?.kind === 'tool'
+        ? projectTuiToolPermission(
+            permission.call,
+            runtimeCwd,
+            sensitiveValues,
+            permission.decision,
+          )
+        : null,
+    [permission, runtimeCwd, sensitiveValues],
+  )
   const [elicitation, setElicitation] = useState<PendingElicitation | null>(
     null,
   )
   const elicitationRef = useRef<PendingElicitation | null>(null)
+  const [elicitationForm, setElicitationForm] =
+    useState<TuiElicitationFormState | null>(null)
+  const [elicitationUrlWaiting, setElicitationUrlWaiting] = useState(false)
+  const elicitationUrlWaitingRef = useRef<PendingElicitation | null>(null)
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
   const questionRef = useRef<PendingQuestion | null>(null)
   const questionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1182,6 +1246,9 @@ export function InteractiveApp({
     null,
   )
   const planApprovalRef = useRef<PendingPlanApproval | null>(null)
+  const [planApprovalSelection, setPlanApprovalSelection] = useState(0)
+  const [planApprovalFeedbackMode, setPlanApprovalFeedbackMode] =
+    useState(false)
   const serviceRef = useRef<InteractiveSessionCommands | null>(null)
   const serviceCreationRef = useRef<
     Promise<InteractiveSessionCommands> | undefined
@@ -1408,7 +1475,7 @@ export function InteractiveApp({
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
-      planApprovalRef.current?.resolve(false)
+      planApprovalRef.current?.resolve({ behavior: 'deny' })
       exit()
     }
     if (signal.aborted) cancel()
@@ -1422,7 +1489,7 @@ export function InteractiveApp({
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
-      planApprovalRef.current?.resolve(false)
+      planApprovalRef.current?.resolve({ behavior: 'deny' })
       if (exitConfirmationTimerRef.current)
         clearTimeout(exitConfirmationTimerRef.current)
       if (btwCopiedTimerRef.current) clearTimeout(btwCopiedTimerRef.current)
@@ -1861,7 +1928,7 @@ export function InteractiveApp({
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
-      planApprovalRef.current?.resolve(false)
+      planApprovalRef.current?.resolve({ behavior: 'deny' })
       onCancel?.()
       exit()
       return
@@ -2036,6 +2103,18 @@ export function InteractiveApp({
           kind: 'notice',
           text: `MCP elicitation completed · ${event.mcpServerName}`,
         })
+        if (
+          elicitationUrlWaitingRef.current?.request.serverName ===
+            event.mcpServerName &&
+          elicitationUrlWaitingRef.current.request.elicitationId ===
+            event.elicitationId
+        ) {
+          elicitationUrlWaitingRef.current = null
+          setElicitationUrlWaiting(false)
+          setElicitation(null)
+          setElicitationForm(null)
+          clearComposerInput()
+        }
         break
       case 'tool-use-summary':
         append({ kind: 'notice', text: event.summary })
@@ -2069,12 +2148,26 @@ export function InteractiveApp({
   const requestApproval = (
     call: ModelToolCall,
     kind: PendingPermission['kind'],
+    decision?: PermissionDecision,
   ) =>
-    new Promise<boolean>((resolveApproval) => {
+    new Promise<PermissionApproval>((resolveApproval) => {
+      const projected =
+        kind === 'tool'
+          ? projectTuiToolPermission(
+              call,
+              runtimeCwdRef.current,
+              sensitiveValues,
+              decision,
+            )
+          : null
+      const editableRule = projected?.options.find(
+        (option) => option.editableRule,
+      )?.editableRule
       let settled = false
       const pending: PendingPermission = {
         kind,
         call,
+        ...(decision ? { decision } : {}),
         resolve: (approved) => {
           if (settled) return
           settled = true
@@ -2083,29 +2176,54 @@ export function InteractiveApp({
           resolveApproval(approved)
         },
       }
+      clearComposerInput()
+      setPermissionSelection(0)
+      setPermissionFeedbackMode(false)
+      setPermissionRuleEditor(
+        editableRule ? createComposerEditor(editableRule.initialValue) : null,
+      )
       permissionRef.current = pending
       setPermission(pending)
     })
-  const approveTool = (call: ModelToolCall) => requestApproval(call, 'tool')
+  const approveTool = (
+    call: ModelToolCall,
+    _originalCall?: ModelToolCall,
+    decision?: PermissionDecision,
+  ) => requestApproval(call, 'tool', decision)
 
   const requestElicitation = (request: CliElicitationRequest) =>
     new Promise<CliElicitationResult>((resolveResult) => {
       let settled = false
       const pending: PendingElicitation = {
         request,
-        resolve: (result) => {
+        resolve: (result, options) => {
           if (settled) return
           settled = true
           if (elicitationRef.current === pending) elicitationRef.current = null
-          setElicitation((current) => (current === pending ? null : current))
+          if (!options?.keepUrlDialog) {
+            setElicitation((current) => (current === pending ? null : current))
+            setElicitationForm(null)
+            clearComposerInput()
+          }
           resolveResult(result)
         },
       }
+      const form = createTuiElicitationForm(request.requestedSchema)
+      setElicitationForm(form)
+      setElicitationUrlWaiting(false)
+      elicitationUrlWaitingRef.current = null
+      updateComposerInput(elicitationTextValue(form))
       elicitationRef.current = pending
       setElicitation(pending)
     })
   const approveRecovery = (call: ModelToolCall) =>
-    resume?.retryInterruptedTools ? true : requestApproval(call, 'recovery')
+    resume?.retryInterruptedTools
+      ? true
+      : requestApproval(call, 'recovery').then(
+          (approval) =>
+            approval === true ||
+            (typeof approval === 'object' && approval.behavior === 'allow'),
+        )
 
   const askUser: ClaudeInteractiveToolCallbacks['askUser'] = (
     questions,
@@ -2157,9 +2275,9 @@ export function InteractiveApp({
     request,
     signal,
   ) =>
-    new Promise<boolean>((resolveApproval) => {
+    new Promise<ClaudePlanApprovalResult>((resolveApproval) => {
       let settled = false
-      const abort = () => pending.resolve(false)
+      const abort = () => pending.resolve({ behavior: 'deny' })
       const pending: PendingPlanApproval = {
         request,
         resolve: (approved) => {
@@ -2173,10 +2291,13 @@ export function InteractiveApp({
         },
       }
       if (signal?.aborted) {
-        pending.resolve(false)
+        pending.resolve({ behavior: 'deny' })
         return
       }
       signal?.addEventListener('abort', abort, { once: true })
+      clearComposerInput()
+      setPlanApprovalSelection(0)
+      setPlanApprovalFeedbackMode(false)
       planApprovalRef.current = pending
       setPlanApproval(pending)
     })
@@ -2217,6 +2338,12 @@ export function InteractiveApp({
   }
 
   const isSessionActionApproved = (call: ModelToolCall): boolean => {
+    if (
+      immediatePermissionRulesRef.current.some((rule) =>
+        claudePermissionRuleMatches(rule, call, runtimeCwdRef.current),
+      )
+    )
+      return true
     const activeSessionId = sessionIdRef.current
     return activeSessionId
       ? (approvedSessionActionsRef.current
@@ -3599,19 +3726,272 @@ export function InteractiveApp({
     }
 
     if (permission) {
-      if (lower === 'y' || value === '1') {
-        permission.resolve(true)
-      } else if (lower === 'n' || value === '2' || key.return || key.escape) {
+      const options =
+        permission.kind === 'tool' && toolPermissionModel
+          ? toolPermissionModel.options
+          : [
+              { action: 'allow-once' as const, label: 'Yes' },
+              { action: 'deny' as const, label: 'No' },
+            ]
+      const optionCount = options.length
+      const resolvePermission = (selectedIndex: number) => {
+        const feedback = inputRef.current.trim()
+        clearComposerInput()
+        setPermissionFeedbackMode(false)
+        const selected = options[selectedIndex]
+        if (!selected) return
+        if (selected.action === 'allow-once') {
+          permission.resolve(
+            feedback ? { behavior: 'allow', feedback } : { behavior: 'allow' },
+          )
+          return
+        }
+        if (
+          permission.kind === 'tool' &&
+          selected.action === 'persist-rule' &&
+          (selected.rule || selected.editableRule || selected.updates?.length)
+        ) {
+          const editedRule = permissionRuleEditor?.text.trim()
+          const rule = selected.editableRule
+            ? editedRule
+              ? `${selected.editableRule.toolName}(${editedRule})`
+              : undefined
+            : selected.rule
+          const updates: readonly PermissionUpdate[] = selected.editableRule
+            ? rule
+              ? [
+                  {
+                    type: 'addRules',
+                    rules: [
+                      {
+                        toolName: selected.editableRule.toolName,
+                        ruleContent: editedRule ?? '',
+                      },
+                    ],
+                    behavior: 'allow',
+                    destination: 'localSettings',
+                  },
+                ]
+              : []
+            : (selected.updates ??
+              (rule
+                ? [
+                    {
+                      type: 'addRules',
+                      rules: [
+                        /^([A-Za-z][\w-]*)(?:\((.*)\))?$/u.exec(rule),
+                      ].flatMap((match) =>
+                        match?.[1]
+                          ? [
+                              {
+                                toolName: match[1],
+                                ...(match[2] === undefined
+                                  ? {}
+                                  : { ruleContent: match[2] }),
+                              },
+                            ]
+                          : [],
+                      ),
+                      behavior: 'allow',
+                      destination: 'localSettings',
+                    } as const,
+                  ]
+                : []))
+          if (!rule && updates.length === 0) {
+            permission.resolve({ behavior: 'allow' })
+            return
+          }
+          const saving = (async () => {
+            try {
+              for (const update of updates) {
+                if (
+                  update.type !== 'addRules' ||
+                  update.destination !== 'localSettings'
+                ) {
+                  continue
+                }
+                for (const value of update.rules) {
+                  const savedRule = permissionRuleValueToString(value)
+                  await permissionStore.add({
+                    behavior: update.behavior,
+                    rule: savedRule,
+                    scope: 'local',
+                  })
+                  immediatePermissionRulesRef.current.push(savedRule)
+                }
+              }
+              permission.resolve({
+                behavior: 'allow',
+                updatedPermissions: updates,
+              })
+            } catch (error) {
+              warn(error)
+            }
+          })()
+          onTurnChange?.(saving)
+          void saving.finally(() => onTurnChange?.(null))
+          return
+        }
+        if (
+          permission.kind === 'tool' &&
+          selected.action === 'allow-session-action' &&
+          (selected.rule || selected.updates?.length)
+        ) {
+          if (selected.rule)
+            immediatePermissionRulesRef.current.push(selected.rule)
+          permission.resolve({
+            behavior: 'allow',
+            updatedPermissions: selected.updates ?? [],
+          })
+          return
+        }
+        if (
+          permission.kind === 'tool' &&
+          selected.action === 'allow-session-edits'
+        ) {
+          for (const rule of ['Write', 'Edit', 'NotebookEdit']) {
+            if (!immediatePermissionRulesRef.current.includes(rule))
+              immediatePermissionRulesRef.current.push(rule)
+          }
+          updateRuntimePreferences((current) => ({
+            ...current,
+            permissionMode: 'acceptEdits',
+          }))
+          permission.resolve({
+            behavior: 'allow',
+            updatedPermissions: selected.updates?.length
+              ? selected.updates
+              : [
+                  {
+                    type: 'setMode',
+                    mode: 'acceptEdits',
+                    destination: 'session',
+                  },
+                ],
+          })
+          const activeSessionId = sessionIdRef.current
+          if (activeSessionId && serviceRef.current?.setPermissionMode) {
+            const saving = serviceRef.current
+              .setPermissionMode(activeSessionId, 'acceptEdits')
+              .catch((error: unknown) => warn(error))
+            onTurnChange?.(saving)
+            void saving.finally(() => onTurnChange?.(null))
+          }
+          return
+        }
+        permission.resolve(
+          feedback ? { behavior: 'deny', message: feedback } : false,
+        )
+      }
+      if (key.escape) {
         permission.resolve(false)
+      } else if (permissionFeedbackMode) {
+        if (key.tab) {
+          clearComposerInput()
+          setPermissionFeedbackMode(false)
+        } else if (key.return) {
+          resolvePermission(permissionSelection)
+        } else {
+          editComposer()
+        }
+      } else if (key.upArrow) {
+        setPermissionSelection((current) =>
+          current === 0 ? optionCount - 1 : current - 1,
+        )
+      } else if (key.downArrow) {
+        setPermissionSelection((current) => (current + 1) % optionCount)
+      } else if (
+        key.tab &&
+        (options[permissionSelection]?.action === 'allow-once' ||
+          options[permissionSelection]?.action === 'deny')
+      ) {
+        clearComposerInput()
+        setPermissionFeedbackMode(true)
+      } else if (options[permissionSelection]?.editableRule && !key.return) {
+        if (key.leftArrow) {
+          setPermissionRuleEditor((current) =>
+            moveComposerCursor(current ?? createComposerEditor(), -1),
+          )
+        } else if (key.rightArrow) {
+          setPermissionRuleEditor((current) =>
+            moveComposerCursor(current ?? createComposerEditor(), 1),
+          )
+        } else if (key.backspace) {
+          setPermissionRuleEditor((current) =>
+            deleteComposerBackward(current ?? createComposerEditor()),
+          )
+        } else if (key.delete) {
+          setPermissionRuleEditor((current) =>
+            deleteComposerForward(current ?? createComposerEditor()),
+          )
+        } else if (value && !key.ctrl && !key.meta) {
+          setPermissionRuleEditor((current) =>
+            insertComposerText(current ?? createComposerEditor(), value),
+          )
+        }
+      } else if (lower === 'y') {
+        resolvePermission(0)
+      } else if (lower === 'n') {
+        resolvePermission(optionCount - 1)
+      } else if (/^[1-9]$/u.test(value)) {
+        const selectedIndex = Number(value) - 1
+        if (selectedIndex < optionCount) resolvePermission(selectedIndex)
+      } else if (key.return) {
+        resolvePermission(permissionSelection)
       }
       return
     }
 
     if (planApproval) {
-      if (lower === 'y' || value === '1') {
-        planApproval.resolve(true)
-      } else if (lower === 'n' || value === '2' || key.return || key.escape) {
-        planApproval.resolve(false)
+      const elevatedMode: ClaudePermissionMode = runtimeSettingsRef.current
+        .useAutoModeDuringPlan
+        ? 'auto'
+        : allowDangerouslySkipPermissions
+          ? 'bypassPermissions'
+          : 'acceptEdits'
+      const resolvePlanApproval = (selectedIndex: number) => {
+        const feedback = inputRef.current.trim() || undefined
+        clearComposerInput()
+        setPlanApprovalFeedbackMode(false)
+        if (selectedIndex === 2) {
+          planApproval.resolve({
+            behavior: 'deny',
+            ...(feedback ? { feedback } : {}),
+          })
+          return
+        }
+        planApproval.resolve({
+          behavior: 'allow',
+          permissionMode: selectedIndex === 0 ? elevatedMode : 'default',
+          ...(feedback ? { feedback } : {}),
+        })
+      }
+      if (key.escape) {
+        planApproval.resolve({ behavior: 'deny' })
+      } else if (planApprovalFeedbackMode) {
+        if (key.tab) {
+          clearComposerInput()
+          setPlanApprovalFeedbackMode(false)
+        } else if (key.return) {
+          resolvePlanApproval(planApprovalSelection)
+        } else {
+          editComposer()
+        }
+      } else if (key.upArrow) {
+        setPlanApprovalSelection((current) => (current === 0 ? 2 : current - 1))
+      } else if (key.downArrow) {
+        setPlanApprovalSelection((current) => (current + 1) % 3)
+      } else if (key.tab) {
+        clearComposerInput()
+        setPlanApprovalFeedbackMode(true)
+      } else if (lower === 'y') {
+        resolvePlanApproval(0)
+      } else if (lower === 'n') {
+        resolvePlanApproval(2)
+      } else if (/^[1-3]$/u.test(value)) {
+        resolvePlanApproval(Number(value) - 1)
+      } else if (key.return) {
+        resolvePlanApproval(planApprovalSelection)
       }
       return
     }
@@ -3646,42 +4026,134 @@ export function InteractiveApp({
     }
 
     if (elicitation) {
-      if (key.escape) {
-        elicitation.resolve({ action: 'cancel' })
-      } else if (key.return) {
-        const answer = inputRef.current.trim()
-        clearComposerInput()
-        if (!answer || answer.toLowerCase() === 'decline') {
-          elicitation.resolve({ action: 'decline' })
-        } else if (answer.toLowerCase() === 'cancel') {
-          elicitation.resolve({ action: 'cancel' })
-        } else if (answer.toLowerCase() === 'accept') {
-          elicitation.resolve({ action: 'accept' })
-        } else {
-          try {
-            const content: unknown = JSON.parse(answer)
-            if (
-              !content ||
-              typeof content !== 'object' ||
-              Array.isArray(content)
-            )
-              throw new Error('elicitation content must be a JSON object')
-            elicitation.resolve({
-              action: 'accept',
-              content: content as Record<
-                string,
-                string | number | boolean | string[]
-              >,
-            })
-          } catch {
-            append({
-              kind: 'warning',
-              text: 'Elicitation response must be accept, decline, cancel, or a JSON object.',
-            })
-          }
+      const form =
+        elicitationForm ??
+        createTuiElicitationForm(elicitation.request.requestedSchema)
+      const currentField = focusedElicitationField(form)
+      const textField =
+        currentField &&
+        ['text', 'number', 'integer'].includes(currentField.kind)
+      const commitCurrent = () =>
+        textField ? commitElicitationText(form, inputRef.current) : form
+      const showForm = (next: TuiElicitationFormState) => {
+        setElicitationForm(next)
+        updateComposerInput(elicitationTextValue(next))
+      }
+      const move = (direction: -1 | 1) =>
+        showForm(moveElicitationFocus(commitCurrent(), direction))
+
+      if (elicitation.request.mode === 'url') {
+        const openUrl = () => {
+          void Promise.resolve()
+            .then(() => elicitationUrlOpener(elicitation.request.url ?? ''))
+            .catch(() => undefined)
         }
-      } else {
-        editComposer()
+        const dismissUrlDialog = () => {
+          elicitationUrlWaitingRef.current = null
+          setElicitationUrlWaiting(false)
+          setElicitation(null)
+          setElicitationForm(null)
+          clearComposerInput()
+        }
+        if (key.escape) {
+          if (elicitationUrlWaiting) dismissUrlDialog()
+          else elicitation.resolve({ action: 'cancel' })
+        } else if (key.leftArrow || key.rightArrow) {
+          setElicitationForm({
+            ...form,
+            focusIndex: form.focusIndex === 0 ? 1 : 0,
+          })
+        } else if (key.return && form.focusIndex === 0) {
+          if (elicitationUrlWaiting) {
+            openUrl()
+          } else {
+            openUrl()
+            elicitationUrlWaitingRef.current = elicitation
+            setElicitationUrlWaiting(true)
+            elicitation.resolve({ action: 'accept' }, { keepUrlDialog: true })
+          }
+        } else if (key.return && form.focusIndex === 1) {
+          if (elicitationUrlWaiting) dismissUrlDialog()
+          else elicitation.resolve({ action: 'decline' })
+        }
+        return
+      }
+
+      if (form.expandedField && currentField) {
+        if (key.escape || key.leftArrow) {
+          setElicitationForm({ ...form, expandedField: undefined })
+        } else if (key.upArrow) {
+          showForm(moveElicitationOption(form, -1))
+        } else if (key.downArrow) {
+          showForm(moveElicitationOption(form, 1))
+        } else if (value === ' ') {
+          setElicitationForm(
+            selectElicitationOption(form, currentField.kind === 'enum'),
+          )
+        } else if (key.return) {
+          showForm(
+            moveElicitationFocus(selectElicitationOption(form, true, true), 1),
+          )
+        } else if (printable && value) {
+          setElicitationForm(typeaheadElicitationOption(form, value))
+        }
+      } else if (key.escape) {
+        elicitation.resolve({ action: 'cancel' })
+      } else if (key.upArrow) {
+        move(-1)
+      } else if (key.downArrow) {
+        move(1)
+      } else if (!currentField && (key.leftArrow || key.rightArrow)) {
+        setElicitationForm({
+          ...form,
+          focusIndex:
+            form.focusIndex === form.fields.length
+              ? form.fields.length + 1
+              : form.fields.length,
+        })
+      } else if (form.focusIndex === form.fields.length && key.return) {
+        const validated = validateTuiElicitationForm(form)
+        if (elicitationFormIsValid(validated)) {
+          elicitation.resolve({
+            action: 'accept',
+            ...(Object.keys(validated.values).length > 0
+              ? { content: { ...validated.values } }
+              : {}),
+          })
+        } else {
+          showForm(validated)
+        }
+      } else if (form.focusIndex === form.fields.length + 1 && key.return) {
+        elicitation.resolve({ action: 'decline' })
+      } else if (currentField?.kind === 'boolean') {
+        if (value === ' ' || lower === 'y' || lower === 'n') {
+          let next = toggleElicitationBoolean(form)
+          if (lower === 'n' && next.values[currentField.name] === true)
+            next = toggleElicitationBoolean(next)
+          if (lower === 'y' && next.values[currentField.name] === false)
+            next = toggleElicitationBoolean(next)
+          setElicitationForm(next)
+        } else if (key.backspace) {
+          setElicitationForm(unsetElicitationField(form))
+        } else if (key.return) {
+          move(1)
+        }
+      } else if (
+        currentField &&
+        ['enum', 'multi-enum'].includes(currentField.kind)
+      ) {
+        if (key.rightArrow) {
+          setElicitationForm(expandElicitationOptions(form))
+        } else if (key.backspace) {
+          setElicitationForm(unsetElicitationField(form))
+        } else if (key.return) {
+          move(1)
+        } else if (printable && value) {
+          setElicitationForm(typeaheadElicitationOption(form, value))
+        }
+      } else if (textField) {
+        if (key.return) move(1)
+        else editComposer()
       }
       return
     }
@@ -5543,13 +6015,17 @@ export function InteractiveApp({
         return
       }
       const selectedCommand = matchingSlashCommands[selectedSlashCommandIndex]
+      const commandNameQuery = inputRef.current.slice(1).toLocaleLowerCase()
       const exactSelectedCommand =
         selectedCommand !== undefined &&
-        inputRef.current.toLocaleLowerCase() ===
-          `/${selectedCommand.name}`.toLocaleLowerCase()
+        commandNameQuery === selectedCommand.name.toLocaleLowerCase()
+      const selectedCommandMatchesName =
+        selectedCommand !== undefined &&
+        selectedCommand.name.toLocaleLowerCase().startsWith(commandNameQuery)
       if (
         selectedCommand &&
-        (key.tab || (key.return && !exactSelectedCommand))
+        (key.tab ||
+          (key.return && !exactSelectedCommand && selectedCommandMatchesName))
       ) {
         updateComposerInput(`/${selectedCommand.name} `)
         setCommandPaletteOpen(false)
@@ -5627,6 +6103,40 @@ export function InteractiveApp({
                   themeSettings.theme as (typeof TUI_THEMES)[number],
                 ),
           ),
+        })
+      } else if (prompt === '/vim') {
+        const saving = (async () => {
+          setBusy(true)
+          try {
+            const mode =
+              runtimeSettingsRef.current.editor === 'vim' ? 'normal' : 'vim'
+            const snapshot = await saveConfigSetting(
+              'editor',
+              mode,
+              configTarget,
+            )
+            await reloadRuntimeSettings(snapshot)
+            setVimInsertMode(true)
+            append({
+              kind: 'local-result',
+              text: `Editor mode set to ${mode}. ${
+                mode === 'vim'
+                  ? 'Use Escape key to toggle between INSERT and NORMAL modes.'
+                  : 'Using standard (readline) keyboard bindings.'
+              }`,
+            })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+          }
+        })()
+        onTurnChange?.(saving)
+        void saving.finally(() => onTurnChange?.(null))
+      } else if (prompt === '/output-style') {
+        append({
+          kind: 'local-result',
+          text: '/output-style has been deprecated. Use /config to change your output style, or set it in your settings file. Changes take effect on the next session.',
         })
       } else if (prompt === '/terminal-setup') {
         const setup = (async () => {
@@ -6011,37 +6521,100 @@ export function InteractiveApp({
             memoryEditorRequest !== null ? (
               <ExternalEditorWait screenReader={axScreenReader} />
             ) : permission ? (
-              <DialogFrame
-                title={
-                  permission.kind === 'recovery'
-                    ? `Retry interrupted ${permission.call.name}?`
-                    : `Allow ${permission.call.name}?`
-                }
-                screenReader={axScreenReader}
-              >
-                <Text bold>
-                  {describeTool(permission.call, sensitiveValues)}
-                </Text>
-                <Text>{selectionPrefix(true, axScreenReader)}1. Yes</Text>
-                <Text> 2. No</Text>
-                <Text dimColor>Enter/Esc declines · y/n quick response</Text>
-              </DialogFrame>
+              permission.kind === 'tool' && toolPermissionModel ? (
+                <ToolPermissionDialog
+                  model={toolPermissionModel}
+                  selection={permissionSelection}
+                  feedbackMode={permissionFeedbackMode}
+                  feedback={input}
+                  ruleEditor={permissionRuleEditor}
+                  screenReader={axScreenReader}
+                />
+              ) : (
+                <DialogFrame
+                  title={`Retry interrupted ${permission.call.name}?`}
+                  screenReader={axScreenReader}
+                >
+                  <Box flexDirection="column" paddingX={1} paddingY={1}>
+                    <Text bold>
+                      {describeTool(permission.call, sensitiveValues)}
+                    </Text>
+                  </Box>
+                  <Text>Do you want to proceed?</Text>
+                  <Text inverse={!axScreenReader && permissionSelection === 0}>
+                    {selectionPrefix(permissionSelection === 0, axScreenReader)}
+                    1. Yes
+                  </Text>
+                  <Text inverse={!axScreenReader && permissionSelection === 1}>
+                    {selectionPrefix(permissionSelection === 1, axScreenReader)}
+                    2. No
+                  </Text>
+                  {permissionFeedbackMode ? (
+                    <Text>
+                      ›{' '}
+                      {input ||
+                        (permissionSelection === 0
+                          ? 'tell Praxis what to do next'
+                          : 'tell Praxis what to do differently')}
+                    </Text>
+                  ) : null}
+                  <Text dimColor>
+                    {permissionFeedbackMode
+                      ? 'Enter to submit · Tab to collapse · Esc to cancel'
+                      : 'Enter to confirm · Tab to add feedback · Esc to cancel'}
+                  </Text>
+                </DialogFrame>
+              )
             ) : planApproval ? (
-              <DialogFrame
-                title="Approve this plan and begin implementation?"
-                screenReader={axScreenReader}
-              >
-                <Text dimColor>{planApproval.request.planPath}</Text>
+              <DialogFrame title="Ready to code?" screenReader={axScreenReader}>
+                <Text>Here is Praxis&apos;s plan:</Text>
                 {planApproval.request.plan ? (
-                  <Box marginY={1}>
+                  <Box
+                    borderStyle={axScreenReader ? undefined : 'classic'}
+                    borderLeft={false}
+                    borderRight={false}
+                    paddingX={axScreenReader ? 0 : 1}
+                    marginY={1}
+                  >
                     <Text>{planApproval.request.plan}</Text>
                   </Box>
                 ) : null}
-                <Text>
-                  {selectionPrefix(true, axScreenReader)}1. Yes, implement the
-                  plan
+                <Text dimColor>
+                  Praxis has written up a plan and is ready to execute. Would
+                  you like to proceed?
                 </Text>
-                <Text> 2. No, keep planning</Text>
+                <Text inverse={!axScreenReader && planApprovalSelection === 0}>
+                  {selectionPrefix(planApprovalSelection === 0, axScreenReader)}
+                  1.{' '}
+                  {runtimeSettings.useAutoModeDuringPlan
+                    ? 'Yes, and use auto mode'
+                    : allowDangerouslySkipPermissions
+                      ? 'Yes, and bypass permissions'
+                      : 'Yes, auto-accept edits'}
+                </Text>
+                <Text inverse={!axScreenReader && planApprovalSelection === 1}>
+                  {selectionPrefix(planApprovalSelection === 1, axScreenReader)}
+                  2. Yes, manually approve edits
+                </Text>
+                <Text inverse={!axScreenReader && planApprovalSelection === 2}>
+                  {selectionPrefix(planApprovalSelection === 2, axScreenReader)}
+                  3. No, keep planning
+                </Text>
+                {planApprovalFeedbackMode ? (
+                  <Text>
+                    ›{' '}
+                    {input ||
+                      (planApprovalSelection === 2
+                        ? 'Tell Praxis what to change'
+                        : 'Add feedback for implementation')}
+                  </Text>
+                ) : null}
+                <Text dimColor>{planApproval.request.planPath}</Text>
+                <Text dimColor>
+                  {planApprovalFeedbackMode
+                    ? 'Enter to submit · Tab to collapse · Esc to cancel'
+                    : 'Enter to confirm · Tab to add feedback · Esc to cancel'}
+                </Text>
               </DialogFrame>
             ) : question ? (
               <DialogFrame
@@ -6074,24 +6647,34 @@ export function InteractiveApp({
                 </Text>
               </DialogFrame>
             ) : elicitation ? (
-              <DialogFrame
-                title={`MCP elicitation (${elicitation.request.serverName})`}
-                screenReader={axScreenReader}
-              >
-                <Text>{elicitation.request.message}</Text>
-                {elicitation.request.url ? (
-                  <Text>{elicitation.request.url}</Text>
-                ) : null}
-                {elicitation.request.requestedSchema ? (
-                  <Text dimColor>
-                    {JSON.stringify(elicitation.request.requestedSchema)}
-                  </Text>
-                ) : null}
-                <Text>› {input}</Text>
-                <Text dimColor>
-                  Enter JSON object to accept · Esc to cancel
-                </Text>
-              </DialogFrame>
+              elicitation.request.mode === 'url' ? (
+                <McpElicitationUrl
+                  serverName={elicitation.request.serverName}
+                  message={elicitation.request.message}
+                  url={elicitation.request.url ?? ''}
+                  waiting={elicitationUrlWaiting}
+                  actionLabel={
+                    elicitation.request.elicitationId
+                      ? 'Skip confirmation'
+                      : 'Continue without waiting'
+                  }
+                  selection={elicitationForm?.focusIndex ?? 0}
+                  screenReader={axScreenReader}
+                />
+              ) : (
+                <McpElicitationForm
+                  serverName={elicitation.request.serverName}
+                  message={elicitation.request.message}
+                  state={
+                    elicitationForm ??
+                    createTuiElicitationForm(
+                      elicitation.request.requestedSchema,
+                    )
+                  }
+                  input={input}
+                  screenReader={axScreenReader}
+                />
+              )
             ) : menu?.kind === 'model-input' ? (
               <DialogFrame title="Enter model ID" screenReader={axScreenReader}>
                 <Text dimColor>

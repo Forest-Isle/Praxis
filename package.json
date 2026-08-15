@@ -127,6 +127,8 @@
     "quickjs-emscripten-core": "^0.32.0",
     "react": "^19.2.8",
     "sharp": "^0.35.3",
+    "tree-sitter": "^0.25.1",
+    "tree-sitter-bash": "^0.25.1",
     "turndown": "^7.2.0",
     "yaml": "^2.9.0"
   },

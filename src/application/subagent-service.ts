@@ -38,6 +38,8 @@ import {
   type ModelUsage,
   type PermissionResolver,
   type PermissionApproval,
+  type PermissionDecision,
+  type PermissionUpdate,
   type RuntimeEvent,
   type RuntimeEventSink,
   type ToolExecutionContext,
@@ -207,7 +209,12 @@ export interface ClaudeSubagentExecutorOptions {
   approveTool?: (
     call: ModelToolCall,
     originalCall?: ModelToolCall,
+    decision?: PermissionDecision,
   ) => PermissionApproval | Promise<PermissionApproval>
+  permissionUpdates?: () => readonly PermissionUpdate[]
+  onPermissionUpdates?: (
+    updates: readonly PermissionUpdate[],
+  ) => void | Promise<void>
   eventSink?: RuntimeEventSink
   maxDepth?: number
   maxCalls?: number
@@ -1576,6 +1583,10 @@ export class ClaudeSubagentExecutor {
         observer,
         ...(this.options.approveTool
           ? { approveTool: this.options.approveTool }
+          : {}),
+        permissionUpdates: this.options.permissionUpdates?.() ?? [],
+        ...(this.options.onPermissionUpdates
+          ? { onPermissionUpdates: this.options.onPermissionUpdates }
           : {}),
         ...(this.options.hooks || this.options.backgroundTaskNotifications
           ? {

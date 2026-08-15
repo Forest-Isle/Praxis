@@ -1,0 +1,242 @@
+export type ClaudeCommandDisposition = 'included' | 'excluded'
+
+export type ClaudeCommandVisibility = 'visible' | 'hidden' | 'conditional'
+
+export interface ClaudeCommandInventoryEntry {
+  name: string
+  disposition: ClaudeCommandDisposition
+  visibility: ClaudeCommandVisibility
+  reason?: string
+}
+
+// Authoritative external COMMANDS registry from the ~/dev/claude-code 2.1.208
+// source snapshot. Duplicate interactive/non-interactive implementations share
+// one command name here. Build-feature commands remain conditional rather than
+// disappearing from the parity inventory.
+export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
+  { name: 'add-dir', disposition: 'included', visibility: 'visible' },
+  { name: 'advisor', disposition: 'included', visibility: 'conditional' },
+  { name: 'agents', disposition: 'included', visibility: 'visible' },
+  { name: 'branch', disposition: 'included', visibility: 'visible' },
+  { name: 'btw', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'chrome',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Chrome integration is outside the CLI-only product boundary.',
+  },
+  { name: 'clear', disposition: 'included', visibility: 'visible' },
+  { name: 'color', disposition: 'included', visibility: 'visible' },
+  { name: 'compact', disposition: 'included', visibility: 'visible' },
+  { name: 'config', disposition: 'included', visibility: 'visible' },
+  { name: 'copy', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'desktop',
+    disposition: 'excluded',
+    visibility: 'visible',
+    reason: 'Desktop handoff/import is outside the CLI-only product boundary.',
+  },
+  { name: 'context', disposition: 'included', visibility: 'conditional' },
+  { name: 'cost', disposition: 'included', visibility: 'conditional' },
+  { name: 'diff', disposition: 'included', visibility: 'visible' },
+  { name: 'doctor', disposition: 'included', visibility: 'conditional' },
+  { name: 'effort', disposition: 'included', visibility: 'visible' },
+  { name: 'exit', disposition: 'included', visibility: 'visible' },
+  { name: 'fast', disposition: 'included', visibility: 'conditional' },
+  {
+    name: 'files',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'The source command is restricted to the internal Ant user type.',
+  },
+  { name: 'heapdump', disposition: 'included', visibility: 'hidden' },
+  { name: 'help', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'ide',
+    disposition: 'excluded',
+    visibility: 'visible',
+    reason: 'IDE integration is outside the CLI-only product boundary.',
+  },
+  { name: 'init', disposition: 'included', visibility: 'visible' },
+  { name: 'keybindings', disposition: 'included', visibility: 'conditional' },
+  {
+    name: 'install-github-app',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Hosted GitHub app setup is outside the local-only boundary.',
+  },
+  {
+    name: 'install-slack-app',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Hosted Slack app setup is outside the local-only boundary.',
+  },
+  { name: 'mcp', disposition: 'included', visibility: 'visible' },
+  { name: 'memory', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'mobile',
+    disposition: 'excluded',
+    visibility: 'visible',
+    reason: 'Mobile app handoff is outside the CLI-only product boundary.',
+  },
+  { name: 'model', disposition: 'included', visibility: 'visible' },
+  { name: 'output-style', disposition: 'included', visibility: 'hidden' },
+  {
+    name: 'remote-env',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Remote-session environments are outside the local-only boundary.',
+  },
+  { name: 'plugin', disposition: 'included', visibility: 'visible' },
+  { name: 'pr-comments', disposition: 'included', visibility: 'visible' },
+  { name: 'release-notes', disposition: 'included', visibility: 'visible' },
+  { name: 'reload-plugins', disposition: 'included', visibility: 'visible' },
+  { name: 'rename', disposition: 'included', visibility: 'visible' },
+  { name: 'resume', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'session',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason:
+      'Remote-session URLs and QR codes are outside the local-only boundary.',
+  },
+  { name: 'skills', disposition: 'included', visibility: 'visible' },
+  { name: 'stats', disposition: 'included', visibility: 'visible' },
+  { name: 'status', disposition: 'included', visibility: 'visible' },
+  { name: 'statusline', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'stickers',
+    disposition: 'excluded',
+    visibility: 'visible',
+    reason: 'Merchandise ordering is not an agent capability.',
+  },
+  {
+    name: 'tag',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'The source command is restricted to the internal Ant user type.',
+  },
+  { name: 'theme', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'feedback',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason:
+      'Anthropic product-feedback submission is a hosted control-plane surface.',
+  },
+  { name: 'review', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'ultrareview',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Ultrareview runs on the hosted Claude Code web surface.',
+  },
+  { name: 'rewind', disposition: 'included', visibility: 'visible' },
+  { name: 'security-review', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'terminal-setup',
+    disposition: 'included',
+    visibility: 'conditional',
+  },
+  {
+    name: 'upgrade',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason:
+      'Claude subscription upgrades are outside the authentication boundary.',
+  },
+  {
+    name: 'extra-usage',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason:
+      'Claude subscription overage billing is outside the authentication boundary.',
+  },
+  {
+    name: 'rate-limit-options',
+    disposition: 'excluded',
+    visibility: 'hidden',
+    reason:
+      'Claude subscription rate-limit purchasing is outside the authentication boundary.',
+  },
+  {
+    name: 'usage',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'The source command is the Claude subscription plan-usage panel.',
+  },
+  { name: 'insights', disposition: 'included', visibility: 'visible' },
+  { name: 'vim', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'web-setup',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Remote setup is outside the local-only boundary.',
+  },
+  { name: 'fork', disposition: 'included', visibility: 'conditional' },
+  { name: 'buddy', disposition: 'included', visibility: 'conditional' },
+  { name: 'proactive', disposition: 'included', visibility: 'conditional' },
+  { name: 'brief', disposition: 'included', visibility: 'conditional' },
+  { name: 'assistant', disposition: 'included', visibility: 'conditional' },
+  {
+    name: 'remote-control',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Bridge mode is a remote-control surface.',
+  },
+  {
+    name: 'remote-control-server',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Remote Control is outside the local-only boundary.',
+  },
+  { name: 'voice', disposition: 'included', visibility: 'conditional' },
+  { name: 'think-back', disposition: 'included', visibility: 'conditional' },
+  { name: 'thinkback-play', disposition: 'included', visibility: 'hidden' },
+  { name: 'permissions', disposition: 'included', visibility: 'visible' },
+  { name: 'plan', disposition: 'included', visibility: 'visible' },
+  {
+    name: 'privacy-settings',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason:
+      'Claude subscriber privacy controls require the excluded account surface.',
+  },
+  { name: 'hooks', disposition: 'included', visibility: 'visible' },
+  { name: 'export', disposition: 'included', visibility: 'visible' },
+  { name: 'sandbox', disposition: 'included', visibility: 'conditional' },
+  {
+    name: 'login',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Claude subscription authentication is explicitly excluded.',
+  },
+  {
+    name: 'logout',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Claude subscription authentication is explicitly excluded.',
+  },
+  {
+    name: 'passes',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Claude subscription referrals are outside the product boundary.',
+  },
+  {
+    name: 'peers',
+    disposition: 'excluded',
+    visibility: 'conditional',
+    reason: 'Peer inbox collaboration is a multi-user surface.',
+  },
+  { name: 'tasks', disposition: 'included', visibility: 'visible' },
+  { name: 'workflows', disposition: 'included', visibility: 'conditional' },
+  { name: 'torch', disposition: 'included', visibility: 'conditional' },
+] as const satisfies readonly ClaudeCommandInventoryEntry[]
+
+export const CLAUDE_2_1_208_COMMAND_BY_NAME: ReadonlyMap<
+  string,
+  ClaudeCommandInventoryEntry
+> = new Map(
+  CLAUDE_2_1_208_COMMAND_INVENTORY.map((entry) => [entry.name, entry]),
+)

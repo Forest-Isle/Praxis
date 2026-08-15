@@ -287,6 +287,10 @@ export interface ToolExecutionContext {
   messages?: readonly ModelMessage[]
   signal?: AbortSignal
   toolResultDirectory?: string
+  originalCall?: ModelToolCall
+  permissionUpdates?: readonly PermissionUpdate[]
+  permissionPhase?: 'request' | 'execute'
+  permissionApproved?: boolean
 }
 
 export interface ToolRegistry {
@@ -303,15 +307,77 @@ export interface ToolRegistry {
 
 export type PermissionBehavior = 'allow' | 'ask' | 'deny'
 
+export type PermissionMode =
+  | 'acceptEdits'
+  | 'auto'
+  | 'bypassPermissions'
+  | 'manual'
+  | 'dontAsk'
+  | 'plan'
+  | 'default'
+
+export type PermissionUpdateDestination =
+  'userSettings' | 'projectSettings' | 'localSettings' | 'session' | 'cliArg'
+
+export type PermissionUpdateMode = Exclude<PermissionMode, 'auto' | 'manual'>
+
+export interface PermissionRuleValue {
+  toolName: string
+  ruleContent?: string
+}
+
+export type PermissionUpdate =
+  | {
+      type: 'addRules'
+      rules: readonly PermissionRuleValue[]
+      behavior: PermissionBehavior
+      destination: PermissionUpdateDestination
+    }
+  | {
+      type: 'replaceRules'
+      rules: readonly PermissionRuleValue[]
+      behavior: PermissionBehavior
+      destination: PermissionUpdateDestination
+    }
+  | {
+      type: 'removeRules'
+      rules: readonly PermissionRuleValue[]
+      behavior: PermissionBehavior
+      destination: PermissionUpdateDestination
+    }
+  | {
+      type: 'setMode'
+      mode: PermissionUpdateMode
+      destination: PermissionUpdateDestination
+    }
+  | {
+      type: 'addDirectories'
+      directories: readonly string[]
+      destination: PermissionUpdateDestination
+    }
+  | {
+      type: 'removeDirectories'
+      directories: readonly string[]
+      destination: PermissionUpdateDestination
+    }
+
 export type PermissionApproval =
   | boolean
-  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
+  | {
+      behavior: 'allow'
+      updatedInput?: Record<string, unknown>
+      updatedPermissions?: readonly PermissionUpdate[]
+      feedback?: string
+    }
   | { behavior: 'deny'; message: string; interrupt?: boolean }
 
 export interface PermissionResolutionContext {
   cwd: string
   messages?: readonly ModelMessage[]
   signal?: AbortSignal
+  toolResultDirectory?: string
+  originalCall?: ModelToolCall
+  permissionUpdates?: readonly PermissionUpdate[]
 }
 
 export type PermissionDecisionSource =
@@ -327,6 +393,8 @@ export type PermissionDecision =
   | {
       behavior: 'ask'
       reason?: string
+      suggestions?: readonly PermissionUpdate[]
+      metadata?: Readonly<Record<string, unknown>>
       source?: PermissionDecisionSource
     }
   | {
@@ -420,7 +488,12 @@ export interface AgentRunRequest {
   approveTool?: (
     call: ModelToolCall,
     originalCall?: ModelToolCall,
+    decision?: PermissionDecision,
   ) => PermissionApproval | Promise<PermissionApproval>
+  permissionUpdates?: readonly PermissionUpdate[]
+  onPermissionUpdates?: (
+    updates: readonly PermissionUpdate[],
+  ) => void | Promise<void>
   onStop?: (
     text: string,
   ) => Promise<
@@ -436,7 +509,13 @@ export interface AgentRunRequest {
 
 export interface AgentToolRecoveryRequest extends Pick<
   AgentRunRequest,
-  'approveTool' | 'cwd' | 'observer' | 'signal' | 'toolResultDirectory'
+  | 'approveTool'
+  | 'cwd'
+  | 'observer'
+  | 'onPermissionUpdates'
+  | 'permissionUpdates'
+  | 'signal'
+  | 'toolResultDirectory'
 > {
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
   messages?: readonly ModelMessage[]
@@ -995,7 +1074,13 @@ export class AgentRuntime {
       }
     }
 
-    const context: ToolExecutionContext = { cwd: request.cwd ?? '', messages }
+    const context: ToolExecutionContext = {
+      cwd: request.cwd ?? '',
+      messages,
+      originalCall: call,
+      permissionPhase: 'request',
+      permissionUpdates: request.permissionUpdates ?? [],
+    }
     if (request.signal) context.signal = request.signal
     if (request.toolResultDirectory) {
       context.toolResultDirectory = request.toolResultDirectory
@@ -1029,15 +1114,25 @@ export class AgentRuntime {
     let allowed = decision.behavior === 'allow'
     let denialReason: string | undefined
     let interrupt = false
+    let approvalFeedback: string | undefined
     if (decision.behavior === 'ask') {
       this.emit({ type: 'state', state: 'awaiting-permission' })
       const approval = request.approveTool
-        ? await request.approveTool(prepared, call)
+        ? await request.approveTool(prepared, call, decision)
         : false
       if (typeof approval === 'boolean') {
         allowed = approval
       } else if (approval.behavior === 'allow') {
         allowed = true
+        approvalFeedback = approval.feedback?.trim() || undefined
+        if (approval.updatedPermissions?.length) {
+          const updatedPermissions = [
+            ...(context.permissionUpdates ?? []),
+            ...approval.updatedPermissions,
+          ]
+          await request.onPermissionUpdates?.(approval.updatedPermissions)
+          context.permissionUpdates = updatedPermissions
+        }
         if (approval.updatedInput) {
           try {
             prepared = await tools.prepare(
@@ -1073,8 +1168,18 @@ export class AgentRuntime {
     if (request.signal?.aborted) return this.cancel()
 
     this.emit({ type: 'state', state: 'executing-tools' })
+    context.permissionPhase = 'execute'
+    context.permissionApproved = true
     try {
-      return await tools.execute(prepared, context)
+      const result = await tools.execute(prepared, context)
+      if (!approvalFeedback) return result
+      return {
+        ...result,
+        followUpUserMessages: [
+          ...(result.followUpUserMessages ?? []),
+          approvalFeedback,
+        ],
+      }
     } catch (error) {
       if (request.signal?.aborted) return this.cancel()
       return {
