@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { realpath } from 'node:fs/promises'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
+import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
 import {
   annotateAutoModePermissionOutcome,
   annotatePermissionDecision,
@@ -23,7 +24,10 @@ import {
 } from './claude-auto-classifier.js'
 import { analyzeBashCommands, validateBashSemantics } from './bash-ast.js'
 import { shellPermissionMatchCandidates } from './bash-normalization.js'
-import { validateBashPathSafety } from './bash-path-safety.js'
+import {
+  pathIsInsideRoots,
+  validateBashPathSafety,
+} from './bash-path-safety.js'
 import { validateSedSafety } from './sed-safety.js'
 import { parseShellRule, shellRuleMatches } from './shell-rule-matching.js'
 import {
@@ -49,6 +53,7 @@ interface PermissionRule {
 export interface ClaudePermissionResolverOptions {
   cwd: string
   cwdProvider?: () => string
+  configRoot?: string
   homeDirectory?: string
   settings: readonly ClaudeJsonResource[]
   allowedTools?: readonly string[]
@@ -397,6 +402,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
   private readonly rules: readonly PermissionRule[]
   private readonly cwd: string
   private readonly cwdProvider: (() => string) | undefined
+  private readonly configRoot: string | undefined
   private readonly homeDirectory: string
   private readonly permissionMode: ClaudePermissionMode
   private readonly autoClassifier: ClaudeAutoClassifier | undefined
@@ -409,6 +415,9 @@ export class ClaudePermissionResolver implements PermissionResolver {
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
     this.cwdProvider = options.cwdProvider
+    this.configRoot = options.configRoot
+      ? resolve(options.configRoot)
+      : undefined
     this.homeDirectory = resolve(options.homeDirectory ?? homedir())
     this.rules = [
       ...loadRules(options.settings),
@@ -448,6 +457,19 @@ export class ClaudePermissionResolver implements PermissionResolver {
     context?: PermissionResolutionContext,
   ): Promise<PermissionDecision> {
     const cwd = resolve(context?.cwd || this.cwdProvider?.() || this.cwd)
+    const projectInternalRoot = this.configRoot
+      ? resolve(this.configRoot, 'projects', sanitizeClaudeProjectPath(cwd))
+      : undefined
+    const internalEditableRoots = projectInternalRoot
+      ? [resolve(projectInternalRoot, 'memory')]
+      : []
+    const internalReadableRoots = [
+      ...(projectInternalRoot ? [projectInternalRoot] : []),
+      ...(this.configRoot ? [resolve(this.configRoot, 'tasks')] : []),
+      ...(context?.toolResultDirectory
+        ? [resolve(context.toolResultDirectory)]
+        : []),
+    ]
     const updates = context?.permissionUpdates ?? []
     const permissionMode =
       (effectivePermissionMode(updates) as ClaudePermissionMode | undefined) ??
@@ -596,6 +618,8 @@ export class ClaudePermissionResolver implements PermissionResolver {
               homeDirectory: this.homeDirectory,
               writeRoots,
               readRoots: [...writeRoots, ...this.additionalReadDirectories],
+              internalEditableRoots,
+              internalReadableRoots,
               permissionMode,
               fileRule: (operation, absolutePath) => {
                 const candidate: ModelToolCall = {
@@ -707,6 +731,12 @@ export class ClaudePermissionResolver implements PermissionResolver {
         ]),
       ]
       const write = ['Write', 'Edit', 'NotebookEdit'].includes(call.name)
+      const internalRoots = write
+        ? internalEditableRoots
+        : internalReadableRoots
+      if (pathIsInsideRoots(absolutePath, internalRoots)) {
+        return annotatePermissionDecision({ behavior: 'allow' }, 'default')
+      }
       const roots = [
         cwd,
         ...effectiveAdditionalDirectories(

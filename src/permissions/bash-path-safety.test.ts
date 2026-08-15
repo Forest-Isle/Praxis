@@ -75,6 +75,38 @@ describe('Claude Bash path safety', () => {
     ).toMatchObject({ safe: false, behavior: 'ask', operation: 'write' })
   })
 
+  it('orders internal path grants between deny rules and safety/root checks', () => {
+    const memoryRoot = '/config/projects/-workspace/memory'
+    expect(
+      validateBashPathSafety(
+        'touch /config/projects/-workspace/memory/MEMORY.md',
+        {
+          ...base,
+          internalEditableRoots: [memoryRoot],
+        },
+      ),
+    ).toEqual({ safe: true })
+    expect(
+      validateBashPathSafety(
+        'touch /config/projects/-workspace/memory/MEMORY.md',
+        {
+          ...base,
+          internalEditableRoots: [memoryRoot],
+          fileRule: () => 'deny',
+        },
+      ),
+    ).toMatchObject({ safe: false, behavior: 'deny' })
+    expect(
+      validateBashPathSafety(
+        'cat /config/projects/-workspace/session/tool-results/result.txt',
+        {
+          ...base,
+          internalReadableRoots: ['/config/projects/-workspace'],
+        },
+      ),
+    ).toEqual({ safe: true })
+  })
+
   it('keeps sensitive files outside accept-edits auto approval', () => {
     expect(
       validateBashPathSafety('cp source .git/config', {
@@ -120,6 +152,11 @@ describe('Claude Bash path safety', () => {
     ).toMatchObject({
       safe: false,
       reason: expect.stringContaining('directory changes'),
+    })
+    expect(validateBashPathSafety('cd src && git status', base)).toMatchObject({
+      safe: false,
+      behavior: 'ask',
+      reason: expect.stringContaining('bare repository'),
     })
   })
 

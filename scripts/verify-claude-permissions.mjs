@@ -58,7 +58,11 @@ async function runReadProbe({ cwd, configRoot, path, expectedBehavior }) {
         block.name === 'Read' &&
         block.input?.file_path === path,
     )
-  if (!toolCall) throw new Error(`Claude did not call Read for ${path}`)
+  if (!toolCall) {
+    throw new Error(
+      `Claude did not call Read for ${path}: ${JSON.stringify(response)}`,
+    )
+  }
   const resultEntry = entries.find((entry) =>
     contentBlocks(entry).some(
       (block) =>
@@ -82,6 +86,59 @@ async function runReadProbe({ cwd, configRoot, path, expectedBehavior }) {
   if (!result || !behaviorMatches) {
     throw new Error(
       `Claude Read ${expectedBehavior} mismatch for ${path}: ${JSON.stringify({ resultEntry, result })}`,
+    )
+  }
+}
+
+async function runWriteProbe({ cwd, configRoot, path, content }) {
+  const response = await runClaudeJson(
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--max-turns',
+      '2',
+      '--tools',
+      'Write',
+      '--permission-mode',
+      'dontAsk',
+      '--output-format',
+      'json',
+      `Use the Write tool exactly once to write ${JSON.stringify(content)} to ${path}. Do not use any other path or tool.`,
+    ],
+    cwd,
+    configRoot,
+  )
+  if (typeof response.session_id !== 'string') {
+    throw new Error('Claude internal Write probe returned no session ID')
+  }
+  const paths = resolveClaudePaths({
+    configDir: configRoot,
+    cwd,
+    sessionId: response.session_id,
+  })
+  const entries = (await readFile(paths.sessionFile, 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+  const toolCall = entries
+    .flatMap(contentBlocks)
+    .find(
+      (block) =>
+        block.type === 'tool_use' &&
+        block.name === 'Write' &&
+        block.input?.file_path === path,
+    )
+  if (!toolCall) throw new Error(`Claude did not call Write for ${path}`)
+  const result = entries
+    .flatMap(contentBlocks)
+    .find(
+      (block) =>
+        block.type === 'tool_result' && block.tool_use_id === toolCall.id,
+    )
+  if (!result || result.is_error === true) {
+    throw new Error(
+      `Claude internal Write allow mismatch for ${path}: ${JSON.stringify(result)}`,
     )
   }
 }
@@ -182,6 +239,20 @@ try {
   const redirectedPath = join(probeRoot, 'outside.txt')
   const redirectedBashCommand = `printf praxis-redirect > ${redirectedPath}`
   const acceptEditsBashCommand = 'touch praxis-accept-edits.txt'
+  const internalPaths = resolveClaudePaths({
+    configDir: configRoot,
+    cwd,
+    sessionId: '00000000-0000-4000-8000-000000000000',
+  })
+  const internalReadPath = join(
+    internalPaths.projectRoot,
+    'permission-internal.txt',
+  )
+  const internalMemoryPath = join(
+    internalPaths.projectRoot,
+    'memory',
+    'permission-memory.md',
+  )
   const userPermissions = {
     allow: [
       `Read(${permissionPath(join(cwd, 'allowed*'))})`,
@@ -199,6 +270,7 @@ try {
     writeFixture(allowedPath, 'ALLOWED_PERMISSION_MARKER\n'),
     writeFixture(askedPath, 'ASKED_PERMISSION_MARKER\n'),
     writeFixture(deniedPath, 'DENIED_PERMISSION_MARKER\n'),
+    writeFixture(internalReadPath, 'INTERNAL_PERMISSION_MARKER\n'),
     writeFixture(
       join(configRoot, 'settings.json'),
       JSON.stringify({ permissions: userPermissions }),
@@ -212,6 +284,7 @@ try {
   const version = await detectClaudeVersion('Permission probe')
   const praxisResolver = new ClaudePermissionResolver({
     cwd,
+    configRoot,
     settings: [
       {
         path: join(configRoot, 'settings.json'),
@@ -229,6 +302,8 @@ try {
     ['allow', 'Read', { file_path: allowedPath }],
     ['ask', 'Read', { file_path: askedPath }],
     ['deny', 'Read', { file_path: deniedPath }],
+    ['allow', 'Read', { file_path: internalReadPath }],
+    ['allow', 'Write', { file_path: internalMemoryPath, content: 'MEMORY' }],
     ['allow', 'Bash', { command: bashCommand }],
     ['allow', 'Bash', { command: wrappedBashCommand }],
     ['deny', 'Bash', { command: deniedBashCommand }],
@@ -278,6 +353,18 @@ try {
     path: deniedPath,
     expectedBehavior: 'deny',
   })
+  await runReadProbe({
+    cwd,
+    configRoot,
+    path: internalReadPath,
+    expectedBehavior: 'allow',
+  })
+  await runWriteProbe({
+    cwd,
+    configRoot,
+    path: internalMemoryPath,
+    content: 'MEMORY',
+  })
   await runBashProbe({ cwd, configRoot, command: bashCommand })
   await runBashProbe({ cwd, configRoot, command: wrappedBashCommand })
   await runBashProbe({
@@ -299,7 +386,7 @@ try {
     permissionMode: 'acceptEdits',
   })
   console.log(
-    `Claude ${version} permission compatibility passed: user/project allow, ask, deny, // paths, glob, Bash :*, wrappers, env-deny, redirect path constraints, and acceptEdits Bash mode`,
+    `Claude ${version} permission compatibility passed: user/project allow, ask, deny, internal read/write paths, // paths, glob, Bash :*, wrappers, env-deny, redirect path constraints, and acceptEdits Bash mode`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

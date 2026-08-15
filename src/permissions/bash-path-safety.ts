@@ -17,6 +17,8 @@ export interface BashPathSafetyOptions {
   homeDirectory: string
   readRoots: readonly string[]
   writeRoots: readonly string[]
+  internalEditableRoots?: readonly string[]
+  internalReadableRoots?: readonly string[]
   permissionMode:
     | 'acceptEdits'
     | 'auto'
@@ -445,7 +447,10 @@ function suspiciousWritePath(path: string, platform: NodeJS.Platform): boolean {
   )
 }
 
-function insideRoots(candidate: string, roots: readonly string[]): boolean {
+export function pathIsInsideRoots(
+  candidate: string,
+  roots: readonly string[],
+): boolean {
   const rootRepresentations = roots.flatMap(pathRepresentations)
   return pathRepresentations(candidate).every((path) =>
     rootRepresentations.some((root) => inside(path, root)),
@@ -538,6 +543,12 @@ function pathFailure(
     }
   }
   if (
+    operation !== 'read' &&
+    pathIsInsideRoots(absolutePath, options.internalEditableRoots ?? [])
+  ) {
+    return { safe: true }
+  }
+  if (
     dangerous &&
     [rawPath, ...pathsToCheck].some((path) =>
       dangerousRemoval(path, options.homeDirectory),
@@ -579,15 +590,21 @@ function pathFailure(
       operation,
     }
   }
-  if (rules.length > 0 && rules.every((rule) => rule === 'allow')) {
-    return { safe: true }
-  }
   const roots = operation === 'read' ? options.readRoots : options.writeRoots
-  const inRoot = insideRoots(absolutePath, roots)
+  const inRoot = pathIsInsideRoots(absolutePath, roots)
   if (
     inRoot &&
     (operation === 'read' || options.permissionMode === 'acceptEdits')
   ) {
+    return { safe: true }
+  }
+  if (
+    operation === 'read' &&
+    pathIsInsideRoots(absolutePath, options.internalReadableRoots ?? [])
+  ) {
+    return { safe: true }
+  }
+  if (rules.length > 0 && rules.every((rule) => rule === 'allow')) {
     return { safe: true }
   }
   return {
@@ -634,6 +651,17 @@ export function validateBashPathSafety(
       safe: false,
       behavior: 'ask',
       reason: 'Multiple directory changes require explicit approval',
+    }
+  }
+  if (
+    hasCd &&
+    normalized.some(({ wrapper }) => wrapper.ok && wrapper.argv[0] === 'git')
+  ) {
+    return {
+      safe: false,
+      behavior: 'ask',
+      reason:
+        'Compound commands with cd and git require approval to prevent bare repository attacks',
     }
   }
 

@@ -1437,6 +1437,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       new ClaudePermissionResolver({
         cwd,
         cwdProvider: () => workspace.cwd(),
+        configRoot,
         settings,
         allowedTools: cli.allowedTools,
         disallowedTools: cli.disallowedTools,

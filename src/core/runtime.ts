@@ -375,6 +375,7 @@ export interface PermissionResolutionContext {
   cwd: string
   messages?: readonly ModelMessage[]
   signal?: AbortSignal
+  toolResultDirectory?: string
   originalCall?: ModelToolCall
   permissionUpdates?: readonly PermissionUpdate[]
 }

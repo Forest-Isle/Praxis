@@ -333,6 +333,16 @@ describe('ClaudePermissionResolver', () => {
       reason: expect.stringContaining('critical path'),
       suggestions: [],
     })
+    await expect(
+      allowed().resolve({
+        id: 'cd-git',
+        name: 'Bash',
+        input: { command: 'cd src && git status' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('bare repository'),
+    })
   })
 
   it('allows Bash paths through matching file rules and preserves file denies', async () => {
@@ -558,6 +568,73 @@ describe('ClaudePermissionResolver', () => {
     })
     expect(decision).toMatchObject({ behavior: 'ask' })
     expect(permissionDecisionSource(decision)).toBe('rule')
+  })
+
+  it('allows Claude internal memory and session paths after explicit rules', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      configRoot: '/config',
+      settings: [],
+    })
+    await expect(
+      resolver.resolve({
+        id: 'memory-write',
+        name: 'Write',
+        input: {
+          file_path: '/config/projects/-workspace/memory/MEMORY.md',
+        },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'session-read',
+        name: 'Read',
+        input: {
+          file_path:
+            '/config/projects/-workspace/session/tool-results/result.txt',
+        },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      resolver.resolve({
+        id: 'task-read',
+        name: 'Read',
+        input: { file_path: '/config/tasks/session/task.json' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+
+    const constrained = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      configRoot: '/config',
+      settings: [
+        {
+          path: '/config/settings.json',
+          scope: 'user',
+          value: {
+            permissions: {
+              deny: ['Read(//config/projects/-workspace/**)'],
+              ask: ['Write(//config/projects/-workspace/memory/**)'],
+            },
+          },
+        },
+      ],
+    })
+    await expect(
+      constrained.resolve({
+        id: 'session-deny',
+        name: 'Read',
+        input: { file_path: '/config/projects/-workspace/session.jsonl' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(
+      constrained.resolve({
+        id: 'memory-ask',
+        name: 'Write',
+        input: {
+          file_path: '/config/projects/-workspace/memory/MEMORY.md',
+        },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
   })
 
   it.each(['default', 'manual'] as const)(
@@ -1502,7 +1579,7 @@ describe('ClaudePermissionResolver', () => {
     }).resolve({
       id: 'compound',
       name: 'Bash',
-      input: { command: 'cd src && npm test && git push' },
+      input: { command: 'cd src && npm test && npm publish' },
     })
     expect(decision).toMatchObject({
       behavior: 'ask',
@@ -1511,7 +1588,7 @@ describe('ClaudePermissionResolver', () => {
           type: 'addRules',
           rules: [
             { toolName: 'Bash', ruleContent: 'npm test:*' },
-            { toolName: 'Bash', ruleContent: 'git push:*' },
+            { toolName: 'Bash', ruleContent: 'npm publish:*' },
           ],
           behavior: 'allow',
           destination: 'localSettings',
@@ -1530,14 +1607,14 @@ describe('ClaudePermissionResolver', () => {
       resolver.resolve({
         id: 'partially-allowed',
         name: 'Bash',
-        input: { command: 'cd src && npm test && git push' },
+        input: { command: 'cd src && npm test && npm publish' },
       }),
     ).resolves.toMatchObject({
       behavior: 'ask',
       suggestions: [
         {
           type: 'addRules',
-          rules: [{ toolName: 'Bash', ruleContent: 'git push:*' }],
+          rules: [{ toolName: 'Bash', ruleContent: 'npm publish:*' }],
         },
       ],
     })
