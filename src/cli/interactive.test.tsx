@@ -424,6 +424,33 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual([])
   })
 
+  it('shows the removed /agents guidance locally without creating a provider', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            calls.push('service')
+            throw new Error('agents must not require a provider')
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('/agents')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('/agents')
+    expect(app.lastFrame()).toContain('The /agents wizard has been removed.')
+    expect(app.lastFrame()).toContain('.claude/agents/')
+    expect(app.lastFrame()).toContain('~/.claude/agents/')
+    expect(app.lastFrame()).toContain(
+      'https://code.claude.com/docs/en/sub-agents',
+    )
+    expect(calls).toEqual([])
+  })
+
   it('reports the current renderer and restarts after switching it', async () => {
     const rendererChanges: Array<{
       mode: 'default' | 'fullscreen'

@@ -14,6 +14,12 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'agents',
+    description:
+      '(removed) Ask Claude to create/manage subagents, or edit .claude/agents/',
+    source: 'builtin',
+  },
+  {
     name: 'branch',
     description: 'Create a branch of the current conversation at this point',
     source: 'builtin',
