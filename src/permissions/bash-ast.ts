@@ -115,10 +115,93 @@ const SAFE_STRING_SPECIAL_VARIABLES = new Set(['?', '$', '!', '#', '0', '-'])
 
 type StaticValue = { ok: true; value: string } | { ok: false; nodeType: string }
 
+type SafeCatHeredoc = { body: string } | { dangerous: true } | null
+
 export type BashSemanticResult =
   { safe: true } | { safe: false; reason: string }
 
 const EMPTY_VARIABLE_SCOPE: ReadonlyMap<string, string> = new Map()
+
+const ARITHMETIC_CONTAINER_TYPES = new Set([
+  'binary_expression',
+  'unary_expression',
+  'ternary_expression',
+  'parenthesized_expression',
+])
+
+const ARITHMETIC_LITERAL =
+  /^(?:[0-9]+|0[xX][0-9a-fA-F]+|[0-9]+#[0-9a-zA-Z]+|[-+*/%^&|~!<>=?:(),]+|<<|>>|\*\*|&&|\|\||[<>=!]=|\$\(\(|\)\))$/u
+
+function arithmeticIsLiteral(node: SyntaxNode): boolean {
+  for (const child of node.children) {
+    if (child.children.length === 0) {
+      if (!ARITHMETIC_LITERAL.test(child.text)) return false
+      continue
+    }
+    if (
+      !ARITHMETIC_CONTAINER_TYPES.has(child.type) ||
+      !arithmeticIsLiteral(child)
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function quotedHeredocStart(node: SyntaxNode): boolean {
+  return (
+    (node.text.startsWith("'") && node.text.endsWith("'")) ||
+    (node.text.startsWith('"') && node.text.endsWith('"')) ||
+    node.text.startsWith('\\')
+  )
+}
+
+function safeCatHeredoc(node: SyntaxNode): SafeCatHeredoc {
+  if (node.type !== 'command_substitution') return null
+  const statements = node.namedChildren
+  if (
+    statements.length !== 1 ||
+    statements[0]?.type !== 'redirected_statement'
+  ) {
+    return null
+  }
+  const statement = statements[0]
+  const command = statement.namedChildren.find(
+    (child) => child.type === 'command',
+  )
+  const redirects = statement.namedChildren.filter(
+    (child) => child.type === 'heredoc_redirect',
+  )
+  if (
+    !command ||
+    command.namedChildren.length !== 1 ||
+    command.childForFieldName('name')?.text !== 'cat' ||
+    redirects.length !== 1 ||
+    statement.namedChildren.length !== 2
+  ) {
+    return null
+  }
+  const redirect = redirects[0]
+  const start = redirect?.namedChildren.find(
+    (child) => child.type === 'heredoc_start',
+  )
+  const body = redirect?.namedChildren.find(
+    (child) => child.type === 'heredoc_body',
+  )
+  if (!start || !body || !quotedHeredocStart(start)) return null
+  if (body.namedChildren.some((child) => child.type !== 'heredoc_content')) {
+    return null
+  }
+  if (PROC_ENVIRON.test(body.text) || /\bsystem\s*\(/u.test(body.text)) {
+    return { dangerous: true }
+  }
+  return { body: body.text }
+}
+
+function isCatHeredocCommand(node: SyntaxNode): boolean {
+  const substitution = node.parent?.parent
+  return substitution ? safeCatHeredoc(substitution) !== null : false
+}
 
 function staticNodeValue(
   node: SyntaxNode,
@@ -133,7 +216,6 @@ function staticNodeValue(
   }
   if (
     node.type === 'word' ||
-    node.type === 'number' ||
     node.type === 'string_content' ||
     node.type === 'test_operator'
   ) {
@@ -142,11 +224,29 @@ function staticNodeValue(
       value: node.text.replace(/\\\n/gu, '').replace(/\\(.)/gu, '$1'),
     }
   }
+  if (node.type === 'number') {
+    return node.children.length === 0
+      ? { ok: true, value: node.text }
+      : { ok: false, nodeType: node.namedChild(0)?.type ?? node.type }
+  }
   if (node.type === 'raw_string') {
     return { ok: true, value: node.text.slice(1, -1) }
   }
   if (node.type === 'command_substitution' && substitutions) {
+    const heredoc = safeCatHeredoc(node)
+    if (heredoc && 'dangerous' in heredoc) {
+      return { ok: false, nodeType: node.type }
+    }
+    if (heredoc) {
+      const body = heredoc.body.replace(/\n+$/u, '')
+      return { ok: true, value: body.includes('\n') ? '' : body }
+    }
     return { ok: true, value: SUBSTITUTION_PLACEHOLDER }
+  }
+  if (node.type === 'arithmetic_expansion') {
+    return arithmeticIsLiteral(node)
+      ? { ok: true, value: node.text }
+      : { ok: false, nodeType: node.type }
   }
   if (node.type === 'simple_expansion') {
     const variable = node.namedChildren.find(
@@ -238,6 +338,69 @@ function commandArgv(
     argv.push(value.value)
   }
   return { ok: true, value: name.value, argv }
+}
+
+const DECLARATION_COMMANDS = new Set([
+  'export',
+  'local',
+  'readonly',
+  'declare',
+  'typeset',
+])
+
+function declarationArgv(
+  node: SyntaxNode,
+  scope: ReadonlyMap<string, string>,
+): StaticValue & { argv?: string[] } {
+  const keyword = node.children.find((child) =>
+    DECLARATION_COMMANDS.has(child.type),
+  )?.text
+  if (!keyword) return { ok: false, nodeType: node.type }
+  const argv = [keyword]
+  for (const child of node.namedChildren) {
+    if (child.type === 'variable_assignment') {
+      const name = child.childForFieldName('name')?.text
+      const valueNode = child.childForFieldName('value')
+      if (!name) return { ok: false, nodeType: child.type }
+      const value = valueNode
+        ? staticNodeValue(valueNode, true, scope)
+        : ({ ok: true, value: '' } as const)
+      if (!value.ok) return value
+      argv.push(`${name}=${value.value}`)
+      continue
+    }
+    if (child.type === 'variable_name') {
+      argv.push(child.text)
+      continue
+    }
+    const value = staticNodeValue(
+      child,
+      child.type === 'string' || child.type === 'concatenation',
+      scope,
+    )
+    if (!value.ok || value.value === SUBSTITUTION_PLACEHOLDER) {
+      return value.ok ? { ok: false, nodeType: child.type } : value
+    }
+    argv.push(value.value)
+  }
+  return { ok: true, value: keyword, argv }
+}
+
+function declarationSemanticFailure(
+  argv: readonly string[],
+): string | undefined {
+  const command = argv[0]
+  if (command === 'declare' || command === 'typeset' || command === 'local') {
+    for (const argument of argv.slice(1)) {
+      if (/^-[A-Za-z]*[niaA]/u.test(argument)) {
+        return `Declaration flag '${argument}' changes assignment semantics`
+      }
+      if (!argument.startsWith('-') && /^[^=]*\[/u.test(argument)) {
+        return `Declaration operand '${argument}' contains array subscript evaluation`
+      }
+    }
+  }
+  return firstSemanticFailure(argv)
 }
 
 export type BashWrapperResult =
@@ -478,7 +641,9 @@ function commandNodes(root: SyntaxNode): readonly SyntaxNode[] {
       node.type === 'test_command' ||
       node.type === 'unset_command'
     ) {
-      commands.push(permissionUnit(node))
+      if (node.type !== 'command' || !isCatHeredocCommand(node)) {
+        commands.push(permissionUnit(node))
+      }
     }
     for (const child of node.namedChildren) visit(child)
   }
@@ -489,7 +654,9 @@ function commandNodes(root: SyntaxNode): readonly SyntaxNode[] {
 function rawCommandNodes(root: SyntaxNode): readonly SyntaxNode[] {
   const commands: SyntaxNode[] = []
   const visit = (node: SyntaxNode) => {
-    if (node.type === 'command') commands.push(node)
+    if (node.type === 'command' && !isCatHeredocCommand(node)) {
+      commands.push(node)
+    }
     for (const child of node.namedChildren) visit(child)
   }
   visit(root)
@@ -607,6 +774,7 @@ function buildCommandScopes(root: SyntaxNode): BashScopeAnalysis {
       return
     }
     if (node.type === 'declaration_command') {
+      scopes.set(nodeKey(node), new Map(scope))
       for (const child of node.namedChildren) {
         if (child.type === 'variable_assignment') {
           applyVariableAssignment(child, scope)
@@ -684,7 +852,7 @@ function resolvedCommandText(
   node: SyntaxNode,
   argv: readonly string[],
 ): string {
-  return /\$[A-Za-z_]/u.test(node.text)
+  return /\$[A-Za-z_]/u.test(node.text) || node.text.includes('\n')
     ? argv.map(shellQuoted).join(' ')
     : node.text
 }
@@ -724,13 +892,14 @@ export function analyzeBashStructure(source: string): BashStaticAnalysis {
   if (tree.rootNode.hasError) {
     return { parsed: false, reason: 'Command syntax could not be parsed' }
   }
-  const nodes = rawCommandNodes(tree.rootNode)
-  if (nodes.length > MAX_BASH_PERMISSION_COMMANDS) {
+  const permissionUnits = commandNodes(tree.rootNode)
+  if (permissionUnits.length > MAX_BASH_PERMISSION_COMMANDS) {
     return {
       parsed: false,
       reason: `Command contains more than ${MAX_BASH_PERMISSION_COMMANDS} permission units`,
     }
   }
+  const nodes = rawCommandNodes(tree.rootNode)
   const commandScopes = buildCommandScopes(tree.rootNode)
   if (commandScopes.failure) {
     return { parsed: false, reason: commandScopes.failure }
@@ -810,13 +979,14 @@ export function validateBashSemantics(source: string): BashSemanticResult {
   if (tree.rootNode.hasError) {
     return { safe: false, reason: 'Command syntax could not be parsed' }
   }
-  const commands = rawCommandNodes(tree.rootNode)
-  if (commands.length > MAX_BASH_PERMISSION_COMMANDS) {
+  const permissionUnits = commandNodes(tree.rootNode)
+  if (permissionUnits.length > MAX_BASH_PERMISSION_COMMANDS) {
     return {
       safe: false,
       reason: `Command contains more than ${MAX_BASH_PERMISSION_COMMANDS} permission units`,
     }
   }
+  const commands = rawCommandNodes(tree.rootNode)
   const commandScopes = buildCommandScopes(tree.rootNode)
   if (commandScopes.failure) {
     return { safe: false, reason: commandScopes.failure }
@@ -914,19 +1084,16 @@ export function validateBashSemantics(source: string): BashSemanticResult {
       }
     }
     if (node.type === 'declaration_command') {
-      if (/^(?:declare|typeset|local)\s+-[A-Za-z]*[niaA]/u.test(node.text)) {
-        structuralFailure =
-          'Declaration flag changes assignment semantics and cannot be statically analyzed'
+      const parsed = declarationArgv(
+        node,
+        variableScopeForCommand(commandScopes.scopes, node),
+      )
+      if (!parsed.ok || !parsed.argv) {
+        structuralFailure = 'Declaration command cannot be statically analyzed'
         return
       }
-      if (
-        /^(?:declare|typeset|local)\b/u.test(node.text) &&
-        /(?:^|\s)["']?[^=\s"']*\[/u.test(node.text)
-      ) {
-        structuralFailure =
-          'Declaration operand contains array subscript evaluation'
-        return
-      }
+      structuralFailure = declarationSemanticFailure(parsed.argv)
+      if (structuralFailure) return
     }
     if (node.type === 'test_command') {
       const text = node.text

@@ -1,5 +1,5 @@
-import { existsSync, realpathSync } from 'node:fs'
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { lstatSync, readlinkSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 
 import type { PermissionUpdate } from '../core/runtime.js'
 import {
@@ -26,6 +26,7 @@ export interface BashPathSafetyOptions {
     | 'plan'
     | 'default'
   fileRule?: (operation: FileOperation, absolutePath: string) => RuleOutcome
+  platform?: NodeJS.Platform
 }
 
 export type BashPathSafetyResult =
@@ -251,8 +252,19 @@ function commandPaths(command: PathCommand, args: readonly string[]): string[] {
       '--regexp',
       '-f',
       '--file',
-      '-g',
-      '--glob',
+      ...(command === 'grep'
+        ? ['--exclude', '--include', '--exclude-dir', '--include-dir']
+        : [
+            '-t',
+            '--type',
+            '-T',
+            '--type-not',
+            '-g',
+            '--glob',
+            '--max-depth',
+            '-r',
+            '--replace',
+          ]),
       '-m',
       '--max-count',
       '-A',
@@ -262,7 +274,19 @@ function commandPaths(command: PathCommand, args: readonly string[]): string[] {
       '-C',
       '--context',
     ])
-    return patternCommandPaths(args, flags, command === 'rg' ? ['.'] : [])
+    const paths = patternCommandPaths(
+      args,
+      flags,
+      command === 'rg' ? ['.'] : [],
+    )
+    if (
+      command === 'grep' &&
+      paths.length === 0 &&
+      args.some((argument) => ['-r', '-R', '--recursive'].includes(argument))
+    ) {
+      return ['.']
+    }
+    return paths
   }
   if (command === 'sed') return sedPaths(args)
   if (command === 'jq') {
@@ -277,8 +301,12 @@ function commandPaths(command: PathCommand, args: readonly string[]): string[] {
         '--argjson',
         '--slurpfile',
         '--rawfile',
+        '--args',
+        '--jsonargs',
         '-L',
         '--library-path',
+        '--indent',
+        '--tab',
       ]),
     )
   }
@@ -299,8 +327,13 @@ function commandPaths(command: PathCommand, args: readonly string[]): string[] {
 }
 
 function expandPath(path: string, options: BashPathSafetyOptions): string {
-  if (path === '~' || path.startsWith('~/')) {
-    return resolve(options.homeDirectory, path.slice(2))
+  if (
+    path === '~' ||
+    path.startsWith('~/') ||
+    ((options.platform ?? process.platform) === 'win32' &&
+      path.startsWith('~\\'))
+  ) {
+    return resolve(options.homeDirectory, path.slice(1).replace(/^[/\\]/u, ''))
   }
   return isAbsolute(path) ? resolve(path) : resolve(options.cwd, path)
 }
@@ -313,19 +346,103 @@ function inside(candidate: string, root: string): boolean {
 function pathRepresentations(path: string): readonly string[] {
   const absolute = resolve(path)
   const representations = new Set([absolute])
+  if (path.startsWith('//') || path.startsWith('\\\\')) {
+    return [...representations]
+  }
+
+  let current = absolute
+  const visited = new Set<string>()
+  for (let depth = 0; depth < 40 && !visited.has(current); depth += 1) {
+    visited.add(current)
+    try {
+      const stats = lstatSync(current)
+      if (
+        stats.isFIFO() ||
+        stats.isSocket() ||
+        stats.isCharacterDevice() ||
+        stats.isBlockDevice()
+      ) {
+        break
+      }
+      if (!stats.isSymbolicLink()) break
+      const target = readlinkSync(current)
+      current = isAbsolute(target) ? target : resolve(dirname(current), target)
+      representations.add(current)
+    } catch {
+      break
+    }
+  }
+
   let existing = absolute
-  while (!existsSync(existing)) {
-    const parent = dirname(existing)
-    if (parent === existing) return [...representations]
-    existing = parent
+  for (;;) {
+    try {
+      lstatSync(existing)
+      break
+    } catch {
+      const parent = dirname(existing)
+      if (parent === existing) return [...representations]
+      existing = parent
+    }
   }
   try {
     const canonicalParent = realpathSync.native(existing)
     representations.add(resolve(canonicalParent, relative(existing, absolute)))
   } catch {
-    // A disappearing path remains covered by its lexical representation.
+    // A disappearing or inaccessible path retains its lexical representations.
+  }
+  try {
+    representations.add(realpathSync.native(absolute))
+  } catch {
+    // Nonexistent targets are covered by their deepest existing ancestor.
   }
   return [...representations]
+}
+
+function globBasePath(path: string, platform: NodeJS.Platform): string {
+  const match = GLOB.exec(path)
+  if (match?.index === undefined) return path
+  const prefix = path.slice(0, match.index)
+  const separatorIndex =
+    platform === 'win32'
+      ? Math.max(prefix.lastIndexOf('/'), prefix.lastIndexOf('\\'))
+      : prefix.lastIndexOf('/')
+  if (separatorIndex < 0) return '.'
+  return prefix.slice(0, separatorIndex) || '/'
+}
+
+function containsTraversal(path: string): boolean {
+  return path.split(/[\\/]+/u).includes('..')
+}
+
+function vulnerableUncPath(path: string, platform: NodeJS.Platform): boolean {
+  if (platform !== 'win32') return false
+  return (
+    /\\\\[^\s\\/]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/iu.test(path) ||
+    /(^|[^:])\/\/[^\s\\/]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/iu.test(path) ||
+    /\/\\{2,}[^\s\\/]/u.test(path) ||
+    /\\{2,}\/[^\s\\/]/u.test(path) ||
+    /@ssl@\d+|@\d+@ssl|davwwwroot/iu.test(path)
+  )
+}
+
+function suspiciousWritePath(path: string, platform: NodeJS.Platform): boolean {
+  if (
+    (platform === 'win32' || process.env.WSL_DISTRO_NAME !== undefined) &&
+    path.indexOf(':', 2) >= 0
+  ) {
+    return true
+  }
+  return (
+    /~\d/u.test(path) ||
+    path.startsWith('\\\\?\\') ||
+    path.startsWith('\\\\.\\') ||
+    path.startsWith('//?/') ||
+    path.startsWith('//./') ||
+    /[.\s]+$/u.test(path) ||
+    /\.(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/iu.test(path) ||
+    /(^|[\\/])\.{3,}(?:[\\/]|$)/u.test(path) ||
+    vulnerableUncPath(path, platform)
+  )
 }
 
 function insideRoots(candidate: string, roots: readonly string[]): boolean {
@@ -337,7 +454,7 @@ function insideRoots(candidate: string, roots: readonly string[]): boolean {
 
 function sensitivePath(path: string): boolean {
   const segments = resolve(path)
-    .split(sep)
+    .split(/[\\/]+/u)
     .filter(Boolean)
     .map((segment) => segment.toLocaleLowerCase())
   for (let index = 0; index < segments.length; index += 1) {
@@ -353,7 +470,11 @@ function dangerousRemoval(path: string, homeDirectory: string): boolean {
   const normalized = path.replace(/[\\/]+/gu, '/').replace(/\/$/u, '') || '/'
   if (normalized === '*' || normalized.endsWith('/*')) return true
   if (normalized === '/' || normalized === resolve(homeDirectory)) return true
-  return dirname(normalized) === '/'
+  return (
+    dirname(normalized) === '/' ||
+    /^[A-Za-z]:$/u.test(normalized) ||
+    /^[A-Za-z]:\/[^/]+$/u.test(normalized)
+  )
 }
 
 function pathFailure(
@@ -362,6 +483,16 @@ function pathFailure(
   options: BashPathSafetyOptions,
   dangerous = false,
 ): BashPathSafetyResult {
+  const platform = options.platform ?? process.platform
+  if (vulnerableUncPath(rawPath, platform)) {
+    return {
+      safe: false,
+      behavior: 'ask',
+      reason: 'UNC network paths require manual approval',
+      path: rawPath,
+      operation,
+    }
+  }
   if (
     rawPath.includes('__PRAXIS_COMMAND_SUBSTITUTION__') ||
     rawPath.includes('$') ||
@@ -388,7 +519,11 @@ function pathFailure(
       reason: 'Glob patterns are not allowed in write operations',
     }
   }
-  const absolutePath = expandPath(rawPath, options)
+  const validationPath =
+    operation === 'read' && GLOB.test(rawPath) && !containsTraversal(rawPath)
+      ? globBasePath(rawPath, platform)
+      : rawPath
+  const absolutePath = expandPath(validationPath, options)
   const pathsToCheck = pathRepresentations(absolutePath)
   const rules = pathsToCheck.map(
     (path) => options.fileRule?.(operation, path) ?? null,
@@ -404,12 +539,29 @@ function pathFailure(
   }
   if (
     dangerous &&
-    pathsToCheck.some((path) => dangerousRemoval(path, options.homeDirectory))
+    [rawPath, ...pathsToCheck].some((path) =>
+      dangerousRemoval(path, options.homeDirectory),
+    )
   ) {
     return {
       safe: false,
       behavior: 'ask',
       reason: `Dangerous removal operation on critical path: ${absolutePath}`,
+      path: absolutePath,
+      operation,
+      suggestions: [],
+    }
+  }
+  if (
+    operation !== 'read' &&
+    [rawPath, ...pathsToCheck].some((path) =>
+      suspiciousWritePath(path, platform),
+    )
+  ) {
+    return {
+      safe: false,
+      behavior: 'ask',
+      reason: `Write to suspicious path '${absolutePath}' requires explicit approval`,
       path: absolutePath,
       operation,
       suggestions: [],

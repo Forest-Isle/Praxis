@@ -273,4 +273,91 @@ describe('Bash AST permission analysis', () => {
       reason: expect.stringContaining(reason),
     })
   })
+
+  it('accepts only literal arithmetic expansions', () => {
+    expect(validateBashSemantics('echo $((1 + 2 * 3))')).toEqual({ safe: true })
+    expect(
+      validateBashSemantics('echo "hex=$((0xff + 16#ff)) shift=$((1 << 2))"'),
+    ).toEqual({ safe: true })
+    expect(validateBashSemantics('echo $((value + 1))')).toMatchObject({
+      safe: false,
+    })
+    expect(validateBashSemantics('echo $((arr[$(id)]))')).toMatchObject({
+      safe: false,
+    })
+  })
+
+  it('models declaration argv and scope with source-shaped flag semantics', () => {
+    expect(
+      analyzeBashCommands(
+        'export FOO=bar; readonly NAME="safe value"; declare -x X=one; echo "$FOO:$NAME:$X"',
+      ),
+    ).toEqual({
+      parsed: true,
+      commands: [
+        'export FOO=bar',
+        'readonly NAME="safe value"',
+        'declare -x X=one',
+        "echo 'bar:safe value:one'",
+      ],
+    })
+    expect(validateBashSemantics('declare "-n" target=value')).toMatchObject({
+      safe: false,
+      reason: expect.stringContaining('changes assignment semantics'),
+    })
+    expect(validateBashSemantics('local -rxn target=value')).toMatchObject({
+      safe: false,
+    })
+    expect(validateBashSemantics('export -n target')).toEqual({ safe: true })
+    expect(validateBashSemantics('readonly -a target')).toEqual({ safe: true })
+  })
+
+  it('tracks declaration command substitutions as runtime-unknown strings', () => {
+    expect(
+      validateBashSemantics('export VALUE=$(date); printf "value: $VALUE"'),
+    ).toEqual({ safe: true })
+    expect(
+      validateBashSemantics('export VALUE=$(date); printf "$VALUE"'),
+    ).toMatchObject({ safe: false })
+  })
+
+  it('treats an exact quoted cat heredoc substitution as static content', () => {
+    const singleLine = 'rm "$(cat <<\'EOF\'\n/etc/passwd\nEOF\n)"'
+    expect(analyzeBashStructure(singleLine)).toEqual({
+      parsed: true,
+      commands: [{ text: 'rm /etc/passwd', argv: ['rm', '/etc/passwd'] }],
+      redirects: [],
+    })
+    expect(analyzeBashCommands(singleLine)).toEqual({
+      parsed: true,
+      commands: ['rm /etc/passwd'],
+    })
+    expect(validateBashSemantics(singleLine)).toEqual({ safe: true })
+
+    const multiline =
+      'gh pr create --body "$(cat <<\'EOF\'\n## Summary\n- item\nEOF\n)"'
+    expect(analyzeBashStructure(multiline)).toMatchObject({
+      parsed: true,
+      commands: [{ argv: ['gh', 'pr', 'create', '--body', ''] }],
+    })
+  })
+
+  it.each([
+    'echo "$(cat <<\'EOF\'\n/proc/self/environ\nEOF\n)"',
+    'echo "$(cat <<\'EOF\'\nsystem("id")\nEOF\n)"',
+    'echo "$(cat extra <<\'EOF\'\nvalue\nEOF\n)"',
+  ])('rejects unsafe or non-exact cat heredoc substitution %s', (source) => {
+    expect(validateBashSemantics(source)).toMatchObject({ safe: false })
+  })
+
+  it('counts declaration forms toward the permission-unit limit', () => {
+    const source = Array.from(
+      { length: 51 },
+      (_, index) => `export VALUE_${index}=safe`,
+    ).join('; ')
+    expect(validateBashSemantics(source)).toMatchObject({
+      safe: false,
+      reason: expect.stringContaining('more than 50'),
+    })
+  })
 })

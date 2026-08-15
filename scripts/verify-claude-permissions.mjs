@@ -91,6 +91,7 @@ async function runBashProbe({
   configRoot,
   command,
   expectedBehavior = 'allow',
+  permissionMode = 'dontAsk',
 }) {
   let response
   try {
@@ -104,7 +105,7 @@ async function runBashProbe({
         '--tools',
         'Bash',
         '--permission-mode',
-        'dontAsk',
+        permissionMode,
         '--output-format',
         'json',
         `Use the Bash tool exactly once with this exact command: ${command}`,
@@ -180,6 +181,7 @@ try {
   const deniedBashCommand = 'CUSTOM_ENV=value printf praxis-denied argument'
   const redirectedPath = join(probeRoot, 'outside.txt')
   const redirectedBashCommand = `printf praxis-redirect > ${redirectedPath}`
+  const acceptEditsBashCommand = 'touch praxis-accept-edits.txt'
   const userPermissions = {
     allow: [
       `Read(${permissionPath(join(cwd, 'allowed*'))})`,
@@ -244,6 +246,20 @@ try {
       )
     }
   }
+  const praxisAcceptEdits = await new ClaudePermissionResolver({
+    cwd,
+    settings: [],
+    permissionMode: 'acceptEdits',
+  }).resolve({
+    id: 'praxis_accept_edits_bash',
+    name: 'Bash',
+    input: { command: acceptEditsBashCommand },
+  })
+  if (praxisAcceptEdits.behavior !== 'allow') {
+    throw new Error(
+      `Praxis acceptEdits Bash mismatch: expected allow, got ${praxisAcceptEdits.behavior}`,
+    )
+  }
   await runReadProbe({
     cwd,
     configRoot,
@@ -276,8 +292,14 @@ try {
     command: redirectedBashCommand,
     expectedBehavior: 'ask',
   })
+  await runBashProbe({
+    cwd,
+    configRoot,
+    command: acceptEditsBashCommand,
+    permissionMode: 'acceptEdits',
+  })
   console.log(
-    `Claude ${version} permission compatibility passed: user/project allow, ask, deny, // paths, glob, Bash :*, wrappers, env-deny, and redirect path constraints`,
+    `Claude ${version} permission compatibility passed: user/project allow, ask, deny, // paths, glob, Bash :*, wrappers, env-deny, redirect path constraints, and acceptEdits Bash mode`,
   )
 } finally {
   await rm(probeRoot, { recursive: true })

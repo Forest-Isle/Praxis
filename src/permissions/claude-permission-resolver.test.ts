@@ -497,6 +497,69 @@ describe('ClaudePermissionResolver', () => {
     ).resolves.toEqual({ behavior: 'allow' })
   })
 
+  it('applies accept-edits Bash mode after rules, paths, and sed constraints', async () => {
+    const resolver = new ClaudePermissionResolver({
+      cwd: '/workspace',
+      settings: [],
+      permissionMode: 'acceptEdits',
+    })
+    const allowed = await resolver.resolve({
+      id: 'accept-touch',
+      name: 'Bash',
+      input: { command: 'printf ready && touch output.txt' },
+    })
+    expect(allowed).toEqual({ behavior: 'allow' })
+    expect(permissionDecisionSource(allowed)).toBe('mode')
+
+    await expect(
+      resolver.resolve({
+        id: 'accept-sensitive',
+        name: 'Bash',
+        input: { command: 'touch .git/config' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('sensitive file'),
+    })
+    await expect(
+      resolver.resolve({
+        id: 'accept-cp-flags',
+        name: 'Bash',
+        input: { command: 'cp --target-directory=/outside source' },
+      }),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: expect.stringContaining('flags'),
+    })
+    await expect(
+      resolver.resolve({
+        id: 'accept-sed-constraint',
+        name: 'Bash',
+        input: { command: "sed 'e id'" },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  it('keeps an explicit ask rule ahead of accept-edits Bash mode', async () => {
+    const decision = await new ClaudePermissionResolver({
+      cwd: '/workspace',
+      permissionMode: 'acceptEdits',
+      settings: [
+        {
+          path: '/workspace/.claude/settings.json',
+          scope: 'project',
+          value: { permissions: { ask: ['Bash(touch:*)'] } },
+        },
+      ],
+    }).resolve({
+      id: 'accept-ask-rule',
+      name: 'Bash',
+      input: { command: 'touch output.txt' },
+    })
+    expect(decision).toMatchObject({ behavior: 'ask' })
+    expect(permissionDecisionSource(decision)).toBe('rule')
+  })
+
   it.each(['default', 'manual'] as const)(
     'honors immediate session approvals in %s mode',
     async (permissionMode) => {

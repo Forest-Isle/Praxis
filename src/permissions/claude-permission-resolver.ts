@@ -114,6 +114,16 @@ const FILE_TOOLS = new Set([
   'Grep',
 ])
 
+const ACCEPT_EDITS_BASH_COMMANDS = new Set([
+  'mkdir',
+  'touch',
+  'rm',
+  'rmdir',
+  'mv',
+  'cp',
+  'sed',
+])
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -653,6 +663,16 @@ export class ClaudePermissionResolver implements PermissionResolver {
       }
     }
     if (permissionMode === 'bypassPermissions') {
+      return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
+    }
+    if (
+      permissionMode === 'acceptEdits' &&
+      call.name === 'Bash' &&
+      subcommands.some((subcommand) => {
+        const base = subcommand.trim().split(/\s+/u)[0]
+        return base !== undefined && ACCEPT_EDITS_BASH_COMMANDS.has(base)
+      })
+    ) {
       return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
     }
     if (

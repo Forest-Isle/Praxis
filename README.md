@@ -114,9 +114,11 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   file-rule matching, atomic session permission updates, compound-shell rule
   suggestions backed by a bounded Bash AST, source-shaped exact/prefix/wildcard
   matching, wrapper and environment normalization, fail-closed Bash semantic
-  checks with control-flow-aware variable scopes, argv-based command/redirection
-  path validation, dangerous-removal and sensitive-file gates, source-ordered
-  strict sed constraints, live raw/resolved-path grants for external directories,
+  checks with control-flow-aware variable scopes, declaration and literal-only
+  arithmetic analysis, exact `cat` heredoc handling, argv-based
+  command/redirection path validation, full symlink-chain checks, dangerous-removal,
+  sensitive-file, and suspicious Windows-path gates, source-ordered strict sed
+  constraints, mode-ordered `acceptEdits` handling, live raw/resolved-path grants for external directories,
   safe-property Skill auto-allow, interactive
   workspace-directory add/remove controls, path confinement, credential
   redaction, and sanitized child processes.
