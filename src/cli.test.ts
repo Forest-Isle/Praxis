@@ -107,6 +107,70 @@ function dependencies(
 }
 
 describe('Praxis CLI', () => {
+  it('runs release notes provider-free in text, JSON, and stream JSON modes', async () => {
+    let serviceCreations = 0
+    const localDependencies: CliDependencies = {
+      async createService() {
+        serviceCreations += 1
+        throw new Error('release notes must not create a model service')
+      },
+      async loadReleaseNotes() {
+        return 'Version 2.1.208:\n· Fixture note'
+      },
+    }
+
+    const text = captureIO()
+    await expect(
+      run(['-p', '/release-notes'], text.io, localDependencies),
+    ).resolves.toBe(0)
+    expect(text.stdout.join('')).toBe('Version 2.1.208:\n· Fixture note\n')
+
+    const json = captureIO()
+    await expect(
+      run(
+        ['-p', '--output-format', 'json', '/release-notes'],
+        json.io,
+        localDependencies,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(json.stdout.join(''))).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      num_turns: 0,
+      result: 'Version 2.1.208:\n· Fixture note',
+      usage: { input_tokens: 0, output_tokens: 0 },
+    })
+
+    const stream = captureIO()
+    await expect(
+      run(
+        ['-p', '--verbose', '--output-format', 'stream-json', '/release-notes'],
+        stream.io,
+        localDependencies,
+      ),
+    ).resolves.toBe(0)
+    const records = stream.stdout.map((line) => JSON.parse(line))
+    expect(records.map(({ type }) => type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+    ])
+    expect(records[1]).toMatchObject({
+      type: 'assistant',
+      message: { content: [{ text: 'Version 2.1.208:\n· Fixture note' }] },
+    })
+    expect(serviceCreations).toBe(0)
+
+    const disabled = captureIO()
+    await expect(
+      run(['-p', '--disable-slash-commands', '/release-notes'], disabled.io, {
+        ...dependencies(),
+        loadReleaseNotes: async () => 'Version 2.1.208:\n· Fixture note',
+      }),
+    ).resolves.toBe(0)
+    expect(disabled.stdout.join('')).toBe('answer:/release-notes\n')
+  })
+
   it('runs init-only lifecycle without constructing a provider turn', async () => {
     const capture = captureIO()
     const calls: string[] = []

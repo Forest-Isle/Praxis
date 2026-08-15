@@ -46,7 +46,10 @@ import {
   type ToolExecutionResult,
   type ToolRegistry,
 } from '../core/runtime.js'
-import type { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
+import {
+  BUILTIN_STATUSLINE_AGENT_PATH,
+  type ClaudeExtensionCatalog,
+} from '../extensions/claude-extensions.js'
 import { ClaudeHookToolCoordinator } from '../hooks/claude-hook-tools.js'
 import type {
   ClaudeHookOutcome,
@@ -190,6 +193,41 @@ export class StructuredOutputRegistry implements ToolRegistry {
       content: 'Structured output recorded.',
       isError: false,
     })
+  }
+}
+
+class RestrictedToolRegistry implements ToolRegistry {
+  private readonly allowed: ReadonlySet<string>
+
+  constructor(
+    private readonly base: ToolRegistry,
+    names: readonly string[],
+  ) {
+    this.allowed = new Set(names)
+  }
+
+  definitions(): readonly ModelToolDefinition[] {
+    return this.base
+      .definitions()
+      .filter((definition) => this.allowed.has(definition.name))
+  }
+
+  prepare(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ModelToolCall> {
+    if (!this.allowed.has(call.name))
+      throw new Error(`Tool ${call.name} is unavailable to this agent`)
+    return this.base.prepare(call, context)
+  }
+
+  execute(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    if (!this.allowed.has(call.name))
+      throw new Error(`Tool ${call.name} is unavailable to this agent`)
+    return this.base.execute(call, context)
   }
 }
 
@@ -1329,13 +1367,21 @@ export class ClaudeSubagentExecutor {
       options.spawnDepth,
       () => options.promptId,
     )
+    const builtInStatusLineAgent =
+      this.options.extensions?.agent(options.input.subagentType)?.path ===
+      BUILTIN_STATUSLINE_AGENT_PATH
+    const scopedTools = builtInStatusLineAgent
+      ? new RestrictedToolRegistry(nestedTools, ['Read', 'Edit'])
+      : nestedTools
     const agentTools = options.outputSchema
       ? new StructuredOutputRegistry(
-          structuredOnlyTools,
+          builtInStatusLineAgent
+            ? new RestrictedToolRegistry(structuredOnlyTools, ['Read', 'Edit'])
+            : structuredOnlyTools,
           options.outputSchema,
           options.structuredOutput,
         )
-      : nestedTools
+      : scopedTools
     const runtimeTools = this.options.hooks
       ? new ClaudeHookToolCoordinator({
           tools: agentTools,

@@ -136,6 +136,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'release-notes',
+    description: 'View release notes',
+    source: 'builtin',
+  },
+  {
     name: 'rename',
     description: 'Rename the current conversation',
     source: 'builtin',

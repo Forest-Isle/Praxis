@@ -1,0 +1,55 @@
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+
+import { cleanup, render } from 'ink-testing-library'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { createClaudeStatusLineInput, StatusLine } from './status-line.js'
+
+afterEach(cleanup)
+
+describe('StatusLine', () => {
+  it('renders configured output and hot reloads shared settings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-ui-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'workspace')
+    await Promise.all([mkdir(configRoot), mkdir(cwd)])
+    const settingsPath = join(configRoot, 'settings.json')
+    await writeFile(
+      settingsPath,
+      JSON.stringify({
+        statusLine: { type: 'command', command: 'printf first', padding: 1 },
+      }),
+    )
+    const input = createClaudeStatusLineInput({
+      configRoot,
+      cwd,
+      projectDir: cwd,
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      version: '2.1.208',
+      outputStyle: 'default',
+      additionalDirectories: [],
+    })
+    const app = render(
+      <StatusLine
+        configRoot={configRoot}
+        cwd={cwd}
+        input={input}
+        refreshKey="initial"
+      />,
+    )
+    await delay(450)
+    expect(app.lastFrame()).toContain('first')
+
+    await writeFile(
+      settingsPath,
+      JSON.stringify({
+        statusLine: { type: 'command', command: 'printf second' },
+      }),
+    )
+    await delay(900)
+    expect(app.lastFrame()).toContain('second')
+  })
+})

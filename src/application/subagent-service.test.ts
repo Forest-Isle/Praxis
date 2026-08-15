@@ -475,6 +475,69 @@ describe('foreground Claude Agent execution', () => {
     ).toBe(true)
   })
 
+  it('limits the built-in statusline setup agent to Read and Edit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-agent-test-'))
+    roots.push(root)
+    let mainTurn = 0
+    let childTools: string[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        if (JSON.stringify(request.messages).includes('statusLine command')) {
+          childTools = request.tools?.map(({ name }) => name) ?? []
+          yield { type: 'text-delta', delta: 'CHILD_DONE' }
+        } else if (mainTurn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_statusline',
+              name: 'Agent',
+              input: {
+                description: 'Configure status line',
+                prompt: 'Configure statusLine',
+                subagent_type: 'statusline-setup',
+                run_in_background: false,
+              },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'MAIN_DONE' }
+        }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () =>
+        ['Read', 'Edit', 'Bash'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+      async prepare(call) {
+        return call
+      },
+      async execute(call) {
+        return { content: call.name, isError: false }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      extensions: new ClaudeExtensionCatalog({
+        commands: [],
+        skills: [],
+        agents: [],
+      }),
+      enableSubagents: true,
+    })
+
+    expect((await service.run('/statusline')).text).toBe('MAIN_DONE')
+    expect(childTools).toEqual(['Read', 'Edit'])
+  })
+
   it('runs a background agent and persists its completion notification', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-background-agent-test-'))
     roots.push(root)

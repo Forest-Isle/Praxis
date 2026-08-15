@@ -1091,6 +1091,31 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Did not add a working directory.')
   })
 
+  it('shows release notes locally without creating a model session', async () => {
+    let creations = 0
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            creations += 1
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        releaseNotesLoader={async () =>
+          'Version 2.1.208:\n· Local release note'
+        }
+      />,
+    )
+
+    app.stdin.write('/release-notes')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Version 2.1.208:')
+    expect(app.lastFrame()).toContain('· Local release note')
+    expect(creations).toBe(0)
+  })
+
   it('navigates the read-only hooks event, matcher, and hook menus', async () => {
     const settings = {
       hooks: {
