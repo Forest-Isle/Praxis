@@ -6337,6 +6337,12 @@ export function InteractiveApp({
         void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/add-dir') {
         openWorkspaceDirectoryInput()
+      } else if (prompt === '/agents') {
+        append({ kind: 'user', text: prompt })
+        append({
+          kind: 'local-result',
+          text: 'The /agents wizard has been removed.\n\nAsk Claude to create or update subagents for you (e.g. "create a code-reviewer subagent that ..."),\nor edit the files directly:\n  • .claude/agents/       (this project)\n  • ~/.claude/agents/     (all projects)\n\nDocs: https://code.claude.com/docs/en/sub-agents',
+        })
       } else if (btwCommand) {
         const sideQuestion = btwCommand[1]?.trim()
         if (sideQuestion) askSideQuestion(sideQuestion)
