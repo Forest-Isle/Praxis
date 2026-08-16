@@ -289,12 +289,14 @@ describe('BackgroundAgentManager', () => {
         outputTokens: 50,
         cacheReadInputTokens: 10,
         cacheCreationInputTokens: 4,
+        webSearchRequests: 3,
       },
       modelUsage: {
         'model-a': {
           inputTokens: 30,
           outputTokens: 10,
           cacheReadInputTokens: 5,
+          webSearchRequests: 2,
         },
         'model-b': { inputTokens: 40, outputTokens: 20 },
       },
@@ -308,6 +310,7 @@ describe('BackgroundAgentManager', () => {
         outputTokens: 30,
         cacheReadInputTokens: 2,
         cacheCreationInputTokens: 7,
+        webSearchRequests: 2,
       },
       modelUsage: {
         'model-b': {
@@ -319,6 +322,7 @@ describe('BackgroundAgentManager', () => {
           inputTokens: 20,
           outputTokens: 15,
           cacheReadInputTokens: 3,
+          webSearchRequests: 1,
         },
       },
       toolUseCount: 1,
@@ -348,18 +352,21 @@ describe('BackgroundAgentManager', () => {
       expect.stringContaining('<tool-use-id>call_message</tool-use-id>'),
     ])
     // Aggregate usage stays the plain sum of each result.usage (including the
-    // cache counters) and is not re-derived from the raw-model breakdown.
+    // cache and web-search counters) and is not re-derived from the raw-model
+    // breakdown, which keeps per-model web search counts unmerged.
     expect(consumed.usage).toEqual({
       inputTokens: 160,
       outputTokens: 80,
       cacheReadInputTokens: 12,
       cacheCreationInputTokens: 11,
+      webSearchRequests: 5,
     })
     expect(consumed.modelUsage).toEqual({
       'model-a': {
         inputTokens: 30,
         outputTokens: 10,
         cacheReadInputTokens: 5,
+        webSearchRequests: 2,
       },
       'model-b': {
         inputTokens: 50,
@@ -370,6 +377,7 @@ describe('BackgroundAgentManager', () => {
         inputTokens: 20,
         outputTokens: 15,
         cacheReadInputTokens: 3,
+        webSearchRequests: 1,
       },
     })
     const modelUsage = consumed.modelUsage

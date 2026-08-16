@@ -339,11 +339,14 @@ function mergeUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
     (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
   const cacheCreationInputTokens =
     (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const webSearchRequests =
+    (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
   return {
     inputTokens: left.inputTokens + right.inputTokens,
     outputTokens: left.outputTokens + right.outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
   }
 }
 
@@ -369,7 +372,8 @@ function hasNonZeroUsage(usage: ModelUsage): boolean {
     usage.inputTokens > 0 ||
     usage.outputTokens > 0 ||
     (usage.cacheReadInputTokens ?? 0) > 0 ||
-    (usage.cacheCreationInputTokens ?? 0) > 0
+    (usage.cacheCreationInputTokens ?? 0) > 0 ||
+    (usage.webSearchRequests ?? 0) > 0
   )
 }
 
@@ -3479,6 +3483,9 @@ export class ClaudeSessionService {
               model,
               usage,
               ...(costUsd === undefined ? {} : { costUsd }),
+              ...(usage.webSearchRequests === undefined
+                ? {}
+                : { webSearchRequests: usage.webSearchRequests }),
               ...(mainModel !== undefined &&
               mainModel === model &&
               combinedDurationMs !== undefined

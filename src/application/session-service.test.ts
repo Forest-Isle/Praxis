@@ -1981,14 +1981,22 @@ describe('ClaudeSessionService', () => {
           yield { type: 'text-delta', delta: 'main answer' }
           yield {
             type: 'usage',
-            usage: { inputTokens: 10, outputTokens: 4 },
+            usage: {
+              inputTokens: 10,
+              outputTokens: 4,
+              webSearchRequests: 3,
+            },
           }
           return
         }
         yield { type: 'text-delta', delta: 'final answer' }
         yield {
           type: 'usage',
-          usage: { inputTokens: 3, outputTokens: 1 },
+          usage: {
+            inputTokens: 3,
+            outputTokens: 1,
+            webSearchRequests: 1,
+          },
         }
       },
     }
@@ -2019,6 +2027,7 @@ describe('ClaudeSessionService', () => {
             outputTokens: 5,
             cacheReadInputTokens: 8,
             cacheCreationInputTokens: 2,
+            webSearchRequests: 2,
           },
         }
       },
@@ -2060,14 +2069,20 @@ describe('ClaudeSessionService', () => {
       outputTokens: 10,
       cacheReadInputTokens: 8,
       cacheCreationInputTokens: 2,
+      webSearchRequests: 6,
     })
     expect(run.modelUsage).toEqual({
-      'main-fixture-model': { inputTokens: 13, outputTokens: 5 },
+      'main-fixture-model': {
+        inputTokens: 13,
+        outputTokens: 5,
+        webSearchRequests: 4,
+      },
       'child-fixture-model': {
         inputTokens: 20,
         outputTokens: 5,
         cacheReadInputTokens: 8,
         cacheCreationInputTokens: 2,
+        webSearchRequests: 2,
       },
     })
     expect(run.costUsd).toBe(18 / 1_000_000 + 20 / 1_000_000)
@@ -2087,7 +2102,7 @@ describe('ClaudeSessionService', () => {
       outputTokens: 5,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
-      webSearchRequests: 0,
+      webSearchRequests: 4,
       costUsd: 18 / 1_000_000,
     })
     expect(snapshot.modelUsage['child-fixture-model']).toEqual({
@@ -2095,7 +2110,7 @@ describe('ClaudeSessionService', () => {
       outputTokens: 5,
       cacheReadInputTokens: 8,
       cacheCreationInputTokens: 2,
-      webSearchRequests: 0,
+      webSearchRequests: 2,
       costUsd: 20 / 1_000_000,
     })
     expect(snapshot.totalCostUsd).toBe(18 / 1_000_000 + 20 / 1_000_000)
@@ -3491,6 +3506,7 @@ describe('ClaudeSessionService', () => {
               outputTokens: 5,
               cacheReadInputTokens: 10,
               cacheCreationInputTokens: 4,
+              webSearchRequests: 3,
             },
           }
           return
@@ -3498,7 +3514,11 @@ describe('ClaudeSessionService', () => {
         yield { type: 'text-delta', delta: 'final answer' }
         yield {
           type: 'usage',
-          usage: { inputTokens: 20, outputTokens: 3 },
+          usage: {
+            inputTokens: 20,
+            outputTokens: 3,
+            webSearchRequests: 2,
+          },
         }
       },
     }
@@ -3529,6 +3549,7 @@ describe('ClaudeSessionService', () => {
         outputTokens: 8,
         cacheReadInputTokens: 10,
         cacheCreationInputTokens: 4,
+        webSearchRequests: 5,
       },
     })
     expect(result.modelUsage).toEqual({
@@ -3537,6 +3558,7 @@ describe('ClaudeSessionService', () => {
         outputTokens: 8,
         cacheReadInputTokens: 10,
         cacheCreationInputTokens: 4,
+        webSearchRequests: 5,
       },
     })
     expect(result.costUsd).toBe(71 / 1_000_000)
@@ -3577,7 +3599,7 @@ describe('ClaudeSessionService', () => {
         outputTokens: 8,
         cacheReadInputTokens: 10,
         cacheCreationInputTokens: 4,
-        webSearchRequests: 0,
+        webSearchRequests: 5,
         costUsd: 71 / 1_000_000,
       },
     })

@@ -116,6 +116,7 @@ const modelUsageCounterFields = [
   'outputTokens',
   'cacheReadInputTokens',
   'cacheCreationInputTokens',
+  'webSearchRequests',
 ] as const
 
 function assertValidModelUsageEntry(model: string, usage: ModelUsage): void {
@@ -139,11 +140,14 @@ function addUsageChecked(left: ModelUsage, right: ModelUsage): ModelUsage {
     (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
   const cacheCreationInputTokens =
     (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const webSearchRequests =
+    (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
   if (
     !Number.isSafeInteger(inputTokens) ||
     !Number.isSafeInteger(outputTokens) ||
     !Number.isSafeInteger(cacheReadInputTokens) ||
-    !Number.isSafeInteger(cacheCreationInputTokens)
+    !Number.isSafeInteger(cacheCreationInputTokens) ||
+    !Number.isSafeInteger(webSearchRequests)
   ) {
     throw new Error('Model usage total overflow')
   }
@@ -152,6 +156,7 @@ function addUsageChecked(left: ModelUsage, right: ModelUsage): ModelUsage {
     outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
   }
 }
 
