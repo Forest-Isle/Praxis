@@ -1,3 +1,5 @@
+// Product-scope disposition: required work blocks developer-core closure,
+// while deferred work is optional and excluded work remains a documented non-goal.
 export type ClaudeCommandDisposition =
   'included' | 'required' | 'deferred' | 'excluded'
 
