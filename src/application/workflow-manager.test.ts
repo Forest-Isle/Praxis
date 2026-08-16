@@ -523,6 +523,7 @@ return { first, second }`
             outputTokens: 50,
             cacheReadInputTokens: 10,
             cacheCreationInputTokens: 5,
+            webSearchRequests: 2,
           },
           modelUsage: {
             'model-a': {
@@ -530,6 +531,7 @@ return { first, second }`
               outputTokens: 30,
               cacheReadInputTokens: 6,
               cacheCreationInputTokens: 3,
+              webSearchRequests: 1,
             },
             'model-b': {
               inputTokens: 30,
@@ -550,6 +552,7 @@ return { first, second }`
           outputTokens: 100,
           cacheReadInputTokens: 20,
           cacheCreationInputTokens: 10,
+          webSearchRequests: 3,
         },
         modelUsage: {
           'model-a': {
@@ -557,12 +560,14 @@ return { first, second }`
             outputTokens: 60,
             cacheReadInputTokens: 12,
             cacheCreationInputTokens: 6,
+            webSearchRequests: 2,
           },
           'model-c': {
             inputTokens: 80,
             outputTokens: 40,
             cacheReadInputTokens: 8,
             cacheCreationInputTokens: 4,
+            webSearchRequests: 1,
           },
         },
         toolUseCount: 2,
@@ -592,6 +597,7 @@ return { first, second }`
       outputTokens: 150,
       cacheReadInputTokens: 30,
       cacheCreationInputTokens: 15,
+      webSearchRequests: 5,
     })
     expect(firstNotification.modelUsage).toEqual({
       'model-a': {
@@ -599,6 +605,7 @@ return { first, second }`
         outputTokens: 90,
         cacheReadInputTokens: 18,
         cacheCreationInputTokens: 9,
+        webSearchRequests: 3,
       },
       'model-b': {
         inputTokens: 30,
@@ -611,6 +618,7 @@ return { first, second }`
         outputTokens: 40,
         cacheReadInputTokens: 8,
         cacheCreationInputTokens: 4,
+        webSearchRequests: 1,
       },
     })
     expect(Object.keys(firstNotification.modelUsage ?? {})).toEqual([

@@ -210,6 +210,7 @@ const workflowUsageCounterFields = [
   'outputTokens',
   'cacheReadInputTokens',
   'cacheCreationInputTokens',
+  'webSearchRequests',
 ] as const
 
 function assertValidWorkflowUsage(usage: ModelUsage): void {
@@ -232,11 +233,14 @@ function addWorkflowUsageChecked(
     (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
   const cacheCreationInputTokens =
     (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const webSearchRequests =
+    (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
   if (
     !Number.isSafeInteger(inputTokens) ||
     !Number.isSafeInteger(outputTokens) ||
     !Number.isSafeInteger(cacheReadInputTokens) ||
-    !Number.isSafeInteger(cacheCreationInputTokens)
+    !Number.isSafeInteger(cacheCreationInputTokens) ||
+    !Number.isSafeInteger(webSearchRequests)
   ) {
     throw new Error('Workflow model usage total overflow')
   }
@@ -245,6 +249,7 @@ function addWorkflowUsageChecked(
     outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
   }
 }
 
