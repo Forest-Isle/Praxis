@@ -1,6 +1,7 @@
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { formatCostSummary } from './cost-summary.js'
 import {
   ConfigDashboard,
   projectConfigRows,
@@ -55,7 +56,9 @@ describe('Claude-style config dashboard', () => {
       />,
     )
     const frame = app.lastFrame() ?? ''
-    expect(frame).toMatch(/Status\s+Config\s+Usage/u)
+    expect(frame).toMatch(/Settings\s+Status\s+Config\s+Usage/u)
+    expect(frame.split('\n')[0]?.trimStart()).toMatch(/^Settings/u)
+    expect(frame.split('\n').every((line) => !/^─+$/.test(line))).toBe(true)
     expect(frame).toContain('⌕ Search settings…')
     expect(frame).toContain('Auto-compact')
     expect(frame).toContain('❯ Show tips')
@@ -79,6 +82,7 @@ describe('Claude-style config dashboard', () => {
       />,
     )
     const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Settings')
     expect(frame).toContain('Default permission mode')
     expect(frame).toContain('Type to filter')
     expect(frame).toContain('Selected tab: Config')
@@ -126,32 +130,41 @@ describe('Claude-style config dashboard', () => {
     expect(status.lastFrame()).toContain('session-fixture')
     expect(status.lastFrame()).toContain('user, project')
 
+    const usageData = {
+      totalCostUsd: 0.125,
+      apiDurationMs: 1_500,
+      wallDurationMs: 3_200,
+      linesAdded: 4,
+      linesRemoved: 2,
+      hasUnknownModelCost: false,
+      modelUsage: [
+        {
+          model: 'claude-sonnet-4-20250514',
+          canonicalName: 'claude-sonnet-4-0',
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadInputTokens: 3,
+          cacheCreationInputTokens: 2,
+          webSearchRequests: 2,
+          costUsd: 0.125,
+        },
+      ],
+    }
     const usage = render(
       <ConfigDashboard
         tab="usage"
         snapshot={snapshot}
-        usage={{
-          costUsd: 0.125,
-          apiDurationMs: 1_500,
-          wallDurationMs: 3_200,
-          linesAdded: 4,
-          linesRemoved: 2,
-          usage: {
-            inputTokens: 10,
-            outputTokens: 5,
-            cacheReadInputTokens: 3,
-            cacheCreationInputTokens: 2,
-          },
-        }}
+        usage={usageData}
         width={100}
         screenReader={false}
       />,
     )
-    expect(usage.lastFrame()).toContain('Total cost: $0.1250')
-    expect(usage.lastFrame()).toContain('4 lines added, 2 lines removed')
-    expect(usage.lastFrame()).toContain(
-      '10 input, 5 output, 3 cache read, 2 cache write',
-    )
+    const frame = usage.lastFrame() ?? ''
+    expect(frame).toMatch(/Settings\s+Status\s+Config\s+Usage/u)
+    expect(frame).toContain(formatCostSummary(usageData))
+    expect(frame).toContain('Usage by model:')
+    expect(frame).toContain('claude-sonnet-4-0')
+    expect(frame).toContain('2 web search')
   })
 
   it('renders the three source tabs and rejects missing measured data', () => {
@@ -173,7 +186,7 @@ describe('Claude-style config dashboard', () => {
         screenReader={false}
       />,
     )
-    expect(status.lastFrame()).toMatch(/Status\s+Config\s+Usage/u)
+    expect(status.lastFrame()).toMatch(/Settings\s+Status\s+Config\s+Usage/u)
     for (const label of [
       'Version',
       'Session name',
@@ -188,12 +201,13 @@ describe('Claude-style config dashboard', () => {
         tab="usage"
         snapshot={snapshot}
         usage={{
-          costUsd: 0,
+          totalCostUsd: 0,
           apiDurationMs: 0,
           wallDurationMs: 0,
           linesAdded: 0,
           linesRemoved: 0,
-          usage: { inputTokens: 0, outputTokens: 0 },
+          hasUnknownModelCost: false,
+          modelUsage: [],
         }}
         width={100}
         screenReader={false}

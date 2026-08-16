@@ -29,6 +29,7 @@ import type { TuiCustomTheme } from './tui/custom-themes.js'
 import type { TuiThemeSettings } from './tui/theme.js'
 import { projectRuntimeSettings } from './tui/runtime-settings.js'
 import type { TuiSandboxSnapshot } from './tui/sandbox-settings.js'
+import type { ClaudeSessionCostSnapshot } from '../application/session-cost-tracker.js'
 
 afterEach(() => {
   cleanup()
@@ -456,7 +457,7 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual([])
   })
 
-  it('renders /cost as a dim local result from the active session and zeroes without a session', async () => {
+  it('renders /cost as the Settings Usage dashboard from the active session and zeroes without a session', async () => {
     const creations: Array<{ requireProvider: boolean; cwd?: string }> = []
     let closes = 0
     const runCalls: string[] = []
@@ -494,7 +495,7 @@ describe('InteractiveApp', () => {
               linesRemoved: 3,
               hasUnknownModelCost: false,
               modelUsage: {
-                'claude-sonnet-4': {
+                'claude-sonnet-4-20250514': {
                   inputTokens: 1500,
                   outputTokens: 300,
                   cacheReadInputTokens: 100,
@@ -536,15 +537,20 @@ describe('InteractiveApp', () => {
         : undefined,
     )
     const frame = app.lastFrame()
-    expect(frame).toContain('⎿ Total cost:            $2.50')
+    expect(frame).toContain('Status  Config  Usage')
+    expect(frame).toContain('Session')
+    expect(frame).toContain('Total cost:            $2.50')
     expect(frame).toContain('Total duration (API):  20m 35s')
     expect(frame).toContain('Total duration (wall): 1h 0m 0s')
     expect(frame).toContain(
       'Total code changes:    12 lines added, 3 lines removed',
     )
     expect(frame).toContain(
-      '      claude-sonnet-4:  1.5k input, 300 output, 100 cache read, 50 cache write ($2.50)',
+      'claude-sonnet-4-0:  1.5k input, 300 output, 100 cache read, 50 cache write ($2.50)',
     )
+    expect(frame).toContain('Usage by model:')
+    expect(frame).toContain('Esc to cancel')
+    expect(frame).not.toContain('⎿')
     expect(creations).toEqual([
       { requireProvider: false, cwd: '/fixture/workspace' },
     ])
@@ -577,15 +583,184 @@ describe('InteractiveApp', () => {
         ? true
         : undefined,
     )
+    expect(noSessionApp.lastFrame()).toContain('Status  Config  Usage')
+    expect(noSessionApp.lastFrame()).toContain('Session')
     expect(noSessionApp.lastFrame()).toContain(
-      '⎿ Total cost:            $0.0000\n' +
-        '  Total duration (API):  0s\n' +
-        '  Total duration (wall): 0s\n' +
-        '  Total code changes:    0 lines added, 0 lines removed\n' +
-        '  Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
+      'Total cost:            $0.0000\n' +
+        'Total duration (API):  0s\n' +
+        'Total duration (wall): 0s\n' +
+        'Total code changes:    0 lines added, 0 lines removed\n' +
+        'Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
     )
+    expect(noSessionApp.lastFrame()).toContain('Esc to cancel')
+    expect(noSessionApp.lastFrame()).not.toContain('⎿')
     expect(noSessionCalls).toEqual([])
     noSessionApp.unmount()
+  })
+
+  it('navigates Settings to Usage with the current session snapshot and drops stale delayed results', async () => {
+    const deferreds: Array<{
+      resolve: (value: ClaudeSessionCostSnapshot) => void
+      reject: (reason: Error) => void
+    }> = []
+    const costRequests: string[] = []
+    const creations: Array<{ requireProvider: boolean }> = []
+    const runCalls: string[] = []
+    const resumeCalls: string[] = []
+    const turns: Array<Promise<void> | null> = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push({ requireProvider: options.requireProvider })
+        return {
+          async run() {
+            runCalls.push('run')
+            throw new Error('unused')
+          },
+          async resume() {
+            resumeCalls.push('resume')
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async costSnapshot(sessionId) {
+            costRequests.push(sessionId)
+            let resolve!: (value: ClaudeSessionCostSnapshot) => void
+            let reject!: (reason: Error) => void
+            const promise = new Promise<ClaudeSessionCostSnapshot>(
+              (res, rej) => {
+                resolve = res
+                reject = rej
+              },
+            )
+            deferreds.push({ resolve, reject })
+            return promise
+          },
+          async close() {},
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[
+          {
+            sessionId: 'active-session',
+            lastPrompt: 'hello',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        resume={{ sessionId: 'active-session' }}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+        onTurnChange={(turn) => {
+          turns.push(turn)
+        }}
+      />,
+    )
+    const snapshot = (totalCostUsd: number): ClaudeSessionCostSnapshot => ({
+      sessionId: 'active-session',
+      totalCostUsd,
+      apiDurationMs: 0,
+      apiDurationWithoutRetriesMs: 0,
+      toolDurationMs: 0,
+      wallDurationMs: 0,
+      linesAdded: 0,
+      linesRemoved: 0,
+      hasUnknownModelCost: false,
+      modelUsage: {
+        'claude-sonnet-4-20250514': {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          webSearchRequests: 0,
+          costUsd: totalCostUsd,
+        },
+      },
+    })
+
+    try {
+      app.stdin.write('/status')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Settings') &&
+        app.lastFrame()?.includes('Status  Config  Usage')
+          ? true
+          : undefined,
+      )
+
+      // Status -> Config -> Usage requests a real current-session snapshot.
+      app.stdin.write('\u001B[C')
+      app.stdin.write('\u001B[C')
+      await waitFor(() => (costRequests.length === 1 ? true : undefined))
+      expect(costRequests).toEqual(['active-session'])
+
+      // A second Usage entry in the same menu supersedes the first request.
+      app.stdin.write('\u001B[D')
+      app.stdin.write('\u001B[C')
+      await waitFor(() => (costRequests.length === 2 ? true : undefined))
+      expect(costRequests).toEqual(['active-session', 'active-session'])
+
+      // Reopening Settings Usage creates a newer menu generation and request.
+      app.stdin.write('\u001B')
+      await waitFor(() => {
+        const frame = app.lastFrame()
+        return frame !== undefined && !frame.includes('Status  Config  Usage')
+          ? true
+          : undefined
+      })
+      app.stdin.write('/cost')
+      app.stdin.write('\r')
+      await waitFor(() => (costRequests.length === 3 ? true : undefined))
+      expect(costRequests).toEqual([
+        'active-session',
+        'active-session',
+        'active-session',
+      ])
+      const freshTurn = turns.at(-1)
+      expect(freshTurn).not.toBeNull()
+
+      // A superseded request fails late: its warning must not surface either,
+      // even when it settles before the oldest stale request resolves.
+      deferreds[1]?.reject(new Error('stale cost failure'))
+      await flush()
+      expect(turns.at(-1)).toBe(freshTurn)
+      expect(app.lastFrame()).not.toContain('stale cost failure')
+
+      // The oldest request resolves late with stale data: it must not overwrite
+      // the newer menu, and its turn cleanup must not touch the newer operation.
+      deferreds[0]?.resolve(snapshot(111.11))
+      await flush()
+      expect(turns.at(-1)).toBe(freshTurn)
+      expect(app.lastFrame()).toContain('Total cost:            $0.0000')
+      expect(app.lastFrame()).not.toContain('$111.11')
+
+      // The newest request resolves and its snapshot is the one that remains.
+      deferreds[2]?.resolve(snapshot(222.22))
+      await waitFor(() =>
+        app.lastFrame()?.includes('Total cost:            $222.22')
+          ? true
+          : undefined,
+      )
+      expect(app.lastFrame()).toContain('Total cost:            $222.22')
+      expect(app.lastFrame()).not.toContain('$111.11')
+      expect(app.lastFrame()).not.toContain('stale cost failure')
+      expect(turns.at(-1)).toBeNull()
+      expect(creations).toEqual([
+        { requireProvider: false },
+        { requireProvider: false },
+        { requireProvider: false },
+      ])
+      expect(runCalls).toEqual([])
+      expect(resumeCalls).toEqual([])
+    } finally {
+      app.unmount()
+    }
   })
 
   it('reports the current renderer and restarts after switching it', async () => {
@@ -1217,7 +1392,9 @@ describe('InteractiveApp', () => {
     app.stdin.write('/usage')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Usage: 0 input, 0 output')
+    expect(app.lastFrame()).toContain(
+      'Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
+    )
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
 
@@ -2391,6 +2568,14 @@ describe('InteractiveApp', () => {
   it('streams /btw answers and manages history, copy, and clear locally', async () => {
     const clipboardWriter = vi.fn(async () => undefined)
     const questions: string[] = []
+    const sideUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUsd: 0,
+    }
     const app = render(
       <InteractiveApp
         factory={{
@@ -2413,10 +2598,28 @@ describe('InteractiveApp', () => {
                 const answer = question === 'first?' ? 'FIRST' : 'SECOND'
                 onDelta?.(answer.slice(0, 2))
                 onDelta?.(answer.slice(2))
+                sideUsage.inputTokens += 2
+                sideUsage.outputTokens += 1
                 return {
                   sessionId: 'active-session',
                   text: answer,
                   usage: { inputTokens: 2, outputTokens: 1 },
+                }
+              },
+              async costSnapshot(sessionId) {
+                return {
+                  sessionId,
+                  totalCostUsd: sideUsage.costUsd,
+                  apiDurationMs: 0,
+                  apiDurationWithoutRetriesMs: 0,
+                  toolDurationMs: 0,
+                  wallDurationMs: 0,
+                  linesAdded: 0,
+                  linesRemoved: 0,
+                  hasUnknownModelCost: false,
+                  modelUsage: {
+                    'claude-sonnet-4-20250514': { ...sideUsage },
+                  },
                 }
               },
             }
@@ -2463,8 +2666,12 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     app.stdin.write('/usage')
     app.stdin.write('\r')
-    await flush()
-    expect(app.lastFrame()).toContain('Usage: 4 input, 2 output')
+    await waitFor(() =>
+      app.lastFrame()?.includes('4 input, 2 output') ? true : undefined,
+    )
+    expect(app.lastFrame()).toContain(
+      'claude-sonnet-4-0:  4 input, 2 output, 0 cache read, 0 cache write ($0.0000)',
+    )
   })
 
   it('keeps a fresh /btw session for later fork and accumulates its cost', async () => {
@@ -2497,6 +2704,29 @@ describe('InteractiveApp', () => {
                   costUsd: 0.000321,
                 }
               },
+              async costSnapshot(sessionId) {
+                return {
+                  sessionId,
+                  totalCostUsd: 0.000321,
+                  apiDurationMs: 0,
+                  apiDurationWithoutRetriesMs: 0,
+                  toolDurationMs: 0,
+                  wallDurationMs: 0,
+                  linesAdded: 0,
+                  linesRemoved: 0,
+                  hasUnknownModelCost: false,
+                  modelUsage: {
+                    'claude-sonnet-4-20250514': {
+                      inputTokens: 2,
+                      outputTokens: 1,
+                      cacheReadInputTokens: 0,
+                      cacheCreationInputTokens: 0,
+                      webSearchRequests: 0,
+                      costUsd: 0.000321,
+                    },
+                  },
+                }
+              },
               forkSideQuestion,
             }
           },
@@ -2520,8 +2750,10 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     app.stdin.write('/usage')
     app.stdin.write('\r')
-    await flush()
-    expect(app.lastFrame()).toContain('$0.0003')
+    await waitFor(() =>
+      app.lastFrame()?.includes('($0.0003)') ? true : undefined,
+    )
+    expect(app.lastFrame()).toContain('($0.0003)')
   })
 
   it('aborts an in-flight /btw answer when its panel closes', async () => {

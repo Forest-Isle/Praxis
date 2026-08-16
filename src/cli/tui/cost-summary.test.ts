@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  canonicalClaudeCostModelName,
   formatCostSummary,
   type CostModelUsage,
   type CostSummary,
@@ -85,6 +86,44 @@ describe('formatCostSummary', () => {
         'Usage by model:\n' +
         '             Model A:  1.3k input, 700 output, 100 cache read, 50 cache write, 1.5k web search ($1.50)\n' +
         '             Model B:  10 input, 20 output, 0 cache read, 0 cache write ($0.5000)',
+    )
+  })
+
+  it('groups entries whose resulting canonical names are equal', () => {
+    const summary: CostSummary = {
+      totalCostUsd: 0.4,
+      apiDurationMs: 1000,
+      wallDurationMs: 2000,
+      linesAdded: 1,
+      linesRemoved: 0,
+      hasUnknownModelCost: false,
+      modelUsage: [
+        {
+          model: 'claude-sonnet-4-20250514',
+          canonicalName: canonicalClaudeCostModelName(
+            'claude-sonnet-4-20250514',
+          ),
+          inputTokens: 10,
+          outputTokens: 20,
+          costUsd: 0.2,
+        },
+        {
+          model: 'claude-sonnet-4-0',
+          canonicalName: 'claude-sonnet-4-0',
+          inputTokens: 5,
+          outputTokens: 10,
+          costUsd: 0.2,
+        },
+      ],
+    }
+
+    expect(formatCostSummary(summary)).toBe(
+      'Total cost:            $0.4000\n' +
+        'Total duration (API):  1s\n' +
+        'Total duration (wall): 2s\n' +
+        'Total code changes:    1 line added, 0 lines removed\n' +
+        'Usage by model:\n' +
+        '   claude-sonnet-4-0:  15 input, 30 output, 0 cache read, 0 cache write ($0.4000)',
     )
   })
 
@@ -323,5 +362,36 @@ describe('formatCostSummary', () => {
       expect(format).toThrow(TypeError)
       expect(format).toThrow(new RegExp(field))
     })
+  })
+})
+
+describe('canonicalClaudeCostModelName', () => {
+  it('maps only the observed dated Sonnet alias to its canonical name', () => {
+    expect(canonicalClaudeCostModelName('claude-sonnet-4-20250514')).toBe(
+      'claude-sonnet-4-0',
+    )
+  })
+
+  it('leaves canonical names and every other dated, provider, and unknown id unchanged', () => {
+    for (const model of [
+      'claude-sonnet-4-0',
+      'claude-opus-4-1',
+      'claude-haiku-3-5',
+      'claude-sonnet-4-20241022',
+      'claude-sonnet-4-5-20250514',
+      'claude-sonnet-4-1-20250514',
+      'claude-opus-4-20240805',
+      'claude-opus-4-1-20250514',
+      'claude-haiku-3-5-20241022',
+      'claude-3-5-sonnet-20241022',
+      'gpt-4o',
+      'claude-sonnet-4',
+    ]) {
+      expect(canonicalClaudeCostModelName(model)).toBe(model)
+    }
+  })
+
+  it('rejects blank input', () => {
+    expect(() => canonicalClaudeCostModelName('')).toThrow(TypeError)
   })
 })

@@ -117,7 +117,10 @@ import {
   slashCommandQuery,
   type TuiSlashCommand,
 } from './tui/slash-commands.js'
-import { formatCostSummary, type CostSummary } from './tui/cost-summary.js'
+import {
+  canonicalClaudeCostModelName,
+  type CostSummary,
+} from './tui/cost-summary.js'
 import {
   createComposerEditor,
   deleteComposerBackward,
@@ -722,11 +725,13 @@ type InteractiveMenu =
     }
   | {
       kind: 'config'
+      generation: number
       snapshot: Awaited<ReturnType<typeof loadConfigSettings>>
       tab: ConfigDashboardTab
       selectedIndex: number
       query: string
       searchFocused: boolean
+      usage: CostSummary
     }
   | { kind: 'mcp'; model: TuiMcpPanelModel; state: TuiMcpPanelState }
   | { kind: 'tasks'; tasks: readonly TuiTaskEntry[]; state: TuiTaskPanelState }
@@ -754,6 +759,16 @@ type InteractiveMenu =
       emptyText: string
       selectedIndex: number
     }
+
+const ZERO_COST_SUMMARY: CostSummary = {
+  totalCostUsd: 0,
+  apiDurationMs: 0,
+  wallDurationMs: 0,
+  linesAdded: 0,
+  linesRemoved: 0,
+  hasUnknownModelCost: false,
+  modelUsage: [],
+}
 
 function selectionPrefix(selected: boolean, screenReader: boolean): string {
   if (selected) return screenReader ? 'Selected: ' : '❯ '
@@ -1221,6 +1236,9 @@ export function InteractiveApp({
   const btwCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [menu, setMenu] = useState<InteractiveMenu | null>(null)
   const menuRef = useRef<InteractiveMenu | null>(null)
+  const configOpenGenerationRef = useRef(0)
+  const configUsageRequestRef = useRef(0)
+  const configOperationRef = useRef<Promise<void> | null>(null)
   const [busy, setBusy] = useState(false)
   const taskEntriesRef = useRef<readonly TuiTaskEntry[]>([])
   const mcpControllerRef = useRef<McpPanelController | null>(null)
@@ -1915,6 +1933,16 @@ export function InteractiveApp({
   }, [processSuspendRequested])
 
   const updateMenu = (next: InteractiveMenu | null) => {
+    if (next === null && menuRef.current?.kind === 'config') {
+      configOpenGenerationRef.current += 1
+      configUsageRequestRef.current += 1
+      const closingConfigOperation = configOperationRef.current
+      configOperationRef.current = null
+      if (closingConfigOperation) {
+        setBusy(false)
+        onTurnChange?.(null)
+      }
+    }
     menuRef.current = next
     setMenu(next)
   }
@@ -2727,30 +2755,143 @@ export function InteractiveApp({
     })
   }
 
+  const loadCostUsage = async (
+    sessionId: string | null,
+  ): Promise<CostSummary> => {
+    if (!sessionId) return ZERO_COST_SUMMARY
+    return withLocalCommands(async (commands) => {
+      if (!commands.costSnapshot) {
+        throw new Error('This interactive service cannot report session cost.')
+      }
+      const snapshot = await commands.costSnapshot(sessionId)
+      return {
+        totalCostUsd: snapshot.totalCostUsd,
+        apiDurationMs: snapshot.apiDurationMs,
+        wallDurationMs: snapshot.wallDurationMs,
+        linesAdded: snapshot.linesAdded,
+        linesRemoved: snapshot.linesRemoved,
+        hasUnknownModelCost: snapshot.hasUnknownModelCost,
+        modelUsage: Object.entries(snapshot.modelUsage).map(
+          ([model, usage]) => ({
+            model,
+            canonicalName: canonicalClaudeCostModelName(model),
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            cacheReadInputTokens: usage.cacheReadInputTokens,
+            cacheCreationInputTokens: usage.cacheCreationInputTokens,
+            webSearchRequests: usage.webSearchRequests,
+            costUsd: usage.costUsd,
+          }),
+        ),
+      }
+    })
+  }
+
+  const loadConfigMenuUsage = (
+    generation: number,
+    sessionId: string | null,
+  ) => {
+    const requestId = ++configUsageRequestRef.current
+    const loading = (async () => {
+      setBusy(true)
+      try {
+        const usage = await loadCostUsage(sessionId)
+        const current = menuRef.current
+        if (
+          current?.kind === 'config' &&
+          current.generation === generation &&
+          current.tab === 'usage' &&
+          sessionIdRef.current === sessionId &&
+          configUsageRequestRef.current === requestId
+        ) {
+          updateMenu({ ...current, usage })
+        }
+      } catch (error) {
+        const current = menuRef.current
+        if (
+          current?.kind === 'config' &&
+          current.generation === generation &&
+          current.tab === 'usage' &&
+          sessionIdRef.current === sessionId &&
+          configUsageRequestRef.current === requestId
+        ) {
+          warn(error)
+        }
+      }
+    })()
+    configOperationRef.current = loading
+    onTurnChange?.(loading)
+    void loading.finally(() => {
+      if (configOperationRef.current === loading) {
+        configOperationRef.current = null
+        setBusy(false)
+        onTurnChange?.(null)
+      }
+    })
+  }
+
   const openSettings = (tab: ConfigDashboardTab) => {
+    const generation = ++configOpenGenerationRef.current
+    const sessionId = sessionIdRef.current
+    const requestId = tab === 'usage' ? ++configUsageRequestRef.current : 0
     const initial: Extract<InteractiveMenu, { kind: 'config' }> = {
       kind: 'config',
+      generation,
       snapshot: { settings: {}, state: {} },
       tab,
       selectedIndex: 0,
       query: '',
       searchFocused: tab === 'config',
+      usage: ZERO_COST_SUMMARY,
     }
     updateMenu(initial)
     const loading = (async () => {
       setBusy(true)
       try {
-        const snapshot = await loadConfigSettings(configTarget)
-        if (menuRef.current?.kind === 'config')
-          updateMenu({ ...menuRef.current, snapshot })
+        const [snapshot, usage] = await Promise.all([
+          loadConfigSettings(configTarget),
+          tab === 'usage'
+            ? loadCostUsage(sessionId)
+            : Promise.resolve(ZERO_COST_SUMMARY),
+        ])
+        const current = menuRef.current
+        if (current?.kind === 'config' && current.generation === generation) {
+          const next = { ...current, snapshot }
+          if (
+            current.tab === 'usage' &&
+            sessionIdRef.current === sessionId &&
+            configUsageRequestRef.current === requestId
+          ) {
+            next.usage = usage
+          }
+          updateMenu(next)
+        }
       } catch (error) {
-        warn(error)
-      } finally {
-        setBusy(false)
+        const current = menuRef.current
+        if (tab === 'usage') {
+          if (
+            current?.kind === 'config' &&
+            current.generation === generation &&
+            current.tab === 'usage' &&
+            sessionIdRef.current === sessionId &&
+            configUsageRequestRef.current === requestId
+          ) {
+            warn(error)
+          }
+        } else if (configOpenGenerationRef.current === generation) {
+          warn(error)
+        }
       }
     })()
+    configOperationRef.current = loading
     onTurnChange?.(loading)
-    void loading.finally(() => onTurnChange?.(null))
+    void loading.finally(() => {
+      if (configOperationRef.current === loading) {
+        configOperationRef.current = null
+        setBusy(false)
+        onTurnChange?.(null)
+      }
+    })
   }
 
   const exportConversation = (method: 'clipboard' | 'file') => {
@@ -4548,6 +4689,8 @@ export function InteractiveApp({
           selectedIndex: 0,
           searchFocused: tab === 'config',
         })
+        if (tab === 'usage')
+          loadConfigMenuUsage(earlyMenu.generation, sessionIdRef.current)
         return
       }
       if (earlyMenu.tab !== 'config') return
@@ -6648,61 +6791,7 @@ export function InteractiveApp({
         onTurnChange?.(loading)
         void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/cost') {
-        const loading = (async () => {
-          setBusy(true)
-          setStatus('loading cost summary')
-          try {
-            let summary: CostSummary
-            if (sessionId) {
-              summary = await withLocalCommands(async (commands) => {
-                if (!commands.costSnapshot) {
-                  throw new Error(
-                    'This interactive service cannot report session cost.',
-                  )
-                }
-                const snapshot = await commands.costSnapshot(sessionId)
-                return {
-                  totalCostUsd: snapshot.totalCostUsd,
-                  apiDurationMs: snapshot.apiDurationMs,
-                  wallDurationMs: snapshot.wallDurationMs,
-                  linesAdded: snapshot.linesAdded,
-                  linesRemoved: snapshot.linesRemoved,
-                  hasUnknownModelCost: snapshot.hasUnknownModelCost,
-                  modelUsage: Object.entries(snapshot.modelUsage).map(
-                    ([model, usage]) => ({
-                      model,
-                      canonicalName: model,
-                      inputTokens: usage.inputTokens,
-                      outputTokens: usage.outputTokens,
-                      cacheReadInputTokens: usage.cacheReadInputTokens,
-                      cacheCreationInputTokens: usage.cacheCreationInputTokens,
-                      webSearchRequests: usage.webSearchRequests,
-                      costUsd: usage.costUsd,
-                    }),
-                  ),
-                }
-              })
-            } else {
-              summary = {
-                totalCostUsd: 0,
-                apiDurationMs: 0,
-                wallDurationMs: 0,
-                linesAdded: 0,
-                linesRemoved: 0,
-                hasUnknownModelCost: false,
-                modelUsage: [],
-              }
-            }
-            append({ kind: 'local-result', text: formatCostSummary(summary) })
-          } catch (error) {
-            warn(error)
-          } finally {
-            setBusy(false)
-            setStatus('ready')
-          }
-        })()
-        onTurnChange?.(loading)
-        void loading.finally(() => onTurnChange?.(null))
+        openSettings('usage')
       } else if (prompt === '/status') {
         openSettings('status')
       } else if (prompt === '/release-notes') {
@@ -7344,14 +7433,7 @@ export function InteractiveApp({
                     model: runtimeDisplay.model ?? 'default',
                     settingSources: statusSettingSources.split(', '),
                   }}
-                  usage={{
-                    costUsd: costUsd ?? 0,
-                    apiDurationMs: 0,
-                    wallDurationMs: 0,
-                    linesAdded: 0,
-                    linesRemoved: 0,
-                    usage: usage ?? { inputTokens: 0, outputTokens: 0 },
-                  }}
+                  usage={menu.usage}
                   width={width}
                   screenReader={axScreenReader}
                 />

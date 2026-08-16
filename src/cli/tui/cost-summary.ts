@@ -37,6 +37,10 @@ interface GroupedUsage {
 
 const LABEL_WIDTH = 23
 
+const CLAUDE_MODEL_CANONICAL_ALIASES: Readonly<Record<string, string>> = {
+  'claude-sonnet-4-20250514': 'claude-sonnet-4-0',
+}
+
 const compactFormatterCache = new Map<number, Intl.NumberFormat>()
 
 function formatCompact(value: number): string {
@@ -200,6 +204,20 @@ function validateSummary(summary: CostSummary): void {
   for (const usage of summary.modelUsage) {
     validateUsage(usage)
   }
+}
+
+/**
+ * Canonicalizes the single dated Claude model alias observed in a Claude Code
+ * 2.1.208 `/cost` fixture: `claude-sonnet-4-20250514` becomes
+ * `claude-sonnet-4-0`. Every other model id, including already-canonical names
+ * and unobserved dated Opus/Haiku/Sonnet ids, is returned byte-for-byte
+ * unchanged.
+ */
+export function canonicalClaudeCostModelName(model: string): string {
+  if (model.length === 0) {
+    throw new TypeError('model must be a non-empty string')
+  }
+  return CLAUDE_MODEL_CANONICAL_ALIASES[model] ?? model
 }
 
 export function formatCostSummary(summary: CostSummary): string {
