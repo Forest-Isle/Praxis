@@ -33,13 +33,7 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
       'The CLI-driven Chrome integration is required parity work and is not implemented yet.',
   },
   { name: 'clear', disposition: 'included', visibility: 'visible' },
-  {
-    name: 'color',
-    disposition: 'deferred',
-    visibility: 'visible',
-    reason:
-      'The dedicated /color contract is required; /theme is not a substitute.',
-  },
+  { name: 'color', disposition: 'included', visibility: 'visible' },
   { name: 'compact', disposition: 'included', visibility: 'visible' },
   { name: 'config', disposition: 'included', visibility: 'visible' },
   { name: 'copy', disposition: 'included', visibility: 'visible' },

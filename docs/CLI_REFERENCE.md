@@ -37,6 +37,9 @@ praxis -p --model <model-id> --max-turns 4 "Investigate"
 praxis -p --max-budget-usd 0.50 --output-format json "Investigate"
 praxis -p --thinking adaptive --max-thinking-tokens 8192 "Reason within a cap"
 
+# Provider-free session color command (also supports JSON and stream JSON)
+praxis -p "/color purple"
+
 # Background agents
 praxis --bg "Investigate in the background"
 praxis agents
@@ -57,6 +60,10 @@ praxis stop <agent-id>
 # Use the printed praxis attach/logs/stop commands with its eight-hex job ID.
 /sandbox
 /sandbox exclude "docker:*"
+/color purple
+# Colors only the current session's prompt-bar separators.
+/color default
+# Restores the default dim separators.
 
 # MCP and plugins
 praxis mcp list

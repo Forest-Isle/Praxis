@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createErrorResult,
+  matchHeadlessColorCommand,
   parseCliInvocation,
   readStreamJsonMessages,
   readStreamUserMessages,
@@ -1163,6 +1164,77 @@ describe('CLI protocol', () => {
       fast_mode_state: 'off',
       uuid: expect.any(String),
     })
+  })
+
+  it('emits a synthetic assistant for a provider-free local command', () => {
+    const records: unknown[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record),
+      runtimeInfo,
+      sessionId,
+      true,
+    )
+    output.init()
+    output.syntheticAssistant('Session color set to: purple')
+    output.result(
+      {
+        sessionId,
+        text: 'Session color set to: purple',
+        usage: { inputTokens: 0, outputTokens: 0 },
+        durationApiMs: 0,
+        costUsd: 0,
+        modelUsage: {},
+      },
+      Date.now(),
+    )
+
+    expect(records.map((record) => (record as { type: string }).type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+    ])
+    expect(records[0]).toMatchObject({ type: 'system', subtype: 'init' })
+    expect(records[1]).toEqual({
+      type: 'assistant',
+      message: {
+        id: expect.any(String),
+        type: 'message',
+        role: 'assistant',
+        model: '<synthetic>',
+        content: [{ type: 'text', text: 'Session color set to: purple' }],
+        stop_reason: 'stop_sequence',
+        stop_sequence: '',
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      parent_tool_use_id: null,
+      session_id: sessionId,
+    })
+    expect(records[2]).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      num_turns: 0,
+      duration_api_ms: 0,
+      total_cost_usd: 0,
+      result: 'Session color set to: purple',
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {},
+      stop_reason: null,
+    })
+  })
+
+  it('matches only bare /color commands with optional arguments', () => {
+    expect(matchHeadlessColorCommand('/color')).toBe('')
+    expect(matchHeadlessColorCommand('/color ')).toBe('')
+    expect(matchHeadlessColorCommand('/color purple')).toBe('purple')
+    expect(matchHeadlessColorCommand('/color   purple')).toBe('purple')
+    expect(matchHeadlessColorCommand('/color purple  ')).toBe('purple  ')
+    expect(matchHeadlessColorCommand('/color red blue')).toBe('red blue')
+    expect(matchHeadlessColorCommand('/colorblue')).toBeUndefined()
+    expect(matchHeadlessColorCommand('/colorful')).toBeUndefined()
+    expect(matchHeadlessColorCommand('/COLOR purple')).toBeUndefined()
+    expect(matchHeadlessColorCommand('say /color')).toBeUndefined()
+    expect(matchHeadlessColorCommand('')).toBeUndefined()
+    expect(matchHeadlessColorCommand('/color\npurple')).toBe('purple')
   })
 
   it('emits SendUserMessage stream records', () => {

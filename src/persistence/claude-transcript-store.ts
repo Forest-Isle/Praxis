@@ -89,6 +89,7 @@ export interface ClaudeTranscriptStoreOptions {
 
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true })
 const NON_TAIL_ENTRY_TYPES = new Set([
+  'agent-color',
   'agent-name',
   'agent-setting',
   'custom-title',

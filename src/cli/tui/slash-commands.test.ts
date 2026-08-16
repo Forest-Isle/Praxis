@@ -36,6 +36,7 @@ describe('TUI slash command catalog', () => {
     expect(commands.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         'agents',
+        'color',
         'context',
         'status',
         'theme',
@@ -46,6 +47,12 @@ describe('TUI slash command catalog', () => {
         'hooks',
       ]),
     )
+    expect(commands.find((command) => command.name === 'color')).toEqual({
+      name: 'color',
+      description: 'Set the prompt bar color for this session',
+      argumentHint: '[red|blue|green|yellow|purple|orange|pink|cyan|default]',
+      source: 'builtin',
+    })
     expect(commands.find((command) => command.name === 'agents')).toEqual({
       name: 'agents',
       description:

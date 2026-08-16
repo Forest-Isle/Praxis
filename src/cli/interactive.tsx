@@ -102,6 +102,12 @@ import {
   type RecentlyDeniedAction,
   type RecentlyDeniedStore,
 } from './tui/recently-denied.js'
+import {
+  agentColorMessage,
+  parseAgentColorInput,
+  type AgentColorSelection,
+} from '../compatibility/claude/agent-color.js'
+import type { AgentColorName } from '../compatibility/claude/agent-color.js'
 import type { ClaudeResourceScope } from '../compatibility/claude/shared-resources.js'
 import type { TuiHookConfiguration } from './tui/hook-settings.js'
 import {
@@ -338,6 +344,13 @@ interface InteractiveSessionCommands {
     sessionId: string | undefined,
     permissionMode?: ClaudePermissionMode,
   ): Promise<string>
+  recordColorUsage?(
+    sessionId: string | undefined,
+    selection: AgentColorSelection,
+    display: string,
+    permissionMode?: ClaudePermissionMode,
+  ): Promise<string>
+  agentColor?(sessionId: string): Promise<AgentColorName | undefined>
   recordBackgroundUsage?(
     sessionId: string | undefined,
     permissionMode?: ClaudePermissionMode,
@@ -431,6 +444,7 @@ interface InteractiveAppProps {
   initialSessions: readonly SessionSummary[]
   initialPrompt?: string
   initialHistory?: readonly TranscriptItem[]
+  initialSessionColor?: AgentColorName
   signal?: AbortSignal
   onCancel?: () => void
   onTurnChange?: (turn: Promise<void> | null) => void
@@ -961,6 +975,7 @@ export function InteractiveApp({
   initialSessions,
   initialPrompt,
   initialHistory = [],
+  initialSessionColor,
   signal,
   onCancel,
   onTurnChange,
@@ -1128,6 +1143,9 @@ export function InteractiveApp({
   const statusLineSessionId = useRef(resume?.sessionId ?? randomUUID())
   const sessionIdRef = useRef<string | null>(resume?.sessionId ?? null)
   sessionIdRef.current = sessionId
+  const [sessionColor, setSessionColor] = useState<AgentColorName | undefined>(
+    initialSessionColor,
+  )
   const [sessionName, setSessionName] = useState<string | null>(null)
   const [activeSessionSummary, setActiveSessionSummary] = useState<
     SessionSummary | undefined
@@ -1338,6 +1356,16 @@ export function InteractiveApp({
         : filterTuiSlashCommands(allSlashCommands, commandQuery),
     [allSlashCommands, commandQuery],
   )
+  const commandArgumentHint = useMemo(() => {
+    if (shellMode || !input.startsWith('/')) return undefined
+    if (inputCursor !== input.length) return undefined
+    const match = /^\/(\S+) $/u.exec(input)
+    if (!match?.[1]) return undefined
+    const command = allSlashCommands.find(
+      (candidate) => candidate.name === match[1],
+    )
+    return command?.argumentHint
+  }, [allSlashCommands, input, inputCursor, shellMode])
   const commandPaletteVisible =
     !busy &&
     !permission &&
@@ -2509,14 +2537,20 @@ export function InteractiveApp({
     sessionLoadRef.current = loadId
     if (nextSessionId === null) {
       setHistory([])
+      setSessionColor(undefined)
       return
     }
     const loading = (async () => {
       try {
         const commands = await service()
         const transcript = await commands.transcript?.(nextSessionId)
+        const agentColor =
+          commands.agentColor === undefined
+            ? undefined
+            : await commands.agentColor(nextSessionId)
         if (sessionLoadRef.current === loadId) {
           setHistory(transcript ? [...transcript] : [])
+          setSessionColor(agentColor)
         }
       } catch (error) {
         if (sessionLoadRef.current === loadId) warn(error)
@@ -2899,6 +2933,37 @@ export function InteractiveApp({
     })()
     onTurnChange?.(showing)
     void showing.finally(() => onTurnChange?.(null))
+  }
+
+  const changeSessionColor = (
+    display: string,
+    selection: AgentColorSelection,
+  ) => {
+    appendPromptHistory(display)
+    if (selection.kind === 'color') setSessionColor(selection.color)
+    else if (selection.kind === 'reset') setSessionColor(undefined)
+    const changing = (async () => {
+      try {
+        const activeSessionId = await withLocalCommands(async (commands) => {
+          if (!commands.recordColorUsage) {
+            throw new Error('Session color is unavailable.')
+          }
+          return commands.recordColorUsage(
+            sessionId ?? undefined,
+            selection,
+            display,
+            runtimePreferencesRef.current.permissionMode,
+          )
+        })
+        if (activeSessionId) setSessionId(activeSessionId)
+        append({ kind: 'user', text: display })
+        append({ kind: 'local-result', text: agentColorMessage(selection) })
+      } catch (error) {
+        warn(error)
+      }
+    })()
+    onTurnChange?.(changing)
+    void changing.finally(() => onTurnChange?.(null))
   }
 
   const backgroundSession = () => {
@@ -6186,6 +6251,7 @@ export function InteractiveApp({
       composerImagesRef.current.clear()
       if (!prompt || prompt === '!') return
       const copyCommand = /^\/copy(?:\s+(\d+))?$/u.exec(prompt)
+      const colorCommand = /^\/color(?:\s+([\s\S]+))?$/u.exec(prompt)
       const sandboxCommand = /^\/sandbox(?:\s+([\s\S]+))?$/u.exec(prompt)
       const tuiCommand = /^\/tui(?:\s+(default|fullscreen))?$/u.exec(prompt)
       const renameCommand = /^\/rename(?:\s+(.+))?$/u.exec(prompt)
@@ -6198,11 +6264,13 @@ export function InteractiveApp({
       } else if (prompt === '/new') {
         statusLineSessionId.current = randomUUID()
         setSessionId(null)
+        setSessionColor(undefined)
         setPendingFork(false)
         append({ kind: 'notice', text: 'Started a new session.' })
       } else if (prompt === '/clear') {
         statusLineSessionId.current = randomUUID()
         setSessionId(null)
+        setSessionColor(undefined)
         setPendingFork(false)
         setHistory([])
         setUsage(undefined)
@@ -6343,6 +6411,8 @@ export function InteractiveApp({
           kind: 'local-result',
           text: 'The /agents wizard has been removed.\n\nAsk Claude to create or update subagents for you (e.g. "create a code-reviewer subagent that ..."),\nor edit the files directly:\n  • .claude/agents/       (this project)\n  • ~/.claude/agents/     (all projects)\n\nDocs: https://code.claude.com/docs/en/sub-agents',
         })
+      } else if (colorCommand) {
+        changeSessionColor(prompt, parseAgentColorInput(colorCommand[1] ?? ''))
       } else if (btwCommand) {
         const sideQuestion = btwCommand[1]?.trim()
         if (sideQuestion) askSideQuestion(sideQuestion)
@@ -7407,6 +7477,10 @@ export function InteractiveApp({
                     shellMode ? Math.max(0, inputCursor - 1) : inputCursor
                   }
                   shellMode={shellMode}
+                  {...(sessionColor === undefined ? {} : { sessionColor })}
+                  {...(commandArgumentHint === undefined
+                    ? {}
+                    : { commandArgumentHint })}
                   busy={busy}
                   clipboardBusy={clipboardBusy}
                   status={status}
@@ -7583,11 +7657,16 @@ export async function runInteractive(options: {
       initialAgentPromptResolved = true
     }
     let initialHistory: readonly TranscriptItem[] = []
+    let initialSessionColor: AgentColorName | undefined
     try {
       initialHistory =
         resume?.sessionId === undefined || listing.transcript === undefined
           ? []
           : await listing.transcript(resume.sessionId)
+      initialSessionColor =
+        resume?.sessionId === undefined || listing.agentColor === undefined
+          ? undefined
+          : await listing.agentColor(resume.sessionId)
     } catch (error) {
       try {
         await listing.close?.()
@@ -7617,6 +7696,7 @@ export async function runInteractive(options: {
         slashCommands={initialSlashCommands}
         agents={initialAgents}
         initialHistory={history}
+        {...(initialSessionColor === undefined ? {} : { initialSessionColor })}
         runtimeSettings={currentRuntimeSettings}
         {...(options.settingSources === undefined
           ? {}

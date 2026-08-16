@@ -144,6 +144,16 @@ describe('TUI semantic theme palettes', () => {
       warning: 'yellowBright',
       muted: 'white',
       selectionText: 'black',
+      sessionColors: {
+        red: '#dc2626',
+        blue: '#2563eb',
+        green: '#16a34a',
+        yellow: '#ca8a04',
+        purple: '#9333ea',
+        orange: '#ea580c',
+        pink: '#db2777',
+        cyan: '#0891b2',
+      },
       syntaxTheme: 'Monokai Extended',
       syntax: {
         text: 'whiteBright',
@@ -164,5 +174,61 @@ describe('TUI semantic theme palettes', () => {
       expect(terminalColorCapability(environment)).toBe('ansi16')
       expect(tuiPalette('auto', false, environment)).toEqual(expected)
     }
+  })
+
+  it('pins the session color map for every profile', () => {
+    expect(tuiPalette('dark').sessionColors).toEqual({
+      red: '#dc2626',
+      blue: '#2563eb',
+      green: '#16a34a',
+      yellow: '#ca8a04',
+      purple: '#9333ea',
+      orange: '#ea580c',
+      pink: '#db2777',
+      cyan: '#0891b2',
+    })
+    expect(tuiPalette('light').sessionColors).toEqual(
+      tuiPalette('dark').sessionColors,
+    )
+    expect(tuiPalette('dark-ansi').sessionColors).toEqual({
+      red: 'redBright',
+      blue: 'blueBright',
+      green: 'greenBright',
+      yellow: 'yellowBright',
+      purple: 'magentaBright',
+      orange: 'redBright',
+      pink: 'magentaBright',
+      cyan: 'cyanBright',
+    })
+    expect(tuiPalette('light-ansi').sessionColors).toEqual({
+      red: 'red',
+      blue: 'blue',
+      green: 'green',
+      yellow: 'yellow',
+      purple: 'magenta',
+      orange: 'redBright',
+      pink: 'magentaBright',
+      cyan: 'cyan',
+    })
+    expect(tuiPalette('dark-daltonized').sessionColors).toEqual({
+      red: '#ff6666',
+      blue: '#66b2ff',
+      green: '#66ff66',
+      yellow: '#ffff66',
+      purple: '#b266ff',
+      orange: '#ffb266',
+      pink: '#ff99cc',
+      cyan: '#66cccc',
+    })
+    expect(tuiPalette('light-daltonized').sessionColors).toEqual({
+      red: '#cc0000',
+      blue: '#0066cc',
+      green: '#00cc00',
+      yellow: '#ffcc00',
+      purple: '#800080',
+      orange: '#ff8000',
+      pink: '#ff66b2',
+      cyan: '#00b2b2',
+    })
   })
 })

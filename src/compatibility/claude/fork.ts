@@ -184,6 +184,7 @@ export function createClaudeNativeFork({
   sessionId,
   resumeSessionAt,
 }: ClaudeNativeForkOptions): ClaudeTranscriptEntry[] {
+  const agentColors: ClaudeTranscriptEntry[] = []
   const titles: ClaudeTranscriptEntry[] = []
   const modes: ClaudeTranscriptEntry[] = []
   const permissionModes: ClaudeTranscriptEntry[] = []
@@ -245,7 +246,8 @@ export function createClaudeNativeFork({
       throw new Error('Claude fork source entry has the wrong sessionId')
     }
     const copied = copyClaudeEntryWithSessionId(entry, sessionId)
-    if (entry.type === 'ai-title') titles.push(copied)
+    if (entry.type === 'agent-color') agentColors.push(copied)
+    else if (entry.type === 'ai-title') titles.push(copied)
     else if (entry.type === 'mode') modes.push(copied)
     else if (entry.type === 'permission-mode') permissionModes.push(copied)
     else if (entry.type === 'pr-link') prLinks.push(copied)
@@ -271,6 +273,7 @@ export function createClaudeNativeFork({
     lastPrompt = undefined
   }
   return [
+    ...agentColors.slice(-1),
     ...titles.slice(-1),
     ...modes.slice(-1),
     ...permissionModes.slice(-1),

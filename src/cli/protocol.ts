@@ -332,6 +332,18 @@ export function createErrorResult(
   }
 }
 
+/**
+ * Returns the argument text of a headless `/color` prompt, or undefined when
+ * the prompt is not a bare `/color` command. A trailing space matches with an
+ * empty argument (random color), while `/colorblue` and `/colorful` are not
+ * the command.
+ */
+export function matchHeadlessColorCommand(prompt: string): string | undefined {
+  const match = /^\/color(?:\s+([\s\S]*))?$/u.exec(prompt)
+  if (match === null) return undefined
+  return match[1] ?? ''
+}
+
 const INPUT_FORMATS = ['text', 'stream-json'] as const
 const OUTPUT_FORMATS = ['text', 'json', 'stream-json'] as const
 const PERMISSION_MODES = [
@@ -2048,6 +2060,29 @@ export class StreamJsonOutput {
 
   replayUser(message: StreamUserMessage['message']): void {
     this.write({ type: 'user', message, session_id: this.sessionId })
+  }
+
+  /**
+   * Emits the synthetic assistant message for a provider-free local command
+   * (e.g. /color). It must not touch the turn state, so the following result
+   * keeps num_turns 0 and no stream_event records are produced.
+   */
+  syntheticAssistant(text: string): void {
+    this.write({
+      type: 'assistant',
+      message: {
+        id: randomUUID(),
+        type: 'message',
+        role: 'assistant',
+        model: '<synthetic>',
+        content: [{ type: 'text', text }],
+        stop_reason: 'stop_sequence',
+        stop_sequence: '',
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      parent_tool_use_id: null,
+      session_id: this.sessionId,
+    })
   }
 
   controlRequest(request: {

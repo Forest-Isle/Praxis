@@ -21,6 +21,12 @@ import {
   type SideQuestionForkResult,
   type SideQuestionResult,
 } from './application/session-service.js'
+import {
+  agentColorMessage,
+  parseAgentColorInput,
+  type AgentColorName,
+  type AgentColorSelection,
+} from './compatibility/claude/agent-color.js'
 import type { ClaudeDisplayTranscriptItem } from './compatibility/claude/projection.js'
 import {
   ClaudeConditionalRuleResolver,
@@ -143,6 +149,7 @@ import {
 import {
   createErrorResult,
   createSuccessResult,
+  matchHeadlessColorCommand,
   parseCliInvocation,
   readStreamJsonMessages,
   StreamJsonOutput,
@@ -975,6 +982,14 @@ interface SessionCommands {
     sessionId: string | undefined,
     permissionMode?: ClaudePermissionMode,
   ): Promise<string>
+  recordColorUsage?(
+    sessionId: string | undefined,
+    selection: AgentColorSelection,
+    display: string,
+    permissionMode?: ClaudePermissionMode,
+    options?: { createSession?: boolean },
+  ): Promise<string>
+  agentColor?(sessionId: string): Promise<AgentColorName | undefined>
   recordBackgroundUsage?(
     sessionId: string | undefined,
     permissionMode?: ClaudePermissionMode,
@@ -1926,6 +1941,21 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ),
       recordBtwUsage: (sessionId, permissionMode) =>
         service.recordBtwUsage(sessionId, permissionMode),
+      recordColorUsage: (
+        sessionId,
+        selection,
+        display,
+        permissionMode,
+        options,
+      ) =>
+        service.recordColorUsage(
+          sessionId,
+          selection,
+          display,
+          permissionMode,
+          options,
+        ),
+      agentColor: (sessionId) => service.readEffectiveAgentColor(sessionId),
       recordBackgroundUsage: (sessionId, permissionMode) =>
         service.recordBackgroundUsage(sessionId, permissionMode),
       recordBackgroundLaunch: (sessionId) =>
@@ -4800,6 +4830,7 @@ async function execute(
   const pendingEvents: Parameters<RuntimeEventSink>[0][] = []
   let streamIterator: AsyncGenerator<StreamJsonMessage> | undefined
   let firstStreamMessage: StreamUserMessage | undefined
+  let streamInputExhausted = false
   const queuedStreamUsers: StreamUserMessage[] = []
   const earlyControlResponses = new Map<string, StreamControlResponse>()
   let currentTurnAbort: AbortController | undefined
@@ -5006,6 +5037,19 @@ async function execute(
     }
     return 0
   }
+  const headlessTurnReached =
+    invocation.rewindFiles === undefined &&
+    !['sessions', 'fork', 'inspect', 'export'].includes(command ?? 'run')
+  if (streamIterator && headlessTurnReached) {
+    const first = await nextStreamUser()
+    if (first) firstStreamMessage = first
+    else streamInputExhausted = true
+  }
+  const firstHeadlessPrompt = firstStreamMessage?.prompt ?? headlessPrompt
+  const firstTurnIsLocalColor =
+    !invocation.disableSlashCommands &&
+    firstHeadlessPrompt !== undefined &&
+    matchHeadlessColorCommand(firstHeadlessPrompt) !== undefined
   const service = await dependencies.createService({
     eventSink:
       outputFormat === 'stream-json' && !invocation.legacyJson
@@ -5039,8 +5083,7 @@ async function execute(
             }
           : eventSink(io, outputFormat, invocation.legacyJson),
     requireProvider:
-      invocation.rewindFiles === undefined &&
-      !['fork', 'sessions', 'inspect', 'export'].includes(command ?? 'run'),
+      !streamInputExhausted && !firstTurnIsLocalColor && headlessTurnReached,
     ...(retryInterruptedTools ? { approveRecovery: () => true } : {}),
     ...(streamIterator ? { approveTool: approveStreamTool } : {}),
     ...(streamIterator ? { onElicitation: respondStreamElicitation } : {}),
@@ -5160,12 +5203,7 @@ async function execute(
         invocation.includeHookEvents,
       )
     }
-    if (streamIterator) {
-      const first = await nextStreamUser()
-      if (!first) return 0
-      firstStreamMessage = first
-    }
-
+    if (streamInputExhausted) return 0
     const initialPrompt =
       firstStreamMessage?.prompt ??
       promptFrom(
@@ -5196,43 +5234,71 @@ async function execute(
           streamOutput.replayUser(streamMessage.message)
       }
       let result: SessionRunResult
+      let colorArgs: string | undefined
       try {
-        result =
-          existingSessionId !== undefined || !isFirstTurn
-            ? runSignal
-              ? await service.resume(
-                  activeSessionId,
-                  prompt,
-                  runSignal,
-                  undefined,
-                  streamMessage?.images,
-                  streamMessage?.documents,
-                )
-              : await service.resume(
-                  activeSessionId,
-                  prompt,
-                  undefined,
-                  undefined,
-                  streamMessage?.images,
-                  streamMessage?.documents,
-                )
-            : runSignal
-              ? await service.run(
-                  prompt,
-                  runSignal,
-                  activeSessionId,
-                  undefined,
-                  streamMessage?.images,
-                  streamMessage?.documents,
-                )
-              : await service.run(
-                  prompt,
-                  undefined,
-                  activeSessionId,
-                  undefined,
-                  streamMessage?.images,
-                  streamMessage?.documents,
-                )
+        colorArgs = invocation.disableSlashCommands
+          ? undefined
+          : matchHeadlessColorCommand(prompt)
+        if (colorArgs !== undefined) {
+          if (!service.recordColorUsage) {
+            throw new Error('Session color is unavailable.')
+          }
+          const selection = parseAgentColorInput(colorArgs)
+          const localSessionId = await service.recordColorUsage(
+            activeSessionId,
+            selection,
+            prompt,
+            invocation.permissionMode,
+            isFirstTurn && existingSessionId === undefined
+              ? { createSession: true }
+              : undefined,
+          )
+          result = {
+            sessionId: localSessionId,
+            text: agentColorMessage(selection),
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationApiMs: 0,
+            costUsd: 0,
+            modelUsage: {},
+          }
+        } else {
+          result =
+            existingSessionId !== undefined || !isFirstTurn
+              ? runSignal
+                ? await service.resume(
+                    activeSessionId,
+                    prompt,
+                    runSignal,
+                    undefined,
+                    streamMessage?.images,
+                    streamMessage?.documents,
+                  )
+                : await service.resume(
+                    activeSessionId,
+                    prompt,
+                    undefined,
+                    undefined,
+                    streamMessage?.images,
+                    streamMessage?.documents,
+                  )
+              : runSignal
+                ? await service.run(
+                    prompt,
+                    runSignal,
+                    activeSessionId,
+                    undefined,
+                    streamMessage?.images,
+                    streamMessage?.documents,
+                  )
+                : await service.run(
+                    prompt,
+                    undefined,
+                    activeSessionId,
+                    undefined,
+                    streamMessage?.images,
+                    streamMessage?.documents,
+                  )
+        }
       } catch (error) {
         if (isCancellation(error, turnAbort.signal)) {
           if (currentTurnAbort === turnAbort) currentTurnAbort = undefined
@@ -5264,8 +5330,12 @@ async function execute(
         return false
       }
       activeSessionId = result.sessionId
-      if (streamOutput) streamOutput.result(result, startedAt)
-      else if (outputFormat === 'json') {
+      if (streamOutput) {
+        if (colorArgs !== undefined) {
+          streamOutput.syntheticAssistant(result.text)
+        }
+        streamOutput.result(result, startedAt)
+      } else if (outputFormat === 'json') {
         const resultRuntimeInfo = service.runtimeInfo?.() ?? runtimeInfo
         writeJson(
           io,
@@ -5273,12 +5343,12 @@ async function execute(
             result,
             resultRuntimeInfo,
             startedAt,
-            Math.max(1, jsonModelTurns),
+            colorArgs !== undefined ? 0 : Math.max(1, jsonModelTurns),
           ),
         )
       } else if (outputFormat !== 'text')
         writeJson(io, { type: 'result', ...result })
-      else io.stdout('\n')
+      else io.stdout(colorArgs !== undefined ? `${result.text}\n` : '\n')
       if (streamOutput && invocation.promptSuggestions) {
         try {
           const suggestion = await service.promptSuggestion?.(

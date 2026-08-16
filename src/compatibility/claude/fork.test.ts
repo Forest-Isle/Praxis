@@ -141,6 +141,75 @@ describe('createClaudeNativeFork', () => {
     ])
   })
 
+  it('copies exactly one effective agent-color before mode metadata', async () => {
+    const [user, assistant, lastPrompt] = await fixture('basic-session.jsonl')
+    if (!user || !assistant || !lastPrompt) throw new Error('fixture missing')
+    const source = [
+      { type: 'agent-color', agentColor: 'red', sessionId: user.sessionId },
+      user,
+      assistant,
+      lastPrompt,
+      { type: 'mode', mode: 'normal', sessionId: user.sessionId },
+      {
+        type: 'permission-mode',
+        permissionMode: 'default',
+        sessionId: user.sessionId,
+      },
+      { type: 'agent-color', agentColor: 'blue', sessionId: user.sessionId },
+      { type: 'agent-color', agentColor: 'cyan', sessionId: user.sessionId },
+    ]
+    const sessionId = '99999999-9999-4999-8999-999999999999'
+
+    expect(
+      createClaudeNativeFork({
+        source,
+        sourceSessionId: String(user.sessionId),
+        sessionId,
+      }),
+    ).toEqual([
+      { type: 'agent-color', agentColor: 'cyan', sessionId },
+      { type: 'mode', mode: 'normal', sessionId },
+      { type: 'permission-mode', permissionMode: 'default', sessionId },
+      { ...user, sessionId },
+      { ...assistant, sessionId },
+      { ...lastPrompt, sessionId },
+    ])
+  })
+
+  it('preserves the default agent-color sentinel as the effective fork value', async () => {
+    const [user, assistant, lastPrompt] = await fixture('basic-session.jsonl')
+    if (!user || !assistant || !lastPrompt) throw new Error('fixture missing')
+    const source = [
+      { type: 'agent-color', agentColor: 'purple', sessionId: user.sessionId },
+      user,
+      assistant,
+      lastPrompt,
+      { type: 'mode', mode: 'normal', sessionId: user.sessionId },
+      {
+        type: 'permission-mode',
+        permissionMode: 'default',
+        sessionId: user.sessionId,
+      },
+      { type: 'agent-color', agentColor: 'default', sessionId: user.sessionId },
+    ]
+    const sessionId = '99999999-9999-4999-8999-999999999999'
+
+    expect(
+      createClaudeNativeFork({
+        source,
+        sourceSessionId: String(user.sessionId),
+        sessionId,
+      }),
+    ).toEqual([
+      { type: 'agent-color', agentColor: 'default', sessionId },
+      { type: 'mode', mode: 'normal', sessionId },
+      { type: 'permission-mode', permissionMode: 'default', sessionId },
+      { ...user, sessionId },
+      { ...assistant, sessionId },
+      { ...lastPrompt, sessionId },
+    ])
+  })
+
   it('preserves ordinary Claude metadata without requiring a Praxis writer', async () => {
     const [user, assistant, lastPrompt] = await fixture('basic-session.jsonl')
     if (!user || !assistant || !lastPrompt) throw new Error('fixture missing')
