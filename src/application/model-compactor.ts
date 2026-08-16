@@ -91,6 +91,12 @@ export class ModelCompactor implements Compactor {
         `Compaction summary exceeded ${targetTokens} tokens (estimated ${summaryTokens})`,
       )
     }
-    return { summary, usage, durationMs: Date.now() - startedAt }
+    const model = this.provider.model
+    return {
+      summary,
+      usage,
+      durationMs: Date.now() - startedAt,
+      ...(model !== undefined && model.trim() !== '' ? { model } : {}),
+    }
   }
 }
