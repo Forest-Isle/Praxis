@@ -37,6 +37,7 @@ import {
   type ModelToolCall,
   type ModelToolDefinition,
   type ModelUsage,
+  type ModelUsageByModel,
   type PermissionResolver,
   type PermissionApproval,
   type PermissionDecision,
@@ -107,6 +108,7 @@ export interface WorkflowAgentRunOptions {
 export interface WorkflowAgentRunResult {
   result: unknown
   usage: ModelUsage
+  modelUsage?: ModelUsageByModel
   toolUseCount: number
   durationMs: number
   resolvedModel: string
@@ -450,6 +452,10 @@ export interface ClaudeSubagentExecutorOptions {
   toolNames?: readonly string[]
   backgroundTaskNotifications?: (waitForRunning: boolean) => Promise<string[]>
   persistence?: 'disk' | 'memory'
+  onLineChanges?: (changes: {
+    readonly linesAdded: number
+    readonly linesRemoved: number
+  }) => void | Promise<void>
 }
 
 function parseAgentInput(call: ModelToolCall): AgentInput {
@@ -935,6 +941,7 @@ export class ClaudeSubagentExecutor {
       ].join('\n\n'),
       isError: false,
       usage: result.usage,
+      ...(result.modelUsage ? { modelUsage: { ...result.modelUsage } } : {}),
       nativeToolUseResult: {
         ...createClaudeAgentToolUseResult({
           prompt: input.prompt,
@@ -1010,6 +1017,7 @@ export class ClaudeSubagentExecutor {
     ) => Promise<{
       text: string
       usage: ModelUsage
+      modelUsage?: ModelUsageByModel
       toolUseCount: number
     }>
   }): BackgroundAgentTaskSpec['run'] {
@@ -1024,7 +1032,13 @@ export class ClaudeSubagentExecutor {
       availableIsolation = undefined
       const startedAt = Date.now()
       let result:
-        { text: string; usage: ModelUsage; toolUseCount: number } | undefined
+        | {
+            text: string
+            usage: ModelUsage
+            modelUsage?: ModelUsageByModel
+            toolUseCount: number
+          }
+        | undefined
       let failure: unknown
       let cleanup: { retained: boolean; reason?: string } | undefined
       try {
@@ -1196,6 +1210,7 @@ export class ClaudeSubagentExecutor {
     return {
       result: options.schema ? structured.value : run.text,
       usage: run.usage,
+      ...(run.modelUsage ? { modelUsage: { ...run.modelUsage } } : {}),
       toolUseCount: run.toolUseCount,
       durationMs: Date.now() - startedAt,
       resolvedModel: provider.model ?? 'praxis/provider',
@@ -1284,9 +1299,11 @@ export class ClaudeSubagentExecutor {
     }
   }
 
-  notifications(
-    waitForRunning: boolean,
-  ): Promise<{ messages: string[]; usage: ModelUsage }> {
+  notifications(waitForRunning: boolean): Promise<{
+    messages: string[]
+    usage: ModelUsage
+    modelUsage?: ModelUsageByModel
+  }> {
     return this.background.notifications({ waitForRunning })
   }
 
@@ -1500,6 +1517,7 @@ export class ClaudeSubagentExecutor {
   }): Promise<{
     text: string
     usage: { inputTokens: number; outputTokens: number }
+    modelUsage?: ModelUsageByModel
     toolUseCount: number
   }> {
     const cwd = options.cwd ?? this.cwd()
@@ -1733,6 +1751,13 @@ export class ClaudeSubagentExecutor {
         call: ModelToolCall,
         result: ToolExecutionResult,
       ) => {
+        if (result.isError === false) {
+          const linesAdded = result.linesAdded ?? 0
+          const linesRemoved = result.linesRemoved ?? 0
+          if (linesAdded !== 0 || linesRemoved !== 0) {
+            await this.options.onLineChanges?.({ linesAdded, linesRemoved })
+          }
+        }
         const nestedToolUseCount = result.nativeToolUseResult?.totalToolUseCount
         if (
           call.name === 'Agent' &&
@@ -1924,7 +1949,13 @@ export class ClaudeSubagentExecutor {
                     true,
                   )) ?? []),
                 )
-                return { messages, usage: background.usage }
+                return {
+                  messages,
+                  usage: background.usage,
+                  ...(background.modelUsage
+                    ? { modelUsage: background.modelUsage }
+                    : {}),
+                }
               },
             }
           : {}),

@@ -114,6 +114,7 @@ import {
   type TranscriptTail,
 } from '../persistence/claude-transcript-store.js'
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
+import type { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
 import { ModelCompactor } from './model-compactor.js'
 import {
   agentMemoryPrompt,
@@ -134,6 +135,10 @@ import type {
   WorktreeSessionState,
   WorkspaceContext,
 } from './session-worktree.js'
+import {
+  ClaudeSessionCostTracker,
+  type ClaudeSessionCostSnapshot,
+} from './session-cost-tracker.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import { generateToolUseSummary } from './tool-use-summary.js'
@@ -214,6 +219,7 @@ export interface ClaudeSessionServiceOptions {
   fileRewindRoots?: readonly string[]
   interactiveTools?: ClaudeInteractiveToolManager
   mcp?: ClaudeMcpRuntime
+  costStateStore?: Pick<ClaudeCostStateStore, 'load' | 'save'>
 }
 
 function agentPermissionMode(
@@ -341,6 +347,77 @@ function mergeUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
   }
 }
 
+function mergeSessionRawModelUsage(
+  ...parts: readonly (Readonly<Record<string, ModelUsage>> | undefined)[]
+): Readonly<Record<string, ModelUsage>> | undefined {
+  const merged = new Map<string, ModelUsage>()
+  for (const part of parts) {
+    if (part === undefined) continue
+    for (const [model, usage] of Object.entries(part)) {
+      const existing = merged.get(model)
+      merged.set(
+        model,
+        existing === undefined ? { ...usage } : mergeUsage(existing, usage),
+      )
+    }
+  }
+  return merged.size === 0 ? undefined : Object.fromEntries(merged)
+}
+
+function hasNonZeroUsage(usage: ModelUsage): boolean {
+  return (
+    usage.inputTokens > 0 ||
+    usage.outputTokens > 0 ||
+    (usage.cacheReadInputTokens ?? 0) > 0 ||
+    (usage.cacheCreationInputTokens ?? 0) > 0
+  )
+}
+
+function createLineCountAccumulator(): {
+  readonly linesAdded: number
+  readonly linesRemoved: number
+  add(input: {
+    isError: boolean
+    linesAdded?: number
+    linesRemoved?: number
+  }): void
+} {
+  let linesAdded = 0
+  let linesRemoved = 0
+  const addCounter = (
+    current: number,
+    value: number | undefined,
+    field: 'linesAdded' | 'linesRemoved',
+  ): number => {
+    if (value === undefined) return current
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError(`${field} must be a nonnegative safe integer`)
+    }
+    const next = current + value
+    if (!Number.isSafeInteger(next) || next < 0) {
+      throw new TypeError(`${field} total must be a nonnegative safe integer`)
+    }
+    return next
+  }
+  return {
+    get linesAdded(): number {
+      return linesAdded
+    },
+    get linesRemoved(): number {
+      return linesRemoved
+    },
+    add(input) {
+      if (input.isError) return
+      linesAdded = addCounter(linesAdded, input.linesAdded, 'linesAdded')
+      linesRemoved = addCounter(
+        linesRemoved,
+        input.linesRemoved,
+        'linesRemoved',
+      )
+    },
+  }
+}
+
 export function workflowTokenTarget(prompt: string): number | null {
   const match = /(?:^|\s)\+(\d+(?:\.\d+)?)([km])\b/iu.exec(prompt)
   if (!match) return null
@@ -403,6 +480,12 @@ export class ClaudeSessionService {
   private readonly downloadedFileResourceSessions = new Set<string>()
   private activeProvider: ModelProvider | undefined
   private mcpClosePromise: Promise<void> | undefined
+  private readonly sessionCostTrackers = new Map<
+    string,
+    ClaudeSessionCostTracker
+  >()
+  private activeCostSessionId: string | undefined
+  private closeCostSavePromise: Promise<void> | undefined
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
@@ -516,6 +599,8 @@ export class ClaudeSessionService {
     this.hostedSubagents.clear()
     this.backgroundTasks.clear()
     await this.workflowManager?.close()
+    this.closeCostSavePromise ??= this.persistActiveSessionCost()
+    await this.closeCostSavePromise
     this.mcpClosePromise ??= this.options.mcp?.close?.() ?? Promise.resolve()
     await this.mcpClosePromise
   }
@@ -1939,6 +2024,58 @@ export class ClaudeSessionService {
     }
   }
 
+  private async activateSessionCostTracker(sessionId: string): Promise<void> {
+    if (this.activeCostSessionId === sessionId) return
+    const store = this.options.costStateStore
+    if (store) {
+      // Load the target native state before any save so the single
+      // `.claude.json` slot is not overwritten before it is read.
+      const loaded = await store.load(sessionId)
+      const currentId = this.activeCostSessionId
+      if (currentId !== undefined) {
+        const current = this.sessionCostTrackers.get(currentId)
+        if (current) await store.save(current.snapshot())
+      }
+      if (!this.sessionCostTrackers.has(sessionId)) {
+        this.sessionCostTrackers.set(
+          sessionId,
+          new ClaudeSessionCostTracker({
+            sessionId,
+            ...(loaded ? { restored: loaded } : {}),
+          }),
+        )
+      }
+    } else if (!this.sessionCostTrackers.has(sessionId)) {
+      this.sessionCostTrackers.set(
+        sessionId,
+        new ClaudeSessionCostTracker({ sessionId }),
+      )
+    }
+    this.activeCostSessionId = sessionId
+  }
+
+  private persistActiveSessionCost(): Promise<void> {
+    const store = this.options.costStateStore
+    const activeId = this.activeCostSessionId
+    if (!store || activeId === undefined) return Promise.resolve()
+    const tracker = this.sessionCostTrackers.get(activeId)
+    if (!tracker) return Promise.resolve()
+    return store.save(tracker.snapshot())
+  }
+
+  async costSnapshot(sessionId: string): Promise<ClaudeSessionCostSnapshot> {
+    const existing = this.sessionCostTrackers.get(sessionId)
+    if (existing) return existing.snapshot()
+    const store = this.options.costStateStore
+    const loaded = store ? await store.load(sessionId) : null
+    const tracker = new ClaudeSessionCostTracker({
+      sessionId,
+      ...(loaded ? { restored: loaded } : {}),
+    })
+    this.sessionCostTrackers.set(sessionId, tracker)
+    return tracker.snapshot()
+  }
+
   private async executeTurn(
     sessionId: string,
     prompt: string,
@@ -1960,6 +2097,8 @@ export class ClaudeSessionService {
     if (shellCommand !== undefined && shellCommand.trim().length === 0) {
       throw new Error('Shell command must not be empty')
     }
+
+    await this.activateSessionCostTracker(sessionId)
 
     await this.ensureFileResources(sessionId, signal)
 
@@ -2232,6 +2371,15 @@ export class ClaudeSessionService {
                 this.sessionPermissionUpdates.get(sessionId) ?? [],
               onPermissionUpdates: (updates) =>
                 this.applyPermissionUpdates(sessionId, updates),
+              onLineChanges: (changes) => {
+                const tracker = this.sessionCostTrackers.get(sessionId)
+                if (!tracker) {
+                  throw new Error(
+                    `Session cost tracker is not active for session ${sessionId}`,
+                  )
+                }
+                tracker.recordLineChanges(changes)
+              },
               ...(this.options.eventSink
                 ? { eventSink: this.options.eventSink }
                 : {}),
@@ -2634,13 +2782,19 @@ export class ClaudeSessionService {
           recoveryRequest,
         )
         const recoveryUsage = recoveryResults.reduce<ModelUsage>(
-          (usage, result) => ({
-            inputTokens: usage.inputTokens + (result.usage?.inputTokens ?? 0),
-            outputTokens:
-              usage.outputTokens + (result.usage?.outputTokens ?? 0),
-          }),
+          (usage, result) =>
+            result.usage ? mergeUsage(usage, result.usage) : usage,
           { inputTokens: 0, outputTokens: 0 },
         )
+        const recoveryModelUsage = mergeSessionRawModelUsage(
+          ...recoveryResults.map((result) =>
+            result.isError ? undefined : result.modelUsage,
+          ),
+        )
+        const foregroundLineChanges = createLineCountAccumulator()
+        for (const result of recoveryResults) {
+          foregroundLineChanges.add(result)
+        }
 
         if (
           this.options.agent &&
@@ -2726,6 +2880,9 @@ export class ClaudeSessionService {
           inputTokens: 0,
           outputTokens: 0,
         }
+        let compactionDurationMs: number | undefined
+        let compactionModelUsage:
+          Readonly<Record<string, ModelUsage>> | undefined
         const definitions = provider.capabilities.tools
           ? (structuredTools?.definitions() ?? [])
           : []
@@ -2959,11 +3116,33 @@ export class ClaudeSessionService {
             uuid: boundaryUuid,
           })
           compactionAnchorUuid = compactSummaryUuid
-          compactionUsage = {
-            inputTokens:
-              compactionUsage.inputTokens + compacted.usage.inputTokens,
-            outputTokens:
-              compactionUsage.outputTokens + compacted.usage.outputTokens,
+          compactionUsage = mergeUsage(compactionUsage, compacted.usage)
+          const compactedDurationMs = compacted.durationMs
+          if (
+            typeof compactedDurationMs !== 'number' ||
+            !Number.isFinite(compactedDurationMs) ||
+            compactedDurationMs < 0
+          ) {
+            throw new TypeError(
+              'compaction durationMs must be a finite nonnegative number',
+            )
+          }
+          const accumulatedDurationMs =
+            (compactionDurationMs ?? 0) + compactedDurationMs
+          if (!Number.isFinite(accumulatedDurationMs)) {
+            throw new TypeError('compaction durationMs total overflow')
+          }
+          compactionDurationMs = accumulatedDurationMs
+          const compactedMainModel = provider.model
+          if (
+            compactedMainModel !== undefined &&
+            compactedMainModel.trim() !== '' &&
+            hasNonZeroUsage(compacted.usage)
+          ) {
+            compactionModelUsage = mergeSessionRawModelUsage(
+              compactionModelUsage,
+              { [compactedMainModel]: compacted.usage },
+            )
           }
         }
         await compactIfNeeded(pendingUserMessages)
@@ -3039,6 +3218,7 @@ export class ClaudeSessionService {
           }
         }
         let shellUsage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+        let shellModelUsage: Readonly<Record<string, ModelUsage>> | undefined
         if (shellCommand !== undefined) {
           const call: ModelToolCall = {
             id: `shell_${randomUUID().replaceAll('-', '')}`,
@@ -3079,6 +3259,10 @@ export class ClaudeSessionService {
             throw error
           }
           shellUsage = shellResult.usage ?? shellUsage
+          if (!shellResult.isError) {
+            shellModelUsage = shellResult.modelUsage
+            foregroundLineChanges.add(shellResult)
+          }
           const stdout =
             shellResult.processOutput?.stdout ??
             (shellResult.isError ? '' : shellResult.content)
@@ -3152,7 +3336,9 @@ export class ClaudeSessionService {
             ? { maxModelTurns: this.options.maxModelTurns }
             : {}),
           ...(this.options.betas?.length ? { betas: this.options.betas } : {}),
-          ...(this.options.collectMetrics ? { collectMetrics: true } : {}),
+          ...(this.options.collectMetrics || this.options.costStateStore
+            ? { collectMetrics: true }
+            : {}),
           reloadMessages: async () => {
             await compactIfNeeded([], currentTurnUserMessages ?? [])
             return [
@@ -3198,18 +3384,31 @@ export class ClaudeSessionService {
                   if (scheduled) {
                     messages.push(...scheduled.map(({ prompt }) => prompt))
                   }
+                  const batchUsage =
+                    background || workflow
+                      ? mergeUsage(
+                          background?.usage ?? {
+                            inputTokens: 0,
+                            outputTokens: 0,
+                          },
+                          workflow?.usage ?? {
+                            inputTokens: 0,
+                            outputTokens: 0,
+                          },
+                        )
+                      : undefined
+                  const batchModelUsage = mergeSessionRawModelUsage(
+                    background?.modelUsage,
+                    workflow?.modelUsage,
+                  )
                   return {
                     messages,
-                    ...(background || workflow
+                    ...(batchUsage
                       ? {
-                          usage: {
-                            inputTokens:
-                              (background?.usage.inputTokens ?? 0) +
-                              (workflow?.usage.inputTokens ?? 0),
-                            outputTokens:
-                              (background?.usage.outputTokens ?? 0) +
-                              (workflow?.usage.outputTokens ?? 0),
-                          },
+                          usage: batchUsage,
+                          ...(batchModelUsage
+                            ? { modelUsage: batchModelUsage }
+                            : {}),
                         }
                       : {}),
                   }
@@ -3252,6 +3451,67 @@ export class ClaudeSessionService {
           mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
           result.usage,
         )
+        const tracker = this.sessionCostTrackers.get(sessionId)
+        if (!tracker) {
+          throw new Error(
+            `Session cost tracker is not active for session ${sessionId}`,
+          )
+        }
+        const turnModelUsage = mergeSessionRawModelUsage(
+          recoveryModelUsage,
+          compactionModelUsage,
+          shellModelUsage,
+          result.modelUsage,
+        )
+        const combinedDurationMs =
+          compactionDurationMs === undefined &&
+          result.durationApiMs === undefined
+            ? undefined
+            : (compactionDurationMs ?? 0) + (result.durationApiMs ?? 0)
+        const mainModel = provider.model
+        let rawCostUsd: number | undefined
+        if (turnModelUsage) {
+          for (const [model, usage] of Object.entries(turnModelUsage)) {
+            const pricing = this.options.pricing?.resolve(model)
+            const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
+            if (costUsd !== undefined) rawCostUsd = (rawCostUsd ?? 0) + costUsd
+            tracker.recordTurn({
+              model,
+              usage,
+              ...(costUsd === undefined ? {} : { costUsd }),
+              ...(mainModel !== undefined &&
+              mainModel === model &&
+              combinedDurationMs !== undefined
+                ? {
+                    apiDurationMs: combinedDurationMs,
+                    apiDurationWithoutRetriesMs: 0,
+                  }
+                : {}),
+            })
+          }
+        }
+        foregroundLineChanges.add({
+          isError: false,
+          ...(result.linesAdded === undefined
+            ? {}
+            : { linesAdded: result.linesAdded }),
+          ...(result.linesRemoved === undefined
+            ? {}
+            : { linesRemoved: result.linesRemoved }),
+        })
+        if (
+          foregroundLineChanges.linesAdded !== 0 ||
+          foregroundLineChanges.linesRemoved !== 0
+        ) {
+          tracker.recordLineChanges({
+            ...(foregroundLineChanges.linesAdded === 0
+              ? {}
+              : { linesAdded: foregroundLineChanges.linesAdded }),
+            ...(foregroundLineChanges.linesRemoved === 0
+              ? {}
+              : { linesRemoved: foregroundLineChanges.linesRemoved }),
+          })
+        }
         return {
           sessionId,
           text:
@@ -3259,22 +3519,11 @@ export class ClaudeSessionService {
               ? JSON.stringify(structuredCapture.value)
               : result.text,
           usage: totalUsage,
-          ...(result.durationApiMs === undefined
+          ...(combinedDurationMs === undefined
             ? {}
-            : { durationApiMs: result.durationApiMs }),
-          ...(this.options.pricing
-            ? (() => {
-                const pricing = this.options.pricing?.resolve(
-                  provider.model ?? 'praxis/provider',
-                )
-                return pricing
-                  ? { costUsd: usageCostUsd(result.usage, pricing) }
-                  : {}
-              })()
-            : {}),
-          ...(provider.model
-            ? { modelUsage: { [provider.model]: result.usage } }
-            : {}),
+            : { durationApiMs: combinedDurationMs }),
+          ...(rawCostUsd === undefined ? {} : { costUsd: rawCostUsd }),
+          ...(turnModelUsage ? { modelUsage: { ...turnModelUsage } } : {}),
           ...(structuredCapture && structuredCapture.calls === 1
             ? { structuredOutput: structuredCapture.value }
             : {}),

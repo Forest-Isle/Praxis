@@ -1,4 +1,4 @@
-import type { ModelUsage } from '../core/runtime.js'
+import type { ModelUsage, ModelUsageByModel } from '../core/runtime.js'
 
 const AGENT_ID_PATTERN = /^a[0-9a-f]{16}$/u
 const MAX_TIMEOUT_MS = 600_000
@@ -6,6 +6,7 @@ const MAX_TIMEOUT_MS = 600_000
 export interface BackgroundAgentRunResult {
   text: string
   usage: ModelUsage
+  modelUsage?: ModelUsageByModel
   toolUseCount: number
   durationMs: number
   isolationPath?: string
@@ -108,6 +109,91 @@ function waitBounded(
       },
     )
   })
+}
+
+const modelUsageCounterFields = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+] as const
+
+function assertValidModelUsageEntry(model: string, usage: ModelUsage): void {
+  if (model.trim() === '') {
+    throw new Error('Model usage breakdown contains a blank model name')
+  }
+  for (const field of modelUsageCounterFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(
+        `Model usage for "${model}" has an invalid ${field} counter`,
+      )
+    }
+  }
+}
+
+function addUsageChecked(left: ModelUsage, right: ModelUsage): ModelUsage {
+  const inputTokens = left.inputTokens + right.inputTokens
+  const outputTokens = left.outputTokens + right.outputTokens
+  const cacheReadInputTokens =
+    (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
+  const cacheCreationInputTokens =
+    (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    !Number.isSafeInteger(outputTokens) ||
+    !Number.isSafeInteger(cacheReadInputTokens) ||
+    !Number.isSafeInteger(cacheCreationInputTokens)
+  ) {
+    throw new Error('Model usage total overflow')
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+  }
+}
+
+function assertValidResultUsage(usage: ModelUsage): void {
+  for (const field of modelUsageCounterFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`Model usage total has an invalid ${field} counter`)
+    }
+  }
+}
+
+function mergeModelUsageEntry(
+  map: Map<string, ModelUsage>,
+  model: string,
+  usage: ModelUsage,
+): void {
+  assertValidModelUsageEntry(model, usage)
+  const existing = map.get(model)
+  if (existing === undefined) {
+    map.set(model, { ...usage })
+    return
+  }
+  map.set(model, addUsageChecked(existing, usage))
+}
+
+function mergeToolModelUsage(
+  map: Map<string, ModelUsage>,
+  breakdown: ModelUsageByModel,
+): void {
+  const entries = Object.entries(breakdown)
+  if (entries.length === 0) return
+  // Validate every key, counter, and merged sum before adding any entry from
+  // this breakdown so malformed data never merges partially.
+  for (const [model, usage] of entries) {
+    assertValidModelUsageEntry(model, usage)
+    const existing = map.get(model)
+    if (existing !== undefined) addUsageChecked(existing, usage)
+  }
+  for (const [model, usage] of entries) {
+    mergeModelUsageEntry(map, model, usage)
+  }
 }
 
 export class BackgroundAgentManager {
@@ -284,7 +370,11 @@ export class BackgroundAgentManager {
   async notifications(options: {
     waitForRunning: boolean
     excludeAgentId?: string
-  }): Promise<{ messages: string[]; usage: ModelUsage }> {
+  }): Promise<{
+    messages: string[]
+    usage: ModelUsage
+    modelUsage?: ModelUsageByModel
+  }> {
     const eligibleTasks = [...this.tasks.entries()].filter(
       ([agentId]) => agentId !== options.excludeAgentId,
     )
@@ -300,15 +390,27 @@ export class BackgroundAgentManager {
       if (running.length > 0) await Promise.race(running)
     }
     const notifications: string[] = []
-    const usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+    let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+    const modelUsageByModel = new Map<string, ModelUsage>()
     for (const [, task] of eligibleTasks) {
       for (const notification of task.notifications.splice(0)) {
         notifications.push(this.formatNotification(task, notification))
-        usage.inputTokens += notification.result?.usage.inputTokens ?? 0
-        usage.outputTokens += notification.result?.usage.outputTokens ?? 0
+        if (notification.result) {
+          assertValidResultUsage(notification.result.usage)
+          usage = addUsageChecked(usage, notification.result.usage)
+        }
+        if (notification.result?.modelUsage) {
+          mergeToolModelUsage(modelUsageByModel, notification.result.modelUsage)
+        }
       }
     }
-    return { messages: notifications, usage }
+    const modelUsage =
+      modelUsageByModel.size === 0
+        ? undefined
+        : Object.fromEntries(modelUsageByModel)
+    return modelUsage === undefined
+      ? { messages: notifications, usage }
+      : { messages: notifications, usage, modelUsage }
   }
 
   private start(

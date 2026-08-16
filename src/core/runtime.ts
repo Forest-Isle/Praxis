@@ -87,6 +87,8 @@ export interface ModelUsage {
   cacheCreationInputTokens?: number
 }
 
+export type ModelUsageByModel = Readonly<Record<string, ModelUsage>>
+
 export interface ModelWebSearch {
   allowedDomains?: readonly string[]
   blockedDomains?: readonly string[]
@@ -269,7 +271,10 @@ export interface ToolExecutionResult {
   images?: readonly ModelImage[]
   documents?: readonly ModelDocument[]
   isError: boolean
+  linesAdded?: number
+  linesRemoved?: number
   usage?: ModelUsage
+  modelUsage?: ModelUsageByModel
   accessedPaths?: readonly string[]
   followUpUserMessages?: readonly string[]
   nativeToolUseResult?: Record<string, unknown>
@@ -494,10 +499,13 @@ export interface AgentRunRequest {
   onPermissionUpdates?: (
     updates: readonly PermissionUpdate[],
   ) => void | Promise<void>
-  onStop?: (
-    text: string,
-  ) => Promise<
-    readonly string[] | { messages: readonly string[]; usage?: ModelUsage }
+  onStop?: (text: string) => Promise<
+    | readonly string[]
+    | {
+        messages: readonly string[]
+        usage?: ModelUsage
+        modelUsage?: ModelUsageByModel
+      }
   >
   signal?: AbortSignal
   effort?: string
@@ -524,7 +532,10 @@ export interface AgentToolRecoveryRequest extends Pick<
 export interface AgentRunResult {
   text: string
   usage: ModelUsage
+  modelUsage?: ModelUsageByModel
   durationApiMs?: number
+  linesAdded?: number
+  linesRemoved?: number
 }
 
 export class ModelProviderError extends Error {
@@ -604,6 +615,107 @@ function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
   }
 }
 
+function addLineMetric(
+  field: 'linesAdded' | 'linesRemoved',
+  value: number | undefined,
+  total: number,
+): number {
+  if (value === undefined) return total
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${field} must be a nonnegative safe integer`)
+  }
+  const sum = total + value
+  if (!Number.isSafeInteger(sum)) {
+    throw new Error(`${field} total overflow`)
+  }
+  return sum
+}
+
+const modelUsageCounterFields = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+] as const
+
+function hasNonZeroModelUsage(usage: ModelUsage): boolean {
+  return (
+    usage.inputTokens > 0 ||
+    usage.outputTokens > 0 ||
+    (usage.cacheReadInputTokens ?? 0) > 0 ||
+    (usage.cacheCreationInputTokens ?? 0) > 0
+  )
+}
+
+function assertValidModelUsageEntry(model: string, usage: ModelUsage): void {
+  if (model.trim() === '') {
+    throw new Error('Model usage breakdown contains a blank model name')
+  }
+  for (const field of modelUsageCounterFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(
+        `Model usage for "${model}" has an invalid ${field} counter`,
+      )
+    }
+  }
+}
+
+function addUsageChecked(left: ModelUsage, right: ModelUsage): ModelUsage {
+  const inputTokens = left.inputTokens + right.inputTokens
+  const outputTokens = left.outputTokens + right.outputTokens
+  const cacheReadInputTokens =
+    (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
+  const cacheCreationInputTokens =
+    (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    !Number.isSafeInteger(outputTokens) ||
+    !Number.isSafeInteger(cacheReadInputTokens) ||
+    !Number.isSafeInteger(cacheCreationInputTokens)
+  ) {
+    throw new Error('Model usage total overflow')
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+  }
+}
+
+function mergeModelUsageEntry(
+  map: Map<string, ModelUsage>,
+  model: string,
+  usage: ModelUsage,
+): void {
+  assertValidModelUsageEntry(model, usage)
+  const existing = map.get(model)
+  if (existing === undefined) {
+    map.set(model, { ...usage })
+    return
+  }
+  map.set(model, addUsageChecked(existing, usage))
+}
+
+function mergeToolModelUsage(
+  map: Map<string, ModelUsage>,
+  breakdown: ModelUsageByModel,
+): void {
+  const entries = Object.entries(breakdown)
+  if (entries.length === 0) return
+  // Validate every key, counter, and merged sum before adding any entry from
+  // this tool result so a malformed breakdown never merges partially.
+  for (const [model, usage] of entries) {
+    assertValidModelUsageEntry(model, usage)
+    const existing = map.get(model)
+    if (existing !== undefined) addUsageChecked(existing, usage)
+  }
+  for (const [model, usage] of entries) {
+    mergeModelUsageEntry(map, model, usage)
+  }
+}
+
 function prepareProviderMessages(
   messages: readonly ModelMessage[],
   supportsImages: boolean,
@@ -665,7 +777,10 @@ export class AgentRuntime {
     const messages = [...request.messages]
     let usage = emptyUsage()
     let modelUsage = emptyUsage()
+    const modelUsageByModel = new Map<string, ModelUsage>()
     let durationApiMs = 0
+    let linesAdded = 0
+    let linesRemoved = 0
     const definitions = this.provider.capabilities.tools
       ? (this.options.tools?.definitions() ?? [])
       : []
@@ -818,6 +933,17 @@ export class AgentRuntime {
         if (!streaming) this.emit({ type: 'state', state: 'streaming' })
         usage = addUsage(usage, turnUsage)
         modelUsage = addUsage(modelUsage, turnUsage)
+        if (
+          this.provider.model !== undefined &&
+          this.provider.model.trim() !== '' &&
+          hasNonZeroModelUsage(turnUsage)
+        ) {
+          mergeModelUsageEntry(
+            modelUsageByModel,
+            this.provider.model,
+            turnUsage,
+          )
+        }
         const assistantMessage =
           toolCalls.length === 0
             ? {
@@ -841,12 +967,16 @@ export class AgentRuntime {
             : (stopResult as {
                 messages: readonly string[]
                 usage?: ModelUsage
+                modelUsage?: ModelUsageByModel
               })
           const stopMessages: readonly string[] = stopBatch
             ? stopBatch.messages
             : (stopResult as readonly string[])
           if (stopBatch?.usage) {
             usage = addUsage(usage, stopBatch.usage)
+          }
+          if (stopBatch?.modelUsage) {
+            mergeToolModelUsage(modelUsageByModel, stopBatch.modelUsage)
           }
           if (stopMessages.length > 0) {
             await request.observer?.followUpUserMessagesCompleted?.(
@@ -866,10 +996,17 @@ export class AgentRuntime {
             continue
           }
           this.emit({ type: 'state', state: 'completed' })
+          const modelUsage =
+            modelUsageByModel.size === 0
+              ? undefined
+              : Object.fromEntries(modelUsageByModel)
           return {
             text,
             usage,
+            ...(modelUsage === undefined ? {} : { modelUsage }),
             ...(durationApiMs === 0 ? {} : { durationApiMs }),
+            ...(linesAdded === 0 ? {} : { linesAdded }),
+            ...(linesRemoved === 0 ? {} : { linesRemoved }),
           }
         }
 
@@ -887,7 +1024,22 @@ export class AgentRuntime {
             output: result.content,
           })
           if (result.usage) usage = addUsage(usage, result.usage)
+          if (result.isError === false && result.modelUsage !== undefined) {
+            mergeToolModelUsage(modelUsageByModel, result.modelUsage)
+          }
           durationApiMs += result.durationApiMs ?? 0
+          if (result.isError === false) {
+            linesAdded = addLineMetric(
+              'linesAdded',
+              result.linesAdded,
+              linesAdded,
+            )
+            linesRemoved = addLineMetric(
+              'linesRemoved',
+              result.linesRemoved,
+              linesRemoved,
+            )
+          }
           messages.push({
             role: 'tool',
             toolCallId: call.id,

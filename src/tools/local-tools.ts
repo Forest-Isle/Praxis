@@ -6,6 +6,7 @@ import {
   realpath,
   stat,
   writeFile,
+  type FileHandle,
 } from 'node:fs/promises'
 import {
   basename,
@@ -40,6 +41,7 @@ import {
   type ProcessResult,
 } from '../platform/bounded-process-runner.js'
 import { globFiles } from './glob.js'
+import { countLineChanges } from './line-changes.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
 import { openPdf } from './pdf.js'
 import { effectiveAdditionalDirectories } from '../permissions/permission-updates.js'
@@ -1190,22 +1192,48 @@ export class LocalToolRegistry implements ToolRegistry {
     if (Buffer.byteLength(content) > this.maxFileBytes) {
       throw new Error(`Content exceeds ${this.maxFileBytes} byte write limit`)
     }
-    const handle = await open(
-      filePath,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
-      0o666,
-    )
+    let handle: FileHandle
+    let newFile = false
+    try {
+      handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      try {
+        handle = await open(
+          filePath,
+          constants.O_RDWR |
+            constants.O_CREAT |
+            constants.O_EXCL |
+            constants.O_NOFOLLOW,
+          0o666,
+        )
+        newFile = true
+      } catch (createError) {
+        if ((createError as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw createError
+        }
+        handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
+      }
+    }
     try {
       await this.assertStablePath(filePath)
       const metadata = await handle.stat()
       if (!metadata.isFile()) throw new Error(`Not a file: ${filePath}`)
+      const preContent = newFile ? '' : await handle.readFile('utf8')
       const encoded = Buffer.from(content)
+      const { linesAdded, linesRemoved } = countLineChanges(
+        preContent,
+        content,
+        preContent === '' ? { newFile: true } : undefined,
+      )
       await handle.write(encoded, 0, encoded.length, 0)
       await handle.truncate(encoded.length)
       await handle.sync()
       return {
         content: `Wrote ${encoded.length} bytes`,
         isError: false,
+        linesAdded,
+        linesRemoved,
       }
     } finally {
       await handle.close()
@@ -1244,6 +1272,7 @@ export class LocalToolRegistry implements ToolRegistry {
         call.input.replace_all === true
           ? source.replaceAll(oldString, newString)
           : source.replace(oldString, newString)
+      const { linesAdded, linesRemoved } = countLineChanges(source, output)
       const encoded = Buffer.from(output)
       await handle.write(encoded, 0, encoded.length, 0)
       await handle.truncate(encoded.length)
@@ -1251,6 +1280,8 @@ export class LocalToolRegistry implements ToolRegistry {
       return {
         content: `Replaced ${replacementCount} occurrence(s)`,
         isError: false,
+        linesAdded,
+        linesRemoved,
       }
     } finally {
       await handle.close()

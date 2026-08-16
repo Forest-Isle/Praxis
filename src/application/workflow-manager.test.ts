@@ -502,4 +502,126 @@ return { first, second }`
     expect(calls).toBe(1)
     await manager.close()
   })
+
+  it('aggregates full cache-aware usage and raw-model attribution exactly once', async () => {
+    const { manager } = await fixture()
+    const script = `export const meta = {
+  name: 'usage-aggregate',
+  description: 'Aggregate workflow agent usage',
+}
+const first = await agent('first')
+const second = await agent('second')
+return { first, second }`
+    let calls = 0
+    const runAgent = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) {
+        return {
+          result: 'first-result',
+          usage: {
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadInputTokens: 10,
+            cacheCreationInputTokens: 5,
+          },
+          modelUsage: {
+            'model-a': {
+              inputTokens: 60,
+              outputTokens: 30,
+              cacheReadInputTokens: 6,
+              cacheCreationInputTokens: 3,
+            },
+            'model-b': {
+              inputTokens: 30,
+              outputTokens: 15,
+              cacheReadInputTokens: 3,
+              cacheCreationInputTokens: 1,
+            },
+          },
+          toolUseCount: 1,
+          durationMs: 4,
+          resolvedModel: 'model-a',
+        }
+      }
+      return {
+        result: 'second-result',
+        usage: {
+          inputTokens: 200,
+          outputTokens: 100,
+          cacheReadInputTokens: 20,
+          cacheCreationInputTokens: 10,
+        },
+        modelUsage: {
+          'model-a': {
+            inputTokens: 120,
+            outputTokens: 60,
+            cacheReadInputTokens: 12,
+            cacheCreationInputTokens: 6,
+          },
+          'model-c': {
+            inputTokens: 80,
+            outputTokens: 40,
+            cacheReadInputTokens: 8,
+            cacheCreationInputTokens: 4,
+          },
+        },
+        toolUseCount: 2,
+        durationMs: 4,
+        resolvedModel: 'model-a',
+      }
+    })
+    await manager.launch({
+      sessionId,
+      promptId: 'prompt-usage-aggregate',
+      script,
+      parsed: parseWorkflowScript(script),
+      args: null,
+      defaultModel: 'model-a',
+      runAgent,
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+    const firstNotification = await manager.notifications(true)
+    expect(runAgent).toHaveBeenCalledTimes(2)
+    expect(firstNotification.messages).toEqual([
+      expect.stringContaining('<task-notification>'),
+    ])
+    expect(firstNotification.usage).toEqual({
+      inputTokens: 300,
+      outputTokens: 150,
+      cacheReadInputTokens: 30,
+      cacheCreationInputTokens: 15,
+    })
+    expect(firstNotification.modelUsage).toEqual({
+      'model-a': {
+        inputTokens: 180,
+        outputTokens: 90,
+        cacheReadInputTokens: 18,
+        cacheCreationInputTokens: 9,
+      },
+      'model-b': {
+        inputTokens: 30,
+        outputTokens: 15,
+        cacheReadInputTokens: 3,
+        cacheCreationInputTokens: 1,
+      },
+      'model-c': {
+        inputTokens: 80,
+        outputTokens: 40,
+        cacheReadInputTokens: 8,
+        cacheCreationInputTokens: 4,
+      },
+    })
+    expect(Object.keys(firstNotification.modelUsage ?? {})).toEqual([
+      'model-a',
+      'model-b',
+      'model-c',
+    ])
+    expect(await manager.notifications(false)).toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    await manager.close()
+  })
 })

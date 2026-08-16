@@ -281,6 +281,226 @@ describe('BackgroundAgentManager', () => {
     })
   })
 
+  it('aggregates raw-model usage across consumed notifications once', async () => {
+    const firstResult: BackgroundAgentRunResult = {
+      text: 'FIRST',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadInputTokens: 10,
+        cacheCreationInputTokens: 4,
+      },
+      modelUsage: {
+        'model-a': {
+          inputTokens: 30,
+          outputTokens: 10,
+          cacheReadInputTokens: 5,
+        },
+        'model-b': { inputTokens: 40, outputTokens: 20 },
+      },
+      toolUseCount: 1,
+      durationMs: 5,
+    }
+    const secondResult: BackgroundAgentRunResult = {
+      text: 'SECOND',
+      usage: {
+        inputTokens: 60,
+        outputTokens: 30,
+        cacheReadInputTokens: 2,
+        cacheCreationInputTokens: 7,
+      },
+      modelUsage: {
+        'model-b': {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheCreationInputTokens: 8,
+        },
+        'model-c': {
+          inputTokens: 20,
+          outputTokens: 15,
+          cacheReadInputTokens: 3,
+        },
+      },
+      toolUseCount: 1,
+      durationMs: 5,
+    }
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec((_message, _signal, continuation) =>
+        Promise.resolve(continuation ? secondResult : firstResult),
+      ),
+    )
+    await manager.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    expect(
+      manager.send(
+        'a0123456789abcdef',
+        'continue work',
+        'continue test',
+        'call_message',
+      ),
+    ).toContain('"success":true')
+    await manager.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+
+    // One call consumes both notifications, so overlapping raw models merge.
+    const consumed = await manager.notifications({ waitForRunning: false })
+    expect(consumed.messages).toEqual([
+      expect.stringContaining('<tool-use-id>call_agent</tool-use-id>'),
+      expect.stringContaining('<tool-use-id>call_message</tool-use-id>'),
+    ])
+    // Aggregate usage stays the plain sum of each result.usage (including the
+    // cache counters) and is not re-derived from the raw-model breakdown.
+    expect(consumed.usage).toEqual({
+      inputTokens: 160,
+      outputTokens: 80,
+      cacheReadInputTokens: 12,
+      cacheCreationInputTokens: 11,
+    })
+    expect(consumed.modelUsage).toEqual({
+      'model-a': {
+        inputTokens: 30,
+        outputTokens: 10,
+        cacheReadInputTokens: 5,
+      },
+      'model-b': {
+        inputTokens: 50,
+        outputTokens: 25,
+        cacheCreationInputTokens: 8,
+      },
+      'model-c': {
+        inputTokens: 20,
+        outputTokens: 15,
+        cacheReadInputTokens: 3,
+      },
+    })
+    const modelUsage = consumed.modelUsage
+    if (modelUsage !== undefined) {
+      expect(Object.keys(modelUsage)).toEqual(['model-a', 'model-b', 'model-c'])
+      // Returned entries are copies; mutating them cannot alter stored results.
+      const merged = modelUsage['model-b']
+      if (merged !== undefined) {
+        merged.inputTokens = 999
+        expect(
+          manager.snapshots()[0]?.result?.modelUsage?.['model-b']?.inputTokens,
+        ).toBe(10)
+      }
+    }
+
+    const empty = await manager.notifications({ waitForRunning: false })
+    expect(empty).toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    expect('modelUsage' in empty).toBe(false)
+  })
+
+  it('fails explicitly on malformed or overflowing raw-model usage', async () => {
+    const runWithModelUsage = (
+      modelUsage: NonNullable<BackgroundAgentRunResult['modelUsage']>,
+    ) =>
+      spec(async () => ({
+        text: 'BAD',
+        usage: { inputTokens: 2, outputTokens: 1 },
+        modelUsage,
+        toolUseCount: 1,
+        durationMs: 5,
+      }))
+
+    const blank = new BackgroundAgentManager()
+    blank.launch(
+      runWithModelUsage({
+        'model-a': { inputTokens: 1, outputTokens: 1 },
+        ' ': { inputTokens: 1, outputTokens: 1 },
+      }),
+    )
+    await blank.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    await expect(
+      blank.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('blank model name')
+
+    const negative = new BackgroundAgentManager()
+    negative.launch(
+      runWithModelUsage({
+        'model-a': { inputTokens: -1, outputTokens: 1 },
+      }),
+    )
+    await negative.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    await expect(
+      negative.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('invalid inputTokens counter')
+
+    const overflow = new BackgroundAgentManager()
+    overflow.launch(
+      spec(async (_message, _signal, continuation) => ({
+        text: continuation ? 'OVERFLOW' : 'HUGE',
+        usage: { inputTokens: 2, outputTokens: 1 },
+        modelUsage: {
+          'model-a': { inputTokens: Number.MAX_SAFE_INTEGER, outputTokens: 0 },
+        },
+        toolUseCount: 1,
+        durationMs: 5,
+      })),
+    )
+    await overflow.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    expect(
+      overflow.send(
+        'a0123456789abcdef',
+        'continue',
+        'continue overflow',
+        'call_overflow',
+      ),
+    ).toContain('"success":true')
+    await overflow.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    await expect(
+      overflow.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('Model usage total overflow')
+
+    const negativeAggregate = new BackgroundAgentManager()
+    negativeAggregate.launch(
+      spec(async () => ({
+        text: 'BAD',
+        usage: { inputTokens: -1, outputTokens: 1 },
+        toolUseCount: 1,
+        durationMs: 5,
+      })),
+    )
+    await negativeAggregate.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    await expect(
+      negativeAggregate.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('invalid inputTokens counter')
+
+    const aggregateOverflow = new BackgroundAgentManager()
+    aggregateOverflow.launch(
+      spec(async (_message, _signal, continuation) => ({
+        text: continuation ? 'OVERFLOW' : 'HUGE',
+        usage: { inputTokens: Number.MAX_SAFE_INTEGER, outputTokens: 1 },
+        toolUseCount: 1,
+        durationMs: 5,
+      })),
+    )
+    await aggregateOverflow.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    expect(
+      aggregateOverflow.send(
+        'a0123456789abcdef',
+        'continue',
+        'continue overflow',
+        'call_overflow',
+      ),
+    ).toContain('"success":true')
+    await aggregateOverflow.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    await expect(
+      aggregateOverflow.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('Model usage total overflow')
+  })
+
   it('validates IDs and bounded output waits', async () => {
     const manager = new BackgroundAgentManager()
     expect(() =>

@@ -1165,5 +1165,127 @@ describe('LocalToolRegistry', () => {
     await expect(registry.execute(edit, { cwd })).rejects.toThrow(
       'Edited content exceeds 10 bytes',
     )
+    await expect(readFile(join(cwd, 'expand.txt'), 'utf8')).resolves.toBe(
+      'aaaa',
+    )
+  })
+
+  it('reports exact Claude line metrics for successful local mutations', async () => {
+    const { cwd } = await workspace()
+    const registry = new LocalToolRegistry({ cwd })
+    const context = { cwd }
+
+    // New-file Write with trailing newline uses Claude's new-file rule.
+    const newWithTrailing = await registry.prepare(
+      {
+        id: 'write-new-trailing',
+        name: 'Write',
+        input: { file_path: 'fresh.txt', content: 'alpha\nbeta\n' },
+      },
+      context,
+    )
+    await expect(registry.execute(newWithTrailing, context)).resolves.toEqual({
+      content: 'Wrote 11 bytes',
+      isError: false,
+      linesAdded: 3,
+      linesRemoved: 0,
+    })
+
+    // Existing empty file Write uses the same Claude create rule.
+    await writeFile(join(cwd, 'existing-empty.txt'), '')
+    const existingEmpty = await registry.prepare(
+      {
+        id: 'write-existing-empty',
+        name: 'Write',
+        input: {
+          file_path: 'existing-empty.txt',
+          content: 'alpha\nbeta\n',
+        },
+      },
+      context,
+    )
+    await expect(registry.execute(existingEmpty, context)).resolves.toEqual({
+      content: 'Wrote 11 bytes',
+      isError: false,
+      linesAdded: 3,
+      linesRemoved: 0,
+    })
+
+    // New-file Write without trailing newline counts only visible lines.
+    const newWithoutTrailing = await registry.prepare(
+      {
+        id: 'write-new-no-trailing',
+        name: 'Write',
+        input: { file_path: 'fresh-no-trailing.txt', content: 'alpha\nbeta' },
+      },
+      context,
+    )
+    await expect(
+      registry.execute(newWithoutTrailing, context),
+    ).resolves.toEqual({
+      content: 'Wrote 10 bytes',
+      isError: false,
+      linesAdded: 2,
+      linesRemoved: 0,
+    })
+
+    // Existing-file Write overwrites with a full pre/post diff.
+    const overwrite = await registry.prepare(
+      {
+        id: 'write-overwrite',
+        name: 'Write',
+        input: { file_path: 'fresh.txt', content: 'delta\n' },
+      },
+      context,
+    )
+    await expect(registry.execute(overwrite, context)).resolves.toEqual({
+      content: 'Wrote 6 bytes',
+      isError: false,
+      linesAdded: 1,
+      linesRemoved: 2,
+    })
+
+    // Edit single replacement.
+    await writeFile(join(cwd, 'edit-single.txt'), 'one\ntwo\nthree\n')
+    const editSingle = await registry.prepare(
+      {
+        id: 'edit-single',
+        name: 'Edit',
+        input: {
+          file_path: 'edit-single.txt',
+          old_string: 'two',
+          new_string: 'TWO',
+        },
+      },
+      context,
+    )
+    await expect(registry.execute(editSingle, context)).resolves.toEqual({
+      content: 'Replaced 1 occurrence(s)',
+      isError: false,
+      linesAdded: 1,
+      linesRemoved: 1,
+    })
+
+    // Edit replace_all counts every replaced occurrence.
+    await writeFile(join(cwd, 'edit-all.txt'), 'alpha\nbeta\nalpha\n')
+    const editAll = await registry.prepare(
+      {
+        id: 'edit-all',
+        name: 'Edit',
+        input: {
+          file_path: 'edit-all.txt',
+          old_string: 'alpha',
+          new_string: 'ALPHA',
+          replace_all: true,
+        },
+      },
+      context,
+    )
+    await expect(registry.execute(editAll, context)).resolves.toEqual({
+      content: 'Replaced 2 occurrence(s)',
+      isError: false,
+      linesAdded: 2,
+      linesRemoved: 2,
+    })
   })
 })

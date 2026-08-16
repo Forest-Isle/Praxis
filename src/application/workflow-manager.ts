@@ -14,6 +14,7 @@ import {
   workflowReplayDescriptor,
   workflowReplayKey,
 } from '../compatibility/claude/workflow-replay.js'
+import type { ModelUsage, ModelUsageByModel } from '../core/runtime.js'
 import { ClaudeWorkflowStore } from '../persistence/claude-workflow-store.js'
 import type {
   WorkflowAgentRunOptions,
@@ -105,6 +106,8 @@ interface WorkflowTask {
   totalTokens: number
   totalInputTokens: number
   totalToolCalls: number
+  usage: ModelUsage
+  modelUsage: Map<string, ModelUsage>
   controller: AbortController
   promise: Promise<void>
   notificationPending: boolean
@@ -202,6 +205,93 @@ function validateAgentOptions(options: WorkflowAgentOptions): void {
   }
 }
 
+const workflowUsageCounterFields = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+] as const
+
+function assertValidWorkflowUsage(usage: ModelUsage): void {
+  for (const field of workflowUsageCounterFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`Workflow agent usage has an invalid ${field} counter`)
+    }
+  }
+}
+
+function addWorkflowUsageChecked(
+  left: ModelUsage,
+  right: ModelUsage,
+): ModelUsage {
+  assertValidWorkflowUsage(right)
+  const inputTokens = left.inputTokens + right.inputTokens
+  const outputTokens = left.outputTokens + right.outputTokens
+  const cacheReadInputTokens =
+    (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
+  const cacheCreationInputTokens =
+    (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    !Number.isSafeInteger(outputTokens) ||
+    !Number.isSafeInteger(cacheReadInputTokens) ||
+    !Number.isSafeInteger(cacheCreationInputTokens)
+  ) {
+    throw new Error('Workflow model usage total overflow')
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+  }
+}
+
+function assertValidWorkflowModelUsageEntry(
+  model: string,
+  usage: ModelUsage,
+): void {
+  if (model.trim() === '') {
+    throw new Error(
+      'Workflow model usage breakdown contains a blank model name',
+    )
+  }
+  assertValidWorkflowUsage(usage)
+}
+
+function mergeWorkflowModelUsageEntry(
+  map: Map<string, ModelUsage>,
+  model: string,
+  usage: ModelUsage,
+): void {
+  assertValidWorkflowModelUsageEntry(model, usage)
+  const existing = map.get(model)
+  if (existing === undefined) {
+    map.set(model, { ...usage })
+    return
+  }
+  map.set(model, addWorkflowUsageChecked(existing, usage))
+}
+
+function mergeWorkflowModelUsage(
+  map: Map<string, ModelUsage>,
+  breakdown: ModelUsageByModel,
+): void {
+  const entries = Object.entries(breakdown)
+  if (entries.length === 0) return
+  // Validate every key, counter, and merged sum before adding any entry from
+  // this agent result so a malformed breakdown never merges partially.
+  for (const [model, usage] of entries) {
+    assertValidWorkflowModelUsageEntry(model, usage)
+    const existing = map.get(model)
+    if (existing !== undefined) addWorkflowUsageChecked(existing, usage)
+  }
+  for (const [model, usage] of entries) {
+    mergeWorkflowModelUsageEntry(map, model, usage)
+  }
+}
+
 export class WorkflowManager {
   private readonly tasks = new Map<string, WorkflowTask>()
   private readonly activeRuns = new Set<string>()
@@ -258,6 +348,8 @@ export class WorkflowManager {
       totalTokens: 0,
       totalInputTokens: 0,
       totalToolCalls: 0,
+      usage: { inputTokens: 0, outputTokens: 0 },
+      modelUsage: new Map<string, ModelUsage>(),
       controller,
       promise: Promise.resolve(),
       notificationPending: false,
@@ -340,7 +432,8 @@ export class WorkflowManager {
 
   async notifications(waitForRunning: boolean): Promise<{
     messages: string[]
-    usage: { inputTokens: number; outputTokens: number }
+    usage: ModelUsage
+    modelUsage?: ModelUsageByModel
   }> {
     if (waitForRunning) {
       await Promise.all(
@@ -350,18 +443,25 @@ export class WorkflowManager {
       )
     }
     const messages: string[] = []
-    let inputTokens = 0
-    let outputTokens = 0
+    let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+    const modelUsage = new Map<string, ModelUsage>()
     for (const task of this.tasks.values()) {
       if (task.status === 'running' || !task.notificationPending) continue
       task.notificationPending = false
       messages.push(this.notification(task))
-      inputTokens += task.totalInputTokens
-      outputTokens += task.totalTokens
+      usage = addWorkflowUsageChecked(usage, task.usage)
+      for (const [model, entry] of task.modelUsage) {
+        mergeWorkflowModelUsageEntry(modelUsage, model, entry)
+      }
     }
+    const modelUsageByModel =
+      modelUsage.size === 0 ? undefined : Object.fromEntries(modelUsage)
     return {
       messages,
-      usage: { inputTokens, outputTokens },
+      usage,
+      ...(modelUsageByModel === undefined
+        ? {}
+        : { modelUsage: modelUsageByModel }),
     }
   }
 
@@ -557,6 +657,10 @@ export class WorkflowManager {
           task.totalTokens += progress.totalTokens
           task.totalInputTokens += result.usage.inputTokens
           task.totalToolCalls += result.toolUseCount
+          task.usage = addWorkflowUsageChecked(task.usage, result.usage)
+          if (result.modelUsage !== undefined) {
+            mergeWorkflowModelUsage(task.modelUsage, result.modelUsage)
+          }
           await task.store.append({
             type: 'result',
             key,
