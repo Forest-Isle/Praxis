@@ -15,10 +15,15 @@ Anthropic/OpenAI-compatible model access. Praxis deliberately excludes
 accounts, organizations, billing, managed enterprise policy, remote control,
 IDE surfaces, and telemetry control planes.
 
-Claude Code 2.1.208 is the compatibility, architecture, and design baseline.
-Every single-user CLI capability remains required unless it falls inside an
-explicit exclusion above. A similar Praxis surface is not a substitute for the
-corresponding Claude command or runtime contract.
+Claude Code 2.1.208 remains the architecture, design, and observable
+compatibility baseline for included and required single-user developer
+capabilities. Only entries classified `required` block developer-core
+closure; `deferred` entries are optional and demand-driven. Exclusions cover
+the existing enterprise, authentication, hosted, and client surfaces plus the
+explicitly classified subscription-bound integration, campaign, hidden
+maintainer diagnostic, and build-experimental commands. A similar Praxis
+surface is not a substitute for the corresponding Claude command or runtime
+contract.
 
 ## Requirements
 
