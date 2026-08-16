@@ -1195,12 +1195,17 @@ Status: complete.
 
 ## Stage 133 - leftover dialog surfaces and final divergence audit
 
-Status: pending.
+Status: complete for the verified Claude Code 2.1.208 credential-free dialog
+subset; broader interactive TTY parity remains partial.
 
-- [ ] enumerate remaining 2.1.208 dialogs not yet aligned (permission prompts,
-      plan approval, MCP elicitation — credential-free subset)
-- [ ] align exact dialog layout/behavior for each included dialog
-- [ ] focused TTY/Ink gates per dialog
+- [x] enumerate remaining 2.1.208 dialogs not yet aligned (permission prompts,
+      plan approval, MCP elicitation — credential-free subset) as
+      source-aligned tool-specific permission prompts, plan approval, and
+      primitive/form MCP elicitation
+- [x] align exact dialog layout/behavior for each included dialog, covering
+      file-diff permission decisions, plan approval/decline, MCP elicitation,
+      and tool permission panels
+- [x] focused Ink/interactive gates per dialog, including MCP elicitation state
 
 ## Stage 138 - agent definition runtime
 
@@ -1240,3 +1245,20 @@ Status: complete for the verified Claude Code 2.1.208 /color contract.
       binary, including zero-model-turn text/JSON/stream-json `/color` runs,
       native transcript shape, reset round-trips, session routing and
       no-persistence behavior, and Claude resuming Praxis-created color sessions
+
+## Stage 140 - developer-core scope contract
+
+Status: complete.
+
+- [x] accept command-scope classification for Stage 140: inventory
+      disposition adds a `required` tier alongside optional and excluded
+- [x] required blockers are `/cost` and interactive `/doctor`
+- [x] optional non-blocking deferred commands are `/advisor`, `/fast`,
+      `/stats`, `/insights`, and `/voice`
+- [x] newly excluded commands are `/chrome`, `/heapdump`, `/think-back`,
+      `/thinkback-play`, `/buddy`, `/proactive`, `/brief`, `/assistant`,
+      and `/torch`
+- [x] included/required capabilities still require the Claude 2.1.208
+      architecture, observable behavior, UI, and shared-data fidelity
+- [x] record the disposition through the focused inventory and docs gates
+      (slash-catalog inventory, parity matrix, TUI parity)

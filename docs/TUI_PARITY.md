@@ -474,8 +474,14 @@ pair on new sessions), sharing the displayed input via `history.jsonl`, loading
 the effective color on resume/session open (with reset reading as no color),
 retaining it as exactly one leading entry on fork, and coloring the composer's
 top/bottom separators per profile with dim separators restored on reset,
-`/clear`, `/new`, and fresh sessions. Every remaining required command
-still needs an observed contract and focused TTY or Ink gate. Every deferred
-single-user CLI command remains a completion blocker; only the explicitly
-agreed enterprise, multi-user, subscription-auth, Desktop/IDE/mobile, Remote
-Control, and hosted-only surfaces are excluded.
+`/clear`, `/new`, and fresh sessions. The two required commands — `/cost`
+and interactive `/doctor` — still need an observed contract and a focused
+TTY or Ink gate before developer-core closure. The five deferred commands —
+`/advisor`, `/fast`, `/stats`, `/insights`, and `/voice` — are optional and
+demand-driven and do not block completion. Newly excluded non-goals are the
+subscription-bound `/chrome`, the campaign `/think-back` and
+`/thinkback-play`, the hidden maintainer diagnostic `/heapdump`, and the
+build-experimental `/buddy`, `/proactive`, `/brief`, `/assistant`, and
+`/torch`; they join
+the existing enterprise, multi-user, subscription-auth, Desktop/IDE/mobile,
+Remote Control, and hosted-only exclusions.

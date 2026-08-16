@@ -1,4 +1,5 @@
-export type ClaudeCommandDisposition = 'included' | 'deferred' | 'excluded'
+export type ClaudeCommandDisposition =
+  'included' | 'required' | 'deferred' | 'excluded'
 
 export type ClaudeCommandVisibility = 'visible' | 'hidden' | 'conditional'
 
@@ -20,17 +21,17 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     disposition: 'deferred',
     visibility: 'conditional',
     reason:
-      'Conditional advice mode is required parity work and is not implemented yet.',
+      'Conditional advice mode is an optional, demand-driven feature that does not block developer-core closure.',
   },
   { name: 'agents', disposition: 'included', visibility: 'visible' },
   { name: 'branch', disposition: 'included', visibility: 'visible' },
   { name: 'btw', disposition: 'included', visibility: 'visible' },
   {
     name: 'chrome',
-    disposition: 'deferred',
+    disposition: 'excluded',
     visibility: 'conditional',
     reason:
-      'The CLI-driven Chrome integration is required parity work and is not implemented yet.',
+      'Claude-AI subscription-gated Chrome Beta; a future provider-neutral browser feature is separate from this command.',
   },
   { name: 'clear', disposition: 'included', visibility: 'visible' },
   { name: 'color', disposition: 'included', visibility: 'visible' },
@@ -46,7 +47,7 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
   { name: 'context', disposition: 'included', visibility: 'conditional' },
   {
     name: 'cost',
-    disposition: 'deferred',
+    disposition: 'required',
     visibility: 'conditional',
     reason:
       'The dedicated /cost contract is required; /status is not a substitute.',
@@ -54,7 +55,7 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
   { name: 'diff', disposition: 'included', visibility: 'visible' },
   {
     name: 'doctor',
-    disposition: 'deferred',
+    disposition: 'required',
     visibility: 'conditional',
     reason:
       'Interactive /doctor is required; the top-level command is not a substitute.',
@@ -66,7 +67,7 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     disposition: 'deferred',
     visibility: 'conditional',
     reason:
-      'The /fast state flow is required; model and effort controls are not a substitute.',
+      'The /fast state flow is an optional convenience; model and effort controls cover the core flow, so it is deferred without blocking developer-core closure.',
   },
   {
     name: 'files',
@@ -76,10 +77,10 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
   },
   {
     name: 'heapdump',
-    disposition: 'deferred',
+    disposition: 'excluded',
     visibility: 'hidden',
     reason:
-      'The hidden heap-diagnostic contract is required parity work and is not implemented yet.',
+      'Hidden V8 maintainer diagnostic that writes a heap dump to Desktop; not a developer-core command.',
   },
   { name: 'help', disposition: 'included', visibility: 'visible' },
   {
@@ -137,7 +138,7 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     disposition: 'deferred',
     visibility: 'visible',
     reason:
-      'Historical usage statistics are required parity work and are not implemented yet.',
+      'Historical usage statistics are an optional, demand-driven feature that does not block developer-core closure.',
   },
   { name: 'status', disposition: 'included', visibility: 'visible' },
   { name: 'statusline', disposition: 'included', visibility: 'visible' },
@@ -207,7 +208,7 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     disposition: 'deferred',
     visibility: 'visible',
     reason:
-      'Retrospective insights are required parity work and are not implemented yet.',
+      'Retrospective insights are an optional, demand-driven feature that does not block developer-core closure.',
   },
   { name: 'vim', disposition: 'included', visibility: 'visible' },
   {
@@ -219,31 +220,31 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
   { name: 'fork', disposition: 'included', visibility: 'conditional' },
   {
     name: 'buddy',
-    disposition: 'deferred',
+    disposition: 'excluded',
     visibility: 'conditional',
     reason:
-      'This conditional source mode is required parity work and is not implemented yet.',
+      'Compile/build-feature-gated experiment, not a stable single-user developer-core command.',
   },
   {
     name: 'proactive',
-    disposition: 'deferred',
+    disposition: 'excluded',
     visibility: 'conditional',
     reason:
-      'This conditional source mode is required parity work and is not implemented yet.',
+      'Compile/build-feature-gated experiment, not a stable single-user developer-core command.',
   },
   {
     name: 'brief',
-    disposition: 'deferred',
+    disposition: 'excluded',
     visibility: 'conditional',
     reason:
-      'This conditional source mode is required parity work and is not implemented yet.',
+      'Compile/build-feature-gated experiment, not a stable single-user developer-core command.',
   },
   {
     name: 'assistant',
-    disposition: 'deferred',
+    disposition: 'excluded',
     visibility: 'conditional',
     reason:
-      'This conditional source mode is required parity work and is not implemented yet.',
+      'Compile/build-feature-gated experiment, not a stable single-user developer-core command.',
   },
   {
     name: 'remote-control',
@@ -262,21 +263,21 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     disposition: 'deferred',
     visibility: 'conditional',
     reason:
-      'Conditional voice input is required parity work and is not implemented yet.',
+      'Conditional voice input is an optional, demand-driven feature that does not block developer-core closure.',
   },
   {
     name: 'think-back',
-    disposition: 'deferred',
+    disposition: 'excluded',
     visibility: 'conditional',
     reason:
-      'The conditional retrospective flow is required parity work and is not implemented yet.',
+      'The 2025 year-in-review campaign surface; a marketing flow, not a stable developer-core command.',
   },
   {
     name: 'thinkback-play',
-    disposition: 'deferred',
+    disposition: 'excluded',
     visibility: 'hidden',
     reason:
-      'The hidden retrospective playback flow is required parity work and is not implemented yet.',
+      'Hidden animation for the 2025 year-in-review campaign; a marketing flow, not a stable developer-core command.',
   },
   { name: 'permissions', disposition: 'included', visibility: 'visible' },
   { name: 'plan', disposition: 'included', visibility: 'visible' },
@@ -318,10 +319,10 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
   { name: 'workflows', disposition: 'included', visibility: 'conditional' },
   {
     name: 'torch',
-    disposition: 'deferred',
+    disposition: 'excluded',
     visibility: 'conditional',
     reason:
-      'This source-gated behavior is required conditional parity work and is not implemented yet.',
+      'Compile/build-feature-gated experiment, not a stable single-user developer-core command.',
   },
 ] as const satisfies readonly ClaudeCommandInventoryEntry[]
 
