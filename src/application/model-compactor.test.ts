@@ -85,6 +85,63 @@ describe('ModelCompactor', () => {
     expect(called).toBe(false)
   })
 
+  it('returns the provider raw model when it is nonblank', async () => {
+    const provider: ModelProvider = {
+      model: 'anthropic/claude-fixture',
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'bounded summary' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 3, outputTokens: 1 },
+        }
+      },
+    }
+
+    const result = await new ModelCompactor(provider).compact({
+      messages: [{ role: 'user', content: 'history' }],
+      targetTokens: 100,
+      contextWindowTokens: 1_000,
+    })
+
+    expect(result.model).toBe('anthropic/claude-fixture')
+  })
+
+  it('omits the model when the provider exposes none', async () => {
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'bounded summary' }
+      },
+    }
+
+    const result = await new ModelCompactor(provider).compact({
+      messages: [{ role: 'user', content: 'history' }],
+      targetTokens: 100,
+      contextWindowTokens: 1_000,
+    })
+
+    expect(result.model).toBeUndefined()
+  })
+
+  it('omits the model when the provider exposes a blank model', async () => {
+    const provider: ModelProvider = {
+      model: '   ',
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'bounded summary' }
+      },
+    }
+
+    const result = await new ModelCompactor(provider).compact({
+      messages: [{ role: 'user', content: 'history' }],
+      targetTokens: 100,
+      contextWindowTokens: 1_000,
+    })
+
+    expect(result.model).toBeUndefined()
+  })
+
   it('shrinks the summary target to fit ordinary default-reserve overflow', async () => {
     const requests: ModelRequest[] = []
     const provider: ModelProvider = {

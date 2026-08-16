@@ -138,6 +138,7 @@ import type {
 import {
   ClaudeSessionCostTracker,
   type ClaudeSessionCostSnapshot,
+  type ClaudeSessionTurnInput,
 } from './session-cost-tracker.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
@@ -375,6 +376,32 @@ function hasNonZeroUsage(usage: ModelUsage): boolean {
     (usage.cacheCreationInputTokens ?? 0) > 0 ||
     (usage.webSearchRequests ?? 0) > 0
   )
+}
+
+function requireUsageCounter(value: number, field: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${field} must be a nonnegative safe integer`)
+  }
+}
+
+function requireManualCompactUsage(usage: ModelUsage): void {
+  requireUsageCounter(usage.inputTokens, 'usage.inputTokens')
+  requireUsageCounter(usage.outputTokens, 'usage.outputTokens')
+  if (usage.cacheReadInputTokens !== undefined) {
+    requireUsageCounter(
+      usage.cacheReadInputTokens,
+      'usage.cacheReadInputTokens',
+    )
+  }
+  if (usage.cacheCreationInputTokens !== undefined) {
+    requireUsageCounter(
+      usage.cacheCreationInputTokens,
+      'usage.cacheCreationInputTokens',
+    )
+  }
+  if (usage.webSearchRequests !== undefined) {
+    requireUsageCounter(usage.webSearchRequests, 'usage.webSearchRequests')
+  }
 }
 
 function createLineCountAccumulator(): {
@@ -1690,6 +1717,7 @@ export class ClaudeSessionService {
       if (snapshot.entries.length === 0) {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
+      await this.activateSessionCostTracker(sessionId)
       const activeEntries = selectClaudeActiveTranscript(snapshot.entries)
       const allMessages = projectClaudeModelMessages(activeEntries)
       let selectedEntries = activeEntries
@@ -1756,12 +1784,73 @@ export class ClaudeSessionService {
         ...(signal ? { signal } : {}),
       })
       if (signal?.aborted) throw new AgentRunCancelledError()
-      const preTokens = estimateModelRequestTokens(allMessages)
+      const compactedDurationMs = compacted.durationMs
+      if (
+        typeof compactedDurationMs !== 'number' ||
+        !Number.isFinite(compactedDurationMs) ||
+        compactedDurationMs < 0
+      ) {
+        throw new TypeError(
+          'compaction durationMs must be a finite nonnegative number',
+        )
+      }
+      requireManualCompactUsage(compacted.usage)
+      const compactorModel = compacted.model
+      const compactModel =
+        compactorModel !== undefined && compactorModel.trim() !== ''
+          ? compactorModel
+          : provider.model
       const summary = compacted.summary
+      const meaningfulMetering =
+        summary.trim().length > 0 &&
+        (hasNonZeroUsage(compacted.usage) || compactedDurationMs > 0)
+      if (
+        meaningfulMetering &&
+        (compactModel === undefined || compactModel.trim() === '')
+      ) {
+        throw new Error(
+          'Manual compact usage requires a nonblank model identity',
+        )
+      }
+      const preTokens = estimateModelRequestTokens(allMessages)
       const preservedMessages = projectClaudeModelMessages(preservedEntries)
       const boundaryUuid = randomUUID()
       const summaryUuid = randomUUID()
       const uuids = [boundaryUuid, summaryUuid]
+      let meteringTurnInput: ClaudeSessionTurnInput | undefined
+      if (
+        meaningfulMetering &&
+        compactModel !== undefined &&
+        compactModel.trim() !== ''
+      ) {
+        const tracker = this.sessionCostTrackers.get(sessionId)
+        if (!tracker) {
+          throw new Error(
+            `Session cost tracker is not active for session ${sessionId}`,
+          )
+        }
+        const pricing = this.options.pricing?.resolve(compactModel)
+        const costUsd = pricing
+          ? usageCostUsd(compacted.usage, pricing)
+          : undefined
+        meteringTurnInput = {
+          model: compactModel,
+          usage: compacted.usage,
+          ...(costUsd === undefined ? {} : { costUsd }),
+          ...(compacted.usage.webSearchRequests === undefined
+            ? {}
+            : { webSearchRequests: compacted.usage.webSearchRequests }),
+          apiDurationMs: compactedDurationMs,
+        }
+        // Preflight the exact record input against a clone of the live
+        // tracker so a cumulative total overflow rejects before the compact
+        // boundary is appended rather than after a half-commit.
+        const preflight = new ClaudeSessionCostTracker({
+          sessionId,
+          restored: tracker.snapshot(),
+        })
+        preflight.recordTurn(meteringTurnInput)
+      }
       const entries = createClaudeCompactEntries({
         sessionId,
         logicalParentUuid,
@@ -1774,7 +1863,7 @@ export class ClaudeSessionService {
         previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
           snapshot.entries,
         ),
-        durationMs: compacted.durationMs,
+        durationMs: compactedDurationMs,
         cwd: this.activeCwd(),
         claudeVersion: this.options.claudeVersion,
         gitBranch: null,
@@ -1805,6 +1894,15 @@ export class ClaudeSessionService {
         preTokens,
         uuid: boundaryUuid,
       })
+      if (meteringTurnInput !== undefined) {
+        const tracker = this.sessionCostTrackers.get(sessionId)
+        if (!tracker) {
+          throw new Error(
+            `Session cost tracker is not active for session ${sessionId}`,
+          )
+        }
+        tracker.recordTurn(meteringTurnInput)
+      }
       return {
         summary,
         usage: compacted.usage,

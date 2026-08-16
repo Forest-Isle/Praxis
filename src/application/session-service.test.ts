@@ -73,6 +73,28 @@ async function createService() {
   }
 }
 
+function trackedTotals(snapshot: {
+  totalCostUsd: number
+  apiDurationMs: number
+  apiDurationWithoutRetriesMs: number
+  toolDurationMs: number
+  linesAdded: number
+  linesRemoved: number
+  hasUnknownModelCost: boolean
+  modelUsage: Record<string, unknown>
+}) {
+  return {
+    totalCostUsd: snapshot.totalCostUsd,
+    apiDurationMs: snapshot.apiDurationMs,
+    apiDurationWithoutRetriesMs: snapshot.apiDurationWithoutRetriesMs,
+    toolDurationMs: snapshot.toolDurationMs,
+    linesAdded: snapshot.linesAdded,
+    linesRemoved: snapshot.linesRemoved,
+    hasUnknownModelCost: snapshot.hasUnknownModelCost,
+    modelUsage: snapshot.modelUsage,
+  }
+}
+
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true })),
@@ -837,6 +859,7 @@ describe('ClaudeSessionService', () => {
             summary: 'durable manual summary',
             usage: { inputTokens: 12, outputTokens: 4 },
             durationMs: 25,
+            model: 'manual-compact-model',
           }
         },
       },
@@ -873,6 +896,798 @@ describe('ClaudeSessionService', () => {
     expect(transcript).toContain('"trigger":"manual"')
     expect(transcript).toContain('"isCompactSummary":true')
     expect(transcript).toContain('durable manual summary')
+  })
+
+  it('attributes manual compact usage, web search, cost, and API duration to the session cost tracker', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-cost-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        ...queuedProvider(['original answer']),
+        model: 'run-model',
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'costed manual summary',
+            usage: {
+              inputTokens: 1000,
+              outputTokens: 200,
+              cacheReadInputTokens: 300,
+              cacheCreationInputTokens: 50,
+              webSearchRequests: 2,
+            },
+            durationMs: 42,
+            model: 'compact-model',
+          }
+        },
+      },
+      pricing: new ModelPricingRegistry({
+        'run-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+        'compact-model': {
+          inputPerMillionUsd: 3,
+          outputPerMillionUsd: 15,
+          cacheReadInputPerMillionUsd: 0.3,
+          cacheCreationInputPerMillionUsd: 3.75,
+        },
+      }),
+    })
+
+    const run = await service.run('start')
+    await service.compact(run.sessionId)
+    const snapshot = await service.costSnapshot(run.sessionId)
+
+    const compactCost =
+      ((1000 - 300 - 50) * 3 + 200 * 15 + 300 * 0.3 + 50 * 3.75) / 1_000_000
+    expect(snapshot.modelUsage['compact-model']).toEqual({
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheReadInputTokens: 300,
+      cacheCreationInputTokens: 50,
+      webSearchRequests: 2,
+      costUsd: compactCost,
+    })
+    expect(snapshot.totalCostUsd).toBe(5 / 1_000_000 + compactCost)
+    expect(snapshot.apiDurationMs).toBe(42)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(42)
+    expect(snapshot.toolDurationMs).toBe(0)
+    expect(snapshot.hasUnknownModelCost).toBe(false)
+  })
+
+  it('records manual compact usage without cost and diagnoses an unknown model price', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-unknown-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        ...queuedProvider(['original answer']),
+        model: 'priced-run-model',
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'unpriced manual summary',
+            usage: { inputTokens: 5, outputTokens: 3 },
+            durationMs: 11,
+            model: 'unpriced-compact-model',
+          }
+        },
+      },
+      pricing: new ModelPricingRegistry({
+        'priced-run-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+      }),
+    })
+
+    const run = await service.run('start')
+    await service.compact(run.sessionId)
+    const snapshot = await service.costSnapshot(run.sessionId)
+
+    expect(snapshot.hasUnknownModelCost).toBe(true)
+    expect(snapshot.modelUsage['unpriced-compact-model']).toEqual({
+      inputTokens: 5,
+      outputTokens: 3,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUsd: 0,
+    })
+    expect(snapshot.apiDurationMs).toBe(11)
+  })
+
+  it('loads restored cost state in a fresh service and persists the combined snapshot once on a direct compact close', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-restore-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const restored: ClaudeSessionCostState = {
+      sessionId,
+      totalCostUsd: 12.5,
+      apiDurationMs: 1000,
+      apiDurationWithoutRetriesMs: 900,
+      toolDurationMs: 500,
+      wallDurationMs: 60000,
+      linesAdded: 10,
+      linesRemoved: 2,
+      modelUsage: {
+        'restored-model': {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 10,
+          cacheCreationInputTokens: 5,
+          webSearchRequests: 1,
+          costUsd: 12.5,
+        },
+      },
+    }
+
+    const seedService = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['existing answer']),
+    })
+    await seedService.run('seed transcript', undefined, sessionId)
+    await seedService.close()
+
+    const loads: string[] = []
+    const saves: ClaudeSessionCostState[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        ...queuedProvider(['existing answer']),
+        model: 'run-model',
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'restored manual summary',
+            usage: {
+              inputTokens: 20,
+              outputTokens: 10,
+              webSearchRequests: 1,
+            },
+            durationMs: 33,
+            model: 'compact-model',
+          }
+        },
+      },
+      pricing: new ModelPricingRegistry({
+        'run-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+        'compact-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+      }),
+      costStateStore: {
+        load: async (id) => {
+          loads.push(id)
+          return id === sessionId ? restored : null
+        },
+        save: async (state) => {
+          saves.push(state)
+        },
+      },
+    })
+
+    const compacted = await service.compact(sessionId)
+
+    expect(compacted.summary).toBe('restored manual summary')
+    expect(loads).toEqual([sessionId])
+
+    const after = await service.costSnapshot(sessionId)
+    expect(after.totalCostUsd).toBeCloseTo(12.5 + 30 / 1_000_000)
+    expect(after.apiDurationMs).toBe(1000 + 33)
+    expect(after.apiDurationWithoutRetriesMs).toBe(900 + 33)
+    expect(after.toolDurationMs).toBe(500)
+    expect(after.linesAdded).toBe(10)
+    expect(after.linesRemoved).toBe(2)
+    expect(after.modelUsage['restored-model']).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadInputTokens: 10,
+      cacheCreationInputTokens: 5,
+      webSearchRequests: 1,
+      costUsd: 12.5,
+    })
+    expect(after.modelUsage['compact-model']).toEqual({
+      inputTokens: 20,
+      outputTokens: 10,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 1,
+      costUsd: 30 / 1_000_000,
+    })
+    expect(after.hasUnknownModelCost).toBe(false)
+
+    await service.close()
+    expect(saves).toHaveLength(1)
+    const saved = saves[0]
+    if (!saved) throw new Error('expected one persisted cost snapshot')
+    expect(saved).toMatchObject({
+      sessionId,
+      apiDurationMs: after.apiDurationMs,
+      apiDurationWithoutRetriesMs: after.apiDurationWithoutRetriesMs,
+      toolDurationMs: after.toolDurationMs,
+      linesAdded: 10,
+      linesRemoved: 2,
+    })
+    expect(saved.totalCostUsd).toBeCloseTo(12.5 + 30 / 1_000_000)
+    expect(saved.modelUsage['compact-model']).toEqual({
+      inputTokens: 20,
+      outputTokens: 10,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 1,
+      costUsd: 30 / 1_000_000,
+    })
+  })
+
+  it('rejects before append when restored manual compact input overflows a safe-integer total', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-manual-compact-overflow-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const restored: ClaudeSessionCostState = {
+      sessionId,
+      totalCostUsd: 12.5,
+      apiDurationMs: 1000,
+      apiDurationWithoutRetriesMs: 900,
+      toolDurationMs: 500,
+      wallDurationMs: 60000,
+      linesAdded: 10,
+      linesRemoved: 2,
+      modelUsage: {
+        'compact-model': {
+          inputTokens: Number.MAX_SAFE_INTEGER,
+          outputTokens: 50,
+          cacheReadInputTokens: 10,
+          cacheCreationInputTokens: 5,
+          webSearchRequests: 1,
+          costUsd: 12.5,
+        },
+      },
+    }
+
+    const seedService = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['existing answer']),
+    })
+    await seedService.run('seed transcript', undefined, sessionId)
+    await seedService.close()
+
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['existing answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'overflowing manual summary',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 5,
+            model: 'compact-model',
+          }
+        },
+      },
+      pricing: new ModelPricingRegistry({
+        'compact-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+      }),
+      costStateStore: {
+        load: async (id) => (id === sessionId ? restored : null),
+        save: async () => undefined,
+      },
+    })
+
+    const before = await service.costSnapshot(sessionId)
+    await expect(service.compact(sessionId)).rejects.toThrow(
+      'inputTokens total must be a safe integer',
+    )
+    const after = await service.costSnapshot(sessionId)
+    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
+  })
+
+  it('meters a selected manual compact once and avoids duplicate accounting on a later normal turn', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-manual-compact-selected-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        ...queuedProvider(['first answer', 'second answer', 'third answer']),
+        model: 'shared-model',
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'selected summary',
+            usage: { inputTokens: 7, outputTokens: 4 },
+            durationMs: 9,
+            model: 'shared-model',
+          }
+        },
+      },
+      pricing: new ModelPricingRegistry({
+        'shared-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+      }),
+    })
+
+    const run = await service.run('first prompt')
+    await service.resume(run.sessionId, 'second prompt')
+    const second = (await service.rewindPoints(run.sessionId)).find(
+      (point) => point.prompt === 'second prompt',
+    )
+    if (!second) throw new Error('second rewind point missing')
+
+    await service.compact(run.sessionId, undefined, {
+      messageId: second.messageId,
+      direction: 'to',
+    })
+    const afterCompact = await service.costSnapshot(run.sessionId)
+    expect(afterCompact.modelUsage['shared-model']).toMatchObject({
+      inputTokens: 13,
+      outputTokens: 8,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+    })
+    expect(afterCompact.modelUsage['shared-model']?.costUsd).toBeCloseTo(
+      21 / 1_000_000,
+    )
+    expect(afterCompact.apiDurationMs).toBe(9)
+
+    await service.resume(run.sessionId, 'third prompt')
+    const afterTurn = await service.costSnapshot(run.sessionId)
+    expect(afterTurn.modelUsage['shared-model']).toMatchObject({
+      inputTokens: 16,
+      outputTokens: 10,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+    })
+    expect(afterTurn.modelUsage['shared-model']?.costUsd).toBeCloseTo(
+      26 / 1_000_000,
+    )
+    expect(afterTurn.apiDurationMs).toBe(9)
+  })
+
+  it('does not mutate transcript or tracker totals when the manual compactor fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-fail-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['original answer']),
+      compactor: {
+        async compact() {
+          throw new Error('manual summary provider failed')
+        },
+      },
+    })
+
+    const run = await service.run('start')
+    const before = await service.costSnapshot(run.sessionId)
+    await expect(service.compact(run.sessionId)).rejects.toThrow(
+      'manual summary provider failed',
+    )
+    const after = await service.costSnapshot(run.sessionId)
+    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
+  })
+
+  it('does not append or record tracker totals for an invalid manual compact duration', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-manual-compact-duration-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['original answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'invalid duration summary',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: -5,
+            model: 'compact-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('start')
+    const before = await service.costSnapshot(run.sessionId)
+    await expect(service.compact(run.sessionId)).rejects.toThrow(
+      'compaction durationMs must be a finite nonnegative number',
+    )
+    const after = await service.costSnapshot(run.sessionId)
+    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
+  })
+
+  it('fails before append when manual compact usage lacks a model identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-model-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['original answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'unattributed summary',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 5,
+          }
+        },
+      },
+    })
+
+    const run = await service.run('start')
+    const before = await service.costSnapshot(run.sessionId)
+    await expect(service.compact(run.sessionId)).rejects.toThrow(
+      'Manual compact usage requires a nonblank model identity',
+    )
+    const after = await service.costSnapshot(run.sessionId)
+    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
+  })
+
+  it.each([
+    ['inputTokens', 'usage.inputTokens', -1],
+    ['outputTokens', 'usage.outputTokens', 1.5],
+    ['cacheReadInputTokens', 'usage.cacheReadInputTokens', Number.NaN],
+    [
+      'cacheCreationInputTokens',
+      'usage.cacheCreationInputTokens',
+      Number.POSITIVE_INFINITY,
+    ],
+    ['webSearchRequests', 'usage.webSearchRequests', -7],
+  ])(
+    'does not append or record tracker totals for an invalid manual compact %s',
+    async (field, errorField, invalidValue) => {
+      const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-usage-'))
+      roots.push(root)
+      const configRoot = join(root, 'config')
+      const cwd = join(root, 'project')
+      const service = new ClaudeSessionService({
+        configRoot,
+        cwd,
+        claudeVersion: '2.1.208',
+        provider: queuedProvider(['original answer']),
+        compactor: {
+          async compact() {
+            return {
+              summary: 'invalid usage summary',
+              usage: { inputTokens: 1, outputTokens: 1, [field]: invalidValue },
+              durationMs: 5,
+              model: 'compact-model',
+            }
+          },
+        },
+      })
+
+      const run = await service.run('start')
+      const before = await service.costSnapshot(run.sessionId)
+      await expect(service.compact(run.sessionId)).rejects.toThrow(
+        `${errorField} must be a nonnegative safe integer`,
+      )
+      const after = await service.costSnapshot(run.sessionId)
+      expect(trackedTotals(after)).toEqual(trackedTotals(before))
+
+      const transcript = await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: run.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+      expect(transcript).not.toContain('compact_boundary')
+    },
+  )
+
+  it('does not touch cost state when compacting a nonexistent session', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-missing-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const missingId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const load = vi.fn(async () => null)
+    const save = vi.fn(async () => undefined)
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([]),
+      costStateStore: { load, save },
+    })
+
+    await expect(service.compact(missingId)).rejects.toThrow(
+      `Claude session not found: ${missingId}`,
+    )
+    expect(load).not.toHaveBeenCalled()
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('fails before append when a zero-usage compact has positive duration but no model identity', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-manual-compact-duration-model-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['original answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'timed unmodeled summary',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 7,
+          }
+        },
+      },
+    })
+
+    const run = await service.run('start')
+    const before = await service.costSnapshot(run.sessionId)
+    await expect(service.compact(run.sessionId)).rejects.toThrow(
+      'Manual compact usage requires a nonblank model identity',
+    )
+    const after = await service.costSnapshot(run.sessionId)
+    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
+  })
+
+  it('does not record a zero model row for an all-zero valid manual compact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-zero-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['original answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'zero summary',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 0,
+            model: 'zero-model',
+          }
+        },
+      },
+      pricing: new ModelPricingRegistry({
+        'zero-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+      }),
+    })
+
+    const run = await service.run('start')
+    const result = await service.compact(run.sessionId)
+    expect(result.summary).toBe('zero summary')
+    const snapshot = await service.costSnapshot(run.sessionId)
+    expect(snapshot.modelUsage['zero-model']).toBeUndefined()
+    expect(snapshot.apiDurationMs).toBe(0)
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('compact_boundary')
+  })
+
+  it('does not append or record tracker totals when a manual compact is cancelled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-cancel-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let releaseCompactor: (() => void) | undefined
+    const compactorGate = new Promise<void>((resolve) => {
+      releaseCompactor = resolve
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['original answer']),
+      compactor: {
+        async compact() {
+          await compactorGate
+          return {
+            summary: 'late summary',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 5,
+            model: 'compact-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('start')
+    const before = await service.costSnapshot(run.sessionId)
+    const controller = new AbortController()
+    const compactPromise = service.compact(run.sessionId, controller.signal)
+    controller.abort()
+    releaseCompactor?.()
+    await expect(compactPromise).rejects.toThrow('Agent run cancelled')
+    const after = await service.costSnapshot(run.sessionId)
+    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
+  })
+
+  it('does not record tracker totals for an empty manual compact summary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-empty-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['original answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: '',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 5,
+            model: 'compact-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('start')
+    const result = await service.compact(run.sessionId)
+    expect(result.summary).toBe('')
+    const snapshot = await service.costSnapshot(run.sessionId)
+    expect(snapshot.modelUsage['compact-model']).toBeUndefined()
+    expect(snapshot.apiDurationMs).toBe(0)
+    expect(snapshot.totalCostUsd).toBe(0)
+  })
+
+  it('does not record tracker totals when the manual compact lease conflicts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-lock-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '66666666-6666-4666-8666-666666666666'
+    let announceStarted: (() => void) | undefined
+    let releaseProvider: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      announceStarted = resolve
+    })
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          announceStarted?.()
+          await providerGate
+          yield { type: 'text-delta', delta: 'finished' }
+        },
+      },
+      compactor: {
+        async compact() {
+          throw new Error('compactor must not run on a conflicting lease')
+        },
+      },
+      sessionPersistence: false,
+    })
+
+    const activeTurn = service.run('first writer', undefined, sessionId)
+    await started
+    try {
+      await expect(service.compact(sessionId)).rejects.toThrow(
+        'Claude transcript compact conflict',
+      )
+    } finally {
+      releaseProvider?.()
+    }
+    await expect(activeTurn).resolves.toMatchObject({ text: 'finished' })
+    const snapshot = await service.costSnapshot(sessionId)
+    expect(snapshot.totalCostUsd).toBe(0)
+    expect(snapshot.apiDurationMs).toBe(0)
+    expect(snapshot.modelUsage).toEqual({})
   })
 
   it('relocates an active session and continues it from the new cwd', async () => {
@@ -2172,6 +2987,7 @@ describe('ClaudeSessionService', () => {
             summary: 'selected range summary',
             usage: { inputTokens: 8, outputTokens: 3 },
             durationMs: 10,
+            model: 'manual-compact-model',
           }
         },
       },
@@ -2241,6 +3057,7 @@ describe('ClaudeSessionService', () => {
             summary: 'earlier range summary',
             usage: { inputTokens: 8, outputTokens: 3 },
             durationMs: 10,
+            model: 'manual-compact-model',
           }
         },
       },
@@ -2309,6 +3126,7 @@ describe('ClaudeSessionService', () => {
             summary: 'whole conversation summary',
             usage: { inputTokens: 4, outputTokens: 2 },
             durationMs: 5,
+            model: 'manual-compact-model',
           }
         },
       },
@@ -3638,6 +4456,7 @@ describe('ClaudeSessionService', () => {
             summary: 'manual summary',
             usage: { inputTokens: 1, outputTokens: 1 },
             durationMs: 1,
+            model: 'manual-compact-model',
           }
         },
       },
