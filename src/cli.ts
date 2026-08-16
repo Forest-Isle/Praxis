@@ -21,6 +21,8 @@ import {
   type SideQuestionForkResult,
   type SideQuestionResult,
 } from './application/session-service.js'
+import type { ClaudeSessionCostSnapshot } from './application/session-cost-tracker.js'
+import { ClaudeCostStateStore } from './persistence/claude-cost-state-store.js'
 import {
   agentColorMessage,
   parseAgentColorInput,
@@ -45,6 +47,7 @@ import {
   loadClaudeContextResources,
   loadClaudeSettings,
   loadClaudeSharedResources,
+  resolveClaudeProjectIdentity,
   resolveClaudeProjectMemoryDirectory,
   type ClaudeJsonResource,
 } from './compatibility/claude/shared-resources.js'
@@ -1008,6 +1011,7 @@ interface SessionCommands {
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
   transcript?(sessionId: string): Promise<ClaudeDisplayTranscriptItem[]>
+  costSnapshot?(sessionId: string): Promise<ClaudeSessionCostSnapshot>
   compact?(
     sessionId: string,
     signal?: AbortSignal,
@@ -1251,12 +1255,18 @@ const createDefaultService: CliDependencies['createService'] = async ({
     provider = providerForMainModel(model)
   }
 
+  const costStateStore = new ClaudeCostStateStore({
+    statePath: claudeStatePath,
+    projectIdentity: await resolveClaudeProjectIdentity({ cwd }),
+  })
+
   const options = {
     configRoot,
     cwd,
     claudeVersion,
     eventSink: runtimeEventSink,
     sessionPersistence: cli.sessionPersistence,
+    costStateStore,
     explicitModel:
       interactiveModel !== undefined || controls.model !== undefined,
     explicitSystemPrompt: cli.systemPrompt !== undefined,
@@ -2001,6 +2011,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       },
       sessions: () => service.sessions(),
+      costSnapshot: (sessionId) => service.costSnapshot(sessionId),
       slashCommands: () =>
         extensions.slashCommandDefinitions().map((definition) => ({
           name: definition.name,
