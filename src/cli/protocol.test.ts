@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createErrorResult,
+  createSuccessResult,
+  isHeadlessCostCommand,
   matchHeadlessColorCommand,
   parseCliInvocation,
   readStreamJsonMessages,
@@ -1235,6 +1237,94 @@ describe('CLI protocol', () => {
     expect(matchHeadlessColorCommand('say /color')).toBeUndefined()
     expect(matchHeadlessColorCommand('')).toBeUndefined()
     expect(matchHeadlessColorCommand('/color\npurple')).toBe('purple')
+  })
+
+  it('matches only trimmed exact /cost as a local command', () => {
+    expect(isHeadlessCostCommand('/cost')).toBe(true)
+    expect(isHeadlessCostCommand('/cost ')).toBe(true)
+    expect(isHeadlessCostCommand('  /cost  ')).toBe(true)
+    expect(isHeadlessCostCommand('/cost\n')).toBe(true)
+    expect(isHeadlessCostCommand('/costs')).toBe(false)
+    expect(isHeadlessCostCommand('/cost extra')).toBe(false)
+    expect(isHeadlessCostCommand('/Cost')).toBe(false)
+    expect(isHeadlessCostCommand('say /cost')).toBe(false)
+    expect(isHeadlessCostCommand('')).toBe(false)
+  })
+
+  it('maps per-model cost and web search usage from a cost result', () => {
+    const startedAt = Date.now()
+    const result = createSuccessResult(
+      {
+        sessionId,
+        text: 'Total cost:            $0.0010',
+        usage: { inputTokens: 0, outputTokens: 0 },
+        durationApiMs: 0,
+        costUsd: 0.001,
+        modelUsage: {
+          'claude-sonnet-4-20250514': {
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadInputTokens: 3,
+            cacheCreationInputTokens: 2,
+            webSearchRequests: 1,
+          },
+        },
+        modelCostUsd: { 'claude-sonnet-4-20250514': 0.001 },
+      },
+      runtimeInfo,
+      startedAt,
+      0,
+    )
+    expect(result).toMatchObject({
+      subtype: 'success',
+      num_turns: 0,
+      duration_api_ms: 0,
+      total_cost_usd: 0.001,
+      result: 'Total cost:            $0.0010',
+      session_id: sessionId,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {
+        'claude-sonnet-4-20250514': {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadInputTokens: 3,
+          cacheCreationInputTokens: 2,
+          webSearchRequests: 1,
+          costUSD: 0.001,
+        },
+      },
+    })
+  })
+
+  it('keeps the legacy single-model cost mapping for ordinary results', () => {
+    const startedAt = Date.now()
+    const result = createSuccessResult(
+      {
+        sessionId,
+        text: 'answer',
+        usage: { inputTokens: 2, outputTokens: 3 },
+        costUsd: 0.5,
+        modelUsage: {
+          'test-model': { inputTokens: 2, outputTokens: 3 },
+        },
+      },
+      runtimeInfo,
+      startedAt,
+      1,
+    )
+    expect(result).toMatchObject({
+      num_turns: 1,
+      total_cost_usd: 0.5,
+      modelUsage: {
+        'test-model': {
+          inputTokens: 2,
+          outputTokens: 3,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUSD: 0.5,
+        },
+      },
+    })
   })
 
   it('emits SendUserMessage stream records', () => {

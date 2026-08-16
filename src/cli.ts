@@ -72,6 +72,12 @@ import type { TuiSlashCommand } from './cli/tui/slash-commands.js'
 import { persistTuiPermissionUpdates } from './cli/tui/permission-settings.js'
 import { loadClaudeReleaseNotes } from './cli/tui/release-notes.js'
 import {
+  canonicalClaudeCostModelName,
+  formatCostSummary,
+  type CostModelUsage,
+  type CostSummary,
+} from './cli/tui/cost-summary.js'
+import {
   projectTuiHooks,
   type TuiHookConfiguration,
 } from './cli/tui/hook-settings.js'
@@ -152,6 +158,7 @@ import {
 import {
   createErrorResult,
   createSuccessResult,
+  isHeadlessCostCommand,
   matchHeadlessColorCommand,
   parseCliInvocation,
   readStreamJsonMessages,
@@ -162,6 +169,7 @@ import {
   type CliRuntimeInfo,
   type CliElicitationRequest,
   type CliElicitationResult,
+  type ProtocolResult,
   type StreamUserMessage,
   type StreamJsonMessage,
   type StreamControlResponse,
@@ -4271,6 +4279,147 @@ function isCancellation(error: unknown, signal?: AbortSignal): boolean {
   )
 }
 
+function emptyCostSnapshot(sessionId: string): ClaudeSessionCostSnapshot {
+  return {
+    sessionId,
+    totalCostUsd: 0,
+    apiDurationMs: 0,
+    apiDurationWithoutRetriesMs: 0,
+    toolDurationMs: 0,
+    wallDurationMs: 0,
+    linesAdded: 0,
+    linesRemoved: 0,
+    modelUsage: {},
+    hasUnknownModelCost: false,
+  }
+}
+
+/**
+ * Computes the validated nonnegative delta between a current cost snapshot and
+ * a process-local baseline. The baseline represents restored historic state or
+ * the empty state before this process touched the session, so the delta shows
+ * only same-process accumulation. Counter regression and incompatible model
+ * state are rejected explicitly rather than clamped.
+ */
+function costSummaryDelta(
+  current: ClaudeSessionCostSnapshot,
+  baseline: ClaudeSessionCostSnapshot | undefined,
+): CostSummary {
+  const base = baseline ?? emptyCostSnapshot(current.sessionId)
+  const assertAtLeast = (
+    label: string,
+    value: number,
+    floor: number,
+  ): number => {
+    if (value < floor) {
+      throw new Error(
+        `Cost state regression: ${label} fell below the process baseline`,
+      )
+    }
+    return value - floor
+  }
+  const totalCostUsd = assertAtLeast(
+    'total cost',
+    current.totalCostUsd,
+    base.totalCostUsd,
+  )
+  const apiDurationMs = assertAtLeast(
+    'API duration',
+    current.apiDurationMs,
+    base.apiDurationMs,
+  )
+  const wallDurationMs = assertAtLeast(
+    'wall duration',
+    current.wallDurationMs,
+    base.wallDurationMs,
+  )
+  const linesAdded = assertAtLeast(
+    'lines added',
+    current.linesAdded,
+    base.linesAdded,
+  )
+  const linesRemoved = assertAtLeast(
+    'lines removed',
+    current.linesRemoved,
+    base.linesRemoved,
+  )
+  const modelUsage: CostModelUsage[] = []
+  for (const [model, usage] of Object.entries(current.modelUsage)) {
+    const baseUsage = base.modelUsage[model]
+    if (baseUsage === undefined) {
+      modelUsage.push({
+        model,
+        canonicalName: canonicalClaudeCostModelName(model),
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadInputTokens: usage.cacheReadInputTokens,
+        cacheCreationInputTokens: usage.cacheCreationInputTokens,
+        webSearchRequests: usage.webSearchRequests,
+        costUsd: usage.costUsd,
+      })
+      continue
+    }
+    const inputTokens = usage.inputTokens - baseUsage.inputTokens
+    const outputTokens = usage.outputTokens - baseUsage.outputTokens
+    const cacheReadInputTokens =
+      usage.cacheReadInputTokens - baseUsage.cacheReadInputTokens
+    const cacheCreationInputTokens =
+      usage.cacheCreationInputTokens - baseUsage.cacheCreationInputTokens
+    const webSearchRequests =
+      usage.webSearchRequests - baseUsage.webSearchRequests
+    const costUsd = usage.costUsd - baseUsage.costUsd
+    if (
+      inputTokens < 0 ||
+      outputTokens < 0 ||
+      cacheReadInputTokens < 0 ||
+      cacheCreationInputTokens < 0 ||
+      webSearchRequests < 0 ||
+      costUsd < 0
+    ) {
+      throw new Error(
+        `Cost state regression for model ${model}: counters fell below the process baseline`,
+      )
+    }
+    if (
+      inputTokens === 0 &&
+      outputTokens === 0 &&
+      cacheReadInputTokens === 0 &&
+      cacheCreationInputTokens === 0 &&
+      webSearchRequests === 0 &&
+      costUsd === 0
+    ) {
+      continue
+    }
+    modelUsage.push({
+      model,
+      canonicalName: canonicalClaudeCostModelName(model),
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens,
+      cacheCreationInputTokens,
+      webSearchRequests,
+      costUsd,
+    })
+  }
+  for (const model of Object.keys(base.modelUsage)) {
+    if (current.modelUsage[model] === undefined) {
+      throw new Error(
+        `Cost state regression for model ${model}: model disappeared from the session tracker`,
+      )
+    }
+  }
+  return {
+    totalCostUsd,
+    apiDurationMs,
+    wallDurationMs,
+    linesAdded,
+    linesRemoved,
+    hasUnknownModelCost:
+      current.hasUnknownModelCost && !base.hasUnknownModelCost,
+    modelUsage,
+  }
+}
+
 function helpActionAt(
   argv: readonly string[],
   commandIndex: number,
@@ -5061,6 +5210,10 @@ async function execute(
     !invocation.disableSlashCommands &&
     firstHeadlessPrompt !== undefined &&
     matchHeadlessColorCommand(firstHeadlessPrompt) !== undefined
+  const firstTurnIsLocalCost =
+    !invocation.disableSlashCommands &&
+    firstHeadlessPrompt !== undefined &&
+    isHeadlessCostCommand(firstHeadlessPrompt)
   const service = await dependencies.createService({
     eventSink:
       outputFormat === 'stream-json' && !invocation.legacyJson
@@ -5094,7 +5247,10 @@ async function execute(
             }
           : eventSink(io, outputFormat, invocation.legacyJson),
     requireProvider:
-      !streamInputExhausted && !firstTurnIsLocalColor && headlessTurnReached,
+      !streamInputExhausted &&
+      !firstTurnIsLocalColor &&
+      !firstTurnIsLocalCost &&
+      headlessTurnReached,
     ...(retryInterruptedTools ? { approveRecovery: () => true } : {}),
     ...(streamIterator ? { approveTool: approveStreamTool } : {}),
     ...(streamIterator ? { onElicitation: respondStreamElicitation } : {}),
@@ -5103,6 +5259,11 @@ async function execute(
     ...(agent ? { agent } : {}),
     controls: invocation,
   })
+  const costBaselines = new Map<string, ClaudeSessionCostSnapshot>()
+  const ensureCostBaseline = async (sessionId: string): Promise<void> => {
+    if (!service.costSnapshot || costBaselines.has(sessionId)) return
+    costBaselines.set(sessionId, await service.costSnapshot(sessionId))
+  }
   try {
     const lifecycleTrigger = invocation.init
       ? 'init'
@@ -5236,6 +5397,7 @@ async function execute(
       signal?.addEventListener('abort', forwardAbort, { once: true })
       currentTurnAbort = streamIterator ? turnAbort : undefined
       const runSignal = streamIterator ? turnAbort.signal : signal
+      await ensureCostBaseline(activeSessionId)
       if (streamOutput) {
         streamOutput.init()
         if (isFirstTurn) {
@@ -5244,13 +5406,52 @@ async function execute(
         if (invocation.replayUserMessages && streamMessage)
           streamOutput.replayUser(streamMessage.message)
       }
-      let result: SessionRunResult
+      let result: ProtocolResult
       let colorArgs: string | undefined
+      let costTurn = false
       try {
+        costTurn =
+          !invocation.disableSlashCommands && isHeadlessCostCommand(prompt)
         colorArgs = invocation.disableSlashCommands
           ? undefined
           : matchHeadlessColorCommand(prompt)
-        if (colorArgs !== undefined) {
+        if (costTurn) {
+          if (!service.costSnapshot) {
+            throw new Error('Session cost is unavailable.')
+          }
+          const current = await service.costSnapshot(activeSessionId)
+          const delta = costSummaryDelta(
+            current,
+            costBaselines.get(activeSessionId),
+          )
+          const modelUsageEntries = delta.modelUsage.map((entry) => [
+            entry.model,
+            {
+              inputTokens: entry.inputTokens,
+              outputTokens: entry.outputTokens,
+              ...(entry.cacheReadInputTokens === undefined
+                ? {}
+                : { cacheReadInputTokens: entry.cacheReadInputTokens }),
+              ...(entry.cacheCreationInputTokens === undefined
+                ? {}
+                : { cacheCreationInputTokens: entry.cacheCreationInputTokens }),
+              ...(entry.webSearchRequests === undefined
+                ? {}
+                : { webSearchRequests: entry.webSearchRequests }),
+            },
+          ])
+          result = {
+            sessionId: activeSessionId,
+            text: formatCostSummary(delta),
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationApiMs: 0,
+            costUsd: delta.totalCostUsd,
+            modelUsage: Object.fromEntries(modelUsageEntries),
+            modelCostUsd: Object.fromEntries(
+              delta.modelUsage.map((entry) => [entry.model, entry.costUsd]),
+            ),
+          }
+        } else if (colorArgs !== undefined) {
           if (!service.recordColorUsage) {
             throw new Error('Session color is unavailable.')
           }
@@ -5341,8 +5542,10 @@ async function execute(
         return false
       }
       activeSessionId = result.sessionId
+      await ensureCostBaseline(activeSessionId)
+      const localCommand = colorArgs !== undefined || costTurn
       if (streamOutput) {
-        if (colorArgs !== undefined) {
+        if (localCommand) {
           streamOutput.syntheticAssistant(result.text)
         }
         streamOutput.result(result, startedAt)
@@ -5354,12 +5557,12 @@ async function execute(
             result,
             resultRuntimeInfo,
             startedAt,
-            colorArgs !== undefined ? 0 : Math.max(1, jsonModelTurns),
+            localCommand ? 0 : Math.max(1, jsonModelTurns),
           ),
         )
       } else if (outputFormat !== 'text')
         writeJson(io, { type: 'result', ...result })
-      else io.stdout(colorArgs !== undefined ? `${result.text}\n` : '\n')
+      else io.stdout(localCommand ? `${result.text}\n` : '\n')
       if (streamOutput && invocation.promptSuggestions) {
         try {
           const suggestion = await service.promptSuggestion?.(
