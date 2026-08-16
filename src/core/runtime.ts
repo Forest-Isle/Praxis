@@ -85,6 +85,7 @@ export interface ModelUsage {
   outputTokens: number
   cacheReadInputTokens?: number
   cacheCreationInputTokens?: number
+  webSearchRequests?: number
 }
 
 export type ModelUsageByModel = Readonly<Record<string, ModelUsage>>
@@ -607,11 +608,14 @@ function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
     (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
   const cacheCreationInputTokens =
     (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const webSearchRequests =
+    (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
   return {
     inputTokens: left.inputTokens + right.inputTokens,
     outputTokens: left.outputTokens + right.outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
   }
 }
 
@@ -636,6 +640,7 @@ const modelUsageCounterFields = [
   'outputTokens',
   'cacheReadInputTokens',
   'cacheCreationInputTokens',
+  'webSearchRequests',
 ] as const
 
 function hasNonZeroModelUsage(usage: ModelUsage): boolean {
@@ -643,7 +648,8 @@ function hasNonZeroModelUsage(usage: ModelUsage): boolean {
     usage.inputTokens > 0 ||
     usage.outputTokens > 0 ||
     (usage.cacheReadInputTokens ?? 0) > 0 ||
-    (usage.cacheCreationInputTokens ?? 0) > 0
+    (usage.cacheCreationInputTokens ?? 0) > 0 ||
+    (usage.webSearchRequests ?? 0) > 0
   )
 }
 
@@ -668,11 +674,14 @@ function addUsageChecked(left: ModelUsage, right: ModelUsage): ModelUsage {
     (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
   const cacheCreationInputTokens =
     (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const webSearchRequests =
+    (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
   if (
     !Number.isSafeInteger(inputTokens) ||
     !Number.isSafeInteger(outputTokens) ||
     !Number.isSafeInteger(cacheReadInputTokens) ||
-    !Number.isSafeInteger(cacheCreationInputTokens)
+    !Number.isSafeInteger(cacheCreationInputTokens) ||
+    !Number.isSafeInteger(webSearchRequests)
   ) {
     throw new Error('Model usage total overflow')
   }
@@ -681,6 +690,7 @@ function addUsageChecked(left: ModelUsage, right: ModelUsage): ModelUsage {
     outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
   }
 }
 
