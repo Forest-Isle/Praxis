@@ -19,6 +19,7 @@ import type {
   SideQuestionForkResult,
   SideQuestionResult,
 } from '../application/session-service.js'
+import type { ClaudeSessionCostSnapshot } from '../application/session-cost-tracker.js'
 import type {
   ModelImage,
   ModelToolCall,
@@ -116,6 +117,7 @@ import {
   slashCommandQuery,
   type TuiSlashCommand,
 } from './tui/slash-commands.js'
+import { formatCostSummary, type CostSummary } from './tui/cost-summary.js'
 import {
   createComposerEditor,
   deleteComposerBackward,
@@ -318,6 +320,7 @@ interface InteractiveSessionCommands {
   ): Promise<ForkResult>
   sessions(): Promise<SessionSummary[]>
   transcript?(sessionId: string): Promise<TranscriptItem[]>
+  costSnapshot?(sessionId: string): Promise<ClaudeSessionCostSnapshot>
   compact?(
     sessionId: string,
     signal?: AbortSignal,
@@ -6640,6 +6643,62 @@ export function InteractiveApp({
             })
           } catch {
             // Leave the Memory files section empty if files cannot be read.
+          }
+        })()
+        onTurnChange?.(loading)
+        void loading.finally(() => onTurnChange?.(null))
+      } else if (prompt === '/cost') {
+        const loading = (async () => {
+          setBusy(true)
+          setStatus('loading cost summary')
+          try {
+            let summary: CostSummary
+            if (sessionId) {
+              summary = await withLocalCommands(async (commands) => {
+                if (!commands.costSnapshot) {
+                  throw new Error(
+                    'This interactive service cannot report session cost.',
+                  )
+                }
+                const snapshot = await commands.costSnapshot(sessionId)
+                return {
+                  totalCostUsd: snapshot.totalCostUsd,
+                  apiDurationMs: snapshot.apiDurationMs,
+                  wallDurationMs: snapshot.wallDurationMs,
+                  linesAdded: snapshot.linesAdded,
+                  linesRemoved: snapshot.linesRemoved,
+                  hasUnknownModelCost: snapshot.hasUnknownModelCost,
+                  modelUsage: Object.entries(snapshot.modelUsage).map(
+                    ([model, usage]) => ({
+                      model,
+                      canonicalName: model,
+                      inputTokens: usage.inputTokens,
+                      outputTokens: usage.outputTokens,
+                      cacheReadInputTokens: usage.cacheReadInputTokens,
+                      cacheCreationInputTokens: usage.cacheCreationInputTokens,
+                      webSearchRequests: usage.webSearchRequests,
+                      costUsd: usage.costUsd,
+                    }),
+                  ),
+                }
+              })
+            } else {
+              summary = {
+                totalCostUsd: 0,
+                apiDurationMs: 0,
+                wallDurationMs: 0,
+                linesAdded: 0,
+                linesRemoved: 0,
+                hasUnknownModelCost: false,
+                modelUsage: [],
+              }
+            }
+            append({ kind: 'local-result', text: formatCostSummary(summary) })
+          } catch (error) {
+            warn(error)
+          } finally {
+            setBusy(false)
+            setStatus('ready')
           }
         })()
         onTurnChange?.(loading)

@@ -49,10 +49,10 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
   { name: 'context', disposition: 'included', visibility: 'conditional' },
   {
     name: 'cost',
-    disposition: 'required',
+    disposition: 'included',
     visibility: 'conditional',
     reason:
-      'The dedicated /cost contract is required; /status is not a substitute.',
+      'The dedicated /cost contract is included; /status is not a substitute.',
   },
   { name: 'diff', disposition: 'included', visibility: 'visible' },
   {

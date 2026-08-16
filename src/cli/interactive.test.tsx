@@ -456,6 +456,138 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual([])
   })
 
+  it('renders /cost as a dim local result from the active session and zeroes without a session', async () => {
+    const creations: Array<{ requireProvider: boolean; cwd?: string }> = []
+    let closes = 0
+    const runCalls: string[] = []
+    const resumeCalls: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push({
+          requireProvider: options.requireProvider,
+          ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        })
+        return {
+          async run() {
+            runCalls.push('run')
+            throw new Error('unused')
+          },
+          async resume() {
+            resumeCalls.push('resume')
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async costSnapshot(sessionId) {
+            return {
+              sessionId,
+              totalCostUsd: 2.5,
+              apiDurationMs: 1_234_567,
+              apiDurationWithoutRetriesMs: 1_000_000,
+              toolDurationMs: 200_000,
+              wallDurationMs: 3_600_000,
+              linesAdded: 12,
+              linesRemoved: 3,
+              hasUnknownModelCost: false,
+              modelUsage: {
+                'claude-sonnet-4': {
+                  inputTokens: 1500,
+                  outputTokens: 300,
+                  cacheReadInputTokens: 100,
+                  cacheCreationInputTokens: 50,
+                  webSearchRequests: 0,
+                  costUsd: 2.5,
+                },
+              },
+            }
+          },
+          async close() {
+            closes += 1
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[
+          {
+            sessionId: 'active-session',
+            lastPrompt: 'hello',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        resume={{ sessionId: 'active-session' }}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+      />,
+    )
+
+    app.stdin.write('/cost')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Total cost:            $2.50')
+        ? true
+        : undefined,
+    )
+    const frame = app.lastFrame()
+    expect(frame).toContain('⎿ Total cost:            $2.50')
+    expect(frame).toContain('Total duration (API):  20m 35s')
+    expect(frame).toContain('Total duration (wall): 1h 0m 0s')
+    expect(frame).toContain(
+      'Total code changes:    12 lines added, 3 lines removed',
+    )
+    expect(frame).toContain(
+      '      claude-sonnet-4:  1.5k input, 300 output, 100 cache read, 50 cache write ($2.50)',
+    )
+    expect(creations).toEqual([
+      { requireProvider: false, cwd: '/fixture/workspace' },
+    ])
+    expect(runCalls).toEqual([])
+    expect(resumeCalls).toEqual([])
+    expect(closes).toBe(1)
+    app.unmount()
+
+    const noSessionCalls: string[] = []
+    const noSessionApp = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            noSessionCalls.push('service')
+            throw new Error('cost without a session must not create a service')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+      />,
+    )
+    noSessionApp.stdin.write('/cost')
+    noSessionApp.stdin.write('\r')
+    await waitFor(() =>
+      noSessionApp
+        .lastFrame()
+        ?.includes(
+          'Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
+        )
+        ? true
+        : undefined,
+    )
+    expect(noSessionApp.lastFrame()).toContain(
+      '⎿ Total cost:            $0.0000\n' +
+        '  Total duration (API):  0s\n' +
+        '  Total duration (wall): 0s\n' +
+        '  Total code changes:    0 lines added, 0 lines removed\n' +
+        '  Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
+    )
+    expect(noSessionCalls).toEqual([])
+    noSessionApp.unmount()
+  })
+
   it('reports the current renderer and restarts after switching it', async () => {
     const rendererChanges: Array<{
       mode: 'default' | 'fullscreen'
@@ -3570,15 +3702,21 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('/memory')
     app.stdin.write('\r')
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    await flush()
+    await waitFor(() =>
+      app.lastFrame()?.includes('Auto-memory: on') ? true : undefined,
+    )
     app.stdin.write('2')
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    await flush()
+    await waitFor(() =>
+      memoryEditor.mock.calls.length === 1 ? true : undefined,
+    )
     expect(memoryEditor).toHaveBeenCalledWith('/workspace/CLAUDE.md', {
       cwd: '/workspace',
     })
-    expect(app.lastFrame()).toContain('Opened memory file at ./CLAUDE.md')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Opened memory file at ./CLAUDE.md')
+        ? true
+        : undefined,
+    )
     expect(app.lastFrame()).toContain('Using Fixture editor')
   })
 
