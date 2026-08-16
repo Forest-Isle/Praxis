@@ -46,6 +46,7 @@ interface StreamState {
   cacheReadInputTokens: number
   cacheCreationInputTokens: number
   outputTokens: number
+  webSearchRequests: number
   usageSeen: boolean
   messageStarted: boolean
   messageDeltaSeen: boolean
@@ -66,6 +67,31 @@ function webSearchLinks(value: unknown): { title: string; url: string }[] {
       ? [{ title: item.title, url: item.url }]
       : [],
   )
+}
+
+function readWebSearchRequests(
+  usage: Record<string, unknown>,
+  state: StreamState,
+): void {
+  const serverToolUse = usage.server_tool_use
+  if (serverToolUse === undefined) return
+  if (!isRecord(serverToolUse)) {
+    throw new ModelProviderError(
+      'Provider returned an invalid server_tool_use usage object for web_search_requests',
+      { retryable: false },
+    )
+  }
+  const count = serverToolUse.web_search_requests
+  if (count === undefined) return
+  if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) {
+    throw new ModelProviderError(
+      'Provider returned an invalid web_search_requests counter',
+      { retryable: false },
+    )
+  }
+  // A present count is the latest cumulative value, never a delta.
+  state.webSearchRequests = count
+  if (count > 0) state.usageSeen = true
 }
 
 function positiveInteger(value: number, label: string): number {
@@ -200,6 +226,7 @@ function parseSseEvent(
           ? usage.cache_read_input_tokens
           : 0
       state.usageSeen = true
+      readWebSearchRequests(usage, state)
     }
     return []
   }
@@ -504,6 +531,7 @@ function parseSseEvent(
       state.outputTokens = value.usage.output_tokens
       state.usageSeen = true
     }
+    readWebSearchRequests(value.usage, state)
     return []
   }
 
@@ -538,6 +566,9 @@ function parseSseEvent(
           ...(state.cacheCreationInputTokens === 0
             ? {}
             : { cacheCreationInputTokens: state.cacheCreationInputTokens }),
+          ...(state.webSearchRequests === 0
+            ? {}
+            : { webSearchRequests: state.webSearchRequests }),
         },
       })
       state.usageSeen = false
@@ -886,6 +917,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
       outputTokens: 0,
+      webSearchRequests: 0,
       usageSeen: false,
       messageStarted: false,
       messageDeltaSeen: false,

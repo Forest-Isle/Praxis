@@ -1445,6 +1445,7 @@ describe('AgentRuntime', () => {
               outputTokens: 5,
               cacheReadInputTokens: 100,
               cacheCreationInputTokens: 50,
+              webSearchRequests: 4,
             },
           }
           return
@@ -1456,6 +1457,7 @@ describe('AgentRuntime', () => {
             inputTokens: 20,
             outputTokens: 10,
             cacheReadInputTokens: 30,
+            webSearchRequests: 2,
           },
         }
       },
@@ -1472,6 +1474,7 @@ describe('AgentRuntime', () => {
               inputTokens: 2,
               outputTokens: 2,
               cacheReadInputTokens: 10,
+              webSearchRequests: 1,
             },
             'subagent-alpha': { inputTokens: 4, outputTokens: 3 },
           },
@@ -1513,6 +1516,7 @@ describe('AgentRuntime', () => {
       outputTokens: 16,
       cacheReadInputTokens: 130,
       cacheCreationInputTokens: 50,
+      webSearchRequests: 6,
     })
     // First-insertion order is stable: parent model first, then nested model.
     expect(Object.keys(result.modelUsage ?? {})).toEqual([
@@ -1525,6 +1529,7 @@ describe('AgentRuntime', () => {
       outputTokens: 17,
       cacheReadInputTokens: 140,
       cacheCreationInputTokens: 50,
+      webSearchRequests: 7,
     })
     expect(result.modelUsage?.['subagent-alpha']).toEqual({
       inputTokens: 4,
@@ -1595,6 +1600,7 @@ describe('AgentRuntime', () => {
               outputTokens: 5,
               cacheReadInputTokens: 100,
               cacheCreationInputTokens: 50,
+              webSearchRequests: 4,
             },
           }
           return
@@ -1606,6 +1612,7 @@ describe('AgentRuntime', () => {
             inputTokens: 6,
             outputTokens: 4,
             cacheReadInputTokens: 20,
+            webSearchRequests: 2,
           },
         }
       },
@@ -1623,6 +1630,7 @@ describe('AgentRuntime', () => {
               outputTokens: 13,
               cacheReadInputTokens: 40,
               cacheCreationInputTokens: 5,
+              webSearchRequests: 3,
             },
             modelUsage: {
               // Overlaps the parent model: must merge, not replace or recount.
@@ -1631,12 +1639,14 @@ describe('AgentRuntime', () => {
                 outputTokens: 10,
                 cacheReadInputTokens: 30,
                 cacheCreationInputTokens: 5,
+                webSearchRequests: 2,
               },
               // First raw model observed from onStop.
               'raw-model-x': {
                 inputTokens: 4,
                 outputTokens: 3,
                 cacheReadInputTokens: 10,
+                webSearchRequests: 1,
               },
             },
           }
@@ -1654,6 +1664,7 @@ describe('AgentRuntime', () => {
       outputTokens: 22,
       cacheReadInputTokens: 160,
       cacheCreationInputTokens: 55,
+      webSearchRequests: 9,
     })
     // Parent-first insertion order, then raw models first observed from onStop.
     expect(Object.keys(result.modelUsage ?? {})).toEqual([
@@ -1666,11 +1677,13 @@ describe('AgentRuntime', () => {
       outputTokens: 19,
       cacheReadInputTokens: 150,
       cacheCreationInputTokens: 55,
+      webSearchRequests: 8,
     })
     expect(result.modelUsage?.['raw-model-x']).toEqual({
       inputTokens: 4,
       outputTokens: 3,
       cacheReadInputTokens: 10,
+      webSearchRequests: 1,
     })
 
     // A malformed onStop breakdown rejects the run before any partial merge.
@@ -1692,6 +1705,31 @@ describe('AgentRuntime', () => {
         }),
       }),
     ).rejects.toThrow('blank model name')
+
+    // An invalid web-search counter in an onStop breakdown also rejects before
+    // any partial raw-model-map mutation.
+    const invalidCounterRuntime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield { type: 'text-delta', delta: 'done' }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      }),
+    )
+    await expect(
+      invalidCounterRuntime.run({
+        messages: [{ role: 'user', content: 'bad counter' }],
+        onStop: async () => ({
+          messages: [],
+          modelUsage: {
+            'claude-3-5-sonnet': { inputTokens: 1, outputTokens: 1 },
+            'raw-model-y': {
+              inputTokens: 1,
+              outputTokens: 1,
+              webSearchRequests: -1,
+            },
+          },
+        }),
+      }),
+    ).rejects.toThrow('invalid webSearchRequests counter')
 
     // Overflow when merging an onStop breakdown also fails explicitly.
     const overflowRuntime = new AgentRuntime({
