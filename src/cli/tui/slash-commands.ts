@@ -4,6 +4,7 @@ export interface TuiSlashCommand {
   name: string
   description: string
   source: TuiSlashCommandSource
+  argumentHint?: string
   progressMessage?: string
 }
 
@@ -44,6 +45,12 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     name: 'clear',
     description:
       'Start a new session with empty context; previous session stays on disk (resumable with /resume)',
+    source: 'builtin',
+  },
+  {
+    name: 'color',
+    description: 'Set the prompt bar color for this session',
+    argumentHint: '[red|blue|green|yellow|purple|orange|pink|cyan|default]',
     source: 'builtin',
   },
   {

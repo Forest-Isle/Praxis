@@ -104,11 +104,27 @@ describe('ClaudeSchemaAdapter', () => {
       agentName: 'Named session',
       sessionId: '11111111-1111-4111-8111-111111111111',
     }
+    const agentColor = {
+      type: 'agent-color',
+      agentColor: 'purple',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    }
+    const agentColorDefault = {
+      type: 'agent-color',
+      agentColor: 'default',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    }
     expect(adapter.serializeForAppend(customTitle)).toBe(
       JSON.stringify(customTitle),
     )
     expect(adapter.serializeForAppend(agentName)).toBe(
       JSON.stringify(agentName),
+    )
+    expect(adapter.serializeForAppend(agentColor)).toBe(
+      JSON.stringify(agentColor),
+    )
+    expect(adapter.serializeForAppend(agentColorDefault)).toBe(
+      JSON.stringify(agentColorDefault),
     )
     const permissionMode = {
       type: 'permission-mode',
@@ -122,11 +138,20 @@ describe('ClaudeSchemaAdapter', () => {
       JSON.stringify(customTitle),
     )
     expect(adapter.serializeForFork(agentName)).toBe(JSON.stringify(agentName))
+    expect(adapter.serializeForFork(agentColor)).toBe(
+      JSON.stringify(agentColor),
+    )
     expect(() =>
       adapter.serializeForAppend({ ...customTitle, customTitle: '' }),
     ).toThrow('invalid metadata')
     expect(() =>
       adapter.serializeForAppend({ ...agentName, agentName: '' }),
+    ).toThrow('invalid metadata')
+    expect(() =>
+      adapter.serializeForAppend({ ...agentColor, agentColor: 'bogus' }),
+    ).toThrow('invalid metadata')
+    expect(() =>
+      adapter.serializeForFork({ ...agentColor, sessionId: '' }),
     ).toThrow('invalid metadata')
     expect(() => adapter.serializeForAppend({ type: 'user' })).toThrow(
       'missing uuid',

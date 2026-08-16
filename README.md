@@ -95,7 +95,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   tabs, `/sandbox` mode/dependency/override/config controls, local cached
   `/release-notes`, Claude-compatible `/statusline` command execution and setup
   agent, source-aligned `/init` project-instruction onboarding with its enhanced
-  skills/hooks flow, `/mcp`, `/memory` shared instruction and auto-memory
+  skills/hooks flow, provider-free per-session `/color` prompt-bar styling,
+  `/mcp`, `/memory` shared instruction and auto-memory
   access, and live extension-reload controls,
   cursor/history composer, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,

@@ -1,3 +1,5 @@
+import { isAgentColorValue } from './agent-color.js'
+
 export type ClaudeWriteMode = 'read-only' | 'read-write'
 
 export type ClaudeTranscriptEntry = Record<string, unknown> & { type: string }
@@ -14,6 +16,7 @@ export interface ClaudeSchemaAdapter {
 
 const SUPPORTED_VERSION = '2.1.208'
 const APPENDABLE_ENTRY_TYPES = new Set([
+  'agent-color',
   'agent-name',
   'agent-setting',
   'assistant',
@@ -31,6 +34,7 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'worktree-state',
 ])
 const FORKABLE_ENTRY_TYPES = new Set([
+  'agent-color',
   'agent-name',
   'agent-setting',
   'ai-title',
@@ -849,6 +853,15 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
     }
     return
   }
+  if (entry.type === 'agent-color') {
+    if (
+      !isAgentColorValue(entry.agentColor) ||
+      !isNonEmptyString(entry.sessionId)
+    ) {
+      throw new Error('Claude agent-color entry has invalid metadata')
+    }
+    return
+  }
   if (entry.type === 'agent-name') {
     if (
       !isNonEmptyString(entry.agentName) ||
@@ -1026,7 +1039,11 @@ function validateSidechainEntry(entry: ClaudeTranscriptEntry): void {
 }
 
 function validateForkableEntry(entry: ClaudeTranscriptEntry): void {
-  if (entry.type === 'custom-title' || entry.type === 'agent-name') {
+  if (
+    entry.type === 'custom-title' ||
+    entry.type === 'agent-name' ||
+    entry.type === 'agent-color'
+  ) {
     validateAppendableEntry(entry)
     return
   }

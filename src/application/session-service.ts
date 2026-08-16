@@ -13,6 +13,14 @@ import {
 import { homedir } from 'node:os'
 import { basename, extname, isAbsolute, join, relative } from 'node:path'
 
+import {
+  AGENT_COLOR_DEFAULT,
+  agentColorMessage,
+  getClaudeEffectiveAgentColor,
+  type AgentColorName,
+  type AgentColorSelection,
+  type AgentColorValue,
+} from '../compatibility/claude/agent-color.js'
 import type { ClaudeConditionalRuleResolver } from '../compatibility/claude/context.js'
 import {
   createClaudeCompactEntries,
@@ -1126,6 +1134,14 @@ export class ClaudeSessionService {
     }
   }
 
+  async readEffectiveAgentColor(
+    sessionId: string,
+  ): Promise<AgentColorName | undefined> {
+    this.assertSessionPersistence()
+    const recovery = await this.store(sessionId).loadReadOnly()
+    return getClaudeEffectiveAgentColor(recovery.entries, sessionId)
+  }
+
   async export(sessionId: string): Promise<Buffer> {
     this.assertSessionPersistence()
     try {
@@ -1439,6 +1455,40 @@ export class ClaudeSessionService {
       if (result.status === 'completed') return activeSessionId
       await new Promise<void>((resolve) => setTimeout(resolve, 25))
     }
+  }
+
+  async recordColorUsage(
+    sessionId: string | undefined,
+    selection: AgentColorSelection,
+    display: string,
+    permissionMode: ClaudePermissionMode = 'default',
+    options: { createSession?: boolean } = {},
+  ): Promise<string> {
+    const output = agentColorMessage(selection)
+    const agentColor: AgentColorValue | undefined =
+      selection.kind === 'color'
+        ? selection.color
+        : selection.kind === 'reset'
+          ? AGENT_COLOR_DEFAULT
+          : undefined
+    const createLocalSession =
+      sessionId === undefined || options.createSession === true
+    const activeSessionId = await this.ensureLocalSession(
+      sessionId,
+      permissionMode,
+      createLocalSession ? agentColor : undefined,
+      options.createSession === true,
+    )
+    if (this.options.sessionPersistence !== false) {
+      await this.appendInputHistory(display, activeSessionId)
+    }
+    await this.appendAgentColorUsage(
+      activeSessionId,
+      display,
+      output,
+      createLocalSession ? undefined : agentColor,
+    )
+    return activeSessionId
   }
 
   async recordBackgroundUsage(
@@ -3541,6 +3591,51 @@ export class ClaudeSessionService {
     }
   }
 
+  private async appendAgentColorUsage(
+    sessionId: string,
+    display: string,
+    output: string,
+    agentColor: AgentColorValue | undefined,
+  ): Promise<void> {
+    const args = display.replace(/^\/color\s*/u, '').trim()
+    while (true) {
+      const result = await this.turnStore(sessionId).withLease(
+        async (lease) => {
+          const snapshot = await lease.load()
+          if (snapshot.entries.length === 0) {
+            throw new Error(`Claude session not found: ${sessionId}`)
+          }
+          const appended = await lease.appendMany(snapshot.tail, [
+            ...(agentColor === undefined
+              ? []
+              : [
+                  {
+                    type: 'agent-color',
+                    agentColor,
+                    sessionId,
+                  } as const,
+                ]),
+            ...this.localCommandEntries(
+              sessionId,
+              this.activeCwd(),
+              this.logicalTailUuid(snapshot.tail),
+              'color',
+              args,
+              output,
+            ),
+          ])
+          if (appended.status === 'conflict') {
+            throw new Error(
+              `Claude color local command append conflict: ${appended.reason}`,
+            )
+          }
+        },
+      )
+      if (result.status === 'completed') return
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+    }
+  }
+
   private async appendSystemLocalCommand(
     sessionId: string,
     command: string,
@@ -3580,12 +3675,23 @@ export class ClaudeSessionService {
   private async ensureLocalSession(
     sessionId: string | undefined,
     permissionMode: ClaudePermissionMode,
+    agentColor?: AgentColorValue,
+    createExplicit = false,
   ): Promise<string> {
-    if (sessionId) return sessionId
+    if (sessionId !== undefined && !createExplicit) return sessionId
     this.assertWritable()
-    const createdSessionId = randomUUID()
+    const createdSessionId = sessionId ?? randomUUID()
     const store = this.turnStore(createdSessionId)
     const created = await store.create([
+      ...(agentColor === undefined
+        ? []
+        : [
+            {
+              type: 'agent-color',
+              agentColor,
+              sessionId: createdSessionId,
+            } as const,
+          ]),
       { type: 'mode', mode: 'normal', sessionId: createdSessionId },
       {
         type: 'permission-mode',

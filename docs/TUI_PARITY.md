@@ -465,7 +465,16 @@ Stage 135 adds the source-registered `/release-notes` local command and
 status-line renderer over shared settings. Stage 136 adds `/init` as a built-in
 prompt command with the public 2.1.208 repository-analysis flow, the
 `CLAUDE_CODE_NEW_INIT` skills/hooks flow, same-name user override behavior, and
-the `analyzing your codebase` progress state. Every remaining required command
+the `analyzing your codebase` progress state. Stage 139 completes the `/color`
+prompt command: a provider-free local command that picks a random palette color
+for a bare invocation, sets explicit colors, resets through `default`/`reset`/
+`none`/`gray`/`grey`, and reports the exact normalized-input error message,
+while writing native `agent-color` transcript entries (before the local-command
+pair on new sessions), sharing the displayed input via `history.jsonl`, loading
+the effective color on resume/session open (with reset reading as no color),
+retaining it as exactly one leading entry on fork, and coloring the composer's
+top/bottom separators per profile with dim separators restored on reset,
+`/clear`, `/new`, and fresh sessions. Every remaining required command
 still needs an observed contract and focused TTY or Ink gate. Every deferred
 single-user CLI command remains a completion blocker; only the explicitly
 agreed enterprise, multi-user, subscription-auth, Desktop/IDE/mobile, Remote

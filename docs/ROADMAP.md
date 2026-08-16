@@ -1216,3 +1216,27 @@ Status: complete for the verified Claude Code 2.1.208 definition contract.
 - [x] verify the top-level request and transcript contract against the pinned
       Claude 2.1.208 binary, including explicit model precedence and the
       headless/interactive system-prompt precedence split
+
+## Stage 139 - prompt bar color command
+
+Status: complete for the verified Claude Code 2.1.208 /color contract.
+
+- [x] discover `/color` in the slash catalog with the exact 2.1.208 description
+      and `[red|blue|green|yellow|purple|orange|pink|cyan|default]` hint
+- [x] provider-free dispatch: bare `/color` picks a random color via
+      `Math.random`, explicit names trim/lowercase to set, `default`/`reset`/
+      `none`/`gray`/`grey` reset, everything else reports the normalized input
+      with the exact 2.1.208 error message
+- [x] write native `agent-color` transcript entries (before the local-command
+      pair on new sessions, appended before the pair on existing sessions) and
+      share the displayed input through `history.jsonl`
+- [x] color the composer's top/bottom separators per profile (normal, ANSI,
+      daltonized), keep the prompt glyph unchanged, and restore dim separators
+      on reset, `/clear`, `/new`, and new sessions
+- [x] load the effective color on resume and session open (reset reads as no
+      color), retain it on fork as exactly one leading `agent-color` entry, and
+      validate `agent-color` entries through the append/fork schema paths
+- [x] verify all six compatibility proofs against the pinned Claude 2.1.208
+      binary, including zero-model-turn text/JSON/stream-json `/color` runs,
+      native transcript shape, reset round-trips, session routing and
+      no-persistence behavior, and Claude resuming Praxis-created color sessions

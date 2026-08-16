@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Box, Text, useStdout } from 'ink'
 
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
+import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
 import { composerEditorSegments } from './composer-editor.js'
 import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
 import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
@@ -2437,6 +2438,8 @@ export function Composer({
   turnDuration,
   editorMode = 'normal',
   prStatus,
+  sessionColor,
+  commandArgumentHint,
 }: {
   input: string
   cursor?: number
@@ -2458,6 +2461,8 @@ export function Composer({
   turnDuration?: string
   editorMode?: 'normal' | 'vim'
   prStatus?: string
+  sessionColor?: AgentColorName
+  commandArgumentHint?: string
 }) {
   const palette = useTuiPalette()
   const [spinnerIndex, setSpinnerIndex] = useState(0)
@@ -2482,6 +2487,8 @@ export function Composer({
       </Text>
     )
   const line = '─'.repeat(Math.max(12, Math.min(100, width)))
+  const separatorColor =
+    sessionColor === undefined ? undefined : palette.sessionColors[sessionColor]
   return (
     <Box flexDirection="column" marginTop={1}>
       {usage ? (
@@ -2503,7 +2510,13 @@ export function Composer({
           {costUsd === undefined ? '' : ` · $${costUsd.toFixed(6)}`}
         </Text>
       ) : null}
-      <Text dimColor>{line}</Text>
+      <Text
+        {...(separatorColor === undefined
+          ? { dimColor: true }
+          : { color: separatorColor })}
+      >
+        {line}
+      </Text>
       {clipboardBusy ? (
         <Text>Pasting…</Text>
       ) : busy ? (
@@ -2521,10 +2534,18 @@ export function Composer({
             {shellMode ? '! ' : '❯ '}
           </Text>
           {input ? (
-            <ComposerInput
-              cursor={cursor ?? Array.from(input).length}
-              input={input}
-            />
+            <Text>
+              <ComposerInput
+                cursor={cursor ?? Array.from(input).length}
+                input={input}
+              />
+              {commandArgumentHint ? (
+                <Text dimColor>
+                  {input.endsWith(' ') ? '' : ' '}
+                  {commandArgumentHint}
+                </Text>
+              ) : null}
+            </Text>
           ) : (
             <Text dimColor>
               {shellMode
@@ -2534,7 +2555,13 @@ export function Composer({
           )}
         </Text>
       )}
-      <Text dimColor>{line}</Text>
+      <Text
+        {...(separatorColor === undefined
+          ? { dimColor: true }
+          : { color: separatorColor })}
+      >
+        {line}
+      </Text>
       {shortcutsVisible ? (
         <ShortcutHelp width={width} />
       ) : (

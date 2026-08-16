@@ -1113,6 +1113,89 @@ describe('Claude-style TUI components', () => {
     expect(shellTranscript.lastFrame()).toContain('⎿ /tmp/project')
   })
 
+  it('colors the composer separators around the prompt when a session color is set', () => {
+    const line = '─'.repeat(60)
+    const base = render(
+      <Composer
+        input=""
+        busy={false}
+        status="ready"
+        display={display}
+        width={60}
+        screenReader={false}
+      />,
+    )
+    const colored = render(
+      <Composer
+        input=""
+        busy={false}
+        status="ready"
+        display={display}
+        width={60}
+        screenReader={false}
+        sessionColor="purple"
+      />,
+    )
+    const baseFrame = base.lastFrame() ?? ''
+    const coloredFrame = colored.lastFrame() ?? ''
+    const baseLines = baseFrame.split('\n')
+    const coloredLines = coloredFrame.split('\n')
+    expect(baseLines[1]).toBe(line)
+    expect(baseLines[3]).toBe(line)
+    expect(coloredLines[1]).toBe(line)
+    expect(coloredLines[3]).toBe(line)
+    expect(coloredLines[2]).toContain('❯ ')
+    expect(coloredFrame).toBe(baseFrame)
+    expect(coloredFrame).not.toContain('Session color')
+    expect(coloredFrame).not.toContain('purple')
+  })
+
+  it('renders the slash command argument hint dimmed beside the input', () => {
+    const hint = '[red|blue|green|yellow|purple|orange|pink|cyan|default]'
+    const trailing = render(
+      <Composer
+        input="/color "
+        cursor={7}
+        busy={false}
+        status="ready"
+        display={display}
+        width={100}
+        screenReader={false}
+        commandArgumentHint={hint}
+      />,
+    )
+    const trailingPlain = render(
+      <Composer
+        input="/color "
+        cursor={7}
+        busy={false}
+        status="ready"
+        display={display}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(trailing.lastFrame()?.split('\n')[2]).toBe(`❯ /color  ${hint}`)
+    expect(trailingPlain.lastFrame()).not.toContain(hint)
+
+    const bare = render(
+      <Composer
+        input="/color"
+        cursor={6}
+        busy={false}
+        status="ready"
+        display={display}
+        width={100}
+        screenReader={false}
+        commandArgumentHint={hint}
+      />,
+    )
+    expect(bare.lastFrame()?.split('\n')[2]).toBe(`❯ /color  ${hint}`)
+    expect(trailing.lastFrame()?.split('\n')[2]).toBe(
+      bare.lastFrame()?.split('\n')[2],
+    )
+  })
+
   it('renders the external editor wait state and footer outcomes', () => {
     const wait = render(<ExternalEditorWait screenReader={false} />)
     expect(wait.lastFrame()).toBe(

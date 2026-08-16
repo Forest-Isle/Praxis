@@ -1,5 +1,6 @@
 import { createContext, useContext, type ReactNode } from 'react'
 
+import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
 import type { TuiCustomTheme } from './custom-themes.js'
 
 export const TUI_THEMES = [
@@ -45,6 +46,7 @@ export interface TuiPalette {
   warning: string
   muted: string
   selectionText: string
+  sessionColors: Readonly<Record<AgentColorName, string>>
   syntaxTheme: 'Monokai Extended' | 'GitHub' | 'ansi'
   syntax: TuiSyntaxPalette
 }
@@ -96,6 +98,64 @@ const LIGHT_SYNTAX: TuiSyntaxPalette = {
   addedBackground: '#d7ffd7',
   addedHighlight: '#afffaf',
 }
+
+const NORMAL_SESSION_COLORS: Readonly<Record<AgentColorName, string>> = {
+  red: '#dc2626',
+  blue: '#2563eb',
+  green: '#16a34a',
+  yellow: '#ca8a04',
+  purple: '#9333ea',
+  orange: '#ea580c',
+  pink: '#db2777',
+  cyan: '#0891b2',
+}
+
+const LIGHT_ANSI_SESSION_COLORS: Readonly<Record<AgentColorName, string>> = {
+  red: 'red',
+  blue: 'blue',
+  green: 'green',
+  yellow: 'yellow',
+  purple: 'magenta',
+  orange: 'redBright',
+  pink: 'magentaBright',
+  cyan: 'cyan',
+}
+
+const DARK_ANSI_SESSION_COLORS: Readonly<Record<AgentColorName, string>> = {
+  red: 'redBright',
+  blue: 'blueBright',
+  green: 'greenBright',
+  yellow: 'yellowBright',
+  purple: 'magentaBright',
+  orange: 'redBright',
+  pink: 'magentaBright',
+  cyan: 'cyanBright',
+}
+
+const LIGHT_DALTONIZED_SESSION_COLORS: Readonly<
+  Record<AgentColorName, string>
+> = {
+  red: '#cc0000',
+  blue: '#0066cc',
+  green: '#00cc00',
+  yellow: '#ffcc00',
+  purple: '#800080',
+  orange: '#ff8000',
+  pink: '#ff66b2',
+  cyan: '#00b2b2',
+}
+
+const DARK_DALTONIZED_SESSION_COLORS: Readonly<Record<AgentColorName, string>> =
+  {
+    red: '#ff6666',
+    blue: '#66b2ff',
+    green: '#66ff66',
+    yellow: '#ffff66',
+    purple: '#b266ff',
+    orange: '#ffb266',
+    pink: '#ff99cc',
+    cyan: '#66cccc',
+  }
 
 function automaticDark(environment: TerminalEnvironment): boolean {
   const background = environment.COLORFGBG?.split(';').at(-1)
@@ -271,11 +331,30 @@ export function tuiPalette(
       : syntaxBase
   const autoColor = (color: string) =>
     profile === 'auto' ? adaptAutoColor(color) : color
+  const sessionColors = ansiOnly
+    ? dark
+      ? DARK_ANSI_SESSION_COLORS
+      : LIGHT_ANSI_SESSION_COLORS
+    : daltonized
+      ? dark
+        ? DARK_DALTONIZED_SESSION_COLORS
+        : LIGHT_DALTONIZED_SESSION_COLORS
+      : {
+          red: autoColor(NORMAL_SESSION_COLORS.red),
+          blue: autoColor(NORMAL_SESSION_COLORS.blue),
+          green: autoColor(NORMAL_SESSION_COLORS.green),
+          yellow: autoColor(NORMAL_SESSION_COLORS.yellow),
+          purple: autoColor(NORMAL_SESSION_COLORS.purple),
+          orange: autoColor(NORMAL_SESSION_COLORS.orange),
+          pink: autoColor(NORMAL_SESSION_COLORS.pink),
+          cyan: autoColor(NORMAL_SESSION_COLORS.cyan),
+        }
   const palette: TuiPalette = {
     profile,
     dark,
     ansiOnly,
     syntaxHighlightingDisabled,
+    sessionColors,
     brand: ansiOnly ? 'redBright' : autoColor('#D97757'),
     accent: ansiOnly
       ? 'magentaBright'

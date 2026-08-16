@@ -1130,6 +1130,398 @@ describe('ClaudeSessionService', () => {
     })
   })
 
+  it('records a native /color command before any provider turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-color-fresh-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+    })
+
+    const sessionId = await service.recordColorUsage(
+      undefined,
+      { kind: 'color', color: 'purple' },
+      '/color purple',
+      'bypassPermissions',
+    )
+    const transcript = (
+      await readFile(
+        resolveClaudePaths({ configDir: configRoot, cwd: root, sessionId })
+          .sessionFile,
+        'utf8',
+      )
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+
+    expect(transcript.slice(0, 3)).toEqual([
+      { type: 'agent-color', agentColor: 'purple', sessionId },
+      { type: 'mode', mode: 'normal', sessionId },
+      {
+        type: 'permission-mode',
+        permissionMode: 'bypassPermissions',
+        sessionId,
+      },
+    ])
+    const command = transcript.slice(3)
+    expect(command.map((entry) => entry.type)).toEqual(['system', 'system'])
+    expect(command[0]).toMatchObject({
+      subtype: 'local_command',
+      content:
+        '<command-name>/color</command-name>\n            <command-message>color</command-message>\n            <command-args>purple</command-args>',
+    })
+    expect(command[1]).toMatchObject({
+      subtype: 'local_command',
+      content:
+        '<local-command-stdout>Session color set to: purple</local-command-stdout>',
+      parentUuid: command[0]?.uuid,
+    })
+    await expect(
+      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
+    ).resolves.toContain('"display":"/color purple"')
+    await expect(service.readEffectiveAgentColor(sessionId)).resolves.toBe(
+      'purple',
+    )
+  })
+
+  it('appends agent-color before the local command pair of an existing session', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const run = await service.run('start here')
+
+    await service.recordColorUsage(
+      run.sessionId,
+      { kind: 'color', color: 'cyan' },
+      '/color cyan',
+    )
+    await service.recordColorUsage(
+      run.sessionId,
+      { kind: 'color', color: 'yellow' },
+      '/color yellow',
+    )
+    await service.recordColorUsage(
+      run.sessionId,
+      { kind: 'reset' },
+      '/color reset',
+    )
+
+    const transcript = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: run.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const colorEntries = transcript.filter(
+      (entry) => entry.type === 'agent-color',
+    )
+    expect(colorEntries).toEqual([
+      { type: 'agent-color', agentColor: 'cyan', sessionId: run.sessionId },
+      { type: 'agent-color', agentColor: 'yellow', sessionId: run.sessionId },
+      { type: 'agent-color', agentColor: 'default', sessionId: run.sessionId },
+    ])
+    const resetOutput = transcript.find(
+      (entry) =>
+        entry.type === 'system' &&
+        String(entry.content).includes('Session color reset to default'),
+    )
+    expect(resetOutput).toBeDefined()
+    await expect(service.readEffectiveAgentColor(run.sessionId)).resolves.toBe(
+      undefined,
+    )
+  })
+
+  it('records invalid colors without writing an agent-color entry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-color-invalid-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+    })
+
+    const sessionId = await service.recordColorUsage(
+      undefined,
+      { kind: 'invalid', input: 'bogus' },
+      '/color bogus',
+    )
+    const transcript = (
+      await readFile(
+        resolveClaudePaths({ configDir: configRoot, cwd: root, sessionId })
+          .sessionFile,
+        'utf8',
+      )
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(transcript.some((entry) => entry.type === 'agent-color')).toBe(false)
+    expect(transcript.at(-1)).toMatchObject({
+      subtype: 'local_command',
+      content:
+        '<local-command-stdout>Invalid color "bogus". Available colors: red, blue, green, yellow, purple, orange, pink, cyan, default</local-command-stdout>',
+    })
+    await expect(service.readEffectiveAgentColor(sessionId)).resolves.toBe(
+      undefined,
+    )
+    await expect(
+      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
+    ).resolves.toContain('"display":"/color bogus"')
+  })
+
+  it('reads the effective agent color from a session transcript', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const run = await service.run('start here')
+    await expect(service.readEffectiveAgentColor(run.sessionId)).resolves.toBe(
+      undefined,
+    )
+    await service.recordColorUsage(
+      run.sessionId,
+      { kind: 'color', color: 'orange' },
+      '/color orange',
+    )
+    await expect(service.readEffectiveAgentColor(run.sessionId)).resolves.toBe(
+      'orange',
+    )
+    await service.recordColorUsage(
+      run.sessionId,
+      { kind: 'reset' },
+      '/color reset',
+    )
+    await expect(service.readEffectiveAgentColor(run.sessionId)).resolves.toBe(
+      undefined,
+    )
+    await expect(
+      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
+    ).resolves.toContain('"display":"/color orange"')
+    await expect(
+      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
+    ).resolves.toContain('"display":"/color reset"')
+    void cwd
+  })
+
+  it('creates a fresh local session at an explicit headless session id', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-color-explicit-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+    })
+    const sessionId = '12121212-1212-4212-8212-121212121212'
+
+    const active = await service.recordColorUsage(
+      sessionId,
+      { kind: 'color', color: 'purple' },
+      '/color purple',
+      'bypassPermissions',
+      { createSession: true },
+    )
+    expect(active).toBe(sessionId)
+    const transcript = (
+      await readFile(
+        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+          .sessionFile,
+        'utf8',
+      )
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(transcript.slice(0, 3)).toEqual([
+      { type: 'agent-color', agentColor: 'purple', sessionId },
+      { type: 'mode', mode: 'normal', sessionId },
+      {
+        type: 'permission-mode',
+        permissionMode: 'bypassPermissions',
+        sessionId,
+      },
+    ])
+    await expect(
+      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
+    ).resolves.toContain('"display":"/color purple"')
+
+    await service.recordColorUsage(
+      active,
+      { kind: 'color', color: 'cyan' },
+      '/color cyan',
+    )
+    const afterSecond = (
+      await readFile(
+        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+          .sessionFile,
+        'utf8',
+      )
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(afterSecond.filter((entry) => entry.type === 'agent-color')).toEqual(
+      [
+        { type: 'agent-color', agentColor: 'purple', sessionId },
+        { type: 'agent-color', agentColor: 'cyan', sessionId },
+      ],
+    )
+  })
+
+  it('creates an explicit local session for an invalid color without an agent-color entry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-color-explicit-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+    })
+    const sessionId = '13131313-1313-4313-8313-131313131313'
+
+    await expect(
+      service.recordColorUsage(
+        sessionId,
+        { kind: 'invalid', input: 'bogus' },
+        '/color bogus',
+        'bypassPermissions',
+        { createSession: true },
+      ),
+    ).resolves.toBe(sessionId)
+    const transcript = (
+      await readFile(
+        resolveClaudePaths({ configDir: configRoot, cwd: root, sessionId })
+          .sessionFile,
+        'utf8',
+      )
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(transcript.some((entry) => entry.type === 'agent-color')).toBe(false)
+    expect(transcript.slice(0, 2)).toEqual([
+      { type: 'mode', mode: 'normal', sessionId },
+      {
+        type: 'permission-mode',
+        permissionMode: 'bypassPermissions',
+        sessionId,
+      },
+    ])
+  })
+
+  it('rejects appending to a missing session without createSession', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-color-explicit-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+    })
+    const missingId = '14141414-1414-4414-8414-141414141414'
+
+    await expect(
+      service.recordColorUsage(
+        missingId,
+        { kind: 'color', color: 'red' },
+        '/color red',
+      ),
+    ).rejects.toThrow(`Claude session not found: ${missingId}`)
+    await expect(
+      readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd: root,
+          sessionId: missingId,
+        }).sessionFile,
+        'utf8',
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects creating an explicit local session that is already in use', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-color-explicit-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+    })
+    const sessionId = '15151515-1515-4515-8515-151515151515'
+    await service.recordColorUsage(
+      sessionId,
+      { kind: 'color', color: 'red' },
+      '/color red',
+      'bypassPermissions',
+      { createSession: true },
+    )
+
+    await expect(
+      service.recordColorUsage(
+        sessionId,
+        { kind: 'color', color: 'blue' },
+        '/color blue',
+        'bypassPermissions',
+        { createSession: true },
+      ),
+    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
+  })
+
+  it('keeps local color sessions entirely in memory without persistence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-color-ephemeral-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+      sessionPersistence: false,
+    })
+
+    const sessionId = await service.recordColorUsage(
+      undefined,
+      { kind: 'color', color: 'cyan' },
+      '/color cyan',
+      'bypassPermissions',
+      { createSession: true },
+    )
+    expect(sessionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    )
+    await expect(
+      service.recordColorUsage(sessionId, { kind: 'reset' }, '/color reset'),
+    ).resolves.toBe(sessionId)
+    await expect(service.readEffectiveAgentColor(sessionId)).rejects.toThrow(
+      'Session persistence is disabled',
+    )
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    await expect(readFile(paths.sessionFile, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(
+      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readdir(paths.projectRoot)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
   it('records native empty /background usage without a provider turn', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-background-usage-'))
     roots.push(root)

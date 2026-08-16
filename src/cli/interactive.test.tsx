@@ -8,6 +8,10 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  AGENT_COLORS,
+  type AgentColorSelection,
+} from '../compatibility/claude/agent-color.js'
 import type {
   ModelToolCall,
   PermissionApproval,
@@ -19,6 +23,7 @@ import {
   type InteractiveServiceFactory,
   runInteractive,
 } from './interactive.js'
+import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
 import { projectTuiHooks } from './tui/hook-settings.js'
 import type { TuiCustomTheme } from './tui/custom-themes.js'
 import type { TuiThemeSettings } from './tui/theme.js'
@@ -1782,6 +1787,251 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Usage: /btw <your question>')
     expect(recordBtwUsage).toHaveBeenCalledWith('active-session', 'default')
     expect(answerSideQuestion).not.toHaveBeenCalled()
+  })
+
+  it('dispatches /color with a named color without a provider call', async () => {
+    const recordColorUsage = vi.fn(async () => 'color-session')
+    const recordBackgroundUsage = vi.fn(async () => 'background-session')
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            expect(options.requireProvider).toBe(false)
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              recordColorUsage,
+              recordBackgroundUsage,
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+      />,
+    )
+
+    app.stdin.write('/color purple')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('/color purple')
+    expect(app.lastFrame()).toContain('Session color set to: purple')
+    expect(recordColorUsage).toHaveBeenCalledWith(
+      'active-session',
+      { kind: 'color', color: 'purple' },
+      '/color purple',
+      'default',
+    )
+
+    app.stdin.write('/background')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(recordBackgroundUsage).toHaveBeenCalledWith(
+      'color-session',
+      'default',
+    )
+  })
+
+  it('assigns a random session color for a bare /color command', async () => {
+    const recordColorUsage = vi.fn<
+      (
+        sessionId: string | undefined,
+        selection: AgentColorSelection,
+        display: string,
+        permissionMode: ClaudePermissionMode,
+      ) => Promise<string>
+    >(async () => 'color-session')
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              recordColorUsage,
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('/color')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    const selection = recordColorUsage.mock.calls[0]?.[1]
+    if (selection?.kind !== 'color') {
+      throw new Error('expected a random color selection')
+    }
+    expect(AGENT_COLORS).toContain(selection.color)
+    expect(app.lastFrame()).toContain(
+      `Session color set to: ${selection.color}`,
+    )
+    expect(recordColorUsage).toHaveBeenCalledWith(
+      undefined,
+      selection,
+      '/color',
+      'default',
+    )
+  })
+
+  it('reports invalid colors with the normalized input and no color change', async () => {
+    const recordColorUsage = vi.fn(async () => 'color-session')
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              recordColorUsage,
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+      />,
+    )
+
+    app.stdin.write('/color Bogus')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('/color Bogus')
+    expect(app.lastFrame()).toContain(
+      'Invalid color "bogus". Available colors: red, blue, green, yellow, purple, orange, pink, cyan',
+    )
+    expect(app.lastFrame()).toContain('default')
+    expect(recordColorUsage).toHaveBeenCalledWith(
+      'active-session',
+      { kind: 'invalid', input: 'bogus' },
+      '/color Bogus',
+      'default',
+    )
+  })
+
+  it('resets the session color from a reset alias', async () => {
+    const recordColorUsage = vi.fn(async () => 'color-session')
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              recordColorUsage,
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+      />,
+    )
+
+    app.stdin.write('/color reset')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('Session color reset to default')
+    expect(recordColorUsage).toHaveBeenCalledWith(
+      'active-session',
+      { kind: 'reset' },
+      '/color reset',
+      'default',
+    )
+  })
+
+  it('loads the effective color when opening a session from the picker', async () => {
+    const agentColor = vi.fn(async () => 'orange' as const)
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              agentColor,
+            }
+          },
+        }}
+        initialSessions={[
+          {
+            sessionId: 'pick-session',
+            lastPrompt: 'release work',
+            updatedAt: '2026-08-11T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+      />,
+    )
+    await flush()
+    app.stdin.write('/resume')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('pick')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    expect(agentColor).toHaveBeenCalledWith('pick-session')
   })
 
   it('records native /background rejection for a session without a model turn', async () => {
@@ -6789,6 +7039,71 @@ describe('runInteractive', () => {
       ).resolves.toBe(130)
       expect(transcriptSession).toBe('session-1')
       expect(closed).toBe(1)
+    } finally {
+      if (consoleConstructor) {
+        Object.defineProperty(console, 'Console', consoleConstructor)
+      } else {
+        Reflect.deleteProperty(console, 'Console')
+      }
+    }
+  })
+
+  it('loads the effective agent color for a resumed session', async () => {
+    let colorSession = ''
+    const controller = new AbortController()
+    controller.abort()
+    const consoleConstructor = Object.getOwnPropertyDescriptor(
+      console,
+      'Console',
+    )
+    Object.defineProperty(console, 'Console', {
+      configurable: true,
+      value: NodeConsole,
+    })
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return [
+              {
+                sessionId: 'session-1',
+                lastPrompt: 'inspect',
+                updatedAt: '2026-08-11T00:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+            ]
+          },
+          async transcript() {
+            return []
+          },
+          async agentColor(sessionId: string) {
+            colorSession = sessionId
+            return 'cyan'
+          },
+          async close() {},
+        }
+      },
+    }
+
+    try {
+      await expect(
+        runInteractive({
+          factory,
+          signal: controller.signal,
+          resume: { sessionId: 'SESSION-1' },
+        }),
+      ).resolves.toBe(130)
+      expect(colorSession).toBe('session-1')
     } finally {
       if (consoleConstructor) {
         Object.defineProperty(console, 'Console', consoleConstructor)

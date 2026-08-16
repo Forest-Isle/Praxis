@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import type { ModelProvider, ModelToolCall } from './core/runtime.js'
+import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
+import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
 import {
   createBackgroundWorkerRuntime,
   parseContextEnvironment,
@@ -106,6 +108,50 @@ function dependencies(
   }
 }
 
+interface ColorUsageCall {
+  sessionId: string | undefined
+  selection: AgentColorSelection
+  display: string
+  permissionMode: ClaudePermissionMode
+  options: { createSession?: boolean } | undefined
+}
+
+function colorDependencies() {
+  const calls: ColorUsageCall[] = []
+  const serviceCreations: Array<{ requireProvider: boolean }> = []
+  const base = dependencies()
+  const colorTestDependencies: CliDependencies = {
+    async createService(options) {
+      serviceCreations.push({ requireProvider: options.requireProvider })
+      const service = await base.createService(options)
+      return {
+        ...service,
+        async recordColorUsage(
+          sessionId: string | undefined,
+          selection: AgentColorSelection,
+          display: string,
+          permissionMode: ClaudePermissionMode,
+          options?: { createSession?: boolean },
+        ) {
+          calls.push({
+            sessionId,
+            selection,
+            display,
+            permissionMode,
+            options,
+          })
+          return sessionId ?? '33333333-3333-4333-8333-333333333333'
+        },
+      }
+    },
+  }
+  return {
+    dependencies: colorTestDependencies,
+    calls,
+    serviceCreations,
+  }
+}
+
 describe('Praxis CLI', () => {
   it('runs release notes provider-free in text, JSON, and stream JSON modes', async () => {
     let serviceCreations = 0
@@ -169,6 +215,351 @@ describe('Praxis CLI', () => {
       }),
     ).resolves.toBe(0)
     expect(disabled.stdout.join('')).toBe('answer:/release-notes\n')
+  })
+
+  it('runs /color provider-free in text mode with a local session', async () => {
+    const {
+      dependencies: colorDeps,
+      calls,
+      serviceCreations,
+    } = colorDependencies()
+
+    const text = captureIO()
+    await expect(
+      run(['-p', '/color purple'], text.io, colorDeps),
+    ).resolves.toBe(0)
+    expect(text.stdout.join('')).toBe('Session color set to: purple\n')
+    expect(text.stderr).toEqual([])
+    expect(serviceCreations).toEqual([{ requireProvider: false }])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      sessionId: expect.any(String),
+      selection: { kind: 'color', color: 'purple' },
+      display: '/color purple',
+      permissionMode: 'default',
+      options: { createSession: true },
+    })
+
+    const trailing = captureIO()
+    await expect(run(['-p', '/color '], trailing.io, colorDeps)).resolves.toBe(
+      0,
+    )
+    expect(trailing.stdout.join('')).toMatch(
+      /^Session color set to: (?:red|blue|green|yellow|purple|orange|pink|cyan)\n$/,
+    )
+    expect(calls.at(-1)).toMatchObject({
+      display: '/color',
+      selection: { kind: 'color' },
+      options: { createSession: true },
+    })
+  })
+
+  it('runs /color provider-free in JSON mode with a zero-turn envelope', async () => {
+    const {
+      dependencies: colorDeps,
+      calls,
+      serviceCreations,
+    } = colorDependencies()
+
+    const json = captureIO()
+    await expect(
+      run(
+        ['-p', '--output-format', 'json', '/color orange'],
+        json.io,
+        colorDeps,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(json.stdout.join(''))).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_api_ms: 0,
+      num_turns: 0,
+      result: 'Session color set to: orange',
+      stop_reason: null,
+      total_cost_usd: 0,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {},
+      permission_denials: [],
+    })
+    expect(serviceCreations).toEqual([{ requireProvider: false }])
+    expect(calls).toHaveLength(1)
+  })
+
+  it('runs /color provider-free in stream-json mode across two stdin turns', async () => {
+    const {
+      dependencies: colorDeps,
+      calls,
+      serviceCreations,
+    } = colorDependencies()
+    const capture = captureStreamIO(
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: '/color red' },
+      }) +
+        '\n' +
+        JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: '/color blue' },
+        }) +
+        '\n',
+    )
+    await expect(
+      run(
+        [
+          'run',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+        ],
+        capture.io,
+        colorDeps,
+      ),
+    ).resolves.toBe(0)
+    expect(serviceCreations).toEqual([{ requireProvider: false }])
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records.map(({ type }) => type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+      'system',
+      'assistant',
+      'result',
+    ])
+    expect(records[0]).toMatchObject({
+      type: 'system',
+      subtype: 'init',
+      session_id: records[2].session_id,
+    })
+    expect(records[1]).toMatchObject({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        model: '<synthetic>',
+        content: [{ type: 'text', text: 'Session color set to: red' }],
+        stop_reason: 'stop_sequence',
+        stop_sequence: '',
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      parent_tool_use_id: null,
+      session_id: records[2].session_id,
+    })
+    expect(records[2]).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      num_turns: 0,
+      duration_api_ms: 0,
+      total_cost_usd: 0,
+      result: 'Session color set to: red',
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {},
+      stop_reason: null,
+    })
+    expect(records[3]).toMatchObject({
+      type: 'system',
+      subtype: 'init',
+      session_id: records[2].session_id,
+    })
+    expect(records[4]).toMatchObject({
+      type: 'assistant',
+      message: { content: [{ text: 'Session color set to: blue' }] },
+      session_id: records[2].session_id,
+    })
+    expect(records[5]).toMatchObject({
+      type: 'result',
+      num_turns: 0,
+      result: 'Session color set to: blue',
+      session_id: records[2].session_id,
+    })
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).toMatchObject({
+      display: '/color red',
+      options: { createSession: true },
+    })
+    expect(calls[1]).toMatchObject({
+      sessionId: records[2].session_id,
+      display: '/color blue',
+      options: undefined,
+    })
+  })
+
+  it('creates a fresh local session at the explicit --session-id', async () => {
+    const {
+      dependencies: colorDeps,
+      calls,
+      serviceCreations,
+    } = colorDependencies()
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const json = captureIO()
+    await expect(
+      run(
+        [
+          '-p',
+          '--session-id',
+          sessionId,
+          '--output-format',
+          'json',
+          '/color red',
+        ],
+        json.io,
+        colorDeps,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(json.stdout.join('')).session_id).toBe(sessionId)
+    expect(serviceCreations).toEqual([{ requireProvider: false }])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      sessionId,
+      display: '/color red',
+      options: { createSession: true },
+    })
+  })
+
+  it('routes /color through resume, continue, and fork session selectors', async () => {
+    const { dependencies: colorDeps, calls } = colorDependencies()
+    const resumed = captureIO()
+    await expect(
+      run(
+        [
+          '-p',
+          '--resume',
+          '11111111-1111-4111-8111-111111111111',
+          '/color red',
+        ],
+        resumed.io,
+        colorDeps,
+      ),
+    ).resolves.toBe(0)
+    expect(resumed.stdout.join('')).toBe('Session color set to: red\n')
+    expect(calls.at(-1)).toMatchObject({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      options: undefined,
+    })
+
+    const continued = captureIO()
+    await expect(
+      run(['-p', '--continue', '/color green'], continued.io, colorDeps),
+    ).resolves.toBe(0)
+    expect(continued.stdout.join('')).toBe('Session color set to: green\n')
+    expect(calls.at(-1)).toMatchObject({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      options: undefined,
+    })
+
+    const forked = captureIO()
+    await expect(
+      run(
+        ['-p', '--continue', '--fork-session', '/color cyan'],
+        forked.io,
+        colorDeps,
+      ),
+    ).resolves.toBe(0)
+    expect(forked.stdout.join('')).toBe('Session color set to: cyan\n')
+    expect(calls.at(-1)).toMatchObject({
+      sessionId: '22222222-2222-4222-8222-222222222222',
+      options: undefined,
+    })
+  })
+
+  it('passes --no-session-persistence through to the service', async () => {
+    const { dependencies: colorDeps } = colorDependencies()
+    let received: unknown
+    const passthrough: CliDependencies = {
+      async createService(options) {
+        received = options.controls
+        const base = await colorDeps.createService(options)
+        return base
+      },
+    }
+    const capture = captureIO()
+    await expect(
+      run(
+        ['-p', '--no-session-persistence', '/color purple'],
+        capture.io,
+        passthrough,
+      ),
+    ).resolves.toBe(0)
+    expect(received).toMatchObject({ sessionPersistence: false })
+    expect(capture.stdout.join('')).toBe('Session color set to: purple\n')
+  })
+
+  it('treats only bare /color as a local command and honors --disable-slash-commands', async () => {
+    const {
+      dependencies: colorDeps,
+      calls,
+      serviceCreations,
+    } = colorDependencies()
+
+    const lookalike = captureIO()
+    await expect(
+      run(['-p', '/colorblue'], lookalike.io, colorDeps),
+    ).resolves.toBe(0)
+    expect(lookalike.stdout.join('')).toBe('answer:/colorblue\n')
+    expect(calls).toHaveLength(0)
+    expect(serviceCreations).toEqual([{ requireProvider: true }])
+
+    const disabled = captureIO()
+    await expect(
+      run(
+        ['-p', '--disable-slash-commands', '/color purple'],
+        disabled.io,
+        colorDeps,
+      ),
+    ).resolves.toBe(0)
+    expect(disabled.stdout.join('')).toBe('answer:/color purple\n')
+    expect(calls).toHaveLength(0)
+    expect(serviceCreations.at(-1)).toEqual({ requireProvider: true })
+  })
+
+  it('resumes the local session on a later non-local stream-json turn', async () => {
+    const { dependencies: colorDeps, calls } = colorDependencies()
+    const capture = captureStreamIO(
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: '/color yellow' },
+      }) +
+        '\n' +
+        JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: 'what is 2+2?' },
+        }) +
+        '\n',
+    )
+    await expect(
+      run(
+        [
+          'run',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+        ],
+        capture.io,
+        colorDeps,
+      ),
+    ).resolves.toBe(0)
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records.map(({ type }) => type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+      'system',
+      'assistant',
+      'result',
+    ])
+    const localSessionId = records[2].session_id
+    expect(records[5]).toMatchObject({
+      result: 'resumed:what is 2+2?',
+      session_id: localSessionId,
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      display: '/color yellow',
+      options: { createSession: true },
+    })
   })
 
   it('runs init-only lifecycle without constructing a provider turn', async () => {
@@ -2339,11 +2730,25 @@ describe('Praxis CLI', () => {
 
   it('accepts empty stream-json input as a no-op', async () => {
     const capture = captureStreamIO('')
+    const base = dependencies()
+    const lifecycleCalls: string[] = []
+    const emptyInputDependencies: CliDependencies = {
+      async createService(options) {
+        expect(options.requireProvider).toBe(false)
+        return {
+          ...(await base.createService(options)),
+          async lifecycle(trigger) {
+            lifecycleCalls.push(trigger)
+          },
+        }
+      },
+    }
 
     await expect(
       run(
         [
           'run',
+          '--init',
           '--input-format',
           'stream-json',
           '--output-format',
@@ -2351,9 +2756,10 @@ describe('Praxis CLI', () => {
           '--verbose',
         ],
         capture.io,
-        dependencies(),
+        emptyInputDependencies,
       ),
     ).resolves.toBe(0)
+    expect(lifecycleCalls).toEqual(['init'])
     expect(capture.stdout).toEqual([])
     expect(capture.stderr).toEqual([])
   })
