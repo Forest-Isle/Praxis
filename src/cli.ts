@@ -121,6 +121,7 @@ import {
   readMcpClientSecret,
 } from './mcp/claude-mcp-oauth.js'
 import { servePraxisMcpStdio } from './mcp/praxis-mcp-server.js'
+import { VERIFIED_CLAUDE_SCHEMA_VERSION } from './compatibility/claude/schema.js'
 import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import {
   redactSensitiveText,
@@ -1166,7 +1167,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
 }) => {
   const runtimeEnvironment = requestedProviderEnvironment ?? process.env
   const sandboxEnvironment = { ...runtimeEnvironment, ...environment }
-  const claudeVersion = await detectInstalledClaudeVersion()
+  const claudeVersion = VERIFIED_CLAUDE_SCHEMA_VERSION
   const cwd = requestedCwd ?? process.cwd()
   const workspace = new WorkspaceContext(cwd)
   const configuredRoot = runtimeEnvironment.CLAUDE_CONFIG_DIR || undefined
@@ -5667,12 +5668,17 @@ function isDirectExecution(moduleUrl: string, argvPath: string | undefined) {
 if (isDirectExecution(import.meta.url, process.argv[1])) {
   const controller = new AbortController()
   const cancel = () => controller.abort()
-  process.once('SIGINT', cancel)
-  process.exitCode = await run(
-    process.argv.slice(2),
-    consoleIO,
-    defaultDependencies,
-    controller.signal,
-  )
-  process.removeListener('SIGINT', cancel)
+  process.on('SIGINT', cancel)
+  process.on('SIGTERM', cancel)
+  try {
+    process.exitCode = await run(
+      process.argv.slice(2),
+      consoleIO,
+      defaultDependencies,
+      controller.signal,
+    )
+  } finally {
+    process.removeListener('SIGINT', cancel)
+    process.removeListener('SIGTERM', cancel)
+  }
 }
