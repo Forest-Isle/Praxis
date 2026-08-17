@@ -469,6 +469,13 @@ substitutes an ambient binary. The gate proves one isolated JSONL session is
 alternately resumed by Claude `2.1.208`, Praxis, the cross-version Claude, and
 Praxis again with a single session ID, four ordered provider requests, and the
 producer-version sequence `[2.1.208, 2.1.208, <cross version>, 2.1.208]`.
+`npm run test:cross-version-fork-compat`, `test:cross-version-sidechain-compat`,
+`test:cross-version-compaction-compat`, and
+`test:cross-version-resume-at-compat` are complementary maintainer gates that
+respectively prove provider-free native fork, foreground sidechain, compaction
+active-context projection, and `--resume-session-at` active-branch projection
+across mixed versions. Each uses isolated local SSE fixtures and does not fall
+back to an ambient binary.
 `npm run test:background-agent-compat` captures Claude's current Agent,
 SendMessage, TaskOutput, and TaskStop schemas, then proves async launch, output
 polling, same-ID continuation, completion notification, sidechain persistence,
