@@ -199,12 +199,7 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     reason:
       'Claude subscription rate-limit purchasing is outside the authentication boundary.',
   },
-  {
-    name: 'usage',
-    disposition: 'excluded',
-    visibility: 'conditional',
-    reason: 'The source command is the Claude subscription plan-usage panel.',
-  },
+  { name: 'usage', disposition: 'included', visibility: 'conditional' },
   {
     name: 'insights',
     disposition: 'deferred',
