@@ -170,6 +170,42 @@ describe('WorkflowManager', () => {
     await manager.close()
   })
 
+  it('returns child API durations once from workflow notifications', async () => {
+    const { manager, script, parsed } = await fixture()
+    await manager.launch({
+      sessionId,
+      promptId: 'prompt-duration',
+      script,
+      parsed,
+      args: { prompt: 'duration' },
+      defaultModel: 'fixture-model',
+      runAgent: async () => ({
+        result: 'agent-result',
+        usage: { inputTokens: 3, outputTokens: 2 },
+        toolUseCount: 1,
+        durationMs: 4,
+        durationApiMs: 12,
+        durationApiWithoutRetriesMs: 0,
+        resolvedModel: 'fixture-model',
+      }),
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+
+    await expect(manager.notifications(true)).resolves.toMatchObject({
+      messages: [expect.stringContaining('<task-notification>')],
+      usage: { inputTokens: 3, outputTokens: 2 },
+      durationApiMs: 12,
+      durationApiWithoutRetriesMs: 0,
+    })
+    await expect(manager.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    await manager.close()
+  })
+
   it('replays foreign journal keys by deterministic ordered semantic replay', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-manager-'))
     roots.push(root)

@@ -79,6 +79,49 @@ describe('BackgroundAgentManager', () => {
     })
   })
 
+  it('returns API durations once and preserves an explicit zero retry-free duration', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async () => ({
+        ...completed('DURATION_RESULT'),
+        durationApiMs: 12,
+        durationApiWithoutRetriesMs: 0,
+      })),
+    )
+
+    const first = await manager.notifications({ waitForRunning: true })
+    expect(first).toMatchObject({
+      messages: [expect.stringContaining('<result>DURATION_RESULT</result>')],
+      usage: { inputTokens: 2, outputTokens: 1 },
+      durationApiMs: 12,
+      durationApiWithoutRetriesMs: 0,
+    })
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+  })
+
+  it('rejects invalid API durations without consuming their notification', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async () => ({
+        ...completed('INVALID_DURATION'),
+        durationApiMs: -1,
+      })),
+    )
+    await manager.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('durationApiMs must be a finite nonnegative number')
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('durationApiMs must be a finite nonnegative number')
+  })
+
   it('stops only a running task and propagates its abort signal', async () => {
     let aborted = false
     const manager = new BackgroundAgentManager()
