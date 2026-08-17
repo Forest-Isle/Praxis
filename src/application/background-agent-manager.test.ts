@@ -79,6 +79,49 @@ describe('BackgroundAgentManager', () => {
     })
   })
 
+  it('returns API durations once and preserves an explicit zero retry-free duration', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async () => ({
+        ...completed('DURATION_RESULT'),
+        durationApiMs: 12,
+        durationApiWithoutRetriesMs: 0,
+      })),
+    )
+
+    const first = await manager.notifications({ waitForRunning: true })
+    expect(first).toMatchObject({
+      messages: [expect.stringContaining('<result>DURATION_RESULT</result>')],
+      usage: { inputTokens: 2, outputTokens: 1 },
+      durationApiMs: 12,
+      durationApiWithoutRetriesMs: 0,
+    })
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+  })
+
+  it('rejects invalid API durations without consuming their notification', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async () => ({
+        ...completed('INVALID_DURATION'),
+        durationApiMs: -1,
+      })),
+    )
+    await manager.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('durationApiMs must be a finite nonnegative number')
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('durationApiMs must be a finite nonnegative number')
+  })
+
   it('stops only a running task and propagates its abort signal', async () => {
     let aborted = false
     const manager = new BackgroundAgentManager()
@@ -279,6 +322,340 @@ describe('BackgroundAgentManager', () => {
       messages: [],
       usage: { inputTokens: 0, outputTokens: 0 },
     })
+  })
+
+  it('aggregates raw-model usage across consumed notifications once', async () => {
+    const firstResult: BackgroundAgentRunResult = {
+      text: 'FIRST',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadInputTokens: 10,
+        cacheCreationInputTokens: 4,
+        webSearchRequests: 3,
+      },
+      modelUsage: {
+        'model-a': {
+          inputTokens: 30,
+          outputTokens: 10,
+          cacheReadInputTokens: 5,
+          webSearchRequests: 2,
+        },
+        'model-b': { inputTokens: 40, outputTokens: 20 },
+      },
+      toolUseCount: 1,
+      durationMs: 5,
+    }
+    const secondResult: BackgroundAgentRunResult = {
+      text: 'SECOND',
+      usage: {
+        inputTokens: 60,
+        outputTokens: 30,
+        cacheReadInputTokens: 2,
+        cacheCreationInputTokens: 7,
+        webSearchRequests: 2,
+      },
+      modelUsage: {
+        'model-b': {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheCreationInputTokens: 8,
+        },
+        'model-c': {
+          inputTokens: 20,
+          outputTokens: 15,
+          cacheReadInputTokens: 3,
+          webSearchRequests: 1,
+        },
+      },
+      toolUseCount: 1,
+      durationMs: 5,
+    }
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec((_message, _signal, continuation) =>
+        Promise.resolve(continuation ? secondResult : firstResult),
+      ),
+    )
+    await manager.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    expect(
+      manager.send(
+        'a0123456789abcdef',
+        'continue work',
+        'continue test',
+        'call_message',
+      ),
+    ).toContain('"success":true')
+    await manager.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+
+    // One call consumes both notifications, so overlapping raw models merge.
+    const consumed = await manager.notifications({ waitForRunning: false })
+    expect(consumed.messages).toEqual([
+      expect.stringContaining('<tool-use-id>call_agent</tool-use-id>'),
+      expect.stringContaining('<tool-use-id>call_message</tool-use-id>'),
+    ])
+    // Aggregate usage stays the plain sum of each result.usage (including the
+    // cache and web-search counters) and is not re-derived from the raw-model
+    // breakdown, which keeps per-model web search counts unmerged.
+    expect(consumed.usage).toEqual({
+      inputTokens: 160,
+      outputTokens: 80,
+      cacheReadInputTokens: 12,
+      cacheCreationInputTokens: 11,
+      webSearchRequests: 5,
+    })
+    expect(consumed.modelUsage).toEqual({
+      'model-a': {
+        inputTokens: 30,
+        outputTokens: 10,
+        cacheReadInputTokens: 5,
+        webSearchRequests: 2,
+      },
+      'model-b': {
+        inputTokens: 50,
+        outputTokens: 25,
+        cacheCreationInputTokens: 8,
+      },
+      'model-c': {
+        inputTokens: 20,
+        outputTokens: 15,
+        cacheReadInputTokens: 3,
+        webSearchRequests: 1,
+      },
+    })
+    const modelUsage = consumed.modelUsage
+    if (modelUsage !== undefined) {
+      expect(Object.keys(modelUsage)).toEqual(['model-a', 'model-b', 'model-c'])
+      // Returned entries are copies; mutating them cannot alter stored results.
+      const merged = modelUsage['model-b']
+      if (merged !== undefined) {
+        merged.inputTokens = 999
+        expect(
+          manager.snapshots()[0]?.result?.modelUsage?.['model-b']?.inputTokens,
+        ).toBe(10)
+      }
+    }
+
+    const empty = await manager.notifications({ waitForRunning: false })
+    expect(empty).toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    expect('modelUsage' in empty).toBe(false)
+  })
+
+  it('fails explicitly on malformed or overflowing raw-model usage', async () => {
+    const runWithModelUsage = (
+      modelUsage: NonNullable<BackgroundAgentRunResult['modelUsage']>,
+    ) =>
+      spec(async () => ({
+        text: 'BAD',
+        usage: { inputTokens: 2, outputTokens: 1 },
+        modelUsage,
+        toolUseCount: 1,
+        durationMs: 5,
+      }))
+
+    const blank = new BackgroundAgentManager()
+    blank.launch(
+      runWithModelUsage({
+        'model-a': { inputTokens: 1, outputTokens: 1 },
+        ' ': { inputTokens: 1, outputTokens: 1 },
+      }),
+    )
+    await blank.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    await expect(
+      blank.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('blank model name')
+
+    const negative = new BackgroundAgentManager()
+    negative.launch(
+      runWithModelUsage({
+        'model-a': { inputTokens: -1, outputTokens: 1 },
+      }),
+    )
+    await negative.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    await expect(
+      negative.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('invalid inputTokens counter')
+
+    const overflow = new BackgroundAgentManager()
+    overflow.launch(
+      spec(async (_message, _signal, continuation) => ({
+        text: continuation ? 'OVERFLOW' : 'HUGE',
+        usage: { inputTokens: 2, outputTokens: 1 },
+        modelUsage: {
+          'model-a': { inputTokens: Number.MAX_SAFE_INTEGER, outputTokens: 0 },
+        },
+        toolUseCount: 1,
+        durationMs: 5,
+      })),
+    )
+    await overflow.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    expect(
+      overflow.send(
+        'a0123456789abcdef',
+        'continue',
+        'continue overflow',
+        'call_overflow',
+      ),
+    ).toContain('"success":true')
+    await overflow.output('a0123456789abcdef', { block: true, timeout: 30_000 })
+    await expect(
+      overflow.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('Model usage total overflow')
+
+    const negativeAggregate = new BackgroundAgentManager()
+    negativeAggregate.launch(
+      spec(async () => ({
+        text: 'BAD',
+        usage: { inputTokens: -1, outputTokens: 1 },
+        toolUseCount: 1,
+        durationMs: 5,
+      })),
+    )
+    await negativeAggregate.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    await expect(
+      negativeAggregate.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('invalid inputTokens counter')
+
+    const aggregateOverflow = new BackgroundAgentManager()
+    aggregateOverflow.launch(
+      spec(async (_message, _signal, continuation) => ({
+        text: continuation ? 'OVERFLOW' : 'HUGE',
+        usage: { inputTokens: Number.MAX_SAFE_INTEGER, outputTokens: 1 },
+        toolUseCount: 1,
+        durationMs: 5,
+      })),
+    )
+    await aggregateOverflow.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    expect(
+      aggregateOverflow.send(
+        'a0123456789abcdef',
+        'continue',
+        'continue overflow',
+        'call_overflow',
+      ),
+    ).toContain('"success":true')
+    await aggregateOverflow.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    await expect(
+      aggregateOverflow.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('Model usage total overflow')
+  })
+
+  it('preserves known capability metadata across merged raw-model notifications', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async (_message, _signal, continuation) => ({
+        text: continuation ? 'SECOND' : 'FIRST',
+        usage: { inputTokens: 5, outputTokens: 2 },
+        toolUseCount: 1,
+        durationMs: 5,
+        modelUsage: {
+          'metadata-model': {
+            inputTokens: 5,
+            outputTokens: 2,
+            contextWindow: 200_000,
+            maxOutputTokens: 32_000,
+          },
+        },
+      })),
+    )
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    expect(
+      manager.send(
+        'a0123456789abcdef',
+        'continue',
+        'continue',
+        'call_continue',
+      ),
+    ).toContain('"success":true')
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+
+    const consumed = await manager.notifications({ waitForRunning: false })
+    // Equal known metadata merges without conflict while counters sum.
+    expect(consumed.modelUsage).toEqual({
+      'metadata-model': {
+        inputTokens: 10,
+        outputTokens: 4,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+      },
+    })
+    // The aggregate usage stays counter-only.
+    expect(consumed.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 4,
+    })
+  })
+
+  it('rejects conflicting known metadata before any raw-model row is merged', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async (_message, _signal, continuation) => ({
+        text: continuation ? 'SECOND' : 'FIRST',
+        usage: { inputTokens: 5, outputTokens: 2 },
+        toolUseCount: 1,
+        durationMs: 5,
+        modelUsage: continuation
+          ? {
+              // A valid new model in the same batch as the conflicting row: the
+              // whole notification batch must reject before any row is visible.
+              'other-model': { inputTokens: 1, outputTokens: 1 },
+              'metadata-model': {
+                inputTokens: 5,
+                outputTokens: 2,
+                contextWindow: 100_000,
+                maxOutputTokens: 16_000,
+              },
+            }
+          : {
+              'metadata-model': {
+                inputTokens: 5,
+                outputTokens: 2,
+                contextWindow: 200_000,
+                maxOutputTokens: 32_000,
+              },
+            },
+      })),
+    )
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    expect(
+      manager.send(
+        'a0123456789abcdef',
+        'continue',
+        'continue',
+        'call_continue',
+      ),
+    ).toContain('"success":true')
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).rejects.toThrow(
+      'Model usage for "metadata-model" has conflicting contextWindow values: 200000 vs 100000',
+    )
   })
 
   it('validates IDs and bounded output waits', async () => {

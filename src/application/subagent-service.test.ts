@@ -237,6 +237,351 @@ describe('foreground Claude Agent execution', () => {
     })
   })
 
+  it('propagates child model usage and reports child line changes once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-modelusage-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let childTurn = 0
+    const childProvider: ModelProvider = {
+      model: 'child-raw-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        if (childTurn === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_write_ok',
+              name: 'Write',
+              input: { file_path: 'ok.txt', content: 'ok' },
+            },
+          }
+        } else if (childTurn === 1) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_write_err',
+              name: 'Write',
+              input: { file_path: 'err.txt', content: 'err' },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'CHILD_MODEL_DONE' }
+        }
+        childTurn += 1
+        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+      },
+    }
+    const parentProvider: ModelProvider = {
+      model: 'parent-raw-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'PARENT_UNUSED' }
+        throw new Error('Parent provider must not stream in this test')
+      },
+    }
+    const writeTools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Write',
+          description: 'Write a file.',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute(call) {
+        if (call.input.file_path === 'ok.txt') {
+          return {
+            content: 'WROTE_OK',
+            isError: false,
+            linesAdded: 3,
+            linesRemoved: 1,
+          }
+        }
+        return {
+          content: 'WROTE_ERR',
+          isError: true,
+          linesAdded: 7,
+          linesRemoved: 2,
+        }
+      },
+    }
+    const lineChanges: { linesAdded: number; linesRemoved: number }[] = []
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: parentProvider,
+      baseTools: writeTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      providerForModel: () => childProvider,
+      onLineChanges: (changes) => {
+        lineChanges.push(changes)
+      },
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_model_usage',
+        name: 'Agent',
+        input: {
+          description: 'Model usage child',
+          prompt: 'CHILD_MODEL_PROMPT',
+          subagent_type: 'general-purpose',
+          model: 'child-raw-model',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+    const agentResult = await registry.execute(call, { cwd })
+
+    expect(agentResult.usage).toEqual({ inputTokens: 6, outputTokens: 3 })
+    expect(agentResult.modelUsage).toEqual({
+      'child-raw-model': { inputTokens: 6, outputTokens: 3 },
+    })
+    expect(agentResult.linesAdded).toBeUndefined()
+    expect(agentResult.linesRemoved).toBeUndefined()
+    expect(lineChanges).toEqual([{ linesAdded: 3, linesRemoved: 1 }])
+  })
+
+  it('carries raw-model usage through workflow results and background notifications exactly once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-raw-model-carry-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const provider: ModelProvider = {
+      model: 'raw-cache-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        const source = JSON.stringify(request.messages)
+        if (source.includes('WORKFLOW_PROMPT')) {
+          yield { type: 'text-delta', delta: 'WORKFLOW_DONE' }
+          yield {
+            type: 'usage',
+            usage: {
+              inputTokens: 4,
+              outputTokens: 2,
+              cacheReadInputTokens: 9,
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'BACKGROUND_DONE' }
+          yield {
+            type: 'usage',
+            usage: {
+              inputTokens: 3,
+              outputTokens: 1,
+              cacheReadInputTokens: 6,
+            },
+          }
+        }
+      },
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const workflow = await executor.runWorkflowAgent({
+      sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      runId: 'raw-model-run',
+      agentId: 'a1234567890abcdef',
+      transcriptDirectory: join(root, 'workflow'),
+      prompt: 'WORKFLOW_PROMPT',
+    })
+    expect(workflow.modelUsage).toEqual({
+      'raw-cache-model': {
+        inputTokens: 4,
+        outputTokens: 2,
+        cacheReadInputTokens: 9,
+      },
+    })
+    expect(workflow.usage).toEqual({
+      inputTokens: 4,
+      outputTokens: 2,
+      cacheReadInputTokens: 9,
+    })
+
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_raw_background',
+          name: 'Agent',
+          input: {
+            description: 'Raw model background',
+            prompt: 'BACKGROUND_PROMPT',
+            subagent_type: 'general-purpose',
+            run_in_background: true,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+
+    const first = await executor.notifications(true)
+    expect(first).toMatchObject({
+      messages: [expect.stringContaining('BACKGROUND_DONE')],
+      usage: {
+        inputTokens: 3,
+        outputTokens: 1,
+        cacheReadInputTokens: 6,
+      },
+      modelUsage: {
+        'raw-cache-model': {
+          inputTokens: 3,
+          outputTokens: 1,
+          cacheReadInputTokens: 6,
+        },
+      },
+    })
+    expect(first.durationApiMs).toBeGreaterThanOrEqual(0)
+    expect(first.durationApiWithoutRetriesMs).toBe(first.durationApiMs)
+    await expect(executor.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+  })
+
+  it('reports child line changes before persisting the tool-result entry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-line-order-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let childTurn = 0
+    const childProvider: ModelProvider = {
+      model: 'child-raw-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        if (childTurn === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_write_ok',
+              name: 'Write',
+              input: { file_path: 'ok.txt', content: 'ok' },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'CHILD_MODEL_DONE' }
+        }
+        childTurn += 1
+        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+      },
+    }
+    const parentProvider: ModelProvider = {
+      model: 'parent-raw-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'PARENT_UNUSED' }
+        throw new Error('Parent provider must not stream in this test')
+      },
+    }
+    const writeTools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Write',
+          description: 'Write a file.',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return {
+          content: 'WROTE_OK',
+          isError: false,
+          linesAdded: 3,
+          linesRemoved: 1,
+        }
+      },
+    }
+    const lineChanges: { linesAdded: number; linesRemoved: number }[] = []
+    const rejection = new Error('line change accounting failed')
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: parentProvider,
+      baseTools: writeTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      providerForModel: () => childProvider,
+      onLineChanges: (changes) => {
+        lineChanges.push(changes)
+        throw rejection
+      },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_line_order',
+        name: 'Agent',
+        input: {
+          description: 'Line ordering child',
+          prompt: 'CHILD_MODEL_PROMPT',
+          subagent_type: 'general-purpose',
+          model: 'child-raw-model',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+    await expect(registry.execute(call, { cwd })).rejects.toThrow(rejection)
+
+    expect(lineChanges).toEqual([{ linesAdded: 3, linesRemoved: 1 }])
+
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const sidechainDirectory = join(paths.projectRoot, sessionId, 'subagents')
+    const transcriptFile = (await readdir(sidechainDirectory)).find((name) =>
+      name.endsWith('.jsonl'),
+    )
+    if (!transcriptFile) {
+      throw new Error('Subagent sidechain transcript is missing')
+    }
+    const transcript = entries(
+      await readFile(join(sidechainDirectory, transcriptFile), 'utf8'),
+    )
+    const persistedToolResultIds = transcript.flatMap((entry) => {
+      if (entry.type !== 'user') return []
+      const message = entry.message
+      if (typeof message !== 'object' || message === null) return []
+      const content = (message as Record<string, unknown>).content
+      if (!Array.isArray(content)) return []
+      return content.flatMap((block) => {
+        if (typeof block !== 'object' || block === null) return []
+        const record = block as Record<string, unknown>
+        if (record.type !== 'tool_result') return []
+        return typeof record.tool_use_id === 'string'
+          ? [record.tool_use_id]
+          : []
+      })
+    })
+    expect(persistedToolResultIds).not.toContain('call_write_ok')
+  })
+
   it('rejects background Agent execution when persistence is disabled', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-ephemeral-bg-'))
     roots.push(root)

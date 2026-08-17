@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createErrorResult,
+  createSuccessResult,
+  isHeadlessCostCommand,
   matchHeadlessColorCommand,
   parseCliInvocation,
   readStreamJsonMessages,
@@ -1235,6 +1237,185 @@ describe('CLI protocol', () => {
     expect(matchHeadlessColorCommand('say /color')).toBeUndefined()
     expect(matchHeadlessColorCommand('')).toBeUndefined()
     expect(matchHeadlessColorCommand('/color\npurple')).toBe('purple')
+  })
+
+  it('matches only trimmed exact /cost as a local command', () => {
+    expect(isHeadlessCostCommand('/cost')).toBe(true)
+    expect(isHeadlessCostCommand('/cost ')).toBe(true)
+    expect(isHeadlessCostCommand('  /cost  ')).toBe(true)
+    expect(isHeadlessCostCommand('/cost\n')).toBe(true)
+    expect(isHeadlessCostCommand('/costs')).toBe(false)
+    expect(isHeadlessCostCommand('/cost extra')).toBe(false)
+    expect(isHeadlessCostCommand('/Cost')).toBe(false)
+    expect(isHeadlessCostCommand('say /cost')).toBe(false)
+    expect(isHeadlessCostCommand('')).toBe(false)
+  })
+
+  it('maps per-model cost and web search usage from a cost result', () => {
+    const startedAt = Date.now()
+    const result = createSuccessResult(
+      {
+        sessionId,
+        text: 'Total cost:            $0.0010',
+        usage: { inputTokens: 0, outputTokens: 0 },
+        durationApiMs: 0,
+        costUsd: 0.001,
+        modelUsage: {
+          'claude-sonnet-4-20250514': {
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadInputTokens: 3,
+            cacheCreationInputTokens: 2,
+            webSearchRequests: 1,
+          },
+        },
+        modelCostUsd: { 'claude-sonnet-4-20250514': 0.001 },
+      },
+      runtimeInfo,
+      startedAt,
+      0,
+    )
+    expect(result).toMatchObject({
+      subtype: 'success',
+      num_turns: 0,
+      duration_api_ms: 0,
+      total_cost_usd: 0.001,
+      result: 'Total cost:            $0.0010',
+      session_id: sessionId,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {
+        'claude-sonnet-4-20250514': {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadInputTokens: 3,
+          cacheCreationInputTokens: 2,
+          webSearchRequests: 1,
+          costUSD: 0.001,
+        },
+      },
+    })
+  })
+
+  it('keeps the legacy single-model cost mapping for ordinary results', () => {
+    const startedAt = Date.now()
+    const result = createSuccessResult(
+      {
+        sessionId,
+        text: 'answer',
+        usage: { inputTokens: 2, outputTokens: 3 },
+        costUsd: 0.5,
+        modelUsage: {
+          'test-model': { inputTokens: 2, outputTokens: 3 },
+        },
+      },
+      runtimeInfo,
+      startedAt,
+      1,
+    )
+    expect(result).toMatchObject({
+      num_turns: 1,
+      total_cost_usd: 0.5,
+      modelUsage: {
+        'test-model': {
+          inputTokens: 2,
+          outputTokens: 3,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUSD: 0.5,
+          contextWindow: 0,
+          maxOutputTokens: 0,
+        },
+      },
+    })
+  })
+
+  it('serializes numeric contextWindow and maxOutputTokens with capability fallback', () => {
+    const startedAt = Date.now()
+    const info: CliRuntimeInfo = {
+      ...runtimeInfo,
+      contextWindowTokens: 200_000,
+      maxOutputTokens: 32_000,
+    }
+    const result = createSuccessResult(
+      {
+        sessionId,
+        text: 'answer',
+        usage: { inputTokens: 2, outputTokens: 3 },
+        costUsd: 0.5,
+        modelUsage: {
+          // Known row without metadata: falls back to the matching runtimeInfo
+          // model's capability.
+          'test-model': { inputTokens: 2, outputTokens: 3 },
+          // Unknown model without metadata: serializes as 0.
+          'legacy-model': { inputTokens: 4, outputTokens: 1 },
+          // Row with its own metadata: preserved exactly.
+          'known-model': {
+            inputTokens: 6,
+            outputTokens: 2,
+            contextWindow: 100_000,
+            maxOutputTokens: 16_000,
+          },
+        },
+      },
+      info,
+      startedAt,
+      1,
+    )
+    expect(result.modelUsage).toMatchObject({
+      'test-model': {
+        inputTokens: 2,
+        outputTokens: 3,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUSD: 0.5,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+      },
+      'legacy-model': {
+        inputTokens: 4,
+        outputTokens: 1,
+        costUSD: null,
+        contextWindow: 0,
+        maxOutputTokens: 0,
+      },
+      'known-model': {
+        inputTokens: 6,
+        outputTokens: 2,
+        costUSD: null,
+        contextWindow: 100_000,
+        maxOutputTokens: 16_000,
+      },
+    })
+  })
+
+  it('serializes capability fallback for the default single-model row', () => {
+    const startedAt = Date.now()
+    const info: CliRuntimeInfo = {
+      ...runtimeInfo,
+      contextWindowTokens: 200_000,
+      maxOutputTokens: 32_000,
+    }
+    const result = createSuccessResult(
+      {
+        sessionId,
+        text: 'answer',
+        usage: { inputTokens: 2, outputTokens: 3 },
+      },
+      info,
+      startedAt,
+      1,
+    )
+    expect(result.modelUsage).toMatchObject({
+      'test-model': {
+        inputTokens: 2,
+        outputTokens: 3,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUSD: null,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+      },
+    })
   })
 
   it('emits SendUserMessage stream records', () => {

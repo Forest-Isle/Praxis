@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import type { ModelProvider, ModelToolCall } from './core/runtime.js'
 import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
 import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
+import type { ClaudeSessionCostSnapshot } from './application/session-cost-tracker.js'
 import {
   createBackgroundWorkerRuntime,
   parseContextEnvironment,
@@ -149,6 +150,180 @@ function colorDependencies() {
     dependencies: colorTestDependencies,
     calls,
     serviceCreations,
+  }
+}
+
+const COST_MODEL = 'claude-sonnet-4-20250514'
+const ZERO_COST_SUMMARY =
+  'Total cost:            $0.0000\n' +
+  'Total duration (API):  0s\n' +
+  'Total duration (wall): 0s\n' +
+  'Total code changes:    0 lines added, 0 lines removed\n' +
+  'Usage:                 0 input, 0 output, 0 cache read, 0 cache write'
+
+function zeroCostSnapshot(sessionId: string): ClaudeSessionCostSnapshot {
+  return {
+    sessionId,
+    totalCostUsd: 0,
+    apiDurationMs: 0,
+    apiDurationWithoutRetriesMs: 0,
+    toolDurationMs: 0,
+    wallDurationMs: 0,
+    linesAdded: 0,
+    linesRemoved: 0,
+    modelUsage: {},
+    hasUnknownModelCost: false,
+  }
+}
+
+function recordModelTurn(
+  snapshot: ClaudeSessionCostSnapshot,
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadInputTokens: number
+    cacheCreationInputTokens: number
+    webSearchRequests: number
+    costUsd: number
+  },
+): ClaudeSessionCostSnapshot {
+  const prior = snapshot.modelUsage[COST_MODEL] ?? {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    webSearchRequests: 0,
+    costUsd: 0,
+  }
+  return {
+    ...snapshot,
+    totalCostUsd: snapshot.totalCostUsd + usage.costUsd,
+    apiDurationMs: snapshot.apiDurationMs + 500,
+    wallDurationMs: snapshot.wallDurationMs + 1200,
+    linesAdded: snapshot.linesAdded + 2,
+    linesRemoved: snapshot.linesRemoved + 1,
+    modelUsage: {
+      ...snapshot.modelUsage,
+      [COST_MODEL]: {
+        inputTokens: prior.inputTokens + usage.inputTokens,
+        outputTokens: prior.outputTokens + usage.outputTokens,
+        cacheReadInputTokens:
+          prior.cacheReadInputTokens + usage.cacheReadInputTokens,
+        cacheCreationInputTokens:
+          prior.cacheCreationInputTokens + usage.cacheCreationInputTokens,
+        webSearchRequests: prior.webSearchRequests + usage.webSearchRequests,
+        costUsd: prior.costUsd + usage.costUsd,
+      },
+    },
+  }
+}
+
+interface CostDependenciesOptions {
+  historic?: ClaudeSessionCostSnapshot
+  regress?: boolean
+}
+
+interface CostDependenciesResult {
+  dependencies: CliDependencies
+  serviceCreations: Array<{ requireProvider: boolean }>
+  runCalls: string[]
+  resumeCalls: string[]
+  costSnapshotCalls: string[]
+}
+
+function costDependencies(
+  options: CostDependenciesOptions = {},
+): CostDependenciesResult {
+  const serviceCreations: Array<{ requireProvider: boolean }> = []
+  const runCalls: string[] = []
+  const resumeCalls: string[] = []
+  const costSnapshotCalls: string[] = []
+  const snapshots = new Map<string, ClaudeSessionCostSnapshot>()
+  const snapshotCalls = new Map<string, number>()
+  if (options.historic) {
+    snapshots.set(options.historic.sessionId, options.historic)
+  }
+  const base = dependencies()
+  const costTestDependencies: CliDependencies = {
+    async createService(serviceOptions) {
+      serviceCreations.push({ requireProvider: serviceOptions.requireProvider })
+      const eventSink = serviceOptions.eventSink
+      const service = await base.createService(serviceOptions)
+      return {
+        ...service,
+        async run(prompt, _signal, sessionId) {
+          runCalls.push(prompt)
+          eventSink({ type: 'text-delta', delta: `answer:${prompt}` })
+          const id = sessionId ?? '11111111-1111-4111-8111-111111111111'
+          snapshots.set(
+            id,
+            recordModelTurn(snapshots.get(id) ?? zeroCostSnapshot(id), {
+              inputTokens: 10,
+              outputTokens: 5,
+              cacheReadInputTokens: 3,
+              cacheCreationInputTokens: 2,
+              webSearchRequests: 1,
+              costUsd: 0.001,
+            }),
+          )
+          return {
+            sessionId: id,
+            text: `answer:${prompt}`,
+            usage: { inputTokens: 10, outputTokens: 5 },
+          }
+        },
+        async resume(sessionId, prompt) {
+          resumeCalls.push(prompt)
+          eventSink({ type: 'text-delta', delta: `resumed:${prompt}` })
+          snapshots.set(
+            sessionId,
+            recordModelTurn(
+              snapshots.get(sessionId) ?? zeroCostSnapshot(sessionId),
+              {
+                inputTokens: 4,
+                outputTokens: 5,
+                cacheReadInputTokens: 1,
+                cacheCreationInputTokens: 1,
+                webSearchRequests: 0,
+                costUsd: 0.002,
+              },
+            ),
+          )
+          return {
+            sessionId,
+            text: `resumed:${prompt}`,
+            usage: { inputTokens: 4, outputTokens: 5 },
+          }
+        },
+        async costSnapshot(sessionId) {
+          costSnapshotCalls.push(sessionId)
+          const calls = (snapshotCalls.get(sessionId) ?? 0) + 1
+          snapshotCalls.set(sessionId, calls)
+          if (options.regress && calls >= 2) {
+            const current =
+              snapshots.get(sessionId) ?? zeroCostSnapshot(sessionId)
+            return {
+              ...current,
+              totalCostUsd: current.totalCostUsd - 1,
+              modelUsage: Object.fromEntries(
+                Object.entries(current.modelUsage).map(([model, usage]) => [
+                  model,
+                  { ...usage, inputTokens: usage.inputTokens - 1 },
+                ]),
+              ),
+            }
+          }
+          return snapshots.get(sessionId) ?? zeroCostSnapshot(sessionId)
+        },
+      }
+    },
+  }
+  return {
+    dependencies: costTestDependencies,
+    serviceCreations,
+    runCalls,
+    resumeCalls,
+    costSnapshotCalls,
   }
 }
 
@@ -560,6 +735,424 @@ describe('Praxis CLI', () => {
       display: '/color yellow',
       options: { createSession: true },
     })
+  })
+
+  it('runs /cost provider-free in text mode with an exact zero summary', async () => {
+    const {
+      dependencies: costDeps,
+      serviceCreations,
+      runCalls,
+      resumeCalls,
+      costSnapshotCalls,
+    } = costDependencies()
+
+    const text = captureIO()
+    await expect(run(['-p', '/cost'], text.io, costDeps)).resolves.toBe(0)
+    expect(text.stdout.join('')).toBe(`${ZERO_COST_SUMMARY}\n`)
+    expect(text.stderr).toEqual([])
+    expect(serviceCreations).toEqual([{ requireProvider: false }])
+    expect(runCalls).toEqual([])
+    expect(resumeCalls).toEqual([])
+    expect(costSnapshotCalls).toHaveLength(2)
+    expect(costSnapshotCalls[0]).toBe(costSnapshotCalls[1])
+  })
+
+  it('runs /cost provider-free in JSON mode with a zero-turn success envelope', async () => {
+    const {
+      dependencies: costDeps,
+      serviceCreations,
+      runCalls,
+      resumeCalls,
+    } = costDependencies()
+
+    const json = captureIO()
+    await expect(
+      run(['-p', '--output-format', 'json', '/cost'], json.io, costDeps),
+    ).resolves.toBe(0)
+    expect(JSON.parse(json.stdout.join(''))).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_api_ms: 0,
+      num_turns: 0,
+      result: ZERO_COST_SUMMARY,
+      stop_reason: null,
+      total_cost_usd: 0,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {},
+      permission_denials: [],
+      session_id: expect.any(String),
+    })
+    expect(serviceCreations).toEqual([{ requireProvider: false }])
+    expect(runCalls).toEqual([])
+    expect(resumeCalls).toEqual([])
+  })
+
+  it('runs /cost provider-free in stream-json mode with a synthetic assistant', async () => {
+    const {
+      dependencies: costDeps,
+      serviceCreations,
+      runCalls,
+      resumeCalls,
+    } = costDependencies()
+    const capture = captureStreamIO(
+      `${JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: '/cost' },
+      })}\n`,
+    )
+    await expect(
+      run(
+        [
+          'run',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+        ],
+        capture.io,
+        costDeps,
+      ),
+    ).resolves.toBe(0)
+    expect(serviceCreations).toEqual([{ requireProvider: false }])
+    expect(runCalls).toEqual([])
+    expect(resumeCalls).toEqual([])
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records.map(({ type }) => type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+    ])
+    expect(records[0]).toMatchObject({ type: 'system', subtype: 'init' })
+    expect(records[1]).toMatchObject({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        model: '<synthetic>',
+        content: [{ type: 'text', text: ZERO_COST_SUMMARY }],
+        stop_reason: 'stop_sequence',
+        stop_sequence: '',
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      parent_tool_use_id: null,
+      session_id: records[2].session_id,
+    })
+    expect(records[2]).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      num_turns: 0,
+      duration_api_ms: 0,
+      total_cost_usd: 0,
+      result: ZERO_COST_SUMMARY,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {},
+      stop_reason: null,
+    })
+  })
+
+  it('accumulates same-process model usage into a later /cost stream turn', async () => {
+    const { dependencies: costDeps, runCalls } = costDependencies()
+    const capture = captureStreamIO(
+      `${JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: 'hello' },
+      })}\n${JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: '/cost' },
+      })}\n`,
+    )
+    await expect(
+      run(
+        [
+          'run',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+        ],
+        capture.io,
+        costDeps,
+      ),
+    ).resolves.toBe(0)
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records.map(({ type }) => type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+      'system',
+      'assistant',
+      'result',
+    ])
+    expect(records[2]).toMatchObject({
+      type: 'result',
+      num_turns: 1,
+      result: 'answer:hello',
+    })
+    expect(runCalls).toEqual(['hello'])
+    expect(records[5]).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      num_turns: 0,
+      total_cost_usd: 0.001,
+      session_id: records[2].session_id,
+    })
+    expect(records[5].result).toContain('claude-sonnet-4-0')
+    expect(records[5].result).toContain('10 input, 5 output')
+    expect(records[5].result).toContain('1 web search')
+    expect(records[5].modelUsage).toEqual({
+      [COST_MODEL]: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadInputTokens: 3,
+        cacheCreationInputTokens: 2,
+        webSearchRequests: 1,
+        costUSD: 0.001,
+        contextWindow: 0,
+        maxOutputTokens: 0,
+      },
+    })
+    expect(records[4]).toMatchObject({
+      type: 'assistant',
+      message: {
+        model: '<synthetic>',
+        content: [{ type: 'text', text: records[5].result }],
+      },
+      session_id: records[2].session_id,
+    })
+  })
+
+  it('serializes runtimeInfo capability metadata into the JSON success result', async () => {
+    const capture = captureIO()
+    const capabilityDependencies: CliDependencies = {
+      async createService() {
+        return {
+          async run(prompt, _signal, sessionId) {
+            return {
+              sessionId: sessionId ?? '11111111-1111-4111-8111-111111111111',
+              text: `answer:${prompt}`,
+              usage: { inputTokens: 2, outputTokens: 3 },
+              modelUsage: {
+                // No row metadata: falls back to the matching runtimeInfo
+                // model's capability.
+                'test-model': { inputTokens: 2, outputTokens: 3 },
+                // Unknown model without metadata: serializes as 0.
+                'legacy-model': { inputTokens: 1, outputTokens: 1 },
+              },
+            }
+          },
+          async resume(sessionId, prompt) {
+            return {
+              sessionId,
+              text: `resumed:${prompt}`,
+              usage: { inputTokens: 4, outputTokens: 5 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async inspect() {
+            throw new Error('unused')
+          },
+          async export() {
+            throw new Error('unused')
+          },
+          runtimeInfo() {
+            return {
+              cwd: '/workspace',
+              model: 'test-model',
+              contextWindowTokens: 200_000,
+              maxOutputTokens: 32_000,
+              tools: [],
+              mcpServers: [],
+              permissionMode: 'default',
+              slashCommands: [],
+              agents: [],
+              skills: [],
+              claudeCodeVersion: '2.1.208',
+            }
+          },
+        }
+      },
+    }
+    await expect(
+      run(
+        ['run', '--output-format', 'json', 'hello'],
+        capture.io,
+        capabilityDependencies,
+      ),
+    ).resolves.toBe(0)
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records[0]).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      result: 'answer:hello',
+      modelUsage: {
+        'test-model': {
+          inputTokens: 2,
+          outputTokens: 3,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUSD: null,
+          contextWindow: 200_000,
+          maxOutputTokens: 32_000,
+        },
+        'legacy-model': {
+          inputTokens: 1,
+          outputTokens: 1,
+          costUSD: null,
+          contextWindow: 0,
+          maxOutputTokens: 0,
+        },
+      },
+    })
+  })
+
+  it('runs a later model prompt normally after a local /cost stream turn', async () => {
+    const {
+      dependencies: costDeps,
+      runCalls,
+      resumeCalls,
+      serviceCreations,
+    } = costDependencies()
+    const capture = captureStreamIO(
+      `${JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: '/cost' },
+      })}\n${JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: 'what is 2+2?' },
+      })}\n`,
+    )
+    await expect(
+      run(
+        [
+          'run',
+          '--input-format',
+          'stream-json',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+        ],
+        capture.io,
+        costDeps,
+      ),
+    ).resolves.toBe(0)
+    expect(serviceCreations).toEqual([{ requireProvider: false }])
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records.map(({ type }) => type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+      'system',
+      'assistant',
+      'result',
+    ])
+    const localSessionId = records[2].session_id
+    expect(records[5]).toMatchObject({
+      result: 'resumed:what is 2+2?',
+      session_id: localSessionId,
+    })
+    expect(runCalls).toEqual([])
+    expect(resumeCalls).toEqual(['what is 2+2?'])
+  })
+
+  it('excludes restored historic totals from a resumed process cost summary', async () => {
+    const historicSessionId = '11111111-1111-4111-8111-111111111111'
+    const historic: ClaudeSessionCostSnapshot = {
+      sessionId: historicSessionId,
+      totalCostUsd: 42,
+      apiDurationMs: 30000,
+      apiDurationWithoutRetriesMs: 30000,
+      toolDurationMs: 0,
+      wallDurationMs: 90000,
+      linesAdded: 50,
+      linesRemoved: 30,
+      modelUsage: {
+        [COST_MODEL]: {
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadInputTokens: 200,
+          cacheCreationInputTokens: 100,
+          webSearchRequests: 3,
+          costUsd: 42,
+        },
+      },
+      hasUnknownModelCost: false,
+    }
+    const { dependencies: costDeps } = costDependencies({ historic })
+    const json = captureIO()
+    await expect(
+      run(
+        [
+          '-p',
+          '--resume',
+          historicSessionId,
+          '--output-format',
+          'json',
+          '/cost',
+        ],
+        json.io,
+        costDeps,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(json.stdout.join(''))).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      num_turns: 0,
+      duration_api_ms: 0,
+      total_cost_usd: 0,
+      result: ZERO_COST_SUMMARY,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {},
+      session_id: historicSessionId,
+    })
+  })
+
+  it('treats only trimmed exact /cost as a local command and honors --disable-slash-commands', async () => {
+    const {
+      dependencies: costDeps,
+      runCalls,
+      resumeCalls,
+      serviceCreations,
+    } = costDependencies()
+
+    const lookalike = captureIO()
+    await expect(run(['-p', '/costs'], lookalike.io, costDeps)).resolves.toBe(0)
+    expect(lookalike.stdout.join('')).toBe('answer:/costs\n')
+    expect(serviceCreations.at(-1)).toEqual({ requireProvider: true })
+
+    const extra = captureIO()
+    await expect(run(['-p', '/cost extra'], extra.io, costDeps)).resolves.toBe(
+      0,
+    )
+    expect(extra.stdout.join('')).toBe('answer:/cost extra\n')
+    expect(serviceCreations.at(-1)).toEqual({ requireProvider: true })
+
+    const disabled = captureIO()
+    await expect(
+      run(['-p', '--disable-slash-commands', '/cost'], disabled.io, costDeps),
+    ).resolves.toBe(0)
+    expect(disabled.stdout.join('')).toBe('answer:/cost\n')
+    expect(serviceCreations.at(-1)).toEqual({ requireProvider: true })
+
+    expect(runCalls).toEqual(['/costs', '/cost extra', '/cost'])
+    expect(resumeCalls).toEqual([])
+  })
+
+  it('rejects cost counter regression explicitly instead of clamping', async () => {
+    const { dependencies: costDeps, costSnapshotCalls } = costDependencies({
+      regress: true,
+    })
+    const capture = captureIO()
+    await expect(run(['-p', '/cost'], capture.io, costDeps)).resolves.toBe(1)
+    expect(capture.stdout).toEqual([])
+    expect(capture.stderr.join('')).toContain('regression')
+    expect(costSnapshotCalls).toHaveLength(2)
   })
 
   it('runs init-only lifecycle without constructing a provider turn', async () => {

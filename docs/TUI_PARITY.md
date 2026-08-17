@@ -474,9 +474,9 @@ pair on new sessions), sharing the displayed input via `history.jsonl`, loading
 the effective color on resume/session open (with reset reading as no color),
 retaining it as exactly one leading entry on fork, and coloring the composer's
 top/bottom separators per profile with dim separators restored on reset,
-`/clear`, `/new`, and fresh sessions. The two required commands — `/cost`
-and interactive `/doctor` — still need an observed contract and a focused
-TTY or Ink gate before developer-core closure. The five deferred commands —
+`/clear`, `/new`, and fresh sessions. Stage 141 closes the required `/cost`
+and interactive `/doctor` contracts with focused Ink/TTY and installed-package
+gates; `/cost` additionally covers text, JSON, and stream-json output. The five deferred commands —
 `/advisor`, `/fast`, `/stats`, `/insights`, and `/voice` — are optional and
 demand-driven and do not block completion. Newly excluded non-goals are the
 subscription-bound `/chrome`, the campaign `/think-back` and

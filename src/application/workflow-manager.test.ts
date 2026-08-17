@@ -170,6 +170,42 @@ describe('WorkflowManager', () => {
     await manager.close()
   })
 
+  it('returns child API durations once from workflow notifications', async () => {
+    const { manager, script, parsed } = await fixture()
+    await manager.launch({
+      sessionId,
+      promptId: 'prompt-duration',
+      script,
+      parsed,
+      args: { prompt: 'duration' },
+      defaultModel: 'fixture-model',
+      runAgent: async () => ({
+        result: 'agent-result',
+        usage: { inputTokens: 3, outputTokens: 2 },
+        toolUseCount: 1,
+        durationMs: 4,
+        durationApiMs: 12,
+        durationApiWithoutRetriesMs: 0,
+        resolvedModel: 'fixture-model',
+      }),
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+
+    await expect(manager.notifications(true)).resolves.toMatchObject({
+      messages: [expect.stringContaining('<task-notification>')],
+      usage: { inputTokens: 3, outputTokens: 2 },
+      durationApiMs: 12,
+      durationApiWithoutRetriesMs: 0,
+    })
+    await expect(manager.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    await manager.close()
+  })
+
   it('replays foreign journal keys by deterministic ordered semantic replay', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-manager-'))
     roots.push(root)
@@ -500,6 +536,259 @@ return { first, second }`
     expect(output).toContain('"status": "failed"')
     expect(output).toContain('Workflow token budget exhausted (1)')
     expect(calls).toBe(1)
+    await manager.close()
+  })
+
+  it('aggregates full cache-aware usage and raw-model attribution exactly once', async () => {
+    const { manager } = await fixture()
+    const script = `export const meta = {
+  name: 'usage-aggregate',
+  description: 'Aggregate workflow agent usage',
+}
+const first = await agent('first')
+const second = await agent('second')
+return { first, second }`
+    let calls = 0
+    const runAgent = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) {
+        return {
+          result: 'first-result',
+          usage: {
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadInputTokens: 10,
+            cacheCreationInputTokens: 5,
+            webSearchRequests: 2,
+          },
+          modelUsage: {
+            'model-a': {
+              inputTokens: 60,
+              outputTokens: 30,
+              cacheReadInputTokens: 6,
+              cacheCreationInputTokens: 3,
+              webSearchRequests: 1,
+            },
+            'model-b': {
+              inputTokens: 30,
+              outputTokens: 15,
+              cacheReadInputTokens: 3,
+              cacheCreationInputTokens: 1,
+            },
+          },
+          toolUseCount: 1,
+          durationMs: 4,
+          resolvedModel: 'model-a',
+        }
+      }
+      return {
+        result: 'second-result',
+        usage: {
+          inputTokens: 200,
+          outputTokens: 100,
+          cacheReadInputTokens: 20,
+          cacheCreationInputTokens: 10,
+          webSearchRequests: 3,
+        },
+        modelUsage: {
+          'model-a': {
+            inputTokens: 120,
+            outputTokens: 60,
+            cacheReadInputTokens: 12,
+            cacheCreationInputTokens: 6,
+            webSearchRequests: 2,
+          },
+          'model-c': {
+            inputTokens: 80,
+            outputTokens: 40,
+            cacheReadInputTokens: 8,
+            cacheCreationInputTokens: 4,
+            webSearchRequests: 1,
+          },
+        },
+        toolUseCount: 2,
+        durationMs: 4,
+        resolvedModel: 'model-a',
+      }
+    })
+    await manager.launch({
+      sessionId,
+      promptId: 'prompt-usage-aggregate',
+      script,
+      parsed: parseWorkflowScript(script),
+      args: null,
+      defaultModel: 'model-a',
+      runAgent,
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+    const firstNotification = await manager.notifications(true)
+    expect(runAgent).toHaveBeenCalledTimes(2)
+    expect(firstNotification.messages).toEqual([
+      expect.stringContaining('<task-notification>'),
+    ])
+    expect(firstNotification.usage).toEqual({
+      inputTokens: 300,
+      outputTokens: 150,
+      cacheReadInputTokens: 30,
+      cacheCreationInputTokens: 15,
+      webSearchRequests: 5,
+    })
+    expect(firstNotification.modelUsage).toEqual({
+      'model-a': {
+        inputTokens: 180,
+        outputTokens: 90,
+        cacheReadInputTokens: 18,
+        cacheCreationInputTokens: 9,
+        webSearchRequests: 3,
+      },
+      'model-b': {
+        inputTokens: 30,
+        outputTokens: 15,
+        cacheReadInputTokens: 3,
+        cacheCreationInputTokens: 1,
+      },
+      'model-c': {
+        inputTokens: 80,
+        outputTokens: 40,
+        cacheReadInputTokens: 8,
+        cacheCreationInputTokens: 4,
+        webSearchRequests: 1,
+      },
+    })
+    expect(Object.keys(firstNotification.modelUsage ?? {})).toEqual([
+      'model-a',
+      'model-b',
+      'model-c',
+    ])
+    expect(await manager.notifications(false)).toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    await manager.close()
+  })
+
+  it('preserves known capability metadata across workflow agent notifications', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-meta-'))
+    roots.push(root)
+    const cwd = join(root, 'work')
+    const script = `export const meta = {
+  name: 'metadata-probe',
+  description: 'Aggregate workflow metadata usage',
+  phases: [{ title: 'Agent', detail: 'Run two agents' }],
+}
+const first = await agent('first')
+const second = await agent('second')
+return { first, second }`
+    const runAgent = vi.fn(async () => ({
+      result: 'agent-result',
+      usage: { inputTokens: 5, outputTokens: 2 },
+      toolUseCount: 1,
+      durationMs: 4,
+      resolvedModel: 'model-a',
+      modelUsage: {
+        'model-a': {
+          inputTokens: 5,
+          outputTokens: 2,
+          contextWindow: 200_000,
+          maxOutputTokens: 32_000,
+        },
+      },
+    }))
+    const manager = new WorkflowManager(join(root, 'config'), cwd)
+    await manager.launch({
+      sessionId,
+      promptId: 'prompt-metadata-positive',
+      script,
+      parsed: parseWorkflowScript(script),
+      args: null,
+      defaultModel: 'model-a',
+      runAgent,
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+    const notifications = await manager.notifications(true)
+    expect(runAgent).toHaveBeenCalledTimes(2)
+    // Equal known metadata merges without conflict while counters sum.
+    expect(notifications.modelUsage).toEqual({
+      'model-a': {
+        inputTokens: 10,
+        outputTokens: 4,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+      },
+    })
+    // The aggregate usage stays counter-only.
+    expect(notifications.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 4,
+    })
+    await manager.close()
+  })
+
+  it('rejects conflicting known metadata at workflow notification aggregation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-conflict-'))
+    roots.push(root)
+    const cwd = join(root, 'work')
+    const script = `export const meta = {
+  name: 'probe',
+  description: 'Run probe agent',
+  phases: [{ title: 'Agent', detail: 'Run one agent' }],
+}
+phase('Agent')
+const value = await agent(args.prompt, { label: 'Probe' })
+return { value }`
+    let calls = 0
+    const runAgent = vi.fn(async () => {
+      calls += 1
+      return {
+        result: 'agent-result',
+        usage: { inputTokens: 5, outputTokens: 2 },
+        toolUseCount: 1,
+        durationMs: 4,
+        resolvedModel: 'model-a',
+        modelUsage: {
+          'model-a': {
+            inputTokens: 5,
+            outputTokens: 2,
+            contextWindow: calls === 1 ? 200_000 : 100_000,
+            maxOutputTokens: calls === 1 ? 32_000 : 16_000,
+          },
+        },
+      }
+    })
+    const manager = new WorkflowManager(join(root, 'config'), cwd)
+    // Two separate runs so the conflicting rows are merged at notification
+    // aggregation time rather than within a single agent's task merge.
+    await manager.launch({
+      sessionId,
+      promptId: 'prompt-metadata-conflict-first',
+      script,
+      parsed: parseWorkflowScript(script),
+      args: { prompt: 'first' },
+      defaultModel: 'model-a',
+      runAgent,
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+    await manager.launch({
+      sessionId,
+      promptId: 'prompt-metadata-conflict-second',
+      script,
+      parsed: parseWorkflowScript(script),
+      args: { prompt: 'second' },
+      defaultModel: 'model-a',
+      runAgent,
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+    await expect(manager.notifications(true)).rejects.toThrow(
+      'Workflow model usage for "model-a" has conflicting contextWindow values: 200000 vs 100000',
+    )
     await manager.close()
   })
 })

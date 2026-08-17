@@ -20,7 +20,6 @@ export interface FallbackModelProviderOptions {
 
 /** Routes each complete request through Claude's retry-then-fallback policy. */
 export class FallbackModelProvider implements ModelProvider {
-  readonly capabilities: ModelProvider['capabilities']
   private active: ModelProvider
   private readonly retryDelayMs: number
   private readonly fallbackProviders: readonly ModelProvider[]
@@ -31,8 +30,12 @@ export class FallbackModelProvider implements ModelProvider {
     }
     this.active = options.providers[0] as ModelProvider
     this.fallbackProviders = options.providers
-    this.capabilities = this.active.capabilities
     this.retryDelayMs = options.retryDelayMs ?? 500
+  }
+
+  /** Capabilities of the currently active provider after any fallback routing. */
+  get capabilities(): ModelProvider['capabilities'] {
+    return this.active.capabilities
   }
 
   get model(): string {
@@ -44,12 +47,42 @@ export class FallbackModelProvider implements ModelProvider {
     for (const provider of this.providers()) {
       for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_MODEL; attempt += 1) {
         this.active = provider
+        const attemptStartedAt = performance.now()
         try {
           // Buffer each attempt so a stream that fails after partial output
           // cannot duplicate text/tool events when retried.
           const events: ModelStreamEvent[] = []
-          for await (const event of provider.complete(request))
+          let attemptDurationMs: number | undefined
+          for await (const event of provider.complete(request)) {
+            if (event.type === 'api-attempt-duration') {
+              // Consume the underlying attempt timing rather than replaying it
+              // so nested wrappers report a single retry-free duration.
+              if (attemptDurationMs !== undefined) {
+                throw new Error(
+                  'Provider emitted multiple api-attempt-duration events in one attempt',
+                )
+              }
+              const { durationMs } = event
+              if (
+                typeof durationMs !== 'number' ||
+                !Number.isFinite(durationMs) ||
+                durationMs < 0
+              ) {
+                throw new TypeError(
+                  'api-attempt-duration durationMs must be a finite nonnegative number',
+                )
+              }
+              attemptDurationMs = durationMs
+              continue
+            }
             events.push(event)
+          }
+          yield {
+            type: 'api-attempt-duration',
+            durationMs:
+              attemptDurationMs ??
+              Math.max(0, performance.now() - attemptStartedAt),
+          }
           yield* events
           return
         } catch (error) {

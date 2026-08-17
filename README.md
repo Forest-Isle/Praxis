@@ -103,7 +103,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   skills/hooks flow, provider-free per-session `/color` prompt-bar styling,
   `/mcp`, `/memory` shared instruction and auto-memory
   access, and live extension-reload controls,
-  cursor/history composer, per-session model/effort/permission controls,
+  cursor/history composer, provider-free `/cost` usage and pricing summaries,
+  interactive `/doctor` diagnostics, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external
   editing, shared `/keybindings` creation/editing and supported-action remapping,

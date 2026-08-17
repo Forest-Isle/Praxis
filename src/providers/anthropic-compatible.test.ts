@@ -25,6 +25,7 @@ describe('AnthropicCompatibleProvider', () => {
         maxTokens: true,
       },
       contextWindowTokens: 200_000,
+      maxOutputTokens: 8_192,
     })
     expect(
       () =>
@@ -35,6 +36,38 @@ describe('AnthropicCompatibleProvider', () => {
           maxOutputTokens: 0,
         }),
     ).toThrow('positive integer')
+  })
+
+  it('exposes the configured max output tokens as a capability', () => {
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      maxOutputTokens: 16_384,
+    })
+    expect(provider.capabilities.maxOutputTokens).toBe(16_384)
+    expect(provider.capabilities.contextWindowTokens).toBeUndefined()
+  })
+
+  it('derives a default max output tokens capability per model family', () => {
+    const claude = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+    })
+    expect(claude.capabilities.maxOutputTokens).toBe(32_000)
+    const opus = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'claude-opus-4-6',
+    })
+    expect(opus.capabilities.maxOutputTokens).toBe(64_000)
+    const generic = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+    })
+    expect(generic.capabilities.maxOutputTokens).toBe(8_192)
   })
 
   it('maps thinking controls and preserves signed blocks across tool turns', async () => {
@@ -604,11 +637,11 @@ describe('AnthropicCompatibleProvider', () => {
       capturedInit = init
       return new Response(
         [
-          'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":7,"cache_creation_input_tokens":2,"cache_read_input_tokens":3}}}\n\n',
+          'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":7,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"server_tool_use":{"web_search_requests":2}}}}\n\n',
           'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
           'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n',
           'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
-          'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":2}}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":2,"server_tool_use":{"web_search_requests":3}}}\n\n',
           'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":3}}\n\n',
           'event: message_stop\ndata: {"type":"message_stop"}\n\n',
         ].join(''),
@@ -669,6 +702,7 @@ describe('AnthropicCompatibleProvider', () => {
           outputTokens: 3,
           cacheCreationInputTokens: 2,
           cacheReadInputTokens: 3,
+          webSearchRequests: 3,
         },
       },
     ])
@@ -725,6 +759,38 @@ describe('AnthropicCompatibleProvider', () => {
       ],
     })
   })
+
+  it.each([
+    ['a non-object server_tool_use usage', { server_tool_use: [] }],
+    ['a negative counter', { server_tool_use: { web_search_requests: -1 } }],
+    ['a fractional counter', { server_tool_use: { web_search_requests: 1.5 } }],
+    ['a string counter', { server_tool_use: { web_search_requests: '3' } }],
+    [
+      'an unsafe integer counter',
+      { server_tool_use: { web_search_requests: Number.MAX_SAFE_INTEGER + 1 } },
+    ],
+  ])(
+    'rejects an invalid web search usage counter with %s',
+    async (_case, usage) => {
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://api.anthropic.example/v1',
+        apiKey: 'secret',
+        model: 'fixture-model',
+        fetchImplementation: async () =>
+          new Response(
+            [
+              'data: {"type":"message_start","message":{"usage":{}}}\n\n',
+              `data: ${JSON.stringify({ type: 'message_delta', usage })}\n\n`,
+              'data: {"type":"message_stop"}\n\n',
+            ].join(''),
+          ),
+      })
+
+      await expect(
+        provider.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+      ).rejects.toThrow('web_search_requests')
+    },
+  )
 
   it('maps native web search requests and preserves result links', async () => {
     let body: Record<string, unknown> | undefined

@@ -1,7 +1,7 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 
-import type { ModelUsage } from '../../core/runtime.js'
+import { formatCostSummary, type CostSummary } from './cost-summary.js'
 import {
   CLAUDE_2_1_208_CONFIG_SETTINGS,
   configSettingValue,
@@ -25,14 +25,7 @@ export interface ConfigStatusData {
   settingSources: readonly string[]
 }
 
-export interface ConfigUsageData {
-  costUsd: number
-  apiDurationMs: number
-  wallDurationMs: number
-  linesAdded: number
-  linesRemoved: number
-  usage: ModelUsage
-}
+export type ConfigUsageData = CostSummary
 
 export interface ContextCategory {
   label: string
@@ -163,6 +156,7 @@ function DashboardTabs({
   if (screenReader) {
     return (
       <Box flexDirection="column">
+        <Text bold>Settings</Text>
         {tabs.map((tab) => (
           <Text key={tab.id}>
             {tab.id === active ? 'Selected tab: ' : ''}
@@ -174,7 +168,7 @@ function DashboardTabs({
   }
   return (
     <Text>
-      {'  '}
+      {'Settings '}
       {tabs.map((tab) => (
         <Text key={tab.id} inverse={tab.id === active}>
           {' '}
@@ -281,24 +275,11 @@ function StatusRows({ status }: { status: ConfigStatusData }) {
 }
 
 function UsageRows({ usage }: { usage: ConfigUsageData }) {
-  const seconds = (milliseconds: number) =>
-    `${Math.round(milliseconds / 1_000)}s`
   return (
     <>
       <Text bold>Session</Text>
       <Text> </Text>
-      <Text>Total cost: ${usage.costUsd.toFixed(4)}</Text>
-      <Text>Total duration (API): {seconds(usage.apiDurationMs)}</Text>
-      <Text>Total duration (wall): {seconds(usage.wallDurationMs)}</Text>
-      <Text>
-        Total code changes: {usage.linesAdded} lines added, {usage.linesRemoved}{' '}
-        lines removed
-      </Text>
-      <Text>
-        Usage: {usage.usage.inputTokens} input, {usage.usage.outputTokens}{' '}
-        output, {usage.usage.cacheReadInputTokens ?? 0} cache read,{' '}
-        {usage.usage.cacheCreationInputTokens ?? 0} cache write
-      </Text>
+      <Text>{formatCostSummary(usage)}</Text>
       <Text> </Text>
       <Text dimColor>Esc to cancel</Text>
     </>
@@ -365,7 +346,6 @@ export function ConfigDashboard({
   }
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
-      {!screenReader ? <Text>{'─'.repeat(Math.min(100, width))}</Text> : null}
       <DashboardTabs active={tab} screenReader={screenReader} />
       <Text> </Text>
       {content}

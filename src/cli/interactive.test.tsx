@@ -29,6 +29,8 @@ import type { TuiCustomTheme } from './tui/custom-themes.js'
 import type { TuiThemeSettings } from './tui/theme.js'
 import { projectRuntimeSettings } from './tui/runtime-settings.js'
 import type { TuiSandboxSnapshot } from './tui/sandbox-settings.js'
+import type { ClaudeSessionCostSnapshot } from '../application/session-cost-tracker.js'
+import type { DoctorReport } from '../maintenance/doctor.js'
 
 afterEach(() => {
   cleanup()
@@ -454,6 +456,593 @@ describe('InteractiveApp', () => {
       'https://code.claude.com/docs/en/sub-agents',
     )
     expect(calls).toEqual([])
+  })
+
+  it('renders /cost as the Settings Usage dashboard from the active session and zeroes without a session', async () => {
+    const creations: Array<{ requireProvider: boolean; cwd?: string }> = []
+    let closes = 0
+    const runCalls: string[] = []
+    const resumeCalls: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push({
+          requireProvider: options.requireProvider,
+          ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        })
+        return {
+          async run() {
+            runCalls.push('run')
+            throw new Error('unused')
+          },
+          async resume() {
+            resumeCalls.push('resume')
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async costSnapshot(sessionId) {
+            return {
+              sessionId,
+              totalCostUsd: 2.5,
+              apiDurationMs: 1_234_567,
+              apiDurationWithoutRetriesMs: 1_000_000,
+              toolDurationMs: 200_000,
+              wallDurationMs: 3_600_000,
+              linesAdded: 12,
+              linesRemoved: 3,
+              hasUnknownModelCost: false,
+              modelUsage: {
+                'claude-sonnet-4-20250514': {
+                  inputTokens: 1500,
+                  outputTokens: 300,
+                  cacheReadInputTokens: 100,
+                  cacheCreationInputTokens: 50,
+                  webSearchRequests: 0,
+                  costUsd: 2.5,
+                },
+              },
+            }
+          },
+          async close() {
+            closes += 1
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[
+          {
+            sessionId: 'active-session',
+            lastPrompt: 'hello',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        resume={{ sessionId: 'active-session' }}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+      />,
+    )
+
+    app.stdin.write('/cost')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Total cost:            $2.50')
+        ? true
+        : undefined,
+    )
+    const frame = app.lastFrame()
+    expect(frame).toContain('Status  Config  Usage')
+    expect(frame).toContain('Session')
+    expect(frame).toContain('Total cost:            $2.50')
+    expect(frame).toContain('Total duration (API):  20m 35s')
+    expect(frame).toContain('Total duration (wall): 1h 0m 0s')
+    expect(frame).toContain(
+      'Total code changes:    12 lines added, 3 lines removed',
+    )
+    expect(frame).toContain(
+      'claude-sonnet-4-0:  1.5k input, 300 output, 100 cache read, 50 cache write ($2.50)',
+    )
+    expect(frame).toContain('Usage by model:')
+    expect(frame).toContain('Esc to cancel')
+    expect(frame).not.toContain('⎿')
+    expect(creations).toEqual([
+      { requireProvider: false, cwd: '/fixture/workspace' },
+    ])
+    expect(runCalls).toEqual([])
+    expect(resumeCalls).toEqual([])
+    expect(closes).toBe(1)
+    app.unmount()
+
+    const noSessionCalls: string[] = []
+    const noSessionApp = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            noSessionCalls.push('service')
+            throw new Error('cost without a session must not create a service')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+      />,
+    )
+    noSessionApp.stdin.write('/cost')
+    noSessionApp.stdin.write('\r')
+    await waitFor(() =>
+      noSessionApp
+        .lastFrame()
+        ?.includes(
+          'Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
+        )
+        ? true
+        : undefined,
+    )
+    expect(noSessionApp.lastFrame()).toContain('Status  Config  Usage')
+    expect(noSessionApp.lastFrame()).toContain('Session')
+    expect(noSessionApp.lastFrame()).toContain(
+      'Total cost:            $0.0000\n' +
+        'Total duration (API):  0s\n' +
+        'Total duration (wall): 0s\n' +
+        'Total code changes:    0 lines added, 0 lines removed\n' +
+        'Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
+    )
+    expect(noSessionApp.lastFrame()).toContain('Esc to cancel')
+    expect(noSessionApp.lastFrame()).not.toContain('⎿')
+    expect(noSessionCalls).toEqual([])
+    noSessionApp.unmount()
+  })
+
+  it('navigates Settings to Usage with the current session snapshot and drops stale delayed results', async () => {
+    const deferreds: Array<{
+      resolve: (value: ClaudeSessionCostSnapshot) => void
+      reject: (reason: Error) => void
+    }> = []
+    const costRequests: string[] = []
+    const creations: Array<{ requireProvider: boolean }> = []
+    const runCalls: string[] = []
+    const resumeCalls: string[] = []
+    const turns: Array<Promise<void> | null> = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push({ requireProvider: options.requireProvider })
+        return {
+          async run() {
+            runCalls.push('run')
+            throw new Error('unused')
+          },
+          async resume() {
+            resumeCalls.push('resume')
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async costSnapshot(sessionId) {
+            costRequests.push(sessionId)
+            let resolve!: (value: ClaudeSessionCostSnapshot) => void
+            let reject!: (reason: Error) => void
+            const promise = new Promise<ClaudeSessionCostSnapshot>(
+              (res, rej) => {
+                resolve = res
+                reject = rej
+              },
+            )
+            deferreds.push({ resolve, reject })
+            return promise
+          },
+          async close() {},
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[
+          {
+            sessionId: 'active-session',
+            lastPrompt: 'hello',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        resume={{ sessionId: 'active-session' }}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+        onTurnChange={(turn) => {
+          turns.push(turn)
+        }}
+      />,
+    )
+    const snapshot = (totalCostUsd: number): ClaudeSessionCostSnapshot => ({
+      sessionId: 'active-session',
+      totalCostUsd,
+      apiDurationMs: 0,
+      apiDurationWithoutRetriesMs: 0,
+      toolDurationMs: 0,
+      wallDurationMs: 0,
+      linesAdded: 0,
+      linesRemoved: 0,
+      hasUnknownModelCost: false,
+      modelUsage: {
+        'claude-sonnet-4-20250514': {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          webSearchRequests: 0,
+          costUsd: totalCostUsd,
+        },
+      },
+    })
+
+    try {
+      app.stdin.write('/status')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Settings') &&
+        app.lastFrame()?.includes('Status  Config  Usage')
+          ? true
+          : undefined,
+      )
+
+      // Status -> Config -> Usage requests a real current-session snapshot.
+      app.stdin.write('\u001B[C')
+      app.stdin.write('\u001B[C')
+      await waitFor(() => (costRequests.length === 1 ? true : undefined))
+      expect(costRequests).toEqual(['active-session'])
+
+      // A second Usage entry in the same menu supersedes the first request.
+      app.stdin.write('\u001B[D')
+      app.stdin.write('\u001B[C')
+      await waitFor(() => (costRequests.length === 2 ? true : undefined))
+      expect(costRequests).toEqual(['active-session', 'active-session'])
+
+      // Reopening Settings Usage creates a newer menu generation and request.
+      app.stdin.write('\u001B')
+      await waitFor(() => {
+        const frame = app.lastFrame()
+        return frame !== undefined && !frame.includes('Status  Config  Usage')
+          ? true
+          : undefined
+      })
+      app.stdin.write('/cost')
+      app.stdin.write('\r')
+      await waitFor(() => (costRequests.length === 3 ? true : undefined))
+      expect(costRequests).toEqual([
+        'active-session',
+        'active-session',
+        'active-session',
+      ])
+      const freshTurn = turns.at(-1)
+      expect(freshTurn).not.toBeNull()
+
+      // A superseded request fails late: its warning must not surface either,
+      // even when it settles before the oldest stale request resolves.
+      deferreds[1]?.reject(new Error('stale cost failure'))
+      await flush()
+      expect(turns.at(-1)).toBe(freshTurn)
+      expect(app.lastFrame()).not.toContain('stale cost failure')
+
+      // The oldest request resolves late with stale data: it must not overwrite
+      // the newer menu, and its turn cleanup must not touch the newer operation.
+      deferreds[0]?.resolve(snapshot(111.11))
+      await flush()
+      expect(turns.at(-1)).toBe(freshTurn)
+      expect(app.lastFrame()).toContain('Total cost:            $0.0000')
+      expect(app.lastFrame()).not.toContain('$111.11')
+
+      // The newest request resolves and its snapshot is the one that remains.
+      deferreds[2]?.resolve(snapshot(222.22))
+      await waitFor(() =>
+        app.lastFrame()?.includes('Total cost:            $222.22')
+          ? true
+          : undefined,
+      )
+      expect(app.lastFrame()).toContain('Total cost:            $222.22')
+      expect(app.lastFrame()).not.toContain('$111.11')
+      expect(app.lastFrame()).not.toContain('stale cost failure')
+      expect(turns.at(-1)).toBeNull()
+      expect(creations).toEqual([
+        { requireProvider: false },
+        { requireProvider: false },
+        { requireProvider: false },
+      ])
+      expect(runCalls).toEqual([])
+      expect(resumeCalls).toEqual([])
+    } finally {
+      app.unmount()
+    }
+  })
+
+  function doctorReport(overrides: Partial<DoctorReport> = {}): DoctorReport {
+    return {
+      type: 'doctor',
+      ok: true,
+      praxisVersion: '1.2.3',
+      checks: [
+        {
+          id: 'installation',
+          status: 'pass',
+          summary: 'Praxis 1.2.3 installation is readable',
+        },
+        {
+          id: 'mcp',
+          status: 'warn',
+          summary: '1 MCP server configuration(s) are valid',
+          details: {
+            warnings: ['server filesystem uses a deprecated transport'],
+          },
+        },
+        {
+          id: 'plugins',
+          status: 'fail',
+          summary: 'plugin manifest is missing a name',
+        },
+      ],
+      summary: { passed: 1, warnings: 1, failed: 1 },
+      ...overrides,
+    }
+  }
+
+  it('opens /doctor with an immediate loading screen and renders the completed report without service work', async () => {
+    const creations: string[] = []
+    let resolveDoctor!: (report: DoctorReport) => void
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            creations.push('service')
+            throw new Error('doctor must not create a service')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+        doctorLoader={() =>
+          new Promise<DoctorReport>((resolve) => {
+            resolveDoctor = resolve
+          })
+        }
+      />,
+    )
+
+    app.stdin.write('/doctor')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Checking installation status…')
+    expect(creations).toEqual([])
+
+    resolveDoctor(doctorReport())
+    await waitFor(() =>
+      app.lastFrame()?.includes('Summary: 1 passed, 1 warnings, 1 failed.')
+        ? true
+        : undefined,
+    )
+    const frame = app.lastFrame()
+    expect(frame).toContain('Diagnostics')
+    expect(frame).toContain('Updates')
+    expect(frame).toContain(
+      'installation: Praxis 1.2.3 installation is readable',
+    )
+    expect(frame).toContain('Current version: Praxis 1.2.3')
+    expect(frame).toContain('Auto-update: not checked')
+    expect(frame).toContain('Update permissions: not checked')
+    expect(frame).toContain('MCP parsing warnings')
+    expect(frame).toContain('Plugin errors')
+    expect(frame).toContain('Enter to continue · Esc to cancel')
+    expect(frame).not.toContain('⎿')
+    expect(creations).toEqual([])
+
+    // Enter dismisses locally without a model turn, transcript item, or service.
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).not.toContain('Diagnostics')
+    expect(app.lastFrame()).not.toContain('⎿')
+    expect(creations).toEqual([])
+    app.unmount()
+  })
+
+  it('renders a current /doctor loader rejection inside the doctor screen and Esc dismisses', async () => {
+    const creations: string[] = []
+    let rejectDoctor!: (reason: Error) => void
+    const secretEnvName = 'PRAXIS_TEST_TOKEN'
+    const priorSecret = process.env[secretEnvName]
+    const secret = 'praxis-ambient-secret-7d3c9f1'
+    process.env[secretEnvName] = secret
+    try {
+      const app = render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              creations.push('service')
+              throw new Error('doctor must not create a service')
+            },
+          }}
+          initialSessions={[]}
+          display={{ version: 'test', cwd: '/fixture/workspace' }}
+          doctorLoader={() =>
+            new Promise<DoctorReport>((_resolve, reject) => {
+              rejectDoctor = reject
+            })
+          }
+        />,
+      )
+
+      app.stdin.write('/doctor')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…')
+          ? true
+          : undefined,
+      )
+      rejectDoctor(new Error(`PRAXIS_TEST_TOKEN is required: ${secret}`))
+      await waitFor(() =>
+        app.lastFrame()?.includes('Diagnostics failed') ? true : undefined,
+      )
+      expect(app.lastFrame()).toContain('PRAXIS_TEST_TOKEN is required')
+      expect(app.lastFrame()).toContain('[REDACTED]')
+      expect(app.lastFrame()).not.toContain(secret)
+      expect(app.lastFrame()).toContain('Enter to continue · Esc to cancel')
+      expect(app.lastFrame()).not.toContain('⎿')
+      expect(creations).toEqual([])
+
+      app.stdin.write('')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Diagnostics failed') === false
+          ? true
+          : undefined,
+      )
+      expect(creations).toEqual([])
+      app.unmount()
+    } finally {
+      if (priorSecret === undefined) delete process.env[secretEnvName]
+      else process.env[secretEnvName] = priorSecret
+    }
+  })
+
+  it('invalidates closed /doctor generations so stale success and failure stay inert', async () => {
+    const deferreds: Array<{
+      resolve: (report: DoctorReport) => void
+      reject: (reason: Error) => void
+    }> = []
+    const loaderCalls: string[] = []
+    const creations: string[] = []
+    const turns: Array<Promise<void> | null> = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            creations.push('service')
+            throw new Error('doctor must not create a service')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+        onTurnChange={(turn) => {
+          turns.push(turn)
+        }}
+        doctorLoader={() => {
+          loaderCalls.push(String(loaderCalls.length))
+          let resolve!: (report: DoctorReport) => void
+          let reject!: (reason: Error) => void
+          const promise = new Promise<DoctorReport>((res, rej) => {
+            resolve = res
+            reject = rej
+          })
+          deferreds.push({ resolve, reject })
+          return promise
+        }}
+      />,
+    )
+
+    try {
+      // Open -> close -> reopen -> close -> reopen yields three loader calls.
+      app.stdin.write('/doctor')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…')
+          ? true
+          : undefined,
+      )
+      app.stdin.write('')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…') === false
+          ? true
+          : undefined,
+      )
+      app.stdin.write('/doctor')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…')
+          ? true
+          : undefined,
+      )
+      app.stdin.write('')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…') === false
+          ? true
+          : undefined,
+      )
+      app.stdin.write('/doctor')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…')
+          ? true
+          : undefined,
+      )
+      expect(loaderCalls).toEqual(['0', '1', '2'])
+      const freshTurn = turns.at(-1)
+      expect(freshTurn).not.toBeNull()
+
+      // The first (stale) loader success must not overwrite the newer panel.
+      deferreds[0]?.resolve(doctorReport())
+      await flush()
+      expect(app.lastFrame()).toContain('Checking installation status…')
+      expect(turns.at(-1)).toBe(freshTurn)
+
+      // The second (stale) loader failure must not surface into the newer panel.
+      deferreds[1]?.reject(new Error('stale doctor failure'))
+      await flush()
+      expect(app.lastFrame()).toContain('Checking installation status…')
+      expect(app.lastFrame()).not.toContain('stale doctor failure')
+      expect(turns.at(-1)).toBe(freshTurn)
+
+      // The current loader resolves and renders only the newest report.
+      deferreds[2]?.resolve(
+        doctorReport({
+          praxisVersion: '9.9.9',
+          checks: [
+            {
+              id: 'installation',
+              status: 'pass',
+              summary: 'Praxis 9.9.9 installation is readable',
+            },
+          ],
+          summary: { passed: 1, warnings: 0, failed: 0 },
+        }),
+      )
+      await waitFor(() =>
+        app.lastFrame()?.includes('Current version: Praxis 9.9.9')
+          ? true
+          : undefined,
+      )
+      expect(app.lastFrame()).toContain('Current version: Praxis 9.9.9')
+      expect(app.lastFrame()).not.toContain('Praxis 1.2.3')
+      expect(app.lastFrame()).not.toContain('stale doctor failure')
+      expect(turns.at(-1)).toBeNull()
+      expect(creations).toEqual([])
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('lists /doctor in slash discovery with the fixed description', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+    app.stdin.write('/doc')
+    await flush()
+    expect(app.lastFrame()).toContain('/doctor')
+    expect(app.lastFrame()).toContain(
+      'Diagnose and verify your Claude Code installation and settings',
+    )
+    app.unmount()
   })
 
   it('reports the current renderer and restarts after switching it', async () => {
@@ -1085,7 +1674,9 @@ describe('InteractiveApp', () => {
     app.stdin.write('/usage')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Usage: 0 input, 0 output')
+    expect(app.lastFrame()).toContain(
+      'Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
+    )
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
 
@@ -2259,6 +2850,14 @@ describe('InteractiveApp', () => {
   it('streams /btw answers and manages history, copy, and clear locally', async () => {
     const clipboardWriter = vi.fn(async () => undefined)
     const questions: string[] = []
+    const sideUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUsd: 0,
+    }
     const app = render(
       <InteractiveApp
         factory={{
@@ -2281,10 +2880,28 @@ describe('InteractiveApp', () => {
                 const answer = question === 'first?' ? 'FIRST' : 'SECOND'
                 onDelta?.(answer.slice(0, 2))
                 onDelta?.(answer.slice(2))
+                sideUsage.inputTokens += 2
+                sideUsage.outputTokens += 1
                 return {
                   sessionId: 'active-session',
                   text: answer,
                   usage: { inputTokens: 2, outputTokens: 1 },
+                }
+              },
+              async costSnapshot(sessionId) {
+                return {
+                  sessionId,
+                  totalCostUsd: sideUsage.costUsd,
+                  apiDurationMs: 0,
+                  apiDurationWithoutRetriesMs: 0,
+                  toolDurationMs: 0,
+                  wallDurationMs: 0,
+                  linesAdded: 0,
+                  linesRemoved: 0,
+                  hasUnknownModelCost: false,
+                  modelUsage: {
+                    'claude-sonnet-4-20250514': { ...sideUsage },
+                  },
                 }
               },
             }
@@ -2331,8 +2948,12 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     app.stdin.write('/usage')
     app.stdin.write('\r')
-    await flush()
-    expect(app.lastFrame()).toContain('Usage: 4 input, 2 output')
+    await waitFor(() =>
+      app.lastFrame()?.includes('4 input, 2 output') ? true : undefined,
+    )
+    expect(app.lastFrame()).toContain(
+      'claude-sonnet-4-0:  4 input, 2 output, 0 cache read, 0 cache write ($0.0000)',
+    )
   })
 
   it('keeps a fresh /btw session for later fork and accumulates its cost', async () => {
@@ -2365,6 +2986,29 @@ describe('InteractiveApp', () => {
                   costUsd: 0.000321,
                 }
               },
+              async costSnapshot(sessionId) {
+                return {
+                  sessionId,
+                  totalCostUsd: 0.000321,
+                  apiDurationMs: 0,
+                  apiDurationWithoutRetriesMs: 0,
+                  toolDurationMs: 0,
+                  wallDurationMs: 0,
+                  linesAdded: 0,
+                  linesRemoved: 0,
+                  hasUnknownModelCost: false,
+                  modelUsage: {
+                    'claude-sonnet-4-20250514': {
+                      inputTokens: 2,
+                      outputTokens: 1,
+                      cacheReadInputTokens: 0,
+                      cacheCreationInputTokens: 0,
+                      webSearchRequests: 0,
+                      costUsd: 0.000321,
+                    },
+                  },
+                }
+              },
               forkSideQuestion,
             }
           },
@@ -2388,8 +3032,10 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     app.stdin.write('/usage')
     app.stdin.write('\r')
-    await flush()
-    expect(app.lastFrame()).toContain('$0.0003')
+    await waitFor(() =>
+      app.lastFrame()?.includes('($0.0003)') ? true : undefined,
+    )
+    expect(app.lastFrame()).toContain('($0.0003)')
   })
 
   it('aborts an in-flight /btw answer when its panel closes', async () => {
@@ -3570,15 +4216,21 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('/memory')
     app.stdin.write('\r')
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    await flush()
+    await waitFor(() =>
+      app.lastFrame()?.includes('Auto-memory: on') ? true : undefined,
+    )
     app.stdin.write('2')
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    await flush()
+    await waitFor(() =>
+      memoryEditor.mock.calls.length === 1 ? true : undefined,
+    )
     expect(memoryEditor).toHaveBeenCalledWith('/workspace/CLAUDE.md', {
       cwd: '/workspace',
     })
-    expect(app.lastFrame()).toContain('Opened memory file at ./CLAUDE.md')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Opened memory file at ./CLAUDE.md')
+        ? true
+        : undefined,
+    )
     expect(app.lastFrame()).toContain('Using Fixture editor')
   })
 

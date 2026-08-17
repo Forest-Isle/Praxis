@@ -215,6 +215,7 @@ export interface CliRuntimeInfo {
   cwd: string
   model: string
   contextWindowTokens?: number
+  maxOutputTokens?: number
   tools: readonly string[]
   mcpServers: readonly { name: string; status: string }[]
   permissionMode: string
@@ -233,6 +234,11 @@ export interface ProtocolResult {
   durationApiMs?: number
   costUsd?: number
   modelUsage?: Readonly<Record<string, ModelUsage>>
+  /**
+   * Exact per-model cost in USD. When present, each model's costUSD is taken
+   * from this map instead of assigning the total cost to runtimeInfo.model.
+   */
+  modelCostUsd?: Readonly<Record<string, number>>
 }
 
 export function createSuccessResult(
@@ -278,7 +284,18 @@ export function createSuccessResult(
           outputTokens: modelUsage.outputTokens,
           cacheReadInputTokens: modelUsage.cacheReadInputTokens ?? 0,
           cacheCreationInputTokens: modelUsage.cacheCreationInputTokens ?? 0,
-          costUSD: model === info.model ? (result.costUsd ?? null) : null,
+          costUSD:
+            result.modelCostUsd?.[model] ??
+            (model === info.model ? (result.costUsd ?? null) : null),
+          ...(modelUsage.webSearchRequests === undefined
+            ? {}
+            : { webSearchRequests: modelUsage.webSearchRequests }),
+          contextWindow:
+            modelUsage.contextWindow ??
+            (model === info.model ? (info.contextWindowTokens ?? 0) : 0),
+          maxOutputTokens:
+            modelUsage.maxOutputTokens ??
+            (model === info.model ? (info.maxOutputTokens ?? 0) : 0),
         },
       ]),
     ),
@@ -342,6 +359,14 @@ export function matchHeadlessColorCommand(prompt: string): string | undefined {
   const match = /^\/color(?:\s+([\s\S]*))?$/u.exec(prompt)
   if (match === null) return undefined
   return match[1] ?? ''
+}
+
+/**
+ * Returns true only for a trimmed exact `/cost` command. `/costs`, `/cost
+ * extra`, and any non-slash text are model prompts.
+ */
+export function isHeadlessCostCommand(prompt: string): boolean {
+  return prompt.trim() === '/cost'
 }
 
 const INPUT_FORMATS = ['text', 'stream-json'] as const

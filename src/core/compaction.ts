@@ -11,6 +11,8 @@ export interface CompactionResult {
   summary: string
   usage: ModelUsage
   durationMs: number
+  durationWithoutRetriesMs?: number
+  model?: string
 }
 
 export interface Compactor {

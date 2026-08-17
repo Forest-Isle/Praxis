@@ -104,6 +104,12 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'doctor',
+    description:
+      'Diagnose and verify your Claude Code installation and settings',
+    source: 'builtin',
+  },
+  {
     name: 'context',
     description: 'Visualize current context usage as a colored grid',
     source: 'builtin',
@@ -117,6 +123,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     name: 'copy',
     description:
       "Copy Praxis's last response to clipboard (or /copy N for the Nth-latest)",
+    source: 'builtin',
+  },
+  {
+    name: 'cost',
+    description: 'Show the total cost and duration of the current session',
     source: 'builtin',
   },
   {

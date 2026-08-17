@@ -14,6 +14,7 @@ import {
   workflowReplayDescriptor,
   workflowReplayKey,
 } from '../compatibility/claude/workflow-replay.js'
+import type { ModelUsage, ModelUsageByModel } from '../core/runtime.js'
 import { ClaudeWorkflowStore } from '../persistence/claude-workflow-store.js'
 import type {
   WorkflowAgentRunOptions,
@@ -105,6 +106,10 @@ interface WorkflowTask {
   totalTokens: number
   totalInputTokens: number
   totalToolCalls: number
+  usage: ModelUsage
+  modelUsage: Map<string, ModelUsage>
+  durationApiMs: number
+  durationApiWithoutRetriesMs: number
   controller: AbortController
   promise: Promise<void>
   notificationPending: boolean
@@ -202,6 +207,172 @@ function validateAgentOptions(options: WorkflowAgentOptions): void {
   }
 }
 
+const workflowUsageCounterFields = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+  'webSearchRequests',
+] as const
+
+const workflowUsageMetadataFields = [
+  'contextWindow',
+  'maxOutputTokens',
+] as const
+
+function assertValidWorkflowUsage(usage: ModelUsage): void {
+  for (const field of workflowUsageCounterFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`Workflow agent usage has an invalid ${field} counter`)
+    }
+  }
+}
+
+function addWorkflowApiDuration(
+  value: number,
+  total: number,
+  field: 'durationApiMs' | 'durationApiWithoutRetriesMs',
+): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`Workflow ${field} must be a finite nonnegative number`)
+  }
+  const next = total + value
+  if (!Number.isFinite(next) || next < 0) {
+    throw new TypeError(`Workflow ${field} total overflow`)
+  }
+  return next
+}
+
+function addWorkflowUsageChecked(
+  model: string | undefined,
+  left: ModelUsage,
+  right: ModelUsage,
+): ModelUsage {
+  assertValidWorkflowUsage(right)
+  const inputTokens = left.inputTokens + right.inputTokens
+  const outputTokens = left.outputTokens + right.outputTokens
+  const cacheReadInputTokens =
+    (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
+  const cacheCreationInputTokens =
+    (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const webSearchRequests =
+    (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    !Number.isSafeInteger(outputTokens) ||
+    !Number.isSafeInteger(cacheReadInputTokens) ||
+    !Number.isSafeInteger(cacheCreationInputTokens) ||
+    !Number.isSafeInteger(webSearchRequests)
+  ) {
+    throw new Error('Workflow model usage total overflow')
+  }
+  // Aggregates without a model stay counter-only; per-model rows merge their
+  // capability metadata with conflict rejection.
+  const metadata =
+    model === undefined ? {} : mergeWorkflowUsageMetadata(model, left, right)
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
+    ...metadata,
+  }
+}
+
+function mergeWorkflowUsageMetadata(
+  model: string,
+  left: ModelUsage,
+  right: ModelUsage,
+): { contextWindow?: number; maxOutputTokens?: number } {
+  const contextWindow = mergeWorkflowUsageMetadataField(
+    model,
+    'contextWindow',
+    left.contextWindow,
+    right.contextWindow,
+  )
+  const maxOutputTokens = mergeWorkflowUsageMetadataField(
+    model,
+    'maxOutputTokens',
+    left.maxOutputTokens,
+    right.maxOutputTokens,
+  )
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+  }
+}
+
+function mergeWorkflowUsageMetadataField(
+  model: string,
+  field: string,
+  left: number | undefined,
+  right: number | undefined,
+): number | undefined {
+  if (left === undefined) return right
+  if (right === undefined) return left
+  if (left !== right) {
+    throw new Error(
+      `Workflow model usage for "${model}" has conflicting ${field} values: ${left} vs ${right}`,
+    )
+  }
+  return left
+}
+
+function assertValidWorkflowModelUsageEntry(
+  model: string,
+  usage: ModelUsage,
+): void {
+  if (model.trim() === '') {
+    throw new Error(
+      'Workflow model usage breakdown contains a blank model name',
+    )
+  }
+  assertValidWorkflowUsage(usage)
+  for (const field of workflowUsageMetadataFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      throw new Error(
+        `Workflow model usage for "${model}" has an invalid ${field} metadata value`,
+      )
+    }
+  }
+}
+
+function mergeWorkflowModelUsageEntry(
+  map: Map<string, ModelUsage>,
+  model: string,
+  usage: ModelUsage,
+): void {
+  assertValidWorkflowModelUsageEntry(model, usage)
+  const existing = map.get(model)
+  if (existing === undefined) {
+    map.set(model, { ...usage })
+    return
+  }
+  map.set(model, addWorkflowUsageChecked(model, existing, usage))
+}
+
+function mergeWorkflowModelUsage(
+  map: Map<string, ModelUsage>,
+  breakdown: ModelUsageByModel,
+): void {
+  const entries = Object.entries(breakdown)
+  if (entries.length === 0) return
+  // Validate every key, counter, metadata, and merged sum before adding any
+  // entry from this agent result so a malformed or conflicting breakdown never
+  // merges partially.
+  for (const [model, usage] of entries) {
+    assertValidWorkflowModelUsageEntry(model, usage)
+    const existing = map.get(model)
+    if (existing !== undefined) addWorkflowUsageChecked(model, existing, usage)
+  }
+  for (const [model, usage] of entries) {
+    mergeWorkflowModelUsageEntry(map, model, usage)
+  }
+}
+
 export class WorkflowManager {
   private readonly tasks = new Map<string, WorkflowTask>()
   private readonly activeRuns = new Set<string>()
@@ -258,6 +429,10 @@ export class WorkflowManager {
       totalTokens: 0,
       totalInputTokens: 0,
       totalToolCalls: 0,
+      usage: { inputTokens: 0, outputTokens: 0 },
+      modelUsage: new Map<string, ModelUsage>(),
+      durationApiMs: 0,
+      durationApiWithoutRetriesMs: 0,
       controller,
       promise: Promise.resolve(),
       notificationPending: false,
@@ -340,7 +515,10 @@ export class WorkflowManager {
 
   async notifications(waitForRunning: boolean): Promise<{
     messages: string[]
-    usage: { inputTokens: number; outputTokens: number }
+    usage: ModelUsage
+    modelUsage?: ModelUsageByModel
+    durationApiMs?: number
+    durationApiWithoutRetriesMs?: number
   }> {
     if (waitForRunning) {
       await Promise.all(
@@ -350,19 +528,46 @@ export class WorkflowManager {
       )
     }
     const messages: string[] = []
-    let inputTokens = 0
-    let outputTokens = 0
+    let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+    const modelUsage = new Map<string, ModelUsage>()
+    let durationApiMs = 0
+    let durationApiWithoutRetriesMs = 0
+    let durationSeen = false
+    const consumedTasks: WorkflowTask[] = []
     for (const task of this.tasks.values()) {
       if (task.status === 'running' || !task.notificationPending) continue
-      task.notificationPending = false
       messages.push(this.notification(task))
-      inputTokens += task.totalInputTokens
-      outputTokens += task.totalTokens
+      usage = addWorkflowUsageChecked(undefined, usage, task.usage)
+      for (const [model, entry] of task.modelUsage) {
+        mergeWorkflowModelUsageEntry(modelUsage, model, entry)
+      }
+      if (task.durationApiMs !== 0 || task.durationApiWithoutRetriesMs !== 0) {
+        durationSeen = true
+        durationApiMs = addWorkflowApiDuration(
+          task.durationApiMs,
+          durationApiMs,
+          'durationApiMs',
+        )
+        durationApiWithoutRetriesMs = addWorkflowApiDuration(
+          task.durationApiWithoutRetriesMs,
+          durationApiWithoutRetriesMs,
+          'durationApiWithoutRetriesMs',
+        )
+      }
+      consumedTasks.push(task)
     }
-    return {
+    const modelUsageByModel =
+      modelUsage.size === 0 ? undefined : Object.fromEntries(modelUsage)
+    const result = {
       messages,
-      usage: { inputTokens, outputTokens },
+      usage,
+      ...(modelUsageByModel === undefined
+        ? {}
+        : { modelUsage: modelUsageByModel }),
+      ...(durationSeen ? { durationApiMs, durationApiWithoutRetriesMs } : {}),
     }
+    for (const task of consumedTasks) task.notificationPending = false
+    return result
   }
 
   list(sessionId?: string): readonly WorkflowTaskSnapshot[] {
@@ -557,6 +762,30 @@ export class WorkflowManager {
           task.totalTokens += progress.totalTokens
           task.totalInputTokens += result.usage.inputTokens
           task.totalToolCalls += result.toolUseCount
+          task.usage = addWorkflowUsageChecked(
+            undefined,
+            task.usage,
+            result.usage,
+          )
+          if (result.modelUsage !== undefined) {
+            mergeWorkflowModelUsage(task.modelUsage, result.modelUsage)
+          }
+          if (
+            result.durationApiMs !== undefined ||
+            result.durationApiWithoutRetriesMs !== undefined
+          ) {
+            const total = result.durationApiMs ?? 0
+            task.durationApiMs = addWorkflowApiDuration(
+              total,
+              task.durationApiMs,
+              'durationApiMs',
+            )
+            task.durationApiWithoutRetriesMs = addWorkflowApiDuration(
+              result.durationApiWithoutRetriesMs ?? total,
+              task.durationApiWithoutRetriesMs,
+              'durationApiWithoutRetriesMs',
+            )
+          }
           await task.store.append({
             type: 'result',
             key,

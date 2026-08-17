@@ -1,4 +1,4 @@
-import type { ModelUsage } from '../core/runtime.js'
+import type { ModelUsage, ModelUsageByModel } from '../core/runtime.js'
 
 const AGENT_ID_PATTERN = /^a[0-9a-f]{16}$/u
 const MAX_TIMEOUT_MS = 600_000
@@ -6,6 +6,9 @@ const MAX_TIMEOUT_MS = 600_000
 export interface BackgroundAgentRunResult {
   text: string
   usage: ModelUsage
+  modelUsage?: ModelUsageByModel
+  durationApiMs?: number
+  durationApiWithoutRetriesMs?: number
   toolUseCount: number
   durationMs: number
   isolationPath?: string
@@ -108,6 +111,170 @@ function waitBounded(
       },
     )
   })
+}
+
+const modelUsageCounterFields = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+  'webSearchRequests',
+] as const
+
+const modelUsageMetadataFields = ['contextWindow', 'maxOutputTokens'] as const
+
+function assertValidModelUsageEntry(model: string, usage: ModelUsage): void {
+  if (model.trim() === '') {
+    throw new Error('Model usage breakdown contains a blank model name')
+  }
+  for (const field of modelUsageCounterFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(
+        `Model usage for "${model}" has an invalid ${field} counter`,
+      )
+    }
+  }
+  for (const field of modelUsageMetadataFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      throw new Error(
+        `Model usage for "${model}" has an invalid ${field} metadata value`,
+      )
+    }
+  }
+}
+
+function mergeModelUsageMetadata(
+  model: string,
+  left: ModelUsage,
+  right: ModelUsage,
+): { contextWindow?: number; maxOutputTokens?: number } {
+  const contextWindow = mergeModelUsageMetadataField(
+    model,
+    'contextWindow',
+    left.contextWindow,
+    right.contextWindow,
+  )
+  const maxOutputTokens = mergeModelUsageMetadataField(
+    model,
+    'maxOutputTokens',
+    left.maxOutputTokens,
+    right.maxOutputTokens,
+  )
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+  }
+}
+
+function mergeModelUsageMetadataField(
+  model: string,
+  field: string,
+  left: number | undefined,
+  right: number | undefined,
+): number | undefined {
+  if (left === undefined) return right
+  if (right === undefined) return left
+  if (left !== right) {
+    throw new Error(
+      `Model usage for "${model}" has conflicting ${field} values: ${left} vs ${right}`,
+    )
+  }
+  return left
+}
+
+function addUsageChecked(
+  model: string | undefined,
+  left: ModelUsage,
+  right: ModelUsage,
+): ModelUsage {
+  const inputTokens = left.inputTokens + right.inputTokens
+  const outputTokens = left.outputTokens + right.outputTokens
+  const cacheReadInputTokens =
+    (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
+  const cacheCreationInputTokens =
+    (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const webSearchRequests =
+    (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    !Number.isSafeInteger(outputTokens) ||
+    !Number.isSafeInteger(cacheReadInputTokens) ||
+    !Number.isSafeInteger(cacheCreationInputTokens) ||
+    !Number.isSafeInteger(webSearchRequests)
+  ) {
+    throw new Error('Model usage total overflow')
+  }
+  // Aggregates without a model stay counter-only; per-model rows merge their
+  // capability metadata with conflict rejection.
+  const metadata =
+    model === undefined ? {} : mergeModelUsageMetadata(model, left, right)
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
+    ...metadata,
+  }
+}
+
+function assertValidResultUsage(usage: ModelUsage): void {
+  for (const field of modelUsageCounterFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`Model usage total has an invalid ${field} counter`)
+    }
+  }
+}
+
+function addApiDuration(
+  value: number,
+  total: number,
+  field: 'durationApiMs' | 'durationApiWithoutRetriesMs',
+): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${field} must be a finite nonnegative number`)
+  }
+  const next = total + value
+  if (!Number.isFinite(next) || next < 0) {
+    throw new TypeError(`${field} total overflow`)
+  }
+  return next
+}
+
+function mergeModelUsageEntry(
+  map: Map<string, ModelUsage>,
+  model: string,
+  usage: ModelUsage,
+): void {
+  assertValidModelUsageEntry(model, usage)
+  const existing = map.get(model)
+  if (existing === undefined) {
+    map.set(model, { ...usage })
+    return
+  }
+  map.set(model, addUsageChecked(model, existing, usage))
+}
+
+function mergeToolModelUsage(
+  map: Map<string, ModelUsage>,
+  breakdown: ModelUsageByModel,
+): void {
+  const entries = Object.entries(breakdown)
+  if (entries.length === 0) return
+  // Validate every key, counter, metadata, and merged sum before adding any
+  // entry from this breakdown so malformed or conflicting data never merges
+  // partially.
+  for (const [model, usage] of entries) {
+    assertValidModelUsageEntry(model, usage)
+    const existing = map.get(model)
+    if (existing !== undefined) addUsageChecked(model, existing, usage)
+  }
+  for (const [model, usage] of entries) {
+    mergeModelUsageEntry(map, model, usage)
+  }
 }
 
 export class BackgroundAgentManager {
@@ -284,7 +451,13 @@ export class BackgroundAgentManager {
   async notifications(options: {
     waitForRunning: boolean
     excludeAgentId?: string
-  }): Promise<{ messages: string[]; usage: ModelUsage }> {
+  }): Promise<{
+    messages: string[]
+    usage: ModelUsage
+    modelUsage?: ModelUsageByModel
+    durationApiMs?: number
+    durationApiWithoutRetriesMs?: number
+  }> {
     const eligibleTasks = [...this.tasks.entries()].filter(
       ([agentId]) => agentId !== options.excludeAgentId,
     )
@@ -300,15 +473,51 @@ export class BackgroundAgentManager {
       if (running.length > 0) await Promise.race(running)
     }
     const notifications: string[] = []
-    const usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+    let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+    const modelUsageByModel = new Map<string, ModelUsage>()
+    let durationApiMs = 0
+    let durationApiWithoutRetriesMs = 0
+    let durationSeen = false
+    const consumedTasks: BackgroundAgentTask[] = []
     for (const [, task] of eligibleTasks) {
-      for (const notification of task.notifications.splice(0)) {
+      if (task.notifications.length === 0) continue
+      for (const notification of task.notifications) {
         notifications.push(this.formatNotification(task, notification))
-        usage.inputTokens += notification.result?.usage.inputTokens ?? 0
-        usage.outputTokens += notification.result?.usage.outputTokens ?? 0
+        if (notification.result) {
+          assertValidResultUsage(notification.result.usage)
+          usage = addUsageChecked(undefined, usage, notification.result.usage)
+        }
+        if (notification.result?.modelUsage) {
+          mergeToolModelUsage(modelUsageByModel, notification.result.modelUsage)
+        }
+        if (
+          notification.result?.durationApiMs !== undefined ||
+          notification.result?.durationApiWithoutRetriesMs !== undefined
+        ) {
+          durationSeen = true
+          const total = notification.result.durationApiMs ?? 0
+          durationApiMs = addApiDuration(total, durationApiMs, 'durationApiMs')
+          durationApiWithoutRetriesMs = addApiDuration(
+            notification.result.durationApiWithoutRetriesMs ?? total,
+            durationApiWithoutRetriesMs,
+            'durationApiWithoutRetriesMs',
+          )
+        }
       }
+      consumedTasks.push(task)
     }
-    return { messages: notifications, usage }
+    const modelUsage =
+      modelUsageByModel.size === 0
+        ? undefined
+        : Object.fromEntries(modelUsageByModel)
+    const result = {
+      messages: notifications,
+      usage,
+      ...(modelUsage === undefined ? {} : { modelUsage }),
+      ...(durationSeen ? { durationApiMs, durationApiWithoutRetriesMs } : {}),
+    }
+    for (const task of consumedTasks) task.notifications.splice(0)
+    return result
   }
 
   private start(
