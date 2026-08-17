@@ -238,6 +238,126 @@ describe('ClaudeSessionCostTracker', () => {
     expect(snapshot.apiDurationWithoutRetriesMs).toBe(400)
   })
 
+  it('records global durations independently of model usage rows', () => {
+    const tracker = new ClaudeSessionCostTracker({ sessionId: 's1' })
+
+    tracker.recordDurations({
+      apiDurationMs: 500,
+      apiDurationWithoutRetriesMs: 400,
+      toolDurationMs: 300,
+    })
+
+    const snapshot = tracker.snapshot()
+    expect(snapshot.apiDurationMs).toBe(500)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(400)
+    expect(snapshot.toolDurationMs).toBe(300)
+    expect(snapshot.modelUsage).toEqual({})
+    expect(snapshot.totalCostUsd).toBe(0)
+  })
+
+  it('accumulates recordDurations and mirrors the api total when retry-free is omitted', () => {
+    const tracker = new ClaudeSessionCostTracker({ sessionId: 's1' })
+
+    tracker.recordDurations({ apiDurationMs: 400 })
+    tracker.recordDurations({ apiDurationMs: 100, toolDurationMs: 50 })
+    tracker.recordDurations({ apiDurationMs: 25, toolDurationMs: 75 })
+
+    const snapshot = tracker.snapshot()
+    expect(snapshot.apiDurationMs).toBe(525)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(525)
+    expect(snapshot.toolDurationMs).toBe(125)
+  })
+
+  it('adds nothing when no duration is supplied', () => {
+    const tracker = new ClaudeSessionCostTracker({
+      sessionId: 's1',
+      now: () => 100,
+    })
+    tracker.recordDurations({ apiDurationMs: 100 })
+
+    const before = tracker.snapshot()
+    tracker.recordDurations({})
+
+    expect(tracker.snapshot()).toEqual(before)
+  })
+
+  it('rejects invalid recordDurations values atomically', () => {
+    const tracker = new ClaudeSessionCostTracker({
+      sessionId: 's1',
+      now: () => 100,
+    })
+    tracker.recordDurations({ apiDurationMs: 100, toolDurationMs: 50 })
+
+    const before = tracker.snapshot()
+
+    expect(() => tracker.recordDurations({ apiDurationMs: -1 })).toThrow(
+      TypeError,
+    )
+    expect(tracker.snapshot()).toEqual(before)
+    expect(() => tracker.recordDurations({ apiDurationMs: NaN })).toThrow(
+      TypeError,
+    )
+    expect(tracker.snapshot()).toEqual(before)
+    expect(() => tracker.recordDurations({ apiDurationMs: Infinity })).toThrow(
+      TypeError,
+    )
+    expect(tracker.snapshot()).toEqual(before)
+    expect(() =>
+      tracker.recordDurations({ apiDurationWithoutRetriesMs: -5 }),
+    ).toThrow(TypeError)
+    expect(tracker.snapshot()).toEqual(before)
+    expect(() => tracker.recordDurations({ toolDurationMs: -1 })).toThrow(
+      TypeError,
+    )
+    expect(tracker.snapshot()).toEqual(before)
+    expect(() => tracker.recordDurations({ toolDurationMs: NaN })).toThrow(
+      TypeError,
+    )
+    expect(tracker.snapshot()).toEqual(before)
+  })
+
+  it('rejects recordDurations overflow atomically', () => {
+    const tracker = new ClaudeSessionCostTracker({
+      sessionId: 's1',
+      now: () => 100,
+    })
+    tracker.recordDurations({ apiDurationMs: 1e308, toolDurationMs: 1e308 })
+
+    const before = tracker.snapshot()
+
+    expect(() => tracker.recordDurations({ apiDurationMs: 1e308 })).toThrow(
+      TypeError,
+    )
+    expect(tracker.snapshot()).toEqual(before)
+    expect(() => tracker.recordDurations({ toolDurationMs: 1e308 })).toThrow(
+      TypeError,
+    )
+    expect(tracker.snapshot()).toEqual(before)
+  })
+
+  it('rejects an invalid turn tool duration atomically via the shared duration validation', () => {
+    const tracker = new ClaudeSessionCostTracker({
+      sessionId: 's1',
+      now: () => 100,
+    })
+    tracker.recordTurn({
+      model: 'model-a',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      toolDurationMs: 5,
+    })
+
+    const before = tracker.snapshot()
+
+    expect(() =>
+      tracker.recordTurn({
+        model: 'model-a',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        toolDurationMs: -1,
+      }),
+    ).toThrow(TypeError)
+    expect(tracker.snapshot()).toEqual(before)
+  })
+
   it('treats omitted metrics as zero', () => {
     const tracker = new ClaudeSessionCostTracker({ sessionId: 's1' })
 

@@ -286,6 +286,7 @@ export interface ToolExecutionResult {
   nativeMcpMeta?: Record<string, unknown>
   durationApiMs?: number
   durationApiWithoutRetriesMs?: number
+  durationToolMs?: number
   processOutput?: {
     stdout: string
     stderr: string
@@ -541,6 +542,7 @@ export interface AgentRunResult {
   modelUsage?: ModelUsageByModel
   durationApiMs?: number
   durationApiWithoutRetriesMs?: number
+  durationToolMs?: number
   linesAdded?: number
   linesRemoved?: number
 }
@@ -637,6 +639,21 @@ function addLineMetric(
   const sum = total + value
   if (!Number.isSafeInteger(sum)) {
     throw new Error(`${field} total overflow`)
+  }
+  return sum
+}
+
+function addToolDurationMetric(
+  value: number | undefined,
+  total: number,
+): number {
+  if (value === undefined) return total
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new TypeError('durationToolMs must be a finite nonnegative number')
+  }
+  const sum = total + value
+  if (!Number.isFinite(sum) || sum < 0) {
+    throw new TypeError('durationToolMs total overflow')
   }
   return sum
 }
@@ -796,6 +813,7 @@ export class AgentRuntime {
     const modelUsageByModel = new Map<string, ModelUsage>()
     let durationApiMs = 0
     let durationApiWithoutRetriesMs = 0
+    let durationToolMs = 0
     let linesAdded = 0
     let linesRemoved = 0
     const definitions = this.provider.capabilities.tools
@@ -1051,6 +1069,7 @@ export class AgentRuntime {
             ...(modelUsage === undefined ? {} : { modelUsage }),
             ...(durationApiMs === 0 ? {} : { durationApiMs }),
             ...(durationApiMs === 0 ? {} : { durationApiWithoutRetriesMs }),
+            ...(durationToolMs === 0 ? {} : { durationToolMs }),
             ...(linesAdded === 0 ? {} : { linesAdded }),
             ...(linesRemoved === 0 ? {} : { linesRemoved }),
           }
@@ -1076,6 +1095,10 @@ export class AgentRuntime {
           durationApiMs += result.durationApiMs ?? 0
           durationApiWithoutRetriesMs +=
             result.durationApiWithoutRetriesMs ?? result.durationApiMs ?? 0
+          durationToolMs = addToolDurationMetric(
+            result.durationToolMs,
+            durationToolMs,
+          )
           if (result.isError === false) {
             linesAdded = addLineMetric(
               'linesAdded',
@@ -1240,6 +1263,9 @@ export class AgentRuntime {
                 : {}),
               isError: true,
               ...(executed.usage ? { usage: executed.usage } : {}),
+              ...(executed.durationToolMs !== undefined
+                ? { durationToolMs: executed.durationToolMs }
+                : {}),
             }
           : executed
       this.emit({ type: 'state', state: 'persisting-results' })
@@ -1370,11 +1396,14 @@ export class AgentRuntime {
     this.emit({ type: 'state', state: 'executing-tools' })
     context.permissionPhase = 'execute'
     context.permissionApproved = true
+    const toolStartedAt = performance.now()
     try {
       const result = await tools.execute(prepared, context)
-      if (!approvalFeedback) return result
+      const durationToolMs = Math.max(0, performance.now() - toolStartedAt)
+      const measuredResult = { ...result, durationToolMs }
+      if (!approvalFeedback) return measuredResult
       return {
-        ...result,
+        ...measuredResult,
         followUpUserMessages: [
           ...(result.followUpUserMessages ?? []),
           approvalFeedback,
@@ -1382,9 +1411,11 @@ export class AgentRuntime {
       }
     } catch (error) {
       if (request.signal?.aborted) return this.cancel()
+      const durationToolMs = Math.max(0, performance.now() - toolStartedAt)
       return {
         content: error instanceof Error ? error.message : String(error),
         isError: true,
+        durationToolMs,
       }
     }
   }
