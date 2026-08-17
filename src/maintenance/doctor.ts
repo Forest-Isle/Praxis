@@ -38,8 +38,11 @@ import {
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
 import {
-  collectDoctorDiagnostics,
+  collectDoctorLocalDiagnostics,
+  resolveDoctorUpdates,
+  type DoctorDiagnosticOptions,
   type DoctorInstallationDiagnostic,
+  type DoctorPendingUpdateDiagnostic,
   type DoctorUpdateDiagnostic,
   type PraxisDistTagLoader,
 } from './doctor-diagnostic.js'
@@ -76,6 +79,12 @@ export interface DoctorReport {
   }
 }
 
+export type DoctorProgressReport = Omit<DoctorReport, 'updates'> & {
+  updates: DoctorPendingUpdateDiagnostic
+}
+
+export type DoctorProgressListener = (report: DoctorProgressReport) => void
+
 export interface DoctorOptions {
   version: string
   executablePath: string
@@ -90,6 +99,7 @@ export interface DoctorOptions {
   autoUpdateChannel: 'latest' | 'stable'
   invokedBinaryPath?: string
   loadDistTags?: PraxisDistTagLoader
+  onProgress?: DoctorProgressListener
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -225,7 +235,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const configRoot = resolve(options.configRoot)
   const cwd = resolve(options.cwd)
   const sensitiveValues = sensitiveEnvironmentValues(options.environment)
-  const { diagnostic, updates } = await collectDoctorDiagnostics({
+  const diagnosticOptions: DoctorDiagnosticOptions = {
     version: options.version,
     executablePath: options.executablePath,
     ...(options.invokedBinaryPath === undefined
@@ -237,7 +247,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     ...(options.loadDistTags === undefined
       ? {}
       : { loadDistTags: options.loadDistTags }),
-  })
+  }
+  const local = await collectDoctorLocalDiagnostics(diagnosticOptions)
+  const updatesPromise = resolveDoctorUpdates(diagnosticOptions, local.updates)
   let settings: readonly ClaudeJsonResource[] | undefined
   const checks: DoctorCheck[] = []
 
@@ -501,6 +513,21 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     }
   }
 
+  const summary = {
+    passed: checks.filter((check) => check.status === 'pass').length,
+    warnings: checks.filter((check) => check.status === 'warn').length,
+    failed: checks.filter((check) => check.status === 'fail').length,
+  }
+  const base = {
+    type: 'doctor' as const,
+    ok: checks.every((check) => check.status !== 'fail'),
+    praxisVersion: options.version,
+    diagnostic: local.diagnostic,
+    checks,
+    summary,
+  }
+  options.onProgress?.({ ...base, updates: local.updates })
+  const updates = await updatesPromise
   const reportUpdates =
     updates.error === undefined
       ? updates
@@ -508,21 +535,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
           ...updates,
           error: redactSensitiveText(updates.error, sensitiveValues),
         }
-
-  const summary = {
-    passed: checks.filter((check) => check.status === 'pass').length,
-    warnings: checks.filter((check) => check.status === 'warn').length,
-    failed: checks.filter((check) => check.status === 'fail').length,
-  }
-  return {
-    type: 'doctor',
-    ok: checks.every((check) => check.status !== 'fail'),
-    praxisVersion: options.version,
-    diagnostic,
-    updates: reportUpdates,
-    checks,
-    summary,
-  }
+  return { ...base, updates: reportUpdates }
 }
 
 export function formatDoctorReport(report: DoctorReport): string {

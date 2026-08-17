@@ -10,7 +10,11 @@ import {
   pluginRegistryPath,
   writePluginRegistry,
 } from '../plugins/claude-plugin-runtime.js'
-import { formatDoctorReport, runDoctor } from './doctor.js'
+import {
+  formatDoctorReport,
+  runDoctor,
+  type DoctorProgressReport,
+} from './doctor.js'
 
 const roots: string[] = []
 
@@ -378,6 +382,77 @@ describe('Praxis doctor', () => {
     expect(output).toContain('Stable version: 1.0.0')
     expect(output).toContain('Latest version: 1.1.0')
     expect(output).not.toContain('not checked')
+  })
+
+  it('emits one complete pending progress report before resolving a single final report', async () => {
+    const value = await fixture()
+    let resolveTags!: (tags: { stable: string; latest: string }) => void
+    let loaderCalls = 0
+    let progressCalls = 0
+    let progressReport: DoctorProgressReport | undefined
+    let resolveProgressSeen!: () => void
+    const progressSeen = new Promise<void>((resolve) => {
+      resolveProgressSeen = resolve
+    })
+    const reportPromise = runDoctor({
+      version: '0.1.0',
+      executablePath: value.executablePath,
+      nodeExecutablePath: process.execPath,
+      nodeVersion: 'v24.1.0',
+      configRoot: value.configRoot,
+      claudeStatePath: join(value.configRoot, '.claude.json'),
+      cwd: value.projectRoot,
+      environment: {
+        PRAXIS_PROVIDER: 'openai',
+        PRAXIS_API_KEY: 'secret-not-for-output',
+        PRAXIS_MODEL: 'gpt-4o-mini',
+      },
+      detectClaudeVersion: async () => '2.1.208',
+      autoUpdateChannel: 'stable',
+      loadDistTags: () => {
+        loaderCalls += 1
+        return new Promise<{ stable: string; latest: string }>((resolve) => {
+          resolveTags = resolve
+        })
+      },
+      onProgress: (report) => {
+        progressCalls += 1
+        progressReport = report
+        resolveProgressSeen()
+      },
+    })
+
+    await progressSeen
+    expect(progressReport).toBeDefined()
+    expect(progressReport?.updates).toEqual({
+      autoUpdates: 'Managed by source checkout',
+      hasUpdatePermissions: true,
+      channel: 'stable',
+      stableVersion: null,
+      latestVersion: null,
+      registryStatus: 'loading',
+    })
+    expect(progressReport?.checks).toHaveLength(11)
+    expect(progressReport?.summary).toEqual({
+      passed: expect.any(Number),
+      warnings: expect.any(Number),
+      failed: expect.any(Number),
+    })
+    expect(loaderCalls).toBe(1)
+
+    resolveTags({ stable: '1.0.0', latest: '1.1.0' })
+    const report = await reportPromise
+    expect(loaderCalls).toBe(1)
+    expect(progressCalls).toBe(1)
+    expect(report.updates).toMatchObject({
+      channel: 'stable',
+      registryStatus: 'available',
+      stableVersion: '1.0.0',
+      latestVersion: '1.1.0',
+    })
+    expect(report.updates.error).toBeUndefined()
+    expect(JSON.stringify(report)).not.toContain('"registryStatus":"loading"')
+    expect(report.checks).toHaveLength(11)
   })
 
   it('reports unavailable registry state without altering ok or the check summary', async () => {

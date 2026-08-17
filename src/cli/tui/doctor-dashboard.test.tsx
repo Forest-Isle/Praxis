@@ -1,7 +1,10 @@
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { DoctorReport } from '../../maintenance/doctor.js'
+import type {
+  DoctorProgressReport,
+  DoctorReport,
+} from '../../maintenance/doctor.js'
 import {
   DoctorDashboard,
   projectDoctorWarningGroups,
@@ -74,6 +77,23 @@ function report(overrides: Partial<DoctorReport> = {}): DoctorReport {
   }
 }
 
+function progressReport(
+  overrides: Partial<DoctorProgressReport> = {},
+): DoctorProgressReport {
+  return {
+    ...report(),
+    updates: {
+      autoUpdates: 'Manual (praxis update)',
+      hasUpdatePermissions: true,
+      channel: 'stable',
+      stableVersion: null,
+      latestVersion: null,
+      registryStatus: 'loading',
+    },
+    ...overrides,
+  }
+}
+
 describe('DoctorDashboard', () => {
   it('renders the loading screen before completion', () => {
     const frame = render(
@@ -132,6 +152,31 @@ describe('DoctorDashboard', () => {
     )
     expect(frame).not.toContain('node: Node.js v24.0.0 satisfies >=24')
     expect(frame).not.toContain('mcp: 2 MCP server configuration(s) are valid')
+  })
+
+  it('renders Diagnostics and the pending checking-updates state for a progress report', () => {
+    const frame = render(
+      <DoctorDashboard
+        loading={false}
+        report={progressReport()}
+        error={null}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+    expect(frame).toContain('Diagnostics')
+    expect(frame).toContain('Currently running: Praxis 1.2.3 (npm)')
+    expect(frame).toContain('Package manager: npm')
+    expect(frame).toContain('Updates')
+    expect(frame).toContain('Auto-updates: Manual (praxis update)')
+    expect(frame).toContain('Update permissions: yes')
+    expect(frame).toContain('Auto-update channel: stable')
+    expect(frame).toContain('Checking for updates…')
+    expect(frame).toContain('Summary: 2 passed, 1 warnings, 1 failed.')
+    expect(frame).toContain('Enter to continue · Esc to cancel')
+    expect(frame).not.toContain('Stable version:')
+    expect(frame).not.toContain('Latest version:')
+    expect(frame).not.toContain('└ Failed to fetch versions')
   })
 
   it('projects warning/failing checks into conditional groups and omits empty groups', () => {
