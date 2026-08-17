@@ -1,4 +1,13 @@
-import type { ModelMessage, ModelProvider } from '../core/runtime.js'
+import type {
+  ModelMessage,
+  ModelProvider,
+  ModelUsage,
+  ToolUseSummaryOutcome,
+} from '../core/runtime.js'
+import {
+  completeMeteredModelRequest,
+  type MeteredModelCompletion,
+} from './metered-model-completion.js'
 
 const TOOL_USE_SUMMARY_SYSTEM_PROMPT = `Write a short summary label describing what these tool calls accomplished. It appears as a single-line row in a mobile app and truncates around 30 characters, so think git-commit-subject, not sentence.
 
@@ -28,12 +37,28 @@ function truncateJson(value: unknown, maxLength: number): string {
   return `${serialized.slice(0, maxLength - 3)}...`
 }
 
+function hasNonZeroUsage(usage: ModelUsage): boolean {
+  return (
+    usage.inputTokens > 0 ||
+    usage.outputTokens > 0 ||
+    (usage.cacheReadInputTokens ?? 0) > 0 ||
+    (usage.cacheCreationInputTokens ?? 0) > 0 ||
+    (usage.webSearchRequests ?? 0) > 0
+  )
+}
+
 export async function generateToolUseSummary(
   provider: ModelProvider,
   tools: readonly ToolUseSummaryInput[],
   signal: AbortSignal,
   lastAssistantText?: string,
-): Promise<string | null> {
+  onMetrics?: (metrics: {
+    usage: ModelUsage
+    model?: string
+    durationApiMs: number
+    durationApiWithoutRetriesMs: number
+  }) => void,
+): Promise<ToolUseSummaryOutcome | null> {
   if (tools.length === 0 || signal.aborted) return null
   const toolSummaries = tools
     .map(
@@ -51,14 +76,45 @@ export async function generateToolUseSummary(
       content: `${contextPrefix}Tools completed:\n\n${toolSummaries}\n\nLabel:`,
     },
   ]
-  let summary = ''
+  let metrics: MeteredModelCompletion | undefined
+  let summary: string | null = null
   try {
-    for await (const event of provider.complete({ messages, signal })) {
-      if (signal.aborted) return null
-      if (event.type === 'text-delta') summary += event.delta
-    }
+    const completed = await completeMeteredModelRequest(
+      provider,
+      { messages, signal },
+      {
+        onMetrics: (recorded) => {
+          metrics = recorded
+        },
+      },
+    )
+    summary =
+      completed.toolCalls.length === 0 ? completed.text.trim() || null : null
   } catch {
-    return null
+    // Provider/validation/abort errors keep the captured metrics but yield no
+    // summary, preserving the auxiliary-failure semantics.
+    summary = null
   }
-  return summary.trim() || null
+  // Invoke the external callback exactly once when the provider call started.
+  // Callback/tracker errors are intentionally not caught so cost accounting
+  // fails closed. Without an external callback nothing was committed, so the
+  // outcome stays unrecorded.
+  let meteredExternally = false
+  if (metrics) {
+    onMetrics?.(metrics)
+    meteredExternally = onMetrics !== undefined
+  }
+  const usage = metrics?.usage ?? { inputTokens: 0, outputTokens: 0 }
+  const model =
+    metrics?.model !== undefined && metrics.model.trim() !== ''
+      ? metrics.model
+      : 'praxis/provider'
+  return {
+    summary,
+    usage,
+    ...(hasNonZeroUsage(usage) ? { modelUsage: { [model]: usage } } : {}),
+    durationApiMs: metrics?.durationApiMs ?? 0,
+    durationApiWithoutRetriesMs: metrics?.durationApiWithoutRetriesMs ?? 0,
+    meteredExternally,
+  }
 }

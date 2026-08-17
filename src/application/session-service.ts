@@ -1165,7 +1165,7 @@ export class ClaudeSessionService {
       {
         ...(onDelta ? { onTextDelta: onDelta } : {}),
         onMetrics: (recorded) =>
-          this.recordDirectAuxMetrics(activeSessionId, recorded),
+          this.recordAuxiliaryMetrics(activeSessionId, recorded),
       },
     )
     if (metrics.toolCalls.length > 0) {
@@ -1317,7 +1317,7 @@ export class ClaudeSessionService {
       },
       {
         onMetrics: (recorded) =>
-          this.recordDirectAuxMetrics(sessionId, recorded),
+          this.recordAuxiliaryMetrics(sessionId, recorded),
       },
     )
     if (metrics.toolCalls.length > 0) return null
@@ -1348,7 +1348,7 @@ export class ClaudeSessionService {
       },
       {
         onMetrics: (recorded) =>
-          this.recordDirectAuxMetrics(sessionId, recorded),
+          this.recordAuxiliaryMetrics(sessionId, recorded),
       },
     )
     if (metrics.toolCalls.length > 0) return null
@@ -2355,7 +2355,7 @@ export class ClaudeSessionService {
     return store.save(tracker.snapshot())
   }
 
-  private recordDirectAuxMetrics(
+  private recordAuxiliaryMetrics(
     sessionId: string,
     metrics: {
       usage: ModelUsage
@@ -2881,6 +2881,7 @@ export class ClaudeSessionService {
                   tools,
                   signal,
                   lastAssistantText,
+                  (metrics) => this.recordAuxiliaryMetrics(sessionId, metrics),
                 ),
             }
           : {}),
@@ -3881,13 +3882,14 @@ export class ClaudeSessionService {
           }
         }
         // Auto-compaction metering was already recorded atomically with each
-        // committed boundary, so the live tracker receives only recovery,
-        // shell, and main runtime usage rows here. The inclusive public
-        // aggregates above still contain the compaction rows.
+        // committed boundary, and externally metered tool-summary metrics were
+        // committed through the summary callback, so the live tracker receives
+        // only the unrecorded subset here. The inclusive public aggregates
+        // above still contain every row and duration.
         const trackedModelUsage = mergeSessionRawModelUsage(
           recoveryModelUsage,
           shellModelUsage,
-          result.modelUsage,
+          result.unrecordedModelUsage ?? result.modelUsage,
         )
         if (trackedModelUsage) {
           for (const [model, usage] of Object.entries(trackedModelUsage)) {
@@ -3914,14 +3916,19 @@ export class ClaudeSessionService {
           result.durationToolMs,
           combinedToolDurationMs,
         )
+        const trackedDurationApiMs =
+          result.unrecordedDurationApiMs ?? result.durationApiMs
+        const trackedDurationApiWithoutRetriesMs =
+          result.unrecordedDurationApiWithoutRetriesMs ??
+          result.durationApiWithoutRetriesMs
         tracker.recordDurations({
-          ...(result.durationApiMs === undefined
+          ...(trackedDurationApiMs === undefined
             ? {}
-            : { apiDurationMs: result.durationApiMs }),
-          ...(result.durationApiWithoutRetriesMs === undefined
+            : { apiDurationMs: trackedDurationApiMs }),
+          ...(trackedDurationApiWithoutRetriesMs === undefined
             ? {}
             : {
-                apiDurationWithoutRetriesMs: result.durationApiWithoutRetriesMs,
+                apiDurationWithoutRetriesMs: trackedDurationApiWithoutRetriesMs,
               }),
           ...(combinedToolDurationMs === 0
             ? {}

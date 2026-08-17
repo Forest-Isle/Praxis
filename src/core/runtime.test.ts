@@ -1022,7 +1022,13 @@ describe('AgentRuntime', () => {
             },
           ])
           expect(lastAssistantText).toBeUndefined()
-          return 'Read a'
+          return {
+            summary: 'Read a',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationApiMs: 0,
+            durationApiWithoutRetriesMs: 0,
+            meteredExternally: false,
+          }
         },
       },
     )
@@ -1033,6 +1039,231 @@ describe('AgentRuntime', () => {
       summary: 'Read a',
       precedingToolUseIds: ['call_summary'],
     })
+  })
+
+  it('splits inclusive totals from the session-unrecorded subset for externally metered summaries', async () => {
+    let turn = 0
+    const provider: ModelProvider = {
+      model: 'claude-x',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        turn += 1
+        yield { type: 'api-attempt-duration', durationMs: turn === 1 ? 10 : 5 }
+        if (turn === 1) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_a', name: 'Read', input: {} },
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 5 },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'done' }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'contents', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      generateToolUseSummary: async () => ({
+        summary: 'Read a',
+        usage: { inputTokens: 4, outputTokens: 2 },
+        modelUsage: { 'claude-x': { inputTokens: 4, outputTokens: 2 } },
+        durationApiMs: 30,
+        durationApiWithoutRetriesMs: 20,
+        meteredExternally: true,
+      }),
+    })
+
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'inspect' }],
+      collectMetrics: true,
+    })
+    expect(result.text).toBe('done')
+    // Public totals remain inclusive of the externally metered summary.
+    expect(result.usage).toEqual({ inputTokens: 15, outputTokens: 8 })
+    expect(result.modelUsage?.['claude-x']).toEqual({
+      inputTokens: 15,
+      outputTokens: 8,
+    })
+    expect(result.durationApiWithoutRetriesMs).toBe(10 + 20 + 5)
+    // The inclusive total carries the mock summary's own wall duration.
+    expect(result.durationApiMs).toBeGreaterThanOrEqual(30)
+    // The unrecorded subset excludes the externally committed summary metrics.
+    expect(result.unrecordedModelUsage?.['claude-x']).toEqual({
+      inputTokens: 11,
+      outputTokens: 6,
+    })
+    expect(result.unrecordedDurationApiWithoutRetriesMs).toBe(10 + 5)
+    expect(result.unrecordedDurationApiMs).toBeDefined()
+  })
+
+  it('keeps non-externally-metered summary metrics in the unrecorded session totals', async () => {
+    let turn = 0
+    const provider: ModelProvider = {
+      model: 'claude-x',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        turn += 1
+        yield { type: 'api-attempt-duration', durationMs: turn === 1 ? 10 : 5 }
+        if (turn === 1) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_a', name: 'Read', input: {} },
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 5 },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'done' }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'contents', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      generateToolUseSummary: async () => ({
+        summary: 'Read a',
+        usage: { inputTokens: 4, outputTokens: 2 },
+        modelUsage: { 'claude-x': { inputTokens: 4, outputTokens: 2 } },
+        durationApiMs: 30,
+        durationApiWithoutRetriesMs: 20,
+        meteredExternally: false,
+      }),
+    })
+
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'inspect' }],
+      collectMetrics: true,
+    })
+    expect(result.usage).toEqual({ inputTokens: 15, outputTokens: 8 })
+    expect(result.modelUsage?.['claude-x']).toEqual({
+      inputTokens: 15,
+      outputTokens: 8,
+    })
+    expect(result.durationApiWithoutRetriesMs).toBe(10 + 20 + 5)
+    // No externally metered summary was observed, so no unrecorded subset is
+    // emitted and the inclusive fields stay authoritative for the session.
+    expect(result.unrecordedModelUsage).toBeUndefined()
+    expect(result.unrecordedDurationApiMs).toBeUndefined()
+    expect(result.unrecordedDurationApiWithoutRetriesMs).toBeUndefined()
+  })
+
+  it('preserves a retry-free summary duration when its measured total is zero', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_a', name: 'Read', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'contents', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      generateToolUseSummary: async () => ({
+        summary: null,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        durationApiMs: 0,
+        durationApiWithoutRetriesMs: 7,
+        meteredExternally: false,
+      }),
+    })
+
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'inspect' }],
+    })
+    expect(result.durationApiMs).toBeUndefined()
+    expect(result.durationApiWithoutRetriesMs).toBe(7)
+  })
+
+  it('counts summary usage toward the cost budget even when the summary is null', async () => {
+    let turn = 0
+    let calls = 0
+    const provider = providerFrom(async function* () {
+      calls += 1
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_a', name: 'Read', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: '', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      costUsd: (usage) => usage.inputTokens / 1_000_000,
+      maxBudgetUsd: 0.000002,
+      generateToolUseSummary: async () => ({
+        summary: null,
+        usage: { inputTokens: 3, outputTokens: 0 },
+        durationApiMs: 5,
+        durationApiWithoutRetriesMs: 5,
+        meteredExternally: false,
+      }),
+    })
+
+    await expect(
+      runtime.run({
+        messages: [{ role: 'user', content: 'budget' }],
+        onStop: async () => ['continue'],
+      }),
+    ).rejects.toThrow('Maximum budget')
+    expect(calls).toBe(1)
+  })
+
+  it('propagates summary accounting failures so cost accounting fails closed', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_a', name: 'Read', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: '', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      generateToolUseSummary: async () => {
+        throw new Error('tracker unavailable')
+      },
+    })
+
+    await expect(
+      runtime.run({ messages: [{ role: 'user', content: 'inspect' }] }),
+    ).rejects.toThrow('tracker unavailable')
   })
 
   it('passes completed tool history to later tools and recovery', async () => {

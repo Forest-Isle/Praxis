@@ -475,6 +475,15 @@ export interface AgentRunObserver {
   followUpUserMessagesCompleted?(messages: readonly string[]): Promise<void>
 }
 
+export interface ToolUseSummaryOutcome {
+  summary: string | null
+  usage: ModelUsage
+  modelUsage?: ModelUsageByModel
+  durationApiMs: number
+  durationApiWithoutRetriesMs: number
+  meteredExternally: boolean
+}
+
 export interface AgentRuntimeOptions {
   tools?: ToolRegistry
   permissions?: PermissionResolver
@@ -493,7 +502,7 @@ export interface AgentRuntimeOptions {
     }[]
     lastAssistantText?: string
     signal: AbortSignal
-  }) => Promise<string | null>
+  }) => Promise<ToolUseSummaryOutcome | null>
 }
 
 export interface AgentRunRequest {
@@ -550,6 +559,12 @@ export interface AgentRunResult {
   durationToolMs?: number
   linesAdded?: number
   linesRemoved?: number
+  /** Model rows the session tracker still must record after at least one
+   *  externally metered summary outcome; undefined when every summary outcome
+   *  is still unrecorded (so inclusive fields stay authoritative). */
+  unrecordedModelUsage?: ModelUsageByModel
+  unrecordedDurationApiMs?: number
+  unrecordedDurationApiWithoutRetriesMs?: number
 }
 
 export class ModelProviderError extends Error {
@@ -659,6 +674,21 @@ function addToolDurationMetric(
   const sum = total + value
   if (!Number.isFinite(sum) || sum < 0) {
     throw new TypeError('durationToolMs total overflow')
+  }
+  return sum
+}
+
+function addApiDurationMetric(
+  value: number,
+  total: number,
+  field: 'durationApiMs' | 'durationApiWithoutRetriesMs',
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${field} must be a finite nonnegative number`)
+  }
+  const sum = total + value
+  if (!Number.isFinite(sum) || sum < 0) {
+    throw new TypeError(`${field} total overflow`)
   }
   return sum
 }
@@ -885,8 +915,12 @@ export class AgentRuntime {
     let usage = emptyUsage()
     let modelUsage = emptyUsage()
     const modelUsageByModel = new Map<string, ModelUsage>()
+    const unrecordedModelUsageByModel = new Map<string, ModelUsage>()
     let durationApiMs = 0
     let durationApiWithoutRetriesMs = 0
+    let unrecordedDurationApiMs = 0
+    let unrecordedDurationApiWithoutRetriesMs = 0
+    let sawExternallyMeteredSummary = false
     let durationToolMs = 0
     let linesAdded = 0
     let linesRemoved = 0
@@ -900,7 +934,7 @@ export class AgentRuntime {
     const maxToolInputBytes = this.options.maxToolInputBytes ?? 1024 * 1024
     let pendingToolUseSummary:
       | {
-          promise: Promise<string | null>
+          promise: Promise<ToolUseSummaryOutcome | null>
           precedingToolUseIds: readonly string[]
         }
       | undefined
@@ -910,17 +944,53 @@ export class AgentRuntime {
         if (pendingToolUseSummary) {
           const summaryRequest = pendingToolUseSummary
           pendingToolUseSummary = undefined
-          try {
-            const summary = await summaryRequest.promise
-            if (summary) {
+          // Only accounting callback/tracker errors can reject here; provider
+          // and abort failures are swallowed into an outcome by the summary
+          // helper, so a rejection must fail the turn (cost accounting closes).
+          const outcome = await summaryRequest.promise
+          if (outcome) {
+            usage = addUsage(usage, outcome.usage)
+            modelUsage = addUsage(modelUsage, outcome.usage)
+            durationApiMs = addApiDurationMetric(
+              outcome.durationApiMs,
+              durationApiMs,
+              'durationApiMs',
+            )
+            durationApiWithoutRetriesMs = addApiDurationMetric(
+              outcome.durationApiWithoutRetriesMs,
+              durationApiWithoutRetriesMs,
+              'durationApiWithoutRetriesMs',
+            )
+            if (outcome.modelUsage) {
+              mergeToolModelUsage(modelUsageByModel, outcome.modelUsage)
+            }
+            if (outcome.meteredExternally) {
+              sawExternallyMeteredSummary = true
+            } else {
+              if (outcome.modelUsage) {
+                mergeToolModelUsage(
+                  unrecordedModelUsageByModel,
+                  outcome.modelUsage,
+                )
+              }
+              unrecordedDurationApiMs = addApiDurationMetric(
+                outcome.durationApiMs,
+                unrecordedDurationApiMs,
+                'durationApiMs',
+              )
+              unrecordedDurationApiWithoutRetriesMs = addApiDurationMetric(
+                outcome.durationApiWithoutRetriesMs,
+                unrecordedDurationApiWithoutRetriesMs,
+                'durationApiWithoutRetriesMs',
+              )
+            }
+            if (outcome.summary) {
               this.emit({
                 type: 'tool-use-summary',
-                summary,
+                summary: outcome.summary,
                 precedingToolUseIds: summaryRequest.precedingToolUseIds,
               })
             }
-          } catch {
-            // Summaries are auxiliary SDK output and never fail the turn.
           }
         }
         const spent = this.options.costUsd?.(modelUsage)
@@ -1059,12 +1129,31 @@ export class AgentRuntime {
         } finally {
           if (request.collectMetrics) {
             turnApiDurationMs = Math.max(0, performance.now() - apiStartedAt)
-            durationApiMs += turnApiDurationMs
+            durationApiMs = addApiDurationMetric(
+              turnApiDurationMs,
+              durationApiMs,
+              'durationApiMs',
+            )
+            unrecordedDurationApiMs = addApiDurationMetric(
+              turnApiDurationMs,
+              unrecordedDurationApiMs,
+              'durationApiMs',
+            )
           }
         }
         if (request.collectMetrics) {
-          durationApiWithoutRetriesMs +=
+          const turnApiDurationWithoutRetriesMsResolved =
             turnApiDurationWithoutRetriesMs ?? turnApiDurationMs
+          durationApiWithoutRetriesMs = addApiDurationMetric(
+            turnApiDurationWithoutRetriesMsResolved,
+            durationApiWithoutRetriesMs,
+            'durationApiWithoutRetriesMs',
+          )
+          unrecordedDurationApiWithoutRetriesMs = addApiDurationMetric(
+            turnApiDurationWithoutRetriesMsResolved,
+            unrecordedDurationApiWithoutRetriesMs,
+            'durationApiWithoutRetriesMs',
+          )
         }
 
         if (!streaming) this.emit({ type: 'state', state: 'streaming' })
@@ -1075,10 +1164,16 @@ export class AgentRuntime {
           this.provider.model.trim() !== '' &&
           hasNonZeroModelUsage(turnUsage)
         ) {
+          const enrichedUsage = enrichedProviderUsage(this.provider, turnUsage)
           mergeModelUsageEntry(
             modelUsageByModel,
             this.provider.model,
-            enrichedProviderUsage(this.provider, turnUsage),
+            enrichedUsage,
+          )
+          mergeModelUsageEntry(
+            unrecordedModelUsageByModel,
+            this.provider.model,
+            enrichedUsage,
           )
         }
         const assistantMessage =
@@ -1114,6 +1209,10 @@ export class AgentRuntime {
           }
           if (stopBatch?.modelUsage) {
             mergeToolModelUsage(modelUsageByModel, stopBatch.modelUsage)
+            mergeToolModelUsage(
+              unrecordedModelUsageByModel,
+              stopBatch.modelUsage,
+            )
           }
           if (stopMessages.length > 0) {
             await request.observer?.followUpUserMessagesCompleted?.(
@@ -1141,8 +1240,19 @@ export class AgentRuntime {
             text,
             usage,
             ...(modelUsage === undefined ? {} : { modelUsage }),
+            ...(sawExternallyMeteredSummary
+              ? {
+                  unrecordedModelUsage: Object.fromEntries(
+                    unrecordedModelUsageByModel,
+                  ),
+                  unrecordedDurationApiMs,
+                  unrecordedDurationApiWithoutRetriesMs,
+                }
+              : {}),
             ...(durationApiMs === 0 ? {} : { durationApiMs }),
-            ...(durationApiMs === 0 ? {} : { durationApiWithoutRetriesMs }),
+            ...(durationApiMs === 0 && durationApiWithoutRetriesMs === 0
+              ? {}
+              : { durationApiWithoutRetriesMs }),
             ...(durationToolMs === 0 ? {} : { durationToolMs }),
             ...(linesAdded === 0 ? {} : { linesAdded }),
             ...(linesRemoved === 0 ? {} : { linesRemoved }),
@@ -1165,10 +1275,28 @@ export class AgentRuntime {
           if (result.usage) usage = addUsage(usage, result.usage)
           if (result.isError === false && result.modelUsage !== undefined) {
             mergeToolModelUsage(modelUsageByModel, result.modelUsage)
+            mergeToolModelUsage(unrecordedModelUsageByModel, result.modelUsage)
           }
-          durationApiMs += result.durationApiMs ?? 0
-          durationApiWithoutRetriesMs +=
-            result.durationApiWithoutRetriesMs ?? result.durationApiMs ?? 0
+          durationApiMs = addApiDurationMetric(
+            result.durationApiMs ?? 0,
+            durationApiMs,
+            'durationApiMs',
+          )
+          durationApiWithoutRetriesMs = addApiDurationMetric(
+            result.durationApiWithoutRetriesMs ?? result.durationApiMs ?? 0,
+            durationApiWithoutRetriesMs,
+            'durationApiWithoutRetriesMs',
+          )
+          unrecordedDurationApiMs = addApiDurationMetric(
+            result.durationApiMs ?? 0,
+            unrecordedDurationApiMs,
+            'durationApiMs',
+          )
+          unrecordedDurationApiWithoutRetriesMs = addApiDurationMetric(
+            result.durationApiWithoutRetriesMs ?? result.durationApiMs ?? 0,
+            unrecordedDurationApiWithoutRetriesMs,
+            'durationApiWithoutRetriesMs',
+          )
           durationToolMs = addToolDurationMetric(
             result.durationToolMs,
             durationToolMs,

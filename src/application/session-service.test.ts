@@ -3607,6 +3607,282 @@ describe('ClaudeSessionService', () => {
     await service.close()
   })
 
+  it('records main and tool-summary usage, cost, and retry-free API durations exactly once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-summary-metering-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let mainCalls = 0
+    let summaryCalls = 0
+    const provider: ModelProvider = {
+      model: 'summary-metered-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        if (
+          request.messages.some(
+            (message) =>
+              message.role === 'user' &&
+              message.content.includes('Tools completed:'),
+          )
+        ) {
+          summaryCalls += 1
+          yield { type: 'api-attempt-duration', durationMs: 9 }
+          yield { type: 'text-delta', delta: 'Read fixture' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 4, outputTokens: 2 },
+          }
+          return
+        }
+        if (mainCalls++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'summary-metered-call',
+              name: 'Read',
+              input: { file_path: 'a' },
+            },
+          }
+          yield { type: 'api-attempt-duration', durationMs: 1 }
+          return
+        }
+        yield { type: 'api-attempt-duration', durationMs: 3 }
+        yield { type: 'text-delta', delta: 'done' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 10, outputTokens: 5 },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      emitToolUseSummaries: true,
+      pricing: new ModelPricingRegistry({
+        'summary-metered-model': {
+          inputPerMillionUsd: 1,
+          outputPerMillionUsd: 1,
+        },
+      }),
+      costStateStore: { load: async () => null, save: async () => undefined },
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return { content: 'fixture contents', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const run = await service.run('inspect')
+    expect(summaryCalls).toBe(1)
+    // Public result is inclusive of the summary row and API durations.
+    expect(run.usage).toEqual({ inputTokens: 14, outputTokens: 7 })
+    expect(run.modelUsage?.['summary-metered-model']).toMatchObject({
+      inputTokens: 14,
+      outputTokens: 7,
+    })
+    expect(run.durationApiMs).toBeGreaterThan(0)
+    expect(run.costUsd).toBeCloseTo((14 + 7) / 1_000_000)
+
+    const snapshot = await service.costSnapshot(run.sessionId)
+    // The summary row was committed through the callback and the main rows
+    // through the final tracker mutation: exactly once, no duplicate row.
+    expect(snapshot.modelUsage['summary-metered-model']).toMatchObject({
+      inputTokens: 14,
+      outputTokens: 7,
+    })
+    expect(snapshot.hasUnknownModelCost).toBe(false)
+    expect(snapshot.totalCostUsd).toBeCloseTo((14 + 7) / 1_000_000)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(9 + 1 + 3)
+    expect(snapshot.apiDurationMs).toBeGreaterThan(0)
+    await service.close()
+  })
+
+  it('records summary provider failure duration immediately without failing the main turn or creating a model row', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-summary-failure-metering-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let mainCalls = 0
+    let summaryCalls = 0
+    const provider: ModelProvider = {
+      model: 'summary-fail-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        if (
+          request.messages.some(
+            (message) =>
+              message.role === 'user' &&
+              message.content.includes('Tools completed:'),
+          )
+        ) {
+          summaryCalls += 1
+          yield { type: 'api-attempt-duration', durationMs: 6 }
+          throw new Error('summary provider exploded')
+        }
+        if (mainCalls++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'summary-fail-call',
+              name: 'Read',
+              input: { file_path: 'a' },
+            },
+          }
+          yield { type: 'api-attempt-duration', durationMs: 1 }
+          return
+        }
+        yield { type: 'api-attempt-duration', durationMs: 2 }
+        yield { type: 'text-delta', delta: 'done' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 3, outputTokens: 1 },
+        }
+      },
+    }
+    const events: RuntimeEvent[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      eventSink: (event) => events.push(event),
+      emitToolUseSummaries: true,
+      pricing: new ModelPricingRegistry({
+        'summary-fail-model': {
+          inputPerMillionUsd: 1,
+          outputPerMillionUsd: 1,
+        },
+      }),
+      costStateStore: { load: async () => null, save: async () => undefined },
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return { content: 'fixture contents', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const run = await service.run('inspect')
+    expect(run.text).toBe('done')
+    expect(summaryCalls).toBe(1)
+    // A failed summary emits no summary event.
+    expect(events.some((event) => event.type === 'tool-use-summary')).toBe(
+      false,
+    )
+    const snapshot = await service.costSnapshot(run.sessionId)
+    // Zero-usage summary failure records only its API duration: no model row
+    // and no unknown-cost flag, and the auxiliary failure did not fail the run.
+    expect(snapshot.modelUsage['summary-fail-model']).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 1,
+    })
+    expect(snapshot.hasUnknownModelCost).toBe(false)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(6 + 1 + 2)
+    expect(snapshot.apiDurationMs).toBeGreaterThan(0)
+    await service.close()
+  })
+
+  it('keeps externally committed summary metrics after a later main-turn cancellation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-summary-cancel-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const controller = new AbortController()
+    let mainCalls = 0
+    let summaryCalls = 0
+    const provider: ModelProvider = {
+      model: 'summary-cancel-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        if (
+          request.messages.some(
+            (message) =>
+              message.role === 'user' &&
+              message.content.includes('Tools completed:'),
+          )
+        ) {
+          summaryCalls += 1
+          yield { type: 'api-attempt-duration', durationMs: 9 }
+          yield { type: 'text-delta', delta: 'Read fixture' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 4, outputTokens: 2 },
+          }
+          return
+        }
+        if (mainCalls++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'summary-cancel-call',
+              name: 'Read',
+              input: { file_path: 'a' },
+            },
+          }
+          return
+        }
+        yield { type: 'api-attempt-duration', durationMs: 3 }
+        controller.abort()
+        yield { type: 'text-delta', delta: 'ignored' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      emitToolUseSummaries: true,
+      pricing: new ModelPricingRegistry({
+        'summary-cancel-model': {
+          inputPerMillionUsd: 1,
+          outputPerMillionUsd: 1,
+        },
+      }),
+      costStateStore: { load: async () => null, save: async () => undefined },
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return { content: 'fixture contents', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const sessionId = '33333333-3333-4333-8333-333333333333'
+    await expect(
+      service.run('inspect', controller.signal, sessionId),
+    ).rejects.toBeInstanceOf(AgentRunCancelledError)
+    expect(summaryCalls).toBe(1)
+    // The summary was committed through the callback before the main turn was
+    // cancelled, so the snapshot still owns its usage/cost/API durations.
+    const snapshot = await service.costSnapshot(sessionId)
+    expect(snapshot.modelUsage['summary-cancel-model']).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 2,
+    })
+    expect(snapshot.hasUnknownModelCost).toBe(false)
+    expect(snapshot.totalCostUsd).toBeCloseTo((4 + 2) / 1_000_000)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(9)
+    expect(snapshot.apiDurationMs).toBeGreaterThan(0)
+    await service.close()
+  })
+
   it('closes background hosted Agents when the session service closes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-close-'))
     roots.push(root)
