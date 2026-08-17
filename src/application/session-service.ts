@@ -142,6 +142,7 @@ import {
   type ClaudeSessionTurnInput,
 } from './session-cost-tracker.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
+import { completeMeteredModelRequest } from './metered-model-completion.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import { generateToolUseSummary } from './tool-use-summary.js'
 import {
@@ -269,6 +270,9 @@ export interface SideQuestionResult {
   text: string
   usage: ModelUsage
   costUsd?: number
+  modelUsage?: Readonly<Record<string, ModelUsage>>
+  durationApiMs?: number
+  durationApiWithoutRetriesMs?: number
 }
 
 export interface SideQuestionForkResult {
@@ -1146,30 +1150,43 @@ export class ClaudeSessionService {
     ]
     const budget = this.contextBudget(provider)
     if (budget) budget.assertFits(budget.evaluate(messages))
-    let text = ''
-    let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
-    for await (const event of provider.complete({
-      messages,
-      ...(this.options.effort ? { effort: this.options.effort } : {}),
-      ...(signal ? { signal } : {}),
-    })) {
-      if (event.type === 'text-delta') {
-        text += event.delta
-        onDelta?.(event.delta)
-      } else if (event.type === 'usage') {
-        usage = event.usage
-      } else if (event.type === 'tool-call') {
-        throw new Error('Side questions cannot call tools; press f to fork')
-      }
-    }
-    const pricing = this.options.pricing?.resolve(
-      provider.model ?? 'praxis/provider',
+    await this.activateSessionCostTracker(activeSessionId)
+    const model =
+      provider.model !== undefined && provider.model.trim() !== ''
+        ? provider.model
+        : 'praxis/provider'
+    const metrics = await completeMeteredModelRequest(
+      provider,
+      {
+        messages,
+        ...(this.options.effort ? { effort: this.options.effort } : {}),
+        ...(signal ? { signal } : {}),
+      },
+      {
+        ...(onDelta ? { onTextDelta: onDelta } : {}),
+        onMetrics: (recorded) =>
+          this.recordDirectAuxMetrics(activeSessionId, recorded),
+      },
     )
+    if (metrics.toolCalls.length > 0) {
+      throw new Error('Side questions cannot call tools; press f to fork')
+    }
+    const pricing = this.options.pricing?.resolve(model)
+    const costUsd = pricing ? usageCostUsd(metrics.usage, pricing) : undefined
     return {
       sessionId: activeSessionId,
-      text,
-      usage,
-      ...(pricing ? { costUsd: usageCostUsd(usage, pricing) } : {}),
+      text: metrics.text,
+      usage: metrics.usage,
+      ...(costUsd === undefined ? {} : { costUsd }),
+      ...(hasNonZeroUsage(metrics.usage)
+        ? { modelUsage: { [model]: metrics.usage } }
+        : {}),
+      ...(metrics.durationApiMs === 0
+        ? {}
+        : {
+            durationApiMs: metrics.durationApiMs,
+            durationApiWithoutRetriesMs: metrics.durationApiWithoutRetriesMs,
+          }),
     }
   }
 
@@ -1287,19 +1304,24 @@ export class ClaudeSessionService {
             tools: mainAgentToolNames(this.options.tools, agent),
           })
         : this.options.tools
-    let suggestion = ''
-    for await (const event of provider.complete({
-      messages,
-      ...(provider.capabilities.tools
-        ? { tools: suggestionTools?.definitions() ?? [] }
-        : {}),
-      ...(this.options.effort ? { effort: this.options.effort } : {}),
-      ...(signal ? { signal } : {}),
-    })) {
-      if (event.type === 'text-delta') suggestion += event.delta
-      if (event.type === 'tool-call') return null
-    }
-    return validPromptSuggestion(suggestion)
+    await this.activateSessionCostTracker(sessionId)
+    const metrics = await completeMeteredModelRequest(
+      provider,
+      {
+        messages,
+        ...(provider.capabilities.tools
+          ? { tools: suggestionTools?.definitions() ?? [] }
+          : {}),
+        ...(this.options.effort ? { effort: this.options.effort } : {}),
+        ...(signal ? { signal } : {}),
+      },
+      {
+        onMetrics: (recorded) =>
+          this.recordDirectAuxMetrics(sessionId, recorded),
+      },
+    )
+    if (metrics.toolCalls.length > 0) return null
+    return validPromptSuggestion(metrics.text)
   }
 
   async sessionNameSuggestion(
@@ -1313,19 +1335,24 @@ export class ClaudeSessionService {
     if (loaded.status === 'conflict' || loaded.value.entries.length === 0) {
       return null
     }
-    let suggestion = ''
-    for await (const event of provider.complete({
-      messages: [
-        ...projectClaudeModelMessages(loaded.value.entries),
-        { role: 'user', content: SESSION_NAME_INSTRUCTION },
-      ],
-      ...(this.options.effort ? { effort: this.options.effort } : {}),
-      ...(signal ? { signal } : {}),
-    })) {
-      if (event.type === 'text-delta') suggestion += event.delta
-      if (event.type === 'tool-call') return null
-    }
-    return validSessionName(suggestion)
+    await this.activateSessionCostTracker(sessionId)
+    const metrics = await completeMeteredModelRequest(
+      provider,
+      {
+        messages: [
+          ...projectClaudeModelMessages(loaded.value.entries),
+          { role: 'user', content: SESSION_NAME_INSTRUCTION },
+        ],
+        ...(this.options.effort ? { effort: this.options.effort } : {}),
+        ...(signal ? { signal } : {}),
+      },
+      {
+        onMetrics: (recorded) =>
+          this.recordDirectAuxMetrics(sessionId, recorded),
+      },
+    )
+    if (metrics.toolCalls.length > 0) return null
+    return validSessionName(metrics.text)
   }
 
   async sessions(): Promise<SessionSummary[]> {
@@ -2326,6 +2353,46 @@ export class ClaudeSessionService {
     const tracker = this.sessionCostTrackers.get(activeId)
     if (!tracker) return Promise.resolve()
     return store.save(tracker.snapshot())
+  }
+
+  private recordDirectAuxMetrics(
+    sessionId: string,
+    metrics: {
+      usage: ModelUsage
+      model?: string
+      durationApiMs: number
+      durationApiWithoutRetriesMs: number
+    },
+  ): void {
+    const tracker = this.sessionCostTrackers.get(sessionId)
+    if (!tracker) {
+      throw new Error(
+        `Session cost tracker is not active for session ${sessionId}`,
+      )
+    }
+    const model =
+      metrics.model !== undefined && metrics.model.trim() !== ''
+        ? metrics.model
+        : 'praxis/provider'
+    if (hasNonZeroUsage(metrics.usage)) {
+      const pricing = this.options.pricing?.resolve(model)
+      const costUsd = pricing ? usageCostUsd(metrics.usage, pricing) : undefined
+      tracker.recordTurn({
+        model,
+        usage: metrics.usage,
+        ...(costUsd === undefined ? {} : { costUsd }),
+        ...(metrics.usage.webSearchRequests === undefined
+          ? {}
+          : { webSearchRequests: metrics.usage.webSearchRequests }),
+        apiDurationMs: metrics.durationApiMs,
+        apiDurationWithoutRetriesMs: metrics.durationApiWithoutRetriesMs,
+      })
+      return
+    }
+    tracker.recordDurations({
+      apiDurationMs: metrics.durationApiMs,
+      apiDurationWithoutRetriesMs: metrics.durationApiWithoutRetriesMs,
+    })
   }
 
   async costSnapshot(sessionId: string): Promise<ClaudeSessionCostSnapshot> {
