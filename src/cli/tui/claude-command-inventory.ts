@@ -55,13 +55,7 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
       'The dedicated /cost contract is included; /status is not a substitute.',
   },
   { name: 'diff', disposition: 'included', visibility: 'visible' },
-  {
-    name: 'doctor',
-    disposition: 'required',
-    visibility: 'conditional',
-    reason:
-      'Interactive /doctor is required; the top-level command is not a substitute.',
-  },
+  { name: 'doctor', disposition: 'included', visibility: 'conditional' },
   { name: 'effort', disposition: 'included', visibility: 'visible' },
   { name: 'exit', disposition: 'included', visibility: 'visible' },
   {

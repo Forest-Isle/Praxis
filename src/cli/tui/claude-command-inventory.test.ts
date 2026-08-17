@@ -26,7 +26,7 @@ describe('Claude Code 2.1.208 external command inventory', () => {
       CLAUDE_2_1_208_COMMAND_INVENTORY.filter(
         (entry) => entry.disposition === 'required',
       ).map((entry) => entry.name),
-    ).toEqual(['doctor'])
+    ).toEqual([])
 
     expect(CLAUDE_2_1_208_COMMAND_BY_NAME.get('cost')).toMatchObject({
       disposition: 'included',
@@ -37,7 +37,7 @@ describe('Claude Code 2.1.208 external command inventory', () => {
       visibility: 'conditional',
     })
     expect(CLAUDE_2_1_208_COMMAND_BY_NAME.get('doctor')).toMatchObject({
-      disposition: 'required',
+      disposition: 'included',
       visibility: 'conditional',
     })
   })
