@@ -722,6 +722,18 @@ export class AnthropicCompatibleProvider implements ModelProvider {
     if (options.contextWindowTokens !== undefined) {
       positiveInteger(options.contextWindowTokens, 'Context window tokens')
     }
+    this.endpoint = `${options.baseUrl.replace(/\/+$/, '')}/messages`
+    this.model = options.model
+    this.fetchImplementation = options.fetchImplementation ?? fetch
+    this.maxOutputTokens = positiveInteger(
+      options.maxOutputTokens ??
+        (options.model.includes('claude-opus-4-6')
+          ? 64_000
+          : options.model.startsWith('claude-')
+            ? 32_000
+            : 8192),
+      'Max output tokens',
+    )
     this.capabilities = {
       streaming: true,
       usage: true,
@@ -736,19 +748,8 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       ...(options.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: options.contextWindowTokens }),
+      maxOutputTokens: this.maxOutputTokens,
     }
-    this.endpoint = `${options.baseUrl.replace(/\/+$/, '')}/messages`
-    this.model = options.model
-    this.fetchImplementation = options.fetchImplementation ?? fetch
-    this.maxOutputTokens = positiveInteger(
-      options.maxOutputTokens ??
-        (options.model.includes('claude-opus-4-6')
-          ? 64_000
-          : options.model.startsWith('claude-')
-            ? 32_000
-            : 8192),
-      'Max output tokens',
-    )
     this.thinking = validateThinking(options.thinking)
     this.anthropicVersion = options.anthropicVersion ?? '2023-06-01'
     this.maxStreamBufferBytes = options.maxStreamBufferBytes ?? 1024 * 1024

@@ -909,6 +909,8 @@ describe('Praxis CLI', () => {
         cacheCreationInputTokens: 2,
         webSearchRequests: 1,
         costUSD: 0.001,
+        contextWindow: 0,
+        maxOutputTokens: 0,
       },
     })
     expect(records[4]).toMatchObject({
@@ -918,6 +920,95 @@ describe('Praxis CLI', () => {
         content: [{ type: 'text', text: records[5].result }],
       },
       session_id: records[2].session_id,
+    })
+  })
+
+  it('serializes runtimeInfo capability metadata into the JSON success result', async () => {
+    const capture = captureIO()
+    const capabilityDependencies: CliDependencies = {
+      async createService() {
+        return {
+          async run(prompt, _signal, sessionId) {
+            return {
+              sessionId: sessionId ?? '11111111-1111-4111-8111-111111111111',
+              text: `answer:${prompt}`,
+              usage: { inputTokens: 2, outputTokens: 3 },
+              modelUsage: {
+                // No row metadata: falls back to the matching runtimeInfo
+                // model's capability.
+                'test-model': { inputTokens: 2, outputTokens: 3 },
+                // Unknown model without metadata: serializes as 0.
+                'legacy-model': { inputTokens: 1, outputTokens: 1 },
+              },
+            }
+          },
+          async resume(sessionId, prompt) {
+            return {
+              sessionId,
+              text: `resumed:${prompt}`,
+              usage: { inputTokens: 4, outputTokens: 5 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async inspect() {
+            throw new Error('unused')
+          },
+          async export() {
+            throw new Error('unused')
+          },
+          runtimeInfo() {
+            return {
+              cwd: '/workspace',
+              model: 'test-model',
+              contextWindowTokens: 200_000,
+              maxOutputTokens: 32_000,
+              tools: [],
+              mcpServers: [],
+              permissionMode: 'default',
+              slashCommands: [],
+              agents: [],
+              skills: [],
+              claudeCodeVersion: '2.1.208',
+            }
+          },
+        }
+      },
+    }
+    await expect(
+      run(
+        ['run', '--output-format', 'json', 'hello'],
+        capture.io,
+        capabilityDependencies,
+      ),
+    ).resolves.toBe(0)
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records[0]).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      result: 'answer:hello',
+      modelUsage: {
+        'test-model': {
+          inputTokens: 2,
+          outputTokens: 3,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUSD: null,
+          contextWindow: 200_000,
+          maxOutputTokens: 32_000,
+        },
+        'legacy-model': {
+          inputTokens: 1,
+          outputTokens: 1,
+          costUSD: null,
+          contextWindow: 0,
+          maxOutputTokens: 0,
+        },
+      },
     })
   })
 

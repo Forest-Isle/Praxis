@@ -25,6 +25,7 @@ describe('AnthropicCompatibleProvider', () => {
         maxTokens: true,
       },
       contextWindowTokens: 200_000,
+      maxOutputTokens: 8_192,
     })
     expect(
       () =>
@@ -35,6 +36,38 @@ describe('AnthropicCompatibleProvider', () => {
           maxOutputTokens: 0,
         }),
     ).toThrow('positive integer')
+  })
+
+  it('exposes the configured max output tokens as a capability', () => {
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      maxOutputTokens: 16_384,
+    })
+    expect(provider.capabilities.maxOutputTokens).toBe(16_384)
+    expect(provider.capabilities.contextWindowTokens).toBeUndefined()
+  })
+
+  it('derives a default max output tokens capability per model family', () => {
+    const claude = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+    })
+    expect(claude.capabilities.maxOutputTokens).toBe(32_000)
+    const opus = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'claude-opus-4-6',
+    })
+    expect(opus.capabilities.maxOutputTokens).toBe(64_000)
+    const generic = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+    })
+    expect(generic.capabilities.maxOutputTokens).toBe(8_192)
   })
 
   it('maps thinking controls and preserves signed blocks across tool turns', async () => {
