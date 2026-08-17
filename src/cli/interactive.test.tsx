@@ -30,7 +30,10 @@ import type { TuiThemeSettings } from './tui/theme.js'
 import { projectRuntimeSettings } from './tui/runtime-settings.js'
 import type { TuiSandboxSnapshot } from './tui/sandbox-settings.js'
 import type { ClaudeSessionCostSnapshot } from '../application/session-cost-tracker.js'
-import type { DoctorReport } from '../maintenance/doctor.js'
+import type {
+  DoctorProgressListener,
+  DoctorReport,
+} from '../maintenance/doctor.js'
 
 afterEach(() => {
   cleanup()
@@ -966,6 +969,83 @@ describe('InteractiveApp', () => {
     app.unmount()
   })
 
+  it('renders pending doctor progress before replacing only the version state with the final report', async () => {
+    const creations: string[] = []
+    const turns: Array<Promise<void> | null> = []
+    let progressListener: DoctorProgressListener | undefined
+    let resolveDoctor!: (report: DoctorReport) => void
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            creations.push('service')
+            throw new Error('doctor must not create a service')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+        onTurnChange={(turn) => {
+          turns.push(turn)
+        }}
+        doctorLoader={(onProgress) => {
+          progressListener = onProgress
+          return new Promise<DoctorReport>((resolve) => {
+            resolveDoctor = resolve
+          })
+        }}
+      />,
+    )
+
+    app.stdin.write('/doctor')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Checking installation status…')
+        ? true
+        : undefined,
+    )
+
+    // Intermediate progress: complete local diagnostics with pending updates.
+    progressListener?.({
+      ...doctorReport(),
+      updates: {
+        autoUpdates: 'Manual (praxis update)',
+        hasUpdatePermissions: true,
+        channel: 'stable',
+        stableVersion: null,
+        latestVersion: null,
+        registryStatus: 'loading',
+      },
+    })
+    await waitFor(() =>
+      app.lastFrame()?.includes('Checking for updates…') ? true : undefined,
+    )
+    const intermediate = app.lastFrame()
+    expect(intermediate).toContain('Diagnostics')
+    expect(intermediate).toContain('Currently running: Praxis 1.2.3 (npm)')
+    expect(intermediate).toContain('Checking for updates…')
+    expect(intermediate).toContain('Enter to continue · Esc to cancel')
+    expect(intermediate).not.toContain('Stable version:')
+    expect(intermediate).not.toContain('Latest version:')
+    expect(intermediate).not.toContain('⎿')
+    expect(turns.at(-1)).not.toBeNull()
+    expect(creations).toEqual([])
+
+    // The final report replaces only the pending update state.
+    resolveDoctor(doctorReport())
+    await waitFor(() =>
+      app.lastFrame()?.includes('Latest version: 1.2.4') ? true : undefined,
+    )
+    const frame = app.lastFrame()
+    expect(frame).toContain('Diagnostics')
+    expect(frame).toContain('Stable version: 1.2.3')
+    expect(frame).toContain('Latest version: 1.2.4')
+    expect(frame).not.toContain('Checking for updates…')
+    expect(frame).not.toContain('⎿')
+    expect(turns.at(-1)).toBeNull()
+    expect(creations).toEqual([])
+    app.unmount()
+  })
+
   it('renders a current /doctor loader rejection inside the doctor screen and Esc dismisses', async () => {
     const creations: string[] = []
     let rejectDoctor!: (reason: Error) => void
@@ -1024,11 +1104,12 @@ describe('InteractiveApp', () => {
     }
   })
 
-  it('invalidates closed /doctor generations so stale success and failure stay inert', async () => {
+  it('invalidates closed /doctor generations so stale success, failure, and progress stay inert', async () => {
     const deferreds: Array<{
       resolve: (report: DoctorReport) => void
       reject: (reason: Error) => void
     }> = []
+    const progressListeners: DoctorProgressListener[] = []
     const loaderCalls: string[] = []
     const creations: string[] = []
     const turns: Array<Promise<void> | null> = []
@@ -1045,8 +1126,9 @@ describe('InteractiveApp', () => {
         onTurnChange={(turn) => {
           turns.push(turn)
         }}
-        doctorLoader={() => {
+        doctorLoader={(onProgress) => {
           loaderCalls.push(String(loaderCalls.length))
+          if (onProgress !== undefined) progressListeners.push(onProgress)
           let resolve!: (report: DoctorReport) => void
           let reject!: (reason: Error) => void
           const promise = new Promise<DoctorReport>((res, rej) => {
@@ -1111,31 +1193,72 @@ describe('InteractiveApp', () => {
       expect(app.lastFrame()).not.toContain('stale doctor failure')
       expect(turns.at(-1)).toBe(freshTurn)
 
-      // The current loader resolves and renders only the newest report.
-      deferreds[2]?.resolve(
-        doctorReport({
-          praxisVersion: '9.9.9',
-          diagnostic: {
-            ...doctorReport().diagnostic,
-            version: '9.9.9',
-          },
-          checks: [
-            {
-              id: 'installation',
-              status: 'pass',
-              summary: 'Praxis 9.9.9 installation is readable',
-            },
-          ],
-          summary: { passed: 1, warnings: 0, failed: 0 },
-        }),
-      )
+      // Stale progress callbacks from closed generations must stay inert too.
+      progressListeners[0]?.({
+        ...doctorReport(),
+        praxisVersion: '0.0.1',
+        diagnostic: { ...doctorReport().diagnostic, version: '0.0.1' },
+        updates: {
+          autoUpdates: 'Manual (praxis update)',
+          hasUpdatePermissions: true,
+          channel: 'stable',
+          stableVersion: null,
+          latestVersion: null,
+          registryStatus: 'loading',
+        },
+      })
+      progressListeners[1]?.({
+        ...doctorReport(),
+        praxisVersion: '0.0.2',
+        diagnostic: { ...doctorReport().diagnostic, version: '0.0.2' },
+        updates: {
+          autoUpdates: 'Manual (praxis update)',
+          hasUpdatePermissions: true,
+          channel: 'stable',
+          stableVersion: null,
+          latestVersion: null,
+          registryStatus: 'loading',
+        },
+      })
+      await flush()
+      expect(app.lastFrame()).toContain('Checking installation status…')
+      expect(app.lastFrame()).not.toContain('Checking for updates…')
+      expect(app.lastFrame()).not.toContain('Praxis 0.0.1')
+      expect(app.lastFrame()).not.toContain('Praxis 0.0.2')
+      expect(turns.at(-1)).toBe(freshTurn)
+
+      // Closing a current pending report must also invalidate its final result.
+      progressListeners[2]?.({
+        ...doctorReport(),
+        praxisVersion: '9.9.9',
+        diagnostic: { ...doctorReport().diagnostic, version: '9.9.9' },
+        updates: {
+          autoUpdates: 'Manual (praxis update)',
+          hasUpdatePermissions: true,
+          channel: 'stable',
+          stableVersion: null,
+          latestVersion: null,
+          registryStatus: 'loading',
+        },
+      })
       await waitFor(() =>
-        app.lastFrame()?.includes('Currently running: Praxis 9.9.9 (npm)')
+        app.lastFrame()?.includes('Checking for updates…') ? true : undefined,
+      )
+      expect(app.lastFrame()).toContain('Currently running: Praxis 9.9.9 (npm)')
+      expect(turns.at(-1)).toBe(freshTurn)
+
+      app.stdin.write('\u001B')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking for updates…') === false
           ? true
           : undefined,
       )
-      expect(app.lastFrame()).toContain('Currently running: Praxis 9.9.9 (npm)')
-      expect(app.lastFrame()).not.toContain('Praxis 1.2.3')
+      expect(turns.at(-1)).toBeNull()
+
+      deferreds[2]?.resolve(doctorReport())
+      await flush()
+      expect(app.lastFrame()).not.toContain('Currently running: Praxis')
+      expect(app.lastFrame()).not.toContain('Checking for updates…')
       expect(app.lastFrame()).not.toContain('stale doctor failure')
       expect(turns.at(-1)).toBeNull()
       expect(creations).toEqual([])

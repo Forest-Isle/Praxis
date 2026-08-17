@@ -28,14 +28,23 @@ export interface DoctorInstallationDiagnostic {
   readonly warnings: readonly DoctorDiagnosticWarning[]
 }
 
-export interface DoctorUpdateDiagnostic {
+export interface DoctorUpdateBaseDiagnostic {
   readonly autoUpdates: string
   readonly hasUpdatePermissions: boolean | null
   readonly channel: 'latest' | 'stable'
+}
+
+export interface DoctorUpdateDiagnostic extends DoctorUpdateBaseDiagnostic {
   readonly stableVersion: string | null
   readonly latestVersion: string | null
   readonly registryStatus: 'available' | 'unavailable'
   readonly error?: string
+}
+
+export interface DoctorPendingUpdateDiagnostic extends DoctorUpdateBaseDiagnostic {
+  readonly stableVersion: null
+  readonly latestVersion: null
+  readonly registryStatus: 'loading'
 }
 
 export interface PraxisDistTags {
@@ -62,6 +71,11 @@ export interface DoctorDiagnosticOptions {
 export interface DoctorDiagnosticsResult {
   diagnostic: DoctorInstallationDiagnostic
   updates: DoctorUpdateDiagnostic
+}
+
+export interface DoctorLocalDiagnosticsResult {
+  diagnostic: DoctorInstallationDiagnostic
+  updates: DoctorPendingUpdateDiagnostic
 }
 
 const PRAXIS_NPM_PACKAGE = 'praxis-agent'
@@ -164,18 +178,35 @@ async function updatePermissions(directory: string): Promise<boolean | null> {
   }
 }
 
-async function buildUpdateDiagnostic(
+async function buildPendingUpdateDiagnostic(
   options: DoctorDiagnosticOptions,
   installation: {
     installationType: DoctorInstallationType
     invokedBinary: string
   },
-): Promise<DoctorUpdateDiagnostic> {
+): Promise<DoctorPendingUpdateDiagnostic> {
   const checkUpdatePermissions =
     options.checkUpdatePermissions ?? updatePermissions
   const hasUpdatePermissions = await checkUpdatePermissions(
     dirname(installation.invokedBinary),
   )
+  return {
+    autoUpdates:
+      installation.installationType === 'npm'
+        ? 'Manual (praxis update)'
+        : 'Managed by source checkout',
+    hasUpdatePermissions,
+    channel: options.autoUpdateChannel,
+    stableVersion: null,
+    latestVersion: null,
+    registryStatus: 'loading',
+  }
+}
+
+export async function resolveDoctorUpdates(
+  options: DoctorDiagnosticOptions,
+  pendingUpdates: DoctorPendingUpdateDiagnostic,
+): Promise<DoctorUpdateDiagnostic> {
   let stableVersion: string | null = null
   let latestVersion: string | null = null
   let registryStatus: 'available' | 'unavailable' = 'unavailable'
@@ -197,12 +228,9 @@ async function buildUpdateDiagnostic(
     }`
   }
   return {
-    autoUpdates:
-      installation.installationType === 'npm'
-        ? 'Manual (praxis update)'
-        : 'Managed by source checkout',
-    hasUpdatePermissions,
-    channel: options.autoUpdateChannel,
+    autoUpdates: pendingUpdates.autoUpdates,
+    hasUpdatePermissions: pendingUpdates.hasUpdatePermissions,
+    channel: pendingUpdates.channel,
     stableVersion,
     latestVersion,
     registryStatus,
@@ -210,9 +238,9 @@ async function buildUpdateDiagnostic(
   }
 }
 
-export async function collectDoctorDiagnostics(
+export async function collectDoctorLocalDiagnostics(
   options: DoctorDiagnosticOptions,
-): Promise<DoctorDiagnosticsResult> {
+): Promise<DoctorLocalDiagnosticsResult> {
   const installationPath = await readableExecutable(options.executablePath)
   const invokedBinary = resolve(
     options.invokedBinaryPath ?? options.executablePath,
@@ -266,9 +294,17 @@ export async function collectDoctorDiagnostics(
     warnings,
   }
 
-  const updates = await buildUpdateDiagnostic(options, {
+  const updates = await buildPendingUpdateDiagnostic(options, {
     installationType,
     invokedBinary,
   })
   return { diagnostic, updates }
+}
+
+export async function collectDoctorDiagnostics(
+  options: DoctorDiagnosticOptions,
+): Promise<DoctorDiagnosticsResult> {
+  const local = await collectDoctorLocalDiagnostics(options)
+  const updates = await resolveDoctorUpdates(options, local.updates)
+  return { diagnostic: local.diagnostic, updates }
 }

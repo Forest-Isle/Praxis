@@ -13,8 +13,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   collectDoctorDiagnostics,
+  collectDoctorLocalDiagnostics,
   loadPraxisDistTags,
+  resolveDoctorUpdates,
   type DoctorDiagnosticOptions,
+  type DoctorPendingUpdateDiagnostic,
 } from './doctor-diagnostic.js'
 
 const roots: string[] = []
@@ -306,6 +309,188 @@ describe('collectDoctorDiagnostics', () => {
     )
     expect(result.updates.hasUpdatePermissions).toBe(false)
     expect(checkedDirectories).toEqual([dirname(resolve(executablePath))])
+  })
+})
+
+describe('collectDoctorLocalDiagnostics', () => {
+  it('collects pending local diagnostics without invoking the dist-tag loader', async () => {
+    const root = await fixture()
+    const executablePath = join(
+      root,
+      'lib',
+      'node_modules',
+      'praxis-agent',
+      'bin',
+      'praxis',
+    )
+    await makeExecutable(executablePath)
+    let loaderCalls = 0
+    const result = await collectDoctorLocalDiagnostics(
+      options(
+        executablePath,
+        {},
+        {
+          loadDistTags: async () => {
+            loaderCalls += 1
+            return { stable: '1.0.0', latest: '1.1.0' }
+          },
+        },
+      ),
+    )
+    expect(loaderCalls).toBe(0)
+    expect(result.diagnostic.installationType).toBe('npm')
+    expect(result.diagnostic.packageManager).toBe('npm')
+    expect(result.diagnostic.version).toBe('0.1.0')
+    expect(result.diagnostic.configInstallMethod).toBe('default (~/.claude)')
+    expect(result.updates).toEqual({
+      autoUpdates: 'Manual (praxis update)',
+      hasUpdatePermissions: true,
+      channel: 'stable',
+      stableVersion: null,
+      latestVersion: null,
+      registryStatus: 'loading',
+    })
+  })
+
+  it('keeps read-only PATH, search, and permission work inside the local collector', async () => {
+    const root = await fixture()
+    const rgPath = join(root, 'bin', 'rg')
+    const executablePath = join(root, 'bin', 'praxis')
+    await makeExecutable(rgPath)
+    await makeExecutable(executablePath)
+    const checkedDirectories: string[] = []
+    const result = await collectDoctorLocalDiagnostics(
+      options(
+        executablePath,
+        { PATH: join(root, 'bin') },
+        {
+          checkUpdatePermissions: async (directory) => {
+            checkedDirectories.push(directory)
+            return false
+          },
+        },
+      ),
+    )
+    expect(result.diagnostic.search).toEqual({
+      working: true,
+      mode: 'system',
+      systemPath: await realpath(rgPath),
+    })
+    expect(result.diagnostic.multipleInstallations).toEqual([
+      await realpath(executablePath),
+    ])
+    expect(result.updates.hasUpdatePermissions).toBe(false)
+    expect(checkedDirectories).toEqual([dirname(resolve(executablePath))])
+  })
+})
+
+describe('resolveDoctorUpdates', () => {
+  it('resolves pending static metadata to a final update diagnostic without repeating permission work', async () => {
+    const pending: DoctorPendingUpdateDiagnostic = {
+      autoUpdates: 'Manual (praxis update)',
+      hasUpdatePermissions: true,
+      channel: 'latest',
+      stableVersion: null,
+      latestVersion: null,
+      registryStatus: 'loading',
+    }
+    const checkUpdatePermissions = vi.fn(async () => true)
+    const result = await resolveDoctorUpdates(
+      {
+        ...options('/tmp/unused', {}, { autoUpdateChannel: 'latest' }),
+        checkUpdatePermissions,
+      },
+      pending,
+    )
+    expect(checkUpdatePermissions).not.toHaveBeenCalled()
+    expect(result).toEqual({
+      autoUpdates: 'Manual (praxis update)',
+      hasUpdatePermissions: true,
+      channel: 'latest',
+      stableVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      registryStatus: 'available',
+    })
+    expect(result.error).toBeUndefined()
+  })
+
+  it('marks the registry unavailable when the loader yields no latest tag', async () => {
+    const pending: DoctorPendingUpdateDiagnostic = {
+      autoUpdates: 'Managed by source checkout',
+      hasUpdatePermissions: null,
+      channel: 'stable',
+      stableVersion: null,
+      latestVersion: null,
+      registryStatus: 'loading',
+    }
+    const result = await resolveDoctorUpdates(
+      options(
+        '/tmp/unused',
+        {},
+        {
+          loadDistTags: async () => ({ stable: '1.0.0' }),
+        },
+      ),
+      pending,
+    )
+    expect(result).toMatchObject({
+      autoUpdates: 'Managed by source checkout',
+      hasUpdatePermissions: null,
+      channel: 'stable',
+      registryStatus: 'unavailable',
+      stableVersion: null,
+      latestVersion: null,
+    })
+    expect(result.error).toMatch(/Failed to fetch version/iu)
+  })
+})
+
+describe('collectDoctorDiagnostics compatibility composition', () => {
+  it('composes local collection with a single registry lookup for the final result', async () => {
+    const root = await fixture()
+    const executablePath = join(root, 'bin', 'praxis')
+    await makeExecutable(executablePath)
+    let loaderCalls = 0
+    const result = await collectDoctorDiagnostics(
+      options(
+        executablePath,
+        {},
+        {
+          loadDistTags: async () => {
+            loaderCalls += 1
+            return { stable: '1.0.0', latest: '1.1.0' }
+          },
+        },
+      ),
+    )
+    expect(loaderCalls).toBe(1)
+    expect(result.diagnostic.installationType).toBe('source')
+    expect(result.updates.registryStatus).toBe('available')
+    expect(result.updates.stableVersion).toBe('1.0.0')
+    expect(result.updates.latestVersion).toBe('1.1.0')
+    expect(result.updates).not.toHaveProperty('registryStatus', 'loading')
+  })
+
+  it('surfaces an unavailable final result while invoking the loader exactly once', async () => {
+    const root = await fixture()
+    const executablePath = join(root, 'bin', 'praxis')
+    await makeExecutable(executablePath)
+    let loaderCalls = 0
+    const result = await collectDoctorDiagnostics(
+      options(
+        executablePath,
+        {},
+        {
+          loadDistTags: async () => {
+            loaderCalls += 1
+            return { stable: '1.0.0' }
+          },
+        },
+      ),
+    )
+    expect(loaderCalls).toBe(1)
+    expect(result.updates.registryStatus).toBe('unavailable')
+    expect(result.updates.error).toMatch(/Failed to fetch version/iu)
   })
 })
 

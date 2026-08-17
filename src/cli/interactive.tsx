@@ -118,7 +118,12 @@ import {
   slashCommandQuery,
   type TuiSlashCommand,
 } from './tui/slash-commands.js'
-import { runDoctor, type DoctorReport } from '../maintenance/doctor.js'
+import {
+  runDoctor,
+  type DoctorProgressListener,
+  type DoctorProgressReport,
+  type DoctorReport,
+} from '../maintenance/doctor.js'
 import {
   canonicalClaudeCostModelName,
   formatCostSummary,
@@ -476,7 +481,7 @@ interface InteractiveAppProps {
   allowDangerouslySkipPermissions?: boolean
   additionalDirectories?: readonly string[]
   diffLoader?: () => Promise<TuiDiffSnapshot>
-  doctorLoader?: () => Promise<DoctorReport>
+  doctorLoader?: (onProgress?: DoctorProgressListener) => Promise<DoctorReport>
   fileLoader?: () => Promise<readonly TuiFileEntry[]>
   externalEditor?: (
     prompt: string,
@@ -742,7 +747,7 @@ type InteractiveMenu =
       kind: 'doctor'
       generation: number
       loading: boolean
-      report: DoctorReport | null
+      report: DoctorReport | DoctorProgressReport | null
       error: string | null
     }
   | { kind: 'mcp'; model: TuiMcpPanelModel; state: TuiMcpPanelState }
@@ -1083,7 +1088,7 @@ export function InteractiveApp({
   const loadDoctorReport = useMemo(
     () =>
       doctorLoader ??
-      (async () => {
+      (async (onProgress?: DoctorProgressListener) => {
         const configuredRoot = process.env.CLAUDE_CONFIG_DIR || undefined
         const configRoot = resolve(
           configuredRoot ?? resolve(homedir(), '.claude'),
@@ -1108,6 +1113,7 @@ export function InteractiveApp({
           ...(process.argv[1] === undefined
             ? {}
             : { invokedBinaryPath: process.argv[1] }),
+          ...(onProgress === undefined ? {} : { onProgress }),
         })
       }),
     [doctorLoader, runtimeCwd, display.version, configTarget],
@@ -2978,7 +2984,18 @@ export function InteractiveApp({
     const loading = (async () => {
       setBusy(true)
       try {
-        const report = await loadDoctorReport()
+        const report = await loadDoctorReport((progress) => {
+          const current = menuRef.current
+          if (current?.kind === 'doctor' && current.generation === generation) {
+            updateMenu({
+              kind: 'doctor',
+              generation,
+              loading: false,
+              report: progress,
+              error: null,
+            })
+          }
+        })
         const current = menuRef.current
         if (current?.kind === 'doctor' && current.generation === generation) {
           updateMenu({

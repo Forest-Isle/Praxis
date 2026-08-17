@@ -2,7 +2,11 @@ import React from 'react'
 
 import { Box, Text } from 'ink'
 
-import type { DoctorCheck, DoctorReport } from '../../maintenance/doctor.js'
+import type {
+  DoctorCheck,
+  DoctorProgressReport,
+  DoctorReport,
+} from '../../maintenance/doctor.js'
 
 export interface DoctorWarningGroup {
   heading: string
@@ -34,7 +38,7 @@ const WARNING_GROUP_DEFINITIONS: readonly {
 ]
 
 export function projectDoctorWarningGroups(
-  report: DoctorReport,
+  report: DoctorReport | DoctorProgressReport,
 ): readonly DoctorWarningGroup[] {
   return WARNING_GROUP_DEFINITIONS.map((group) => ({
     heading: group.heading,
@@ -77,7 +81,7 @@ function checkDetails(check: DoctorCheck): React.ReactNode {
   )
 }
 
-function doctorSummary(report: DoctorReport): string {
+function doctorSummary(report: DoctorReport | DoctorProgressReport): string {
   if (report.summary.failed > 0)
     return `${report.summary.failed} issue(s) found.`
   if (report.summary.warnings > 0) return 'No blocking issues found.'
@@ -88,7 +92,7 @@ function WarningGroups({
   report,
   screenReader,
 }: {
-  report: DoctorReport
+  report: DoctorReport | DoctorProgressReport
   screenReader: boolean
 }) {
   const groups = projectDoctorWarningGroups(report)
@@ -122,7 +126,7 @@ export function DoctorDashboard({
   screenReader,
 }: {
   loading: boolean
-  report: DoctorReport | null
+  report: DoctorReport | DoctorProgressReport | null
   error: string | null
   width: number
   screenReader: boolean
@@ -208,6 +212,8 @@ export function DoctorDashboard({
           )}
           <Text>{`Latest version: ${updates.latestVersion ?? 'unknown'}`}</Text>
         </>
+      ) : updates.registryStatus === 'loading' ? (
+        <Text>Checking for updates…</Text>
       ) : (
         <Text>└ Failed to fetch versions</Text>
       )}
