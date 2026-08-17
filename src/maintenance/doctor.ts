@@ -37,6 +37,12 @@ import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
+import {
+  collectDoctorDiagnostics,
+  type DoctorInstallationDiagnostic,
+  type DoctorUpdateDiagnostic,
+  type PraxisDistTagLoader,
+} from './doctor-diagnostic.js'
 
 export interface DoctorCheck {
   id:
@@ -60,6 +66,8 @@ export interface DoctorReport {
   type: 'doctor'
   ok: boolean
   praxisVersion: string
+  diagnostic: DoctorInstallationDiagnostic
+  updates: DoctorUpdateDiagnostic
   checks: readonly DoctorCheck[]
   summary: {
     passed: number
@@ -79,6 +87,9 @@ export interface DoctorOptions {
   environment: NodeJS.ProcessEnv
   detectClaudeVersion?: (execute?: VersionCommand) => Promise<string>
   executeVersion?: VersionCommand
+  autoUpdateChannel: 'latest' | 'stable'
+  invokedBinaryPath?: string
+  loadDistTags?: PraxisDistTagLoader
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -213,6 +224,20 @@ async function capture(
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const configRoot = resolve(options.configRoot)
   const cwd = resolve(options.cwd)
+  const sensitiveValues = sensitiveEnvironmentValues(options.environment)
+  const { diagnostic, updates } = await collectDoctorDiagnostics({
+    version: options.version,
+    executablePath: options.executablePath,
+    ...(options.invokedBinaryPath === undefined
+      ? {}
+      : { invokedBinaryPath: options.invokedBinaryPath }),
+    configRoot,
+    environment: options.environment,
+    autoUpdateChannel: options.autoUpdateChannel,
+    ...(options.loadDistTags === undefined
+      ? {}
+      : { loadDistTags: options.loadDistTags }),
+  })
   let settings: readonly ClaudeJsonResource[] | undefined
   const checks: DoctorCheck[] = []
 
@@ -470,12 +495,19 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     }),
   )
 
-  const sensitiveValues = sensitiveEnvironmentValues(options.environment)
   for (const check of checks) {
     if (check.status === 'fail') {
       check.summary = redactSensitiveText(check.summary, sensitiveValues)
     }
   }
+
+  const reportUpdates =
+    updates.error === undefined
+      ? updates
+      : {
+          ...updates,
+          error: redactSensitiveText(updates.error, sensitiveValues),
+        }
 
   const summary = {
     passed: checks.filter((check) => check.status === 'pass').length,
@@ -486,6 +518,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     type: 'doctor',
     ok: checks.every((check) => check.status !== 'fail'),
     praxisVersion: options.version,
+    diagnostic,
+    updates: reportUpdates,
     checks,
     summary,
   }
@@ -493,6 +527,41 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
 
 export function formatDoctorReport(report: DoctorReport): string {
   const lines = ['Praxis doctor', '']
+  const { diagnostic, updates } = report
+  lines.push('Diagnostics')
+  lines.push(
+    `  Currently running: Praxis ${diagnostic.version} (${diagnostic.installationType})`,
+  )
+  if (diagnostic.packageManager !== null) {
+    lines.push(`  Package manager: ${diagnostic.packageManager}`)
+  }
+  lines.push(`  Path: ${diagnostic.installationPath}`)
+  lines.push(`  Invoked: ${diagnostic.invokedBinary}`)
+  lines.push(`  Config install method: ${diagnostic.configInstallMethod}`)
+  lines.push(
+    `  Search: ${
+      diagnostic.search.working
+        ? `${diagnostic.search.mode} (${diagnostic.search.systemPath})`
+        : 'unavailable'
+    }`,
+  )
+  lines.push('', 'Updates')
+  lines.push(`  Auto-updates: ${updates.autoUpdates}`)
+  if (updates.hasUpdatePermissions !== null) {
+    lines.push(
+      `  Update permissions: ${updates.hasUpdatePermissions ? 'yes' : 'no'}`,
+    )
+  }
+  lines.push(`  Update channel: ${updates.channel}`)
+  if (updates.registryStatus === 'available') {
+    if (updates.stableVersion !== null) {
+      lines.push(`  Stable version: ${updates.stableVersion}`)
+    }
+    lines.push(`  Latest version: ${updates.latestVersion ?? 'unknown'}`)
+  } else {
+    lines.push('  └ Failed to fetch versions')
+  }
+  lines.push('')
   for (const check of report.checks) {
     lines.push(`[${check.status.toUpperCase()}] ${check.id}: ${check.summary}`)
     if (check.details) {

@@ -846,6 +846,31 @@ describe('InteractiveApp', () => {
       type: 'doctor',
       ok: true,
       praxisVersion: '1.2.3',
+      diagnostic: {
+        installationType: 'npm',
+        version: '1.2.3',
+        packageManager: 'npm',
+        installationPath:
+          '/usr/local/lib/node_modules/praxis-agent/dist/cli.js',
+        invokedBinary: '/usr/local/bin/praxis',
+        configInstallMethod: 'default (~/.claude)',
+        search: {
+          working: true,
+          mode: 'system',
+          systemPath: '/usr/local/bin/rg',
+        },
+        recommendation: null,
+        multipleInstallations: ['/usr/local/bin/praxis'],
+        warnings: [],
+      },
+      updates: {
+        autoUpdates: 'Manual (praxis update)',
+        hasUpdatePermissions: true,
+        channel: 'stable',
+        stableVersion: '1.2.3',
+        latestVersion: '1.2.4',
+        registryStatus: 'available',
+      },
       checks: [
         {
           id: 'installation',
