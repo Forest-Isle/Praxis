@@ -1262,3 +1262,17 @@ Status: complete.
       architecture, observable behavior, UI, and shared-data fidelity
 - [x] record the disposition through the focused inventory and docs gates
       (slash-catalog inventory, parity matrix, TUI parity)
+
+## Stage 141 - cost and developer-core closure
+
+Status: complete for the accepted single-user developer-core scope.
+
+- [x] implement provider-free `/cost` reporting in interactive, text, JSON, and
+      stream-json modes with session-safe persistence and no-persistence paths
+- [x] implement the interactive `/doctor` dashboard and preserve its headless
+      diagnostics contract
+- [x] meter provider, tool, manual/automatic compaction, direct auxiliary,
+      tool-summary, and foreground/background/workflow/nested subagent calls
+      without double recording on cancellation, resume, or notification drain
+- [x] verify the complete quality gate, clean installed-package contract, and
+      Claude 2.1.207/2.1.208/2.1.209/3.0.0 transcript-write safety matrix
