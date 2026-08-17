@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -117,6 +118,7 @@ import {
   slashCommandQuery,
   type TuiSlashCommand,
 } from './tui/slash-commands.js'
+import { runDoctor, type DoctorReport } from '../maintenance/doctor.js'
 import {
   canonicalClaudeCostModelName,
   type CostSummary,
@@ -229,6 +231,7 @@ import {
   ToolPermissionDialog,
 } from './tui/tool-permission.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
+import { DoctorDashboard } from './tui/doctor-dashboard.js'
 import { SandboxDashboard, tuiSandboxTabs } from './tui/sandbox-dashboard.js'
 import {
   createTuiSandboxStore,
@@ -472,6 +475,7 @@ interface InteractiveAppProps {
   allowDangerouslySkipPermissions?: boolean
   additionalDirectories?: readonly string[]
   diffLoader?: () => Promise<TuiDiffSnapshot>
+  doctorLoader?: () => Promise<DoctorReport>
   fileLoader?: () => Promise<readonly TuiFileEntry[]>
   externalEditor?: (
     prompt: string,
@@ -732,6 +736,13 @@ type InteractiveMenu =
       query: string
       searchFocused: boolean
       usage: CostSummary
+    }
+  | {
+      kind: 'doctor'
+      generation: number
+      loading: boolean
+      report: DoctorReport | null
+      error: string | null
     }
   | { kind: 'mcp'; model: TuiMcpPanelModel; state: TuiMcpPanelState }
   | { kind: 'tasks'; tasks: readonly TuiTaskEntry[]; state: TuiTaskPanelState }
@@ -1010,6 +1021,7 @@ export function InteractiveApp({
   allowDangerouslySkipPermissions = false,
   additionalDirectories = [],
   diffLoader,
+  doctorLoader,
   fileLoader,
   externalEditor = editTuiPrompt,
   keybindingsConfigRoot,
@@ -1066,6 +1078,33 @@ export function InteractiveApp({
   const loadDiffSnapshot = useMemo(
     () => diffLoader ?? (() => loadGitDiff(runtimeCwd)),
     [diffLoader, runtimeCwd],
+  )
+  const loadDoctorReport = useMemo(
+    () =>
+      doctorLoader ??
+      (() => {
+        const configuredRoot = process.env.CLAUDE_CONFIG_DIR || undefined
+        const configRoot = resolve(
+          configuredRoot ?? resolve(homedir(), '.claude'),
+        )
+        const claudeStatePath = configuredRoot
+          ? join(configRoot, '.claude.json')
+          : resolve(homedir(), '.claude.json')
+        return runDoctor({
+          version: display.version,
+          executablePath: resolve(
+            process.argv[1] ??
+              fileURLToPath(new URL('../cli.js', import.meta.url)),
+          ),
+          nodeExecutablePath: process.execPath,
+          nodeVersion: process.version,
+          configRoot,
+          claudeStatePath,
+          cwd: runtimeCwd,
+          environment: process.env,
+        })
+      }),
+    [doctorLoader, runtimeCwd, display.version],
   )
   const loadFiles = useMemo(
     () =>
@@ -1239,6 +1278,8 @@ export function InteractiveApp({
   const configOpenGenerationRef = useRef(0)
   const configUsageRequestRef = useRef(0)
   const configOperationRef = useRef<Promise<void> | null>(null)
+  const doctorMenuGenerationRef = useRef(0)
+  const doctorOperationRef = useRef<Promise<void> | null>(null)
   const [busy, setBusy] = useState(false)
   const taskEntriesRef = useRef<readonly TuiTaskEntry[]>([])
   const mcpControllerRef = useRef<McpPanelController | null>(null)
@@ -1939,6 +1980,15 @@ export function InteractiveApp({
       const closingConfigOperation = configOperationRef.current
       configOperationRef.current = null
       if (closingConfigOperation) {
+        setBusy(false)
+        onTurnChange?.(null)
+      }
+    }
+    if (next === null && menuRef.current?.kind === 'doctor') {
+      doctorMenuGenerationRef.current += 1
+      const closingDoctorOperation = doctorOperationRef.current
+      doctorOperationRef.current = null
+      if (closingDoctorOperation) {
         setBusy(false)
         onTurnChange?.(null)
       }
@@ -2888,6 +2938,58 @@ export function InteractiveApp({
     void loading.finally(() => {
       if (configOperationRef.current === loading) {
         configOperationRef.current = null
+        setBusy(false)
+        onTurnChange?.(null)
+      }
+    })
+  }
+
+  const openDoctor = () => {
+    const generation = ++doctorMenuGenerationRef.current
+    updateMenu({
+      kind: 'doctor',
+      generation,
+      loading: true,
+      report: null,
+      error: null,
+    })
+    const loading = (async () => {
+      setBusy(true)
+      try {
+        const report = await loadDoctorReport()
+        const current = menuRef.current
+        if (current?.kind === 'doctor' && current.generation === generation) {
+          updateMenu({
+            kind: 'doctor',
+            generation,
+            loading: false,
+            report,
+            error: null,
+          })
+        }
+      } catch (error) {
+        const current = menuRef.current
+        if (current?.kind === 'doctor' && current.generation === generation) {
+          updateMenu({
+            kind: 'doctor',
+            generation,
+            loading: false,
+            report: null,
+            error: redactSensitiveText(
+              error instanceof Error ? error.message : String(error),
+              sensitiveValues,
+            ),
+          })
+        }
+      } finally {
+        if (doctorMenuGenerationRef.current === generation) setBusy(false)
+      }
+    })()
+    doctorOperationRef.current = loading
+    onTurnChange?.(loading)
+    void loading.finally(() => {
+      if (doctorOperationRef.current === loading) {
+        doctorOperationRef.current = null
         setBusy(false)
         onTurnChange?.(null)
       }
@@ -6170,6 +6272,13 @@ export function InteractiveApp({
         return
       }
 
+      if (activeMenu.kind === 'doctor') {
+        if (key.escape || value === '\u001B' || key.return) {
+          updateMenu(null)
+        }
+        return
+      }
+
       if (key.escape) {
         updateMenu(null)
         return
@@ -6792,6 +6901,8 @@ export function InteractiveApp({
         void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/cost') {
         openSettings('usage')
+      } else if (prompt === '/doctor') {
+        openDoctor()
       } else if (prompt === '/status') {
         openSettings('status')
       } else if (prompt === '/release-notes') {
@@ -7434,6 +7545,14 @@ export function InteractiveApp({
                     settingSources: statusSettingSources.split(', '),
                   }}
                   usage={menu.usage}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : menu.kind === 'doctor' ? (
+                <DoctorDashboard
+                  loading={menu.loading}
+                  report={menu.report}
+                  error={menu.error}
                   width={width}
                   screenReader={axScreenReader}
                 />
