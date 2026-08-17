@@ -41,6 +41,169 @@ describe('AgentRuntime', () => {
     expect(result.durationApiMs).toBeGreaterThanOrEqual(0)
   })
 
+  it('reports the provider attempt duration as the retry-free API duration', async () => {
+    const provider = providerFrom(async function* () {
+      yield { type: 'api-attempt-duration', durationMs: 7 }
+      yield { type: 'text-delta', delta: 'measured' }
+      yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+    })
+    const runtime = new AgentRuntime(provider)
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'measure' }],
+      collectMetrics: true,
+    })
+    expect(result.durationApiWithoutRetriesMs).toBe(7)
+    expect(result.durationApiMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('preserves an explicit zero provider attempt duration while the total duration is present', async () => {
+    const provider = providerFrom(async function* () {
+      yield { type: 'api-attempt-duration', durationMs: 0 }
+      yield { type: 'text-delta', delta: 'measured' }
+      yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+    })
+    const runtime = new AgentRuntime(provider)
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'measure' }],
+      collectMetrics: true,
+    })
+    expect(result.durationApiWithoutRetriesMs).toBe(0)
+    expect(result.durationApiMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('falls back to the surrounding elapsed duration when the provider reports no attempt metric', async () => {
+    const provider = providerFrom(async function* () {
+      yield { type: 'text-delta', delta: 'measured' }
+      yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+    })
+    const runtime = new AgentRuntime(provider)
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'measure' }],
+      collectMetrics: true,
+    })
+    expect(result.durationApiWithoutRetriesMs).toBeDefined()
+    expect(result.durationApiWithoutRetriesMs).toBe(result.durationApiMs)
+  })
+
+  it('omits the retry-free metric when metrics are not collected', async () => {
+    const provider = providerFrom(async function* () {
+      yield { type: 'api-attempt-duration', durationMs: 7 }
+      yield { type: 'text-delta', delta: 'measured' }
+      yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+    })
+    const runtime = new AgentRuntime(provider)
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'measure' }],
+    })
+    expect(result.durationApiWithoutRetriesMs).toBeUndefined()
+    expect(result.durationApiMs).toBeUndefined()
+  })
+
+  it('propagates nested tool retry-free API duration across turns', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      turn += 1
+      yield { type: 'api-attempt-duration', durationMs: turn * 10 }
+      if (turn === 1) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_duration', name: 'Read', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+      yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({
+          content: 'nested',
+          isError: false,
+          durationApiMs: 100,
+          durationApiWithoutRetriesMs: 80,
+        }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'inspect' }],
+      collectMetrics: true,
+    })
+    expect(result.text).toBe('done')
+    expect(result.durationApiWithoutRetriesMs).toBe(10 + 20 + 80)
+    expect(result.durationApiMs).toBeGreaterThanOrEqual(100)
+  })
+
+  it('falls back to a tool durationApiMs when the tool reports no retry-free duration', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      turn += 1
+      yield { type: 'api-attempt-duration', durationMs: 5 }
+      if (turn === 1) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_legacy', name: 'Read', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+      yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({
+          content: 'legacy',
+          isError: false,
+          durationApiMs: 100,
+        }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'inspect' }],
+      collectMetrics: true,
+    })
+    expect(result.durationApiWithoutRetriesMs).toBe(5 + 5 + 100)
+  })
+
+  it('rejects invalid provider attempt duration metadata', async () => {
+    const runWith = async (durationMs: number) => {
+      const provider = providerFrom(async function* () {
+        yield { type: 'api-attempt-duration', durationMs }
+        yield { type: 'text-delta', delta: 'unexpected' }
+      })
+      return new AgentRuntime(provider).run({
+        messages: [{ role: 'user', content: 'measure' }],
+        collectMetrics: true,
+      })
+    }
+    const message =
+      'api-attempt-duration durationMs must be a finite nonnegative number'
+    await expect(runWith(-1)).rejects.toThrow(message)
+    await expect(runWith(Number.NaN)).rejects.toThrow(message)
+    await expect(runWith(Number.POSITIVE_INFINITY)).rejects.toThrow(message)
+  })
+
+  it('rejects duplicate provider attempt duration metadata in one turn', async () => {
+    const provider = providerFrom(async function* () {
+      yield { type: 'api-attempt-duration', durationMs: 1 }
+      yield { type: 'api-attempt-duration', durationMs: 2 }
+      yield { type: 'text-delta', delta: 'unexpected' }
+    })
+    await expect(
+      new AgentRuntime(provider).run({
+        messages: [{ role: 'user', content: 'measure' }],
+        collectMetrics: true,
+      }),
+    ).rejects.toThrow(
+      'Provider emitted multiple api-attempt-duration events in one turn',
+    )
+  })
+
   it('stops before a new model turn after a priced budget is exhausted', async () => {
     let calls = 0
     const provider = providerFrom(async function* () {

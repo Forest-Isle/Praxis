@@ -115,6 +115,10 @@ export type ModelStreamEvent =
       errorStatus: number | null
       error: ProviderErrorKind
     }
+  | {
+      type: 'api-attempt-duration'
+      durationMs: number
+    }
 
 export interface ModelRequest {
   messages: readonly ModelMessage[]
@@ -281,6 +285,7 @@ export interface ToolExecutionResult {
   nativeToolUseResult?: Record<string, unknown>
   nativeMcpMeta?: Record<string, unknown>
   durationApiMs?: number
+  durationApiWithoutRetriesMs?: number
   processOutput?: {
     stdout: string
     stderr: string
@@ -535,6 +540,7 @@ export interface AgentRunResult {
   usage: ModelUsage
   modelUsage?: ModelUsageByModel
   durationApiMs?: number
+  durationApiWithoutRetriesMs?: number
   linesAdded?: number
   linesRemoved?: number
 }
@@ -789,6 +795,7 @@ export class AgentRuntime {
     let modelUsage = emptyUsage()
     const modelUsageByModel = new Map<string, ModelUsage>()
     let durationApiMs = 0
+    let durationApiWithoutRetriesMs = 0
     let linesAdded = 0
     let linesRemoved = 0
     const definitions = this.provider.capabilities.tools
@@ -865,11 +872,34 @@ export class AgentRuntime {
         const toolCalls: ModelToolCall[] = []
 
         const apiStartedAt = request.collectMetrics ? performance.now() : 0
+        let turnApiDurationMs = 0
+        let turnApiDurationWithoutRetriesMs: number | undefined
+        let turnApiAttemptDurationSeen = false
         try {
           for await (const event of this.provider.complete(providerRequest)) {
             if (request.signal?.aborted) return this.cancel()
             if (event.type === 'api-retry') {
               this.emit(event)
+              continue
+            }
+            if (event.type === 'api-attempt-duration') {
+              if (turnApiAttemptDurationSeen) {
+                throw new Error(
+                  'Provider emitted multiple api-attempt-duration events in one turn',
+                )
+              }
+              turnApiAttemptDurationSeen = true
+              const { durationMs } = event
+              if (
+                typeof durationMs !== 'number' ||
+                !Number.isFinite(durationMs) ||
+                durationMs < 0
+              ) {
+                throw new TypeError(
+                  'api-attempt-duration durationMs must be a finite nonnegative number',
+                )
+              }
+              turnApiDurationWithoutRetriesMs = durationMs
               continue
             }
             if (!streaming) {
@@ -936,8 +966,13 @@ export class AgentRuntime {
           }
         } finally {
           if (request.collectMetrics) {
-            durationApiMs += Math.max(0, performance.now() - apiStartedAt)
+            turnApiDurationMs = Math.max(0, performance.now() - apiStartedAt)
+            durationApiMs += turnApiDurationMs
           }
+        }
+        if (request.collectMetrics) {
+          durationApiWithoutRetriesMs +=
+            turnApiDurationWithoutRetriesMs ?? turnApiDurationMs
         }
 
         if (!streaming) this.emit({ type: 'state', state: 'streaming' })
@@ -1015,6 +1050,7 @@ export class AgentRuntime {
             usage,
             ...(modelUsage === undefined ? {} : { modelUsage }),
             ...(durationApiMs === 0 ? {} : { durationApiMs }),
+            ...(durationApiMs === 0 ? {} : { durationApiWithoutRetriesMs }),
             ...(linesAdded === 0 ? {} : { linesAdded }),
             ...(linesRemoved === 0 ? {} : { linesRemoved }),
           }
@@ -1038,6 +1074,8 @@ export class AgentRuntime {
             mergeToolModelUsage(modelUsageByModel, result.modelUsage)
           }
           durationApiMs += result.durationApiMs ?? 0
+          durationApiWithoutRetriesMs +=
+            result.durationApiWithoutRetriesMs ?? result.durationApiMs ?? 0
           if (result.isError === false) {
             linesAdded = addLineMetric(
               'linesAdded',
