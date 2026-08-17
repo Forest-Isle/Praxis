@@ -2864,6 +2864,10 @@ async function executeDoctorCommand(
   const claudeStatePath = configuredRoot
     ? join(configRoot, '.claude.json')
     : resolve(homedir(), '.claude.json')
+  const runtimeSettings = await loadRuntimeSettings({
+    configRoot,
+    statePath: claudeStatePath,
+  })
   const report = await runDoctor({
     version: VERSION,
     executablePath: fileURLToPath(import.meta.url),
@@ -2873,6 +2877,10 @@ async function executeDoctorCommand(
     claudeStatePath,
     cwd: process.cwd(),
     environment: process.env,
+    autoUpdateChannel: runtimeSettings.autoUpdatesChannel,
+    ...(process.argv[1] === undefined
+      ? {}
+      : { invokedBinaryPath: process.argv[1] }),
   })
   if (invocation.legacyJson || invocation.outputFormat === 'json') {
     writeJson(io, report)

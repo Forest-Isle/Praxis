@@ -58,10 +58,21 @@ async function fixture(): Promise<{
 
 afterEach(async () => {
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   )
 })
+
+function deterministicDistTags(): {
+  autoUpdateChannel: 'stable'
+  loadDistTags: () => Promise<{ stable: string; latest: string }>
+} {
+  return {
+    autoUpdateChannel: 'stable',
+    loadDistTags: async () => ({ stable: '1.0.0', latest: '1.1.0' }),
+  }
+}
 
 describe('Praxis doctor', () => {
   it('diagnoses unknown model pricing without weakening fail-closed policy', async () => {
@@ -80,6 +91,7 @@ describe('Praxis doctor', () => {
         PRAXIS_MODEL: 'private-provider-model',
       },
       detectClaudeVersion: async () => '2.1.208',
+      ...deterministicDistTags(),
     })
     const provider = report.checks.find(({ id }) => id === 'provider')
     expect(report.ok).toBe(true)
@@ -130,6 +142,7 @@ describe('Praxis doctor', () => {
         PRAXIS_MAX_OUTPUT_TOKENS: '2048',
       },
       detectClaudeVersion: async () => '2.1.208',
+      ...deterministicDistTags(),
     })
 
     expect(report.ok).toBe(true)
@@ -167,6 +180,7 @@ describe('Praxis doctor', () => {
         PRAXIS_MODEL: 'gpt-4o-mini',
       },
       detectClaudeVersion: async () => '2.1.208',
+      ...deterministicDistTags(),
     })
 
     expect(report.ok).toBe(false)
@@ -184,6 +198,10 @@ describe('Praxis doctor', () => {
     vi.stubEnv('PRAXIS_PROVIDER', 'openai')
     vi.stubEnv('PRAXIS_API_KEY', '')
     vi.stubEnv('PRAXIS_MODEL', 'fixture-model')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false })),
+    )
     let stdout = ''
     let stderr = ''
 
@@ -198,7 +216,24 @@ describe('Praxis doctor', () => {
 
     expect(code).toBe(1)
     expect(stderr).toBe('')
-    expect(JSON.parse(stdout)).toMatchObject({ type: 'doctor', ok: false })
+    const report = JSON.parse(stdout) as Record<string, unknown>
+    expect(report).toMatchObject({
+      type: 'doctor',
+      ok: false,
+      diagnostic: {
+        version: expect.any(String),
+        installationPath: expect.any(String),
+        invokedBinary: expect.any(String),
+        configInstallMethod: 'CLAUDE_CONFIG_DIR',
+      },
+      updates: {
+        channel: 'latest',
+        registryStatus: 'unavailable',
+        stableVersion: null,
+        latestVersion: null,
+      },
+    })
+    expect(stdout).not.toContain('not checked')
   })
 
   it('validates hook matchers, permission rules, and MCP stdio prerequisites without execution', async () => {
@@ -239,6 +274,7 @@ describe('Praxis doctor', () => {
         PRAXIS_MODEL: 'gpt-4o-mini',
       },
       detectClaudeVersion: async () => '2.1.208',
+      ...deterministicDistTags(),
     })
 
     expect(report.checks.find((check) => check.id === 'mcp')?.status).toBe(
@@ -273,6 +309,7 @@ describe('Praxis doctor', () => {
         PRAXIS_MODEL: 'gpt-4o-mini',
       },
       detectClaudeVersion: async () => '2.1.208',
+      ...deterministicDistTags(),
     })
 
     expect(report.ok).toBe(true)
@@ -292,5 +329,92 @@ describe('Praxis doctor', () => {
 
     expect(code).toBe(0)
     expect(stdout).toContain('Usage: praxis doctor [options]')
+  })
+
+  it('includes deterministic diagnostic and update data in every report', async () => {
+    const value = await fixture()
+    const report = await runDoctor({
+      version: '0.1.0',
+      executablePath: value.executablePath,
+      nodeExecutablePath: process.execPath,
+      nodeVersion: 'v24.1.0',
+      configRoot: value.configRoot,
+      claudeStatePath: join(value.configRoot, '.claude.json'),
+      cwd: value.projectRoot,
+      environment: {
+        PRAXIS_PROVIDER: 'openai',
+        PRAXIS_API_KEY: 'secret-not-for-output',
+        PRAXIS_MODEL: 'gpt-4o-mini',
+      },
+      detectClaudeVersion: async () => '2.1.208',
+      ...deterministicDistTags(),
+    })
+
+    const { diagnostic, updates } = report
+    expect(diagnostic).toMatchObject({
+      installationType: 'source',
+      packageManager: null,
+      version: '0.1.0',
+      configInstallMethod: 'default (~/.claude)',
+    })
+    expect(diagnostic.multipleInstallations).toContain(
+      diagnostic.installationPath,
+    )
+    expect(updates).toMatchObject({
+      autoUpdates: 'Managed by source checkout',
+      hasUpdatePermissions: true,
+      channel: 'stable',
+      stableVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      registryStatus: 'available',
+    })
+    const output = formatDoctorReport(report)
+    expect(output).toContain('Diagnostics')
+    expect(output).toContain('Currently running: Praxis 0.1.0 (source)')
+    expect(output).toContain('Config install method: default (~/.claude)')
+    expect(output).toContain('Updates')
+    expect(output).toContain('Auto-updates: Managed by source checkout')
+    expect(output).toContain('Update channel: stable')
+    expect(output).toContain('Stable version: 1.0.0')
+    expect(output).toContain('Latest version: 1.1.0')
+    expect(output).not.toContain('not checked')
+  })
+
+  it('reports unavailable registry state without altering ok or the check summary', async () => {
+    const value = await fixture()
+    const secretValue = 'super-secret-api-key'
+    const report = await runDoctor({
+      version: '0.1.0',
+      executablePath: value.executablePath,
+      nodeExecutablePath: process.execPath,
+      nodeVersion: 'v24.1.0',
+      configRoot: value.configRoot,
+      claudeStatePath: join(value.configRoot, '.claude.json'),
+      cwd: value.projectRoot,
+      environment: {
+        PRAXIS_PROVIDER: 'openai',
+        PRAXIS_API_KEY: secretValue,
+        PRAXIS_MODEL: 'gpt-4o-mini',
+      },
+      detectClaudeVersion: async () => '2.1.208',
+      autoUpdateChannel: 'latest',
+      loadDistTags: async () => {
+        throw new Error(`registry lookup failed: ${secretValue}`)
+      },
+    })
+
+    expect(report.ok).toBe(true)
+    expect(report.checks).toHaveLength(11)
+    expect(report.summary.failed).toBe(0)
+    const updates = report.updates
+    expect(updates).toMatchObject({
+      channel: 'latest',
+      registryStatus: 'unavailable',
+      stableVersion: null,
+      latestVersion: null,
+    })
+    expect(updates.error).toContain('registry lookup failed')
+    expect(JSON.stringify(report)).not.toContain(secretValue)
+    expect(formatDoctorReport(report)).toContain('└ Failed to fetch versions')
   })
 })

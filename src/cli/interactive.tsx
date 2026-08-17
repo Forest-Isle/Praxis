@@ -1083,7 +1083,7 @@ export function InteractiveApp({
   const loadDoctorReport = useMemo(
     () =>
       doctorLoader ??
-      (() => {
+      (async () => {
         const configuredRoot = process.env.CLAUDE_CONFIG_DIR || undefined
         const configRoot = resolve(
           configuredRoot ?? resolve(homedir(), '.claude'),
@@ -1091,6 +1091,7 @@ export function InteractiveApp({
         const claudeStatePath = configuredRoot
           ? join(configRoot, '.claude.json')
           : resolve(homedir(), '.claude.json')
+        const runtimeSettings = await loadRuntimeSettings(configTarget)
         return runDoctor({
           version: display.version,
           executablePath: resolve(
@@ -1103,9 +1104,13 @@ export function InteractiveApp({
           claudeStatePath,
           cwd: runtimeCwd,
           environment: process.env,
+          autoUpdateChannel: runtimeSettings.autoUpdatesChannel,
+          ...(process.argv[1] === undefined
+            ? {}
+            : { invokedBinaryPath: process.argv[1] }),
         })
       }),
-    [doctorLoader, runtimeCwd, display.version],
+    [doctorLoader, runtimeCwd, display.version, configTarget],
   )
   const loadFiles = useMemo(
     () =>
