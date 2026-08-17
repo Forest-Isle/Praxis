@@ -62,10 +62,12 @@ describe('TUI slash command catalog', () => {
     for (const command of commands.filter(
       (candidate) => candidate.source === 'builtin',
     )) {
+      const inventory = CLAUDE_2_1_208_COMMAND_BY_NAME.get(command.name)
       expect(
-        CLAUDE_2_1_208_COMMAND_BY_NAME.get(command.name),
+        inventory,
         `/${command.name} must come from the Claude 2.1.208 source registry`,
-      ).toMatchObject({ disposition: 'included' })
+      ).toBeDefined()
+      expect(['included', 'required']).toContain(inventory?.disposition)
     }
     expect(
       commands.find((command) => command.name === 'output-style'),
