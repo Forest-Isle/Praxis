@@ -10,6 +10,7 @@ export type ClaudeDataResource =
   | 'provider-payload'
   | 'search-index'
   | 'scheduled-prompts'
+  | 'session-cost'
   | 'session-lock'
   | 'settings'
   | 'skills'
@@ -116,6 +117,12 @@ export const CLAUDE_DATA_OWNERSHIP = [
     plane: 'praxis-sidecar',
     praxisAccess: 'read-write',
     location: 'praxis/locks/',
+  },
+  {
+    resource: 'session-cost',
+    plane: 'praxis-sidecar',
+    praxisAccess: 'read-write',
+    location: 'praxis/session-costs/<session-id>.json',
   },
 ] as const satisfies readonly DataOwnershipPolicy[]
 

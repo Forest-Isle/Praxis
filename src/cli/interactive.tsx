@@ -109,6 +109,7 @@ import {
 } from '../compatibility/claude/agent-color.js'
 import type { AgentColorName } from '../compatibility/claude/agent-color.js'
 import type { ClaudeResourceScope } from '../compatibility/claude/shared-resources.js'
+import { isClaudeSessionId } from '../compatibility/claude/paths.js'
 import type { TuiHookConfiguration } from './tui/hook-settings.js'
 import {
   filterTuiSlashCommands,
@@ -116,6 +117,17 @@ import {
   slashCommandQuery,
   type TuiSlashCommand,
 } from './tui/slash-commands.js'
+import {
+  accumulateSessionCost,
+  createSessionCostState,
+  formatSessionCostReport,
+  type SessionCostInput,
+  type SessionCostState,
+} from './tui/session-cost.js'
+import {
+  FileSystemTuiSessionCostStore,
+  type TuiSessionCostStore,
+} from './tui/session-cost-store.js'
 import {
   createComposerEditor,
   deleteComposerBackward,
@@ -503,6 +515,7 @@ interface InteractiveAppProps {
   }
   sandboxStore?: TuiSandboxStore
   recentlyDeniedStore?: RecentlyDeniedStore
+  sessionCostStore?: TuiSessionCostStore
   themeStore?: {
     load(): Promise<TuiThemeSettings>
     save(update: Partial<TuiThemeSettings>): Promise<TuiThemeSettings>
@@ -1010,6 +1023,7 @@ export function InteractiveApp({
   permissionRuleStore,
   sandboxStore: suppliedSandboxStore,
   recentlyDeniedStore: suppliedRecentlyDeniedStore,
+  sessionCostStore: suppliedSessionCostStore,
   terminalSetup: terminalSetupOverride,
   themeStore,
   initialThemeSettings,
@@ -1033,6 +1047,12 @@ export function InteractiveApp({
           resolve(homedir(), '.claude'),
       ),
     [keybindingsConfigRoot],
+  )
+  const sessionCostStore = useMemo(
+    () =>
+      suppliedSessionCostStore ??
+      new FileSystemTuiSessionCostStore(keybindingsRoot),
+    [keybindingsRoot, suppliedSessionCostStore],
   )
   const configTarget = useMemo(
     () => resolveConfigSettingsLocation(runtimeSettingsTarget),
@@ -1233,6 +1253,11 @@ export function InteractiveApp({
   const [turnDuration, setTurnDuration] = useState<number | undefined>()
   const [usage, setUsage] = useState<ModelUsage | undefined>()
   const [costUsd, setCostUsd] = useState<number | undefined>()
+  const [sessionCost, setSessionCost] =
+    useState<SessionCostState>(createSessionCostState)
+  const sessionCostRef = useRef<SessionCostState>(sessionCost)
+  const sessionCostLoadPendingRef = useRef<string | null>(null)
+  const sessionCostDeltasRef = useRef<SessionCostInput[]>([])
   const [contextWindowTokens, setContextWindowTokens] = useState(
     display.contextWindowTokens,
   )
@@ -2389,6 +2414,78 @@ export function InteractiveApp({
       ),
     })
 
+  const setSessionCostState = (next: SessionCostState) => {
+    sessionCostRef.current = next
+    setSessionCost(next)
+  }
+
+  const persistSessionCost = (sessionId: string, state: SessionCostState) => {
+    void sessionCostStore.save(sessionId, state).catch((error: unknown) => {
+      if (componentMountedRef.current) warn(error)
+    })
+  }
+
+  const applyLoadedSessionCost = (
+    sessionId: string,
+    loaded: SessionCostState,
+  ) => {
+    if (sessionCostLoadPendingRef.current !== sessionId) return
+    sessionCostLoadPendingRef.current = null
+    const deltas = sessionCostDeltasRef.current
+    sessionCostDeltasRef.current = []
+    let next = loaded
+    for (const input of deltas) next = accumulateSessionCost(next, input)
+    sessionCostRef.current = next
+    setSessionCost(next)
+    if (deltas.length > 0) persistSessionCost(sessionId, next)
+  }
+
+  const recordSessionCost = (
+    resultSessionId: string,
+    input: SessionCostInput,
+  ) => {
+    if (sessionIdRef.current !== resultSessionId) return
+    const next = accumulateSessionCost(sessionCostRef.current, input)
+    sessionCostRef.current = next
+    setSessionCost(next)
+    if (sessionCostLoadPendingRef.current === resultSessionId) {
+      sessionCostDeltasRef.current.push(input)
+      return
+    }
+    if (!isClaudeSessionId(resultSessionId)) return
+    persistSessionCost(resultSessionId, next)
+  }
+
+  useEffect(() => {
+    const initialSessionId = resume?.sessionId
+    if (!initialSessionId) return
+    if (!isClaudeSessionId(initialSessionId)) return
+    const loadId = sessionLoadRef.current + 1
+    sessionLoadRef.current = loadId
+    sessionCostLoadPendingRef.current = initialSessionId
+    sessionCostDeltasRef.current = []
+    let cancelled = false
+    void sessionCostStore.load(initialSessionId).then(
+      (loaded) => {
+        if (cancelled) return
+        if (sessionLoadRef.current !== loadId) return
+        applyLoadedSessionCost(initialSessionId, loaded)
+      },
+      (error: unknown) => {
+        if (cancelled) return
+        if (sessionLoadRef.current !== loadId) return
+        if (sessionCostLoadPendingRef.current === initialSessionId) {
+          sessionCostLoadPendingRef.current = null
+          sessionCostDeltasRef.current = []
+        }
+        warn(error)
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [resume?.sessionId, sessionCostStore])
+
   const retireService = (): Promise<void> => {
     serviceEpochRef.current += 1
     scheduledWaitRef.current?.abort()
@@ -2526,6 +2623,7 @@ export function InteractiveApp({
   const openSession = (nextSessionId: string | null) => {
     sessionIdRef.current = nextSessionId
     setSessionId(nextSessionId)
+    setSessionCostState(createSessionCostState())
     setActiveSessionSummary(
       nextSessionId === null
         ? undefined
@@ -2536,10 +2634,16 @@ export function InteractiveApp({
     const loadId = sessionLoadRef.current + 1
     sessionLoadRef.current = loadId
     if (nextSessionId === null) {
+      sessionCostLoadPendingRef.current = null
+      sessionCostDeltasRef.current = []
       setHistory([])
       setSessionColor(undefined)
       return
     }
+    sessionCostLoadPendingRef.current = isClaudeSessionId(nextSessionId)
+      ? nextSessionId
+      : null
+    sessionCostDeltasRef.current = []
     const loading = (async () => {
       try {
         const commands = await service()
@@ -2548,9 +2652,22 @@ export function InteractiveApp({
           commands.agentColor === undefined
             ? undefined
             : await commands.agentColor(nextSessionId)
+        let loadedCost: SessionCostState | undefined
+        if (isClaudeSessionId(nextSessionId)) {
+          try {
+            loadedCost = await sessionCostStore.load(nextSessionId)
+          } catch (error) {
+            if (sessionLoadRef.current === loadId) {
+              sessionCostLoadPendingRef.current = null
+              sessionCostDeltasRef.current = []
+              warn(error)
+            }
+          }
+        }
         if (sessionLoadRef.current === loadId) {
           setHistory(transcript ? [...transcript] : [])
           setSessionColor(agentColor)
+          if (loadedCost) applyLoadedSessionCost(nextSessionId, loadedCost)
         }
       } catch (error) {
         if (sessionLoadRef.current === loadId) warn(error)
@@ -3056,6 +3173,7 @@ export function InteractiveApp({
       ? AbortSignal.any([signal, controller.signal])
       : controller.signal
     const answering = (async () => {
+      const sideStartedAt = Date.now()
       try {
         const commands = await service()
         if (!commands.answerSideQuestion) {
@@ -3075,7 +3193,10 @@ export function InteractiveApp({
             ),
           runtimePreferencesRef.current.permissionMode,
         )
-        if (result.sessionId) setSessionId(result.sessionId)
+        if (result.sessionId) {
+          sessionIdRef.current = result.sessionId
+          setSessionId(result.sessionId)
+        }
         updateBtwHistory((entries) =>
           entries.map((item) =>
             item.id === id ? { ...item, status: 'complete' } : item,
@@ -3096,6 +3217,20 @@ export function InteractiveApp({
         if (result.costUsd !== undefined) {
           const sideCostUsd = result.costUsd
           setCostUsd((current) => (current ?? 0) + sideCostUsd)
+        }
+        const sideCostInput: SessionCostInput = {
+          usage: result.usage,
+          ...(result.costUsd === undefined
+            ? {}
+            : { costUsd: result.costUsd }),
+          wallDurationMs: Date.now() - sideStartedAt,
+        }
+        if (result.sessionId === undefined) {
+          setSessionCostState(
+            accumulateSessionCost(sessionCostRef.current, sideCostInput),
+          )
+        } else {
+          recordSessionCost(result.sessionId, sideCostInput)
         }
       } catch (error) {
         updateBtwHistory((entries) =>
@@ -3577,6 +3712,19 @@ export function InteractiveApp({
       setActiveThinking('')
       setStatus('ready')
       setTurnDuration(Date.now() - turnStartedAt)
+      recordSessionCost(result.sessionId, {
+        usage: result.usage,
+        ...(result.costUsd === undefined
+          ? {}
+          : { costUsd: result.costUsd }),
+        ...(result.durationApiMs === undefined
+          ? {}
+          : { durationApiMs: result.durationApiMs }),
+        wallDurationMs: Date.now() - turnStartedAt,
+        ...(result.modelUsage === undefined
+          ? {}
+          : { modelUsage: result.modelUsage }),
+      })
       if (
         runtimeSettingsRef.current.notifChannel !== 'notifications_disabled'
       ) {
@@ -5285,6 +5433,7 @@ export function InteractiveApp({
                   throw new Error('Recently denied retry is unavailable.')
                 }
                 setRetryingDeniedId(action.id)
+                const retryStartedAt = Date.now()
                 const result = await commands.retryRecentlyDenied(
                   action.sessionId,
                   action.display,
@@ -5295,6 +5444,19 @@ export function InteractiveApp({
                 setUsage(result.usage)
                 setCostUsd(result.costUsd)
                 append({ kind: 'assistant', text: result.text })
+                recordSessionCost(result.sessionId, {
+                  usage: result.usage,
+                  ...(result.costUsd === undefined
+                    ? {}
+                    : { costUsd: result.costUsd }),
+                  ...(result.durationApiMs === undefined
+                    ? {}
+                    : { durationApiMs: result.durationApiMs }),
+                  wallDurationMs: Date.now() - retryStartedAt,
+                  ...(result.modelUsage === undefined
+                    ? {}
+                    : { modelUsage: result.modelUsage }),
+                })
                 updateMenu(null)
               } else {
                 if (!commands.approveRecentlyDenied) {
@@ -6266,6 +6428,10 @@ export function InteractiveApp({
         setSessionId(null)
         setSessionColor(undefined)
         setPendingFork(false)
+        sessionCostLoadPendingRef.current = null
+        sessionCostDeltasRef.current = []
+        sessionLoadRef.current += 1
+        setSessionCostState(createSessionCostState())
         append({ kind: 'notice', text: 'Started a new session.' })
       } else if (prompt === '/clear') {
         statusLineSessionId.current = randomUUID()
@@ -6275,6 +6441,10 @@ export function InteractiveApp({
         setHistory([])
         setUsage(undefined)
         setCostUsd(undefined)
+        sessionCostLoadPendingRef.current = null
+        sessionCostDeltasRef.current = []
+        sessionLoadRef.current += 1
+        setSessionCostState(createSessionCostState())
         setActiveText('')
         setActiveThinking('')
         setThinkingExpanded(false)
@@ -6590,6 +6760,12 @@ export function InteractiveApp({
         })()
         onTurnChange?.(inspection)
         void inspection.finally(() => onTurnChange?.(null))
+      } else if (prompt === '/cost') {
+        append({ kind: 'user', text: prompt })
+        append({
+          kind: 'local-result',
+          text: formatSessionCostReport(sessionCost),
+        })
       } else if (prompt === '/context') {
         const skills = allSlashCommands
           .filter((command) => command.source === 'skill')

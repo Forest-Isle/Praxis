@@ -120,6 +120,11 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'cost',
+    description: 'Show the total cost and duration of the current session',
+    source: 'builtin',
+  },
+  {
     name: 'status',
     description: 'Show runtime status, configuration, usage, and statistics',
     source: 'builtin',

@@ -23,7 +23,7 @@ Together they establish these stable rules:
   rather than requiring users to remember the available slash commands;
 - applicable local commands include direct `/add-dir`, response `/copy [N]`,
   native `/branch` and `/rename`, full-conversation `/export`, `/config`,
-  `/usage`, `/mcp`, `/skill`, read-only shared `/hooks`, provider-backed
+  `/usage`, session-local `/cost`, `/mcp`, `/skill`, read-only shared `/hooks`, provider-backed
   `/compact`, native `/rewind`,
   runtime `/cd`, transcript-free `/btw` side questions, persistent
   `/background` terminal handoff, and live plugin/skill reload entries;
@@ -399,8 +399,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   remain visible as compact operational feedback.
 - Streaming text is rendered once and replaced by the completed assistant turn.
 - Empty input shows a suggestion; typed input never gets replaced.
-- Per-turn cost comes from the actual model result; context capacity comes from
-  the active provider capability rather than a TUI constant.
+- `/cost` accumulates known per-result cost, usage, API/wall duration, and
+  unknown-cost diagnosis for the active session, restoring only that session's
+  private `praxis/session-costs/` sidecar; context capacity comes from the
+  active provider capability rather than a TUI constant.
 - Terminal resize changes layout only, never session or input state.
 
 ## Verification
@@ -474,9 +476,9 @@ pair on new sessions), sharing the displayed input via `history.jsonl`, loading
 the effective color on resume/session open (with reset reading as no color),
 retaining it as exactly one leading entry on fork, and coloring the composer's
 top/bottom separators per profile with dim separators restored on reset,
-`/clear`, `/new`, and fresh sessions. The two required commands — `/cost`
-and interactive `/doctor` — still need an observed contract and a focused
-TTY or Ink gate before developer-core closure. The five deferred commands —
+`/clear`, `/new`, and fresh sessions. Interactive `/doctor` still needs an
+observed contract and a focused TTY or Ink gate before developer-core closure.
+The five deferred commands —
 `/advisor`, `/fast`, `/stats`, `/insights`, and `/voice` — are optional and
 demand-driven and do not block completion. Newly excluded non-goals are the
 subscription-bound `/chrome`, the campaign `/think-back` and

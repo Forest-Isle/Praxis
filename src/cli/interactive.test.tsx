@@ -29,6 +29,12 @@ import type { TuiCustomTheme } from './tui/custom-themes.js'
 import type { TuiThemeSettings } from './tui/theme.js'
 import { projectRuntimeSettings } from './tui/runtime-settings.js'
 import type { TuiSandboxSnapshot } from './tui/sandbox-settings.js'
+import {
+  accumulateSessionCost,
+  createSessionCostState,
+  type SessionCostState,
+} from './tui/session-cost.js'
+import type { TuiSessionCostStore } from './tui/session-cost-store.js'
 
 afterEach(() => {
   cleanup()
@@ -4612,6 +4618,385 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain(
       'Context · 6 tokens / 100 (6%) · $0.000321',
     )
+  })
+
+  it('runs /cost locally without a provider and reports an empty session', async () => {
+    let creations = 0
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            creations += 1
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('/cost')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'Show the total cost and duration of the current session',
+    )
+
+    app.stdin.write('\r')
+    await flush()
+    const frame = app.lastFrame()
+    expect(frame).toContain('Total cost: $0.0000')
+    expect(frame).toContain('Total duration (API): 0ms')
+    expect(frame).toContain('Total duration (wall): 0ms')
+    expect(frame).toContain('Total code changes: 0 lines added, 0 lines removed')
+    expect(frame).toContain('Usage by model:')
+    expect(frame).not.toContain('costs may be inaccurate')
+    expect(creations).toBe(0)
+  })
+
+  it('accumulates /cost across turns and side questions and resets on /clear and /new', async () => {
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            return {
+              sessionId: 'session-1',
+              text: 'first',
+              usage: {
+                inputTokens: 10,
+                outputTokens: 4,
+                cacheReadInputTokens: 2,
+              },
+              costUsd: 0.0002,
+              durationApiMs: 150,
+              modelUsage: {
+                sonnet: {
+                  inputTokens: 10,
+                  outputTokens: 4,
+                  cacheReadInputTokens: 2,
+                },
+              },
+            }
+          },
+          async resume(sessionId) {
+            return {
+              sessionId,
+              text: 'second',
+              usage: {
+                inputTokens: 10,
+                outputTokens: 4,
+                cacheReadInputTokens: 2,
+              },
+              costUsd: 0.0002,
+              durationApiMs: 150,
+              modelUsage: {
+                sonnet: {
+                  inputTokens: 10,
+                  outputTokens: 4,
+                  cacheReadInputTokens: 2,
+                },
+              },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async answerSideQuestion(
+            _sessionId,
+            _question,
+            _signal,
+            onDelta,
+          ) {
+            onDelta?.('ANSWER')
+            return {
+              sessionId: 'session-1',
+              text: 'ANSWER',
+              usage: { inputTokens: 2, outputTokens: 1 },
+              costUsd: 0.0001,
+            }
+          },
+        }
+      },
+    }
+    const app = render(<InteractiveApp factory={factory} initialSessions={[]} />)
+
+    app.stdin.write('first')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('second')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('/btw quick?')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('ANSWER') ? true : undefined,
+    )
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+
+    app.stdin.write('/cost')
+    app.stdin.write('\r')
+    await flush()
+    const frame = app.lastFrame()
+    expect(frame).toContain('Total cost: $0.0005')
+    expect(frame).toContain('Total duration (API): 300ms')
+    expect(frame).toContain('Total duration (wall):')
+    expect(frame).toContain('Total code changes: 0 lines added, 0 lines removed')
+    expect(frame).toContain('Usage by model:')
+    expect(frame).toContain('sonnet: 20 input · 8 output · 4 cache read')
+    expect(frame).toContain('provider default: 2 input · 1 output')
+    expect(frame).not.toContain('costs may be inaccurate')
+
+    app.stdin.write('/clear')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('/cost')
+    app.stdin.write('\r')
+    await flush()
+    const cleared = app.lastFrame()
+    expect(cleared).toContain('Total cost: $0.0000')
+    expect(cleared).toContain('Total duration (API): 0ms')
+    expect(cleared).toContain('Total duration (wall): 0ms')
+    expect(cleared).not.toContain('sonnet:')
+    expect(cleared).not.toContain('provider default:')
+
+    app.stdin.write('third')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('/new')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('/cost')
+    app.stdin.write('\r')
+    await flush()
+    const afterNew = app.lastFrame()
+    expect(afterNew).toContain('Total cost: $0.0000')
+    expect(afterNew).toContain('Total duration (API): 0ms')
+    expect(afterNew).toContain('Total duration (wall): 0ms')
+    expect(afterNew).not.toContain('sonnet:')
+    expect(afterNew).not.toContain('provider default:')
+  })
+
+  it('marks /cost totals as potentially inaccurate when a turn has no known cost', async () => {
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run() {
+            return {
+              sessionId: 'session-1',
+              text: 'first',
+              usage: { inputTokens: 10, outputTokens: 4 },
+              costUsd: 0.0002,
+              durationApiMs: 100,
+              modelUsage: {
+                sonnet: { inputTokens: 10, outputTokens: 4 },
+              },
+            }
+          },
+          async resume(sessionId) {
+            return {
+              sessionId,
+              text: 'second',
+              usage: { inputTokens: 5, outputTokens: 2 },
+              durationApiMs: 50,
+              modelUsage: {
+                haiku: { inputTokens: 5, outputTokens: 2 },
+              },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(<InteractiveApp factory={factory} initialSessions={[]} />)
+
+    app.stdin.write('first')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('second')
+    app.stdin.write('\r')
+    await flush()
+
+    app.stdin.write('/cost')
+    app.stdin.write('\r')
+    await flush()
+    const frame = app.lastFrame()
+    expect(frame).toContain('Total cost: $0.0002')
+    expect(frame).toContain(
+      '(costs may be inaccurate due to usage of unknown models)',
+    )
+    expect(frame).toContain('sonnet: 10 input · 4 output')
+    expect(frame).toContain('haiku: 5 input · 2 output')
+  })
+
+  it('restores seeded session cost through resume and accumulates the next turn', async () => {
+    const sessionId = '8f18ec85-1cd5-4e2b-a084-9b2f6a3d4c5e'
+    const seeded = accumulateSessionCost(createSessionCostState(), {
+      usage: {
+        inputTokens: 10,
+        outputTokens: 4,
+        cacheReadInputTokens: 2,
+      },
+      costUsd: 0.0002,
+      durationApiMs: 150,
+      wallDurationMs: 500,
+      modelUsage: {
+        sonnet: {
+          inputTokens: 10,
+          outputTokens: 4,
+          cacheReadInputTokens: 2,
+        },
+      },
+    })
+    const loaded = new Map<string, SessionCostState>([[sessionId, seeded]])
+    const loads: string[] = []
+    const saves: string[] = []
+    const saved = new Map<string, SessionCostState>()
+    const store: TuiSessionCostStore = {
+      async load(id) {
+        loads.push(id)
+        return loaded.get(id) ?? createSessionCostState()
+      },
+      async save(id, state) {
+        saves.push(id)
+        saved.set(id, state)
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume(resumedSessionId) {
+                return {
+                  sessionId: resumedSessionId,
+                  text: 'resumed answer',
+                  usage: {
+                    inputTokens: 5,
+                    outputTokens: 2,
+                    cacheReadInputTokens: 1,
+                  },
+                  costUsd: 0.0001,
+                  durationApiMs: 60,
+                  modelUsage: {
+                    sonnet: {
+                      inputTokens: 5,
+                      outputTokens: 2,
+                      cacheReadInputTokens: 1,
+                    },
+                  },
+                }
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async transcript() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[
+          {
+            sessionId,
+            lastPrompt: 'previous task',
+            updatedAt: '2026-08-04T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+          {
+            sessionId: 'session-invalid',
+            lastPrompt: 'invalid task',
+            updatedAt: '2026-08-04T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        resume={{ sessionId }}
+        sessionCostStore={store}
+      />,
+    )
+
+    await flush()
+    app.stdin.write('/cost')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    await waitFor(() =>
+      app.lastFrame()?.includes('Total cost: $0.0002') ? true : undefined,
+    )
+    expect(app.lastFrame()).toContain(
+      'sonnet: 10 input · 4 output · 2 cache read',
+    )
+    expect(loads).toEqual([sessionId])
+
+    app.stdin.write('continue')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('resumed answer')
+
+    app.stdin.write('/cost')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    const frame = app.lastFrame()
+    expect(frame).toContain('Total cost: $0.0003')
+    expect(frame).toContain('Total duration (API): 210ms')
+    expect(frame).toContain('Total duration (wall):')
+    expect(frame).toContain('sonnet: 15 input · 6 output · 3 cache read')
+    expect(frame).not.toContain('costs may be inaccurate')
+
+    const persisted = saved.get(sessionId)
+    expect(persisted?.knownCostUsd).toBeCloseTo(0.0003, 10)
+    expect(persisted?.hasUnknownCost).toBe(false)
+    expect(persisted?.durationApiMs).toBe(210)
+    expect(persisted?.models.sonnet).toEqual({
+      inputTokens: 15,
+      outputTokens: 6,
+      cacheReadInputTokens: 3,
+      cacheCreationInputTokens: 0,
+    })
+    expect(saves).toEqual([sessionId])
+
+    // An invalid session id must open without a store access or a deferred
+    // pending cost load.
+    const loadsBefore = loads.length
+    const savesBefore = saves.length
+    app.stdin.write('/resume')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(loads.slice(loadsBefore)).toEqual([])
+    expect(saves.slice(savesBefore)).toEqual([])
+
+    app.stdin.write('continue')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('/cost')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Total cost: $0.0001')
+    expect(loads.slice(loadsBefore)).toEqual([])
+    expect(saves.slice(savesBefore)).toEqual([])
   })
 
   it('toggles retained thinking with Ctrl+O without losing the full text', async () => {

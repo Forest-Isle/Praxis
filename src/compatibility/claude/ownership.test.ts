@@ -38,6 +38,7 @@ describe('Claude shared-data ownership', () => {
     for (const resource of [
       'provider-payload',
       'search-index',
+      'session-cost',
       'session-lock',
     ] as const) {
       expect(getDataOwnership(resource)).toMatchObject({
@@ -45,6 +46,10 @@ describe('Claude shared-data ownership', () => {
         praxisAccess: 'read-write',
       })
     }
+
+    expect(getDataOwnership('session-cost')).toMatchObject({
+      location: 'praxis/session-costs/<session-id>.json',
+    })
 
     expect(
       CLAUDE_DATA_OWNERSHIP.filter((policy) => policy.plane === 'shared').map(

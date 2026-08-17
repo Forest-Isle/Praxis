@@ -47,13 +47,7 @@ export const CLAUDE_2_1_208_COMMAND_INVENTORY = [
     reason: 'Desktop handoff/import is outside the CLI-only product boundary.',
   },
   { name: 'context', disposition: 'included', visibility: 'conditional' },
-  {
-    name: 'cost',
-    disposition: 'required',
-    visibility: 'conditional',
-    reason:
-      'The dedicated /cost contract is required; /status is not a substitute.',
-  },
+  { name: 'cost', disposition: 'included', visibility: 'conditional' },
   { name: 'diff', disposition: 'included', visibility: 'visible' },
   {
     name: 'doctor',

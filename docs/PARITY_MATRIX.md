@@ -33,7 +33,7 @@ Dispositions, per the accepted developer-core command inventory:
 
 Accepted inventory dispositions (`included | required | deferred | excluded`):
 
-- **Required**: `/cost` and interactive `/doctor`.
+- **Required**: interactive `/doctor`.
 - **Deferred**: `/advisor`, `/fast`, `/stats`, `/insights`, `/voice`.
 - **Newly excluded**:
   - subscription-bound integration: `/chrome`;

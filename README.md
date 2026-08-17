@@ -97,7 +97,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   `/rewind`, runtime `/cd`, transcript-free
   `/btw` side questions with background-Agent handoff, interactive
   `/background` terminal handoff, unified `/status`/`/config`/`/usage` settings
-  tabs, `/sandbox` mode/dependency/override/config controls, local cached
+  tabs, session-local `/cost` summaries that survive resume through private
+  Claude-config sidecars, `/sandbox` mode/dependency/override/config controls, local cached
   `/release-notes`, Claude-compatible `/statusline` command execution and setup
   agent, source-aligned `/init` project-instruction onboarding with its enhanced
   skills/hooks flow, provider-free per-session `/color` prompt-bar styling,
