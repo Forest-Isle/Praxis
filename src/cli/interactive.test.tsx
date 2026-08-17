@@ -931,16 +931,29 @@ describe('InteractiveApp', () => {
     )
     const frame = app.lastFrame()
     expect(frame).toContain('Diagnostics')
-    expect(frame).toContain('Updates')
+    expect(frame).toContain('Currently running: Praxis 1.2.3 (npm)')
+    expect(frame).toContain('Package manager: npm')
     expect(frame).toContain(
-      'installation: Praxis 1.2.3 installation is readable',
+      'Path: /usr/local/lib/node_modules/praxis-agent/dist/cli.js',
     )
-    expect(frame).toContain('Current version: Praxis 1.2.3')
-    expect(frame).toContain('Auto-update: not checked')
-    expect(frame).toContain('Update permissions: not checked')
+    expect(frame).toContain('Invoked: /usr/local/bin/praxis')
+    expect(frame).toContain('Config install method: default (~/.claude)')
+    expect(frame).toContain('Search: OK (system)')
+    expect(frame).toContain('└ /usr/local/bin/rg')
+    expect(frame).toContain('Updates')
+    expect(frame).toContain('Auto-updates: Manual (praxis update)')
+    expect(frame).toContain('Update permissions: yes')
+    expect(frame).toContain('Auto-update channel: stable')
+    expect(frame).toContain('Stable version: 1.2.3')
+    expect(frame).toContain('Latest version: 1.2.4')
     expect(frame).toContain('MCP parsing warnings')
     expect(frame).toContain('Plugin errors')
     expect(frame).toContain('Enter to continue · Esc to cancel')
+    expect(frame).not.toContain('not checked')
+    expect(frame).not.toContain('Current version: Praxis')
+    expect(frame).not.toContain(
+      'installation: Praxis 1.2.3 installation is readable',
+    )
     expect(frame).not.toContain('⎿')
     expect(creations).toEqual([])
 
@@ -1102,6 +1115,10 @@ describe('InteractiveApp', () => {
       deferreds[2]?.resolve(
         doctorReport({
           praxisVersion: '9.9.9',
+          diagnostic: {
+            ...doctorReport().diagnostic,
+            version: '9.9.9',
+          },
           checks: [
             {
               id: 'installation',
@@ -1113,11 +1130,11 @@ describe('InteractiveApp', () => {
         }),
       )
       await waitFor(() =>
-        app.lastFrame()?.includes('Current version: Praxis 9.9.9')
+        app.lastFrame()?.includes('Currently running: Praxis 9.9.9 (npm)')
           ? true
           : undefined,
       )
-      expect(app.lastFrame()).toContain('Current version: Praxis 9.9.9')
+      expect(app.lastFrame()).toContain('Currently running: Praxis 9.9.9 (npm)')
       expect(app.lastFrame()).not.toContain('Praxis 1.2.3')
       expect(app.lastFrame()).not.toContain('stale doctor failure')
       expect(turns.at(-1)).toBeNull()

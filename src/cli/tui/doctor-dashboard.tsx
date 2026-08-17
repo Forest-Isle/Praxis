@@ -154,27 +154,63 @@ export function DoctorDashboard({
     )
   }
   if (report === null) return null
+  const { diagnostic, updates } = report
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       <Text bold> Doctor:</Text>
       <Text> </Text>
       <Text bold> Diagnostics</Text>
-      {report.checks.map((check) => (
-        <Box key={check.id} flexDirection="column">
-          <Text color={checkStatusColor(check.status)}>
-            {checkStatusText(check.status, screenReader)} {check.id}:{' '}
-            {check.summary}
-          </Text>
-          {checkDetails(check)}
+      <Text>{`Currently running: Praxis ${diagnostic.version} (${diagnostic.installationType})`}</Text>
+      {diagnostic.packageManager !== null && (
+        <Text>{`Package manager: ${diagnostic.packageManager}`}</Text>
+      )}
+      <Text>{`Path: ${diagnostic.installationPath}`}</Text>
+      <Text>{`Invoked: ${diagnostic.invokedBinary}`}</Text>
+      <Text>{`Config install method: ${diagnostic.configInstallMethod}`}</Text>
+      {diagnostic.search.working ? (
+        <>
+          <Text>{`Search: OK (${diagnostic.search.mode})`}</Text>
+          {diagnostic.search.systemPath !== null && (
+            <Text>{`└ ${diagnostic.search.systemPath}`}</Text>
+          )}
+        </>
+      ) : (
+        <Text>Search: unavailable</Text>
+      )}
+      {diagnostic.multipleInstallations.length > 1 && (
+        <>
+          <Text bold>Multiple installations found</Text>
+          {diagnostic.multipleInstallations.map((path) => (
+            <Text key={path}>{`- ${path}`}</Text>
+          ))}
+        </>
+      )}
+      {diagnostic.recommendation !== null && (
+        <Text>{`Recommendation: ${diagnostic.recommendation}`}</Text>
+      )}
+      {diagnostic.warnings.map((warning) => (
+        <Box key={warning.issue} flexDirection="column">
+          <Text>{warning.issue}</Text>
+          <Text>{`└ Fix: ${warning.fix}`}</Text>
         </Box>
       ))}
       <Text> </Text>
       <Text bold> Updates</Text>
-      <Text>{`Current version: Praxis ${report.praxisVersion}`}</Text>
-      <Text>Auto-update: not checked</Text>
-      <Text>Update channel: not checked</Text>
-      <Text>Latest version: not checked</Text>
-      <Text>Update permissions: not checked</Text>
+      <Text>{`Auto-updates: ${updates.autoUpdates}`}</Text>
+      {updates.hasUpdatePermissions !== null && (
+        <Text>{`Update permissions: ${updates.hasUpdatePermissions ? 'yes' : 'no'}`}</Text>
+      )}
+      <Text>{`Auto-update channel: ${updates.channel}`}</Text>
+      {updates.registryStatus === 'available' ? (
+        <>
+          {updates.stableVersion !== null && (
+            <Text>{`Stable version: ${updates.stableVersion}`}</Text>
+          )}
+          <Text>{`Latest version: ${updates.latestVersion ?? 'unknown'}`}</Text>
+        </>
+      ) : (
+        <Text>└ Failed to fetch versions</Text>
+      )}
       <WarningGroups report={report} screenReader={screenReader} />
       <Text> </Text>
       <Text>{doctorSummary(report)}</Text>
