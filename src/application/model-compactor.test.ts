@@ -163,4 +163,79 @@ describe('ModelCompactor', () => {
     expect(effectiveTarget).toBeGreaterThan(0)
     expect(effectiveTarget).toBeLessThan(2_250)
   })
+
+  it('reports the provider attempt duration without retries', async () => {
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        yield { type: 'api-attempt-duration', durationMs: 25 }
+        yield { type: 'text-delta', delta: 'bounded summary' }
+        yield { type: 'usage', usage: { inputTokens: 3, outputTokens: 1 } }
+      },
+    }
+
+    const result = await new ModelCompactor(provider).compact({
+      messages: [{ role: 'user', content: 'history' }],
+      targetTokens: 100,
+      contextWindowTokens: 1_000,
+    })
+
+    expect(result.durationWithoutRetriesMs).toBe(25)
+    expect(result.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('falls back to the total duration for legacy providers', async () => {
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'bounded summary' }
+        yield { type: 'usage', usage: { inputTokens: 3, outputTokens: 1 } }
+      },
+    }
+
+    const result = await new ModelCompactor(provider).compact({
+      messages: [{ role: 'user', content: 'history' }],
+      targetTokens: 100,
+      contextWindowTokens: 1_000,
+    })
+
+    expect(result.durationWithoutRetriesMs).toBe(result.durationMs)
+    expect(result.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('rejects duplicate or invalid provider attempt duration metadata', async () => {
+    const duplicate: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        yield { type: 'api-attempt-duration', durationMs: 1 }
+        yield { type: 'api-attempt-duration', durationMs: 2 }
+        yield { type: 'text-delta', delta: 'unexpected' }
+      },
+    }
+    await expect(
+      new ModelCompactor(duplicate).compact({
+        messages: [{ role: 'user', content: 'history' }],
+        targetTokens: 100,
+        contextWindowTokens: 1_000,
+      }),
+    ).rejects.toThrow(
+      'Provider emitted multiple api-attempt-duration events in one attempt',
+    )
+
+    const invalid: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        yield { type: 'api-attempt-duration', durationMs: -1 }
+      },
+    }
+    await expect(
+      new ModelCompactor(invalid).compact({
+        messages: [{ role: 'user', content: 'history' }],
+        targetTokens: 100,
+        contextWindowTokens: 1_000,
+      }),
+    ).rejects.toThrow(
+      'api-attempt-duration durationMs must be a finite nonnegative number',
+    )
+  })
 })

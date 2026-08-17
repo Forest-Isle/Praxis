@@ -87,7 +87,7 @@ import {
 } from './background-task-runtime.js'
 import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
-import type { Compactor } from '../core/compaction.js'
+import type { CompactionResult, Compactor } from '../core/compaction.js'
 import {
   ContextBudget,
   estimateModelRequestTokens,
@@ -402,6 +402,36 @@ function requireManualCompactUsage(usage: ModelUsage): void {
   if (usage.webSearchRequests !== undefined) {
     requireUsageCounter(usage.webSearchRequests, 'usage.webSearchRequests')
   }
+}
+
+function requireCompactionDurations(result: CompactionResult): {
+  durationMs: number
+  durationWithoutRetriesMs: number
+} {
+  const durationMs = result.durationMs
+  if (
+    typeof durationMs !== 'number' ||
+    !Number.isFinite(durationMs) ||
+    durationMs < 0
+  ) {
+    throw new TypeError(
+      'compaction durationMs must be a finite nonnegative number',
+    )
+  }
+  if (result.durationWithoutRetriesMs === undefined) {
+    return { durationMs, durationWithoutRetriesMs: durationMs }
+  }
+  const durationWithoutRetriesMs = result.durationWithoutRetriesMs
+  if (
+    typeof durationWithoutRetriesMs !== 'number' ||
+    !Number.isFinite(durationWithoutRetriesMs) ||
+    durationWithoutRetriesMs < 0
+  ) {
+    throw new TypeError(
+      'compaction durationWithoutRetriesMs must be a finite nonnegative number',
+    )
+  }
+  return { durationMs, durationWithoutRetriesMs }
 }
 
 function createLineCountAccumulator(): {
@@ -1784,16 +1814,10 @@ export class ClaudeSessionService {
         ...(signal ? { signal } : {}),
       })
       if (signal?.aborted) throw new AgentRunCancelledError()
-      const compactedDurationMs = compacted.durationMs
-      if (
-        typeof compactedDurationMs !== 'number' ||
-        !Number.isFinite(compactedDurationMs) ||
-        compactedDurationMs < 0
-      ) {
-        throw new TypeError(
-          'compaction durationMs must be a finite nonnegative number',
-        )
-      }
+      const {
+        durationMs: compactedDurationMs,
+        durationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
+      } = requireCompactionDurations(compacted)
       requireManualCompactUsage(compacted.usage)
       const compactorModel = compacted.model
       const compactModel =
@@ -1841,6 +1865,7 @@ export class ClaudeSessionService {
             ? {}
             : { webSearchRequests: compacted.usage.webSearchRequests }),
           apiDurationMs: compactedDurationMs,
+          apiDurationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
         }
         // Preflight the exact record input against a clone of the live
         // tracker so a cumulative total overflow rejects before the compact
@@ -2983,6 +3008,7 @@ export class ClaudeSessionService {
           outputTokens: 0,
         }
         let compactionDurationMs: number | undefined
+        let compactionDurationWithoutRetriesMs: number | undefined
         let compactionModelUsage:
           Readonly<Record<string, ModelUsage>> | undefined
         const definitions = provider.capabilities.tools
@@ -3130,6 +3156,23 @@ export class ClaudeSessionService {
             contextWindowTokens: budget.contextWindowTokens,
             ...(signal ? { signal } : {}),
           })
+          const {
+            durationMs: compactedDurationMs,
+            durationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
+          } = requireCompactionDurations(compacted)
+          const proposedCompactionDurationMs =
+            (compactionDurationMs ?? 0) + compactedDurationMs
+          if (!Number.isFinite(proposedCompactionDurationMs)) {
+            throw new TypeError('compaction durationMs total overflow')
+          }
+          const proposedCompactionDurationWithoutRetriesMs =
+            (compactionDurationWithoutRetriesMs ?? 0) +
+            compactedDurationWithoutRetriesMs
+          if (!Number.isFinite(proposedCompactionDurationWithoutRetriesMs)) {
+            throw new TypeError(
+              'compaction durationWithoutRetriesMs total overflow',
+            )
+          }
           const boundaryUuid = randomUUID()
           const summaryUuid = randomUUID()
           const timestamp = new Date().toISOString()
@@ -3148,7 +3191,7 @@ export class ClaudeSessionService {
               previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
                 snapshot.entries,
               ),
-              durationMs: compacted.durationMs,
+              durationMs: compactedDurationMs,
               cwd: this.activeCwd(),
               claudeVersion: this.options.claudeVersion,
               gitBranch: null,
@@ -3219,22 +3262,9 @@ export class ClaudeSessionService {
           })
           compactionAnchorUuid = compactSummaryUuid
           compactionUsage = mergeUsage(compactionUsage, compacted.usage)
-          const compactedDurationMs = compacted.durationMs
-          if (
-            typeof compactedDurationMs !== 'number' ||
-            !Number.isFinite(compactedDurationMs) ||
-            compactedDurationMs < 0
-          ) {
-            throw new TypeError(
-              'compaction durationMs must be a finite nonnegative number',
-            )
-          }
-          const accumulatedDurationMs =
-            (compactionDurationMs ?? 0) + compactedDurationMs
-          if (!Number.isFinite(accumulatedDurationMs)) {
-            throw new TypeError('compaction durationMs total overflow')
-          }
-          compactionDurationMs = accumulatedDurationMs
+          compactionDurationMs = proposedCompactionDurationMs
+          compactionDurationWithoutRetriesMs =
+            proposedCompactionDurationWithoutRetriesMs
           const compactedMainModel = provider.model
           if (
             compactedMainModel !== undefined &&
@@ -3570,6 +3600,13 @@ export class ClaudeSessionService {
           result.durationApiMs === undefined
             ? undefined
             : (compactionDurationMs ?? 0) + (result.durationApiMs ?? 0)
+        const combinedDurationWithoutRetriesMs =
+          compactionDurationWithoutRetriesMs === undefined &&
+          result.durationApiWithoutRetriesMs === undefined &&
+          result.durationApiMs === undefined
+            ? undefined
+            : (compactionDurationWithoutRetriesMs ?? 0) +
+              (result.durationApiWithoutRetriesMs ?? result.durationApiMs ?? 0)
         const mainModel = provider.model
         let rawCostUsd: number | undefined
         if (turnModelUsage) {
@@ -3589,7 +3626,12 @@ export class ClaudeSessionService {
               combinedDurationMs !== undefined
                 ? {
                     apiDurationMs: combinedDurationMs,
-                    apiDurationWithoutRetriesMs: 0,
+                    ...(combinedDurationWithoutRetriesMs === undefined
+                      ? {}
+                      : {
+                          apiDurationWithoutRetriesMs:
+                            combinedDurationWithoutRetriesMs,
+                        }),
                   }
                 : {}),
             })

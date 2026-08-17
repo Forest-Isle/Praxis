@@ -959,6 +959,150 @@ describe('ClaudeSessionService', () => {
     expect(snapshot.hasUnknownModelCost).toBe(false)
   })
 
+  it('records the exact retry-free API duration in the main cost row snapshot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-retry-free-duration-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        model: 'retry-free-model',
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'api-attempt-duration', durationMs: 0 }
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          yield { type: 'text-delta', delta: 'measured' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 3, outputTokens: 2 },
+          }
+        },
+      },
+      pricing: new ModelPricingRegistry({
+        'retry-free-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+      }),
+      costStateStore: { load: async () => null, save: async () => undefined },
+    })
+
+    const run = await service.run('start')
+    const snapshot = await service.costSnapshot(run.sessionId)
+
+    expect(snapshot.modelUsage['retry-free-model']).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 2,
+    })
+    expect(snapshot.apiDurationMs).toBeGreaterThan(0)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(0)
+  })
+
+  it('records manual compact total and retry-free duration separately', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-manual-compact-retryfree-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['original answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'retry-free summary',
+            usage: { inputTokens: 5, outputTokens: 3 },
+            durationMs: 50,
+            durationWithoutRetriesMs: 33,
+            model: 'compact-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('start')
+    await service.compact(run.sessionId)
+    const snapshot = await service.costSnapshot(run.sessionId)
+
+    expect(snapshot.apiDurationMs).toBe(50)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(33)
+  })
+
+  it('accumulates retry-free auto-compaction and main-turn durations in the snapshot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-retryfree-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield {
+            type: 'text-delta',
+            delta: `old-context ${'discarded '.repeat(600)}`,
+          }
+        },
+      },
+    })
+    const first = await origin.run('CURRENT_TASK')
+
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        model: 'retry-free-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 2_500,
+        },
+        async *complete() {
+          yield { type: 'api-attempt-duration', durationMs: 20 }
+          yield { type: 'text-delta', delta: 'final answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 5 },
+          }
+        },
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'COMPACTED_RETRY_FREE',
+            usage: { inputTokens: 6, outputTokens: 4 },
+            durationMs: 70,
+            durationWithoutRetriesMs: 55,
+            model: 'retry-free-model',
+          }
+        },
+      },
+      contextReserveTokens: 1_500,
+      pricing: new ModelPricingRegistry({
+        'retry-free-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+      }),
+      costStateStore: { load: async () => null, save: async () => undefined },
+    })
+
+    const result = await service.resume(first.sessionId, 'Continue the task.')
+    const snapshot = await service.costSnapshot(result.sessionId)
+
+    expect(result.text).toBe('final answer')
+    expect(snapshot.modelUsage['retry-free-model']).toMatchObject({
+      inputTokens: 16,
+      outputTokens: 9,
+    })
+    expect(snapshot.apiDurationMs).toBeGreaterThanOrEqual(70)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(55 + 20)
+  })
+
   it('records manual compact usage without cost and diagnoses an unknown model price', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-unknown-'))
     roots.push(root)
@@ -4580,6 +4724,96 @@ describe('ClaudeSessionService', () => {
     )
     expect(boundary?.logicalParentUuid).toBe(originalPrompt?.uuid)
     expect(boundary?.logicalParentUuid).not.toBe(toolResult?.uuid)
+  })
+
+  it('rejects an auto-compaction duration overflow before appending the failing boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-compact-overflow-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield {
+            type: 'text-delta',
+            delta: `old-context ${'discarded '.repeat(600)}`,
+          }
+        },
+      },
+    })
+    const first = await origin.run('CURRENT_TASK')
+
+    let compactCalls = 0
+    const provider: ModelProvider = {
+      model: 'overflow-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        contextWindowTokens: 2_500,
+      },
+      async *complete() {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_large', name: 'Read', input: {} },
+        }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        { name: 'Read', description: 'Read', inputSchema: { type: 'object' } },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return {
+          content: `LARGE_RESULT ${'contents '.repeat(600)}`,
+          isError: false,
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextReserveTokens: 1_500,
+      compactor: {
+        async compact() {
+          compactCalls += 1
+          return {
+            summary: `overflow summary ${compactCalls}`,
+            usage: { inputTokens: 2, outputTokens: 1 },
+            durationMs: Number.MAX_VALUE,
+            model: 'overflow-model',
+          }
+        },
+      },
+    })
+
+    await expect(
+      service.resume(first.sessionId, 'Read the large result.'),
+    ).rejects.toThrow('compaction durationMs total overflow')
+    expect(compactCalls).toBe(2)
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript.match(/"subtype":"compact_boundary"/g)).toHaveLength(1)
+    expect(transcript).toContain('overflow summary 1')
+    expect(transcript).not.toContain('overflow summary 2')
   })
 
   it('supports repeated compaction with cumulative dropped-token metadata', async () => {

@@ -67,6 +67,8 @@ export class ModelCompactor implements Compactor {
     const startedAt = Date.now()
     let summary = ''
     let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+    let attemptDurationMs: number | undefined
+    let attemptDurationSeen = false
     const providerRequest = {
       messages,
       ...(request.signal ? { signal: request.signal } : {}),
@@ -76,6 +78,26 @@ export class ModelCompactor implements Compactor {
       if (request.signal?.aborted) throw new AgentRunCancelledError()
       if (event.type === 'tool-call') {
         throw new Error('Compaction model must not call tools')
+      }
+      if (event.type === 'api-attempt-duration') {
+        if (attemptDurationSeen) {
+          throw new Error(
+            'Provider emitted multiple api-attempt-duration events in one attempt',
+          )
+        }
+        attemptDurationSeen = true
+        const { durationMs } = event
+        if (
+          typeof durationMs !== 'number' ||
+          !Number.isFinite(durationMs) ||
+          durationMs < 0
+        ) {
+          throw new TypeError(
+            'api-attempt-duration durationMs must be a finite nonnegative number',
+          )
+        }
+        attemptDurationMs = durationMs
+        continue
       }
       if (event.type === 'text-delta') summary += event.delta
       else if (event.type === 'usage') usage = event.usage
@@ -91,11 +113,13 @@ export class ModelCompactor implements Compactor {
         `Compaction summary exceeded ${targetTokens} tokens (estimated ${summaryTokens})`,
       )
     }
+    const durationMs = Date.now() - startedAt
     const model = this.provider.model
     return {
       summary,
       usage,
-      durationMs: Date.now() - startedAt,
+      durationMs,
+      durationWithoutRetriesMs: attemptDurationMs ?? durationMs,
       ...(model !== undefined && model.trim() !== '' ? { model } : {}),
     }
   }
