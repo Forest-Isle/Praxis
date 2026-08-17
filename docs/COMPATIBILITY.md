@@ -255,15 +255,23 @@ bounded timeout, response, model-output, and 15-minute cache limits.
 
 Claude Code's local format is an implementation contract and can change.
 Praxis maintains versioned compatibility adapters rather than one permissive
-parser:
+parser.
+
+Ordinary Praxis session runtime always emits the verified Claude Code `2.1.208`
+write profile and never derives it from the installed Claude version:
 
 ```text
-Claude installation/version detection
-  -> schema adapter selection
+Verified write profile (Claude Code 2.1.208)
   -> read/validate
   -> append native entry
   -> re-open validation
 ```
+
+Explicit schema adapters and fork creation remain separate and fail closed for
+an unverified write profile: an explicitly supplied version selects the adapter,
+only the verified `2.1.208` profile is writable, and unknown versions keep
+read-only inspection and export paths. This safety policy is never weakened for
+unverified versions.
 
 Support policy:
 
@@ -453,6 +461,14 @@ settings sources without copying or synchronization.
 `npm run test:resume-selector-compat` proves installed UUID/title selector
 resolution, canonical UUID routing, missing/ambiguous failures, and Claude
 resuming a Praxis-named session.
+`npm run test:cross-version-session-compat` is an explicit maintainer gate for
+mixed-version shared-session resume. It builds Praxis and requires
+`PRAXIS_CLAUDE_BINARY` (Claude Code `2.1.208`) and
+`PRAXIS_CLAUDE_CROSS_VERSION_BINARY` (a second Claude Code version); it never
+substitutes an ambient binary. The gate proves one isolated JSONL session is
+alternately resumed by Claude `2.1.208`, Praxis, the cross-version Claude, and
+Praxis again with a single session ID, four ordered provider requests, and the
+producer-version sequence `[2.1.208, 2.1.208, <cross version>, 2.1.208]`.
 `npm run test:background-agent-compat` captures Claude's current Agent,
 SendMessage, TaskOutput, and TaskStop schemas, then proves async launch, output
 polling, same-ID continuation, completion notification, sidechain persistence,
