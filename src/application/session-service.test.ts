@@ -4817,6 +4817,7 @@ describe('ClaudeSessionService', () => {
     const requests: ModelRequest[] = []
     let mainTurns = 0
     const provider: ModelProvider = {
+      model: 'tool-compact-model',
       capabilities: {
         streaming: true,
         usage: true,
@@ -5007,6 +5008,226 @@ describe('ClaudeSessionService', () => {
     expect(transcript.match(/"subtype":"compact_boundary"/g)).toHaveLength(1)
     expect(transcript).toContain('overflow summary 1')
     expect(transcript).not.toContain('overflow summary 2')
+  })
+
+  it('meters a committed auto-compact boundary even when the following main provider fails', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-auto-compact-metered-fail-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield {
+            type: 'text-delta',
+            delta: `old-context ${'discarded '.repeat(600)}`,
+          }
+        },
+      },
+    })
+    const first = await origin.run('CURRENT_TASK')
+
+    let mainCalls = 0
+    const provider: ModelProvider = {
+      model: 'main-run-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 2_500,
+      },
+      async *complete() {
+        if (mainCalls++ === 0) {
+          throw new ModelProviderError(
+            'main provider failed after boundary commit',
+            { retryable: true },
+          )
+        }
+        yield { type: 'text-delta', delta: 'resumed answer' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 9, outputTokens: 4 },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      contextReserveTokens: 1_500,
+      compactor: {
+        async compact() {
+          return {
+            summary: 'COMPACTED_DISTINCT_MODEL',
+            usage: {
+              inputTokens: 12,
+              outputTokens: 6,
+              webSearchRequests: 1,
+            },
+            durationMs: 40,
+            durationWithoutRetriesMs: 25,
+            model: 'distinct-compactor-model',
+          }
+        },
+      },
+      pricing: new ModelPricingRegistry({
+        'main-run-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+        'distinct-compactor-model': {
+          inputPerMillionUsd: 2,
+          outputPerMillionUsd: 3,
+        },
+      }),
+      costStateStore: { load: async () => null, save: async () => undefined },
+    })
+
+    const compactCost = (12 * 2 + 6 * 3) / 1_000_000
+    await expect(
+      service.resume(first.sessionId, 'Continue the task.'),
+    ).rejects.toThrow('main provider failed after boundary commit')
+
+    const snapshot = await service.costSnapshot(first.sessionId)
+    expect(snapshot.modelUsage).toEqual({
+      'distinct-compactor-model': {
+        inputTokens: 12,
+        outputTokens: 6,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        webSearchRequests: 1,
+        costUsd: compactCost,
+      },
+    })
+    expect(snapshot.totalCostUsd).toBe(compactCost)
+    expect(snapshot.apiDurationMs).toBe(40)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(25)
+    expect(snapshot.toolDurationMs).toBe(0)
+    expect(snapshot.hasUnknownModelCost).toBe(false)
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript.match(/"subtype":"compact_boundary"/g)).toHaveLength(1)
+    expect(transcript).toContain('COMPACTED_DISTINCT_MODEL')
+
+    const resumed = await service.resume(first.sessionId, 'Continue again.')
+    expect(resumed.text).toBe('resumed answer')
+    expect(resumed.durationApiMs).toBeDefined()
+    const resumedDurationApiMs = resumed.durationApiMs as number
+
+    const after = await service.costSnapshot(first.sessionId)
+    expect(after.modelUsage['distinct-compactor-model']).toEqual({
+      inputTokens: 12,
+      outputTokens: 6,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 1,
+      costUsd: compactCost,
+    })
+    expect(after.modelUsage['main-run-model']).toMatchObject({
+      inputTokens: 9,
+      outputTokens: 4,
+    })
+    expect(after.totalCostUsd).toBeCloseTo(compactCost + 13 / 1_000_000)
+    expect(after.apiDurationMs).toBe(40 + resumedDurationApiMs)
+    expect(after.apiDurationWithoutRetriesMs).toBe(25 + resumedDurationApiMs)
+    expect(
+      (
+        await readFile(
+          resolveClaudePaths({
+            configDir: configRoot,
+            cwd,
+            sessionId: first.sessionId,
+          }).sessionFile,
+          'utf8',
+        )
+      ).match(/"subtype":"compact_boundary"/g),
+    ).toHaveLength(1)
+  })
+
+  it('fails before append when auto-compact usage lacks a model identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-compact-model-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield {
+            type: 'text-delta',
+            delta: `old-context ${'discarded '.repeat(600)}`,
+          }
+        },
+      },
+    })
+    const first = await origin.run('CURRENT_TASK')
+
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 2_500,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'unreachable answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        },
+      },
+      contextReserveTokens: 1_500,
+      compactor: {
+        async compact() {
+          return {
+            summary: 'unattributed compact summary',
+            usage: { inputTokens: 3, outputTokens: 2 },
+            durationMs: 5,
+          }
+        },
+      },
+      costStateStore: { load: async () => null, save: async () => undefined },
+    })
+
+    const before = await service.costSnapshot(first.sessionId)
+    await expect(
+      service.resume(first.sessionId, 'Continue the task.'),
+    ).rejects.toThrow('Auto compact usage requires a nonblank model identity')
+    const after = await service.costSnapshot(first.sessionId)
+    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+
+    const { resolveClaudePaths } =
+      await import('../compatibility/claude/paths.js')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('compact_boundary')
   })
 
   it('supports repeated compaction with cumulative dropped-token metadata', async () => {
@@ -5363,6 +5584,7 @@ describe('ClaudeSessionService', () => {
             summary: 'summary',
             usage: { inputTokens: 1, outputTokens: 1 },
             durationMs: 1,
+            model: 'summary-target-model',
           }
         },
       },

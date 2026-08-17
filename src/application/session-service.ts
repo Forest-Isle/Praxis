@@ -138,6 +138,7 @@ import type {
 import {
   ClaudeSessionCostTracker,
   type ClaudeSessionCostSnapshot,
+  type ClaudeSessionDurationsInput,
   type ClaudeSessionTurnInput,
 } from './session-cost-tracker.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
@@ -3381,6 +3382,69 @@ export class ClaudeSessionService {
             ...replayEntries,
           ]
           if (signal?.aborted) throw new AgentRunCancelledError()
+          // Construct the exact tracker mutations for this single committed
+          // boundary and preflight them against a clone of the live tracker so
+          // invalid input or cumulative overflow rejects before the compact
+          // boundary is appended rather than after a half-commit.
+          const tracker = this.sessionCostTrackers.get(sessionId)
+          if (!tracker) {
+            throw new Error(
+              `Session cost tracker is not active for session ${sessionId}`,
+            )
+          }
+          const compactModel =
+            compacted.model !== undefined && compacted.model.trim() !== ''
+              ? compacted.model
+              : provider.model
+          const compactModelNonBlank =
+            compactModel !== undefined && compactModel.trim() !== ''
+          if (hasNonZeroUsage(compacted.usage) && !compactModelNonBlank) {
+            throw new Error(
+              'Auto compact usage requires a nonblank model identity',
+            )
+          }
+          let meteringTurnInput: ClaudeSessionTurnInput | undefined
+          if (compactModelNonBlank && hasNonZeroUsage(compacted.usage)) {
+            const pricing = this.options.pricing?.resolve(compactModel)
+            const costUsd = pricing
+              ? usageCostUsd(compacted.usage, pricing)
+              : undefined
+            meteringTurnInput = {
+              model: compactModel,
+              usage: compacted.usage,
+              ...(costUsd === undefined ? {} : { costUsd }),
+              ...(compacted.usage.webSearchRequests === undefined
+                ? {}
+                : { webSearchRequests: compacted.usage.webSearchRequests }),
+            }
+          }
+          let meteringDurationsInput: ClaudeSessionDurationsInput | undefined
+          if (
+            compactedDurationMs > 0 ||
+            compactedDurationWithoutRetriesMs > 0
+          ) {
+            meteringDurationsInput = {
+              ...(compactedDurationMs === 0
+                ? {}
+                : { apiDurationMs: compactedDurationMs }),
+              apiDurationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
+            }
+          }
+          if (
+            meteringTurnInput !== undefined ||
+            meteringDurationsInput !== undefined
+          ) {
+            const preflight = new ClaudeSessionCostTracker({
+              sessionId,
+              restored: tracker.snapshot(),
+            })
+            if (meteringTurnInput !== undefined) {
+              preflight.recordTurn(meteringTurnInput)
+            }
+            if (meteringDurationsInput !== undefined) {
+              preflight.recordDurations(meteringDurationsInput)
+            }
+          }
           const appendResult = await lease.appendMany(snapshot.tail, entries)
           if (appendResult.status === 'conflict') {
             throw new Error(
@@ -3402,16 +3466,20 @@ export class ClaudeSessionService {
           compactionDurationMs = proposedCompactionDurationMs
           compactionDurationWithoutRetriesMs =
             proposedCompactionDurationWithoutRetriesMs
-          const compactedMainModel = provider.model
-          if (
-            compactedMainModel !== undefined &&
-            compactedMainModel.trim() !== '' &&
-            hasNonZeroUsage(compacted.usage)
-          ) {
+          if (meteringTurnInput !== undefined) {
             compactionModelUsage = mergeSessionRawModelUsage(
               compactionModelUsage,
-              { [compactedMainModel]: compacted.usage },
+              { [meteringTurnInput.model]: compacted.usage },
             )
+          }
+          // Commit the preflighted mutations once the boundary is durable so a
+          // later main-provider failure or cancellation cannot lose the
+          // compactor's usage/cost/API durations.
+          if (meteringTurnInput !== undefined) {
+            tracker.recordTurn(meteringTurnInput)
+          }
+          if (meteringDurationsInput !== undefined) {
+            tracker.recordDurations(meteringDurationsInput)
           }
         }
         await compactIfNeeded(pendingUserMessages)
@@ -3737,19 +3805,27 @@ export class ClaudeSessionService {
           result.durationApiMs === undefined
             ? undefined
             : (compactionDurationMs ?? 0) + (result.durationApiMs ?? 0)
-        const combinedDurationWithoutRetriesMs =
-          compactionDurationWithoutRetriesMs === undefined &&
-          result.durationApiWithoutRetriesMs === undefined &&
-          result.durationApiMs === undefined
-            ? undefined
-            : (compactionDurationWithoutRetriesMs ?? 0) +
-              (result.durationApiWithoutRetriesMs ?? result.durationApiMs ?? 0)
         let rawCostUsd: number | undefined
         if (turnModelUsage) {
           for (const [model, usage] of Object.entries(turnModelUsage)) {
             const pricing = this.options.pricing?.resolve(model)
             const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
             if (costUsd !== undefined) rawCostUsd = (rawCostUsd ?? 0) + costUsd
+          }
+        }
+        // Auto-compaction metering was already recorded atomically with each
+        // committed boundary, so the live tracker receives only recovery,
+        // shell, and main runtime usage rows here. The inclusive public
+        // aggregates above still contain the compaction rows.
+        const trackedModelUsage = mergeSessionRawModelUsage(
+          recoveryModelUsage,
+          shellModelUsage,
+          result.modelUsage,
+        )
+        if (trackedModelUsage) {
+          for (const [model, usage] of Object.entries(trackedModelUsage)) {
+            const pricing = this.options.pricing?.resolve(model)
+            const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
             tracker.recordTurn({
               model,
               usage,
@@ -3772,13 +3848,13 @@ export class ClaudeSessionService {
           combinedToolDurationMs,
         )
         tracker.recordDurations({
-          ...(combinedDurationMs === undefined
+          ...(result.durationApiMs === undefined
             ? {}
-            : { apiDurationMs: combinedDurationMs }),
-          ...(combinedDurationWithoutRetriesMs === undefined
+            : { apiDurationMs: result.durationApiMs }),
+          ...(result.durationApiWithoutRetriesMs === undefined
             ? {}
             : {
-                apiDurationWithoutRetriesMs: combinedDurationWithoutRetriesMs,
+                apiDurationWithoutRetriesMs: result.durationApiWithoutRetriesMs,
               }),
           ...(combinedToolDurationMs === 0
             ? {}
