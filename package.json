@@ -63,6 +63,7 @@
     "test:notebook-compat": "npm run build && node scripts/verify-notebook-compatibility.mjs",
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:cross-version-session-compat": "npm run build && node scripts/verify-cross-version-session-compatibility.mjs",
+    "test:cross-version-resume-at-compat": "npm run build && node scripts/verify-cross-version-resume-at-compatibility.mjs",
     "test:cross-version-fork-compat": "npm run build && node scripts/verify-cross-version-fork-compatibility.mjs",
     "test:cross-version-sidechain-compat": "npm run build && node scripts/verify-cross-version-sidechain-compatibility.mjs",
     "test:cross-version-compaction-compat": "npm run build && node scripts/verify-cross-version-compaction-compatibility.mjs",
