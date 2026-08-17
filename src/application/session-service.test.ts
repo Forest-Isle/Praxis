@@ -2128,18 +2128,22 @@ describe('ClaudeSessionService', () => {
     const before = await readFile(sessionFile, 'utf8')
     const deltas: string[] = []
 
-    await expect(
-      service.answerSideQuestion(
-        run.sessionId,
-        'what was the answer?',
-        undefined,
-        (delta) => deltas.push(delta),
-      ),
-    ).resolves.toEqual({
+    const sideResult = await service.answerSideQuestion(
+      run.sessionId,
+      'what was the answer?',
+      undefined,
+      (delta) => deltas.push(delta),
+    )
+    expect(sideResult).toMatchObject({
       sessionId: run.sessionId,
       text: 'side answer',
       usage: { inputTokens: 7, outputTokens: 3 },
+      modelUsage: { 'praxis/provider': { inputTokens: 7, outputTokens: 3 } },
     })
+    expect(sideResult.durationApiMs).toBeGreaterThanOrEqual(0)
+    expect(sideResult.durationApiWithoutRetriesMs).toBe(
+      sideResult.durationApiMs,
+    )
 
     expect(deltas).toEqual(['side', ' answer'])
     expect(requests[1]?.tools).toBeUndefined()
@@ -2752,6 +2756,85 @@ describe('ClaudeSessionService', () => {
     await expect(
       readFile(join(root, 'config', 'history.jsonl'), 'utf8'),
     ).resolves.toContain(`"sessionId":"${result.sessionId}"`)
+  })
+
+  it('meters a side question into the session cost snapshot exactly once without touching the transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-btw-metered-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = root
+    const requests: ModelRequest[] = []
+    const responses = [
+      {
+        text: 'main context answer',
+        usage: { inputTokens: 3, outputTokens: 2 },
+      },
+      { text: 'side answer', usage: { inputTokens: 7, outputTokens: 3 } },
+    ]
+    const provider: ModelProvider = {
+      model: 'fixture-side-model',
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        const response = responses.shift()
+        if (!response) throw new Error('Provider response fixture exhausted')
+        yield { type: 'text-delta', delta: response.text }
+        yield { type: 'usage', usage: response.usage }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      pricing: new ModelPricingRegistry({
+        'fixture-side-model': { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
+      }),
+    })
+    const run = await service.run('remember main context')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const before = await readFile(sessionFile, 'utf8')
+    const mainSnapshot = await service.costSnapshot(run.sessionId)
+    expect(mainSnapshot.modelUsage['fixture-side-model']).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 2,
+      costUsd: 0.000014,
+    })
+
+    const sideResult = await service.answerSideQuestion(
+      run.sessionId,
+      'what was the answer?',
+    )
+    expect(sideResult).toMatchObject({
+      text: 'side answer',
+      usage: { inputTokens: 7, outputTokens: 3 },
+      costUsd: 0.000026,
+      modelUsage: { 'fixture-side-model': { inputTokens: 7, outputTokens: 3 } },
+    })
+    expect(sideResult.durationApiMs).toBeGreaterThanOrEqual(0)
+    expect(sideResult.durationApiWithoutRetriesMs).toBe(
+      sideResult.durationApiMs,
+    )
+
+    const snapshot = await service.costSnapshot(run.sessionId)
+    expect(snapshot.modelUsage['fixture-side-model']).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 5,
+      costUsd: expect.closeTo(0.00004),
+    })
+    expect(snapshot.hasUnknownModelCost).toBe(false)
+    expect(snapshot.apiDurationMs).toBeGreaterThanOrEqual(
+      mainSnapshot.apiDurationMs,
+    )
+    expect(snapshot.apiDurationWithoutRetriesMs).toBeGreaterThanOrEqual(
+      mainSnapshot.apiDurationWithoutRetriesMs,
+    )
+    await expect(readFile(sessionFile, 'utf8')).resolves.toBe(before)
+    expect(requests).toHaveLength(2)
   })
 
   it('forks a /btw question into a native background Agent sidechain', async () => {
@@ -3810,6 +3893,191 @@ describe('ClaudeSessionService', () => {
       role: 'user',
       content: expect.stringContaining('[SUGGESTION MODE:'),
     })
+  })
+
+  it('meters a prompt suggestion into the session cost snapshot exactly once without mutating the transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-suggestion-metered-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      model: 'suggestion-model',
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        yield {
+          type: 'text-delta',
+          delta:
+            requests.length === 1
+              ? 'main answer'
+              : 'continue the implementation',
+        }
+        yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      pricing: new ModelPricingRegistry({
+        'suggestion-model': { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
+      }),
+    })
+    const result = await service.run('implement the feature')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    }).sessionFile
+    const before = await readFile(sessionFile, 'utf8')
+
+    await expect(service.promptSuggestion(result.sessionId)).resolves.toBe(
+      'continue the implementation',
+    )
+
+    const snapshot = await service.costSnapshot(result.sessionId)
+    expect(snapshot.modelUsage['suggestion-model']).toMatchObject({
+      inputTokens: 8,
+      outputTokens: 4,
+      costUsd: 0.000032,
+    })
+    expect(snapshot.hasUnknownModelCost).toBe(false)
+    expect(snapshot.apiDurationMs).toBeGreaterThanOrEqual(0)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(snapshot.apiDurationMs)
+    await expect(readFile(sessionFile, 'utf8')).resolves.toBe(before)
+    expect(requests).toHaveLength(2)
+  })
+
+  it('returns null for a tool-call prompt suggestion while still recording API duration without a new model row', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-suggestion-toolcall-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let turns = 0
+    const provider: ModelProvider = {
+      model: 'toolcall-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        turns += 1
+        if (turns === 1) {
+          yield { type: 'text-delta', delta: 'main answer' }
+          yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+          return
+        }
+        yield {
+          type: 'tool-call',
+          call: {
+            id: 'call_suggest',
+            name: 'Read',
+            input: { file_path: 'README.md' },
+          },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      pricing: new ModelPricingRegistry({
+        'toolcall-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+      }),
+    })
+    const run = await service.run('implement')
+    const beforeSnapshot = await service.costSnapshot(run.sessionId)
+
+    await expect(service.promptSuggestion(run.sessionId)).resolves.toBeNull()
+
+    const afterSnapshot = await service.costSnapshot(run.sessionId)
+    expect(afterSnapshot.modelUsage).toEqual(beforeSnapshot.modelUsage)
+    expect(afterSnapshot.hasUnknownModelCost).toBe(false)
+    expect(afterSnapshot.apiDurationMs).toBeGreaterThanOrEqual(
+      beforeSnapshot.apiDurationMs,
+    )
+    expect(afterSnapshot.apiDurationWithoutRetriesMs).toBeGreaterThanOrEqual(
+      beforeSnapshot.apiDurationWithoutRetriesMs,
+    )
+  })
+
+  it('records API duration without a model row when a prompt suggestion provider fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-suggestion-failure-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let turns = 0
+    const provider: ModelProvider = {
+      model: 'failure-model',
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        turns += 1
+        if (turns === 1) {
+          yield { type: 'text-delta', delta: 'main answer' }
+          yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+          return
+        }
+        throw new Error('suggestion provider failed')
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      pricing: new ModelPricingRegistry({
+        'failure-model': { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+      }),
+    })
+    const run = await service.run('implement')
+    const beforeSnapshot = await service.costSnapshot(run.sessionId)
+
+    await expect(service.promptSuggestion(run.sessionId)).rejects.toThrow(
+      'suggestion provider failed',
+    )
+
+    const afterSnapshot = await service.costSnapshot(run.sessionId)
+    expect(afterSnapshot.modelUsage).toEqual(beforeSnapshot.modelUsage)
+    expect(afterSnapshot.hasUnknownModelCost).toBe(false)
+    expect(afterSnapshot.apiDurationMs).toBeGreaterThanOrEqual(
+      beforeSnapshot.apiDurationMs,
+    )
+    expect(afterSnapshot.apiDurationWithoutRetriesMs).toBeGreaterThanOrEqual(
+      beforeSnapshot.apiDurationWithoutRetriesMs,
+    )
+  })
+
+  it('records nothing for a pre-aborted prompt suggestion without calling the provider', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-suggestion-abort-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let calls = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        calls += 1
+        yield { type: 'text-delta', delta: 'unexpected' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+    })
+    const run = await service.run('start')
+    const beforeSnapshot = await service.costSnapshot(run.sessionId)
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      service.promptSuggestion(run.sessionId, controller.signal),
+    ).rejects.toBeInstanceOf(AgentRunCancelledError)
+
+    const afterSnapshot = await service.costSnapshot(run.sessionId)
+    expect(trackedTotals(afterSnapshot)).toEqual(trackedTotals(beforeSnapshot))
+    expect(calls).toBe(1)
   })
 
   it('marks background user and assistant transcript entries with native session metadata', async () => {
@@ -5868,6 +6136,58 @@ describe('ClaudeSessionService', () => {
       'review-auth-flow',
     )
     expect(await readFile(paths.sessionFile, 'utf8')).toBe(before)
+  })
+
+  it('meters a session-name suggestion into the session cost snapshot exactly once without transcript mutation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-name-metered-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      model: 'name-model',
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(request) {
+        requests.push(request)
+        yield {
+          type: 'text-delta',
+          delta: requests.length === 1 ? 'main answer' : 'review-auth-flow',
+        }
+        yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      pricing: new ModelPricingRegistry({
+        'name-model': { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
+      }),
+    })
+    const result = await service.run('review authentication')
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    const before = await readFile(paths.sessionFile, 'utf8')
+
+    await expect(service.sessionNameSuggestion(result.sessionId)).resolves.toBe(
+      'review-auth-flow',
+    )
+
+    const snapshot = await service.costSnapshot(result.sessionId)
+    expect(snapshot.modelUsage['name-model']).toMatchObject({
+      inputTokens: 8,
+      outputTokens: 4,
+      costUsd: 0.000032,
+    })
+    expect(snapshot.hasUnknownModelCost).toBe(false)
+    expect(snapshot.apiDurationMs).toBeGreaterThanOrEqual(0)
+    expect(snapshot.apiDurationWithoutRetriesMs).toBe(snapshot.apiDurationMs)
+    expect(await readFile(paths.sessionFile, 'utf8')).toBe(before)
+    expect(requests).toHaveLength(2)
   })
 
   it('resumes and forks at an active user message using native transcript branches', async () => {
