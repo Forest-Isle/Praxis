@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CLAUDE_2_1_208_COMMAND_BY_NAME,
   CLAUDE_2_1_208_COMMAND_INVENTORY,
+  type ClaudeCommandInventoryEntry,
 } from './claude-command-inventory.js'
 
 describe('Claude Code 2.1.208 external command inventory', () => {
@@ -22,10 +23,13 @@ describe('Claude Code 2.1.208 external command inventory', () => {
   })
 
   it('keeps developer-core closure on exactly the required commands', () => {
+    const inventory: readonly ClaudeCommandInventoryEntry[] =
+      CLAUDE_2_1_208_COMMAND_INVENTORY
+
     expect(
-      CLAUDE_2_1_208_COMMAND_INVENTORY.filter(
-        (entry) => entry.disposition === 'required',
-      ).map((entry) => entry.name),
+      inventory
+        .filter((entry) => entry.disposition === 'required')
+        .map((entry) => entry.name),
     ).toEqual([])
 
     expect(CLAUDE_2_1_208_COMMAND_BY_NAME.get('cost')).toMatchObject({
