@@ -54,6 +54,10 @@ const turnMarkers = [
   ['FROM_PRAXIS', 'FROM_PRAXIS_ANSWER'],
   ['FROM_CROSS_VERSION', 'FROM_CROSS_VERSION_ANSWER'],
   ['FROM_PRAXIS_AFTER_CROSS_VERSION', 'FROM_PRAXIS_AFTER_CROSS_VERSION_ANSWER'],
+  ['REVERSE_CROSS_FIRST', 'REVERSE_CROSS_FIRST_ANSWER'],
+  ['REVERSE_PRAXIS_SECOND', 'REVERSE_PRAXIS_SECOND_ANSWER'],
+  ['REVERSE_21208_THIRD', 'REVERSE_21208_THIRD_ANSWER'],
+  ['REVERSE_PRAXIS_FOURTH', 'REVERSE_PRAXIS_FOURTH_ANSWER'],
 ]
 
 function responseText(body) {
@@ -160,16 +164,174 @@ async function runClaude(executable, args, cwd, configRoot, extraEnv) {
   return JSON.parse(stdout)
 }
 
+async function assertTranscriptProducerSequence({
+  configRoot,
+  cwd,
+  sessionId,
+  promptSequence,
+  expectedVersions,
+}) {
+  const sessionPaths = resolveClaudePaths({
+    configDir: configRoot,
+    cwd,
+    sessionId,
+  })
+  const sessionDir = dirname(sessionPaths.sessionFile)
+  const sessionFiles = (await readdir(sessionDir)).filter((name) =>
+    name.endsWith('.jsonl'),
+  )
+  assert(
+    sessionFiles.length === 1,
+    `Expected exactly one session file, found: ${sessionFiles.join(', ')}`,
+  )
+  const transcriptSource = await readFile(sessionPaths.sessionFile, 'utf8')
+  const transcript = transcriptSource
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+  let lastIndex = -1
+  for (let index = 0; index < promptSequence.length; index += 1) {
+    const prompt = promptSequence[index]
+    const entryIndex = transcript.findIndex(
+      (candidate) =>
+        candidate.type === 'user' && candidate.message?.content === prompt,
+    )
+    assert(
+      entryIndex > lastIndex,
+      `Transcript user entry ${prompt} missing or out of order`,
+    )
+    lastIndex = entryIndex
+    assert(
+      transcript[entryIndex].version === expectedVersions[index],
+      `User entry ${prompt} has version ${transcript[entryIndex].version}, expected ${expectedVersions[index]}`,
+    )
+  }
+}
+
+// The cross-version Claude nondeterministically writes one of two native seed
+// layouts when it creates a session: a last-prompt-only seed (the seed prompt
+// is recorded as a `last-prompt` entry with no initial `user` entry) or an
+// initial `user` entry carrying the seed prompt at the cross version. In both
+// layouts the message chain starts with its own assistant response. This
+// helper asserts the exact producer shape and the per-turn producer versions
+// it records: [<cross version>, 2.1.208, 2.1.208, 2.1.208].
+async function assertReverseCrossFirstTranscript({
+  configRoot,
+  cwd,
+  sessionId,
+  crossVersion,
+  referenceVersion,
+}) {
+  const sessionPaths = resolveClaudePaths({
+    configDir: configRoot,
+    cwd,
+    sessionId,
+  })
+  const sessionDir = dirname(sessionPaths.sessionFile)
+  const sessionFiles = (await readdir(sessionDir)).filter((name) =>
+    name.endsWith('.jsonl'),
+  )
+  assert(
+    sessionFiles.length === 1,
+    `Expected exactly one session file, found: ${sessionFiles.join(', ')}`,
+  )
+  const transcriptSource = await readFile(sessionPaths.sessionFile, 'utf8')
+  const transcript = transcriptSource
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+
+  const seedPromptEntry = transcript.find(
+    (entry) =>
+      entry.type === 'last-prompt' &&
+      entry.lastPrompt === 'REVERSE_CROSS_FIRST',
+  )
+  const userEntries = transcript.filter((entry) => entry.type === 'user')
+  const seedUserEntries = userEntries.filter(
+    (entry) => entry.message?.content === 'REVERSE_CROSS_FIRST',
+  )
+
+  const firstAssistantIndex = transcript.findIndex(
+    (entry) => entry.type === 'assistant',
+  )
+  assert(
+    firstAssistantIndex !== -1 &&
+      transcript[firstAssistantIndex]?.version === crossVersion,
+    `Cross-version create did not produce an assistant entry at version ${crossVersion}, got ${JSON.stringify(transcript[firstAssistantIndex] ?? null)}`,
+  )
+
+  // The cross-version Claude nondeterministically writes one of two native
+  // seed layouts: a last-prompt-only seed (no initial user entry) or an
+  // initial user entry carrying the seed prompt at the cross version.
+  let resumeUserEntries
+  if (seedUserEntries.length === 0) {
+    assert(
+      seedPromptEntry !== undefined,
+      'Cross-version seed prompt REVERSE_CROSS_FIRST missing from last-prompt entries',
+    )
+    const seedIndex = transcript.indexOf(seedPromptEntry)
+    const firstUserIndex = transcript.findIndex(
+      (entry) => entry.type === 'user',
+    )
+    assert(
+      seedIndex !== -1 && firstUserIndex !== -1 && seedIndex < firstUserIndex,
+      'Cross-version seed prompt must be recorded before the first resume user entry',
+    )
+    resumeUserEntries = userEntries
+  } else {
+    assert(
+      seedUserEntries.length === 1,
+      `Expected exactly one initial user seed entry, found ${seedUserEntries.length}`,
+    )
+    assert(
+      userEntries[0] === seedUserEntries[0],
+      'Cross-version initial user seed entry must be the first user entry, before the resume user turns',
+    )
+    assert(
+      seedUserEntries[0].version === crossVersion,
+      `Cross-version seed user entry has version ${seedUserEntries[0].version}, expected ${crossVersion}`,
+    )
+    resumeUserEntries = userEntries.slice(1)
+  }
+
+  const expectedUserTurns = [
+    ['REVERSE_PRAXIS_SECOND', referenceVersion],
+    ['REVERSE_21208_THIRD', referenceVersion],
+    ['REVERSE_PRAXIS_FOURTH', referenceVersion],
+  ]
+  assert(
+    resumeUserEntries.length === expectedUserTurns.length,
+    `Expected ${expectedUserTurns.length} post-seed user entries, found ${resumeUserEntries.length}`,
+  )
+  for (let index = 0; index < expectedUserTurns.length; index += 1) {
+    const [prompt, expectedVersion] = expectedUserTurns[index]
+    assert(
+      resumeUserEntries[index].message?.content === prompt,
+      `User entry ${index + 1} is ${JSON.stringify(resumeUserEntries[index].message?.content)}, expected ${prompt}`,
+    )
+    assert(
+      resumeUserEntries[index].version === expectedVersion,
+      `User entry ${prompt} has version ${resumeUserEntries[index].version}, expected ${expectedVersion}`,
+    )
+  }
+  return [crossVersion, referenceVersion, referenceVersion, referenceVersion]
+}
+
 const root = await mkdtemp(join(tmpdir(), 'praxis-cross-version-'))
 const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
+const reverseConfigRoot = join(root, 'reverse-config')
+const reverseCwd = join(root, 'reverse-work')
 
 try {
   await Promise.all([
     mkdir(cwd, { recursive: true }),
     mkdir(configRoot, { recursive: true }),
+    mkdir(reverseCwd, { recursive: true }),
+    mkdir(reverseConfigRoot, { recursive: true }),
   ])
   const canonicalCwd = await realpath(cwd)
+  const reverseCanonicalCwd = await realpath(reverseCwd)
 
   const referenceVersion = await detectVersion(
     referenceBinary,
@@ -218,13 +380,17 @@ try {
     '--output-format',
     'json',
   ]
-  const praxis = (...args) =>
+  const praxis = (execConfigRoot, execCwd, ...args) =>
     execFileAsync(
       process.execPath,
       [join(process.cwd(), 'dist/cli.js'), ...args],
       {
-        cwd: canonicalCwd,
-        env: { ...process.env, ...praxisEnv, CLAUDE_CONFIG_DIR: configRoot },
+        cwd: execCwd,
+        env: {
+          ...process.env,
+          ...praxisEnv,
+          CLAUDE_CONFIG_DIR: execConfigRoot,
+        },
         maxBuffer: 4 * 1024 * 1024,
         timeout: 120_000,
       },
@@ -252,6 +418,8 @@ try {
 
   mode = 'praxis-turn-2'
   const praxisTurn2 = await praxis(
+    configRoot,
+    canonicalCwd,
     '-p',
     '--output-format=json',
     '--resume',
@@ -288,6 +456,8 @@ try {
 
   mode = 'praxis-turn-4'
   const praxisTurn4 = await praxis(
+    configRoot,
+    canonicalCwd,
     '-p',
     '--output-format=json',
     '--resume',
@@ -331,24 +501,6 @@ try {
     )
   }
 
-  const sessionPaths = resolveClaudePaths({
-    configDir: configRoot,
-    cwd: canonicalCwd,
-    sessionId,
-  })
-  const sessionDir = dirname(sessionPaths.sessionFile)
-  const sessionFiles = (await readdir(sessionDir)).filter((name) =>
-    name.endsWith('.jsonl'),
-  )
-  assert(
-    sessionFiles.length === 1,
-    `Expected exactly one session file, found: ${sessionFiles.join(', ')}`,
-  )
-  const transcriptSource = await readFile(sessionPaths.sessionFile, 'utf8')
-  const transcript = transcriptSource
-    .trimEnd()
-    .split('\n')
-    .map((line) => JSON.parse(line))
   const expectedVersions = [
     REFERENCE_VERSION,
     REFERENCE_VERSION,
@@ -361,26 +513,146 @@ try {
     'FROM_CROSS_VERSION',
     'FROM_PRAXIS_AFTER_CROSS_VERSION',
   ]
-  let lastIndex = -1
-  for (let index = 0; index < promptSequence.length; index += 1) {
-    const prompt = promptSequence[index]
-    const entryIndex = transcript.findIndex(
-      (candidate) =>
-        candidate.type === 'user' && candidate.message?.content === prompt,
-    )
-    assert(
-      entryIndex > lastIndex,
-      `Transcript user entry ${prompt} missing or out of order`,
-    )
-    lastIndex = entryIndex
-    assert(
-      transcript[entryIndex].version === expectedVersions[index],
-      `User entry ${prompt} has version ${transcript[entryIndex].version}, expected ${expectedVersions[index]}`,
-    )
-  }
+  await assertTranscriptProducerSequence({
+    configRoot,
+    cwd: canonicalCwd,
+    sessionId,
+    promptSequence,
+    expectedVersions,
+  })
 
   console.log(
     `cross-version session compatibility passed: Claude ${REFERENCE_VERSION}, Praxis, and Claude ${crossVersion} alternately resumed one shared JSONL session (${sessionId}) with producer versions [${expectedVersions.join(', ')}].`,
+  )
+
+  // Reverse cross-first direction: the cross-version Claude creates a second
+  // isolated session, Praxis resumes it, reference Claude resumes it, and
+  // Praxis resumes it again. Uses an independent config root and worktree so
+  // the reverse chain shares no transcript state with the forward chain.
+  mode = 'reverse-claude-turn-1'
+  const reverseFirst = await runClaude(
+    crossBinary,
+    [...claudeCommon, 'REVERSE_CROSS_FIRST'],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    typeof reverseFirst.session_id === 'string' &&
+      reverseFirst.session_id.length > 0,
+    `Cross-version create returned no session_id: ${JSON.stringify(reverseFirst)}`,
+  )
+  assert(
+    reverseFirst.type === 'result' &&
+      !reverseFirst.is_error &&
+      reverseFirst.result === 'REVERSE_CROSS_FIRST_ANSWER',
+    `Cross-version create failed or returned unexpected fixture answer: ${JSON.stringify(reverseFirst)}`,
+  )
+  const reverseSessionId = reverseFirst.session_id
+
+  mode = 'reverse-praxis-turn-2'
+  const reversePraxis2 = await praxis(
+    reverseConfigRoot,
+    reverseCanonicalCwd,
+    '-p',
+    '--output-format=json',
+    '--resume',
+    reverseSessionId,
+    '--',
+    'REVERSE_PRAXIS_SECOND',
+  )
+  const reversePraxisResult2 = JSON.parse(reversePraxis2.stdout)
+  assert(
+    reversePraxisResult2.type === 'result' &&
+      !reversePraxisResult2.is_error &&
+      reversePraxisResult2.result === 'REVERSE_PRAXIS_SECOND_ANSWER',
+    `Praxis reverse turn 2 failed: ${reversePraxis2.stdout}`,
+  )
+  assert(
+    reversePraxisResult2.session_id === reverseSessionId,
+    `Praxis reverse turn 2 changed session id to ${reversePraxisResult2.session_id}`,
+  )
+
+  mode = 'reverse-claude-turn-3'
+  const reverseThird = await runClaude(
+    referenceBinary,
+    [...claudeCommon, '--resume', reverseSessionId, 'REVERSE_21208_THIRD'],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    reverseThird.session_id === reverseSessionId,
+    `Reference Claude changed session id to ${reverseThird.session_id}`,
+  )
+  assert(
+    reverseThird.type === 'result' &&
+      !reverseThird.is_error &&
+      reverseThird.result === 'REVERSE_21208_THIRD_ANSWER',
+    `Reference Claude reverse resume failed or returned unexpected fixture answer: ${JSON.stringify(reverseThird)}`,
+  )
+
+  mode = 'reverse-praxis-turn-4'
+  const reversePraxis4 = await praxis(
+    reverseConfigRoot,
+    reverseCanonicalCwd,
+    '-p',
+    '--output-format=json',
+    '--resume',
+    reverseSessionId,
+    '--',
+    'REVERSE_PRAXIS_FOURTH',
+  )
+  const reversePraxisResult4 = JSON.parse(reversePraxis4.stdout)
+  assert(
+    reversePraxisResult4.type === 'result' &&
+      !reversePraxisResult4.is_error &&
+      reversePraxisResult4.result === 'REVERSE_PRAXIS_FOURTH_ANSWER',
+    `Praxis reverse turn 4 failed: ${reversePraxis4.stdout}`,
+  )
+  assert(
+    reversePraxisResult4.session_id === reverseSessionId,
+    `Praxis reverse turn 4 changed session id to ${reversePraxisResult4.session_id}`,
+  )
+
+  const reverseExpectedTurns = [
+    ['reverse-claude-turn-1', 'REVERSE_CROSS_FIRST'],
+    ['reverse-praxis-turn-2', 'REVERSE_PRAXIS_SECOND'],
+    ['reverse-claude-turn-3', 'REVERSE_21208_THIRD'],
+    ['reverse-praxis-turn-4', 'REVERSE_PRAXIS_FOURTH'],
+  ]
+  assert(
+    malformed.length === 0,
+    `Malformed provider traffic: ${malformed.join('; ')}`,
+  )
+  assert(
+    requests.length === expectedTurns.length + reverseExpectedTurns.length,
+    `Expected ${expectedTurns.length + reverseExpectedTurns.length} provider requests, got ${requests.length}`,
+  )
+  for (let index = 0; index < reverseExpectedTurns.length; index += 1) {
+    const [expectedMode, prompt] = reverseExpectedTurns[index]
+    const request = requests[expectedTurns.length + index]
+    assert(
+      request.mode === expectedMode,
+      `Provider request ${expectedTurns.length + index + 1} was ${request.mode}, expected ${expectedMode}`,
+    )
+    const source = JSON.stringify(request.body.messages ?? [])
+    assert(
+      source.includes(prompt),
+      `Provider request ${expectedTurns.length + index + 1} (${expectedMode}) omitted ${prompt}`,
+    )
+  }
+
+  const reverseProducerVersions = await assertReverseCrossFirstTranscript({
+    configRoot: reverseConfigRoot,
+    cwd: reverseCanonicalCwd,
+    sessionId: reverseSessionId,
+    crossVersion,
+    referenceVersion: REFERENCE_VERSION,
+  })
+
+  console.log(
+    `reverse cross-first session compatibility passed: Claude ${crossVersion} created, then Praxis and Claude ${REFERENCE_VERSION} alternately resumed one shared JSONL session (${reverseSessionId}) with producer versions [${reverseProducerVersions.join(', ')}].`,
   )
 } finally {
   if (server.listening) await closeServer()

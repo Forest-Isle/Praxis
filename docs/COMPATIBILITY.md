@@ -465,10 +465,22 @@ resuming a Praxis-named session.
 mixed-version shared-session resume. It builds Praxis and requires
 `PRAXIS_CLAUDE_BINARY` (Claude Code `2.1.208`) and
 `PRAXIS_CLAUDE_CROSS_VERSION_BINARY` (a second Claude Code version); it never
-substitutes an ambient binary. The gate proves one isolated JSONL session is
-alternately resumed by Claude `2.1.208`, Praxis, the cross-version Claude, and
-Praxis again with a single session ID, four ordered provider requests, and the
-producer-version sequence `[2.1.208, 2.1.208, <cross version>, 2.1.208]`.
+substitutes an ambient binary. The gate proves both seed directions. In the
+forward direction, Claude `2.1.208` creates an isolated JSONL session that
+Praxis, the cross-version Claude, and Praxis then alternately resume with a
+single session ID, four ordered provider requests, and the producer-version
+sequence `[2.1.208, 2.1.208, <cross version>, 2.1.208]`. In the reverse
+direction, the cross-version Claude creates a second isolated session (own
+config root and worktree) that Praxis, Claude `2.1.208`, and Praxis resume in
+turn, with the producer-version sequence
+`[<cross version>, 2.1.208, 2.1.208, 2.1.208]`; the newer Claude may record its
+seed prompt as a `last-prompt` entry without a user entry, or write one
+initial cross-version user entry; the gate accepts and validates either
+native seed layout before the exact three reference-version resume users.
+Both
+directions require exact fixture responses, one session ID per chain, no
+malformed SSE requests, and an append-only valid JSONL transcript with the
+producer version recorded on each entry.
 `npm run test:cross-version-fork-compat`, `test:cross-version-sidechain-compat`,
 `test:cross-version-compaction-compat`, and
 `test:cross-version-resume-at-compat` are complementary maintainer gates that
