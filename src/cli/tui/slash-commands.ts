@@ -104,6 +104,12 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
     source: 'builtin',
   },
   {
+    name: 'doctor',
+    description:
+      'Diagnose and verify your Claude Code installation and settings',
+    source: 'builtin',
+  },
+  {
     name: 'context',
     description: 'Visualize current context usage as a colored grid',
     source: 'builtin',

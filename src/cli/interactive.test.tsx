@@ -30,6 +30,7 @@ import type { TuiThemeSettings } from './tui/theme.js'
 import { projectRuntimeSettings } from './tui/runtime-settings.js'
 import type { TuiSandboxSnapshot } from './tui/sandbox-settings.js'
 import type { ClaudeSessionCostSnapshot } from '../application/session-cost-tracker.js'
+import type { DoctorReport } from '../maintenance/doctor.js'
 
 afterEach(() => {
   cleanup()
@@ -761,6 +762,287 @@ describe('InteractiveApp', () => {
     } finally {
       app.unmount()
     }
+  })
+
+  function doctorReport(overrides: Partial<DoctorReport> = {}): DoctorReport {
+    return {
+      type: 'doctor',
+      ok: true,
+      praxisVersion: '1.2.3',
+      checks: [
+        {
+          id: 'installation',
+          status: 'pass',
+          summary: 'Praxis 1.2.3 installation is readable',
+        },
+        {
+          id: 'mcp',
+          status: 'warn',
+          summary: '1 MCP server configuration(s) are valid',
+          details: {
+            warnings: ['server filesystem uses a deprecated transport'],
+          },
+        },
+        {
+          id: 'plugins',
+          status: 'fail',
+          summary: 'plugin manifest is missing a name',
+        },
+      ],
+      summary: { passed: 1, warnings: 1, failed: 1 },
+      ...overrides,
+    }
+  }
+
+  it('opens /doctor with an immediate loading screen and renders the completed report without service work', async () => {
+    const creations: string[] = []
+    let resolveDoctor!: (report: DoctorReport) => void
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            creations.push('service')
+            throw new Error('doctor must not create a service')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+        doctorLoader={() =>
+          new Promise<DoctorReport>((resolve) => {
+            resolveDoctor = resolve
+          })
+        }
+      />,
+    )
+
+    app.stdin.write('/doctor')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Checking installation status…')
+    expect(creations).toEqual([])
+
+    resolveDoctor(doctorReport())
+    await waitFor(() =>
+      app.lastFrame()?.includes('Summary: 1 passed, 1 warnings, 1 failed.')
+        ? true
+        : undefined,
+    )
+    const frame = app.lastFrame()
+    expect(frame).toContain('Diagnostics')
+    expect(frame).toContain('Updates')
+    expect(frame).toContain(
+      'installation: Praxis 1.2.3 installation is readable',
+    )
+    expect(frame).toContain('Current version: Praxis 1.2.3')
+    expect(frame).toContain('Auto-update: not checked')
+    expect(frame).toContain('Update permissions: not checked')
+    expect(frame).toContain('MCP parsing warnings')
+    expect(frame).toContain('Plugin errors')
+    expect(frame).toContain('Enter to continue · Esc to cancel')
+    expect(frame).not.toContain('⎿')
+    expect(creations).toEqual([])
+
+    // Enter dismisses locally without a model turn, transcript item, or service.
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).not.toContain('Diagnostics')
+    expect(app.lastFrame()).not.toContain('⎿')
+    expect(creations).toEqual([])
+    app.unmount()
+  })
+
+  it('renders a current /doctor loader rejection inside the doctor screen and Esc dismisses', async () => {
+    const creations: string[] = []
+    let rejectDoctor!: (reason: Error) => void
+    const secretEnvName = 'PRAXIS_TEST_TOKEN'
+    const priorSecret = process.env[secretEnvName]
+    const secret = 'praxis-ambient-secret-7d3c9f1'
+    process.env[secretEnvName] = secret
+    try {
+      const app = render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              creations.push('service')
+              throw new Error('doctor must not create a service')
+            },
+          }}
+          initialSessions={[]}
+          display={{ version: 'test', cwd: '/fixture/workspace' }}
+          doctorLoader={() =>
+            new Promise<DoctorReport>((_resolve, reject) => {
+              rejectDoctor = reject
+            })
+          }
+        />,
+      )
+
+      app.stdin.write('/doctor')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…')
+          ? true
+          : undefined,
+      )
+      rejectDoctor(new Error(`PRAXIS_TEST_TOKEN is required: ${secret}`))
+      await waitFor(() =>
+        app.lastFrame()?.includes('Diagnostics failed') ? true : undefined,
+      )
+      expect(app.lastFrame()).toContain('PRAXIS_TEST_TOKEN is required')
+      expect(app.lastFrame()).toContain('[REDACTED]')
+      expect(app.lastFrame()).not.toContain(secret)
+      expect(app.lastFrame()).toContain('Enter to continue · Esc to cancel')
+      expect(app.lastFrame()).not.toContain('⎿')
+      expect(creations).toEqual([])
+
+      app.stdin.write('')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Diagnostics failed') === false
+          ? true
+          : undefined,
+      )
+      expect(creations).toEqual([])
+      app.unmount()
+    } finally {
+      if (priorSecret === undefined) delete process.env[secretEnvName]
+      else process.env[secretEnvName] = priorSecret
+    }
+  })
+
+  it('invalidates closed /doctor generations so stale success and failure stay inert', async () => {
+    const deferreds: Array<{
+      resolve: (report: DoctorReport) => void
+      reject: (reason: Error) => void
+    }> = []
+    const loaderCalls: string[] = []
+    const creations: string[] = []
+    const turns: Array<Promise<void> | null> = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            creations.push('service')
+            throw new Error('doctor must not create a service')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+        onTurnChange={(turn) => {
+          turns.push(turn)
+        }}
+        doctorLoader={() => {
+          loaderCalls.push(String(loaderCalls.length))
+          let resolve!: (report: DoctorReport) => void
+          let reject!: (reason: Error) => void
+          const promise = new Promise<DoctorReport>((res, rej) => {
+            resolve = res
+            reject = rej
+          })
+          deferreds.push({ resolve, reject })
+          return promise
+        }}
+      />,
+    )
+
+    try {
+      // Open -> close -> reopen -> close -> reopen yields three loader calls.
+      app.stdin.write('/doctor')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…')
+          ? true
+          : undefined,
+      )
+      app.stdin.write('')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…') === false
+          ? true
+          : undefined,
+      )
+      app.stdin.write('/doctor')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…')
+          ? true
+          : undefined,
+      )
+      app.stdin.write('')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…') === false
+          ? true
+          : undefined,
+      )
+      app.stdin.write('/doctor')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Checking installation status…')
+          ? true
+          : undefined,
+      )
+      expect(loaderCalls).toEqual(['0', '1', '2'])
+      const freshTurn = turns.at(-1)
+      expect(freshTurn).not.toBeNull()
+
+      // The first (stale) loader success must not overwrite the newer panel.
+      deferreds[0]?.resolve(doctorReport())
+      await flush()
+      expect(app.lastFrame()).toContain('Checking installation status…')
+      expect(turns.at(-1)).toBe(freshTurn)
+
+      // The second (stale) loader failure must not surface into the newer panel.
+      deferreds[1]?.reject(new Error('stale doctor failure'))
+      await flush()
+      expect(app.lastFrame()).toContain('Checking installation status…')
+      expect(app.lastFrame()).not.toContain('stale doctor failure')
+      expect(turns.at(-1)).toBe(freshTurn)
+
+      // The current loader resolves and renders only the newest report.
+      deferreds[2]?.resolve(
+        doctorReport({
+          praxisVersion: '9.9.9',
+          checks: [
+            {
+              id: 'installation',
+              status: 'pass',
+              summary: 'Praxis 9.9.9 installation is readable',
+            },
+          ],
+          summary: { passed: 1, warnings: 0, failed: 0 },
+        }),
+      )
+      await waitFor(() =>
+        app.lastFrame()?.includes('Current version: Praxis 9.9.9')
+          ? true
+          : undefined,
+      )
+      expect(app.lastFrame()).toContain('Current version: Praxis 9.9.9')
+      expect(app.lastFrame()).not.toContain('Praxis 1.2.3')
+      expect(app.lastFrame()).not.toContain('stale doctor failure')
+      expect(turns.at(-1)).toBeNull()
+      expect(creations).toEqual([])
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('lists /doctor in slash discovery with the fixed description', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+    app.stdin.write('/doc')
+    await flush()
+    expect(app.lastFrame()).toContain('/doctor')
+    expect(app.lastFrame()).toContain(
+      'Diagnose and verify your Claude Code installation and settings',
+    )
+    app.unmount()
   })
 
   it('reports the current renderer and restarts after switching it', async () => {
