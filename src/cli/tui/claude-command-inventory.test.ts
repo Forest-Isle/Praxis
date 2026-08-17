@@ -32,6 +32,10 @@ describe('Claude Code 2.1.208 external command inventory', () => {
       disposition: 'included',
       visibility: 'conditional',
     })
+    expect(CLAUDE_2_1_208_COMMAND_BY_NAME.get('usage')).toMatchObject({
+      disposition: 'included',
+      visibility: 'conditional',
+    })
     expect(CLAUDE_2_1_208_COMMAND_BY_NAME.get('doctor')).toMatchObject({
       disposition: 'required',
       visibility: 'conditional',
