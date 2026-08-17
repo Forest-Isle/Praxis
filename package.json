@@ -64,6 +64,7 @@
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
     "test:cross-version-session-compat": "npm run build && node scripts/verify-cross-version-session-compatibility.mjs",
     "test:cross-version-fork-compat": "npm run build && node scripts/verify-cross-version-fork-compatibility.mjs",
+    "test:cross-version-sidechain-compat": "npm run build && node scripts/verify-cross-version-sidechain-compatibility.mjs",
     "test:dynamic-system-compat": "npm run build && node scripts/verify-dynamic-system-prompt.mjs",
     "test:permission-compat": "npm run build && node scripts/verify-claude-permissions.mjs",
     "test:permission-prompt-compat": "npm run build && node scripts/verify-permission-prompt-tool.mjs",
