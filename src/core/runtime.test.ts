@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   AgentRunCancelledError,
@@ -202,6 +202,239 @@ describe('AgentRuntime', () => {
     ).rejects.toThrow(
       'Provider emitted multiple api-attempt-duration events in one turn',
     )
+  })
+
+  it('measures a successful tool execution wall time exactly', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_success', name: 'Read', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const now = vi
+      .spyOn(performance, 'now')
+      .mockReturnValueOnce(0) // completeToolCall startedAt
+      .mockReturnValueOnce(100) // executeTool start
+      .mockReturnValueOnce(250) // executeTool end
+      .mockReturnValue(0)
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'ok', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    try {
+      const result = await runtime.run({
+        messages: [{ role: 'user', content: 'inspect' }],
+      })
+      expect(result.text).toBe('done')
+      expect(result.durationToolMs).toBe(150)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('measures a thrown tool execution wall time exactly', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_thrown', name: 'Bash', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'recovered' }
+    })
+    const now = vi
+      .spyOn(performance, 'now')
+      .mockReturnValueOnce(0) // completeToolCall startedAt
+      .mockReturnValueOnce(10) // executeTool start
+      .mockReturnValueOnce(40) // executeTool end after the throw
+      .mockReturnValue(0)
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => {
+          throw new Error('boom')
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    try {
+      const result = await runtime.run({
+        messages: [{ role: 'user', content: 'inspect' }],
+      })
+      expect(result.text).toBe('recovered')
+      expect(result.durationToolMs).toBe(30)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('contributes zero tool duration for denied, unavailable, and prepare-failed tools', async () => {
+    const runWith = async (
+      options: ConstructorParameters<typeof AgentRuntime>[2],
+    ) => {
+      let turn = 0
+      const provider = providerFrom(async function* () {
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_zero', name: 'Bash', input: {} },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'done' }
+      })
+      const runtime = new AgentRuntime(provider, undefined, options)
+      return runtime.run({
+        messages: [{ role: 'user', content: 'run' }],
+      })
+    }
+
+    const denied = await runWith({
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'unexpected', isError: false }),
+      },
+      permissions: {
+        resolve: () => ({ behavior: 'deny', reason: 'Denied by policy' }),
+      },
+    })
+    expect(denied.text).toBe('done')
+    expect(denied.durationToolMs).toBeUndefined()
+
+    const unavailable = await runWith(undefined)
+    expect(unavailable.text).toBe('done')
+    expect(unavailable.durationToolMs).toBeUndefined()
+
+    const prepareFailed = await runWith({
+      tools: {
+        definitions: () => [],
+        prepare: async () => {
+          throw new Error('prepare failed')
+        },
+        execute: async () => ({ content: 'unexpected', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    expect(prepareFailed.text).toBe('done')
+    expect(prepareFailed.durationToolMs).toBeUndefined()
+  })
+
+  it('replaces a nested tool-reported duration with the outer execution measurement', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_nested', name: 'Agent', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const now = vi
+      .spyOn(performance, 'now')
+      .mockReturnValueOnce(0) // completeToolCall startedAt
+      .mockReturnValueOnce(100) // executeTool start
+      .mockReturnValueOnce(250) // executeTool end
+      .mockReturnValue(0)
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({
+          content: 'nested',
+          isError: false,
+          durationToolMs: 9999,
+        }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    try {
+      const result = await runtime.run({
+        messages: [{ role: 'user', content: 'inspect' }],
+      })
+      expect(result.text).toBe('done')
+      expect(result.durationToolMs).toBe(150)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('aggregates successful and failed tool durations exactly once across turns', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      turn += 1
+      if (turn === 1) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_error', name: 'Read', input: {} },
+        }
+        return
+      }
+      if (turn === 2) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'call_thrown_agg', name: 'Bash', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const now = vi
+      .spyOn(performance, 'now')
+      .mockReturnValueOnce(0) // call_error startedAt
+      .mockReturnValueOnce(100) // call_error execute start
+      .mockReturnValueOnce(200) // call_error execute end
+      .mockReturnValueOnce(0) // call_error emitProgress
+      .mockReturnValueOnce(0) // call_thrown_agg startedAt
+      .mockReturnValueOnce(300) // call_thrown_agg execute start
+      .mockReturnValueOnce(500) // call_thrown_agg execute end
+      .mockReturnValue(0)
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async (call) => {
+          if (call.id === 'call_thrown_agg') throw new Error('boom')
+          return { content: 'failed', isError: true }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    try {
+      const result = await runtime.run({
+        messages: [{ role: 'user', content: 'inspect' }],
+      })
+      expect(result.text).toBe('done')
+      expect(result.durationToolMs).toBe(300)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('omits the tool duration field when the accumulated value is exactly zero', async () => {
+    const provider = providerFrom(async function* () {
+      yield { type: 'text-delta', delta: 'hello' }
+      yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+    })
+    const result = await new AgentRuntime(provider).run({
+      messages: [{ role: 'user', content: 'say hello' }],
+    })
+    expect(result.text).toBe('hello')
+    expect(result.durationToolMs).toBeUndefined()
   })
 
   it('stops before a new model turn after a priced budget is exhausted', async () => {
@@ -546,7 +779,7 @@ describe('AgentRuntime', () => {
       },
     })
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       text: 'Praxis is local-first.',
       usage: { inputTokens: 13, outputTokens: 7 },
     })
@@ -942,7 +1175,7 @@ describe('AgentRuntime', () => {
         },
       },
     })
-    expect(unsupportedResults).toEqual([
+    expect(unsupportedResults).toMatchObject([
       {
         content: 'Provider does not support image tool results',
         isError: true,
@@ -1283,7 +1516,7 @@ describe('AgentRuntime', () => {
       },
     )
 
-    expect(result).toEqual({ content: 'prepared', isError: false })
+    expect(result).toMatchObject({ content: 'prepared', isError: false })
     expect(completed).toEqual(['shell-direct'])
     expect(events).toContainEqual({
       type: 'permission-decision',

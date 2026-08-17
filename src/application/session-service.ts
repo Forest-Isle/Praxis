@@ -434,6 +434,18 @@ function requireCompactionDurations(result: CompactionResult): {
   return { durationMs, durationWithoutRetriesMs }
 }
 
+function addToolDuration(value: number | undefined, total: number): number {
+  if (value === undefined) return total
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new TypeError('durationToolMs must be a finite nonnegative number')
+  }
+  const next = total + value
+  if (!Number.isFinite(next) || next < 0) {
+    throw new TypeError('durationToolMs total overflow')
+  }
+  return next
+}
+
 function createLineCountAccumulator(): {
   readonly linesAdded: number
   readonly linesRemoved: number
@@ -3607,7 +3619,6 @@ export class ClaudeSessionService {
             ? undefined
             : (compactionDurationWithoutRetriesMs ?? 0) +
               (result.durationApiWithoutRetriesMs ?? result.durationApiMs ?? 0)
-        const mainModel = provider.model
         let rawCostUsd: number | undefined
         if (turnModelUsage) {
           for (const [model, usage] of Object.entries(turnModelUsage)) {
@@ -3621,22 +3632,33 @@ export class ClaudeSessionService {
               ...(usage.webSearchRequests === undefined
                 ? {}
                 : { webSearchRequests: usage.webSearchRequests }),
-              ...(mainModel !== undefined &&
-              mainModel === model &&
-              combinedDurationMs !== undefined
-                ? {
-                    apiDurationMs: combinedDurationMs,
-                    ...(combinedDurationWithoutRetriesMs === undefined
-                      ? {}
-                      : {
-                          apiDurationWithoutRetriesMs:
-                            combinedDurationWithoutRetriesMs,
-                        }),
-                  }
-                : {}),
             })
           }
         }
+        let combinedToolDurationMs = 0
+        for (const recoveryResult of recoveryResults) {
+          combinedToolDurationMs = addToolDuration(
+            recoveryResult.durationToolMs,
+            combinedToolDurationMs,
+          )
+        }
+        combinedToolDurationMs = addToolDuration(
+          result.durationToolMs,
+          combinedToolDurationMs,
+        )
+        tracker.recordDurations({
+          ...(combinedDurationMs === undefined
+            ? {}
+            : { apiDurationMs: combinedDurationMs }),
+          ...(combinedDurationWithoutRetriesMs === undefined
+            ? {}
+            : {
+                apiDurationWithoutRetriesMs: combinedDurationWithoutRetriesMs,
+              }),
+          ...(combinedToolDurationMs === 0
+            ? {}
+            : { toolDurationMs: combinedToolDurationMs }),
+        })
         foregroundLineChanges.add({
           isError: false,
           ...(result.linesAdded === undefined

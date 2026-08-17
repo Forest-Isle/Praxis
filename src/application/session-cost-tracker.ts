@@ -27,6 +27,12 @@ export interface ClaudeLineChangesInput {
   readonly linesRemoved?: number
 }
 
+export interface ClaudeSessionDurationsInput {
+  readonly apiDurationMs?: number
+  readonly apiDurationWithoutRetriesMs?: number
+  readonly toolDurationMs?: number
+}
+
 export interface ClaudeSessionCostSnapshot extends ClaudeSessionCostState {
   readonly hasUnknownModelCost: boolean
 }
@@ -233,16 +239,11 @@ export class ClaudeSessionCostTracker {
       costUsd === undefined ? this.totalCostUsd : this.totalCostUsd + costUsd
     requireMetricTotal(newTotalCostUsd, 'totalCostUsd')
 
-    const newApiDurationMs = this.apiDurationMs + apiDurationMs
-    const newApiDurationWithoutRetriesMs =
-      this.apiDurationWithoutRetriesMs + apiDurationWithoutRetriesMs
-    const newToolDurationMs = this.toolDurationMs + toolDurationMs
-    requireMetricTotal(newApiDurationMs, 'apiDurationMs')
-    requireMetricTotal(
-      newApiDurationWithoutRetriesMs,
-      'apiDurationWithoutRetriesMs',
-    )
-    requireMetricTotal(newToolDurationMs, 'toolDurationMs')
+    const durationTotals = this.durationTotals({
+      apiDurationMs,
+      apiDurationWithoutRetriesMs,
+      toolDurationMs,
+    })
 
     const newLinesAdded = this.linesAdded + linesAdded
     const newLinesRemoved = this.linesRemoved + linesRemoved
@@ -262,11 +263,93 @@ export class ClaudeSessionCostTracker {
       costUsd: newCostUsd,
     })
     this.totalCostUsd = newTotalCostUsd
-    this.apiDurationMs = newApiDurationMs
-    this.apiDurationWithoutRetriesMs = newApiDurationWithoutRetriesMs
-    this.toolDurationMs = newToolDurationMs
+    this.apiDurationMs = durationTotals.apiDurationMs
+    this.apiDurationWithoutRetriesMs =
+      durationTotals.apiDurationWithoutRetriesMs
+    this.toolDurationMs = durationTotals.toolDurationMs
     this.linesAdded = newLinesAdded
     this.linesRemoved = newLinesRemoved
+  }
+
+  recordDurations(input: ClaudeSessionDurationsInput): void {
+    const apiDurationMs =
+      input.apiDurationMs === undefined
+        ? undefined
+        : requireMetric(input.apiDurationMs, 'apiDurationMs')
+    const apiDurationWithoutRetriesMs =
+      input.apiDurationWithoutRetriesMs === undefined
+        ? undefined
+        : requireMetric(
+            input.apiDurationWithoutRetriesMs,
+            'apiDurationWithoutRetriesMs',
+          )
+    const toolDurationMs =
+      input.toolDurationMs === undefined
+        ? undefined
+        : requireMetric(input.toolDurationMs, 'toolDurationMs')
+
+    // Legacy fallback: a supplied API duration implies the retry-free total
+    // when the retry-free value is absent.
+    const resolvedApiDurationWithoutRetriesMs =
+      apiDurationMs !== undefined && apiDurationWithoutRetriesMs === undefined
+        ? apiDurationMs
+        : apiDurationWithoutRetriesMs
+
+    const durationTotals = this.durationTotals({
+      apiDurationMs,
+      apiDurationWithoutRetriesMs: resolvedApiDurationWithoutRetriesMs,
+      toolDurationMs,
+    })
+
+    this.apiDurationMs = durationTotals.apiDurationMs
+    this.apiDurationWithoutRetriesMs =
+      durationTotals.apiDurationWithoutRetriesMs
+    this.toolDurationMs = durationTotals.toolDurationMs
+  }
+
+  private durationTotals(options: {
+    apiDurationMs: number | undefined
+    apiDurationWithoutRetriesMs: number | undefined
+    toolDurationMs: number | undefined
+  }): {
+    apiDurationMs: number
+    apiDurationWithoutRetriesMs: number
+    toolDurationMs: number
+  } {
+    const { apiDurationMs, apiDurationWithoutRetriesMs, toolDurationMs } =
+      options
+
+    const newApiDurationMs =
+      apiDurationMs === undefined
+        ? this.apiDurationMs
+        : this.apiDurationMs + apiDurationMs
+    const newApiDurationWithoutRetriesMs =
+      apiDurationWithoutRetriesMs === undefined
+        ? this.apiDurationWithoutRetriesMs
+        : this.apiDurationWithoutRetriesMs + apiDurationWithoutRetriesMs
+    const newToolDurationMs =
+      toolDurationMs === undefined
+        ? this.toolDurationMs
+        : this.toolDurationMs + toolDurationMs
+
+    if (apiDurationMs !== undefined) {
+      requireMetricTotal(newApiDurationMs, 'apiDurationMs')
+    }
+    if (apiDurationWithoutRetriesMs !== undefined) {
+      requireMetricTotal(
+        newApiDurationWithoutRetriesMs,
+        'apiDurationWithoutRetriesMs',
+      )
+    }
+    if (toolDurationMs !== undefined) {
+      requireMetricTotal(newToolDurationMs, 'toolDurationMs')
+    }
+
+    return {
+      apiDurationMs: newApiDurationMs,
+      apiDurationWithoutRetriesMs: newApiDurationWithoutRetriesMs,
+      toolDurationMs: newToolDurationMs,
+    }
   }
 
   recordLineChanges(input: ClaudeLineChangesInput): void {

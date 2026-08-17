@@ -333,16 +333,16 @@ describe('ClaudeSessionService', () => {
     ])
 
     const snapshotB = await service.costSnapshot(sessionB)
-    expect(snapshotB).toMatchObject({
-      sessionId: sessionB,
-      totalCostUsd: 12.5,
-      apiDurationMs: 1000,
-      apiDurationWithoutRetriesMs: 900,
-      toolDurationMs: 500,
-      linesAdded: 10,
-      linesRemoved: 2,
-      hasUnknownModelCost: false,
-    })
+    expect(snapshotB.sessionId).toBe(sessionB)
+    expect(snapshotB.totalCostUsd).toBe(12.5)
+    // The resumed turn records its own global API duration on top of the
+    // restored totals even though the model-less provider has no usage row.
+    expect(snapshotB.apiDurationMs).toBeGreaterThanOrEqual(1000)
+    expect(snapshotB.apiDurationWithoutRetriesMs).toBeGreaterThanOrEqual(900)
+    expect(snapshotB.toolDurationMs).toBe(500)
+    expect(snapshotB.linesAdded).toBe(10)
+    expect(snapshotB.linesRemoved).toBe(2)
+    expect(snapshotB.hasUnknownModelCost).toBe(false)
     expect(snapshotB.modelUsage['anthropic/claude-fixture']).toEqual({
       inputTokens: 100,
       outputTokens: 50,
@@ -996,6 +996,60 @@ describe('ClaudeSessionService', () => {
     })
     expect(snapshot.apiDurationMs).toBeGreaterThan(0)
     expect(snapshot.apiDurationWithoutRetriesMs).toBe(0)
+  })
+
+  it('records tool duration in the cost snapshot with zero provider usage and no model row', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-tool-duration-zero-usage-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let turn = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          if (turn++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: { id: 'call_read', name: 'Read', input: {} },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'final' }
+          yield { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
+        },
+      },
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'read', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const now = vi
+      .spyOn(performance, 'now')
+      .mockReturnValueOnce(0) // completeToolCall startedAt
+      .mockReturnValueOnce(100) // execute start
+      .mockReturnValueOnce(250) // execute end
+      .mockReturnValue(0)
+    try {
+      const run = await service.run('read it')
+      const snapshot = await service.costSnapshot(run.sessionId)
+      expect(run.text).toBe('final')
+      expect(snapshot.modelUsage).toEqual({})
+      expect(snapshot.hasUnknownModelCost).toBe(false)
+      expect(snapshot.apiDurationMs).toBe(0)
+      expect(snapshot.apiDurationWithoutRetriesMs).toBe(0)
+      expect(snapshot.toolDurationMs).toBe(150)
+    } finally {
+      now.mockRestore()
+    }
   })
 
   it('records manual compact total and retry-free duration separately', async () => {
@@ -7624,5 +7678,86 @@ describe('ClaudeSessionService', () => {
         is_error: false,
       },
     ])
+  })
+
+  it('meters recovered tool execution duration while denied recovery contributes none', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-recovery-duration-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const controller = new AbortController()
+    const interrupted = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_interrupted', name: 'Bash', input: {} },
+          }
+        },
+      },
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        async execute() {
+          controller.abort()
+          throw new DOMException('cancelled', 'AbortError')
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    await expect(
+      interrupted.run('run', controller.signal),
+    ).rejects.toBeInstanceOf(AgentRunCancelledError)
+    const [summary] = await interrupted.sessions()
+    if (!summary) throw new Error('Interrupted session was not persisted')
+
+    const denied = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['must not run']),
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'unexpected', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      approveRecovery: () => false,
+    })
+    await expect(denied.resume(summary.sessionId, 'continue')).rejects.toThrow(
+      'recovery was declined',
+    )
+
+    const now = vi
+      .spyOn(performance, 'now')
+      .mockReturnValueOnce(0) // completeToolCall startedAt
+      .mockReturnValueOnce(100) // execute start
+      .mockReturnValueOnce(300) // execute end
+      .mockReturnValue(0)
+    try {
+      const resumed = new ClaudeSessionService({
+        configRoot,
+        cwd,
+        claudeVersion: '2.1.208',
+        provider: queuedProvider(['final']),
+        tools: {
+          definitions: () => [],
+          prepare: async (call) => call,
+          execute: async () => ({ content: 'recovered', isError: false }),
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+        approveRecovery: () => true,
+      })
+      const result = await resumed.resume(summary.sessionId, 'continue')
+      expect(result.text).toBe('final')
+      const snapshot = await resumed.costSnapshot(summary.sessionId)
+      expect(snapshot.toolDurationMs).toBe(200)
+    } finally {
+      now.mockRestore()
+    }
   })
 })
