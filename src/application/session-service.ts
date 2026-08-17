@@ -576,6 +576,22 @@ function addToolDuration(value: number | undefined, total: number): number {
   return next
 }
 
+function addApiDuration(
+  value: number | undefined,
+  total: number,
+  field: 'durationApiMs' | 'durationApiWithoutRetriesMs',
+): number {
+  if (value === undefined) return total
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${field} must be a finite nonnegative number`)
+  }
+  const next = total + value
+  if (!Number.isFinite(next) || next < 0) {
+    throw new TypeError(`${field} total overflow`)
+  }
+  return next
+}
+
 function createLineCountAccumulator(): {
   readonly linesAdded: number
   readonly linesRemoved: number
@@ -3806,6 +3822,35 @@ export class ClaudeSessionService {
                     background?.modelUsage,
                     workflow?.modelUsage,
                   )
+                  const batchDurationApiMs = addApiDuration(
+                    workflow?.durationApiMs,
+                    addApiDuration(
+                      background?.durationApiMs,
+                      0,
+                      'durationApiMs',
+                    ),
+                    'durationApiMs',
+                  )
+                  const backgroundDurationWithoutRetries =
+                    background?.durationApiWithoutRetriesMs ??
+                    background?.durationApiMs
+                  const workflowDurationWithoutRetries =
+                    workflow?.durationApiWithoutRetriesMs ??
+                    workflow?.durationApiMs
+                  const batchDurationApiWithoutRetriesMs = addApiDuration(
+                    workflowDurationWithoutRetries,
+                    addApiDuration(
+                      backgroundDurationWithoutRetries,
+                      0,
+                      'durationApiWithoutRetriesMs',
+                    ),
+                    'durationApiWithoutRetriesMs',
+                  )
+                  const hasBatchDuration =
+                    background?.durationApiMs !== undefined ||
+                    background?.durationApiWithoutRetriesMs !== undefined ||
+                    workflow?.durationApiMs !== undefined ||
+                    workflow?.durationApiWithoutRetriesMs !== undefined
                   return {
                     messages,
                     ...(batchUsage
@@ -3814,6 +3859,13 @@ export class ClaudeSessionService {
                           ...(batchModelUsage
                             ? { modelUsage: batchModelUsage }
                             : {}),
+                        }
+                      : {}),
+                    ...(hasBatchDuration
+                      ? {
+                          durationApiMs: batchDurationApiMs,
+                          durationApiWithoutRetriesMs:
+                            batchDurationApiWithoutRetriesMs,
                         }
                       : {}),
                   }

@@ -526,6 +526,8 @@ export interface AgentRunRequest {
         messages: readonly string[]
         usage?: ModelUsage
         modelUsage?: ModelUsageByModel
+        durationApiMs?: number
+        durationApiWithoutRetriesMs?: number
       }
   >
   signal?: AbortSignal
@@ -1200,6 +1202,8 @@ export class AgentRuntime {
                 messages: readonly string[]
                 usage?: ModelUsage
                 modelUsage?: ModelUsageByModel
+                durationApiMs?: number
+                durationApiWithoutRetriesMs?: number
               })
           const stopMessages: readonly string[] = stopBatch
             ? stopBatch.messages
@@ -1212,6 +1216,37 @@ export class AgentRuntime {
             mergeToolModelUsage(
               unrecordedModelUsageByModel,
               stopBatch.modelUsage,
+            )
+          }
+          if (stopBatch?.durationApiMs !== undefined) {
+            durationApiMs = addApiDurationMetric(
+              stopBatch.durationApiMs,
+              durationApiMs,
+              'durationApiMs',
+            )
+            unrecordedDurationApiMs = addApiDurationMetric(
+              stopBatch.durationApiMs,
+              unrecordedDurationApiMs,
+              'durationApiMs',
+            )
+          }
+          if (
+            stopBatch?.durationApiWithoutRetriesMs !== undefined ||
+            stopBatch?.durationApiMs !== undefined
+          ) {
+            const resolvedStopDurationWithoutRetriesMs =
+              stopBatch.durationApiWithoutRetriesMs ??
+              stopBatch.durationApiMs ??
+              0
+            durationApiWithoutRetriesMs = addApiDurationMetric(
+              resolvedStopDurationWithoutRetriesMs,
+              durationApiWithoutRetriesMs,
+              'durationApiWithoutRetriesMs',
+            )
+            unrecordedDurationApiWithoutRetriesMs = addApiDurationMetric(
+              resolvedStopDurationWithoutRetriesMs,
+              unrecordedDurationApiWithoutRetriesMs,
+              'durationApiWithoutRetriesMs',
             )
           }
           if (stopMessages.length > 0) {

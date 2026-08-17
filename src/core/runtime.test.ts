@@ -1196,6 +1196,28 @@ describe('AgentRuntime', () => {
     expect(result.durationApiWithoutRetriesMs).toBe(7)
   })
 
+  it('adds stop-batch API durations and preserves an explicit zero retry-free value', async () => {
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield { type: 'api-attempt-duration', durationMs: 5 }
+        yield { type: 'text-delta', delta: 'done' }
+      }),
+    )
+
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'duration' }],
+      collectMetrics: true,
+      onStop: async () => ({
+        messages: [],
+        durationApiMs: 12,
+        durationApiWithoutRetriesMs: 0,
+      }),
+    })
+
+    expect(result.durationApiMs).toBeGreaterThanOrEqual(12)
+    expect(result.durationApiWithoutRetriesMs).toBe(5)
+  })
+
   it('counts summary usage toward the cost budget even when the summary is null', async () => {
     let turn = 0
     let calls = 0

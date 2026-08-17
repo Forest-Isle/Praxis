@@ -108,6 +108,8 @@ interface WorkflowTask {
   totalToolCalls: number
   usage: ModelUsage
   modelUsage: Map<string, ModelUsage>
+  durationApiMs: number
+  durationApiWithoutRetriesMs: number
   controller: AbortController
   promise: Promise<void>
   notificationPending: boolean
@@ -225,6 +227,21 @@ function assertValidWorkflowUsage(usage: ModelUsage): void {
       throw new Error(`Workflow agent usage has an invalid ${field} counter`)
     }
   }
+}
+
+function addWorkflowApiDuration(
+  value: number,
+  total: number,
+  field: 'durationApiMs' | 'durationApiWithoutRetriesMs',
+): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`Workflow ${field} must be a finite nonnegative number`)
+  }
+  const next = total + value
+  if (!Number.isFinite(next) || next < 0) {
+    throw new TypeError(`Workflow ${field} total overflow`)
+  }
+  return next
 }
 
 function addWorkflowUsageChecked(
@@ -414,6 +431,8 @@ export class WorkflowManager {
       totalToolCalls: 0,
       usage: { inputTokens: 0, outputTokens: 0 },
       modelUsage: new Map<string, ModelUsage>(),
+      durationApiMs: 0,
+      durationApiWithoutRetriesMs: 0,
       controller,
       promise: Promise.resolve(),
       notificationPending: false,
@@ -498,6 +517,8 @@ export class WorkflowManager {
     messages: string[]
     usage: ModelUsage
     modelUsage?: ModelUsageByModel
+    durationApiMs?: number
+    durationApiWithoutRetriesMs?: number
   }> {
     if (waitForRunning) {
       await Promise.all(
@@ -509,24 +530,44 @@ export class WorkflowManager {
     const messages: string[] = []
     let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
     const modelUsage = new Map<string, ModelUsage>()
+    let durationApiMs = 0
+    let durationApiWithoutRetriesMs = 0
+    let durationSeen = false
+    const consumedTasks: WorkflowTask[] = []
     for (const task of this.tasks.values()) {
       if (task.status === 'running' || !task.notificationPending) continue
-      task.notificationPending = false
       messages.push(this.notification(task))
       usage = addWorkflowUsageChecked(undefined, usage, task.usage)
       for (const [model, entry] of task.modelUsage) {
         mergeWorkflowModelUsageEntry(modelUsage, model, entry)
       }
+      if (task.durationApiMs !== 0 || task.durationApiWithoutRetriesMs !== 0) {
+        durationSeen = true
+        durationApiMs = addWorkflowApiDuration(
+          task.durationApiMs,
+          durationApiMs,
+          'durationApiMs',
+        )
+        durationApiWithoutRetriesMs = addWorkflowApiDuration(
+          task.durationApiWithoutRetriesMs,
+          durationApiWithoutRetriesMs,
+          'durationApiWithoutRetriesMs',
+        )
+      }
+      consumedTasks.push(task)
     }
     const modelUsageByModel =
       modelUsage.size === 0 ? undefined : Object.fromEntries(modelUsage)
-    return {
+    const result = {
       messages,
       usage,
       ...(modelUsageByModel === undefined
         ? {}
         : { modelUsage: modelUsageByModel }),
+      ...(durationSeen ? { durationApiMs, durationApiWithoutRetriesMs } : {}),
     }
+    for (const task of consumedTasks) task.notificationPending = false
+    return result
   }
 
   list(sessionId?: string): readonly WorkflowTaskSnapshot[] {
@@ -728,6 +769,22 @@ export class WorkflowManager {
           )
           if (result.modelUsage !== undefined) {
             mergeWorkflowModelUsage(task.modelUsage, result.modelUsage)
+          }
+          if (
+            result.durationApiMs !== undefined ||
+            result.durationApiWithoutRetriesMs !== undefined
+          ) {
+            const total = result.durationApiMs ?? 0
+            task.durationApiMs = addWorkflowApiDuration(
+              total,
+              task.durationApiMs,
+              'durationApiMs',
+            )
+            task.durationApiWithoutRetriesMs = addWorkflowApiDuration(
+              result.durationApiWithoutRetriesMs ?? total,
+              task.durationApiWithoutRetriesMs,
+              'durationApiWithoutRetriesMs',
+            )
           }
           await task.store.append({
             type: 'result',

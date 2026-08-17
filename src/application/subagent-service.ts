@@ -109,6 +109,8 @@ export interface WorkflowAgentRunResult {
   result: unknown
   usage: ModelUsage
   modelUsage?: ModelUsageByModel
+  durationApiMs?: number
+  durationApiWithoutRetriesMs?: number
   toolUseCount: number
   durationMs: number
   resolvedModel: string
@@ -942,6 +944,14 @@ export class ClaudeSubagentExecutor {
       isError: false,
       usage: result.usage,
       ...(result.modelUsage ? { modelUsage: { ...result.modelUsage } } : {}),
+      ...(result.durationApiMs === undefined
+        ? {}
+        : { durationApiMs: result.durationApiMs }),
+      ...(result.durationApiWithoutRetriesMs === undefined
+        ? {}
+        : {
+            durationApiWithoutRetriesMs: result.durationApiWithoutRetriesMs,
+          }),
       nativeToolUseResult: {
         ...createClaudeAgentToolUseResult({
           prompt: input.prompt,
@@ -1036,6 +1046,8 @@ export class ClaudeSubagentExecutor {
             text: string
             usage: ModelUsage
             modelUsage?: ModelUsageByModel
+            durationApiMs?: number
+            durationApiWithoutRetriesMs?: number
             toolUseCount: number
           }
         | undefined
@@ -1211,6 +1223,14 @@ export class ClaudeSubagentExecutor {
       result: options.schema ? structured.value : run.text,
       usage: run.usage,
       ...(run.modelUsage ? { modelUsage: { ...run.modelUsage } } : {}),
+      ...(run.durationApiMs === undefined
+        ? {}
+        : { durationApiMs: run.durationApiMs }),
+      ...(run.durationApiWithoutRetriesMs === undefined
+        ? {}
+        : {
+            durationApiWithoutRetriesMs: run.durationApiWithoutRetriesMs,
+          }),
       toolUseCount: run.toolUseCount,
       durationMs: Date.now() - startedAt,
       resolvedModel: provider.model ?? 'praxis/provider',
@@ -1303,6 +1323,8 @@ export class ClaudeSubagentExecutor {
     messages: string[]
     usage: ModelUsage
     modelUsage?: ModelUsageByModel
+    durationApiMs?: number
+    durationApiWithoutRetriesMs?: number
   }> {
     return this.background.notifications({ waitForRunning })
   }
@@ -1518,6 +1540,8 @@ export class ClaudeSubagentExecutor {
     text: string
     usage: { inputTokens: number; outputTokens: number }
     modelUsage?: ModelUsageByModel
+    durationApiMs?: number
+    durationApiWithoutRetriesMs?: number
     toolUseCount: number
   }> {
     const cwd = options.cwd ?? this.cwd()
@@ -1901,6 +1925,7 @@ export class ClaudeSubagentExecutor {
       const effectiveEffort = options.effort ?? configuredEffort
       const result = await runtime.run({
         messages: await assembleMessages(),
+        collectMetrics: true,
         reloadMessages: assembleMessages,
         cwd,
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
@@ -1955,6 +1980,15 @@ export class ClaudeSubagentExecutor {
                   ...(background.modelUsage
                     ? { modelUsage: background.modelUsage }
                     : {}),
+                  ...(background.durationApiMs === undefined
+                    ? {}
+                    : { durationApiMs: background.durationApiMs }),
+                  ...(background.durationApiWithoutRetriesMs === undefined
+                    ? {}
+                    : {
+                        durationApiWithoutRetriesMs:
+                          background.durationApiWithoutRetriesMs,
+                      }),
                 }
               },
             }

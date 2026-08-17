@@ -437,7 +437,7 @@ describe('foreground Claude Agent execution', () => {
     )
 
     const first = await executor.notifications(true)
-    expect(first).toEqual({
+    expect(first).toMatchObject({
       messages: [expect.stringContaining('BACKGROUND_DONE')],
       usage: {
         inputTokens: 3,
@@ -452,6 +452,8 @@ describe('foreground Claude Agent execution', () => {
         },
       },
     })
+    expect(first.durationApiMs).toBeGreaterThanOrEqual(0)
+    expect(first.durationApiWithoutRetriesMs).toBe(first.durationApiMs)
     await expect(executor.notifications(false)).resolves.toEqual({
       messages: [],
       usage: { inputTokens: 0, outputTokens: 0 },

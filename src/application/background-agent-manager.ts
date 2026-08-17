@@ -7,6 +7,8 @@ export interface BackgroundAgentRunResult {
   text: string
   usage: ModelUsage
   modelUsage?: ModelUsageByModel
+  durationApiMs?: number
+  durationApiWithoutRetriesMs?: number
   toolUseCount: number
   durationMs: number
   isolationPath?: string
@@ -227,6 +229,21 @@ function assertValidResultUsage(usage: ModelUsage): void {
   }
 }
 
+function addApiDuration(
+  value: number,
+  total: number,
+  field: 'durationApiMs' | 'durationApiWithoutRetriesMs',
+): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${field} must be a finite nonnegative number`)
+  }
+  const next = total + value
+  if (!Number.isFinite(next) || next < 0) {
+    throw new TypeError(`${field} total overflow`)
+  }
+  return next
+}
+
 function mergeModelUsageEntry(
   map: Map<string, ModelUsage>,
   model: string,
@@ -438,6 +455,8 @@ export class BackgroundAgentManager {
     messages: string[]
     usage: ModelUsage
     modelUsage?: ModelUsageByModel
+    durationApiMs?: number
+    durationApiWithoutRetriesMs?: number
   }> {
     const eligibleTasks = [...this.tasks.entries()].filter(
       ([agentId]) => agentId !== options.excludeAgentId,
@@ -456,8 +475,13 @@ export class BackgroundAgentManager {
     const notifications: string[] = []
     let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
     const modelUsageByModel = new Map<string, ModelUsage>()
+    let durationApiMs = 0
+    let durationApiWithoutRetriesMs = 0
+    let durationSeen = false
+    const consumedTasks: BackgroundAgentTask[] = []
     for (const [, task] of eligibleTasks) {
-      for (const notification of task.notifications.splice(0)) {
+      if (task.notifications.length === 0) continue
+      for (const notification of task.notifications) {
         notifications.push(this.formatNotification(task, notification))
         if (notification.result) {
           assertValidResultUsage(notification.result.usage)
@@ -466,15 +490,34 @@ export class BackgroundAgentManager {
         if (notification.result?.modelUsage) {
           mergeToolModelUsage(modelUsageByModel, notification.result.modelUsage)
         }
+        if (
+          notification.result?.durationApiMs !== undefined ||
+          notification.result?.durationApiWithoutRetriesMs !== undefined
+        ) {
+          durationSeen = true
+          const total = notification.result.durationApiMs ?? 0
+          durationApiMs = addApiDuration(total, durationApiMs, 'durationApiMs')
+          durationApiWithoutRetriesMs = addApiDuration(
+            notification.result.durationApiWithoutRetriesMs ?? total,
+            durationApiWithoutRetriesMs,
+            'durationApiWithoutRetriesMs',
+          )
+        }
       }
+      consumedTasks.push(task)
     }
     const modelUsage =
       modelUsageByModel.size === 0
         ? undefined
         : Object.fromEntries(modelUsageByModel)
-    return modelUsage === undefined
-      ? { messages: notifications, usage }
-      : { messages: notifications, usage, modelUsage }
+    const result = {
+      messages: notifications,
+      usage,
+      ...(modelUsage === undefined ? {} : { modelUsage }),
+      ...(durationSeen ? { durationApiMs, durationApiWithoutRetriesMs } : {}),
+    }
+    for (const task of consumedTasks) task.notifications.splice(0)
+    return result
   }
 
   private start(
