@@ -90,7 +90,7 @@ describe('DoctorDashboard', () => {
     expect(frame).not.toContain('Updates')
   })
 
-  it('renders a completed report with Diagnostics, Updates, statuses, details, and footer', () => {
+  it('renders completed Diagnostics and Updates with real report fields and no placeholders', () => {
     const frame = render(
       <DoctorDashboard
         loading={false}
@@ -101,23 +101,37 @@ describe('DoctorDashboard', () => {
       />,
     ).lastFrame()
     expect(frame).toContain('Diagnostics')
-    expect(frame).toContain('Updates')
+    expect(frame).toContain('Currently running: Praxis 1.2.3 (npm)')
+    expect(frame).toContain('Package manager: npm')
     expect(frame).toContain(
-      'installation: Praxis 1.2.3 installation is readable',
+      'Path: /usr/local/lib/node_modules/praxis-agent/dist/cli.js',
     )
-    expect(frame).toContain('version: 1.2.3')
-    expect(frame).toContain('executablePath: /usr/local/bin/praxis')
-    expect(frame).toContain('node: Node.js v24.0.0 satisfies >=24')
-    expect(frame).toContain('mcp: 2 MCP server configuration(s) are valid')
-    expect(frame).toContain('plugins: plugin manifest is missing a name')
-    expect(frame).toContain('Current version: Praxis 1.2.3')
-    expect(frame).toContain('Auto-update: not checked')
-    expect(frame).toContain('Update channel: not checked')
-    expect(frame).toContain('Latest version: not checked')
-    expect(frame).toContain('Update permissions: not checked')
+    expect(frame).toContain('Invoked: /usr/local/bin/praxis')
+    expect(frame).toContain('Config install method: default (~/.claude)')
+    expect(frame).toContain('Search: OK (system)')
+    expect(frame).toContain('└ /usr/local/bin/rg')
+    expect(frame).toContain('Updates')
+    expect(frame).toContain('Auto-updates: Manual (praxis update)')
+    expect(frame).toContain('Update permissions: yes')
+    expect(frame).toContain('Auto-update channel: stable')
+    expect(frame).toContain('Stable version: 1.2.3')
+    expect(frame).toContain('Latest version: 1.2.4')
     expect(frame).toContain('1 issue(s) found.')
     expect(frame).toContain('Summary: 2 passed, 1 warnings, 1 failed.')
     expect(frame).toContain('Enter to continue · Esc to cancel')
+    // Non-passing checks surface exactly once through the warning groups.
+    expect(frame).toContain('MCP parsing warnings')
+    expect(frame).toContain('server filesystem uses a deprecated transport')
+    expect(frame).toContain('Plugin errors')
+    expect(frame).toContain('plugin manifest is missing a name')
+    // No raw pass checklist, no duplicated current-version line, no placeholders.
+    expect(frame).not.toContain('not checked')
+    expect(frame).not.toContain('Current version: Praxis')
+    expect(frame).not.toContain(
+      'installation: Praxis 1.2.3 installation is readable',
+    )
+    expect(frame).not.toContain('node: Node.js v24.0.0 satisfies >=24')
+    expect(frame).not.toContain('mcp: 2 MCP server configuration(s) are valid')
   })
 
   it('projects warning/failing checks into conditional groups and omits empty groups', () => {
@@ -206,10 +220,142 @@ describe('DoctorDashboard', () => {
         screenReader
       />,
     ).lastFrame()
-    expect(frame).toContain('PASS installation:')
-    expect(frame).toContain('WARN mcp:')
-    expect(frame).toContain('FAIL plugins:')
+    expect(frame).toContain('Currently running: Praxis 1.2.3 (npm)')
+    expect(frame).toContain('WARN 2 MCP server configuration(s) are valid')
+    expect(frame).toContain('FAIL plugin manifest is missing a name')
+    expect(frame).not.toContain('PASS installation:')
     expect(frame).toContain('Enter to continue. Esc to cancel.')
     expect(frame).not.toContain('Enter to continue · Esc to cancel')
+  })
+
+  it('renders missing search and the diagnostic warning fix without a fake path', () => {
+    const missingSearch = report({
+      diagnostic: {
+        ...report().diagnostic,
+        search: { working: false, mode: 'system', systemPath: null },
+        warnings: [
+          {
+            issue: 'The ripgrep (rg) command is not installed on PATH',
+            fix: 'Install ripgrep and ensure it is on PATH',
+          },
+        ],
+      },
+    })
+    const frame = render(
+      <DoctorDashboard
+        loading={false}
+        report={missingSearch}
+        error={null}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+    expect(frame).toContain('Search: unavailable')
+    expect(frame).not.toContain('└ /usr/local/bin/rg')
+    expect(frame).toContain('The ripgrep (rg) command is not installed on PATH')
+    expect(frame).toContain('└ Fix: Install ripgrep and ensure it is on PATH')
+  })
+
+  it('renders duplicate installations with the recommendation', () => {
+    const duplicates = report({
+      diagnostic: {
+        ...report().diagnostic,
+        multipleInstallations: [
+          '/usr/local/bin/praxis',
+          '/usr/local/bin/praxis-old',
+        ],
+        recommendation: 'Remove stale duplicate Praxis installations',
+      },
+    })
+    const frame = render(
+      <DoctorDashboard
+        loading={false}
+        report={duplicates}
+        error={null}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+    expect(frame).toContain('Multiple installations found')
+    expect(frame).toContain('- /usr/local/bin/praxis')
+    expect(frame).toContain('- /usr/local/bin/praxis-old')
+    expect(frame).toContain(
+      'Recommendation: Remove stale duplicate Praxis installations',
+    )
+  })
+
+  it('omits the duplicate-installations heading for a single installation', () => {
+    const frame = render(
+      <DoctorDashboard
+        loading={false}
+        report={report()}
+        error={null}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+    expect(frame).not.toContain('Multiple installations found')
+  })
+
+  it('renders the unavailable registry failure and omits version lines', () => {
+    const unavailable = report({
+      updates: {
+        ...report().updates,
+        registryStatus: 'unavailable',
+        stableVersion: null,
+        latestVersion: null,
+        error: 'Failed to fetch version information from the npm registry',
+      },
+    })
+    const frame = render(
+      <DoctorDashboard
+        loading={false}
+        report={unavailable}
+        error={null}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+    expect(frame).toContain('└ Failed to fetch versions')
+    expect(frame).not.toContain('Stable version:')
+    expect(frame).not.toContain('Latest version:')
+  })
+
+  it('omits the update permissions line when permission status is null', () => {
+    const unknownPermissions = report({
+      updates: { ...report().updates, hasUpdatePermissions: null },
+    })
+    const frame = render(
+      <DoctorDashboard
+        loading={false}
+        report={unknownPermissions}
+        error={null}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+    expect(frame).toContain('Auto-updates: Manual (praxis update)')
+    expect(frame).not.toContain('Update permissions:')
+  })
+
+  it('renders a source install without a package-manager line', () => {
+    const source = report({
+      diagnostic: {
+        ...report().diagnostic,
+        installationType: 'source',
+        packageManager: null,
+      },
+    })
+    const frame = render(
+      <DoctorDashboard
+        loading={false}
+        report={source}
+        error={null}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+    expect(frame).toContain('Currently running: Praxis 1.2.3 (source)')
+    expect(frame).not.toContain('Package manager:')
   })
 })
