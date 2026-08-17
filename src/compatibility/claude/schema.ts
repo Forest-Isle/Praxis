@@ -85,6 +85,7 @@ const FORKABLE_ATTACHMENT_TYPES = new Set([
   'read_truncation_notice',
   'skill_listing',
   'task_reminder',
+  'total_tokens_reminder',
 ])
 const RAW_CLAUDE_ENTRY = Symbol('raw-claude-entry')
 
@@ -1095,11 +1096,11 @@ function validateForkableEntry(entry: ClaudeTranscriptEntry): void {
       throw new Error(`Claude transcript entry is missing ${field}`)
     }
   }
-  if (entry.version !== VERIFIED_CLAUDE_SCHEMA_VERSION) {
-    throw new Error(
-      `Claude transcript fork must target Claude Code ${VERIFIED_CLAUDE_SCHEMA_VERSION}`,
-    )
-  }
+  // A native fork is a lossless copy that retains the source producer's
+  // version as append-only provenance and changes only fork-specific
+  // session-id fields. The strict verified-writer version gate remains on
+  // serializeForAppend and serializeForSidechainAppend; the loop above
+  // already requires a nonempty producer version here.
   if (
     !('parentUuid' in entry) ||
     (entry.parentUuid !== null && !isNonEmptyString(entry.parentUuid))

@@ -197,7 +197,9 @@ source and packed artifacts, bidirectional session/data-plane links,
 Claude-style interactive presentation plus the bounded PTY
 input/stream/result lifecycle, TODO/skip and dispatcher wiring, performance,
 release packaging, and production dependency audit. Unsupported Claude versions
-remain deliberately read-only.
+remain deliberately read-only for generated append/sidechain writes, while
+restricted lossless native-fork copying is proven only for the observed Claude
+Code 2.1.233 record shapes.
 Enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.
 

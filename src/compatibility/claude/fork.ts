@@ -64,6 +64,7 @@ function validateNativeHistory(
 
   const childParentUuids = new Set<string>()
   const externalParentUuids = new Set<string>()
+  let externalParentReferenceCount = 0
   const completedToolCalls = new Set<string>()
   let ordinaryRootCount = 0
   let compactBoundary: ClaudeTranscriptEntry | undefined
@@ -121,6 +122,7 @@ function validateNativeHistory(
           childParentUuids.add(entry.parentUuid)
         } else {
           externalParentUuids.add(entry.parentUuid)
+          externalParentReferenceCount += 1
         }
       }
     }
@@ -148,7 +150,19 @@ function validateNativeHistory(
   if (compactBoundary) {
     throw new Error('Claude compact boundary has no adjacent summary')
   }
-  if (externalParentUuids.size > 0 || ordinaryRootCount > 1) {
+  const omittedSeedUserParent =
+    externalParentUuids.size === 1 ? [...externalParentUuids][0] : undefined
+  const firstEntry = entries[0]
+  const isOmittedSeedUserChain =
+    externalParentUuids.size === 1 &&
+    ordinaryRootCount === 0 &&
+    externalParentReferenceCount === 1 &&
+    firstEntry?.type === 'assistant' &&
+    firstEntry?.parentUuid === omittedSeedUserParent
+  if (
+    (externalParentUuids.size > 0 && !isOmittedSeedUserChain) ||
+    ordinaryRootCount > 1
+  ) {
     throw new Error('Claude fork source has a dangling parentUuid')
   }
 

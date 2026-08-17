@@ -169,7 +169,9 @@ while process.poll() is None:
     sys.stdout.buffer.flush()
     if action_index < len(actions) and actions[action_index]['waitFor'].encode() in output:
         value = actions[action_index]['input'].encode()
+        settle_ms = actions[action_index].get('settleMs', 0)
         action_index += 1
+        time.sleep(settle_ms / 1000)
         time.sleep(0.05)
         if value == b'__TERMINATE__':
             process.terminate()
@@ -357,7 +359,7 @@ try {
   const praxisOutput = await runTty(
     process.execPath,
     [praxisCli, '--model', 'fixture-model', 'PRAXIS_BACKGROUND_CONTEXT_SEED'],
-    [{ waitFor: 'CONTEXT_READY', input: '/background\r' }],
+    [{ waitFor: 'CONTEXT_READY', settleMs: 500, input: '/background\r' }],
     'Praxis /background',
   )
   assertBackgrounding(praxisOutput)
