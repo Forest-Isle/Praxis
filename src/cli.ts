@@ -1865,6 +1865,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(provider?.capabilities.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: provider.capabilities.contextWindowTokens }),
+      ...(provider?.capabilities.maxOutputTokens === undefined
+        ? {}
+        : { maxOutputTokens: provider.capabilities.maxOutputTokens }),
       tools: toolNames,
       mcpServers: mcpTools.serverStatuses(),
       permissionMode: cli.dangerouslySkipPermissions
@@ -2073,15 +2076,33 @@ const createDefaultService: CliDependencies['createService'] = async ({
         await debug?.close()
         if (failure !== undefined) throw failure
       },
-      runtimeInfo: () => ({
-        ...runtimeInfo,
-        cwd: workspace.cwd(),
-        model:
-          service.model() ??
-          provider?.model ??
-          runtimeEnvironment.PRAXIS_MODEL ??
-          'unknown',
-      }),
+      runtimeInfo: () => {
+        // Drop the static capability snapshot so a fallback-routed provider
+        // never reports stale context/output limits, then re-derive them from
+        // the currently active provider.
+        const staticInfo: CliRuntimeInfo = {
+          ...runtimeInfo,
+          cwd: workspace.cwd(),
+          model:
+            service.model() ??
+            provider?.model ??
+            runtimeEnvironment.PRAXIS_MODEL ??
+            'unknown',
+        }
+        delete staticInfo.contextWindowTokens
+        delete staticInfo.maxOutputTokens
+        return {
+          ...staticInfo,
+          ...(provider?.capabilities.contextWindowTokens === undefined
+            ? {}
+            : {
+                contextWindowTokens: provider.capabilities.contextWindowTokens,
+              }),
+          ...(provider?.capabilities.maxOutputTokens === undefined
+            ? {}
+            : { maxOutputTokens: provider.capabilities.maxOutputTokens }),
+        }
+      },
       promptSuggestion: (sessionId, suggestionSignal) =>
         service.promptSuggestion(sessionId, suggestionSignal),
     }

@@ -4575,6 +4575,7 @@ describe('ClaudeSessionService', () => {
         cacheReadInputTokens: 10,
         cacheCreationInputTokens: 4,
         webSearchRequests: 5,
+        contextWindow: 2_500,
       },
     })
     expect(result.costUsd).toBe(71 / 1_000_000)
@@ -4622,6 +4623,144 @@ describe('ClaudeSessionService', () => {
     expect(snapshot.totalCostUsd).toBe(71 / 1_000_000)
     expect(snapshot.apiDurationMs).toBe(result.durationApiMs)
     expect(snapshot.hasUnknownModelCost).toBe(false)
+  })
+
+  it('carries provider capability metadata through turn aggregation without polluting aggregate or cost state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-metadata-turn-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const provider: ModelProvider = {
+      model: 'metadata-fixture-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        contextWindowTokens: 200_000,
+        maxOutputTokens: 32_000,
+      },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'answer' }
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: 7,
+            outputTokens: 4,
+            cacheReadInputTokens: 3,
+            webSearchRequests: 1,
+          },
+        }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      costStateStore: { load: async () => null, save: async () => undefined },
+    })
+
+    const run = await service.run('start')
+
+    // The per-model row carries the provider's known capability metadata after
+    // the turn aggregation boundary.
+    expect(run.modelUsage).toEqual({
+      'metadata-fixture-model': {
+        inputTokens: 7,
+        outputTokens: 4,
+        cacheReadInputTokens: 3,
+        webSearchRequests: 1,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+      },
+    })
+    // The aggregate total stays counter-only.
+    expect(run.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 4,
+      cacheReadInputTokens: 3,
+      webSearchRequests: 1,
+    })
+    // The persisted cost snapshot strips capability metadata.
+    const snapshot = await service.costSnapshot(run.sessionId)
+    expect(snapshot.modelUsage['metadata-fixture-model']).toMatchObject({
+      inputTokens: 7,
+      outputTokens: 4,
+      cacheReadInputTokens: 3,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 1,
+    })
+    expect(snapshot.modelUsage['metadata-fixture-model']).not.toHaveProperty(
+      'contextWindow',
+    )
+    expect(snapshot.modelUsage['metadata-fixture-model']).not.toHaveProperty(
+      'maxOutputTokens',
+    )
+  })
+
+  it('rejects a shell tool breakdown conflicting with the main provider capability metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-metadata-shell-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const provider: ModelProvider = {
+      model: 'shell-fixture-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        contextWindowTokens: 200_000,
+        maxOutputTokens: 32_000,
+      },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'answer' }
+        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: {
+        definitions: () => [
+          {
+            name: 'Bash',
+            description: 'Run a shell command',
+            inputSchema: {
+              type: 'object',
+              properties: { command: { type: 'string' } },
+              required: ['command'],
+            },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async () => ({
+          content: 'shell output',
+          isError: false,
+          usage: { inputTokens: 1, outputTokens: 1 },
+          modelUsage: {
+            'shell-fixture-model': {
+              inputTokens: 2,
+              outputTokens: 1,
+              contextWindow: 100_000,
+              maxOutputTokens: 16_000,
+            },
+          },
+        }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(
+      service.runShell(
+        'printf hi',
+        undefined,
+        '91919191-9191-4191-8191-919191919191',
+      ),
+    ).rejects.toThrow(
+      'Model usage for "shell-fixture-model" has conflicting contextWindow values: 100000 vs 200000',
+    )
   })
 
   it('honors the shared auto-compact setting without disabling manual compaction', async () => {

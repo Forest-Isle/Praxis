@@ -213,6 +213,11 @@ const workflowUsageCounterFields = [
   'webSearchRequests',
 ] as const
 
+const workflowUsageMetadataFields = [
+  'contextWindow',
+  'maxOutputTokens',
+] as const
+
 function assertValidWorkflowUsage(usage: ModelUsage): void {
   for (const field of workflowUsageCounterFields) {
     const value = usage[field]
@@ -223,6 +228,7 @@ function assertValidWorkflowUsage(usage: ModelUsage): void {
 }
 
 function addWorkflowUsageChecked(
+  model: string | undefined,
   left: ModelUsage,
   right: ModelUsage,
 ): ModelUsage {
@@ -244,13 +250,57 @@ function addWorkflowUsageChecked(
   ) {
     throw new Error('Workflow model usage total overflow')
   }
+  // Aggregates without a model stay counter-only; per-model rows merge their
+  // capability metadata with conflict rejection.
+  const metadata =
+    model === undefined ? {} : mergeWorkflowUsageMetadata(model, left, right)
   return {
     inputTokens,
     outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
     ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
+    ...metadata,
   }
+}
+
+function mergeWorkflowUsageMetadata(
+  model: string,
+  left: ModelUsage,
+  right: ModelUsage,
+): { contextWindow?: number; maxOutputTokens?: number } {
+  const contextWindow = mergeWorkflowUsageMetadataField(
+    model,
+    'contextWindow',
+    left.contextWindow,
+    right.contextWindow,
+  )
+  const maxOutputTokens = mergeWorkflowUsageMetadataField(
+    model,
+    'maxOutputTokens',
+    left.maxOutputTokens,
+    right.maxOutputTokens,
+  )
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+  }
+}
+
+function mergeWorkflowUsageMetadataField(
+  model: string,
+  field: string,
+  left: number | undefined,
+  right: number | undefined,
+): number | undefined {
+  if (left === undefined) return right
+  if (right === undefined) return left
+  if (left !== right) {
+    throw new Error(
+      `Workflow model usage for "${model}" has conflicting ${field} values: ${left} vs ${right}`,
+    )
+  }
+  return left
 }
 
 function assertValidWorkflowModelUsageEntry(
@@ -263,6 +313,14 @@ function assertValidWorkflowModelUsageEntry(
     )
   }
   assertValidWorkflowUsage(usage)
+  for (const field of workflowUsageMetadataFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      throw new Error(
+        `Workflow model usage for "${model}" has an invalid ${field} metadata value`,
+      )
+    }
+  }
 }
 
 function mergeWorkflowModelUsageEntry(
@@ -276,7 +334,7 @@ function mergeWorkflowModelUsageEntry(
     map.set(model, { ...usage })
     return
   }
-  map.set(model, addWorkflowUsageChecked(existing, usage))
+  map.set(model, addWorkflowUsageChecked(model, existing, usage))
 }
 
 function mergeWorkflowModelUsage(
@@ -285,12 +343,13 @@ function mergeWorkflowModelUsage(
 ): void {
   const entries = Object.entries(breakdown)
   if (entries.length === 0) return
-  // Validate every key, counter, and merged sum before adding any entry from
-  // this agent result so a malformed breakdown never merges partially.
+  // Validate every key, counter, metadata, and merged sum before adding any
+  // entry from this agent result so a malformed or conflicting breakdown never
+  // merges partially.
   for (const [model, usage] of entries) {
     assertValidWorkflowModelUsageEntry(model, usage)
     const existing = map.get(model)
-    if (existing !== undefined) addWorkflowUsageChecked(existing, usage)
+    if (existing !== undefined) addWorkflowUsageChecked(model, existing, usage)
   }
   for (const [model, usage] of entries) {
     mergeWorkflowModelUsageEntry(map, model, usage)
@@ -454,7 +513,7 @@ export class WorkflowManager {
       if (task.status === 'running' || !task.notificationPending) continue
       task.notificationPending = false
       messages.push(this.notification(task))
-      usage = addWorkflowUsageChecked(usage, task.usage)
+      usage = addWorkflowUsageChecked(undefined, usage, task.usage)
       for (const [model, entry] of task.modelUsage) {
         mergeWorkflowModelUsageEntry(modelUsage, model, entry)
       }
@@ -662,7 +721,11 @@ export class WorkflowManager {
           task.totalTokens += progress.totalTokens
           task.totalInputTokens += result.usage.inputTokens
           task.totalToolCalls += result.toolUseCount
-          task.usage = addWorkflowUsageChecked(task.usage, result.usage)
+          task.usage = addWorkflowUsageChecked(
+            undefined,
+            task.usage,
+            result.usage,
+          )
           if (result.modelUsage !== undefined) {
             mergeWorkflowModelUsage(task.modelUsage, result.modelUsage)
           }

@@ -72,6 +72,49 @@ describe('FallbackModelProvider', () => {
     expect(routed.model).toBe('fallback')
   })
 
+  it('exposes the capabilities of the currently active provider', async () => {
+    const primaryCapabilities = {
+      streaming: true,
+      usage: true,
+      tools: true,
+      contextWindowTokens: 100_000,
+      maxOutputTokens: 4_096,
+    }
+    const fallbackCapabilities = {
+      streaming: true,
+      usage: true,
+      tools: true,
+      contextWindowTokens: 200_000,
+      maxOutputTokens: 8_192,
+    }
+    const routed = new FallbackModelProvider({
+      providers: [
+        {
+          ...provider('primary', async function* () {
+            throw new ModelProviderError('overloaded', {
+              retryable: true,
+              status: 529,
+            })
+            yield text('unreachable')
+          }),
+          capabilities: primaryCapabilities,
+        },
+        {
+          ...provider('fallback', async function* () {
+            yield text('ok')
+          }),
+          capabilities: fallbackCapabilities,
+        },
+      ],
+      retryDelayMs: 0,
+    })
+    // Before routing, the initial active provider's capabilities are exposed.
+    expect(routed.capabilities).toEqual(primaryCapabilities)
+    for await (const event of routed.complete({ messages: [] })) void event
+    // After fallback routing, the active provider's capabilities are exposed.
+    expect(routed.capabilities).toEqual(fallbackCapabilities)
+  })
+
   it('does not retry non-retryable errors or replay partial streams', async () => {
     const primary = vi.fn(async function* () {
       yield text('partial')

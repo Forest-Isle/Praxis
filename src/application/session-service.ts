@@ -351,21 +351,146 @@ function mergeUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
   }
 }
 
-function mergeSessionRawModelUsage(
-  ...parts: readonly (Readonly<Record<string, ModelUsage>> | undefined)[]
-): Readonly<Record<string, ModelUsage>> | undefined {
-  const merged = new Map<string, ModelUsage>()
-  for (const part of parts) {
-    if (part === undefined) continue
-    for (const [model, usage] of Object.entries(part)) {
-      const existing = merged.get(model)
-      merged.set(
-        model,
-        existing === undefined ? { ...usage } : mergeUsage(existing, usage),
+const sessionUsageCounterFields = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+  'webSearchRequests',
+] as const
+
+const sessionUsageMetadataFields = ['contextWindow', 'maxOutputTokens'] as const
+
+function assertValidSessionUsageEntry(model: string, usage: ModelUsage): void {
+  if (model.trim() === '') {
+    throw new Error('Model usage breakdown contains a blank model name')
+  }
+  for (const field of sessionUsageCounterFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(
+        `Model usage for "${model}" has an invalid ${field} counter`,
       )
     }
   }
-  return merged.size === 0 ? undefined : Object.fromEntries(merged)
+  for (const field of sessionUsageMetadataFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      throw new Error(
+        `Model usage for "${model}" has an invalid ${field} metadata value`,
+      )
+    }
+  }
+}
+
+function mergeSessionUsageMetadata(
+  model: string,
+  left: ModelUsage,
+  right: ModelUsage,
+): { contextWindow?: number; maxOutputTokens?: number } {
+  const contextWindow = mergeSessionUsageMetadataField(
+    model,
+    'contextWindow',
+    left.contextWindow,
+    right.contextWindow,
+  )
+  const maxOutputTokens = mergeSessionUsageMetadataField(
+    model,
+    'maxOutputTokens',
+    left.maxOutputTokens,
+    right.maxOutputTokens,
+  )
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+  }
+}
+
+function mergeSessionUsageMetadataField(
+  model: string,
+  field: string,
+  left: number | undefined,
+  right: number | undefined,
+): number | undefined {
+  if (left === undefined) return right
+  if (right === undefined) return left
+  if (left !== right) {
+    throw new Error(
+      `Model usage for "${model}" has conflicting ${field} values: ${left} vs ${right}`,
+    )
+  }
+  return left
+}
+
+function addSessionUsageChecked(
+  model: string,
+  left: ModelUsage,
+  right: ModelUsage,
+): ModelUsage {
+  const inputTokens = left.inputTokens + right.inputTokens
+  const outputTokens = left.outputTokens + right.outputTokens
+  const cacheReadInputTokens =
+    (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
+  const cacheCreationInputTokens =
+    (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const webSearchRequests =
+    (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    !Number.isSafeInteger(outputTokens) ||
+    !Number.isSafeInteger(cacheReadInputTokens) ||
+    !Number.isSafeInteger(cacheCreationInputTokens) ||
+    !Number.isSafeInteger(webSearchRequests)
+  ) {
+    throw new Error('Model usage total overflow')
+  }
+  const metadata = mergeSessionUsageMetadata(model, left, right)
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
+    ...metadata,
+  }
+}
+
+function mergeSessionRawModelUsage(
+  ...parts: readonly (Readonly<Record<string, ModelUsage>> | undefined)[]
+): Readonly<Record<string, ModelUsage>> | undefined {
+  const rows: Array<[string, ModelUsage]> = []
+  for (const part of parts) {
+    if (part === undefined) continue
+    for (const [model, usage] of Object.entries(part)) {
+      assertValidSessionUsageEntry(model, usage)
+      rows.push([model, usage])
+    }
+  }
+  if (rows.length === 0) return undefined
+  // Validate every pairwise counter/metadata/overflow merge across all rows
+  // before any row becomes observable so a malformed or conflicting batch never
+  // merges partially.
+  const preview = new Map<string, ModelUsage>()
+  for (const [model, usage] of rows) {
+    const existing = preview.get(model)
+    preview.set(
+      model,
+      existing === undefined
+        ? { ...usage }
+        : addSessionUsageChecked(model, existing, usage),
+    )
+  }
+  const merged = new Map<string, ModelUsage>()
+  for (const [model, usage] of rows) {
+    const existing = merged.get(model)
+    merged.set(
+      model,
+      existing === undefined
+        ? { ...usage }
+        : addSessionUsageChecked(model, existing, usage),
+    )
+  }
+  return Object.fromEntries(merged)
 }
 
 function hasNonZeroUsage(usage: ModelUsage): boolean {

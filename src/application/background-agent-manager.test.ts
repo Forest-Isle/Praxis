@@ -509,6 +509,112 @@ describe('BackgroundAgentManager', () => {
     ).rejects.toThrow('Model usage total overflow')
   })
 
+  it('preserves known capability metadata across merged raw-model notifications', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async (_message, _signal, continuation) => ({
+        text: continuation ? 'SECOND' : 'FIRST',
+        usage: { inputTokens: 5, outputTokens: 2 },
+        toolUseCount: 1,
+        durationMs: 5,
+        modelUsage: {
+          'metadata-model': {
+            inputTokens: 5,
+            outputTokens: 2,
+            contextWindow: 200_000,
+            maxOutputTokens: 32_000,
+          },
+        },
+      })),
+    )
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    expect(
+      manager.send(
+        'a0123456789abcdef',
+        'continue',
+        'continue',
+        'call_continue',
+      ),
+    ).toContain('"success":true')
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+
+    const consumed = await manager.notifications({ waitForRunning: false })
+    // Equal known metadata merges without conflict while counters sum.
+    expect(consumed.modelUsage).toEqual({
+      'metadata-model': {
+        inputTokens: 10,
+        outputTokens: 4,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+      },
+    })
+    // The aggregate usage stays counter-only.
+    expect(consumed.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 4,
+    })
+  })
+
+  it('rejects conflicting known metadata before any raw-model row is merged', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async (_message, _signal, continuation) => ({
+        text: continuation ? 'SECOND' : 'FIRST',
+        usage: { inputTokens: 5, outputTokens: 2 },
+        toolUseCount: 1,
+        durationMs: 5,
+        modelUsage: continuation
+          ? {
+              // A valid new model in the same batch as the conflicting row: the
+              // whole notification batch must reject before any row is visible.
+              'other-model': { inputTokens: 1, outputTokens: 1 },
+              'metadata-model': {
+                inputTokens: 5,
+                outputTokens: 2,
+                contextWindow: 100_000,
+                maxOutputTokens: 16_000,
+              },
+            }
+          : {
+              'metadata-model': {
+                inputTokens: 5,
+                outputTokens: 2,
+                contextWindow: 200_000,
+                maxOutputTokens: 32_000,
+              },
+            },
+      })),
+    )
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    expect(
+      manager.send(
+        'a0123456789abcdef',
+        'continue',
+        'continue',
+        'call_continue',
+      ),
+    ).toContain('"success":true')
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).rejects.toThrow(
+      'Model usage for "metadata-model" has conflicting contextWindow values: 200000 vs 100000',
+    )
+  })
+
   it('validates IDs and bounded output waits', async () => {
     const manager = new BackgroundAgentManager()
     expect(() =>

@@ -215,6 +215,7 @@ export interface CliRuntimeInfo {
   cwd: string
   model: string
   contextWindowTokens?: number
+  maxOutputTokens?: number
   tools: readonly string[]
   mcpServers: readonly { name: string; status: string }[]
   permissionMode: string
@@ -289,6 +290,12 @@ export function createSuccessResult(
           ...(modelUsage.webSearchRequests === undefined
             ? {}
             : { webSearchRequests: modelUsage.webSearchRequests }),
+          contextWindow:
+            modelUsage.contextWindow ??
+            (model === info.model ? (info.contextWindowTokens ?? 0) : 0),
+          maxOutputTokens:
+            modelUsage.maxOutputTokens ??
+            (model === info.model ? (info.maxOutputTokens ?? 0) : 0),
         },
       ]),
     ),

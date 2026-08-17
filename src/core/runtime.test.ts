@@ -2151,4 +2151,129 @@ describe('AgentRuntime', () => {
       }),
     ).rejects.toThrow('Model usage total overflow')
   })
+
+  it('enriches the main-model raw usage row with provider capability metadata', async () => {
+    const provider: ModelProvider = {
+      model: 'claude-3-5-sonnet',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        contextWindowTokens: 200_000,
+        maxOutputTokens: 32_000,
+      },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'done' }
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: 20,
+            outputTokens: 10,
+            cacheReadInputTokens: 30,
+            webSearchRequests: 2,
+          },
+        }
+      },
+    }
+    const runtime = new AgentRuntime(provider)
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'answer' }],
+    })
+    // The per-model row carries the provider's known capability metadata.
+    expect(result.modelUsage).toEqual({
+      'claude-3-5-sonnet': {
+        inputTokens: 20,
+        outputTokens: 10,
+        cacheReadInputTokens: 30,
+        webSearchRequests: 2,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+      },
+    })
+    // The aggregate total stays counter-only.
+    expect(result.usage).toEqual({
+      inputTokens: 20,
+      outputTokens: 10,
+      cacheReadInputTokens: 30,
+      webSearchRequests: 2,
+    })
+  })
+
+  it('rejects a conflicting nested batch before any raw-model row is added', async () => {
+    const provider: ModelProvider = {
+      model: 'claude-3-5-sonnet',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        contextWindowTokens: 200_000,
+        maxOutputTokens: 32_000,
+      },
+      async *complete() {
+        yield {
+          type: 'tool-call',
+          call: { id: 'read', name: 'Read', input: {} },
+        }
+        yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } }
+        yield { type: 'text-delta', delta: 'done' }
+        yield { type: 'usage', usage: { inputTokens: 3, outputTokens: 2 } }
+      },
+    }
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return {
+            content: 'nested',
+            isError: false,
+            usage: { inputTokens: 2, outputTokens: 1 },
+            modelUsage: {
+              // Valid new model in the same batch as the conflicting row: the
+              // whole batch must reject before either row becomes observable.
+              'subagent-alpha': { inputTokens: 4, outputTokens: 3 },
+              'claude-3-5-sonnet': {
+                inputTokens: 2,
+                outputTokens: 1,
+                contextWindow: 100_000,
+                maxOutputTokens: 16_000,
+              },
+            },
+          }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    await expect(
+      runtime.run({ messages: [{ role: 'user', content: 'read' }] }),
+    ).rejects.toThrow(
+      'Model usage for "claude-3-5-sonnet" has conflicting contextWindow values: 200000 vs 100000',
+    )
+  })
+
+  it('rejects invalid metadata values in raw usage rows', async () => {
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield { type: 'text-delta', delta: 'done' }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      }),
+    )
+    await expect(
+      runtime.run({
+        messages: [{ role: 'user', content: 'bad metadata' }],
+        onStop: async () => ({
+          messages: [],
+          modelUsage: {
+            'claude-3-5-sonnet': {
+              inputTokens: 1,
+              outputTokens: 1,
+              contextWindow: 0,
+            },
+          },
+        }),
+      }),
+    ).rejects.toThrow('invalid contextWindow metadata value')
+  })
 })

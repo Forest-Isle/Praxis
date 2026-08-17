@@ -119,6 +119,8 @@ const modelUsageCounterFields = [
   'webSearchRequests',
 ] as const
 
+const modelUsageMetadataFields = ['contextWindow', 'maxOutputTokens'] as const
+
 function assertValidModelUsageEntry(model: string, usage: ModelUsage): void {
   if (model.trim() === '') {
     throw new Error('Model usage breakdown contains a blank model name')
@@ -131,9 +133,60 @@ function assertValidModelUsageEntry(model: string, usage: ModelUsage): void {
       )
     }
   }
+  for (const field of modelUsageMetadataFields) {
+    const value = usage[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      throw new Error(
+        `Model usage for "${model}" has an invalid ${field} metadata value`,
+      )
+    }
+  }
 }
 
-function addUsageChecked(left: ModelUsage, right: ModelUsage): ModelUsage {
+function mergeModelUsageMetadata(
+  model: string,
+  left: ModelUsage,
+  right: ModelUsage,
+): { contextWindow?: number; maxOutputTokens?: number } {
+  const contextWindow = mergeModelUsageMetadataField(
+    model,
+    'contextWindow',
+    left.contextWindow,
+    right.contextWindow,
+  )
+  const maxOutputTokens = mergeModelUsageMetadataField(
+    model,
+    'maxOutputTokens',
+    left.maxOutputTokens,
+    right.maxOutputTokens,
+  )
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+  }
+}
+
+function mergeModelUsageMetadataField(
+  model: string,
+  field: string,
+  left: number | undefined,
+  right: number | undefined,
+): number | undefined {
+  if (left === undefined) return right
+  if (right === undefined) return left
+  if (left !== right) {
+    throw new Error(
+      `Model usage for "${model}" has conflicting ${field} values: ${left} vs ${right}`,
+    )
+  }
+  return left
+}
+
+function addUsageChecked(
+  model: string | undefined,
+  left: ModelUsage,
+  right: ModelUsage,
+): ModelUsage {
   const inputTokens = left.inputTokens + right.inputTokens
   const outputTokens = left.outputTokens + right.outputTokens
   const cacheReadInputTokens =
@@ -151,12 +204,17 @@ function addUsageChecked(left: ModelUsage, right: ModelUsage): ModelUsage {
   ) {
     throw new Error('Model usage total overflow')
   }
+  // Aggregates without a model stay counter-only; per-model rows merge their
+  // capability metadata with conflict rejection.
+  const metadata =
+    model === undefined ? {} : mergeModelUsageMetadata(model, left, right)
   return {
     inputTokens,
     outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
     ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
+    ...metadata,
   }
 }
 
@@ -180,7 +238,7 @@ function mergeModelUsageEntry(
     map.set(model, { ...usage })
     return
   }
-  map.set(model, addUsageChecked(existing, usage))
+  map.set(model, addUsageChecked(model, existing, usage))
 }
 
 function mergeToolModelUsage(
@@ -189,12 +247,13 @@ function mergeToolModelUsage(
 ): void {
   const entries = Object.entries(breakdown)
   if (entries.length === 0) return
-  // Validate every key, counter, and merged sum before adding any entry from
-  // this breakdown so malformed data never merges partially.
+  // Validate every key, counter, metadata, and merged sum before adding any
+  // entry from this breakdown so malformed or conflicting data never merges
+  // partially.
   for (const [model, usage] of entries) {
     assertValidModelUsageEntry(model, usage)
     const existing = map.get(model)
-    if (existing !== undefined) addUsageChecked(existing, usage)
+    if (existing !== undefined) addUsageChecked(model, existing, usage)
   }
   for (const [model, usage] of entries) {
     mergeModelUsageEntry(map, model, usage)
@@ -402,7 +461,7 @@ export class BackgroundAgentManager {
         notifications.push(this.formatNotification(task, notification))
         if (notification.result) {
           assertValidResultUsage(notification.result.usage)
-          usage = addUsageChecked(usage, notification.result.usage)
+          usage = addUsageChecked(undefined, usage, notification.result.usage)
         }
         if (notification.result?.modelUsage) {
           mergeToolModelUsage(modelUsageByModel, notification.result.modelUsage)

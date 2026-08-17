@@ -20,7 +20,6 @@ export interface FallbackModelProviderOptions {
 
 /** Routes each complete request through Claude's retry-then-fallback policy. */
 export class FallbackModelProvider implements ModelProvider {
-  readonly capabilities: ModelProvider['capabilities']
   private active: ModelProvider
   private readonly retryDelayMs: number
   private readonly fallbackProviders: readonly ModelProvider[]
@@ -31,8 +30,12 @@ export class FallbackModelProvider implements ModelProvider {
     }
     this.active = options.providers[0] as ModelProvider
     this.fallbackProviders = options.providers
-    this.capabilities = this.active.capabilities
     this.retryDelayMs = options.retryDelayMs ?? 500
+  }
+
+  /** Capabilities of the currently active provider after any fallback routing. */
+  get capabilities(): ModelProvider['capabilities'] {
+    return this.active.capabilities
   }
 
   get model(): string {

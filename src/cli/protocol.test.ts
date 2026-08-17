@@ -1322,7 +1322,98 @@ describe('CLI protocol', () => {
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
           costUSD: 0.5,
+          contextWindow: 0,
+          maxOutputTokens: 0,
         },
+      },
+    })
+  })
+
+  it('serializes numeric contextWindow and maxOutputTokens with capability fallback', () => {
+    const startedAt = Date.now()
+    const info: CliRuntimeInfo = {
+      ...runtimeInfo,
+      contextWindowTokens: 200_000,
+      maxOutputTokens: 32_000,
+    }
+    const result = createSuccessResult(
+      {
+        sessionId,
+        text: 'answer',
+        usage: { inputTokens: 2, outputTokens: 3 },
+        costUsd: 0.5,
+        modelUsage: {
+          // Known row without metadata: falls back to the matching runtimeInfo
+          // model's capability.
+          'test-model': { inputTokens: 2, outputTokens: 3 },
+          // Unknown model without metadata: serializes as 0.
+          'legacy-model': { inputTokens: 4, outputTokens: 1 },
+          // Row with its own metadata: preserved exactly.
+          'known-model': {
+            inputTokens: 6,
+            outputTokens: 2,
+            contextWindow: 100_000,
+            maxOutputTokens: 16_000,
+          },
+        },
+      },
+      info,
+      startedAt,
+      1,
+    )
+    expect(result.modelUsage).toMatchObject({
+      'test-model': {
+        inputTokens: 2,
+        outputTokens: 3,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUSD: 0.5,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+      },
+      'legacy-model': {
+        inputTokens: 4,
+        outputTokens: 1,
+        costUSD: null,
+        contextWindow: 0,
+        maxOutputTokens: 0,
+      },
+      'known-model': {
+        inputTokens: 6,
+        outputTokens: 2,
+        costUSD: null,
+        contextWindow: 100_000,
+        maxOutputTokens: 16_000,
+      },
+    })
+  })
+
+  it('serializes capability fallback for the default single-model row', () => {
+    const startedAt = Date.now()
+    const info: CliRuntimeInfo = {
+      ...runtimeInfo,
+      contextWindowTokens: 200_000,
+      maxOutputTokens: 32_000,
+    }
+    const result = createSuccessResult(
+      {
+        sessionId,
+        text: 'answer',
+        usage: { inputTokens: 2, outputTokens: 3 },
+      },
+      info,
+      startedAt,
+      1,
+    )
+    expect(result.modelUsage).toMatchObject({
+      'test-model': {
+        inputTokens: 2,
+        outputTokens: 3,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUSD: null,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
       },
     })
   })
