@@ -2697,6 +2697,28 @@ describe('Praxis CLI', () => {
     expect(capture.stderr).toEqual(['Praxis run cancelled.\n'])
   })
 
+  it('constructs the default service without an installed Claude binary', async () => {
+    const capture = captureIO()
+    const configDir = await mkdtemp(join(tmpdir(), 'praxis-cli-sessions-'))
+    const missingBinary = join(configDir, 'missing-claude')
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousBinary = process.env.PRAXIS_CLAUDE_BINARY
+    process.env.CLAUDE_CONFIG_DIR = configDir
+    process.env.PRAXIS_CLAUDE_BINARY = missingBinary
+    try {
+      await expect(run(['sessions'], capture.io)).resolves.toBe(0)
+      expect(capture.stdout.join('')).toBe('')
+      expect(capture.stderr.join('')).not.toContain(missingBinary)
+      expect(capture.stderr.join('')).not.toContain('--version')
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      if (previousBinary === undefined) delete process.env.PRAXIS_CLAUDE_BINARY
+      else process.env.PRAXIS_CLAUDE_BINARY = previousBinary
+      await rm(configDir, { recursive: true, force: true })
+    }
+  })
+
   it('resumes with NDJSON runtime events and a result record', async () => {
     const capture = captureIO()
     const sessionId = '11111111-1111-4111-8111-111111111111'

@@ -14,7 +14,7 @@ export interface ClaudeSchemaAdapter {
   serializeForFork(entry: ClaudeTranscriptEntry): string
 }
 
-const SUPPORTED_VERSION = '2.1.208'
+export const VERIFIED_CLAUDE_SCHEMA_VERSION = '2.1.208'
 const APPENDABLE_ENTRY_TYPES = new Set([
   'agent-color',
   'agent-name',
@@ -922,9 +922,9 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
     }
   }
 
-  if (entry.version !== SUPPORTED_VERSION) {
+  if (entry.version !== VERIFIED_CLAUDE_SCHEMA_VERSION) {
     throw new Error(
-      `Claude transcript append must target Claude Code ${SUPPORTED_VERSION}`,
+      `Claude transcript append must target Claude Code ${VERIFIED_CLAUDE_SCHEMA_VERSION}`,
     )
   }
 
@@ -991,9 +991,9 @@ function validateSidechainEntry(entry: ClaudeTranscriptEntry): void {
       throw new Error(`Claude sidechain entry is missing ${field}`)
     }
   }
-  if (entry.version !== SUPPORTED_VERSION) {
+  if (entry.version !== VERIFIED_CLAUDE_SCHEMA_VERSION) {
     throw new Error(
-      `Claude sidechain append must target Claude Code ${SUPPORTED_VERSION}`,
+      `Claude sidechain append must target Claude Code ${VERIFIED_CLAUDE_SCHEMA_VERSION}`,
     )
   }
   if (
@@ -1095,9 +1095,9 @@ function validateForkableEntry(entry: ClaudeTranscriptEntry): void {
       throw new Error(`Claude transcript entry is missing ${field}`)
     }
   }
-  if (entry.version !== SUPPORTED_VERSION) {
+  if (entry.version !== VERIFIED_CLAUDE_SCHEMA_VERSION) {
     throw new Error(
-      `Claude transcript fork must target Claude Code ${SUPPORTED_VERSION}`,
+      `Claude transcript fork must target Claude Code ${VERIFIED_CLAUDE_SCHEMA_VERSION}`,
     )
   }
   if (
@@ -1145,7 +1145,7 @@ function validateForkableEntry(entry: ClaudeTranscriptEntry): void {
 }
 
 class ClaudeCode21208Adapter implements ClaudeSchemaAdapter {
-  readonly version = SUPPORTED_VERSION
+  readonly version = VERIFIED_CLAUDE_SCHEMA_VERSION
   readonly writeMode = 'read-write' as const
 
   parse(line: string): ClaudeTranscriptEntry {
@@ -1219,7 +1219,7 @@ class ReadOnlyClaudeAdapter implements ClaudeSchemaAdapter {
 export function selectClaudeSchemaAdapter(
   version: string,
 ): ClaudeSchemaAdapter {
-  if (version === SUPPORTED_VERSION) {
+  if (version === VERIFIED_CLAUDE_SCHEMA_VERSION) {
     return new ClaudeCode21208Adapter()
   }
 

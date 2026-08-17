@@ -2203,7 +2203,7 @@ try {
         })
       ).stdout,
     )
-    const cliReadOnly = cliSessions.sessions?.find(
+    const cliReady = cliSessions.sessions?.find(
       (summary) => summary.sessionId === readOnlySessionId,
     )
     const cliCorrupt = cliSessions.sessions?.find(
@@ -2234,15 +2234,15 @@ try {
       env: cliEnvironment,
     })
     if (
-      cliReadOnly?.status !== 'read-only' ||
+      cliReady?.status !== 'ready' ||
       cliCorrupt?.status !== 'corrupt' ||
-      cliInspection.session?.writeMode !== 'read-only' ||
+      cliInspection.session?.writeMode !== 'read-write' ||
       cliCorruptInspection.session?.status !== 'corrupt' ||
       !cliReadOnlyExport.stdoutBytes.equals(Buffer.from(readOnlySource)) ||
       !cliCorruptExport.stdoutBytes.equals(corruptSource)
     ) {
       throw new Error(
-        `Installed Claude ${claudeVersion} read-only/corrupt CLI recovery failed`,
+        `Installed Claude ${claudeVersion} ordinary CLI schema-independence proof failed`,
       )
     }
     await expectRejected(() => service.run('must stay read-only'), 'read-only')
@@ -2259,7 +2259,7 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install with zero high-risk production advisories, installed provider-free /cost text/JSON/stream-json gates with zero artifacts, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install with zero high-risk production advisories, installed provider-free /cost text/JSON/stream-json gates with zero artifacts, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix with installed ordinary CLI schema-independence proof`,
   )
 } finally {
   try {
