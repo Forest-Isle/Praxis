@@ -168,9 +168,14 @@ Praxis ──────┘
 ```
 
 Praxis can resume Claude Code sessions, and Claude Code can resume compatible
-sessions written by Praxis. The validated read-write target is Claude Code
-2.1.208; unknown versions fail closed for transcript writes while retaining
-read-only inspection and export paths.
+sessions written by Praxis. Ordinary Praxis session runtime always emits the
+verified Claude Code 2.1.208 write profile and never derives it from an
+installed Claude version. Explicit schema adapters and fork creation remain
+fail-closed for an unverified write profile while retaining read-only
+inspection and export paths. Maintainers can prove mixed-version shared-session
+resume with `npm run test:cross-version-session-compat`, which requires
+`PRAXIS_CLAUDE_BINARY` (Claude Code 2.1.208) and
+`PRAXIS_CLAUDE_CROSS_VERSION_BINARY` (a different Claude Code version).
 
 See the
 [compatibility contract](https://github.com/Forest-Isle/Praxis/blob/main/docs/COMPATIBILITY.md)
