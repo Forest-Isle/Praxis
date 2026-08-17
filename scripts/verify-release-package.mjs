@@ -23,6 +23,12 @@ const maxCommandOutputBytes = 4 * 1024 * 1024
 const maxPackageBytes = 1024 * 1024
 const maxUnpackedBytes = 4 * 1024 * 1024
 const maxProviderRequestBytes = 1024 * 1024
+const ZERO_COST_SUMMARY =
+  'Total cost:            $0.0000\n' +
+  'Total duration (API):  0s\n' +
+  'Total duration (wall): 0s\n' +
+  'Total code changes:    0 lines added, 0 lines removed\n' +
+  'Usage:                 0 input, 0 output, 0 cache read, 0 cache write'
 
 async function assertMissing(path, label) {
   try {
@@ -206,6 +212,104 @@ function resultFrom(output) {
   )
   if (!result) throw new Error(`Installed CLI returned no result: ${output}`)
   return result
+}
+
+function assertZeroCostJson(entry, output) {
+  if (
+    entry?.type !== 'result' ||
+    entry?.subtype !== 'success' ||
+    entry?.is_error !== false ||
+    entry?.num_turns !== 0 ||
+    entry?.duration_api_ms !== 0 ||
+    entry?.total_cost_usd !== 0 ||
+    entry?.stop_reason !== null ||
+    entry?.result !== ZERO_COST_SUMMARY ||
+    entry?.usage?.input_tokens !== 0 ||
+    entry?.usage?.output_tokens !== 0 ||
+    !entry?.modelUsage ||
+    Object.keys(entry.modelUsage).length !== 0 ||
+    !Array.isArray(entry?.permission_denials) ||
+    entry.permission_denials.length !== 0 ||
+    typeof entry?.session_id !== 'string' ||
+    entry.session_id.length === 0
+  ) {
+    throw new Error(`Installed /cost JSON zero-turn contract failed: ${output}`)
+  }
+}
+
+function assertZeroCostStream(records, output) {
+  if (records.length !== 3) {
+    throw new Error(
+      `Installed /cost stream-json produced ${records.length} records: ${output}`,
+    )
+  }
+  const [init, assistant, result] = records
+  if (
+    init?.type !== 'system' ||
+    init?.subtype !== 'init' ||
+    assistant?.type !== 'assistant' ||
+    result?.type !== 'result'
+  ) {
+    throw new Error(
+      `Installed /cost stream-json record order mismatch: ${output}`,
+    )
+  }
+  if (
+    assistant?.message?.role !== 'assistant' ||
+    assistant?.message?.model !== '<synthetic>' ||
+    !Array.isArray(assistant?.message?.content) ||
+    assistant.message.content.length !== 1 ||
+    assistant.message.content[0]?.type !== 'text' ||
+    assistant.message.content[0]?.text !== ZERO_COST_SUMMARY ||
+    assistant?.message?.stop_reason !== 'stop_sequence' ||
+    assistant?.message?.stop_sequence !== '' ||
+    assistant?.message?.usage?.input_tokens !== 0 ||
+    assistant?.message?.usage?.output_tokens !== 0 ||
+    assistant?.parent_tool_use_id !== null ||
+    typeof assistant?.session_id !== 'string' ||
+    assistant.session_id.length === 0
+  ) {
+    throw new Error(
+      `Installed /cost stream-json assistant contract failed: ${output}`,
+    )
+  }
+  if (
+    result?.subtype !== 'success' ||
+    result?.is_error !== false ||
+    result?.num_turns !== 0 ||
+    result?.duration_api_ms !== 0 ||
+    result?.total_cost_usd !== 0 ||
+    result?.stop_reason !== null ||
+    result?.result !== ZERO_COST_SUMMARY ||
+    result?.usage?.input_tokens !== 0 ||
+    result?.usage?.output_tokens !== 0 ||
+    !result?.modelUsage ||
+    Object.keys(result.modelUsage).length !== 0 ||
+    result?.session_id !== assistant.session_id
+  ) {
+    throw new Error(
+      `Installed /cost stream-json result contract failed: ${output}`,
+    )
+  }
+}
+
+async function snapshotTree(root) {
+  const entries = []
+  async function visit(directory, prefix) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        entries.push(`${relative}/`)
+        await visit(join(directory, entry.name), relative)
+      } else if (entry.isFile()) {
+        entries.push(relative)
+      } else {
+        throw new Error(`Unsupported cost probe tree entry: ${relative}`)
+      }
+    }
+  }
+  await visit(root, '')
+  return entries.sort()
 }
 
 function forkFrom(output) {
@@ -1490,6 +1594,96 @@ try {
     "#!/bin/sh\nprintf '2.1.208 (Claude Code)\\n'\n",
     { mode: 0o755 },
   )
+  const costConfigRoot = join(probeRoot, 'cost-config')
+  const costWorkDirectory = join(probeRoot, 'cost-work')
+  await mkdir(costConfigRoot, { recursive: true })
+  await mkdir(costWorkDirectory, { recursive: true })
+  const costEnvironment = {
+    ...process.env,
+    CLAUDE_CONFIG_DIR: costConfigRoot,
+    PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+  }
+  for (const name of [
+    'PRAXIS_PROVIDER',
+    'PRAXIS_API_KEY',
+    'PRAXIS_MODEL',
+    'PRAXIS_BASE_URL',
+  ]) {
+    delete costEnvironment[name]
+  }
+  const costConfigBefore = await snapshotTree(costConfigRoot)
+  const costWorkBefore = await snapshotTree(costWorkDirectory)
+
+  const installedCostText = await run(praxis, ['-p', '/cost'], {
+    cwd: costWorkDirectory,
+    env: costEnvironment,
+  })
+  if (
+    installedCostText.stdout !== `${ZERO_COST_SUMMARY}\n` ||
+    installedCostText.stderr !== ''
+  ) {
+    throw new Error(
+      `Installed provider-free /cost text mismatch: stdout ${JSON.stringify(installedCostText.stdout)} stderr ${JSON.stringify(installedCostText.stderr)}`,
+    )
+  }
+
+  const installedCostJson = await run(
+    praxis,
+    ['-p', '--output-format', 'json', '/cost'],
+    { cwd: costWorkDirectory, env: costEnvironment },
+  )
+  let installedCostJsonResult
+  try {
+    installedCostJsonResult = JSON.parse(installedCostJson.stdout)
+  } catch (error) {
+    throw new Error(
+      `Installed /cost JSON output is not valid JSON: ${installedCostJson.stdout}`,
+      { cause: error },
+    )
+  }
+  assertZeroCostJson(installedCostJsonResult, installedCostJson.stdout)
+
+  const installedCostStream = await run(
+    praxis,
+    [
+      'run',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+    ],
+    {
+      cwd: costWorkDirectory,
+      env: costEnvironment,
+      input: `${JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: '/cost' },
+      })}\n`,
+    },
+  )
+  let installedCostStreamRecords
+  try {
+    installedCostStreamRecords = parseJsonLines(installedCostStream.stdout)
+  } catch (error) {
+    throw new Error(
+      `Installed /cost stream-json output is not valid JSON lines: ${installedCostStream.stdout}`,
+      { cause: error },
+    )
+  }
+  assertZeroCostStream(installedCostStreamRecords, installedCostStream.stdout)
+
+  const costConfigAfter = await snapshotTree(costConfigRoot)
+  const costWorkAfter = await snapshotTree(costWorkDirectory)
+  if (
+    JSON.stringify(costConfigAfter) !== JSON.stringify(costConfigBefore) ||
+    JSON.stringify(costWorkAfter) !== JSON.stringify(costWorkBefore)
+  ) {
+    throw new Error(
+      `Installed provider-free /cost side-effect mismatch: config ${JSON.stringify(costConfigAfter)} work ${JSON.stringify(costWorkAfter)}`,
+    )
+  }
+
   const sessions = await run(praxis, ['sessions', '--json'], {
     cwd: workDirectory,
     env: {
@@ -2065,7 +2259,7 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install with zero high-risk production advisories, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install with zero high-risk production advisories, installed provider-free /cost text/JSON/stream-json gates with zero artifacts, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix`,
   )
 } finally {
   try {
