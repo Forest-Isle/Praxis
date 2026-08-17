@@ -66,6 +66,7 @@ const wlCopy = join(binRoot, 'wl-copy')
 const open = join(binRoot, 'open')
 const xdgOpen = join(binRoot, 'xdg-open')
 const snapshotHelper = join(root, 'snapshot-shared-trees.mjs')
+const doctorFetchShim = join(root, 'doctor-fetch-shim.mjs')
 const importedMemory = join(configRoot, 'imported.md')
 const importedBefore = 'IMPORTED_TUI_CONTEXT_BEFORE'
 const importedAfter = 'IMPORTED_TUI_CONTEXT_AFTER'
@@ -810,6 +811,7 @@ try {
     `${JSON.stringify(
       {
         theme: 'dark',
+        autoUpdatesChannel: 'latest',
         permissions: { allow: ['Bash(npm test:*)'] },
         enabledPlugins: { 'hooks-fixture@inline': true },
         hooks: {
@@ -1034,6 +1036,23 @@ await writeFile(process.argv[4], JSON.stringify(snapshot))
   await writeFile(
     wlPaste,
     '#!/bin/sh\ncase "$*" in *image/png*) exit 1 ;; *) printf \'INSTALLED_CLIPBOARD\' ;; esac\n',
+  )
+  await writeFile(
+    doctorFetchShim,
+    `const registryUrl = 'https://registry.npmjs.org/-/package/praxis-agent/dist-tags'
+const originalFetch = globalThis.fetch
+
+globalThis.fetch = async (...args) => {
+  const [input] = args
+  const url =
+    typeof input === 'string' || input instanceof URL ? String(input) : input.url
+  if (url !== registryUrl) return originalFetch(...args)
+  await new Promise((resolve) => setTimeout(resolve, 2750))
+  return new Response(JSON.stringify({ stable: '91.2.3', latest: '91.2.4' }), {
+    headers: { 'content-type': 'application/json' },
+  })
+}
+`,
   )
   await Promise.all([
     chmod(osascript, 0o755),
@@ -1575,7 +1594,7 @@ expect_before timeout {
   puts stderr "TUI compatibility timed out during $phase"
   exit 1
 }
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions --add-dir $env(TUI_SHARED_ROOT) --plugin-dir $env(TUI_PLUGIN_ROOT)
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color NODE_OPTIONS=--import=$env(TUI_DOCTOR_FETCH_SHIM) EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions --add-dir $env(TUI_SHARED_ROOT) --plugin-dir $env(TUI_PLUGIN_ROOT)
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect {
   -re {Praxis.*Code.*v${expectedVersionPattern}} { puts stderr "DBG header matched elapsed=[expr {[clock milliseconds]-$t0}]ms" }
@@ -1755,6 +1774,28 @@ expect -re {Status.*Config.*Usage}
 expect -re {fixture-model}
 expect -re {Setting sources:}
 send "\033"
+expect -re {Try.*review this project}
+after 100
+set phase "doctor palette"
+send "/doctor"
+expect -re {Diagnose and verify your Claude Code installation and settings}
+send "\r"
+set phase "doctor installation status"
+expect -re {Checking installation status}
+set phase "doctor local diagnostics"
+expect -re {Diagnostics}
+expect -re {Currently running: Praxis ${expectedVersionPattern} \(npm\)}
+expect -re {Search: OK \(system\)}
+expect -re {Updates}
+expect -re {Auto-updates: Manual \(praxis update\)}
+expect -re {Update permissions: yes}
+expect -re {Auto-update channel: latest}
+set phase "doctor update status"
+expect -re {Checking for updates}
+set phase "doctor resolved updates"
+expect -re {Stable version: 91\.2\.3}
+expect -re {Latest version: 91\.2\.4}
+send "\r"
 expect -re {Try.*review this project}
 after 100
 set phase "skills dialog"
@@ -2092,6 +2133,7 @@ exit 0
         TUI_CLI: cli,
         TUI_CLIPBOARD_OUTPUT: clipboardOutput,
         TUI_CONFIG_ROOT: configRoot,
+        TUI_DOCTOR_FETCH_SHIM: doctorFetchShim,
         TUI_EDITOR: editor,
         TUI_EDITOR_OUTPUT: editorOutput,
         TUI_ENABLED_DIFF_CAPTURE: enabledDiffCapture,

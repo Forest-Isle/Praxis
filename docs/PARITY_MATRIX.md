@@ -33,8 +33,10 @@ Dispositions, per the accepted developer-core command inventory:
 
 Accepted inventory dispositions (`included | required | deferred | excluded`):
 
-- **Required**: none. Stage 141 closed `/cost` and interactive `/doctor` with
-  focused, PTY, and installed-package evidence.
+- **Required**: none. Stage 141 closed `/cost`; Stages 144-147 closed
+  interactive `/doctor` with structured installation diagnostics, real TUI
+  projection, progressive update resolution, and installed-package PTY
+  evidence.
 - **Deferred**: `/advisor`, `/fast`, `/stats`, `/insights`, `/voice`.
 - **Newly excluded**:
   - subscription-bound integration: `/chrome`;
@@ -166,7 +168,7 @@ routing.
 | `agents`             | Complete | TTY Ink dashboard, live refresh, native/Praxis history review, resume/attach/continuation/stop, JSON active/`--all`, cwd/default dispatch, and packed gate                                                                                                                             |
 | `mcp`                | Complete | add/add-json/get/list/remove/reset-project-choices/login/logout/serve; transport/env/header/OAuth controls, external client-secret storage, rollback, and packed verifier                                                                                                              |
 | `plugin`             | Complete | Marketplace/install/list/details/init/validate/prune/tag/eval, aliases, disable-all, sparse Git checkout, typed and MCPB-qualified config, protected secret persistence/cleanup, scoped JSON/MCPB/DXT runtime loading, skills-dir loading, isolated ablation/judging, and packed gates |
-| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics                                                                                                                                                                                       |
+| `doctor`             | Complete | Local installation, provider, config, MCP, permissions, hooks, resources, and plugin diagnostics; Stages 144-147 add structured installation/update data, real TUI projection, progressive update resolution, and an installed-package PTY gate                                        |
 | `install` / `update` | Complete | Global npm installation/update with stable/latest/version targets, force install, upgrade alias, bounded runner, and installed CLI gate                                                                                                                                                |
 | `project purge`      | Complete | Safe current-project and all-project Claude state cleanup                                                                                                                                                                                                                              |
 | `auto-mode`          | Complete | `config`, label-filtered `defaults`, provider-backed `critique [--model]`, and permission classifier                                                                                                                                                                                   |
