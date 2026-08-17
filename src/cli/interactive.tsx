@@ -121,6 +121,7 @@ import {
 import { runDoctor, type DoctorReport } from '../maintenance/doctor.js'
 import {
   canonicalClaudeCostModelName,
+  formatCostSummary,
   type CostSummary,
 } from './tui/cost-summary.js'
 import {
@@ -2835,6 +2836,22 @@ export function InteractiveApp({
         ),
       }
     })
+  }
+
+  const showCostSummary = (sessionId: string | null) => {
+    const loading = (async () => {
+      setBusy(true)
+      try {
+        const summary = await loadCostUsage(sessionId)
+        append({ kind: 'local-result', text: formatCostSummary(summary) })
+      } catch (error) {
+        warn(error)
+      } finally {
+        setBusy(false)
+      }
+    })()
+    onTurnChange?.(loading)
+    void loading.finally(() => onTurnChange?.(null))
   }
 
   const loadConfigMenuUsage = (
@@ -6900,7 +6917,7 @@ export function InteractiveApp({
         onTurnChange?.(loading)
         void loading.finally(() => onTurnChange?.(null))
       } else if (prompt === '/cost') {
-        openSettings('usage')
+        showCostSummary(sessionIdRef.current)
       } else if (prompt === '/doctor') {
         openDoctor()
       } else if (prompt === '/status') {

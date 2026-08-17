@@ -458,7 +458,7 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual([])
   })
 
-  it('renders /cost as the Settings Usage dashboard from the active session and zeroes without a session', async () => {
+  it('renders /cost as a local-result cost summary from the active session and zeroes without a session', async () => {
     const creations: Array<{ requireProvider: boolean; cwd?: string }> = []
     let closes = 0
     const runCalls: string[] = []
@@ -538,9 +538,7 @@ describe('InteractiveApp', () => {
         : undefined,
     )
     const frame = app.lastFrame()
-    expect(frame).toContain('Status  Config  Usage')
-    expect(frame).toContain('Session')
-    expect(frame).toContain('Total cost:            $2.50')
+    expect(frame).toContain('⎿ Total cost:            $2.50')
     expect(frame).toContain('Total duration (API):  20m 35s')
     expect(frame).toContain('Total duration (wall): 1h 0m 0s')
     expect(frame).toContain(
@@ -550,8 +548,10 @@ describe('InteractiveApp', () => {
       'claude-sonnet-4-0:  1.5k input, 300 output, 100 cache read, 50 cache write ($2.50)',
     )
     expect(frame).toContain('Usage by model:')
-    expect(frame).toContain('Esc to cancel')
-    expect(frame).not.toContain('⎿')
+    expect(frame?.match(/⎿/gu)?.length).toBe(1)
+    expect(frame).not.toContain('Settings')
+    expect(frame).not.toContain('Status  Config  Usage')
+    expect(frame).not.toContain('Esc to cancel')
     expect(creations).toEqual([
       { requireProvider: false, cwd: '/fixture/workspace' },
     ])
@@ -584,19 +584,96 @@ describe('InteractiveApp', () => {
         ? true
         : undefined,
     )
-    expect(noSessionApp.lastFrame()).toContain('Status  Config  Usage')
-    expect(noSessionApp.lastFrame()).toContain('Session')
     expect(noSessionApp.lastFrame()).toContain(
-      'Total cost:            $0.0000\n' +
-        'Total duration (API):  0s\n' +
-        'Total duration (wall): 0s\n' +
-        'Total code changes:    0 lines added, 0 lines removed\n' +
-        'Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
+      '⎿ Total cost:            $0.0000',
     )
-    expect(noSessionApp.lastFrame()).toContain('Esc to cancel')
-    expect(noSessionApp.lastFrame()).not.toContain('⎿')
+    expect(noSessionApp.lastFrame()).toContain('Total duration (API):  0s')
+    expect(noSessionApp.lastFrame()).toContain('Total duration (wall): 0s')
+    expect(noSessionApp.lastFrame()).toContain(
+      'Total code changes:    0 lines added, 0 lines removed',
+    )
+    expect(noSessionApp.lastFrame()).toContain(
+      'Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
+    )
+    expect(noSessionApp.lastFrame()).not.toContain('Settings')
+    expect(noSessionApp.lastFrame()).not.toContain('Status  Config  Usage')
+    expect(noSessionApp.lastFrame()).not.toContain('Esc to cancel')
     expect(noSessionCalls).toEqual([])
     noSessionApp.unmount()
+  })
+
+  it('warns on a failed active-session cost snapshot, closes the local service, and clears the turn without opening Settings', async () => {
+    const creations: Array<{ requireProvider: boolean }> = []
+    let closes = 0
+    const runCalls: string[] = []
+    const resumeCalls: string[] = []
+    const forkCalls: string[] = []
+    const turns: Array<Promise<void> | null> = []
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push({ requireProvider: options.requireProvider })
+        return {
+          async run() {
+            runCalls.push('run')
+            throw new Error('unused')
+          },
+          async resume() {
+            resumeCalls.push('resume')
+            throw new Error('unused')
+          },
+          async fork() {
+            forkCalls.push('fork')
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async costSnapshot() {
+            throw new Error('cost snapshot failed')
+          },
+          async close() {
+            closes += 1
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[
+          {
+            sessionId: 'active-session',
+            lastPrompt: 'hello',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        resume={{ sessionId: 'active-session' }}
+        display={{ version: 'test', cwd: '/fixture/workspace' }}
+        onTurnChange={(turn) => {
+          turns.push(turn)
+        }}
+      />,
+    )
+
+    app.stdin.write('/cost')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('cost snapshot failed') ? true : undefined,
+    )
+    await flush()
+    expect(app.lastFrame()).toContain('cost snapshot failed')
+    expect(app.lastFrame()).not.toContain('Settings')
+    expect(app.lastFrame()).not.toContain('Status  Config  Usage')
+    expect(app.lastFrame()).not.toContain('Esc to cancel')
+    expect(creations).toEqual([{ requireProvider: false }])
+    expect(closes).toBe(1)
+    expect(runCalls).toEqual([])
+    expect(resumeCalls).toEqual([])
+    expect(forkCalls).toEqual([])
+    expect(turns.at(-1)).toBeNull()
+    app.unmount()
   })
 
   it('navigates Settings to Usage with the current session snapshot and drops stale delayed results', async () => {
@@ -715,7 +792,7 @@ describe('InteractiveApp', () => {
           ? true
           : undefined
       })
-      app.stdin.write('/cost')
+      app.stdin.write('/usage')
       app.stdin.write('\r')
       await waitFor(() => (costRequests.length === 3 ? true : undefined))
       expect(costRequests).toEqual([
