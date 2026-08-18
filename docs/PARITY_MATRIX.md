@@ -175,9 +175,9 @@ routing.
 
 ## Final audit status
 
-The supported command and shared-data surface is closed against Claude Code
-2.1.208. Interactive TTY parity remains partial, as stated in the matrix
-above. The latest executable surface audit recursively walks the installed
+The credential-free supported command and shared-data surface is closed against
+Claude Code 2.1.208. Interactive TTY parity remains partial, as stated in the
+matrix above. The latest executable surface audit recursively walks the installed
 Claude command tree,
 checks 40 included routes, 243 route-local options, and 46 commands/aliases
 against Praxis, verifies exact option and positional required/optional/variadic
@@ -207,7 +207,10 @@ The required GitHub `CI` status installs Claude Code 2.1.208 at a fixed path and
 passes that exact executable to the credential-free recursive CLI signature,
 interactive `/background`, and live memory-import provider-request gates,
 alongside interactive PTY, installed-package, performance, and production-audit
-lanes. The full 55-gate suite includes real model calls and remains an explicit maintainer
-qualification gate rather than requiring subscription state or billable
-credentials in public/fork CI.
+lanes. The full 61-gate suite includes real model calls and remains an explicit
+maintainer qualification gate rather than requiring subscription state or
+billable credentials in public/fork CI. The latest qualification attempt stopped
+at gate 1 when the upstream Claude request returned `402 Insufficient Balance`;
+that external condition does not establish a Praxis behavior failure or a full
+live-model pass.
 Release automation does not expand or alter product parity scope.
