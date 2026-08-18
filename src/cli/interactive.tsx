@@ -27,6 +27,7 @@ import type {
   ModelUsage,
   PermissionApproval,
   PermissionDecision,
+  PermissionRuleValue,
   PermissionUpdate,
   RuntimeEvent,
   RuntimeEventSink,
@@ -39,6 +40,7 @@ import type {
   CliRuntimeInfo,
 } from './protocol.js'
 import type {
+  ClaudeAllowedPrompt,
   ClaudeInteractiveToolCallbacks,
   ClaudePlanApprovalRequest,
   ClaudePlanApprovalResult,
@@ -50,6 +52,7 @@ import {
   claudePermissionRuleMatches,
   type ClaudePermissionMode,
 } from '../permissions/claude-permission-resolver.js'
+import { claudeBashPermissionSuggestionContent } from '../permissions/claude-shell-permission.js'
 import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
@@ -2473,6 +2476,33 @@ export function InteractiveApp({
       setPlanApproval(pending)
     })
 
+  const applyApprovedPlanPrompts = (
+    prompts: readonly ClaudeAllowedPrompt[] | undefined,
+  ): readonly PermissionUpdate[] => {
+    const rules: PermissionRuleValue[] = []
+    for (const { tool, prompt } of prompts ?? []) {
+      if (tool !== 'Bash') continue
+      const ruleContent = claudeBashPermissionSuggestionContent(prompt)
+      if (!ruleContent) continue
+      rules.push({ toolName: tool, ruleContent })
+    }
+    for (const rule of rules) {
+      const value = permissionRuleValueToString(rule)
+      if (!immediatePermissionRulesRef.current.includes(value))
+        immediatePermissionRulesRef.current.push(value)
+    }
+    return rules.length === 0
+      ? []
+      : [
+          {
+            type: 'addRules',
+            rules,
+            behavior: 'allow',
+            destination: 'session',
+          },
+        ]
+  }
+
   const warn = (error: unknown) =>
     append({
       kind: 'warning',
@@ -4366,9 +4396,13 @@ export function InteractiveApp({
           })
           return
         }
+        const updatedPermissions = applyApprovedPlanPrompts(
+          planApproval.request.allowedPrompts,
+        )
         planApproval.resolve({
           behavior: 'allow',
           permissionMode: selectedIndex === 0 ? elevatedMode : 'default',
+          ...(updatedPermissions.length > 0 ? { updatedPermissions } : {}),
           ...(feedback ? { feedback } : {}),
         })
       }
@@ -7154,6 +7188,18 @@ export function InteractiveApp({
                     marginY={1}
                   >
                     <Text>{planApproval.request.plan}</Text>
+                  </Box>
+                ) : null}
+                {planApproval.request.allowedPrompts?.length ? (
+                  <Box flexDirection="column" marginY={1}>
+                    <Text bold>Approved Bash commands for this session:</Text>
+                    {planApproval.request.allowedPrompts.map(
+                      ({ prompt }, promptIndex) => (
+                        <Text key={`${promptIndex}-${prompt}`}>
+                          {`• ${prompt}`}
+                        </Text>
+                      ),
+                    )}
                   </Box>
                 ) : null}
                 <Text dimColor>

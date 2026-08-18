@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionResolver, ToolRegistry } from '../core/runtime.js'
 import {
   ClaudeInteractiveToolManager,
+  type ClaudeInteractiveToolCallbacks,
   type ClaudePlanApprovalResult,
   type ClaudeQuestion,
 } from './claude-interactive-tools.js'
@@ -45,10 +46,14 @@ async function fixture(
   const askUser = vi.fn(async (questions: readonly ClaudeQuestion[]) => ({
     answers: { [questions[0]?.question ?? 'missing']: 'Option A' },
   }))
-  const approvePlan = vi.fn(async (): Promise<ClaudePlanApprovalResult> =>
-    options.approve === false
-      ? ({ behavior: 'deny' } as const)
-      : ({ behavior: 'allow', permissionMode: 'default' } as const),
+  const approvePlan = vi.fn<ClaudeInteractiveToolCallbacks['approvePlan']>(
+    async (request, signal): Promise<ClaudePlanApprovalResult> => {
+      void request
+      void signal
+      return options.approve === false
+        ? ({ behavior: 'deny' } as const)
+        : ({ behavior: 'allow', permissionMode: 'default' } as const)
+    },
   )
   const permissionResolverForMode = vi.fn(
     (mode: string): PermissionResolver => ({
@@ -245,5 +250,60 @@ describe('ClaudeInteractiveToolManager', () => {
     expect(result.isError).toBe(true)
     expect(manager.consumeTransition('call_ExitPlanMode')).toBeUndefined()
     expect(manager.contextMessage(sessionId)).toContain('Plan mode')
+  })
+
+  it('surfaces declared allowedPrompts in the plan approval request', async () => {
+    const { configRoot, registry, approvePlan } = await fixture()
+    const planPath = join(configRoot, 'plans', `praxis-${sessionId}.md`)
+    await execute(registry, 'EnterPlanMode', {})
+    await writeFile(planPath, '# Plan\n')
+    await execute(registry, 'ExitPlanMode', {
+      allowedPrompts: [
+        { tool: 'Bash', prompt: 'npm run build' },
+        { tool: 'Bash', prompt: 'git status' },
+      ],
+    })
+    expect(approvePlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'exit',
+        planPath,
+        previousMode: 'default',
+        allowedPrompts: [
+          { tool: 'Bash', prompt: 'npm run build' },
+          { tool: 'Bash', prompt: 'git status' },
+        ],
+      }),
+      undefined,
+    )
+  })
+
+  it('omits allowedPrompts from the request when none are declared', async () => {
+    const { configRoot, registry, approvePlan } = await fixture()
+    const planPath = join(configRoot, 'plans', `praxis-${sessionId}.md`)
+    await execute(registry, 'EnterPlanMode', {})
+    await writeFile(planPath, '# Plan\n')
+    await execute(registry, 'ExitPlanMode', {})
+    expect(approvePlan).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'exit', planPath }),
+      undefined,
+    )
+    expect(approvePlan.mock.calls[0]?.[0]).not.toHaveProperty('allowedPrompts')
+  })
+
+  it('rejects malformed allowedPrompts without requesting approval', async () => {
+    const { registry, approvePlan } = await fixture()
+    await execute(registry, 'EnterPlanMode', {})
+    const malformed = await execute(registry, 'ExitPlanMode', {
+      allowedPrompts: [{ tool: 'Read', prompt: 'npm run build' }],
+    })
+    expect(malformed.isError).toBe(true)
+    expect(approvePlan).not.toHaveBeenCalled()
+
+    approvePlan.mockClear()
+    const wrongType = await execute(registry, 'ExitPlanMode', {
+      allowedPrompts: [{ tool: 'Bash', prompt: '' }],
+    })
+    expect(wrongType.isError).toBe(true)
+    expect(approvePlan).not.toHaveBeenCalled()
   })
 })

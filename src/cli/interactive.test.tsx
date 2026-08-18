@@ -7193,6 +7193,167 @@ describe('InteractiveApp', () => {
     })
   })
 
+  it('lists declared allowedPrompts and registers approved Bash prompts for the session', async () => {
+    let approval: ClaudePlanApprovalResult | undefined
+    let isApproved: ((call: ModelToolCall) => boolean) | undefined
+    const added: { behavior: string; rule: string; scope: string }[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService({ approvePlan, isSessionActionApproved }) {
+        isApproved = isSessionActionApproved
+        return {
+          async run() {
+            approval = await approvePlan?.({
+              action: 'exit',
+              planPath: '/tmp/plan.md',
+              plan: '# Plan\n\n1. Implement.',
+              previousMode: 'default',
+              allowedPrompts: [{ tool: 'Bash', prompt: 'npm run build' }],
+            })
+            return {
+              sessionId: 'session-allowed-prompts',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add(input) {
+            added.push(input)
+          },
+        }}
+      />,
+    )
+    await flush()
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Ready to code?')
+    expect(app.lastFrame()).toContain('npm run build')
+    app.stdin.write('y')
+    await flush()
+    expect(approval).toEqual({
+      behavior: 'allow',
+      permissionMode: 'auto',
+      updatedPermissions: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'npm run:*' }],
+          behavior: 'allow',
+          destination: 'session',
+        },
+      ],
+    })
+    expect(
+      isApproved?.({
+        id: 'bash-declared',
+        name: 'Bash',
+        input: { command: 'npm run build' },
+      }),
+    ).toBe(true)
+    expect(
+      isApproved?.({
+        id: 'bash-declared-prefix',
+        name: 'Bash',
+        input: { command: 'npm run test' },
+      }),
+    ).toBe(true)
+    expect(
+      isApproved?.({
+        id: 'bash-undeclared',
+        name: 'Bash',
+        input: { command: 'rm -rf dist' },
+      }),
+    ).toBe(false)
+    expect(added).toEqual([])
+    expect(app.lastFrame()).toContain('done')
+  })
+
+  it('does not register allowedPrompts when the plan is declined', async () => {
+    let approval: ClaudePlanApprovalResult | undefined
+    let isApproved: ((call: ModelToolCall) => boolean) | undefined
+    const added: { behavior: string; rule: string; scope: string }[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService({ approvePlan, isSessionActionApproved }) {
+        isApproved = isSessionActionApproved
+        return {
+          async run() {
+            approval = await approvePlan?.({
+              action: 'exit',
+              planPath: '/tmp/plan.md',
+              plan: '# Plan',
+              previousMode: 'default',
+              allowedPrompts: [{ tool: 'Bash', prompt: 'npm run build' }],
+            })
+            return {
+              sessionId: 'session-declined-prompts',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        permissionRuleStore={{
+          async load() {
+            return []
+          },
+          async add(input) {
+            added.push(input)
+          },
+        }}
+      />,
+    )
+    await flush()
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Ready to code?')
+    expect(app.lastFrame()).toContain('npm run build')
+    app.stdin.write('n')
+    await flush()
+    expect(approval).toEqual({ behavior: 'deny' })
+    expect(
+      isApproved?.({
+        id: 'bash-declared',
+        name: 'Bash',
+        input: { command: 'npm run build' },
+      }),
+    ).toBe(false)
+    expect(added).toEqual([])
+    expect(app.lastFrame()).toContain('done')
+  })
+
   it('round-trips interactive MCP elicitation form data', async () => {
     let result: unknown
     const factory: InteractiveServiceFactory = {

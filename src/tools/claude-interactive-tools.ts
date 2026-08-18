@@ -8,6 +8,7 @@ import type {
   PermissionDecision,
   PermissionResolutionContext,
   PermissionResolver,
+  PermissionUpdate,
   ToolExecutionContext,
   ToolExecutionResult,
   ToolRegistry,
@@ -32,11 +33,17 @@ export interface ClaudeQuestionResult {
   annotations?: Readonly<Record<string, { preview?: string; notes?: string }>>
 }
 
+export interface ClaudeAllowedPrompt {
+  tool: 'Bash'
+  prompt: string
+}
+
 export interface ClaudePlanApprovalRequest {
   action: 'exit'
   planPath: string
   plan?: string
   previousMode: ClaudePermissionMode
+  allowedPrompts?: readonly ClaudeAllowedPrompt[]
 }
 
 export type ClaudePlanApprovalResult =
@@ -44,6 +51,7 @@ export type ClaudePlanApprovalResult =
       behavior: 'allow'
       permissionMode: ClaudePermissionMode
       feedback?: string
+      updatedPermissions?: readonly PermissionUpdate[]
     }
   | { behavior: 'deny'; feedback?: string }
 
@@ -156,7 +164,8 @@ const EXIT_PLAN_MODE: ModelToolDefinition = {
     type: 'object',
     properties: {
       allowedPrompts: {
-        description: 'Deprecated: no longer used.',
+        description:
+          'Bash commands that may run without a permission prompt for the remainder of the session if the plan is approved.',
         type: 'array',
         items: {
           type: 'object',
@@ -280,6 +289,29 @@ function questionsFrom(input: Record<string, unknown>): ClaudeQuestion[] {
   })
 }
 
+function allowedPromptsFrom(
+  input: Record<string, unknown>,
+): ClaudeAllowedPrompt[] {
+  if (input.allowedPrompts === undefined) return []
+  if (!Array.isArray(input.allowedPrompts)) {
+    throw new Error('allowedPrompts must be an array')
+  }
+  return input.allowedPrompts.map((rawPrompt, promptIndex) => {
+    const prompt = object(rawPrompt, `allowedPrompts[${promptIndex}]`)
+    strictKeys(prompt, ['tool', 'prompt'], `allowedPrompts[${promptIndex}]`)
+    if (prompt.tool !== 'Bash') {
+      throw new Error(`allowedPrompts[${promptIndex}].tool must be "Bash"`)
+    }
+    return {
+      tool: 'Bash',
+      prompt: nonEmptyString(
+        prompt.prompt,
+        `allowedPrompts[${promptIndex}].prompt`,
+      ),
+    }
+  })
+}
+
 class ClaudeInteractiveToolRegistry implements ToolRegistry {
   constructor(
     private readonly base: ToolRegistry,
@@ -328,7 +360,12 @@ class ClaudeInteractiveToolRegistry implements ToolRegistry {
         return this.manager.enter(this.sessionId, call)
       }
       strictKeys(call.input, ['allowedPrompts'], 'ExitPlanMode input')
-      return this.manager.exit(this.sessionId, call, context.signal)
+      return this.manager.exit(
+        this.sessionId,
+        call,
+        context.signal,
+        allowedPromptsFrom(call.input),
+      )
     } catch (error) {
       return {
         content: error instanceof Error ? error.message : String(error),
@@ -554,6 +591,7 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
     sessionId: string,
     call: ModelToolCall,
     signal?: AbortSignal,
+    allowedPrompts: readonly ClaudeAllowedPrompt[] = [],
   ): Promise<ToolExecutionResult> {
     const state = this.state(sessionId)
     if (state.mode !== 'plan') {
@@ -580,6 +618,7 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
         planPath: state.planPath,
         previousMode: state.previousMode,
         ...(plan === undefined ? {} : { plan }),
+        ...(allowedPrompts.length > 0 ? { allowedPrompts } : {}),
       },
       signal,
     )
