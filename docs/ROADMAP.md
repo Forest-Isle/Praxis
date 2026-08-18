@@ -1276,3 +1276,16 @@ Status: complete for the accepted single-user developer-core scope.
       without double recording on cancellation, resume, or notification drain
 - [x] verify the complete quality gate, clean installed-package contract, and
       Claude 2.1.207/2.1.208/2.1.209/3.0.0 transcript-write safety matrix
+
+## Stage 163 - native plugin scaffold parity
+
+Status: complete.
+
+- [x] replace simplified native `plugin init` templates with observed Claude
+      2.1.208 skills-directory default and component scaffolds
+- [x] generate the observed hooks handler/configuration, LSP language mapping,
+      dual MCP starter or channel MCP starter, output-style metadata, and
+      runnable Bun channel-server/package starter
+- [x] add focused plugin-runtime regression coverage and verify default,
+      MCP-only, and all-component scaffolds through byte-for-byte 2.1.208
+      black-box directory diffs
