@@ -675,28 +675,18 @@ export class BackgroundAgentManager {
     notification: BackgroundAgentNotification,
   ): string {
     const result = notification.result?.text ?? notification.error ?? ''
+    const status =
+      notification.status === 'stopped' ? 'killed' : notification.status
     const usage = notification.result
-      ? `<usage><subagent_tokens>${notification.result.usage.inputTokens + notification.result.usage.outputTokens}</subagent_tokens><tool_uses>${notification.result.toolUseCount}</tool_uses><duration_ms>${notification.result.durationMs}</duration_ms></usage>`
+      ? `<usage><total_tokens>${notification.result.usage.inputTokens + notification.result.usage.outputTokens}</total_tokens><tool_uses>${notification.result.toolUseCount}</tool_uses><duration_ms>${notification.result.durationMs}</duration_ms></usage>`
       : ''
     return [
       '<task-notification>',
       `<task-id>${task.spec.agentId}</task-id>`,
       `<tool-use-id>${escapeXml(notification.toolUseId)}</tool-use-id>`,
       `<output-file>${escapeXml(task.spec.outputFile)}</output-file>`,
-      `<status>${notification.status}</status>`,
+      `<status>${status}</status>`,
       `<summary>Agent &quot;${escapeXml(task.spec.description)}&quot; finished</summary>`,
-      '<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>',
-      ...(notification.result?.isolationPath
-        ? [
-            `<worktree-path>${escapeXml(notification.result.isolationPath)}</worktree-path>`,
-            `<worktree-retained>${String(notification.result.isolationRetained)}</worktree-retained>`,
-            ...(notification.result.isolationWarning
-              ? [
-                  `<worktree-warning>${escapeXml(notification.result.isolationWarning)}</worktree-warning>`,
-                ]
-              : []),
-          ]
-        : []),
       `<result>${escapeXml(result)}</result>`,
       usage,
       '</task-notification>',
