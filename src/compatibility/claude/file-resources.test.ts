@@ -34,7 +34,12 @@ describe('Claude startup file resources', () => {
   it('downloads into session uploads and sends the bearer key', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'praxis-file-resources-'))
     roots.push(cwd)
-    const requests: { url: string; authorization: string | null }[] = []
+    const requests: {
+      url: string
+      authorization: string | null
+      anthropicVersion: string | null
+      anthropicBeta: string | null
+    }[] = []
 
     const results = await downloadClaudeFileResources(
       [
@@ -51,6 +56,8 @@ describe('Claude startup file resources', () => {
           requests.push({
             url: request.url,
             authorization: request.headers.get('authorization'),
+            anthropicVersion: request.headers.get('anthropic-version'),
+            anthropicBeta: request.headers.get('anthropic-beta'),
           })
           return new Response(
             request.url.endsWith('file_a/content') ? 'A' : 'B',
@@ -73,7 +80,67 @@ describe('Claude startup file resources', () => {
     expect(
       requests.every((request) => request.authorization === 'Bearer secret'),
     ).toBe(true)
+    expect(
+      requests.every((request) => request.anthropicVersion === '2023-06-01'),
+    ).toBe(true)
+    expect(
+      requests.every(
+        (request) => request.anthropicBeta === 'files-api-2025-04-14',
+      ),
+    ).toBe(true)
     expect(requests[0]?.url).toContain('/v1/files/file_')
+  })
+
+  it('preserves custom headers and merges the required Files API headers', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-file-resources-'))
+    roots.push(cwd)
+    const requests: {
+      url: string
+      authorization: string | null
+      anthropicVersion: string | null
+      anthropicBeta: string | null
+      custom: string | null
+    }[] = []
+
+    const results = await downloadClaudeFileResources(
+      [{ fileId: 'file_c', relativePath: 'docs/c.txt' }],
+      {
+        cwd,
+        sessionId: 'session-2',
+        apiKey: 'secret',
+        baseUrl: 'https://files.example.test/v1',
+        headers: {
+          Authorization: 'Bearer custom-token',
+          'X-Praxis-Custom': 'kept',
+          'anthropic-beta': 'files-api-2025-04-14,oauth-2025-04-20',
+        },
+        fetchImpl: async (input, init) => {
+          const request = new Request(input, init)
+          requests.push({
+            url: request.url,
+            authorization: request.headers.get('authorization'),
+            anthropicVersion: request.headers.get('anthropic-version'),
+            anthropicBeta: request.headers.get('anthropic-beta'),
+            custom: request.headers.get('x-praxis-custom'),
+          })
+          return new Response('C')
+        },
+      },
+    )
+
+    expect(results).toMatchObject([
+      { fileId: 'file_c', success: true, bytesWritten: 1 },
+    ])
+    await expect(
+      readFile(join(cwd, 'session-2/uploads/docs/c.txt'), 'utf8'),
+    ).resolves.toBe('C')
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.authorization).toBe('Bearer custom-token')
+    expect(requests[0]?.custom).toBe('kept')
+    expect(requests[0]?.anthropicVersion).toBe('2023-06-01')
+    expect(requests[0]?.anthropicBeta).toBe(
+      'files-api-2025-04-14,oauth-2025-04-20',
+    )
   })
 
   it('returns a warning result for non-retryable HTTP failures', async () => {
