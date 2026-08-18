@@ -10,7 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 
@@ -1287,5 +1287,200 @@ describe('LocalToolRegistry', () => {
       linesAdded: 2,
       linesRemoved: 2,
     })
+  })
+
+  it('rejects Write, Edit, and NotebookEdit on bypass-immune protected paths', async () => {
+    const { root, cwd } = await workspace()
+    const home = join(root, 'home')
+    await mkdir(join(home, '.ssh'), { recursive: true })
+    await mkdir(join(home, '.aws'), { recursive: true })
+    const registry = new LocalToolRegistry({
+      cwd,
+      homeDirectory: home,
+      configRoot: join(home, '.claude'),
+    })
+    const context = { cwd, permissionApproved: true }
+
+    const authorizedKeys = join(home, '.ssh', 'authorized_keys')
+    await writeFile(authorizedKeys, 'existing-key\n')
+    const write = await registry.prepare(
+      {
+        id: 'protected-write',
+        name: 'Write',
+        input: { file_path: authorizedKeys, content: 'malicious\n' },
+      },
+      context,
+    )
+    await expect(registry.execute(write, context)).rejects.toThrow(
+      'Refusing to write protected path',
+    )
+    await expect(readFile(authorizedKeys, 'utf8')).resolves.toBe(
+      'existing-key\n',
+    )
+
+    const credentials = join(home, '.aws', 'credentials')
+    await writeFile(credentials, 'aws_access_key_id=existing\n')
+    const edit = await registry.prepare(
+      {
+        id: 'protected-edit',
+        name: 'Edit',
+        input: {
+          file_path: credentials,
+          old_string: 'existing',
+          new_string: 'malicious',
+        },
+      },
+      context,
+    )
+    await expect(registry.execute(edit, context)).rejects.toThrow(
+      'Refusing to write protected path',
+    )
+    await expect(readFile(credentials, 'utf8')).resolves.toBe(
+      'aws_access_key_id=existing\n',
+    )
+
+    const notebookPath = join(cwd, '.env.ipynb')
+    await writeFile(
+      notebookPath,
+      JSON.stringify({
+        cells: [
+          {
+            cell_type: 'markdown',
+            id: 'intro',
+            metadata: {},
+            source: ['before'],
+          },
+        ],
+        metadata: {},
+        nbformat: 4,
+      }),
+    )
+    const notebookRead = await registry.prepare(
+      {
+        id: 'protected-notebook-read',
+        name: 'Read',
+        input: { file_path: notebookPath },
+      },
+      { cwd },
+    )
+    const notebookResult = await registry.execute(notebookRead, { cwd })
+    const notebookMessages = [
+      {
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [notebookRead],
+      },
+      {
+        role: 'tool' as const,
+        toolCallId: notebookRead.id,
+        content: notebookResult.content,
+        isError: false,
+      },
+    ]
+    const notebookEdit = await registry.prepare(
+      {
+        id: 'protected-notebook-edit',
+        name: 'NotebookEdit',
+        input: {
+          notebook_path: notebookPath,
+          cell_id: 'intro',
+          new_source: 'after',
+        },
+      },
+      { cwd, messages: notebookMessages },
+    )
+    await expect(
+      registry.execute(notebookEdit, { cwd, messages: notebookMessages }),
+    ).rejects.toThrow('Refusing to write protected path')
+    await expect(readFile(notebookPath, 'utf8')).resolves.toContain('before')
+
+    const defaultConfigRegistry = new LocalToolRegistry({
+      cwd,
+      homeDirectory: home,
+    })
+    const settingsPath = join(home, '.claude', 'settings.json')
+    await mkdir(dirname(settingsPath), { recursive: true })
+    const settingsWrite = await defaultConfigRegistry.prepare(
+      {
+        id: 'protected-default-config',
+        name: 'Write',
+        input: { file_path: settingsPath, content: '{}' },
+      },
+      context,
+    )
+    await expect(
+      defaultConfigRegistry.execute(settingsWrite, context),
+    ).rejects.toThrow('Refusing to write protected path')
+  })
+
+  it('rejects static Bash writes into protected credential paths before execution', async () => {
+    const { root, cwd } = await workspace()
+    const home = join(root, 'home')
+    await mkdir(join(home, '.ssh'), { recursive: true })
+    await mkdir(join(home, '.aws'), { recursive: true })
+    const authorizedKeys = join(home, '.ssh', 'authorized_keys')
+    const credentials = join(home, '.aws', 'credentials')
+    await writeFile(authorizedKeys, 'existing-key\n')
+    await writeFile(credentials, 'existing-credential\n')
+    const registry = new LocalToolRegistry({
+      cwd,
+      homeDirectory: home,
+      configRoot: join(home, '.claude'),
+    })
+    const context = { cwd }
+
+    const redirect = await registry.prepare(
+      {
+        id: 'protected-redirect',
+        name: 'Bash',
+        input: { command: `printf 'secret' > ${authorizedKeys}` },
+      },
+      context,
+    )
+    await expect(registry.execute(redirect, context)).rejects.toThrow(
+      'Refusing to write protected path',
+    )
+    await expect(readFile(authorizedKeys, 'utf8')).resolves.toBe(
+      'existing-key\n',
+    )
+
+    const removal = await registry.prepare(
+      {
+        id: 'protected-removal',
+        name: 'Bash',
+        input: { command: `rm ${credentials}` },
+      },
+      context,
+    )
+    await expect(registry.execute(removal, context)).rejects.toThrow(
+      'Refusing to write protected path',
+    )
+    await expect(readFile(credentials, 'utf8')).resolves.toBe(
+      'existing-credential\n',
+    )
+  })
+
+  it('still allows ordinary workspace writes with configured protected roots', async () => {
+    const { root, cwd } = await workspace()
+    const home = join(root, 'home')
+    const registry = new LocalToolRegistry({
+      cwd,
+      homeDirectory: home,
+      configRoot: join(home, '.claude'),
+    })
+    const context = { cwd }
+    const target = join(cwd, 'notes.txt')
+    const write = await registry.prepare(
+      {
+        id: 'ordinary-write',
+        name: 'Write',
+        input: { file_path: target, content: 'hello' },
+      },
+      context,
+    )
+    await expect(registry.execute(write, context)).resolves.toMatchObject({
+      isError: false,
+    })
+    await expect(readFile(target, 'utf8')).resolves.toBe('hello')
   })
 })

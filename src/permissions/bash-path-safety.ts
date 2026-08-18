@@ -31,6 +31,7 @@ export interface BashPathSafetyOptions {
     | 'plan'
     | 'default'
   fileRule?: (operation: FileOperation, absolutePath: string) => RuleOutcome
+  protectedWrite?: (absolutePath: string) => string | undefined
   platform?: NodeJS.Platform
 }
 
@@ -533,6 +534,20 @@ function pathFailure(
       : rawPath
   const absolutePath = expandPath(validationPath, options)
   const pathsToCheck = pathRepresentations(absolutePath)
+  if (operation !== 'read' && options.protectedWrite !== undefined) {
+    for (const path of pathsToCheck) {
+      const protectedReason = options.protectedWrite(path)
+      if (protectedReason !== undefined) {
+        return {
+          safe: false,
+          behavior: 'deny',
+          reason: `Refusing to write protected path: ${protectedReason}`,
+          path: absolutePath,
+          operation,
+        }
+      }
+    }
+  }
   const rules = pathsToCheck.map(
     (path) => options.fileRule?.(operation, path) ?? null,
   )

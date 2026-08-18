@@ -17,7 +17,7 @@ import {
   relative,
   resolve,
 } from 'node:path'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 
 import sharp from 'sharp'
 
@@ -44,6 +44,8 @@ import { globFiles } from './glob.js'
 import { countLineChanges } from './line-changes.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
 import { openPdf } from './pdf.js'
+import { validateBashPathSafety } from '../permissions/bash-path-safety.js'
+import { protectedWritePathReason } from '../permissions/bypass-immune-paths.js'
 import { effectiveAdditionalDirectories } from '../permissions/permission-updates.js'
 
 export interface LocalToolRegistryOptions {
@@ -58,6 +60,8 @@ export interface LocalToolRegistryOptions {
   enableReportFindings?: boolean
   environment?: Readonly<Record<string, string>>
   sandbox?: BashSandboxRuntime
+  homeDirectory?: string
+  configRoot?: string
 }
 
 export interface BashSandboxRuntime {
@@ -570,6 +574,11 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly enableReportFindings: boolean
   private readonly environment: Readonly<Record<string, string>> | undefined
   private readonly sandbox: BashSandboxRuntime | undefined
+  private readonly homeDirectory: string
+  private readonly configRoot: string
+  private readonly protectedWriteReason: (
+    absolutePath: string,
+  ) => string | undefined
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
@@ -589,10 +598,48 @@ export class LocalToolRegistry implements ToolRegistry {
     this.enableReportFindings = options.enableReportFindings ?? false
     this.environment = options.environment
     this.sandbox = options.sandbox
+    this.homeDirectory = options.homeDirectory
+      ? resolve(options.homeDirectory)
+      : homedir()
+    this.configRoot = options.configRoot
+      ? resolve(options.configRoot)
+      : process.env.CLAUDE_CONFIG_DIR
+        ? resolve(process.env.CLAUDE_CONFIG_DIR)
+        : resolve(this.homeDirectory, '.claude')
+    this.protectedWriteReason = (absolutePath) =>
+      protectedWritePathReason(absolutePath, {
+        homeDirectory: this.homeDirectory,
+        configRoot: this.configRoot,
+      })
     this.processRunner = new BoundedProcessRunner({
       cwd: this.cwd,
       maxOutputBytes: this.maxOutputBytes,
     })
+  }
+
+  private assertProtectedWritePath(filePath: string): void {
+    const reason = this.protectedWriteReason(filePath)
+    if (reason !== undefined) {
+      throw new Error(`Refusing to write protected path: ${reason}`)
+    }
+  }
+
+  private assertProtectedBashCommand(
+    command: string,
+    context?: ToolExecutionContext,
+  ): void {
+    const cwd = this.currentCwd(context)
+    const result = validateBashPathSafety(command, {
+      cwd,
+      homeDirectory: this.homeDirectory,
+      readRoots: [cwd],
+      writeRoots: [cwd],
+      permissionMode: 'bypassPermissions',
+      protectedWrite: this.protectedWriteReason,
+    })
+    if (!result.safe && result.behavior === 'deny') {
+      throw new Error(result.reason)
+    }
   }
 
   private currentCwd(context?: ToolExecutionContext): string {
@@ -1188,6 +1235,7 @@ export class LocalToolRegistry implements ToolRegistry {
 
   private async write(call: ModelToolCall): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'file_path')
+    this.assertProtectedWritePath(filePath)
     const content = stringInput(call.input, 'content', true)
     if (Buffer.byteLength(content) > this.maxFileBytes) {
       throw new Error(`Content exceeds ${this.maxFileBytes} byte write limit`)
@@ -1242,6 +1290,7 @@ export class LocalToolRegistry implements ToolRegistry {
 
   private async edit(call: ModelToolCall): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'file_path')
+    this.assertProtectedWritePath(filePath)
     const oldString = stringInput(call.input, 'old_string')
     const newString = stringInput(call.input, 'new_string', true)
     const handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
@@ -1292,6 +1341,7 @@ export class LocalToolRegistry implements ToolRegistry {
     call: ModelToolCall,
   ): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'notebook_path')
+    this.assertProtectedWritePath(filePath)
     const handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
     try {
       await this.assertStablePath(filePath)
@@ -1413,6 +1463,7 @@ export class LocalToolRegistry implements ToolRegistry {
     if (timeout === undefined)
       throw new Error('Prepared Bash call has no timeout')
     const rawCommand = stringInput(call.input, 'command')
+    this.assertProtectedBashCommand(rawCommand, context)
     const sandboxInput = {
       command: rawCommand,
       ...(call.input.dangerouslyDisableSandbox === true

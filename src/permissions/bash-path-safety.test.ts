@@ -360,4 +360,43 @@ describe('Claude Bash path safety', () => {
       suggestions: [],
     })
   })
+
+  it('hard-denies protected writes from the protected-write callback', () => {
+    const protectedWrite = (path: string) => {
+      if (path === '/home/fixture/.ssh/authorized_keys') {
+        return 'SSH authorized_keys is protected'
+      }
+      if (path === '/home/fixture/.aws/credentials') {
+        return 'AWS credentials are protected'
+      }
+      return undefined
+    }
+    const options = {
+      ...base,
+      permissionMode: 'bypassPermissions' as const,
+      protectedWrite,
+    }
+    expect(
+      validateBashPathSafety(
+        'printf secret > /home/fixture/.ssh/authorized_keys',
+        options,
+      ),
+    ).toMatchObject({
+      safe: false,
+      behavior: 'deny',
+      reason:
+        'Refusing to write protected path: SSH authorized_keys is protected',
+      path: '/home/fixture/.ssh/authorized_keys',
+      operation: 'create',
+    })
+    expect(
+      validateBashPathSafety('rm /home/fixture/.aws/credentials', options),
+    ).toMatchObject({
+      safe: false,
+      behavior: 'deny',
+      reason: 'Refusing to write protected path: AWS credentials are protected',
+      path: '/home/fixture/.aws/credentials',
+      operation: 'write',
+    })
+  })
 })
