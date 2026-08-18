@@ -19,6 +19,7 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
   let root: string
   let cwd: string
   let outside: string
+  let writeOutside: string
   let runtime: ClaudeSandboxRuntime
 
   const configured = (
@@ -67,9 +68,11 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
     root = await mkdtemp(join(tmpdir(), 'praxis-sandbox-e2e-'))
     cwd = join(root, 'workspace')
     outside = join(root, 'outside')
+    writeOutside = join(root, 'write-outside')
     await Promise.all([
       mkdir(join(cwd, '.claude'), { recursive: true }),
       mkdir(join(outside, 'public'), { recursive: true }),
+      mkdir(writeOutside, { recursive: true }),
     ])
     runtime = new ClaudeSandboxRuntime(
       BaseSandboxManager,
@@ -92,14 +95,14 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
     )
 
     const blocked = await bash(
-      `printf 'outside' > '${join(outside, 'blocked.txt')}'`,
+      `printf 'outside' > '${join(writeOutside, 'blocked.txt')}'`,
     )
     expect(blocked.isError).toBe(true)
     expect(blocked.processOutput?.stderr).toMatch(
       /sandbox|deny|operation not permitted/iu,
     )
     await expect(
-      readFile(join(outside, 'blocked.txt'), 'utf8'),
+      readFile(join(writeOutside, 'blocked.txt'), 'utf8'),
     ).rejects.toMatchObject({
       code: 'ENOENT',
     })
@@ -133,7 +136,7 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
   })
 
   it('honors override policy and excluded commands', async () => {
-    const overridePath = join(outside, 'override.txt')
+    const overridePath = join(writeOutside, 'override.txt')
     await expect(
       bash(`printf override > '${overridePath}'`, true),
     ).resolves.toMatchObject({ isError: false })
@@ -141,7 +144,7 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
 
     await runtime.initialize(configured({ allowUnsandboxedCommands: false }))
     const forced = await bash(
-      `printf forced > '${join(outside, 'forced.txt')}'`,
+      `printf forced > '${join(writeOutside, 'forced.txt')}'`,
       true,
     )
     expect(forced.isError).toBe(true)
@@ -153,7 +156,7 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
       }),
     )
     await expect(
-      bash(`printf excluded > '${join(outside, 'excluded.txt')}'`),
+      bash(`printf excluded > '${join(writeOutside, 'excluded.txt')}'`),
     ).resolves.toMatchObject({ isError: false })
   })
 
