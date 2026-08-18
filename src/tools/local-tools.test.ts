@@ -1288,4 +1288,139 @@ describe('LocalToolRegistry', () => {
       linesRemoved: 2,
     })
   })
+
+  it('refuses Write, Edit, and NotebookEdit on bypass-immune protected paths', async () => {
+    const { root, cwd } = await workspace()
+    const home = join(root, 'home')
+    const configRoot = join(home, '.claude')
+    await Promise.all([
+      mkdir(join(home, '.ssh'), { recursive: true }),
+      mkdir(join(home, '.aws'), { recursive: true }),
+      mkdir(configRoot, { recursive: true }),
+    ])
+    const sshKey = join(home, '.ssh', 'id_rsa')
+    const awsCredentials = join(home, '.aws', 'credentials')
+    const notebookPath = join(home, '.ssh', 'notes.ipynb')
+    await Promise.all([
+      writeFile(sshKey, 'secret-key'),
+      writeFile(awsCredentials, 'aws-secret'),
+      writeFile(
+        notebookPath,
+        JSON.stringify({
+          cells: [
+            {
+              cell_type: 'markdown',
+              id: 'secret',
+              metadata: {},
+              source: 'before',
+            },
+          ],
+          metadata: {},
+          nbformat: 4,
+        }),
+      ),
+    ])
+
+    const registry = new LocalToolRegistry({
+      cwd,
+      homeDirectory: home,
+      configRoot,
+    })
+
+    // Write refuses a new protected path before creating it.
+    const newProtected = join(home, '.aws', 'new-credentials.json')
+    const protectedWrite = await registry.prepare(
+      {
+        id: 'protected-write',
+        name: 'Write',
+        input: { file_path: newProtected, content: 'tampered' },
+      },
+      { cwd, permissionPhase: 'request' },
+    )
+    await expect(
+      registry.execute(protectedWrite, { cwd, permissionApproved: true }),
+    ).rejects.toThrow('Refusing to write protected path:')
+    await expect(stat(newProtected)).rejects.toMatchObject({ code: 'ENOENT' })
+
+    // Edit refuses an existing protected path before mutating it.
+    const protectedEdit = await registry.prepare(
+      {
+        id: 'protected-edit',
+        name: 'Edit',
+        input: {
+          file_path: awsCredentials,
+          old_string: 'aws-secret',
+          new_string: 'tampered',
+        },
+      },
+      { cwd, permissionPhase: 'request' },
+    )
+    await expect(
+      registry.execute(protectedEdit, { cwd, permissionApproved: true }),
+    ).rejects.toThrow('Refusing to write protected path:')
+    await expect(readFile(awsCredentials, 'utf8')).resolves.toBe('aws-secret')
+
+    // NotebookEdit refuses a protected notebook after a successful Read.
+    const notebookRead = await registry.prepare(
+      {
+        id: 'protected-notebook-read',
+        name: 'Read',
+        input: { file_path: notebookPath },
+      },
+      { cwd, permissionPhase: 'request' },
+    )
+    const notebookResult = await registry.execute(notebookRead, {
+      cwd,
+      permissionApproved: true,
+    })
+    const messages = [
+      {
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [notebookRead],
+      },
+      {
+        role: 'tool' as const,
+        toolCallId: notebookRead.id,
+        content: notebookResult.content,
+        isError: false,
+      },
+    ]
+    const protectedNotebookEdit = await registry.prepare(
+      {
+        id: 'protected-notebook-edit',
+        name: 'NotebookEdit',
+        input: {
+          notebook_path: notebookPath,
+          cell_id: 'secret',
+          new_source: 'after',
+        },
+      },
+      { cwd, messages, permissionPhase: 'request' },
+    )
+    await expect(
+      registry.execute(protectedNotebookEdit, {
+        cwd,
+        messages,
+        permissionApproved: true,
+      }),
+    ).rejects.toThrow('Refusing to write protected path:')
+    expect(JSON.parse(await readFile(notebookPath, 'utf8'))).toMatchObject({
+      cells: [{ id: 'secret', source: 'before' }],
+    })
+
+    // Ordinary project files with config-like names remain writable.
+    const projectWrite = await registry.prepare(
+      {
+        id: 'project-write',
+        name: 'Write',
+        input: { file_path: 'notes.jsonl', content: '[]' },
+      },
+      { cwd },
+    )
+    await expect(
+      registry.execute(projectWrite, { cwd }),
+    ).resolves.toMatchObject({ isError: false })
+    await expect(readFile(join(cwd, 'notes.jsonl'), 'utf8')).resolves.toBe('[]')
+  })
 })

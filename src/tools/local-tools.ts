@@ -17,7 +17,7 @@ import {
   relative,
   resolve,
 } from 'node:path'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 
 import sharp from 'sharp'
 
@@ -45,6 +45,7 @@ import { countLineChanges } from './line-changes.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
 import { openPdf } from './pdf.js'
 import { effectiveAdditionalDirectories } from '../permissions/permission-updates.js'
+import { bypassImmuneWriteReason } from '../permissions/bypass-immune-paths.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
@@ -58,6 +59,8 @@ export interface LocalToolRegistryOptions {
   enableReportFindings?: boolean
   environment?: Readonly<Record<string, string>>
   sandbox?: BashSandboxRuntime
+  homeDirectory?: string
+  configRoot?: string
 }
 
 export interface BashSandboxRuntime {
@@ -570,6 +573,8 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly enableReportFindings: boolean
   private readonly environment: Readonly<Record<string, string>> | undefined
   private readonly sandbox: BashSandboxRuntime | undefined
+  private readonly homeDirectory: string
+  private readonly configRoot: string
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
@@ -589,6 +594,12 @@ export class LocalToolRegistry implements ToolRegistry {
     this.enableReportFindings = options.enableReportFindings ?? false
     this.environment = options.environment
     this.sandbox = options.sandbox
+    this.homeDirectory = options.homeDirectory
+      ? resolve(options.homeDirectory)
+      : homedir()
+    this.configRoot = options.configRoot
+      ? resolve(options.configRoot)
+      : resolve(process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'))
     this.processRunner = new BoundedProcessRunner({
       cwd: this.cwd,
       maxOutputBytes: this.maxOutputBytes,
@@ -1186,8 +1197,19 @@ export class LocalToolRegistry implements ToolRegistry {
     return mkdtemp(join(parent, 'pdf-'))
   }
 
+  private assertBypassImmunePath(filePath: string): void {
+    const reason = bypassImmuneWriteReason(filePath, {
+      homeDirectory: this.homeDirectory,
+      configRoot: this.configRoot,
+    })
+    if (reason !== undefined) {
+      throw new Error(`Refusing to write protected path: ${reason}`)
+    }
+  }
+
   private async write(call: ModelToolCall): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'file_path')
+    this.assertBypassImmunePath(filePath)
     const content = stringInput(call.input, 'content', true)
     if (Buffer.byteLength(content) > this.maxFileBytes) {
       throw new Error(`Content exceeds ${this.maxFileBytes} byte write limit`)
@@ -1242,6 +1264,7 @@ export class LocalToolRegistry implements ToolRegistry {
 
   private async edit(call: ModelToolCall): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'file_path')
+    this.assertBypassImmunePath(filePath)
     const oldString = stringInput(call.input, 'old_string')
     const newString = stringInput(call.input, 'new_string', true)
     const handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
@@ -1292,6 +1315,7 @@ export class LocalToolRegistry implements ToolRegistry {
     call: ModelToolCall,
   ): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'notebook_path')
+    this.assertBypassImmunePath(filePath)
     const handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
     try {
       await this.assertStablePath(filePath)

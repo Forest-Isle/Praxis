@@ -1554,6 +1554,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
     additionalReadDirectories: initialAdditionalReadDirectories,
     sandbox: claudeSandboxRuntime,
     ...(environment ? { environment } : {}),
+    homeDirectory:
+      sandboxEnvironment.HOME ?? sandboxEnvironment.USERPROFILE ?? homedir(),
+    configRoot,
   })
   const runtimeMcpResources = async (
     candidates: readonly ClaudeJsonResource[],
