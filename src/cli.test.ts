@@ -1437,6 +1437,69 @@ describe('Praxis CLI', () => {
     expect(capture.stderr).toEqual([])
   })
 
+  it('serves --version from the facade fast path and delegates other argv to supplied dependencies', async () => {
+    const versionCapture = captureIO()
+    let versionServiceCreations = 0
+    const counting: CliDependencies = {
+      async createService() {
+        versionServiceCreations += 1
+        throw new Error('--version must not construct a service')
+      },
+    }
+
+    await expect(run(['--version'], versionCapture.io, counting)).resolves.toBe(
+      0,
+    )
+    expect(versionCapture.stdout).toEqual([`${PACKAGE_VERSION}\n`])
+    expect(versionCapture.stderr).toEqual([])
+    expect(versionServiceCreations).toBe(0)
+
+    const delegatedCapture = captureIO()
+    const base = dependencies()
+    let delegatedServiceCreations = 0
+    const delegated: CliDependencies = {
+      async createService(options) {
+        delegatedServiceCreations += 1
+        return base.createService(options)
+      },
+    }
+    await expect(
+      run(['run', 'hello'], delegatedCapture.io, delegated),
+    ).resolves.toBe(0)
+    expect(delegatedCapture.stdout.join('')).toBe('answer:hello\n')
+    expect(delegatedServiceCreations).toBe(1)
+  })
+
+  it('prefers top-level help over the version fast path when both flags are present', async () => {
+    const capture = captureIO()
+    let serviceCreations = 0
+    const unavailable: CliDependencies = {
+      async createService() {
+        serviceCreations += 1
+        throw new Error('--help --version must not construct a service')
+      },
+    }
+
+    await expect(
+      run(['--help', '--version'], capture.io, unavailable),
+    ).resolves.toBe(0)
+    expect(capture.stdout.join('')).toContain('Praxis')
+    expect(capture.stdout.join('')).toContain('--prefill <text>')
+    expect(capture.stdout.join('')).toContain('--thinking <mode>')
+    expect(capture.stdout).not.toEqual([`${PACKAGE_VERSION}\n`])
+    expect(capture.stderr).toEqual([])
+    expect(serviceCreations).toBe(0)
+
+    const shortHelpCapture = captureIO()
+    await expect(
+      run(['-h', '-v'], shortHelpCapture.io, unavailable),
+    ).resolves.toBe(0)
+    expect(shortHelpCapture.stdout.join('')).toContain('--prefill <text>')
+    expect(shortHelpCapture.stdout).not.toEqual([`${PACKAGE_VERSION}\n`])
+    expect(shortHelpCapture.stderr).toEqual([])
+    expect(serviceCreations).toBe(0)
+  })
+
   it('routes command-specific help without constructing services or providers', async () => {
     let constructions = 0
     const unavailable: CliDependencies = {

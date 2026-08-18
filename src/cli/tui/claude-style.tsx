@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { cloneElement, useEffect, useState, type ReactElement } from 'react'
 
 import { Box, Text, useStdout } from 'ink'
 
@@ -17,6 +17,7 @@ import {
   tuiPalette,
   tuiSyntaxStyle,
   useTuiPalette,
+  type TuiPalette,
   type TuiSyntaxToken,
   type TuiTheme,
 } from './theme.js'
@@ -240,8 +241,7 @@ function cachedInlineSegments(text: string): readonly InlineSegment[] {
   return segments
 }
 
-function InlineText({ text }: { text: string }) {
-  const palette = useTuiPalette()
+function inlineTextElement(text: string, palette: TuiPalette): ReactElement {
   return (
     <Text>
       {cachedInlineSegments(text).map((segment, index) => {
@@ -305,50 +305,74 @@ function cachedMarkdownLineShape(line: string): MarkdownLineShape {
   return shape
 }
 
-function MarkdownLine({ line }: { line: string }) {
-  const palette = useTuiPalette()
+const ELEMENT_CACHE_KEY_SEPARATOR = String.fromCharCode(0)
+
+function markdownLineStyleSignature(palette: TuiPalette): string {
+  return [palette.accent, palette.brand, palette.info, palette.link].join(
+    ELEMENT_CACHE_KEY_SEPARATOR,
+  )
+}
+
+const MARKDOWN_LINE_ELEMENT_CACHE_MAX = 4096
+const markdownLineElementCache = new Map<string, ReactElement>()
+
+function buildMarkdownLine(line: string, palette: TuiPalette): ReactElement {
   const shape = cachedMarkdownLineShape(line)
   if (shape.role === 'h3')
-    return (
-      <Text bold>
-        <InlineText text={shape.content} />
-      </Text>
-    )
+    return <Text bold>{inlineTextElement(shape.content, palette)}</Text>
   if (shape.role === 'h2')
     return (
       <Text bold color={palette.accent}>
-        <InlineText text={shape.content} />
+        {inlineTextElement(shape.content, palette)}
       </Text>
     )
   if (shape.role === 'h1')
     return (
       <Text bold color={palette.brand}>
-        <InlineText text={shape.content} />
+        {inlineTextElement(shape.content, palette)}
       </Text>
     )
   if (shape.role === 'bullet')
     return (
       <Text>
         {'  • '}
-        <InlineText text={shape.content} />
+        {inlineTextElement(shape.content, palette)}
       </Text>
     )
   if (shape.role === 'ordered')
     return (
       <Text>
         {'  '}
-        <InlineText text={shape.content} />
+        {inlineTextElement(shape.content, palette)}
       </Text>
     )
   if (shape.role === 'quote')
     return (
       <Text dimColor>
         {'│ '}
-        <InlineText text={shape.content} />
+        {inlineTextElement(shape.content, palette)}
       </Text>
     )
-  if (shape.role === 'plain') return <InlineText text={shape.content} />
+  if (shape.role === 'plain') return inlineTextElement(shape.content, palette)
   return <Text> </Text>
+}
+
+function cachedMarkdownLineElement(
+  line: string,
+  palette: TuiPalette,
+): ReactElement {
+  const key = [line, markdownLineStyleSignature(palette)].join(
+    ELEMENT_CACHE_KEY_SEPARATOR,
+  )
+  const cached = markdownLineElementCache.get(key)
+  if (cached) return cached
+  const element = buildMarkdownLine(line, palette)
+  markdownLineElementCache.set(key, element)
+  if (markdownLineElementCache.size > MARKDOWN_LINE_ELEMENT_CACHE_MAX) {
+    const oldest = markdownLineElementCache.keys().next().value
+    if (oldest !== undefined) markdownLineElementCache.delete(oldest)
+  }
+  return element
 }
 
 const CODE_KEYWORDS = new Set([
@@ -405,16 +429,28 @@ function cachedSyntaxTokens(text: string): readonly CachedSyntaxToken[] {
   return tokens
 }
 
-function SyntaxCodeLine({
-  text,
-  prefix = '',
-  change,
-}: {
-  text: string
-  prefix?: string
-  change?: 'added' | 'removed'
-}) {
-  const palette = useTuiPalette()
+function syntaxStyleSignature(palette: TuiPalette): string {
+  const syntax = palette.syntax
+  return [
+    palette.syntaxHighlightingDisabled ? '1' : '0',
+    syntax.text,
+    syntax.keyword,
+    syntax.identifier,
+    syntax.string,
+    syntax.removedBackground ?? '',
+    syntax.addedBackground ?? '',
+  ].join(ELEMENT_CACHE_KEY_SEPARATOR)
+}
+
+const SYNTAX_LINE_ELEMENT_CACHE_MAX = 4096
+const syntaxLineElementCache = new Map<string, ReactElement>()
+
+function buildSyntaxCodeLine(
+  text: string,
+  prefix: string,
+  change: 'added' | 'removed' | undefined,
+  palette: TuiPalette,
+): ReactElement {
   if (palette.syntaxHighlightingDisabled) {
     return (
       <Text>
@@ -439,6 +475,39 @@ function SyntaxCodeLine({
       </Text>
     </Text>
   )
+}
+
+function cachedSyntaxCodeLine(
+  text: string,
+  prefix: string,
+  change: 'added' | 'removed' | undefined,
+  palette: TuiPalette,
+): ReactElement {
+  const key = [text, prefix, change ?? '', syntaxStyleSignature(palette)].join(
+    ELEMENT_CACHE_KEY_SEPARATOR,
+  )
+  const cached = syntaxLineElementCache.get(key)
+  if (cached) return cached
+  const element = buildSyntaxCodeLine(text, prefix, change, palette)
+  syntaxLineElementCache.set(key, element)
+  if (syntaxLineElementCache.size > SYNTAX_LINE_ELEMENT_CACHE_MAX) {
+    const oldest = syntaxLineElementCache.keys().next().value
+    if (oldest !== undefined) syntaxLineElementCache.delete(oldest)
+  }
+  return element
+}
+
+function SyntaxCodeLine({
+  text,
+  prefix = '',
+  change,
+}: {
+  text: string
+  prefix?: string
+  change?: 'added' | 'removed'
+}) {
+  const palette = useTuiPalette()
+  return cachedSyntaxCodeLine(text, prefix, change, palette)
 }
 
 function ToolResultText({
@@ -781,7 +850,17 @@ function cachedMarkdownText(text: string): readonly ParsedMarkdownLine[] {
   return parsed
 }
 
-export function MarkdownText({ text }: { text: string }) {
+function markdownTextStyleSignature(palette: TuiPalette): string {
+  return [
+    syntaxStyleSignature(palette),
+    markdownLineStyleSignature(palette),
+  ].join(ELEMENT_CACHE_KEY_SEPARATOR)
+}
+
+const MARKDOWN_TEXT_ELEMENT_CACHE_MAX = 4096
+const markdownTextElementCache = new Map<string, ReactElement>()
+
+function buildMarkdownText(text: string, palette: TuiPalette): ReactElement {
   return (
     <Box flexDirection="column">
       {cachedMarkdownText(text).map((line, index) => {
@@ -798,11 +877,39 @@ export function MarkdownText({ text }: { text: string }) {
             </Text>
           )
         if (line.type === 'code')
-          return <SyntaxCodeLine key={index} prefix="│ " text={line.text} />
-        return <MarkdownLine key={index} line={line.line} />
+          return cloneElement(
+            cachedSyntaxCodeLine(line.text, '│ ', undefined, palette),
+            { key: index },
+          )
+        return cloneElement(cachedMarkdownLineElement(line.line, palette), {
+          key: index,
+        })
       })}
     </Box>
   )
+}
+
+function cachedMarkdownTextElement(
+  text: string,
+  palette: TuiPalette,
+): ReactElement {
+  const key = [text, markdownTextStyleSignature(palette)].join(
+    ELEMENT_CACHE_KEY_SEPARATOR,
+  )
+  const cached = markdownTextElementCache.get(key)
+  if (cached) return cached
+  const element = buildMarkdownText(text, palette)
+  markdownTextElementCache.set(key, element)
+  if (markdownTextElementCache.size > MARKDOWN_TEXT_ELEMENT_CACHE_MAX) {
+    const oldest = markdownTextElementCache.keys().next().value
+    if (oldest !== undefined) markdownTextElementCache.delete(oldest)
+  }
+  return element
+}
+
+export function MarkdownText({ text }: { text: string }) {
+  const palette = useTuiPalette()
+  return cachedMarkdownTextElement(text, palette)
 }
 
 export function Transcript({
