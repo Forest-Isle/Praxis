@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
