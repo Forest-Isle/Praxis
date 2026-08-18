@@ -1302,3 +1302,20 @@ separately unverified.
 - [x] verify Linux cwd/outside writes, denyRead/allowRead, denyWrite, network
       allow/deny, override policy, exclusions, cleanup, and planted bare-
       repository files in GitHub Actions
+
+## Stage 165 - final evidence audit
+
+Status: credential-free implementation evidence is complete; the aggregate
+live-model qualification remains externally blocked.
+
+- [x] verify the aggregate runner discovers 61 unique compatibility gates from
+      the current package scripts, including the two verifiers under
+      `test:compat`
+- [x] correct the current parity-matrix gate count without rewriting historical
+      per-stage gate totals
+- [x] confirm the fixed Claude Code 2.1.208 baseline reaches its first real
+      model turn and receives `402 Insufficient Balance` before any Praxis
+      behavior assertion runs
+- [ ] rerun the complete 61-gate live-model qualification after upstream model
+      balance is available
+- [ ] validate the official sandbox runtime on a real WSL environment
