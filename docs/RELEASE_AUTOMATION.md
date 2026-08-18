@@ -75,8 +75,11 @@ package; manual-only versioning was rejected because it can drift from tags.
 ## Error handling and recovery
 
 - Tag/version mismatch fails before package creation.
-- A version PR stays open when its dispatched `CI` fails; fixing source and
-  merging it to `main` updates the PR and reruns the protected auto-merge path.
+- A version PR stays open when a dispatched protected workflow fails or times
+  out. The exact release head receives an explicit non-success bridge status,
+  linked to the observed run when one exists, as long as that head has not
+  changed during verification. Fixing source and merging it to `main` updates
+  the PR and reruns the protected auto-merge path.
 - Any regression failure stops artifact upload and npm publication.
 - Artifact upload uses `--clobber`; a retry replaces only same-release files.
 - npm versions are immutable. Publish checks the registry first and skips an

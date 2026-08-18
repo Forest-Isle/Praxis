@@ -44,8 +44,9 @@ jobs:
           test -n "$HEAD_SHA"
           WORKFLOWS=(ci.yml codeql.yml dependency-review.yml)
           declare -A PREVIOUS_RUN_IDS
-          declare -A COMPLETED_RUN_IDS
-          declare -A COMPLETED_RUN_URLS
+          declare -A OBSERVED_RUN_IDS
+          declare -A OBSERVED_RUN_URLS
+          declare -A WORKFLOW_RESULTS
           for CHECK_NAME in CI 'Dependency review'; do
             gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
               -f state=pending -f context="$CHECK_NAME" \
@@ -95,26 +96,22 @@ jobs:
                 fi
                 CONCLUSION=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
                   --json conclusion --jq '.conclusion')
+                WORKFLOW_RESULTS[$WORKFLOW]=$CONCLUSION
+                OBSERVED_RUN_IDS[$WORKFLOW]=$RUN_ID
+                OBSERVED_RUN_URLS[$WORKFLOW]=$(jq -r '.url' <<< "$RUN")
                 if test "$CONCLUSION" != "success"; then
                   FAILED_WORKFLOWS+=("$WORKFLOW:$CONCLUSION")
-                else
-                  COMPLETED_RUN_IDS[$WORKFLOW]=$RUN_ID
-                  COMPLETED_RUN_URLS[$WORKFLOW]=$(jq -r '.url' <<< "$RUN")
                 fi
                 break
               fi
               if test "$SECONDS" -ge "$DEADLINE"; then
+                WORKFLOW_RESULTS[$WORKFLOW]=timeout
                 FAILED_WORKFLOWS+=("$WORKFLOW:timeout")
                 break
               fi
               sleep 5
             done
           done
-          test "${#FAILED_WORKFLOWS[@]}" -eq 0 || {
-            printf 'Release required workflows failed: %s\n' \
-              "${FAILED_WORKFLOWS[*]}" >&2
-            exit 1
-          }
           CURRENT_PR=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --json headRefName,headRefOid,state)
           test "$(jq -r '.state' <<< "$CURRENT_PR")" = "OPEN"
@@ -125,15 +122,32 @@ jobs:
               ci.yml) CHECK_NAME=CI ;;
               dependency-review.yml) CHECK_NAME='Dependency review' ;;
             esac
-            RUN_ID=${COMPLETED_RUN_IDS[$WORKFLOW]}
-            RUN_URL=${COMPLETED_RUN_URLS[$WORKFLOW]}
-            test -n "$RUN_ID"
-            test -n "$RUN_URL"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
-              -f state=success -f context="$CHECK_NAME" \
-              -f description="Verified by dispatched workflow run $RUN_ID" \
-              -f target_url="$RUN_URL"
+            RESULT=${WORKFLOW_RESULTS[$WORKFLOW]:-timeout}
+            RUN_ID=${OBSERVED_RUN_IDS[$WORKFLOW]:-}
+            RUN_URL=${OBSERVED_RUN_URLS[$WORKFLOW]:-}
+            if test "$RESULT" = "success"; then
+              test -n "$RUN_ID"
+              test -n "$RUN_URL"
+              gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+                -f state=success -f context="$CHECK_NAME" \
+                -f description="Verified by dispatched workflow run $RUN_ID" \
+                -f target_url="$RUN_URL"
+            elif test -n "$RUN_URL"; then
+              gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+                -f state=failure -f context="$CHECK_NAME" \
+                -f description="Dispatched workflow finished with $RESULT" \
+                -f target_url="$RUN_URL"
+            else
+              gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+                -f state=failure -f context="$CHECK_NAME" \
+                -f description="Dispatched workflow timed out before a run was observed"
+            fi
           done
+          test "${#FAILED_WORKFLOWS[@]}" -eq 0 || {
+            printf 'Release required workflows failed: %s\n' \
+              "${FAILED_WORKFLOWS[*]}" >&2
+            exit 1
+          }
           MERGE_DEADLINE=$((SECONDS + 600))
           while true; do
             MERGE_DETAILS=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
