@@ -257,6 +257,68 @@ describe('Claude-style TUI components', () => {
     expect(second).toContain('+function newName() {}')
   })
 
+  it('keeps historical transcript items equivalent while active and palette/mode changes stay live', () => {
+    const items = [
+      { kind: 'user', text: 'inspect the fixture' },
+      {
+        kind: 'assistant',
+        text: '# Result\n```ts\nconst ok = true\nfunction greet() { return "hello" }\n```',
+      },
+    ] as const
+    const tree = (
+      theme: 'dark' | 'dark-ansi',
+      syntaxHighlightingDisabled: boolean,
+      activeText: string,
+      screenReader = false,
+    ) => (
+      <TuiThemeProvider settings={{ theme, syntaxHighlightingDisabled }}>
+        <Transcript
+          screenReader={screenReader}
+          activeText={activeText}
+          items={items}
+        />
+      </TuiThemeProvider>
+    )
+    const app = render(tree('dark', false, ''))
+    const baseline = app.lastFrame() ?? ''
+    expect(baseline).toContain('❯ inspect the fixture')
+    expect(baseline).toContain('│ const ok = true')
+    expect(baseline).toContain('│ function greet() { return "hello" }')
+
+    // Active streaming content updates while historical items stay equivalent.
+    app.rerender(tree('dark', false, 'streaming tail'))
+    const streaming = app.lastFrame() ?? ''
+    expect(streaming).toContain('✳ streaming tail')
+    expect(streaming).toContain('❯ inspect the fixture')
+    expect(streaming).toContain('│ const ok = true')
+    expect(streaming).toContain('│ function greet() { return "hello" }')
+
+    // Palette and syntax-mode changes must not reuse stale subtrees or drop
+    // historical items. The test harness strips color escapes, so the proof
+    // here is structural stability of every visible string.
+    app.rerender(tree('dark-ansi', false, 'streaming tail'))
+    const ansi = app.lastFrame() ?? ''
+    expect(ansi).toContain('streaming tail')
+    expect(ansi).toContain('const ok = true')
+    expect(ansi).toContain('❯ inspect the fixture')
+    expect(ansi).toContain('│ function greet() { return "hello" }')
+
+    app.rerender(tree('dark-ansi', true, 'streaming tail'))
+    const disabled = app.lastFrame() ?? ''
+    expect(disabled).toContain('streaming tail')
+    expect(disabled).toContain('const ok = true')
+    expect(disabled).toContain('❯ inspect the fixture')
+    expect(disabled).toContain('│ function greet() { return "hello" }')
+
+    // Screen-reader mode visibly updates the transcript layout.
+    app.rerender(tree('dark-ansi', true, 'streaming tail', true))
+    const accessible = app.lastFrame() ?? ''
+    expect(accessible).toContain('You: inspect the fixture')
+    expect(accessible).toContain('Praxis: streaming tail')
+    expect(accessible).toContain('const ok = true')
+    expect(accessible).not.toContain('✳')
+  })
+
   it('gives user, assistant, tool, result, and warning distinct shapes', () => {
     const app = render(
       <Transcript
