@@ -207,79 +207,148 @@ export function WelcomePanel({
   )
 }
 
+interface InlineSegment {
+  kind: 'code' | 'bold' | 'link' | 'plain'
+  text: string
+}
+
+const INLINE_SEGMENT_CACHE_MAX = 4096
+const inlineSegmentCache = new Map<string, readonly InlineSegment[]>()
+
+function cachedInlineSegments(text: string): readonly InlineSegment[] {
+  const cached = inlineSegmentCache.get(text)
+  if (cached) return cached
+  const segments = text
+    .split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/u)
+    .map((token): InlineSegment => {
+      if (token.startsWith('`') && token.endsWith('`'))
+        return { kind: 'code', text: token.slice(1, -1) }
+      if (token.startsWith('**') && token.endsWith('**'))
+        return { kind: 'bold', text: token.slice(2, -2) }
+      const link = /^\[([^\]]+)\]\(([^)]+)\)$/u.exec(token)
+      if (link) {
+        const linkText = link[1]
+        if (linkText !== undefined) return { kind: 'link', text: linkText }
+      }
+      return { kind: 'plain', text: token }
+    })
+  inlineSegmentCache.set(text, segments)
+  if (inlineSegmentCache.size > INLINE_SEGMENT_CACHE_MAX) {
+    const oldest = inlineSegmentCache.keys().next().value
+    if (oldest !== undefined) inlineSegmentCache.delete(oldest)
+  }
+  return segments
+}
+
 function InlineText({ text }: { text: string }) {
   const palette = useTuiPalette()
-  const tokens = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/u)
   return (
     <Text>
-      {tokens.map((token, index) => {
-        if (token.startsWith('`') && token.endsWith('`'))
+      {cachedInlineSegments(text).map((segment, index) => {
+        if (segment.kind === 'code')
           return (
             <Text key={index} color={palette.info}>
-              {token.slice(1, -1)}
+              {segment.text}
             </Text>
           )
-        if (token.startsWith('**') && token.endsWith('**'))
+        if (segment.kind === 'bold')
           return (
             <Text key={index} bold>
-              {token.slice(2, -2)}
+              {segment.text}
             </Text>
           )
-        const link = /^\[([^\]]+)\]\(([^)]+)\)$/u.exec(token)
-        if (link)
+        if (segment.kind === 'link')
           return (
             <Text key={index} color={palette.link} underline>
-              {link[1]}
+              {segment.text}
             </Text>
           )
-        return token
+        return segment.text
       })}
     </Text>
   )
 }
 
+type MarkdownLineShape =
+  | { role: 'empty' }
+  | { role: 'h1'; content: string }
+  | { role: 'h2'; content: string }
+  | { role: 'h3'; content: string }
+  | { role: 'bullet'; content: string }
+  | { role: 'ordered'; content: string }
+  | { role: 'quote'; content: string }
+  | { role: 'plain'; content: string }
+
+const MARKDOWN_LINE_CACHE_MAX = 4096
+const markdownLineCache = new Map<string, MarkdownLineShape>()
+
+function cachedMarkdownLineShape(line: string): MarkdownLineShape {
+  const cached = markdownLineCache.get(line)
+  if (cached) return cached
+  let shape: MarkdownLineShape
+  if (line.startsWith('### ')) shape = { role: 'h3', content: line.slice(4) }
+  else if (line.startsWith('## '))
+    shape = { role: 'h2', content: line.slice(3) }
+  else if (line.startsWith('# ')) shape = { role: 'h1', content: line.slice(2) }
+  else if (/^[-*] /u.test(line))
+    shape = { role: 'bullet', content: line.slice(2) }
+  else if (/^\d+\. /u.test(line)) shape = { role: 'ordered', content: line }
+  else if (line.startsWith('> '))
+    shape = { role: 'quote', content: line.slice(2) }
+  else if (line === '') shape = { role: 'empty' }
+  else shape = { role: 'plain', content: line }
+  markdownLineCache.set(line, shape)
+  if (markdownLineCache.size > MARKDOWN_LINE_CACHE_MAX) {
+    const oldest = markdownLineCache.keys().next().value
+    if (oldest !== undefined) markdownLineCache.delete(oldest)
+  }
+  return shape
+}
+
 function MarkdownLine({ line }: { line: string }) {
   const palette = useTuiPalette()
-  if (line.startsWith('### '))
+  const shape = cachedMarkdownLineShape(line)
+  if (shape.role === 'h3')
     return (
       <Text bold>
-        <InlineText text={line.slice(4)} />
+        <InlineText text={shape.content} />
       </Text>
     )
-  if (line.startsWith('## '))
+  if (shape.role === 'h2')
     return (
       <Text bold color={palette.accent}>
-        <InlineText text={line.slice(3)} />
+        <InlineText text={shape.content} />
       </Text>
     )
-  if (line.startsWith('# '))
+  if (shape.role === 'h1')
     return (
       <Text bold color={palette.brand}>
-        <InlineText text={line.slice(2)} />
+        <InlineText text={shape.content} />
       </Text>
     )
-  if (/^[-*] /u.test(line))
+  if (shape.role === 'bullet')
     return (
       <Text>
         {'  • '}
-        <InlineText text={line.slice(2)} />
+        <InlineText text={shape.content} />
       </Text>
     )
-  if (/^\d+\. /u.test(line))
+  if (shape.role === 'ordered')
     return (
       <Text>
         {'  '}
-        <InlineText text={line} />
+        <InlineText text={shape.content} />
       </Text>
     )
-  if (line.startsWith('> '))
+  if (shape.role === 'quote')
     return (
       <Text dimColor>
         {'│ '}
-        <InlineText text={line.slice(2)} />
+        <InlineText text={shape.content} />
       </Text>
     )
-  return line ? <InlineText text={line} /> : <Text> </Text>
+  if (shape.role === 'plain') return <InlineText text={shape.content} />
+  return <Text> </Text>
 }
 
 const CODE_KEYWORDS = new Set([
@@ -306,6 +375,36 @@ const CODE_KEYWORDS = new Set([
 const CODE_TOKEN_PATTERN =
   /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:async|await|class|const|else|export|false|from|function|if|import|let|new|null|return|true|undefined|var)\b|\b[A-Za-z_$][\w$]*(?=\s*\())/gu
 
+interface CachedSyntaxToken {
+  kind: TuiSyntaxToken
+  token: string
+}
+
+const SYNTAX_TOKEN_CACHE_MAX = 2048
+const syntaxTokenCache = new Map<string, readonly CachedSyntaxToken[]>()
+
+function cachedSyntaxTokens(text: string): readonly CachedSyntaxToken[] {
+  const cached = syntaxTokenCache.get(text)
+  if (cached) return cached
+  const tokens = text.split(CODE_TOKEN_PATTERN).map((token) => ({
+    kind:
+      token.startsWith('"') || token.startsWith("'")
+        ? ('string' as const)
+        : CODE_KEYWORDS.has(token)
+          ? ('keyword' as const)
+          : /^[A-Za-z_$][\w$]*$/u.test(token)
+            ? ('identifier' as const)
+            : ('text' as const),
+    token,
+  }))
+  syntaxTokenCache.set(text, tokens)
+  if (syntaxTokenCache.size > SYNTAX_TOKEN_CACHE_MAX) {
+    const oldest = syntaxTokenCache.keys().next().value
+    if (oldest !== undefined) syntaxTokenCache.delete(oldest)
+  }
+  return tokens
+}
+
 function SyntaxCodeLine({
   text,
   prefix = '',
@@ -329,15 +428,7 @@ function SyntaxCodeLine({
     <Text>
       {prefix}
       <Text {...lineStyle}>
-        {text.split(CODE_TOKEN_PATTERN).map((token, index) => {
-          const kind: TuiSyntaxToken =
-            token.startsWith('"') || token.startsWith("'")
-              ? 'string'
-              : CODE_KEYWORDS.has(token)
-                ? 'keyword'
-                : /^[A-Za-z_$][\w$]*$/u.test(token)
-                  ? 'identifier'
-                  : 'text'
+        {cachedSyntaxTokens(text).map(({ kind, token }, index) => {
           if (kind === 'text') return token
           return (
             <Text key={index} {...tuiSyntaxStyle(palette, kind)}>
@@ -653,25 +744,62 @@ function ContextUsageBlock({
   )
 }
 
-export function MarkdownText({ text }: { text: string }) {
+type ParsedMarkdownLine =
+  | { type: 'fence-open'; label: string }
+  | { type: 'fence-close' }
+  | { type: 'code'; text: string }
+  | { type: 'markdown'; line: string }
+
+const MARKDOWN_TEXT_CACHE_MAX = 2048
+const markdownTextCache = new Map<string, readonly ParsedMarkdownLine[]>()
+
+function cachedMarkdownText(text: string): readonly ParsedMarkdownLine[] {
+  const cached = markdownTextCache.get(text)
+  if (cached) return cached
   const lines = text.split('\n')
+  const parsed: ParsedMarkdownLine[] = []
   let code = false
+  for (const line of lines) {
+    if (line.startsWith('```')) {
+      code = !code
+      parsed.push(
+        code
+          ? { type: 'fence-open', label: line.slice(3) || 'code' }
+          : { type: 'fence-close' },
+      )
+      continue
+    }
+    parsed.push(
+      code ? { type: 'code', text: line } : { type: 'markdown', line },
+    )
+  }
+  markdownTextCache.set(text, parsed)
+  if (markdownTextCache.size > MARKDOWN_TEXT_CACHE_MAX) {
+    const oldest = markdownTextCache.keys().next().value
+    if (oldest !== undefined) markdownTextCache.delete(oldest)
+  }
+  return parsed
+}
+
+export function MarkdownText({ text }: { text: string }) {
   return (
     <Box flexDirection="column">
-      {lines.map((line, index) => {
-        if (line.startsWith('```')) {
-          code = !code
+      {cachedMarkdownText(text).map((line, index) => {
+        if (line.type === 'fence-open')
           return (
             <Text key={index} dimColor>
-              {code ? `╭─ ${line.slice(3) || 'code'}` : '╰─'}
+              {`╭─ ${line.label}`}
             </Text>
           )
-        }
-        return code ? (
-          <SyntaxCodeLine key={index} prefix="│ " text={line} />
-        ) : (
-          <MarkdownLine key={index} line={line} />
-        )
+        if (line.type === 'fence-close')
+          return (
+            <Text key={index} dimColor>
+              {'╰─'}
+            </Text>
+          )
+        if (line.type === 'code')
+          return <SyntaxCodeLine key={index} prefix="│ " text={line.text} />
+        return <MarkdownLine key={index} line={line.line} />
       })}
     </Box>
   )
