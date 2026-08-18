@@ -88,10 +88,14 @@ describe('TUI git diff snapshot', () => {
 
     expect(snapshot).toMatchObject({ additions: 2, deletions: 0 })
     const staged = snapshot.files.find((file) => file.path === 'staged.txt')
-    const untracked = snapshot.files.find((file) => file.path === 'untracked.txt')
+    const untracked = snapshot.files.find(
+      (file) => file.path === 'untracked.txt',
+    )
     expect(staged).toMatchObject({ additions: 1, deletions: 0 })
     expect(untracked).toMatchObject({ additions: 1, deletions: 0 })
     expect(visiblePatchLines(staged?.patch ?? '')).toContain('+staged line')
-    expect(visiblePatchLines(untracked?.patch ?? '')).toContain('+untracked line')
+    expect(visiblePatchLines(untracked?.patch ?? '')).toContain(
+      '+untracked line',
+    )
   })
 })
