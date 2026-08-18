@@ -196,10 +196,10 @@ Final audit covers public/hidden/optional-value parsing, command-specific help,
 source and packed artifacts, bidirectional session/data-plane links,
 Claude-style interactive presentation plus the bounded PTY
 input/stream/result lifecycle, TODO/skip and dispatcher wiring, performance,
-release packaging, and production dependency audit. Unsupported Claude versions
-remain deliberately read-only for generated append/sidechain writes, while
-restricted lossless native-fork copying is proven only for the observed Claude
-Code 2.1.233 record shapes.
+release packaging, and production dependency audit. The observed Claude Code
+2.1.208 and 2.1.233 session shapes are bidirectionally resumable and writable
+through their compatible append profiles; unknown or malformed future schemas
+fail closed rather than being treated as an implicitly compatible data plane.
 Enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.
 

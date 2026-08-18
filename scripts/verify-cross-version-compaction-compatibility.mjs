@@ -22,6 +22,18 @@ const CLAUDE_PROMPT = 'CROSS_COMPACT_CLAUDE_PROMPT'
 const CLAUDE_ANSWER = 'CROSS_COMPACT_CLAUDE_ANSWER'
 const FINAL_PROMPT = 'CROSS_COMPACT_PRAXIS_AFTER_CLAUDE'
 const FINAL_ANSWER = 'CROSS_COMPACT_PRAXIS_FINAL'
+const REVERSE_DROPPED = 'REVERSE_CROSS_COMPACT_DROPPED'
+const REVERSE_KEEP = 'REVERSE_CROSS_COMPACT_KEEP'
+const REVERSE_ORIGIN_PROMPT = 'REVERSE_CROSS_COMPACT_ORIGIN_PROMPT'
+const REVERSE_ORIGIN_ANSWER = 'REVERSE_CROSS_COMPACT_ORIGIN'
+const REVERSE_CONTINUE_PROMPT = 'REVERSE_CROSS_COMPACT_CONTINUE_PROMPT'
+const REVERSE_CONTINUE_ANSWER = 'REVERSE_CROSS_COMPACT_CONTINUE'
+const REVERSE_TRIGGER_PROMPT = 'REVERSE_CROSS_COMPACT_TRIGGER_PROMPT'
+const REVERSE_TRIGGER_ANSWER = 'REVERSE_CROSS_COMPACT_TRIGGER'
+const REVERSE_CLAUDE_PROMPT = 'REVERSE_CROSS_COMPACT_CLAUDE_PROMPT'
+const REVERSE_CLAUDE_ANSWER = 'REVERSE_CROSS_COMPACT_CLAUDE_ANSWER'
+const REVERSE_FINAL_PROMPT = 'REVERSE_CROSS_COMPACT_PRAXIS_FINAL_PROMPT'
+const REVERSE_FINAL_ANSWER = 'REVERSE_CROSS_COMPACT_PRAXIS_FINAL'
 
 if (!referenceBinary) {
   throw new Error(
@@ -71,10 +83,10 @@ function messagesText(body) {
 }
 
 function bodyText(body) {
-  return `${body.system ?? ''}\n${messagesText(body)}`
+  return `${JSON.stringify(body.system ?? '')}\n${messagesText(body)}`
 }
 
-function textEvents(text) {
+function textEvents(text, inputTokens = 1) {
   return [
     {
       type: 'message_start',
@@ -86,7 +98,7 @@ function textEvents(text) {
         content: [],
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 0 },
+        usage: { input_tokens: inputTokens, output_tokens: 0 },
       },
     },
     {
@@ -103,7 +115,7 @@ function textEvents(text) {
     {
       type: 'message_delta',
       delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: { input_tokens: 1, output_tokens: 1 },
+      usage: { input_tokens: inputTokens, output_tokens: 1 },
     },
     { type: 'message_stop' },
   ]
@@ -134,25 +146,44 @@ const server = createServer(async (request, response) => {
   }
   requests.push({ mode, body })
   const serialized = bodyText(body)
-  const compacting = serialized.includes(
-    'You are compacting an agent conversation',
-  )
+  const compacting =
+    serialized.includes('You are compacting an agent conversation') ||
+    (mode === 'cross-version-trigger' && serialized.includes(REVERSE_DROPPED))
   const answer = compacting
-    ? KEEP
-    : serialized.includes(FINAL_PROMPT)
-      ? FINAL_ANSWER
-      : serialized.includes(CLAUDE_PROMPT)
-        ? CLAUDE_ANSWER
-        : serialized.includes(PRAXIS_AFTER_COMPACT_PROMPT)
-          ? PRAXIS_AFTER_COMPACT_ANSWER
-          : serialized.includes(CONTINUE_PROMPT)
-            ? PRAXIS_AFTER_COMPACT_ANSWER
-            : serialized.includes(ORIGIN_PROMPT)
-              ? ORIGIN_ANSWER
-              : 'UNEXPECTED_FIXTURE_REQUEST'
+    ? serialized.includes(REVERSE_DROPPED)
+      ? REVERSE_KEEP
+      : KEEP
+    : serialized.includes(REVERSE_FINAL_PROMPT)
+      ? REVERSE_FINAL_ANSWER
+      : serialized.includes(REVERSE_CLAUDE_PROMPT)
+        ? REVERSE_CLAUDE_ANSWER
+        : serialized.includes(REVERSE_TRIGGER_PROMPT)
+          ? REVERSE_TRIGGER_ANSWER
+          : serialized.includes(REVERSE_CONTINUE_PROMPT)
+            ? REVERSE_CONTINUE_ANSWER
+            : serialized.includes(REVERSE_ORIGIN_PROMPT)
+              ? REVERSE_ORIGIN_ANSWER
+              : serialized.includes(FINAL_PROMPT)
+                ? FINAL_ANSWER
+                : serialized.includes(CLAUDE_PROMPT)
+                  ? CLAUDE_ANSWER
+                  : serialized.includes(PRAXIS_AFTER_COMPACT_PROMPT)
+                    ? PRAXIS_AFTER_COMPACT_ANSWER
+                    : serialized.includes(CONTINUE_PROMPT)
+                      ? PRAXIS_AFTER_COMPACT_ANSWER
+                      : serialized.includes(ORIGIN_PROMPT)
+                        ? ORIGIN_ANSWER
+                        : 'UNEXPECTED_FIXTURE_REQUEST'
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
-    textEvents(answer)
+    textEvents(
+      answer,
+      !compacting && mode === 'cross-version-origin'
+        ? 100_000
+        : !compacting && mode === 'cross-version-compaction'
+          ? 150_000
+          : 1,
+    )
       .map(
         (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
       )
@@ -249,6 +280,10 @@ try {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DISABLE_AUTOUPDATER: '1',
+  }
+  const reverseClaudeEnv = {
+    ...claudeEnv,
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '60',
   }
   const providerEnv = {
     PRAXIS_PROVIDER: 'anthropic',
@@ -491,8 +526,238 @@ try {
       `Transcript entry ${prompt} has version ${transcript[entryIndex].version}, expected ${versions[index]}`,
     )
   }
+
+  const reverseConfigRoot = join(root, 'reverse-config')
+  const reverseCwd = join(root, 'reverse-work')
+  await Promise.all([
+    mkdir(reverseCwd, { recursive: true }),
+    mkdir(reverseConfigRoot, { recursive: true }),
+  ])
+  const reverseCanonicalCwd = await realpath(reverseCwd)
+  mode = 'cross-version-origin'
+  const reverseOrigin = await runClaude(
+    crossBinary,
+    [
+      ...claudeCommon,
+      '--autocompact',
+      '100k',
+      `${REVERSE_ORIGIN_PROMPT} ${REVERSE_DROPPED}`,
+    ],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    reverseClaudeEnv,
+  )
+  assert(
+    reverseOrigin.type === 'result' &&
+      !reverseOrigin.is_error &&
+      reverseOrigin.result === REVERSE_ORIGIN_ANSWER &&
+      typeof reverseOrigin.session_id === 'string',
+    `Cross-version compaction origin failed: ${JSON.stringify(reverseOrigin)}`,
+  )
+  const reverseSessionId = reverseOrigin.session_id
+
+  mode = 'cross-version-compaction'
+  const reverseContinued = await runClaude(
+    crossBinary,
+    [...claudeCommon, '--resume', reverseSessionId, REVERSE_CONTINUE_PROMPT],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    reverseClaudeEnv,
+  )
+  assert(
+    reverseContinued.type === 'result' &&
+      !reverseContinued.is_error &&
+      reverseContinued.result === REVERSE_CONTINUE_ANSWER &&
+      reverseContinued.session_id === reverseSessionId,
+    `Cross-version compaction continuation failed: ${JSON.stringify(reverseContinued)}`,
+  )
+
+  mode = 'cross-version-trigger'
+  const reverseTriggered = await runClaude(
+    crossBinary,
+    [...claudeCommon, '--resume', reverseSessionId, REVERSE_TRIGGER_PROMPT],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    reverseClaudeEnv,
+  )
+  assert(
+    reverseTriggered.type === 'result' &&
+      !reverseTriggered.is_error &&
+      reverseTriggered.result === REVERSE_TRIGGER_ANSWER &&
+      reverseTriggered.session_id === reverseSessionId,
+    `Cross-version compaction trigger failed: ${JSON.stringify(reverseTriggered)}`,
+  )
+
+  const reverseSessionFile = resolveClaudePaths({
+    configDir: reverseConfigRoot,
+    cwd: reverseCanonicalCwd,
+    sessionId: reverseSessionId,
+  }).sessionFile
+  const reverseTranscriptSource = await readFile(reverseSessionFile, 'utf8')
+  const reverseTranscript = parseJsonLines(reverseTranscriptSource)
+  assert(
+    reverseTranscript.some(
+      (entry) =>
+        entry.type === 'system' &&
+        entry.subtype === 'compact_boundary' &&
+        entry.compactMetadata?.trigger === 'auto',
+    ),
+    'Cross-version transcript omitted an automatic compact_boundary',
+  )
+  const reverseSummary = reverseTranscript.find(
+    (entry) => entry.type === 'user' && entry.isCompactSummary === true,
+  )
+  assert(reverseSummary, 'Cross-version transcript omitted isCompactSummary')
+  assert(
+    typeof reverseSummary.message?.content === 'string' &&
+      reverseSummary.message.content.includes(REVERSE_KEEP) &&
+      !reverseSummary.message.content.includes(REVERSE_DROPPED),
+    'Cross-version compaction summary did not replace dropped context',
+  )
+  assert(
+    reverseTranscript.some((entry) => entry.version === crossVersion),
+    'Cross-version transcript omitted the cross-version producer identity',
+  )
+  const reverseCompactRequest = requests.find(
+    (request) =>
+      request.mode === 'cross-version-trigger' &&
+      bodyText(request.body).includes(REVERSE_DROPPED),
+  )
+  assert(
+    reverseCompactRequest,
+    'Cross-version compacting provider request was not observed',
+  )
+  const reverseOriginRequest = requests.find(
+    (request) => request.mode === 'cross-version-origin',
+  )
+  assert(
+    reverseOriginRequest &&
+      bodyText(reverseOriginRequest.body).includes(REVERSE_DROPPED),
+    'Cross-version origin request omitted reverse dropped context',
+  )
+  const reverseCompactText = bodyText(reverseCompactRequest.body)
+  assert(
+    reverseCompactText.includes(REVERSE_DROPPED),
+    'Cross-version compactor request omitted reverse dropped context',
+  )
+
+  mode = 'reference-after-cross-compaction'
+  const reverseClaude = await runClaude(
+    referenceBinary,
+    [...claudeCommon, '--resume', reverseSessionId, REVERSE_CLAUDE_PROMPT],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    reverseClaude.type === 'result' &&
+      !reverseClaude.is_error &&
+      reverseClaude.result === REVERSE_CLAUDE_ANSWER &&
+      reverseClaude.session_id === reverseSessionId,
+    `Reference Claude reverse compaction resume failed: ${JSON.stringify(reverseClaude)}`,
+  )
+
+  mode = 'praxis-after-cross-compaction'
+  const reverseFinal = await runPraxis(
+    cli,
+    [
+      '-p',
+      '--output-format=json',
+      '--resume',
+      reverseSessionId,
+      '--',
+      REVERSE_FINAL_PROMPT,
+    ],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    providerEnv,
+  )
+  assert(
+    reverseFinal.type === 'result' &&
+      !reverseFinal.is_error &&
+      reverseFinal.result === REVERSE_FINAL_ANSWER &&
+      (reverseFinal.session_id ?? reverseFinal.sessionId) === reverseSessionId,
+    `Praxis reverse compaction resume failed: ${JSON.stringify(reverseFinal)}`,
+  )
+
+  const reverseReferenceRequest = requests.find(
+    (request) => request.mode === 'reference-after-cross-compaction',
+  )
+  assert(
+    reverseReferenceRequest,
+    'Reference Claude reverse compaction provider request was not observed',
+  )
+  const reverseReferenceText = bodyText(reverseReferenceRequest.body)
+  assert(
+    reverseReferenceText.includes(REVERSE_KEEP),
+    'Reference Claude omitted the cross-version compaction summary',
+  )
+  assert(
+    !reverseReferenceText.includes(REVERSE_DROPPED),
+    'Reference Claude retained cross-version dropped context',
+  )
+  const reverseFinalRequest = requests.find(
+    (request) => request.mode === 'praxis-after-cross-compaction',
+  )
+  assert(
+    reverseFinalRequest,
+    'Praxis reverse compaction provider request was not observed',
+  )
+  const reverseFinalText = bodyText(reverseFinalRequest.body)
+  assert(
+    reverseFinalText.includes(REVERSE_KEEP) &&
+      reverseFinalText.includes(REVERSE_CLAUDE_PROMPT) &&
+      reverseFinalText.includes(REVERSE_CLAUDE_ANSWER),
+    'Praxis omitted reverse cross-version compacted context',
+  )
+  assert(
+    !reverseFinalText.includes(REVERSE_DROPPED),
+    'Praxis retained cross-version dropped context',
+  )
+
+  const reverseFinalTranscript = parseJsonLines(
+    await readFile(reverseSessionFile, 'utf8'),
+  )
+  const reversePromptSequence = [
+    REVERSE_CONTINUE_PROMPT,
+    REVERSE_TRIGGER_PROMPT,
+    REVERSE_CLAUDE_PROMPT,
+    REVERSE_FINAL_PROMPT,
+  ]
+  const reverseVersions = [
+    crossVersion,
+    crossVersion,
+    REFERENCE_VERSION,
+    REFERENCE_VERSION,
+  ]
+  let reverseLastIndex = -1
+  for (let index = 0; index < reversePromptSequence.length; index += 1) {
+    const prompt = reversePromptSequence[index]
+    const entryIndex = reverseFinalTranscript.findIndex(
+      (entry) =>
+        entry.type === 'user' &&
+        typeof entry.message?.content === 'string' &&
+        entry.message.content.includes(prompt),
+    )
+    assert(
+      entryIndex > reverseLastIndex,
+      `Reverse transcript user entry ${prompt} missing or out of order`,
+    )
+    reverseLastIndex = entryIndex
+    assert(
+      reverseFinalTranscript[entryIndex].sessionId === reverseSessionId,
+      `Reverse transcript entry ${prompt} changed session id`,
+    )
+    assert(
+      reverseFinalTranscript[entryIndex].version === reverseVersions[index],
+      `Reverse transcript entry ${prompt} has version ${reverseFinalTranscript[entryIndex].version}, expected ${reverseVersions[index]}`,
+    )
+  }
   console.log(
     `cross-version compaction compatibility passed: Praxis compacted ${sessionId}, Claude ${crossVersion} resumed the compacted projection, and Praxis resumed it again with producer versions [${versions.join(', ')}].`,
+  )
+  console.log(
+    `reverse cross-version compaction compatibility passed: Claude ${crossVersion} compacted ${reverseSessionId}, Claude ${REFERENCE_VERSION} resumed the compacted projection, and Praxis resumed it again with producer versions [${crossVersion}, ${reverseVersions.join(', ')}].`,
   )
 } finally {
   if (server.listening) await closeServer()
