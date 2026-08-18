@@ -1289,3 +1289,16 @@ Status: complete.
 - [x] add focused plugin-runtime regression coverage and verify default,
       MCP-only, and all-component scaffolds through byte-for-byte 2.1.208
       black-box directory diffs
+
+## Stage 164 - Linux sandbox runtime evidence
+
+Status: complete for the real Linux runtime evidence gate; WSL remains
+separately unverified.
+
+- [x] run the official `@anthropic-ai/sandbox-runtime` integration suite on
+      Linux as well as macOS
+- [x] install the Ubuntu `bubblewrap` and `socat` prerequisites and apply the
+      documented Ubuntu 24 user-namespace setting only when required
+- [x] verify Linux cwd/outside writes, denyRead/allowRead, denyWrite, network
+      allow/deny, override policy, exclusions, cleanup, and planted bare-
+      repository files in GitHub Actions
