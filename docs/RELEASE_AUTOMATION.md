@@ -29,10 +29,13 @@ package; manual-only versioning was rejected because it can drift from tags.
    exact same-SHA run and writes a `CI` commit status, linked to that run, only
    after its actual conclusion; a timeout or failed run writes a non-success
    status instead. Once every exact-head check and status is complete, the job
-   ends and GitHub owns auto-merge. If `main` advances and the version PR becomes
-   behind, the next `main` run refreshes it; no stale workflow run remains to
-   occupy the release concurrency group. The release job has a 120-minute
-   ceiling, which covers the three serial 40-minute protected-check windows.
+   observes automatic merge for at most 10 minutes. It immediately releases the
+   concurrency group if the version PR becomes behind, closes without merging,
+   or remains open past that window. When the PR merges, it dispatches one
+   follow-up Release Please run from `main`; this is necessary because GitHub
+   suppresses the ordinary `push` workflow caused by `GITHUB_TOKEN`. The release
+   job has a 135-minute ceiling, which covers the three serial 40-minute
+   protected-check windows, the bounded merge observation, and setup overhead.
 3. After `CI` succeeds, GitHub automatically squash-merges the version PR,
    creating `v<package.version>` and a GitHub release.
 4. Release Please sends a `release-created` repository dispatch carrying the
@@ -47,6 +50,9 @@ package; manual-only versioning was rejected because it can drift from tags.
 - `.github/workflows/release-please.yml`: version PR, exact-CI status bridge,
   tag, release, and dispatch.
 - `.github/workflows/publish.yml`: tag validation, regression, artifacts, npm.
+- Publish provisions the same Linux sandbox runtime prerequisites as CI before
+  its complete release regression, so sandbox coverage cannot be bypassed by a
+  release-only runner image.
 - `scripts/verify-release-ref.mjs`: exact tag/package-version invariant.
 - `scripts/build-release-artifacts.mjs`: deterministic tarball, SBOM, checksums.
 - `release-please-config.json`: single Node package, `v` tags, no changelog file.

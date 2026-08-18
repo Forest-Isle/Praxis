@@ -5,8 +5,10 @@ import { parse } from 'yaml'
 
 const releasePath = '.github/workflows/release-please.yml'
 const dependencyPath = '.github/workflows/dependency-review.yml'
+const publishPath = '.github/workflows/publish.yml'
 const releaseSource = await readFile(releasePath, 'utf8')
 const dependency = parse(await readFile(dependencyPath, 'utf8'))
+const publishSource = await readFile(publishPath, 'utf8')
 const release = parse(releaseSource)
 
 assert.equal(
@@ -16,7 +18,7 @@ assert.equal(
 )
 assert.equal(
   release.jobs?.release?.['timeout-minutes'],
-  120,
+  135,
   'Release Please must bound the release job so a stale release PR cannot hold its concurrency group indefinitely',
 )
 
@@ -33,6 +35,24 @@ assert.equal(
   dependency.on.workflow_dispatch.inputs?.head_ref?.required,
   true,
   'Dispatched dependency review must require a head ref',
+)
+
+for (const command of ['bwrap', 'socat']) {
+  assert.match(
+    publishSource,
+    new RegExp(`command -v ${command} >/dev/null`, 'u'),
+    `Publish must verify the ${command} sandbox prerequisite before release regression`,
+  )
+}
+assert.match(
+  publishSource,
+  /apt-get install -y ripgrep bubblewrap socat/u,
+  'Publish must install the Linux sandbox prerequisites when absent',
+)
+assert.match(
+  publishSource,
+  /kernel\.apparmor_restrict_unprivileged_userns/u,
+  'Publish must handle Ubuntu AppArmor user-namespace restriction like CI',
 )
 
 for (const workflow of ['ci.yml', 'codeql.yml', 'dependency-review.yml']) {
@@ -68,20 +88,23 @@ assert.match(
   /statuses\/\$HEAD_SHA[\s\S]*state=success[\s\S]*context="\$CHECK_NAME"/u,
 )
 assert.match(releaseSource, /target_url="\$RUN_URL"/u)
-assert.doesNotMatch(
+assert.match(releaseSource, /MERGE_DEADLINE=\$\(\(SECONDS \+ 600\)\)/u)
+assert.match(releaseSource, /--json state,mergeStateStatus/u)
+assert.match(releaseSource, /test "\$PR_MERGE_STATE" = "BEHIND"/u)
+assert.match(
   releaseSource,
-  /MERGE_DEADLINE|Release pull request did not auto-merge/u,
-  'Release Please must not occupy its concurrency group while waiting for GitHub auto-merge',
+  /test "\$PR_STATE" = "MERGED"; then[\s\S]*gh workflow run release-please\.yml[\s\S]*--ref main/u,
+  'Release Please must dispatch a follow-up run only after the release pull request has merged',
 )
 assert.doesNotMatch(
   releaseSource,
-  /gh workflow run release-please\.yml/u,
-  'Release Please must not recursively dispatch itself after enabling auto-merge',
+  /Release pull request did not auto-merge before timeout/u,
+  'Release Please must release the concurrency group when auto-merge is slow instead of failing the handoff loop',
 )
 assert.match(releaseSource, /-f base_ref=main/u)
 assert.match(releaseSource, /-f head_ref="\$HEAD_BRANCH"/u)
 assert.doesNotMatch(releaseSource, /contexts\/[^\s"']+/u)
 
 console.log(
-  'Release automation dispatches and fails closed on CI, CodeQL, and dependency review for the exact release head',
+  'Release automation dispatches exact-head checks, bounds release handoff, and provisions Linux sandbox prerequisites for publish regression',
 )
