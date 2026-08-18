@@ -9,10 +9,13 @@ import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSandboxRuntime } from './claude-sandbox-runtime.js'
 import type { ClaudeSandboxSettings } from './claude-sandbox-settings.js'
 
-const describeMacSandbox =
-  process.platform === 'darwin' ? describe : describe.skip
+const sandboxPlatform = process.platform === 'darwin' ? 'macos' : 'linux'
+const describeSandbox =
+  process.platform === 'darwin' || process.platform === 'linux'
+    ? describe
+    : describe.skip
 
-describeMacSandbox('Claude sandbox macOS integration', () => {
+describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
   let root: string
   let cwd: string
   let outside: string
@@ -68,7 +71,10 @@ describeMacSandbox('Claude sandbox macOS integration', () => {
       mkdir(join(cwd, '.claude'), { recursive: true }),
       mkdir(join(outside, 'public'), { recursive: true }),
     ])
-    runtime = new ClaudeSandboxRuntime(BaseSandboxManager, () => 'macos')
+    runtime = new ClaudeSandboxRuntime(
+      BaseSandboxManager,
+      () => sandboxPlatform,
+    )
     await runtime.initialize(configured())
   })
 
