@@ -157,8 +157,14 @@ async function downloadOne(
       const response = await fetcher(
         filesEndpoint(config.baseUrl, resource.fileId),
         {
-          headers: config.headers ?? {
-            Authorization: `Bearer ${config.apiKey}`,
+          headers: {
+            ...(config.headers ?? {
+              Authorization: `Bearer ${config.apiKey}`,
+            }),
+            'anthropic-version':
+              config.headers?.['anthropic-version'] ?? '2023-06-01',
+            'anthropic-beta':
+              config.headers?.['anthropic-beta'] ?? 'files-api-2025-04-14',
           },
           signal: requestSignal,
         },
