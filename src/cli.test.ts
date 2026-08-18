@@ -1447,9 +1447,9 @@ describe('Praxis CLI', () => {
       },
     }
 
-    await expect(
-      run(['--version'], versionCapture.io, counting),
-    ).resolves.toBe(0)
+    await expect(run(['--version'], versionCapture.io, counting)).resolves.toBe(
+      0,
+    )
     expect(versionCapture.stdout).toEqual([`${PACKAGE_VERSION}\n`])
     expect(versionCapture.stderr).toEqual([])
     expect(versionServiceCreations).toBe(0)

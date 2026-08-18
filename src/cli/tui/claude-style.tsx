@@ -319,11 +319,7 @@ const markdownLineElementCache = new Map<string, ReactElement>()
 function buildMarkdownLine(line: string, palette: TuiPalette): ReactElement {
   const shape = cachedMarkdownLineShape(line)
   if (shape.role === 'h3')
-    return (
-      <Text bold>
-        {inlineTextElement(shape.content, palette)}
-      </Text>
-    )
+    return <Text bold>{inlineTextElement(shape.content, palette)}</Text>
   if (shape.role === 'h2')
     return (
       <Text bold color={palette.accent}>
@@ -885,10 +881,9 @@ function buildMarkdownText(text: string, palette: TuiPalette): ReactElement {
             cachedSyntaxCodeLine(line.text, '│ ', undefined, palette),
             { key: index },
           )
-        return cloneElement(
-          cachedMarkdownLineElement(line.line, palette),
-          { key: index },
-        )
+        return cloneElement(cachedMarkdownLineElement(line.line, palette), {
+          key: index,
+        })
       })}
     </Box>
   )
