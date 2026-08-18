@@ -14,6 +14,11 @@ assert.equal(
   'write',
   'Release Please must be able to publish protected commit statuses',
 )
+assert.equal(
+  release.jobs?.release?.['timeout-minutes'],
+  120,
+  'Release Please must bound the release job so a stale release PR cannot hold its concurrency group indefinitely',
+)
 
 assert.ok(
   dependency.on?.workflow_dispatch !== undefined,
@@ -63,12 +68,15 @@ assert.match(
   /statuses\/\$HEAD_SHA[\s\S]*state=success[\s\S]*context="\$CHECK_NAME"/u,
 )
 assert.match(releaseSource, /target_url="\$RUN_URL"/u)
-assert.match(releaseSource, /PR_STATE=.*gh pr view[\s\S]*\.state/u)
-assert.match(releaseSource, /test "\$PR_STATE" = "OPEN"/u)
-assert.match(releaseSource, /MERGE_DEADLINE=\$\(\(SECONDS \+ 300\)\)/u)
-assert.match(
+assert.doesNotMatch(
   releaseSource,
-  /gh workflow run release-please\.yml[\s\S]*--ref main/u,
+  /MERGE_DEADLINE|Release pull request did not auto-merge/u,
+  'Release Please must not occupy its concurrency group while waiting for GitHub auto-merge',
+)
+assert.doesNotMatch(
+  releaseSource,
+  /gh workflow run release-please\.yml/u,
+  'Release Please must not recursively dispatch itself after enabling auto-merge',
 )
 assert.match(releaseSource, /-f base_ref=main/u)
 assert.match(releaseSource, /-f head_ref="\$HEAD_BRANCH"/u)

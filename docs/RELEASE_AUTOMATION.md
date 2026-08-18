@@ -28,7 +28,11 @@ package; manual-only versioning was rejected because it can drift from tags.
    `CI` check remains the branch-protection gate. Release Please waits for the
    exact same-SHA run and writes a `CI` commit status, linked to that run, only
    after its actual conclusion; a timeout or failed run writes a non-success
-   status instead.
+   status instead. Once every exact-head check and status is complete, the job
+   ends and GitHub owns auto-merge. If `main` advances and the version PR becomes
+   behind, the next `main` run refreshes it; no stale workflow run remains to
+   occupy the release concurrency group. The release job has a 120-minute
+   ceiling, which covers the three serial 40-minute protected-check windows.
 3. After `CI` succeeds, GitHub automatically squash-merges the version PR,
    creating `v<package.version>` and a GitHub release.
 4. Release Please sends a `release-created` repository dispatch carrying the
