@@ -71,7 +71,18 @@ assert.match(releaseSource, /\.headSha == \$sha/u)
 assert.match(releaseSource, /\.databaseId > \$previous/u)
 assert.match(releaseSource, /gh run watch "\$RUN_ID"[\s\S]*--exit-status/u)
 assert.match(releaseSource, /FAILED_WORKFLOWS\+=/u)
-assert.match(releaseSource, /test "\$\{#FAILED_WORKFLOWS\[@\]\}" -eq 0/u)
+assert.match(releaseSource, /WORKFLOW_RESULTS\[\$WORKFLOW\]=\$CONCLUSION/u)
+assert.match(releaseSource, /WORKFLOW_RESULTS\[\$WORKFLOW\]=timeout/u)
+assert.match(
+  releaseSource,
+  /-f state=failure[\s\S]*context="\$CHECK_NAME"/u,
+  'Release Please must replace pending bridge statuses with failure when a dispatched workflow fails or times out',
+)
+assert.match(
+  releaseSource,
+  /for WORKFLOW in ci\.yml dependency-review\.yml; do[\s\S]*test "\$\{#FAILED_WORKFLOWS\[@\]\}" -eq 0/u,
+  'Release Please must publish every bridge status before exiting for failed workflows',
+)
 assert.match(releaseSource, /--json headRefName,headRefOid,state/u)
 assert.match(releaseSource, /\.headRefOid[^\n]*\$HEAD_SHA/u)
 assert.match(releaseSource, /ci\.yml\) CHECK_NAME=CI/u)
