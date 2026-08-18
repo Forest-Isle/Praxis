@@ -1,6 +1,6 @@
 {
   "name": "praxis-agent",
-  "version": "0.20.5",
+  "version": "0.20.6",
   "description": "Local-first, single-user general agent for the command line.",
   "license": "MIT",
   "author": "wuqisen",
