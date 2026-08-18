@@ -511,6 +511,13 @@ versions. The sidechain gate proves both directions: Praxis-created
 sidechain survives a `2.1.208` resume and a later Praxis continuation. It
 asserts producer versions, main-chain context, native sidechain metadata, and
 byte-for-byte sidechain immutability after both foreign and Praxis resumes.
+The compaction gate also proves both directions: a Praxis-written compacted
+`2.1.208` projection survives a `2.1.233` resume and later Praxis continuation,
+while `2.1.233` creates native automatic `compact_boundary` and
+`isCompactSummary` records that `2.1.208` then Praxis resume in order. The
+reverse fixture proves the newer producer's dropped turn is replaced by its
+summary in both consumers, retains the session identity and producer versions,
+and never rewrites the shared JSONL chain.
 Each gate uses isolated local SSE fixtures and does not fall back to an ambient
 binary.
 `npm run test:background-agent-compat` captures Claude's current Agent,
