@@ -207,6 +207,56 @@ describe('Claude-style TUI components', () => {
     )
   })
 
+  it('reproduces identical transcript output on repeated renders', () => {
+    const buildTree = () => (
+      <TuiThemeProvider
+        settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+      >
+        <Transcript
+          screenReader={false}
+          activeText=""
+          items={[
+            { kind: 'user', text: 'inspect the fixture' },
+            {
+              kind: 'assistant',
+              text: '# Result\n- first item\n> quoted note\ninline `code` and **bold** and [link](https://example.com)\n```ts\nconst ok = true\nfunction greet() { return "hello" }\n```\nDone.',
+            },
+            {
+              kind: 'tool',
+              call: {
+                id: 'diff',
+                name: 'Bash',
+                input: { command: 'git diff' },
+              },
+              detail: 'Bash {"command":"git diff"}',
+            },
+            {
+              kind: 'tool-result',
+              callId: 'diff',
+              text: '@@ fixture\n-function oldName() {}\n+function newName() {}',
+              isError: false,
+            },
+          ]}
+        />
+      </TuiThemeProvider>
+    )
+    const app = render(buildTree())
+    const first = app.lastFrame() ?? ''
+    app.rerender(buildTree())
+    const second = app.lastFrame() ?? ''
+    expect(second).toBe(first)
+    expect(second).toContain('❯ inspect the fixture')
+    expect(second).toContain('Result')
+    expect(second).toContain('• first item')
+    expect(second).toContain('│ quoted note')
+    expect(second).toContain('╭─ ts')
+    expect(second).toContain('│ const ok = true')
+    expect(second).toContain('│ function greet() { return "hello" }')
+    expect(second).toContain('⏺ Bash(git diff)')
+    expect(second).toContain('-function oldName() {}')
+    expect(second).toContain('+function newName() {}')
+  })
+
   it('gives user, assistant, tool, result, and warning distinct shapes', () => {
     const app = render(
       <Transcript
