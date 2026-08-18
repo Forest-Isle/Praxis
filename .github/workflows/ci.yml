@@ -29,8 +29,11 @@ jobs:
       - name: Install terminal test tools
         run: |
           if ! command -v rg >/dev/null || ! command -v expect >/dev/null || ! command -v tmux >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y ripgrep expect tmux
+            timeout 180s sudo apt-get update \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30
+            timeout 180s sudo apt-get install -y ripgrep expect tmux
           fi
           command -v rg >/dev/null
           command -v expect >/dev/null
@@ -65,7 +68,14 @@ jobs:
           node-version: 24
           cache: npm
       - name: Install ripgrep
-        run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+        run: |
+          command -v rg >/dev/null || (
+            timeout 180s sudo apt-get update \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 &&
+            timeout 180s sudo apt-get install -y ripgrep
+          )
       - name: Install dependencies and compatibility baseline
         run: |
           npm ci
@@ -105,7 +115,14 @@ jobs:
           cache: npm
       - name: Install ripgrep on Linux
         if: runner.os == 'Linux'
-        run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+        run: |
+          command -v rg >/dev/null || (
+            timeout 180s sudo apt-get update \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 &&
+            timeout 180s sudo apt-get install -y ripgrep
+          )
       - name: Install ripgrep on macOS
         if: runner.os == 'macOS'
         run: command -v rg >/dev/null || brew install ripgrep

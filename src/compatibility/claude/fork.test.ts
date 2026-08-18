@@ -416,6 +416,102 @@ describe('createClaudeNativeFork', () => {
     ])
   })
 
+  it('forks a cross-version seed assistant whose only parent is the omitted seed user', async () => {
+    const [user, assistant, lastPrompt] = await fixture('basic-session.jsonl')
+    if (!user || !assistant || !lastPrompt) throw new Error('fixture missing')
+    const sourceSessionId = String(user.sessionId)
+    const sessionId = '99999999-9999-4999-8999-999999999999'
+    const omittedSeedUserUuid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const seedAssistant: ClaudeTranscriptEntry = {
+      ...assistant,
+      version: '2.1.233',
+      parentUuid: omittedSeedUserUuid,
+    }
+    const seedLastPrompt: ClaudeTranscriptEntry = {
+      ...lastPrompt,
+      version: '2.1.233',
+      leafUuid: seedAssistant.uuid,
+    }
+    const source = [
+      {
+        type: 'queue-operation',
+        operation: 'enqueue',
+        sessionId: sourceSessionId,
+      },
+      seedAssistant,
+      seedLastPrompt,
+    ]
+    const fork = createClaudeNativeFork({
+      source,
+      sourceSessionId,
+      sessionId,
+    })
+    const expected = [
+      { ...seedAssistant, sessionId },
+      { ...seedLastPrompt, sessionId },
+    ]
+    const schema = selectClaudeSchemaAdapter('2.1.208')
+
+    expect(fork).toEqual(expected)
+    expect(fork.map((entry) => schema.serializeForFork(entry))).toEqual(
+      expected.map((entry) => JSON.stringify(entry)),
+    )
+  })
+
+  it('forks a cross-version total_tokens_reminder attachment chain', async () => {
+    const [user, assistant, lastPrompt] = await fixture('basic-session.jsonl')
+    if (!user || !assistant || !lastPrompt) throw new Error('fixture missing')
+    const sourceSessionId = String(user.sessionId)
+    const sessionId = '99999999-9999-4999-8999-999999999999'
+    const rootUser: ClaudeTranscriptEntry = { ...user, version: '2.1.233' }
+    const attachmentUuid = '77777777-7777-4777-8777-777777777777'
+    const tokensReminder: ClaudeTranscriptEntry = {
+      type: 'attachment',
+      parentUuid: rootUser.uuid,
+      isSidechain: false,
+      uuid: attachmentUuid,
+      timestamp: '2026-08-03T08:00:00.500Z',
+      userType: 'external',
+      entrypoint: 'sdk-cli',
+      cwd: rootUser.cwd,
+      sessionId: sourceSessionId,
+      version: '2.1.233',
+      gitBranch: rootUser.gitBranch,
+      attachment: {
+        type: 'total_tokens_reminder',
+        text: '<total_tokens>1234</total_tokens>',
+      },
+    }
+    const seedAssistant: ClaudeTranscriptEntry = {
+      ...assistant,
+      version: '2.1.233',
+      parentUuid: attachmentUuid,
+    }
+    const seedLastPrompt: ClaudeTranscriptEntry = {
+      ...lastPrompt,
+      version: '2.1.233',
+      leafUuid: seedAssistant.uuid,
+    }
+    const source = [rootUser, tokensReminder, seedAssistant, seedLastPrompt]
+    const fork = createClaudeNativeFork({
+      source,
+      sourceSessionId,
+      sessionId,
+    })
+    const expected = [
+      { ...rootUser, sessionId },
+      { ...tokensReminder, sessionId },
+      { ...seedAssistant, sessionId },
+      { ...seedLastPrompt, sessionId },
+    ]
+    const schema = selectClaudeSchemaAdapter('2.1.208')
+
+    expect(fork).toEqual(expected)
+    expect(fork.map((entry) => schema.serializeForFork(entry))).toEqual(
+      expected.map((entry) => JSON.stringify(entry)),
+    )
+  })
+
   it('validates compact logical tails while ignoring hook audit attachments', async () => {
     const [user, assistant] = await fixture('basic-session.jsonl')
     const [boundary, summary] = await fixture('compact-session.jsonl')

@@ -83,6 +83,25 @@ describe('ClaudeSchemaAdapter', () => {
     )
   })
 
+  it('forks a cross-version producer entry while append stays rejected', async () => {
+    const source = await readFile(fixtureUrl, 'utf8')
+    const userLine = source.trimEnd().split('\n')[0]
+    const adapter = selectClaudeSchemaAdapter('2.1.208')
+    const crossVersionEntry = {
+      ...adapter.parse(userLine ?? ''),
+      version: '2.1.233',
+    }
+    const copied = copyClaudeEntryWithSessionId(crossVersionEntry, 'target')
+
+    const forkLine = adapter.serializeForFork(copied)
+    expect(forkLine).toBe(adapter.serialize(copied))
+    expect(forkLine).toContain('"version":"2.1.233"')
+    expect(forkLine).toContain('"sessionId":"target"')
+    expect(() => adapter.serializeForAppend(copied)).toThrow(
+      'must target Claude Code 2.1.208',
+    )
+  })
+
   it('accepts only the native append profile', async () => {
     const source = await readFile(fixtureUrl, 'utf8')
     const [userLine, , lastPromptLine] = source.trimEnd().split('\n')

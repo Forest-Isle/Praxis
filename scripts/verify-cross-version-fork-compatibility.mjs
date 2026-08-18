@@ -60,6 +60,9 @@ const turnMarkers = [
   ['FORK_SOURCE_FOLLOWUP', 'FORK_SOURCE_FOLLOWUP_ANSWER'],
   ['FORK_CROSS_PROMPT', 'FORK_CROSS_ANSWER'],
   ['FORK_PRAXIS_AFTER_CROSS', 'FORK_PRAXIS_AFTER_CROSS_ANSWER'],
+  ['REVERSE_FORK_CROSS_CREATE', 'REVERSE_FORK_CROSS_CREATE_ANSWER'],
+  ['REVERSE_FORK_REFERENCE_RESUME', 'REVERSE_FORK_REFERENCE_RESUME_ANSWER'],
+  ['REVERSE_FORK_PRAXIS_RESUME', 'REVERSE_FORK_PRAXIS_RESUME_ANSWER'],
 ]
 
 function responseText(body) {
@@ -101,6 +104,58 @@ function textEvents(text) {
     },
     { type: 'message_stop' },
   ]
+}
+
+// The cross-version Claude nondeterministically writes one of two native seed
+// layouts when it creates a session: a last-prompt-only seed (the seed prompt
+// is recorded as a `last-prompt` entry with no initial `user` entry) or an
+// initial `user` entry carrying the seed prompt at the cross version. A fork
+// child inherits whichever layout the source used. This helper accepts exactly
+// those two shapes, rejects every other layout, and returns the user entries
+// that follow the seed (the reference/Praxis continuation turns).
+function splitReverseSeedUsers(entries, seedPrompt, crossVersion) {
+  const userEntries = entries.filter((entry) => entry.type === 'user')
+  const seedUserEntries = userEntries.filter(
+    (entry) => entry.message?.content === seedPrompt,
+  )
+  const firstAssistantIndex = entries.findIndex(
+    (entry) => entry.type === 'assistant',
+  )
+  assert(
+    firstAssistantIndex !== -1 &&
+      entries[firstAssistantIndex]?.version === crossVersion,
+    `Cross-version seed create did not produce an assistant entry at version ${crossVersion}, got ${JSON.stringify(entries[firstAssistantIndex] ?? null)}`,
+  )
+  if (seedUserEntries.length === 0) {
+    const seedPromptEntry = entries.find(
+      (entry) =>
+        entry.type === 'last-prompt' && entry.lastPrompt === seedPrompt,
+    )
+    assert(
+      seedPromptEntry !== undefined,
+      `Cross-version seed prompt ${seedPrompt} missing from last-prompt entries`,
+    )
+    const seedIndex = entries.indexOf(seedPromptEntry)
+    const firstUserIndex = entries.findIndex((entry) => entry.type === 'user')
+    assert(
+      seedIndex !== -1 && (firstUserIndex === -1 || seedIndex < firstUserIndex),
+      'Cross-version seed prompt must be recorded before the first resume user entry',
+    )
+    return { postSeedUsers: userEntries, hasSeedUser: false }
+  }
+  assert(
+    seedUserEntries.length === 1,
+    `Expected exactly one initial user seed entry, found ${seedUserEntries.length}`,
+  )
+  assert(
+    userEntries[0] === seedUserEntries[0],
+    'Cross-version initial user seed entry must be the first user entry, before the resume user turns',
+  )
+  assert(
+    seedUserEntries[0].version === crossVersion,
+    `Cross-version seed user entry has version ${seedUserEntries[0].version}, expected ${crossVersion}`,
+  )
+  return { postSeedUsers: userEntries.slice(1), hasSeedUser: true }
 }
 
 const requests = []
@@ -169,13 +224,18 @@ async function runClaude(executable, args, cwd, configRoot, extraEnv) {
 const root = await mkdtemp(join(tmpdir(), 'praxis-cross-version-fork-'))
 const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
+const reverseConfigRoot = join(root, 'reverse-config')
+const reverseCwd = join(root, 'reverse-work')
 
 try {
   await Promise.all([
     mkdir(cwd, { recursive: true }),
     mkdir(configRoot, { recursive: true }),
+    mkdir(reverseCwd, { recursive: true }),
+    mkdir(reverseConfigRoot, { recursive: true }),
   ])
   const canonicalCwd = await realpath(cwd)
+  const reverseCanonicalCwd = await realpath(reverseCwd)
 
   const referenceVersion = await detectVersion(
     referenceBinary,
@@ -224,13 +284,17 @@ try {
     '--output-format',
     'json',
   ]
-  const praxis = (...args) =>
+  const praxis = (execConfigRoot, execCwd, ...args) =>
     execFileAsync(
       process.execPath,
       [join(process.cwd(), 'dist/cli.js'), ...args],
       {
-        cwd: canonicalCwd,
-        env: { ...process.env, ...praxisEnv, CLAUDE_CONFIG_DIR: configRoot },
+        cwd: execCwd,
+        env: {
+          ...process.env,
+          ...praxisEnv,
+          CLAUDE_CONFIG_DIR: execConfigRoot,
+        },
         maxBuffer: 4 * 1024 * 1024,
         timeout: 120_000,
       },
@@ -291,7 +355,13 @@ try {
 
   const forkStartRequestCount = requests.length
   mode = 'fork-operation'
-  const forkRun = await praxis('fork', '--json', sourceSessionId)
+  const forkRun = await praxis(
+    configRoot,
+    canonicalCwd,
+    'fork',
+    '--json',
+    sourceSessionId,
+  )
   assert(
     requests.length === forkStartRequestCount,
     'fork operation contacted the provider',
@@ -335,6 +405,8 @@ try {
 
   mode = 'fork-praxis-resume'
   const praxisTurn = await praxis(
+    configRoot,
+    canonicalCwd,
     '-p',
     '--output-format=json',
     '--resume',
@@ -465,8 +537,242 @@ try {
     )
   }
 
+  // Reverse direction: the cross-version Claude creates an isolated source
+  // session, Praxis forks it provider-free into a different child session id,
+  // reference Claude 2.1.208 resumes the child, and Praxis resumes the child.
+  // A separate config root and worktree keep the reverse chain fully isolated
+  // from the forward chain, and reverse-only markers keep its fixture turns
+  // independently observable.
+  mode = 'reverse-fork-cross-create'
+  const reverseCreateTurn = await runClaude(
+    crossBinary,
+    [...claudeCommon, 'REVERSE_FORK_CROSS_CREATE'],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    typeof reverseCreateTurn.session_id === 'string' &&
+      reverseCreateTurn.session_id.length > 0,
+    `Cross-version create returned no session_id: ${JSON.stringify(reverseCreateTurn)}`,
+  )
+  assert(
+    reverseCreateTurn.type === 'result' &&
+      !reverseCreateTurn.is_error &&
+      reverseCreateTurn.result === 'REVERSE_FORK_CROSS_CREATE_ANSWER',
+    `Cross-version create failed or returned unexpected fixture answer: ${JSON.stringify(reverseCreateTurn)}`,
+  )
+  const reverseSourceSessionId = reverseCreateTurn.session_id
+
+  const reverseSourcePaths = resolveClaudePaths({
+    configDir: reverseConfigRoot,
+    cwd: reverseCanonicalCwd,
+    sessionId: reverseSourceSessionId,
+  })
+  const preReverseForkSourceText = await readFile(
+    reverseSourcePaths.sessionFile,
+    'utf8',
+  )
+  const reverseSourceSeed = splitReverseSeedUsers(
+    parseJsonLines(preReverseForkSourceText),
+    'REVERSE_FORK_CROSS_CREATE',
+    crossVersion,
+  )
+  assert(
+    reverseSourceSeed.postSeedUsers.length === 0,
+    `Reverse source contains post-seed user entries before the fork: ${JSON.stringify(reverseSourceSeed.postSeedUsers.map((entry) => entry.message?.content))}`,
+  )
+
+  const reverseForkStartRequestCount = requests.length
+  mode = 'reverse-fork-operation'
+  const reverseForkRun = await praxis(
+    reverseConfigRoot,
+    reverseCanonicalCwd,
+    'fork',
+    '--json',
+    reverseSourceSessionId,
+  )
+  assert(
+    requests.length === reverseForkStartRequestCount,
+    'reverse fork operation contacted the provider',
+  )
+  const reverseForkEvent = parseJsonLines(reverseForkRun.stdout).findLast(
+    (entry) => entry?.type === 'forked',
+  )
+  assert(
+    reverseForkEvent,
+    `Praxis reverse fork returned no forked event: ${reverseForkRun.stdout}`,
+  )
+  assert(
+    typeof reverseForkEvent.sessionId === 'string' &&
+      reverseForkEvent.sessionId.length > 0,
+    `Praxis reverse fork returned no fork session id: ${JSON.stringify(reverseForkEvent)}`,
+  )
+  assert(
+    reverseForkEvent.sessionId !== reverseSourceSessionId,
+    `Praxis reverse fork reused the source session id ${reverseSourceSessionId}`,
+  )
+  assert(
+    reverseForkEvent.parentSessionId === reverseSourceSessionId,
+    `Praxis reverse fork parent is ${reverseForkEvent.parentSessionId}, expected ${reverseSourceSessionId}`,
+  )
+  const reverseForkSessionId = reverseForkEvent.sessionId
+
+  mode = 'reverse-fork-reference-resume'
+  const reverseReferenceTurn = await runClaude(
+    referenceBinary,
+    [
+      ...claudeCommon,
+      '--resume',
+      reverseForkSessionId,
+      'REVERSE_FORK_REFERENCE_RESUME',
+    ],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    reverseReferenceTurn.session_id === reverseForkSessionId,
+    `Reference Claude changed reverse fork session id to ${reverseReferenceTurn.session_id}`,
+  )
+  assert(
+    reverseReferenceTurn.type === 'result' &&
+      !reverseReferenceTurn.is_error &&
+      reverseReferenceTurn.result === 'REVERSE_FORK_REFERENCE_RESUME_ANSWER',
+    `Reference Claude failed or returned unexpected fixture answer: ${JSON.stringify(reverseReferenceTurn)}`,
+  )
+
+  mode = 'reverse-fork-praxis-resume'
+  const reversePraxisTurn = await praxis(
+    reverseConfigRoot,
+    reverseCanonicalCwd,
+    '-p',
+    '--output-format=json',
+    '--resume',
+    reverseForkSessionId,
+    '--',
+    'REVERSE_FORK_PRAXIS_RESUME',
+  )
+  const reversePraxisResult = JSON.parse(reversePraxisTurn.stdout)
+  assert(
+    reversePraxisResult.type === 'result' &&
+      !reversePraxisResult.is_error &&
+      reversePraxisResult.result === 'REVERSE_FORK_PRAXIS_RESUME_ANSWER',
+    `Praxis reverse fork resume failed: ${reversePraxisTurn.stdout}`,
+  )
+
+  const reverseExpectedTurns = [
+    ['reverse-fork-cross-create', 'REVERSE_FORK_CROSS_CREATE'],
+    ['reverse-fork-reference-resume', 'REVERSE_FORK_REFERENCE_RESUME'],
+    ['reverse-fork-praxis-resume', 'REVERSE_FORK_PRAXIS_RESUME'],
+  ]
+  const reverseRequiredMarkers = [
+    ['REVERSE_FORK_CROSS_CREATE'],
+    ['REVERSE_FORK_CROSS_CREATE', 'REVERSE_FORK_REFERENCE_RESUME'],
+    [
+      'REVERSE_FORK_CROSS_CREATE',
+      'REVERSE_FORK_REFERENCE_RESUME',
+      'REVERSE_FORK_PRAXIS_RESUME',
+    ],
+  ]
+  const reverseRequestStart = expectedTurns.length
+  const reverseRequests = requests.slice(reverseRequestStart)
+  assert(
+    reverseRequests.length === reverseExpectedTurns.length,
+    `Expected ${reverseExpectedTurns.length} reverse provider requests, got ${reverseRequests.length}`,
+  )
+  for (let index = 0; index < reverseExpectedTurns.length; index += 1) {
+    const [expectedMode, prompt] = reverseExpectedTurns[index]
+    const request = reverseRequests[index]
+    assert(
+      request.mode === expectedMode,
+      `Reverse provider request ${index + 1} was ${request.mode}, expected ${expectedMode}`,
+    )
+    const source = JSON.stringify(request.body.messages ?? [])
+    assert(
+      source.includes(prompt),
+      `Reverse provider request ${index + 1} (${expectedMode}) omitted ${prompt}`,
+    )
+    for (const marker of reverseRequiredMarkers[index]) {
+      assert(
+        source.includes(marker),
+        `Reverse provider request ${index + 1} (${expectedMode}) omitted ${marker}`,
+      )
+    }
+  }
+
+  const reverseForkPaths = resolveClaudePaths({
+    configDir: reverseConfigRoot,
+    cwd: reverseCanonicalCwd,
+    sessionId: reverseForkSessionId,
+  })
+  const postReverseForkSourceText = await readFile(
+    reverseSourcePaths.sessionFile,
+    'utf8',
+  )
+  const reverseForkText = await readFile(reverseForkPaths.sessionFile, 'utf8')
+  assert(
+    postReverseForkSourceText === preReverseForkSourceText,
+    'reverse fork operation changed the source session transcript',
+  )
+  for (const marker of [
+    'REVERSE_FORK_REFERENCE_RESUME',
+    'REVERSE_FORK_PRAXIS_RESUME',
+  ]) {
+    assert(
+      !postReverseForkSourceText.includes(marker),
+      `reverse source session contains fork-only prompt marker ${marker}`,
+    )
+  }
+
+  const reverseForkEntries = parseJsonLines(reverseForkText)
+  for (const entry of reverseForkEntries) {
+    assert(
+      entry.sessionId === reverseForkSessionId ||
+        entry.type === 'file-history-snapshot' ||
+        entry.type === 'file-history-delta',
+      `reverse fork entry ${entry.type} has session id ${entry.sessionId}, expected ${reverseForkSessionId}`,
+    )
+  }
+  const reverseChildSeed = splitReverseSeedUsers(
+    reverseForkEntries,
+    'REVERSE_FORK_CROSS_CREATE',
+    crossVersion,
+  )
+  const reverseContinuationTurns = [
+    ['REVERSE_FORK_REFERENCE_RESUME', referenceVersion],
+    ['REVERSE_FORK_PRAXIS_RESUME', referenceVersion],
+  ]
+  assert(
+    reverseChildSeed.postSeedUsers.length === reverseContinuationTurns.length,
+    `Expected ${reverseContinuationTurns.length} reverse post-seed user entries, found ${reverseChildSeed.postSeedUsers.length}`,
+  )
+  for (let index = 0; index < reverseContinuationTurns.length; index += 1) {
+    const [prompt, expectedVersion] = reverseContinuationTurns[index]
+    const entry = reverseChildSeed.postSeedUsers[index]
+    assert(
+      entry.message?.content === prompt,
+      `Reverse user entry ${index + 1} is ${JSON.stringify(entry.message?.content)}, expected ${prompt}`,
+    )
+    assert(
+      entry.version === expectedVersion,
+      `Reverse user entry ${prompt} has version ${entry.version}, expected ${expectedVersion}`,
+    )
+    assert(
+      entry.sessionId === reverseForkSessionId,
+      `Reverse user entry ${prompt} has session id ${entry.sessionId}, expected ${reverseForkSessionId}`,
+    )
+  }
+  const reverseVersions = [
+    ...(reverseChildSeed.hasSeedUser ? [crossVersion] : []),
+    ...reverseChildSeed.postSeedUsers.map((entry) => entry.version),
+  ]
+
   console.log(
     `cross-version fork compatibility passed: Claude ${REFERENCE_VERSION} created source ${sourceSessionId}, Praxis forked it provider-free to ${forkSessionId} (parent ${sourceSessionId}), Claude ${crossVersion} and Praxis resumed the fork with producer versions [${expectedForkVersions.join(', ')}].`,
+  )
+  console.log(
+    `reverse cross-version fork compatibility passed: Claude ${crossVersion} created source ${reverseSourceSessionId}, Praxis forked it provider-free to ${reverseForkSessionId} (parent ${reverseSourceSessionId}), Claude ${REFERENCE_VERSION} and Praxis resumed the fork with producer versions [${reverseVersions.join(', ')}].`,
   )
 } finally {
   if (server.listening) await closeServer()

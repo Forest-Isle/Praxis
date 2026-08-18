@@ -269,9 +269,14 @@ Verified write profile (Claude Code 2.1.208)
 
 Explicit schema adapters and fork creation remain separate and fail closed for
 an unverified write profile: an explicitly supplied version selects the adapter,
-only the verified `2.1.208` profile is writable, and unknown versions keep
-read-only inspection and export paths. This safety policy is never weakened for
-unverified versions.
+and only the verified `2.1.208` profile is writable for generated append and
+sidechain writes. Native fork creation is a restricted lossless copy path rather
+than a generated write: it preserves each existing source record's producer
+version, so it can copy specific black-box-verified foreign shapes such as the
+observed Claude Code `2.1.233` records. Unsupported record shapes and unknown
+versions still fail closed before any fork write, and unknown versions keep
+read-only inspection and export paths for generated writes. This safety policy
+is never weakened for unverified versions.
 
 Support policy:
 
@@ -365,11 +370,14 @@ within one scheduler service, missed durable one-shots catch up and auto-delete,
 and recurring jobs execute once more at seven-day expiry before deletion.
 
 Fork uses a separate versioned creation profile because it copies existing
-native records rather than appending newly generated records. For Claude Code
-2.1.208 it losslessly copies supported main-chain `user`, `assistant`, `system`,
-`attachment`, and `agent-setting` entries plus `custom-title`, `agent-name`,
-`ai-title`, `mode`, `permission-mode`, and `last-prompt` metadata, replacing only `sessionId` in
-each copied record. This preserves tool history, compact history, media and
+native records rather than appending newly generated records. It preserves each
+copied record's original producer version, so the fixed `2.1.208`
+generated-write restriction does not apply to this lossless copy path: observed
+Claude Code `2.1.233` main-chain shapes are copied alongside `2.1.208` sources.
+For Claude Code `2.1.208` sources it losslessly copies supported main-chain
+`user`, `assistant`, `system`, `attachment`, and `agent-setting` entries plus
+`custom-title`, `agent-name`, `ai-title`, `mode`, `permission-mode`, and
+`last-prompt` metadata, replacing only `sessionId` in each copied record. This preserves tool history, compact history, media and
 error payloads, hook/nested-memory attachments, agent state, UUIDs, and parent
 links. Latest title/mode/permission state is placed first and latest valid
 `last-prompt` that matches the current logical tail last. Queue operations and
@@ -381,6 +389,12 @@ and unsupported versions fail closed before exclusive target creation.
 Sidechain records and orphaned `last-prompt` hints are excluded from the
 resumable main-chain copy. Raw root `sessionId` replacement preserves every
 other copied JSON token, including integers beyond JavaScript's safe range.
+
+For observed Claude Code `2.1.233` sources, fork supports the
+`total_tokens_reminder` main-chain attachment and both observed cross seed
+layouts: an initial user entry or a last-prompt-only seed graph with one
+initial assistant whose only parent is the omitted seed user. Any other
+malformed or unknown `2.1.233` shape fails closed.
 
 Claude 2.1.208 fixtures cover text, tool use/results, manual compaction,
 subagent sidechains, image results, non-zero tool errors, and user interruption.
@@ -481,13 +495,19 @@ Both
 directions require exact fixture responses, one session ID per chain, no
 malformed SSE requests, and an append-only valid JSONL transcript with the
 producer version recorded on each entry.
-`npm run test:cross-version-fork-compat`, `test:cross-version-sidechain-compat`,
-`test:cross-version-compaction-compat`, and
-`test:cross-version-resume-at-compat` are complementary maintainer gates that
-respectively prove provider-free native fork, foreground sidechain, compaction
-active-context projection, and `--resume-session-at` active-branch projection
-across mixed versions. Each uses isolated local SSE fixtures and does not fall
-back to an ambient binary.
+`npm run test:cross-version-fork-compat` proves provider-free native fork in
+both directions with isolated local SSE fixtures: a `2.1.208` source forked by
+Praxis and resumed by Claude Code `2.1.233` then Praxis, and a `2.1.233` source
+forked by Praxis and resumed by Claude Code `2.1.208` then Praxis. It validates
+both observed cross seed layouts (initial user or last-prompt-only), source
+immutability, child session identity, the absence of any provider request for
+fork, and an append-only valid JSONL transcript.
+`test:cross-version-sidechain-compat`, `test:cross-version-compaction-compat`,
+and `test:cross-version-resume-at-compat` are complementary maintainer gates
+that respectively prove foreground sidechain, compaction active-context
+projection, and `--resume-session-at` active-branch projection across mixed
+versions. Each uses isolated local SSE fixtures and does not fall back to an
+ambient binary.
 `npm run test:background-agent-compat` captures Claude's current Agent,
 SendMessage, TaskOutput, and TaskStop schemas, then proves async launch, output
 polling, same-ID continuation, completion notification, sidechain persistence,
