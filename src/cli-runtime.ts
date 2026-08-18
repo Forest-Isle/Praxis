@@ -1075,6 +1075,8 @@ interface TopLevelAgentCommands {
 
 export interface CliDependencies extends InteractiveServiceFactory {
   loadReleaseNotes?(configRoot: string): Promise<string>
+  /** CLI entrypoint used when this runtime spawns child processes. */
+  cliPath?: string
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
@@ -2300,122 +2302,129 @@ ${focus}${baseline === undefined ? '' : `\n\nBaseline:\n${baseline}`}`
   },
 }
 
-const defaultDependencies: CliDependencies = {
-  createService: createDefaultService,
-  createAutoModeCritic: createDefaultAutoModeCritic,
-  pluginEval: {
-    runtimeFactory: defaultPluginEvalRuntimeFactory,
-    judge: defaultPluginEvalJudge,
-  },
-  runInteractive: async ({
-    agent,
-    controls,
-    initialPrompt,
-    resume,
-    signal,
-  }) => {
-    const { runInteractive } = await import('./cli/interactive.js')
-    const interactiveControls = controls ?? DEFAULT_CLI_CONTROLS
-    const initialAdditionalDirectories = interactiveControls.addDirectories.map(
-      (directory) => realpathSync(resolve(process.cwd(), directory)),
-    )
-    return runInteractive({
-      factory: {
-        createService: ({ additionalDirectories, cwd, ...options }) =>
-          createDefaultService({
-            ...options,
-            ...(cwd === undefined ? {} : { cwd }),
-            sandboxOriginalCwd: process.cwd(),
-            ...(agent === undefined ? {} : { agent }),
-            controls: {
-              ...interactiveControls,
-              addDirectories:
-                additionalDirectories ?? interactiveControls.addDirectories,
-            },
-            interactive: true,
-          }),
-        scheduledPrompts: Boolean(
-          process.env.PRAXIS_API_KEY &&
-          (interactiveControls.model ?? process.env.PRAXIS_MODEL),
-        ),
-      },
-      ...(signal ? { signal } : {}),
-      ...(initialPrompt === undefined ? {} : { initialPrompt }),
-      ...(controls?.axScreenReader ? { axScreenReader: true } : {}),
-      ...(controls?.allowDangerouslySkipPermissions
-        ? { allowDangerouslySkipPermissions: true }
-        : {}),
-      additionalDirectories: initialAdditionalDirectories,
-      ...(interactiveControls.settingSources === undefined
-        ? {}
-        : { settingSources: interactiveControls.settingSources }),
-      display: {
-        version: VERSION,
-        cwd: process.cwd(),
-        ...(controls?.model
-          ? { model: controls.model }
-          : process.env.PRAXIS_MODEL
-            ? { model: process.env.PRAXIS_MODEL }
-            : {}),
-        effort: controls?.effort ?? 'high',
-        permissionMode: controls?.dangerouslySkipPermissions
-          ? 'bypassPermissions'
-          : (controls?.permissionMode ?? 'default'),
-      },
-      onBackground: (request: InteractiveBackgroundRequest) =>
-        requireTopLevelAgentManager(defaultDependencies).launch({
-          prompt: request.prompt,
-          initialDetail: request.detail,
-          sourceSessionId: request.sourceSessionId,
-          sourceCheckpoint: request.sourceCheckpoint,
-          cwd: request.cwd,
-          deferInitialTurn: true,
-          argv: agentDashboardWorkerArgv({
-            ...interactiveControls,
-            agent,
-          }),
-        }),
-      onBackgrounded: (result) => {
-        process.stdout.write(backgroundLaunchMessage(result.id))
-      },
-      ...(resume === undefined ? {} : { resume }),
-      ...(resume?.fromPr !== undefined
-        ? {
-            sessionFilter: createClaudePrSessionFilter<SessionSummary>(
-              resume.fromPr,
-            ),
-            requireSession: true,
-          }
-        : resume?.sessionSelector === undefined
-          ? {}
-          : {
-              sessionFilter: createResumeSessionFilter(resume.sessionSelector),
-              requireSession: true,
-              missingSessionMessage: isClaudeSessionId(resume.sessionSelector)
-                ? `No conversation found with session ID: ${resume.sessionSelector}`
-                : `No conversation found matching: ${resume.sessionSelector}`,
+export function createDefaultDependencies(
+  entrypoint: string = fileURLToPath(import.meta.url),
+): CliDependencies {
+  const dependencies: CliDependencies = {
+    createService: createDefaultService,
+    createAutoModeCritic: createDefaultAutoModeCritic,
+    pluginEval: {
+      runtimeFactory: defaultPluginEvalRuntimeFactory,
+      judge: defaultPluginEvalJudge,
+    },
+    cliPath: entrypoint,
+    runInteractive: async ({
+      agent,
+      controls,
+      initialPrompt,
+      resume,
+      signal,
+    }) => {
+      const { runInteractive } = await import('./cli/interactive.js')
+      const interactiveControls = controls ?? DEFAULT_CLI_CONTROLS
+      const initialAdditionalDirectories =
+        interactiveControls.addDirectories.map((directory) =>
+          realpathSync(resolve(process.cwd(), directory)),
+        )
+      return runInteractive({
+        factory: {
+          createService: ({ additionalDirectories, cwd, ...options }) =>
+            createDefaultService({
+              ...options,
+              ...(cwd === undefined ? {} : { cwd }),
+              sandboxOriginalCwd: process.cwd(),
+              ...(agent === undefined ? {} : { agent }),
+              controls: {
+                ...interactiveControls,
+                addDirectories:
+                  additionalDirectories ?? interactiveControls.addDirectories,
+              },
+              interactive: true,
             }),
-      ...(resume?.requireSession ? { requireSession: true } : {}),
-    })
-  },
-  runAgentsDashboard: async ({ manager, defaults, signal }) => {
-    const { runAgentsDashboard } = await import('./cli/agents-dashboard.js')
-    return runAgentsDashboard({
-      manager,
-      defaults,
-      ...(signal ? { signal } : {}),
-    })
-  },
-  topLevelAgents: new TopLevelAgentManager({
-    configRoot: resolve(
-      process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
-    ),
-    cwd: process.cwd(),
-    cliPath: fileURLToPath(import.meta.url),
-    version: VERSION,
-  }),
-  launchTmux: launchTmuxWorktree,
-  selfUpdate: runSelfUpdate,
+          scheduledPrompts: Boolean(
+            process.env.PRAXIS_API_KEY &&
+            (interactiveControls.model ?? process.env.PRAXIS_MODEL),
+          ),
+        },
+        ...(signal ? { signal } : {}),
+        ...(initialPrompt === undefined ? {} : { initialPrompt }),
+        ...(controls?.axScreenReader ? { axScreenReader: true } : {}),
+        ...(controls?.allowDangerouslySkipPermissions
+          ? { allowDangerouslySkipPermissions: true }
+          : {}),
+        additionalDirectories: initialAdditionalDirectories,
+        ...(interactiveControls.settingSources === undefined
+          ? {}
+          : { settingSources: interactiveControls.settingSources }),
+        display: {
+          version: VERSION,
+          cwd: process.cwd(),
+          ...(controls?.model
+            ? { model: controls.model }
+            : process.env.PRAXIS_MODEL
+              ? { model: process.env.PRAXIS_MODEL }
+              : {}),
+          effort: controls?.effort ?? 'high',
+          permissionMode: controls?.dangerouslySkipPermissions
+            ? 'bypassPermissions'
+            : (controls?.permissionMode ?? 'default'),
+        },
+        onBackground: (request: InteractiveBackgroundRequest) =>
+          requireTopLevelAgentManager(dependencies).launch({
+            prompt: request.prompt,
+            initialDetail: request.detail,
+            sourceSessionId: request.sourceSessionId,
+            sourceCheckpoint: request.sourceCheckpoint,
+            cwd: request.cwd,
+            deferInitialTurn: true,
+            argv: agentDashboardWorkerArgv({
+              ...interactiveControls,
+              agent,
+            }),
+          }),
+        onBackgrounded: (result) => {
+          process.stdout.write(backgroundLaunchMessage(result.id))
+        },
+        ...(resume === undefined ? {} : { resume }),
+        ...(resume?.fromPr !== undefined
+          ? {
+              sessionFilter: createClaudePrSessionFilter<SessionSummary>(
+                resume.fromPr,
+              ),
+              requireSession: true,
+            }
+          : resume?.sessionSelector === undefined
+            ? {}
+            : {
+                sessionFilter: createResumeSessionFilter(resume.sessionSelector),
+                requireSession: true,
+                missingSessionMessage: isClaudeSessionId(resume.sessionSelector)
+                  ? `No conversation found with session ID: ${resume.sessionSelector}`
+                  : `No conversation found matching: ${resume.sessionSelector}`,
+              }),
+        ...(resume?.requireSession ? { requireSession: true } : {}),
+      })
+    },
+    runAgentsDashboard: async ({ manager, defaults, signal }) => {
+      const { runAgentsDashboard } = await import('./cli/agents-dashboard.js')
+      return runAgentsDashboard({
+        manager,
+        defaults,
+        ...(signal ? { signal } : {}),
+      })
+    },
+    topLevelAgents: new TopLevelAgentManager({
+      configRoot: resolve(
+        process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
+      ),
+      cwd: process.cwd(),
+      cliPath: entrypoint,
+      version: VERSION,
+    }),
+    launchTmux: launchTmuxWorktree,
+    selfUpdate: runSelfUpdate,
+  }
+  return dependencies
 }
 
 export async function createBackgroundWorkerRuntime(
@@ -4697,7 +4706,7 @@ async function execute(
     const launched = await dependencies.launchTmux({
       argv,
       cwd: process.cwd(),
-      cliPath: fileURLToPath(import.meta.url),
+      cliPath: dependencies.cliPath ?? fileURLToPath(import.meta.url),
       ...(invocation.worktreeName === undefined
         ? {}
         : { worktreeName: invocation.worktreeName }),
@@ -5637,7 +5646,7 @@ async function execute(
 export async function run(
   argv: readonly string[],
   io: CliIO = consoleIO,
-  dependencies: CliDependencies = defaultDependencies,
+  dependencies: CliDependencies = createDefaultDependencies(),
   signal?: AbortSignal,
 ): Promise<number> {
   try {

@@ -2,7 +2,7 @@
 
 import { realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import type { RuntimeEventSink } from './core/runtime.js'
 import type { CliDependencies, CliIO } from './cli-runtime.js'
@@ -31,7 +31,11 @@ export async function run(
     return 0
   }
   const runtime = await import('./cli-runtime.js')
-  return runtime.run(argv, io, dependencies, signal)
+  const resolvedDependencies =
+    dependencies === undefined
+      ? runtime.createDefaultDependencies(fileURLToPath(import.meta.url))
+      : dependencies
+  return runtime.run(argv, io, resolvedDependencies, signal)
 }
 
 export async function createBackgroundWorkerRuntime(
