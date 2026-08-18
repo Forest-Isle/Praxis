@@ -28,7 +28,10 @@ import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
 } from '../compatibility/claude/context.js'
-import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import {
+  resolveClaudePaths,
+  sanitizeClaudeProjectPath,
+} from '../compatibility/claude/paths.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
@@ -6802,6 +6805,78 @@ describe('ClaudeSessionService', () => {
     await expect(service.export(corruptId)).resolves.toEqual(
       Buffer.from(corruptSource),
     )
+  })
+
+  it('lists sessions from a long-path Claude project directory via prefix scan', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-long-path-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(
+      root,
+      'project',
+      ...[1, 2, 3, 4, 5, 6].map(
+        (index) => `segment-segment-segment-segment-segment-segment-${index}`,
+      ),
+    )
+    expect(sanitizeClaudeProjectPath(cwd).length).toBeGreaterThan(201)
+
+    // A sibling working directory that shares the truncated sanitized prefix
+    // but produces a different project hash, as when a long project path is
+    // recorded from a slightly different cwd.
+    const recordedCwd = join(cwd, 'workspace')
+    expect(sanitizeClaudeProjectPath(cwd)).not.toBe(
+      sanitizeClaudeProjectPath(recordedCwd),
+    )
+
+    const creator = new ClaudeSessionService({
+      configRoot,
+      cwd: recordedCwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['recorded answer']),
+    })
+    const run = await creator.run('recorded prompt')
+
+    const exactRoot = join(
+      configRoot,
+      'projects',
+      sanitizeClaudeProjectPath(cwd),
+    )
+    await expect(readdir(exactRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+    })
+    await expect(service.sessions()).resolves.toEqual([
+      expect.objectContaining({
+        sessionId: run.sessionId,
+        lastPrompt: 'recorded prompt',
+      }),
+    ])
+  })
+
+  it('does not invent sessions for a long path with no matching project directory', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-session-long-path-empty-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(
+      root,
+      'project',
+      ...[1, 2, 3, 4, 5, 6].map(
+        (index) => `segment-segment-segment-segment-segment-segment-${index}`,
+      ),
+    )
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+    })
+    await expect(service.sessions()).resolves.toEqual([])
   })
 
   it('assembles fresh system context for run and resume without persisting it', async () => {

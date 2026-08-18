@@ -1,5 +1,6 @@
+import { readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import { getDataOwnership } from './ownership.js'
 
@@ -25,15 +26,14 @@ export interface ClaudePaths {
   praxisRoot: string
 }
 
-function stablePathHash(value: string): number {
+function claudeDjb2Hash(value: string): number {
   let hash = 0
 
   for (let index = 0; index < value.length; index += 1) {
-    hash = Math.imul(hash, 31) + value.charCodeAt(index)
-    hash |= 0
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0
   }
 
-  return Math.abs(hash)
+  return hash
 }
 
 export function sanitizeClaudeProjectPath(path: string): string {
@@ -42,7 +42,78 @@ export function sanitizeClaudeProjectPath(path: string): string {
     return sanitized
   }
 
-  return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${stablePathHash(path).toString(36)}`
+  return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${Math.abs(claudeDjb2Hash(path)).toString(36)}`
+}
+
+/**
+ * Returns the truncated sanitized directory prefix Claude Code uses for long
+ * project paths, or null when the path is short enough that its project
+ * directory key is unambiguous.
+ */
+export function claudeProjectPathPrefix(path: string): string | null {
+  const sanitized = path.replace(/[^a-zA-Z0-9]/g, '-')
+  if (sanitized.length <= MAX_SANITIZED_LENGTH) {
+    return null
+  }
+  return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-`
+}
+
+/**
+ * Deterministically discovers the Claude project directory for a long project
+ * path whose exact key cannot be resolved from the current cwd. Only reads
+ * entries inside `<configRoot>/projects` that share the truncated sanitized
+ * prefix, so the scan is bounded and never leaves the config root. Prefers the
+ * exact key for the cwd, then the most recently modified matching directory
+ * with a lexicographic name tiebreak.
+ */
+export async function discoverClaudeProjectRoot(
+  configRoot: string,
+  cwd: string,
+): Promise<string | null> {
+  const prefix = claudeProjectPathPrefix(cwd)
+  if (prefix === null) return null
+
+  const projectsRoot = join(configRoot, 'projects')
+  let entries
+  try {
+    entries = await readdir(projectsRoot, { withFileTypes: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+
+  const exactKey = sanitizeClaudeProjectPath(cwd)
+  const candidates: string[] = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    if (entry.name.includes('--worktrees-')) continue
+    if (entry.name.startsWith(prefix)) candidates.push(entry.name)
+  }
+  if (candidates.length === 0) return null
+  if (candidates.includes(exactKey)) return resolve(projectsRoot, exactKey)
+
+  const withMtime = await Promise.all(
+    candidates.map(async (name) => {
+      try {
+        const metadata = await stat(join(projectsRoot, name))
+        return { name, mtimeMs: metadata.mtimeMs }
+      } catch {
+        return null
+      }
+    }),
+  )
+  const readable = withMtime.filter(
+    (candidate): candidate is { name: string; mtimeMs: number } =>
+      candidate !== null,
+  )
+  if (readable.length === 0) return null
+  readable.sort(
+    (left, right) =>
+      right.mtimeMs - left.mtimeMs || left.name.localeCompare(right.name),
+  )
+  const selected = readable[0]
+  if (selected === undefined) return null
+  return resolve(projectsRoot, selected.name)
 }
 
 export function resolveClaudeScheduledTaskFile(cwd: string): string {
