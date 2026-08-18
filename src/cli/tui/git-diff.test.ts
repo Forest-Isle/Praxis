@@ -65,4 +65,33 @@ describe('TUI git diff snapshot', () => {
     ].join('\n')
     expect(visiblePatchLines(patch)).toEqual(['--- content', '+++ content'])
   })
+
+  it('returns an empty snapshot for an unborn repository', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-tui-diff-unborn-'))
+    roots.push(root)
+    await execFileAsync('git', ['init', '-q'], { cwd: root })
+
+    const snapshot = await loadGitDiff(root)
+    expect(snapshot).toEqual({ files: [], additions: 0, deletions: 0 })
+  })
+
+  it('reports staged and untracked files in an unborn repository', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-tui-diff-unborn-'))
+    roots.push(root)
+    await execFileAsync('git', ['init', '-q'], { cwd: root })
+
+    await writeFile(join(root, 'staged.txt'), 'staged line\n')
+    await execFileAsync('git', ['add', '.'], { cwd: root })
+    await writeFile(join(root, 'untracked.txt'), 'untracked line\n')
+
+    const snapshot = await loadGitDiff(root)
+
+    expect(snapshot).toMatchObject({ additions: 2, deletions: 0 })
+    const staged = snapshot.files.find((file) => file.path === 'staged.txt')
+    const untracked = snapshot.files.find((file) => file.path === 'untracked.txt')
+    expect(staged).toMatchObject({ additions: 1, deletions: 0 })
+    expect(untracked).toMatchObject({ additions: 1, deletions: 0 })
+    expect(visiblePatchLines(staged?.patch ?? '')).toContain('+staged line')
+    expect(visiblePatchLines(untracked?.patch ?? '')).toContain('+untracked line')
+  })
 })
