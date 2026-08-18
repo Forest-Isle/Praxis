@@ -16,6 +16,7 @@ function restoredState(
     linesAdded: 0,
     linesRemoved: 0,
     modelUsage: {},
+    hasUnknownModelCost: false,
     ...overrides,
   }
 }
@@ -461,6 +462,7 @@ describe('ClaudeSessionCostTracker', () => {
           costUsd: 1.25,
         },
       },
+      hasUnknownModelCost: false,
     }
     const tracker = new ClaudeSessionCostTracker({
       sessionId: 's1',

@@ -123,7 +123,8 @@ Private operational state lives under `<claude-config>/praxis/`, for example:
 
 Sidecars may contain schema probes, search indexes, process locks, provider raw
 payloads, and cached projections. They are disposable and never authoritative
-for conversation or memory content.
+for conversation or memory content. The `/cost` unknown-model warning flag is
+stored in the `praxis/unknown-cost-sidecar.json` sidecar keyed by session ID.
 
 ## Concurrent access
 
