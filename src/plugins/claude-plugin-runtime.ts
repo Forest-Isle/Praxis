@@ -1588,6 +1588,89 @@ async function writeScaffoldComponent(
   }
 }
 
+function nativeSkillTemplate(name: string): string {
+  return `---
+name: ${name}
+description: TODO — describe WHEN Claude should use this. Include trigger phrases users
+  might say ("do X", "set up Y", "review Z"). Be specific; this string is what Claude
+  matches the user's request against.
+---
+
+# ${name}
+
+TODO: what this skill does, and the steps Claude should take.
+`
+}
+
+function nativeChannelServerTemplate(name: string): string {
+  return `#!/usr/bin/env bun
+/**
+ * ${name} channel server — stdio MCP server implementing the channel contract.
+ * See https://docs.claude.com/en/docs/claude-code/channels-reference.
+ */
+import { Server } from '@modelcontextprotocol/sdk/server/index.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js'
+
+const mcp = new Server(
+  { name: '${name}', version: '0.1.0' },
+  {
+    capabilities: {
+      tools: {},
+      // Required: presence of this key registers the channel notification
+      // listener on Claude's side.
+      experimental: { 'claude/channel': {} },
+    },
+    instructions:
+      "Events from ${name} arrive as <channel source=\\"${name}\\" ...>. Anything " +
+      "you want the sender to see must go through the reply tool — your " +
+      "transcript output never reaches the channel.",
+  },
+)
+
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [
+    {
+      name: 'reply',
+      description: 'Send a message back to the ${name} channel.',
+      inputSchema: {
+        type: 'object',
+        properties: { text: { type: 'string' } },
+        required: ['text'],
+      },
+    },
+  ],
+}))
+
+mcp.setRequestHandler(CallToolRequestSchema, async req => {
+  const args = (req.params.arguments ?? {}) as Record<string, unknown>
+  if (req.params.name === 'reply') {
+    // TODO: deliver args.text to the external service.
+    return { content: [{ type: 'text', text: 'sent' }] }
+  }
+  return { content: [{ type: 'text', text: 'unknown tool' }], isError: true }
+})
+
+// TODO: when the external service has an inbound event, push it to Claude:
+//
+//   await mcp.notification({
+//     method: 'notifications/claude/channel',
+//     params: {
+//       content: 'the event body',
+//       meta: { chat_id: '...', sender: '...' },
+//     },
+//   })
+//
+// Each meta key becomes an attribute on the <channel> tag. Keys must be
+// identifiers (letters/digits/underscores) — others are silently dropped.
+
+await mcp.connect(new StdioServerTransport())
+`
+}
+
 export async function initClaudePlugin(
   path: string,
   name = basename(resolve(path)),
@@ -1660,7 +1743,7 @@ export async function initClaudePlugin(
   if (nativeLayout) {
     await writeScaffoldComponent(
       join(root, 'SKILL.md'),
-      `---\nname: ${name}\ndescription: TODO — describe when Claude should use this plugin.\n---\n\n# ${name}\n\nTODO: what this plugin does.\n`,
+      nativeSkillTemplate(name),
       options.force === true,
     )
   } else {
@@ -1673,60 +1756,84 @@ export async function initClaudePlugin(
   if (components.has('skills')) {
     await writeScaffoldComponent(
       join(root, 'skills', 'example', 'SKILL.md'),
-      '---\nname: example\ndescription: Example plugin skill\n---\n\nUse this skill to inspect the workspace.\n',
+      nativeSkillTemplate('example'),
       options.force === true,
     )
   }
   if (components.has('agents')) {
     await writeScaffoldComponent(
       join(root, 'agents', nativeLayout ? 'example.md' : 'reviewer.md'),
-      '---\nname: example\ndescription: Review changes\n---\n\nReview the current changes.\n',
+      nativeLayout
+        ? '---\nname: example\ndescription: TODO — when should Claude delegate to this subagent?\ntools:\n  - Read\n  - Grep\n---\n\nTODO: system prompt for the subagent.\n'
+        : '---\nname: example\ndescription: Review changes\n---\n\nReview the current changes.\n',
       options.force === true,
     )
   }
   if (components.has('hooks')) {
+    if (nativeLayout) {
+      await writeScaffoldComponent(
+        join(root, 'hooks-handlers', 'on-session-start.ts'),
+        '#!/usr/bin/env bun\n// SessionStart hook handler. Reads the event from stdin, writes a JSON result\n// to stdout. Swap "bun" for "node" or "python3" in hooks/hooks.json if your\n// users\' environment lacks bun.\nconst input = await new Response(Bun.stdin.stream()).text()\nconst event = JSON.parse(input)\nprocess.stdout.write(JSON.stringify({}))\n',
+        options.force === true,
+      )
+    }
     await writeScaffoldComponent(
       join(root, 'hooks', 'hooks.json'),
-      '{\n  "hooks": {\n    "SessionStart": []\n  }\n}\n',
+      nativeLayout
+        ? '{\n  "hooks": {\n    "SessionStart": [\n      {\n        "hooks": [\n          {\n            "type": "command",\n            "command": "bun ${CLAUDE_PLUGIN_ROOT}/hooks-handlers/on-session-start.ts"\n          }\n        ]\n      }\n    ]\n  }\n}\n'
+        : '{\n  "hooks": {\n    "SessionStart": []\n  }\n}\n',
       options.force === true,
     )
   }
   if (components.has('mcp') || components.has('channel')) {
+    const mcpServers = components.has('channel')
+      ? {
+          [name]: {
+            command: 'bun',
+            args: [
+              'run',
+              '--cwd',
+              '${CLAUDE_PLUGIN_ROOT}',
+              '--shell=bun',
+              '--silent',
+              'start',
+            ],
+          },
+        }
+      : {
+          'example-remote': {
+            type: 'http',
+            url: 'https://example.com/mcp',
+          },
+          'example-local': {
+            command: 'npx',
+            args: ['<your-mcp-server-package>'],
+          },
+        }
     await writeScaffoldComponent(
       join(root, '.mcp.json'),
-      `${JSON.stringify(
-        {
-          mcpServers: {
-            [components.has('channel') ? name : 'example']: {
-              command: 'npx',
-              args: ['<your-mcp-server-package>'],
-            },
-          },
-        },
-        null,
-        2,
-      )}\n`,
+      `${JSON.stringify({ mcpServers }, null, 2)}\n`,
       options.force === true,
     )
   }
   if (components.has('lsp')) {
     await writeScaffoldComponent(
       join(root, '.lsp.json'),
-      '{\n  "example": {\n    "command": "example-language-server",\n    "args": ["--stdio"]\n  }\n}\n',
+      '{\n  "example": {\n    "command": "example-language-server",\n    "args": [\n      "--stdio"\n    ],\n    "extensionToLanguage": {\n      ".example": "example"\n    }\n  }\n}\n',
       options.force === true,
     )
   }
   if (components.has('output-style')) {
     await writeScaffoldComponent(
       join(root, 'output-styles', `${name}.md`),
-      `---\nname: ${name}\ndescription: TODO — output style description\nforce-for-plugin: true\n---\n\nTODO: style instructions.\n`,
+      `---\nname: ${name}\ndescription: TODO — one line shown in the Output style picker in /config\nforce-for-plugin: true\nkeep-coding-instructions: true\n---\n\nTODO: the style prompt. This is appended to Claude's system prompt while the\nstyle is active. With force-for-plugin: true, the style applies automatically\nwhen this plugin is enabled.\n`,
       options.force === true,
     )
   }
   if (components.has('channel')) {
     await writeScaffoldComponent(
       join(root, 'server.ts'),
-      '// TODO: implement channel server.\n',
+      nativeChannelServerTemplate(name),
       options.force === true,
     )
     await writeScaffoldComponent(
@@ -1736,6 +1843,8 @@ export async function initClaudePlugin(
           name: `claude-channel-${name}`,
           version: '0.1.0',
           type: 'module',
+          scripts: { start: 'bun install --no-summary && bun server.ts' },
+          dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' },
         },
         null,
         2,

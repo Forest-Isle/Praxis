@@ -923,6 +923,119 @@ describe('Claude plugin runtime', () => {
     ])
   })
 
+  it('scaffolds the observed native plugin init component templates', async () => {
+    const { root, configRoot } = await pluginFixture()
+    const pluginRoot = join(configRoot, 'skills', 'sample')
+    await initClaudePlugin(pluginRoot, 'sample', {
+      nativeLayout: true,
+      with: [
+        'skills',
+        'agents',
+        'hooks',
+        'mcp',
+        'lsp',
+        'output-style',
+        'channel',
+      ],
+    })
+
+    expect(await readFile(join(pluginRoot, 'SKILL.md'), 'utf8')).toBe(
+      '---\nname: sample\ndescription: TODO — describe WHEN Claude should use this. Include trigger phrases users\n  might say ("do X", "set up Y", "review Z"). Be specific; this string is what Claude\n  matches the user\'s request against.\n---\n\n# sample\n\nTODO: what this skill does, and the steps Claude should take.\n',
+    )
+    expect(
+      JSON.parse(
+        await readFile(
+          join(pluginRoot, '.claude-plugin', 'plugin.json'),
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({
+      name: 'sample',
+      version: '0.1.0',
+      description: 'TODO: describe what this plugin provides',
+      skills: ['./'],
+      channels: [{ server: 'sample', displayName: 'sample' }],
+    })
+    expect(
+      await readFile(join(pluginRoot, 'agents', 'example.md'), 'utf8'),
+    ).toBe(
+      '---\nname: example\ndescription: TODO — when should Claude delegate to this subagent?\ntools:\n  - Read\n  - Grep\n---\n\nTODO: system prompt for the subagent.\n',
+    )
+    expect(
+      await readFile(join(pluginRoot, 'skills', 'example', 'SKILL.md'), 'utf8'),
+    ).toContain('description: TODO — describe WHEN Claude should use this.')
+    expect(
+      await readFile(join(pluginRoot, 'hooks', 'hooks.json'), 'utf8'),
+    ).toContain('bun ${CLAUDE_PLUGIN_ROOT}/hooks-handlers/on-session-start.ts')
+    expect(
+      await readFile(
+        join(pluginRoot, 'hooks-handlers', 'on-session-start.ts'),
+        'utf8',
+      ),
+    ).toContain('const event = JSON.parse(input)')
+    expect(
+      JSON.parse(await readFile(join(pluginRoot, '.lsp.json'), 'utf8')),
+    ).toEqual({
+      example: {
+        command: 'example-language-server',
+        args: ['--stdio'],
+        extensionToLanguage: { '.example': 'example' },
+      },
+    })
+    expect(
+      await readFile(join(pluginRoot, 'output-styles', 'sample.md'), 'utf8'),
+    ).toContain('keep-coding-instructions: true')
+    expect(
+      JSON.parse(await readFile(join(pluginRoot, '.mcp.json'), 'utf8')),
+    ).toEqual({
+      mcpServers: {
+        sample: {
+          command: 'bun',
+          args: [
+            'run',
+            '--cwd',
+            '${CLAUDE_PLUGIN_ROOT}',
+            '--shell=bun',
+            '--silent',
+            'start',
+          ],
+        },
+      },
+    })
+    expect(
+      JSON.parse(await readFile(join(pluginRoot, 'package.json'), 'utf8')),
+    ).toEqual({
+      name: 'claude-channel-sample',
+      version: '0.1.0',
+      type: 'module',
+      scripts: { start: 'bun install --no-summary && bun server.ts' },
+      dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' },
+    })
+    const channelServer = await readFile(join(pluginRoot, 'server.ts'), 'utf8')
+    expect(channelServer).toContain("experimental: { 'claude/channel': {} }")
+    expect(channelServer).toContain("name: 'reply'")
+    expect(channelServer).toContain(
+      'await mcp.connect(new StdioServerTransport())',
+    )
+
+    const mcpOnlyRoot = join(root, 'mcp-only')
+    await initClaudePlugin(mcpOnlyRoot, 'mcp-only', {
+      nativeLayout: true,
+      with: ['mcp'],
+    })
+    expect(
+      JSON.parse(await readFile(join(mcpOnlyRoot, '.mcp.json'), 'utf8')),
+    ).toEqual({
+      mcpServers: {
+        'example-remote': { type: 'http', url: 'https://example.com/mcp' },
+        'example-local': {
+          command: 'npx',
+          args: ['<your-mcp-server-package>'],
+        },
+      },
+    })
+  })
+
   it('returns validation warnings and makes them strict failures on request', async () => {
     const { root } = await pluginFixture()
     const manifest = join(root, 'plugin', '.claude-plugin', 'plugin.json')
