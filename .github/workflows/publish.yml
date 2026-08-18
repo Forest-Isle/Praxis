@@ -44,7 +44,19 @@ jobs:
           cache: npm
       - name: Install release prerequisites
         run: |
-          command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+          if ! command -v rg >/dev/null || ! command -v bwrap >/dev/null || ! command -v socat >/dev/null; then
+            timeout 180s sudo apt-get update \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30
+            timeout 180s sudo apt-get install -y ripgrep bubblewrap socat
+          fi
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          command -v rg >/dev/null
+          command -v bwrap >/dev/null
+          command -v socat >/dev/null
           npm ci
           npm install --global @anthropic-ai/claude-code@2.1.208
       - name: Validate tag and GitHub release

@@ -19,7 +19,7 @@ jobs:
   release:
     name: Propose or create release
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 135
     steps:
       - name: Run Release Please
         id: release
@@ -133,6 +133,31 @@ jobs:
               -f state=success -f context="$CHECK_NAME" \
               -f description="Verified by dispatched workflow run $RUN_ID" \
               -f target_url="$RUN_URL"
+          done
+          MERGE_DEADLINE=$((SECONDS + 600))
+          while true; do
+            MERGE_DETAILS=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --json state,mergeStateStatus)
+            PR_STATE=$(jq -r '.state' <<< "$MERGE_DETAILS")
+            PR_MERGE_STATE=$(jq -r '.mergeStateStatus' <<< "$MERGE_DETAILS")
+            if test "$PR_STATE" = "MERGED"; then
+              gh workflow run release-please.yml --repo "$GITHUB_REPOSITORY" \
+                --ref main
+              break
+            fi
+            if test "$PR_STATE" != "OPEN"; then
+              printf 'Release pull request closed without merging; release handoff was not dispatched\n'
+              break
+            fi
+            if test "$PR_MERGE_STATE" = "BEHIND"; then
+              printf 'Release pull request is behind main; ending this run so the next main run can refresh it\n'
+              break
+            fi
+            if test "$SECONDS" -ge "$MERGE_DEADLINE"; then
+              printf 'Release pull request remains open after protected checks; auto-merge remains enabled\n'
+              break
+            fi
+            sleep 3
           done
       - name: Dispatch release publication
         if: steps.release.outputs.release_created == 'true'
