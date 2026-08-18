@@ -207,11 +207,13 @@ describe('BackgroundAgentManager', () => {
     await expect(
       manager.output('a0123456789abcdef', { block: true, timeout: 30_000 }),
     ).resolves.toMatch(/worktree_path>\/tmp\/retained-agent/u)
-    await expect(
-      manager.notifications({ waitForRunning: false }),
-    ).resolves.toMatchObject({
-      messages: [expect.stringContaining('/tmp/retained-agent')],
-    })
+    const { messages } = await manager.notifications({ waitForRunning: false })
+    expect(messages).toEqual([
+      expect.stringContaining('<result>aborted</result>'),
+    ])
+    // Worktree metadata stays in the retrieval output, not the notification.
+    expect(messages[0]).not.toContain('worktree-path')
+    expect(messages[0]).not.toContain('worktree-warning')
   })
 
   it('resumes a completed task under the same agent ID', async () => {
@@ -712,5 +714,59 @@ describe('BackgroundAgentManager', () => {
     expect(notification.messages[0]).toContain(
       '<tool-use-id>call&lt;bad&amp;</tool-use-id>',
     )
+  })
+
+  it('serializes a completed notification with contract fields and total_tokens', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(spec(async () => completed('DONE')))
+    const { messages } = await manager.notifications({ waitForRunning: true })
+    const message = messages[0]
+    expect(message).toContain('<task-id>a0123456789abcdef</task-id>')
+    expect(message).toContain('<tool-use-id>call_agent</tool-use-id>')
+    expect(message).toContain('<output-file>/tmp/agent.output</output-file>')
+    expect(message).toContain('<status>completed</status>')
+    expect(message).toContain(
+      '<summary>Agent &quot;test agent&quot; finished</summary>',
+    )
+    expect(message).toContain('<result>DONE</result>')
+    expect(message).toContain(
+      '<usage><total_tokens>3</total_tokens><tool_uses>1</tool_uses><duration_ms>5</duration_ms></usage>',
+    )
+    expect(message).not.toContain('<note>')
+    expect(message).not.toContain('subagent_tokens')
+    expect(message).not.toContain('worktree-path')
+    expect(message).not.toContain('worktree-warning')
+  })
+
+  it('serializes a stopped task notification as killed without deprecated tags', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(
+        (_message, signal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener(
+              'abort',
+              () => reject(new Error('aborted')),
+              { once: true },
+            )
+          }),
+      ),
+    )
+    manager.stop('a0123456789abcdef')
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    const { messages } = await manager.notifications({ waitForRunning: true })
+    const message = messages[0]
+    expect(message).toContain('<status>killed</status>')
+    expect(message).not.toContain('<status>stopped</status>')
+    expect(message).toContain(
+      '<usage><total_tokens>0</total_tokens><tool_uses>0</tool_uses><duration_ms>0</duration_ms></usage>',
+    )
+    expect(message).not.toContain('<note>')
+    expect(message).not.toContain('subagent_tokens')
+    expect(message).not.toContain('worktree-path')
+    expect(message).not.toContain('worktree-warning')
   })
 })
