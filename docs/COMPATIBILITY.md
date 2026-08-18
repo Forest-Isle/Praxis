@@ -506,8 +506,13 @@ fork, and an append-only valid JSONL transcript.
 and `test:cross-version-resume-at-compat` are complementary maintainer gates
 that respectively prove foreground sidechain, compaction active-context
 projection, and `--resume-session-at` active-branch projection across mixed
-versions. Each uses isolated local SSE fixtures and does not fall back to an
-ambient binary.
+versions. The sidechain gate proves both directions: Praxis-created
+`2.1.208` sidechains survive a `2.1.233` resume, and a `2.1.233`-created
+sidechain survives a `2.1.208` resume and a later Praxis continuation. It
+asserts producer versions, main-chain context, native sidechain metadata, and
+byte-for-byte sidechain immutability after both foreign and Praxis resumes.
+Each gate uses isolated local SSE fixtures and does not fall back to an ambient
+binary.
 `npm run test:background-agent-compat` captures Claude's current Agent,
 SendMessage, TaskOutput, and TaskStop schemas, then proves async launch, output
 polling, same-ID continuation, completion notification, sidechain persistence,
