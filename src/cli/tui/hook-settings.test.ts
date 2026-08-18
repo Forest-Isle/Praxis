@@ -7,6 +7,7 @@ import {
   TUI_HOOK_EVENTS,
   TUI_HOOK_MENU,
 } from './hook-settings.js'
+import { HOOK_EVENTS } from '../../hooks/claude-hooks.js'
 
 describe('TUI hook settings projection', () => {
   it('matches the fixed Claude Code 2.1.208 event and detail fixture', async () => {
@@ -35,6 +36,16 @@ describe('TUI hook settings projection', () => {
         ),
       ),
     ).toEqual(fixture.observedDetails)
+  })
+
+  it('advertises only hook events the runtime can execute', () => {
+    const runtimeEvents = new Set<string>(HOOK_EVENTS)
+    const advertised = TUI_HOOK_EVENTS.map((event) => event.name)
+    for (const name of advertised) {
+      expect(runtimeEvents.has(name)).toBe(true)
+    }
+    expect(advertised).not.toContain('PostToolBatch')
+    expect(advertised).not.toContain('UserPromptExpansion')
   })
 
   it('matches observed scopes and hook types from the 2.1.208 fixture', async () => {
@@ -158,7 +169,7 @@ describe('TUI hook settings projection', () => {
         label: 'https://example.test/hook',
       }),
     ])
-    expect(projected.events[8]?.matchers[0]).toMatchObject({
+    expect(projected.events[4]?.matchers[0]).toMatchObject({
       matcher: 'startup|resume',
       scope: 'Local',
       scopeLabel: 'Local Settings',

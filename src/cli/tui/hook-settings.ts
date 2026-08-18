@@ -1,4 +1,8 @@
 import type { ClaudeJsonResource } from '../../compatibility/claude/shared-resources.js'
+import {
+  HOOK_EVENTS,
+  type ClaudeHookEventName,
+} from '../../hooks/claude-hooks.js'
 
 export interface TuiHookEventDefinition {
   name: string
@@ -36,7 +40,9 @@ export const TUI_HOOK_MENU = {
   visibleRows: 5,
 } as const
 
-export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
+const TUI_HOOK_EVENT_DEFINITIONS: readonly (TuiHookEventDefinition & {
+  name: ClaudeHookEventName
+})[] = [
   {
     name: 'PreToolUse',
     description: 'Before tool execution',
@@ -63,25 +69,6 @@ export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
     detail: [],
   },
   {
-    name: 'PostToolBatch',
-    description: 'After a batch of tool calls resolves',
-    detail: [],
-  },
-  {
-    name: 'PermissionDenied',
-    description: 'After auto mode classifier denies a tool call',
-    detail: [],
-  },
-  {
-    name: 'Notification',
-    description: 'When notifications are sent',
-    detail: [
-      'Input to command is JSON with notification message and type.',
-      'Exit code 0 - stdout/stderr not shown',
-      'Other exit codes - show stderr to user only',
-    ],
-  },
-  {
     name: 'UserPromptSubmit',
     description: 'When the user submits a prompt',
     detail: [
@@ -92,11 +79,6 @@ export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
     ],
   },
   {
-    name: 'UserPromptExpansion',
-    description: 'After a user-typed slash command expands into a prompt',
-    detail: [],
-  },
-  {
     name: 'SessionStart',
     description: 'When a new session is started',
     detail: [],
@@ -104,11 +86,6 @@ export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
   {
     name: 'Stop',
     description: 'Right before Claude concludes its response',
-    detail: [],
-  },
-  {
-    name: 'StopFailure',
-    description: 'When the turn ends due to an API error',
     detail: [],
   },
   {
@@ -123,16 +100,6 @@ export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
     detail: [],
   },
   {
-    name: 'PreCompact',
-    description: 'Before conversation compaction',
-    detail: [],
-  },
-  {
-    name: 'PostCompact',
-    description: 'After conversation compaction',
-    detail: [],
-  },
-  {
     name: 'SessionEnd',
     description: 'When a session is ending',
     detail: [],
@@ -143,6 +110,11 @@ export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
     detail: [],
   },
 ]
+
+export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] =
+  TUI_HOOK_EVENT_DEFINITIONS.filter((event) =>
+    HOOK_EVENTS.includes(event.name),
+  )
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

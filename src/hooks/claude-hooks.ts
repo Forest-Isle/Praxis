@@ -130,7 +130,7 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024
 const KILL_GRACE_MS = 250
 
-const HOOK_EVENTS: readonly ClaudeHookEventName[] = [
+export const HOOK_EVENTS: readonly ClaudeHookEventName[] = [
   'Setup',
   'SessionStart',
   'SubagentStart',
