@@ -805,7 +805,7 @@ describe('Claude-style TUI components', () => {
     )
     expect(events.lastFrame()).toContain('1 hooks configured')
     expect(events.lastFrame()).toContain('❯ 1. PreToolUse (1)')
-    expect(events.lastFrame()).toContain('↓ 12 more below')
+    expect(events.lastFrame()).toContain('↓ 5 more below')
 
     const hooks = render(
       <HookDashboard
