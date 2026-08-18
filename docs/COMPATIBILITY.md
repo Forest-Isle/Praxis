@@ -518,6 +518,12 @@ while `2.1.233` creates native automatic `compact_boundary` and
 reverse fixture proves the newer producer's dropped turn is replaced by its
 summary in both consumers, retains the session identity and producer versions,
 and never rewrites the shared JSONL chain.
+The resume-at gate proves both branch directions: a 2.1.208 source can be
+branched by Praxis then resumed by 2.1.233, and a 2.1.233 source can be
+branched by 2.1.208 then resumed by 2.1.233 and Praxis. It accepts the newer
+producer's observed initial-user and last-prompt-only seed layouts while
+requiring append-only abandoned history, the selected native parent UUID, and
+summary-free active-branch context at every consumer.
 Each gate uses isolated local SSE fixtures and does not fall back to an ambient
 binary.
 `npm run test:background-agent-compat` captures Claude's current Agent,

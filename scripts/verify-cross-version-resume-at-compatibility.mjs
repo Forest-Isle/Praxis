@@ -56,6 +56,12 @@ const turnMarkers = [
   ['PRAXIS_BRANCH_PROMPT', 'PRAXIS_BRANCH_ANSWER'],
   ['CROSS_BRANCH_PROMPT', 'CROSS_BRANCH_ANSWER'],
   ['PRAXIS_FINAL_PROMPT', 'PRAXIS_FINAL_ANSWER'],
+  ['REVERSE_FIRST_PROMPT', 'REVERSE_FIRST_ANSWER'],
+  ['REVERSE_SECOND_PROMPT', 'REVERSE_SECOND_ANSWER'],
+  ['REVERSE_ABANDONED_PROMPT', 'REVERSE_ABANDONED_ANSWER'],
+  ['REVERSE_REFERENCE_BRANCH_PROMPT', 'REVERSE_REFERENCE_BRANCH_ANSWER'],
+  ['REVERSE_CROSS_BRANCH_PROMPT', 'REVERSE_CROSS_BRANCH_ANSWER'],
+  ['REVERSE_PRAXIS_FINAL_PROMPT', 'REVERSE_PRAXIS_FINAL_ANSWER'],
 ]
 
 function responseText(body) {
@@ -175,6 +181,61 @@ function assertBranchContext(requestMode, prompt) {
   }
 }
 
+function splitCrossVersionSeed(transcript, seedPrompt, crossVersion) {
+  const users = transcript.filter((entry) => entry.type === 'user')
+  const seedUsers = users.filter(
+    (entry) => entry.message?.content === seedPrompt,
+  )
+  const firstAssistant = transcript.find((entry) => entry.type === 'assistant')
+  assert(
+    firstAssistant?.version === crossVersion,
+    `Cross-version seed assistant has version ${firstAssistant?.version}, expected ${crossVersion}`,
+  )
+  if (seedUsers.length === 0) {
+    assert(
+      transcript.some(
+        (entry) =>
+          entry.type === 'last-prompt' && entry.lastPrompt === seedPrompt,
+      ),
+      `Cross-version seed ${seedPrompt} was not recorded as last-prompt`,
+    )
+    return { users, hasSeedUser: false }
+  }
+  assert(
+    seedUsers.length === 1 && users[0] === seedUsers[0],
+    `Cross-version seed ${seedPrompt} must be the only initial user entry`,
+  )
+  assert(
+    seedUsers[0].version === crossVersion,
+    `Cross-version seed ${seedPrompt} has version ${seedUsers[0].version}, expected ${crossVersion}`,
+  )
+  return { users: users.slice(1), hasSeedUser: true }
+}
+
+function assertReverseBranchContext(requestMode, prompt, hasSeedUser) {
+  const source = requestFor(requestMode)
+  for (const marker of [
+    'REVERSE_FIRST_ANSWER',
+    'REVERSE_SECOND_PROMPT',
+    prompt,
+  ]) {
+    assert(source.includes(marker), `${requestMode} omitted ${marker}`)
+  }
+  if (hasSeedUser) {
+    assert(
+      source.includes('REVERSE_FIRST_PROMPT'),
+      `${requestMode} omitted REVERSE_FIRST_PROMPT`,
+    )
+  }
+  for (const marker of [
+    'REVERSE_SECOND_ANSWER',
+    'REVERSE_ABANDONED_PROMPT',
+    'REVERSE_ABANDONED_ANSWER',
+  ]) {
+    assert(!source.includes(marker), `${requestMode} retained ${marker}`)
+  }
+}
+
 async function entries(path) {
   return (await readFile(path, 'utf8'))
     .trimEnd()
@@ -207,16 +268,35 @@ async function runClaude(executable, args, cwd, configRoot, extraEnv) {
   return JSON.parse(stdout)
 }
 
+async function runPraxis(cli, args, cwd, configRoot, providerEnv) {
+  const { stdout } = await execFileAsync(process.execPath, [cli, ...args], {
+    cwd,
+    env: {
+      ...process.env,
+      ...providerEnv,
+      CLAUDE_CONFIG_DIR: configRoot,
+    },
+    maxBuffer: 4 * 1024 * 1024,
+    timeout: 120_000,
+  })
+  return JSON.parse(stdout)
+}
+
 const root = await mkdtemp(join(tmpdir(), 'praxis-cross-version-'))
 const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
+const reverseConfigRoot = join(root, 'reverse-config')
+const reverseCwd = join(root, 'reverse-work')
 
 try {
   await Promise.all([
     mkdir(cwd, { recursive: true }),
     mkdir(configRoot, { recursive: true }),
+    mkdir(reverseCwd, { recursive: true }),
+    mkdir(reverseConfigRoot, { recursive: true }),
   ])
   const canonicalCwd = await realpath(cwd)
+  const reverseCanonicalCwd = await realpath(reverseCwd)
 
   const referenceVersion = await detectVersion(
     referenceBinary,
@@ -528,8 +608,261 @@ try {
     )
   }
 
+  // Reverse direction: a newer Claude Code producer creates the abandoned
+  // branch, the 2.1.208 reference CLI performs resume-at, then both newer
+  // Claude Code and Praxis resume the selected active branch.
+  mode = 'reverse-cross-turn-1'
+  const reverseFirst = await runClaude(
+    crossBinary,
+    [...claudeCommon, 'REVERSE_FIRST_PROMPT'],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    reverseFirst.type === 'result' &&
+      !reverseFirst.is_error &&
+      reverseFirst.result === 'REVERSE_FIRST_ANSWER' &&
+      typeof reverseFirst.session_id === 'string',
+    `Cross-version reverse create failed: ${JSON.stringify(reverseFirst)}`,
+  )
+  const reverseSessionId = reverseFirst.session_id
+
+  mode = 'reverse-cross-turn-2'
+  const reverseSecond = await runClaude(
+    crossBinary,
+    [...claudeCommon, '--resume', reverseSessionId, 'REVERSE_SECOND_PROMPT'],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    reverseSecond.type === 'result' &&
+      !reverseSecond.is_error &&
+      reverseSecond.result === 'REVERSE_SECOND_ANSWER' &&
+      reverseSecond.session_id === reverseSessionId,
+    `Cross-version reverse second turn failed: ${JSON.stringify(reverseSecond)}`,
+  )
+
+  mode = 'reverse-cross-turn-3'
+  const reverseAbandoned = await runClaude(
+    crossBinary,
+    [...claudeCommon, '--resume', reverseSessionId, 'REVERSE_ABANDONED_PROMPT'],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    reverseAbandoned.type === 'result' &&
+      !reverseAbandoned.is_error &&
+      reverseAbandoned.result === 'REVERSE_ABANDONED_ANSWER' &&
+      reverseAbandoned.session_id === reverseSessionId,
+    `Cross-version reverse abandoned turn failed: ${JSON.stringify(reverseAbandoned)}`,
+  )
+
+  const reverseSessionPaths = resolveClaudePaths({
+    configDir: reverseConfigRoot,
+    cwd: reverseCanonicalCwd,
+    sessionId: reverseSessionId,
+  })
+  const reverseBeforeBranch = await entries(reverseSessionPaths.sessionFile)
+  const reverseSeed = splitCrossVersionSeed(
+    reverseBeforeBranch,
+    'REVERSE_FIRST_PROMPT',
+    crossVersion,
+  )
+  const reverseSecondPrompt = messageEntry(
+    reverseBeforeBranch,
+    'REVERSE_SECOND_PROMPT',
+  )
+  const reverseAbandonedPrompt = messageEntry(
+    reverseBeforeBranch,
+    'REVERSE_ABANDONED_PROMPT',
+  )
+  const reverseAbandonedPromptIndex = reverseBeforeBranch.indexOf(
+    reverseAbandonedPrompt,
+  )
+  const reverseAbandonedAnswer = reverseBeforeBranch
+    .slice(reverseAbandonedPromptIndex + 1)
+    .find((entry) => entry.type === 'assistant')
+  assert(
+    typeof reverseAbandonedAnswer?.uuid === 'string',
+    'Reverse abandoned assistant entry missing',
+  )
+
+  mode = 'reverse-reference-branch'
+  const reverseReferenceBranch = await runClaude(
+    referenceBinary,
+    [
+      ...claudeCommon,
+      '--resume',
+      reverseSessionId,
+      '--resume-session-at',
+      reverseSecondPrompt.uuid,
+      'REVERSE_REFERENCE_BRANCH_PROMPT',
+    ],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    reverseReferenceBranch.type === 'result' &&
+      !reverseReferenceBranch.is_error &&
+      reverseReferenceBranch.result === 'REVERSE_REFERENCE_BRANCH_ANSWER' &&
+      reverseReferenceBranch.session_id === reverseSessionId,
+    `Reference reverse resume-at failed: ${JSON.stringify(reverseReferenceBranch)}`,
+  )
+  assertReverseBranchContext(
+    'reverse-reference-branch',
+    'REVERSE_REFERENCE_BRANCH_PROMPT',
+    reverseSeed.hasSeedUser,
+  )
+
+  mode = 'reverse-cross-branch-resume'
+  const reverseCrossBranch = await runClaude(
+    crossBinary,
+    [
+      ...claudeCommon,
+      '--resume',
+      reverseSessionId,
+      'REVERSE_CROSS_BRANCH_PROMPT',
+    ],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnv,
+  )
+  assert(
+    reverseCrossBranch.type === 'result' &&
+      !reverseCrossBranch.is_error &&
+      reverseCrossBranch.result === 'REVERSE_CROSS_BRANCH_ANSWER' &&
+      reverseCrossBranch.session_id === reverseSessionId,
+    `Cross-version reverse branch resume failed: ${JSON.stringify(reverseCrossBranch)}`,
+  )
+  assertReverseBranchContext(
+    'reverse-cross-branch-resume',
+    'REVERSE_CROSS_BRANCH_PROMPT',
+    reverseSeed.hasSeedUser,
+  )
+  const reverseCrossSource = requestFor('reverse-cross-branch-resume')
+  assert(
+    reverseCrossSource.includes('REVERSE_REFERENCE_BRANCH_PROMPT') &&
+      reverseCrossSource.includes('REVERSE_REFERENCE_BRANCH_ANSWER'),
+    'Cross-version reverse resume omitted reference branch context',
+  )
+
+  mode = 'reverse-praxis-final'
+  const reversePraxisFinal = await runPraxis(
+    join(process.cwd(), 'dist/cli.js'),
+    [
+      '-p',
+      '--output-format=json',
+      '--resume',
+      reverseSessionId,
+      '--',
+      'REVERSE_PRAXIS_FINAL_PROMPT',
+    ],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    praxisEnv,
+  )
+  assert(
+    reversePraxisFinal.type === 'result' &&
+      !reversePraxisFinal.is_error &&
+      reversePraxisFinal.result === 'REVERSE_PRAXIS_FINAL_ANSWER' &&
+      (reversePraxisFinal.session_id ?? reversePraxisFinal.sessionId) ===
+        reverseSessionId,
+    `Praxis reverse final resume failed: ${JSON.stringify(reversePraxisFinal)}`,
+  )
+  assertReverseBranchContext(
+    'reverse-praxis-final',
+    'REVERSE_PRAXIS_FINAL_PROMPT',
+    reverseSeed.hasSeedUser,
+  )
+  const reverseFinalSource = requestFor('reverse-praxis-final')
+  assert(
+    reverseFinalSource.includes('REVERSE_REFERENCE_BRANCH_ANSWER') &&
+      reverseFinalSource.includes('REVERSE_CROSS_BRANCH_PROMPT') &&
+      reverseFinalSource.includes('REVERSE_CROSS_BRANCH_ANSWER'),
+    'Praxis reverse final resume omitted selected branch context',
+  )
+
+  const reverseExpectedTurns = [
+    ['reverse-cross-turn-1', 'REVERSE_FIRST_PROMPT'],
+    ['reverse-cross-turn-2', 'REVERSE_SECOND_PROMPT'],
+    ['reverse-cross-turn-3', 'REVERSE_ABANDONED_PROMPT'],
+    ['reverse-reference-branch', 'REVERSE_REFERENCE_BRANCH_PROMPT'],
+    ['reverse-cross-branch-resume', 'REVERSE_CROSS_BRANCH_PROMPT'],
+    ['reverse-praxis-final', 'REVERSE_PRAXIS_FINAL_PROMPT'],
+  ]
+  assert(
+    malformed.length === 0,
+    `Malformed reverse provider traffic: ${malformed.join('; ')}`,
+  )
+  assert(
+    requests.length === expectedTurns.length + reverseExpectedTurns.length,
+    `Expected ${expectedTurns.length + reverseExpectedTurns.length} provider requests, got ${requests.length}`,
+  )
+  for (let index = 0; index < reverseExpectedTurns.length; index += 1) {
+    const [expectedMode, prompt] = reverseExpectedTurns[index]
+    const request = requests[expectedTurns.length + index]
+    assert(
+      request.mode === expectedMode,
+      `Reverse provider request ${index + 1} was ${request.mode}, expected ${expectedMode}`,
+    )
+    assert(
+      JSON.stringify(request.body.messages ?? []).includes(prompt),
+      `Reverse provider request ${index + 1} (${expectedMode}) omitted ${prompt}`,
+    )
+  }
+
+  const reverseTranscript = await entries(reverseSessionPaths.sessionFile)
+  const reverseUsers = splitCrossVersionSeed(
+    reverseTranscript,
+    'REVERSE_FIRST_PROMPT',
+    crossVersion,
+  ).users
+  const reverseBranch = messageEntry(
+    reverseTranscript,
+    'REVERSE_REFERENCE_BRANCH_PROMPT',
+  )
+  assert(
+    reverseBranch.parentUuid === reverseSecondPrompt.uuid,
+    `Reference reverse branch parent ${reverseBranch.parentUuid} differs from REVERSE_SECOND_PROMPT ${reverseSecondPrompt.uuid}`,
+  )
+  assert(
+    reverseTranscript.some(
+      (entry) => entry.uuid === reverseAbandonedPrompt.uuid,
+    ) &&
+      reverseTranscript.some(
+        (entry) => entry.uuid === reverseAbandonedAnswer.uuid,
+      ),
+    'Reference resume-at rewrote reverse abandoned append-only history',
+  )
+  const reverseExpectedUsers = [
+    ['REVERSE_SECOND_PROMPT', crossVersion],
+    ['REVERSE_ABANDONED_PROMPT', crossVersion],
+    ['REVERSE_REFERENCE_BRANCH_PROMPT', REFERENCE_VERSION],
+    ['REVERSE_CROSS_BRANCH_PROMPT', crossVersion],
+    ['REVERSE_PRAXIS_FINAL_PROMPT', REFERENCE_VERSION],
+  ]
+  assert(
+    reverseUsers.length === reverseExpectedUsers.length,
+    `Expected ${reverseExpectedUsers.length} reverse post-seed users, found ${reverseUsers.length}`,
+  )
+  for (let index = 0; index < reverseExpectedUsers.length; index += 1) {
+    const [prompt, version] = reverseExpectedUsers[index]
+    const entry = reverseUsers[index]
+    assert(
+      entry.message?.content === prompt && entry.version === version,
+      `Reverse user ${index + 1} is ${JSON.stringify(entry.message?.content)} at ${entry.version}, expected ${prompt} at ${version}`,
+    )
+  }
+
   console.log(
     `cross-version resume-at compatibility passed: Claude ${REFERENCE_VERSION} produced an append-only branch via Praxis --resume-session-at, then Claude ${crossVersion} and Praxis resumed the branch context of one shared JSONL session (${sessionId}) with producer versions [${expectedVersions.join(', ')}].`,
+  )
+  console.log(
+    `reverse cross-version resume-at compatibility passed: Claude ${crossVersion} produced an abandoned branch, Claude ${REFERENCE_VERSION} selected it with --resume-session-at, then Claude ${crossVersion} and Praxis resumed one shared JSONL session (${reverseSessionId}).`,
   )
 } finally {
   if (server.listening) await closeServer()
