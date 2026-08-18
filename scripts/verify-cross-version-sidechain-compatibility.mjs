@@ -27,6 +27,15 @@ const CLAUDE_ANSWER = 'CROSS_SIDECHAIN_CLAUDE_ANSWER'
 const PRAXIS_PROMPT = 'CROSS_SIDECHAIN_PRAXIS_PROMPT'
 const PRAXIS_ANSWER = 'CROSS_SIDECHAIN_PRAXIS_ANSWER'
 const TOOL_USE_ID = 'cross_sidechain_agent'
+const REVERSE_ROOT_PROMPT = 'REVERSE_CROSS_SIDECHAIN_ROOT_PROMPT'
+const REVERSE_CHILD_PROMPT = 'Return REVERSE_CROSS_SIDECHAIN_CHILD_MARKER'
+const REVERSE_CHILD_MARKER = 'REVERSE_CROSS_SIDECHAIN_CHILD_MARKER'
+const REVERSE_MAIN_MARKER = 'REVERSE_CROSS_SIDECHAIN_MAIN_MARKER'
+const REVERSE_CLAUDE_PROMPT = 'REVERSE_CROSS_SIDECHAIN_CLAUDE_PROMPT'
+const REVERSE_CLAUDE_ANSWER = 'REVERSE_CROSS_SIDECHAIN_CLAUDE_ANSWER'
+const REVERSE_PRAXIS_PROMPT = 'REVERSE_CROSS_SIDECHAIN_PRAXIS_PROMPT'
+const REVERSE_PRAXIS_ANSWER = 'REVERSE_CROSS_SIDECHAIN_PRAXIS_ANSWER'
+const REVERSE_TOOL_USE_ID = 'reverse_cross_sidechain_agent'
 
 if (!referenceBinary) {
   throw new Error(
@@ -101,10 +110,10 @@ function textEvents(text) {
   ]
 }
 
-function toolEvents() {
+function toolEvents({ description, prompt, toolUseId }) {
   const input = {
-    description: 'Return cross-version sidechain marker',
-    prompt: CHILD_PROMPT,
+    description,
+    prompt,
     subagent_type: 'general-purpose',
     run_in_background: false,
   }
@@ -127,7 +136,7 @@ function toolEvents() {
       index: 0,
       content_block: {
         type: 'tool_use',
-        id: TOOL_USE_ID,
+        id: toolUseId,
         name: 'Agent',
         input: {},
       },
@@ -196,7 +205,11 @@ const server = createServer(async (request, response) => {
       serialized.includes(ROOT_PROMPT),
       'Praxis main request omitted root prompt',
     )
-    events = toolEvents()
+    events = toolEvents({
+      description: 'Return cross-version sidechain marker',
+      prompt: CHILD_PROMPT,
+      toolUseId: TOOL_USE_ID,
+    })
   } else if (count === 2) {
     assert(
       !hasAgentTool(body),
@@ -240,6 +253,60 @@ const server = createServer(async (request, response) => {
       )
     }
     events = textEvents(PRAXIS_ANSWER)
+  } else if (count === 6) {
+    assert(hasAgentTool(body), 'Cross-version main request omitted Agent tool')
+    assert(
+      serialized.includes(REVERSE_ROOT_PROMPT),
+      'Cross-version main request omitted reverse root prompt',
+    )
+    events = toolEvents({
+      description: 'Return reverse cross-version sidechain marker',
+      prompt: REVERSE_CHILD_PROMPT,
+      toolUseId: REVERSE_TOOL_USE_ID,
+    })
+  } else if (count === 7) {
+    assert(
+      hasAgentTool(body),
+      'Cross-version child request omitted its inherited Agent tool schema',
+    )
+    assert(
+      body.system !== undefined,
+      'Cross-version child request omitted system context',
+    )
+    assert(
+      serialized.includes(REVERSE_CHILD_PROMPT),
+      'Cross-version child request omitted reverse child prompt',
+    )
+    events = textEvents(REVERSE_CHILD_MARKER)
+  } else if (count === 8) {
+    assert(
+      serialized.includes(REVERSE_TOOL_USE_ID) &&
+        serialized.includes(REVERSE_CHILD_MARKER),
+      'Cross-version main continuation omitted Agent result',
+    )
+    events = textEvents(REVERSE_MAIN_MARKER)
+  } else if (count === 9) {
+    assert(
+      serialized.includes(REVERSE_CHILD_MARKER) &&
+        serialized.includes(REVERSE_MAIN_MARKER) &&
+        serialized.includes(REVERSE_CLAUDE_PROMPT),
+      'Reference Claude request omitted cross-version sidechain context',
+    )
+    events = textEvents(REVERSE_CLAUDE_ANSWER)
+  } else if (count === 10) {
+    for (const marker of [
+      REVERSE_CHILD_MARKER,
+      REVERSE_MAIN_MARKER,
+      REVERSE_CLAUDE_PROMPT,
+      REVERSE_CLAUDE_ANSWER,
+      REVERSE_PRAXIS_PROMPT,
+    ]) {
+      assert(
+        serialized.includes(marker),
+        `Praxis reverse post-Claude request omitted ${marker}`,
+      )
+    }
+    events = textEvents(REVERSE_PRAXIS_ANSWER)
   } else {
     throw new Error(`Unexpected provider request ${count}`)
   }
@@ -495,8 +562,214 @@ try {
     )
   }
 
+  const reverseConfigRoot = join(root, 'reverse-config')
+  const reverseCwd = join(root, 'reverse-work')
+  await Promise.all([
+    mkdir(reverseCwd, { recursive: true }),
+    mkdir(reverseConfigRoot, { recursive: true }),
+  ])
+  const reverseCanonicalCwd = await realpath(reverseCwd)
+  const reverseCreated = await runClaude(
+    crossBinary,
+    [
+      '-p',
+      '--model',
+      'haiku',
+      '--tools',
+      'Agent',
+      '--output-format',
+      'json',
+      REVERSE_ROOT_PROMPT,
+    ],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnvironment,
+  )
+  assert(
+    reverseCreated.type === 'result' &&
+      reverseCreated.is_error !== true &&
+      reverseCreated.result === REVERSE_MAIN_MARKER &&
+      typeof reverseCreated.session_id === 'string',
+    `Cross-version Agent run returned unexpected result: ${JSON.stringify(reverseCreated)}`,
+  )
+  const reverseSessionId = reverseCreated.session_id
+  assert(
+    requests.length === 8,
+    `Expected eight provider requests after cross-version Agent run, got ${requests.length}`,
+  )
+
+  const reversePaths = resolveClaudePaths({
+    configDir: reverseConfigRoot,
+    cwd: reverseCanonicalCwd,
+    sessionId: reverseSessionId,
+  })
+  const reverseSubagentsDirectory = join(
+    reversePaths.projectRoot,
+    reverseSessionId,
+    'subagents',
+  )
+  const reverseSidechainFiles = await readdir(reverseSubagentsDirectory)
+  const reverseJsonlNames = reverseSidechainFiles.filter((name) =>
+    name.endsWith('.jsonl'),
+  )
+  const reverseMetadataNames = reverseSidechainFiles.filter((name) =>
+    name.endsWith('.meta.json'),
+  )
+  assert(
+    reverseJsonlNames.length === 1,
+    `Expected one reverse sidechain JSONL, found ${reverseJsonlNames.join(', ')}`,
+  )
+  assert(
+    reverseMetadataNames.length === 1,
+    `Expected one reverse sidechain metadata file, found ${reverseMetadataNames.join(', ')}`,
+  )
+  const reverseSidechainPath = join(
+    reverseSubagentsDirectory,
+    reverseJsonlNames[0],
+  )
+  const reverseMetadataPath = join(
+    reverseSubagentsDirectory,
+    reverseMetadataNames[0],
+  )
+  const reverseSidechainBefore = await readFile(reverseSidechainPath, 'utf8')
+  const reverseMetadataBefore = await readFile(reverseMetadataPath, 'utf8')
+  const reverseSidechain = parseJsonLines(reverseSidechainBefore)
+  assert(
+    /^agent-a[0-9a-f]{16}\.jsonl$/u.test(reverseJsonlNames[0]),
+    `Invalid reverse native sidechain filename ${reverseJsonlNames[0]}`,
+  )
+  assert(reverseSidechain.length > 0, 'Reverse native sidechain is empty')
+  assert(
+    reverseSidechainBefore.includes(REVERSE_CHILD_MARKER) &&
+      reverseSidechainBefore.includes('"isSidechain":true'),
+    'Reverse native sidechain omitted child marker or sidechain metadata',
+  )
+  for (const entry of reverseSidechain) {
+    assert(
+      entry.isSidechain === true,
+      'Reverse sidechain entry omitted isSidechain',
+    )
+    assert(
+      entry.sessionId === reverseSessionId,
+      'Reverse sidechain entry has the wrong session ID',
+    )
+    assert(
+      entry.version === crossVersion,
+      `Reverse sidechain entry has version ${entry.version}, expected ${crossVersion}`,
+    )
+  }
+  const reverseMetadata = JSON.parse(reverseMetadataBefore)
+  assert(
+    reverseMetadata.agentType === 'general-purpose' &&
+      reverseMetadata.toolUseId === REVERSE_TOOL_USE_ID &&
+      reverseMetadata.spawnDepth === 1,
+    `Reverse native sidechain metadata is invalid: ${reverseMetadataBefore}`,
+  )
+
+  const reverseClaudeResult = await runClaude(
+    referenceBinary,
+    [
+      '-p',
+      '--resume',
+      reverseSessionId,
+      '--model',
+      'haiku',
+      '--max-turns',
+      '1',
+      '--tools',
+      '',
+      '--output-format',
+      'json',
+      REVERSE_CLAUDE_PROMPT,
+    ],
+    reverseCanonicalCwd,
+    reverseConfigRoot,
+    claudeEnvironment,
+  )
+  assertResult(
+    reverseClaudeResult,
+    reverseSessionId,
+    REVERSE_CLAUDE_ANSWER,
+    'Reference Claude reverse resume',
+  )
+
+  const reversePraxisResumed = await execFileAsync(
+    process.execPath,
+    [
+      join(process.cwd(), 'dist/cli.js'),
+      '-p',
+      '--output-format=json',
+      '--resume',
+      reverseSessionId,
+      '--',
+      REVERSE_PRAXIS_PROMPT,
+    ],
+    {
+      cwd: reverseCanonicalCwd,
+      env: {
+        ...process.env,
+        ...praxisEnvironment,
+        CLAUDE_CONFIG_DIR: reverseConfigRoot,
+      },
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  )
+  assertResult(
+    JSON.parse(reversePraxisResumed.stdout),
+    reverseSessionId,
+    REVERSE_PRAXIS_ANSWER,
+    'Praxis reverse post-Claude resume',
+  )
+  assert(
+    requests.length === 10,
+    `Expected ten provider requests, got ${requests.length}`,
+  )
+  assert(
+    (await readFile(reverseSidechainPath, 'utf8')) === reverseSidechainBefore,
+    'Reference Claude or Praxis changed reverse sidechain JSONL',
+  )
+  assert(
+    (await readFile(reverseMetadataPath, 'utf8')) === reverseMetadataBefore,
+    'Reference Claude or Praxis changed reverse sidechain metadata',
+  )
+
+  const reverseMainEntries = parseJsonLines(
+    await readFile(reversePaths.sessionFile, 'utf8'),
+  )
+  const reversePrompts = [
+    REVERSE_ROOT_PROMPT,
+    REVERSE_CLAUDE_PROMPT,
+    REVERSE_PRAXIS_PROMPT,
+  ]
+  const reverseVersions = [crossVersion, REFERENCE_VERSION, REFERENCE_VERSION]
+  let reverseLastIndex = -1
+  for (let index = 0; index < reversePrompts.length; index += 1) {
+    const prompt = reversePrompts[index]
+    const entryIndex = reverseMainEntries.findIndex(
+      (entry) => entry.type === 'user' && entry.message?.content === prompt,
+    )
+    assert(
+      entryIndex > reverseLastIndex,
+      `Reverse main user entry ${prompt} is missing or out of order`,
+    )
+    reverseLastIndex = entryIndex
+    const entry = reverseMainEntries[entryIndex]
+    assert(
+      entry.sessionId === reverseSessionId,
+      `Reverse main user entry ${prompt} has wrong session ID`,
+    )
+    assert(
+      entry.version === reverseVersions[index],
+      `Reverse main user entry ${prompt} has version ${entry.version}, expected ${reverseVersions[index]}`,
+    )
+  }
+
   console.log(
     `cross-version sidechain compatibility passed: Praxis wrote a native foreground sidechain, Claude ${crossVersion} resumed session ${sessionId}, and Praxis continued with producer versions [${versions.join(', ')}].`,
+  )
+  console.log(
+    `reverse cross-version sidechain compatibility passed: Claude ${crossVersion} wrote a native foreground sidechain, Claude ${REFERENCE_VERSION} resumed session ${reverseSessionId}, and Praxis continued with producer versions [${reverseVersions.join(', ')}].`,
   )
 } finally {
   if (server.listening) await closeServer()
