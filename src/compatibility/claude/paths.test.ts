@@ -3,10 +3,19 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
+  claudeProjectPathPrefix,
   resolveClaudePaths,
   resolveClaudeScheduledTaskFile,
   sanitizeClaudeProjectPath,
 } from './paths.js'
+
+function claudeDjb2Hash(value: string): number {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0
+  }
+  return hash
+}
 
 describe('Claude project path compatibility', () => {
   it('uses Claude Code character replacement for ordinary paths', () => {
@@ -18,7 +27,7 @@ describe('Claude project path compatibility', () => {
     )
   })
 
-  it('uses Claude Code 2.1.208 truncation and hash for long paths', () => {
+  it('uses Claude Code 2.1.208 truncation and djb2 hash for long paths', () => {
     const cwd =
       '/private/tmp/praxis-claude-long-probe.ZwF0h0/' +
       [1, 2, 3, 4, 5, 6]
@@ -27,9 +36,28 @@ describe('Claude project path compatibility', () => {
         )
         .join('/')
 
+    const pinned =
+      '-private-tmp-praxis-claude-long-probe-ZwF0h0-segment-segment-segment-segment-segment-segment-1-segment-segment-segment-segment-segment-segment-2-segment-segment-segment-segment-segment-segment-3-segme-z3f6qv'
+    expect(sanitizeClaudeProjectPath(cwd)).toBe(pinned)
     expect(sanitizeClaudeProjectPath(cwd)).toBe(
-      '-private-tmp-praxis-claude-long-probe-ZwF0h0-segment-segment-segment-segment-segment-segment-1-segment-segment-segment-segment-segment-segment-2-segment-segment-segment-segment-segment-segment-3-segme-z3f6qv',
+      `${claudeProjectPathPrefix(cwd)}${Math.abs(claudeDjb2Hash(cwd)).toString(36)}`,
     )
+  })
+
+  it('returns a truncated prefix only for long project paths', () => {
+    expect(claudeProjectPathPrefix('/Users/alice/dev/Praxis')).toBeNull()
+    expect(claudeProjectPathPrefix('C:\\Users\\alice\\project')).toBeNull()
+    expect(
+      claudeProjectPathPrefix(
+        '/private/tmp/praxis-claude-long-probe.ZwF0h0/' +
+          [1, 2, 3, 4, 5, 6]
+            .map(
+              (index) =>
+                `segment-segment-segment-segment-segment-segment-${index}`,
+            )
+            .join('/'),
+      ),
+    ).toMatch(/^[a-zA-Z0-9-]{200}-$/)
   })
 
   it('resolves shared and Praxis-owned locations from CLAUDE_CONFIG_DIR', () => {

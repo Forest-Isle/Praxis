@@ -28,6 +28,7 @@ import {
   getCumulativeDroppedTokens,
 } from '../compatibility/claude/compaction.js'
 import {
+  discoverClaudeProjectRoot,
   isClaudeSessionId,
   resolveClaudePaths,
   resolveClaudeScheduledTaskFile,
@@ -1377,8 +1378,19 @@ export class ClaudeSessionService {
     try {
       names = await readdir(paths.projectRoot)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw error
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      const discovered = await discoverClaudeProjectRoot(
+        paths.configRoot,
+        this.activeCwd(),
+      )
+      if (discovered === null) return []
+      paths.projectRoot = discovered
+      try {
+        names = await readdir(paths.projectRoot)
+      } catch (scanError) {
+        if ((scanError as NodeJS.ErrnoException).code === 'ENOENT') return []
+        throw scanError
+      }
     }
 
     const summaries = await Promise.all(
@@ -1391,7 +1403,10 @@ export class ClaudeSessionService {
           try {
             const metadata = await lstat(sessionFile)
             if (!metadata.isFile()) return null
-            const recovery = await this.store(sessionId).loadReadOnly()
+            const recovery = await this.store(
+              sessionId,
+              paths.projectRoot,
+            ).loadReadOnly()
             if (!(await lstat(sessionFile)).isFile()) return null
             const name = this.sessionName(recovery.entries)
             const prLink = getClaudePrLink(recovery.entries, sessionId)
@@ -4775,10 +4790,16 @@ export class ClaudeSessionService {
     ]
   }
 
-  private store(sessionId: string): ClaudeTranscriptStore {
+  private store(
+    sessionId: string,
+    projectRoot?: string,
+  ): ClaudeTranscriptStore {
     const paths = this.paths(sessionId)
     return new ClaudeTranscriptStore({
-      sessionFile: paths.sessionFile,
+      sessionFile:
+        projectRoot === undefined
+          ? paths.sessionFile
+          : join(projectRoot, `${sessionId}.jsonl`),
       lockFile: join(paths.praxisRoot, 'locks', `${sessionId}.lock`),
       schema: this.schema,
     })
