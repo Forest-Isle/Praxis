@@ -57,6 +57,7 @@ function baseState(): ClaudeSessionCostState {
         costUsd: 0.5,
       },
     },
+    hasUnknownModelCost: false,
   }
 }
 
@@ -238,6 +239,7 @@ describe('ClaudeCostStateStore load', () => {
       linesAdded: 0,
       linesRemoved: 0,
       modelUsage: {},
+      hasUnknownModelCost: false,
     })
   })
 })
@@ -639,5 +641,74 @@ describe('ClaudeCostStateStore concurrency', () => {
     )
     expect(calls).toBe(3)
     expect(await readState(statePath)).toEqual({ external: 3 })
+  })
+})
+
+describe('ClaudeCostStateStore unknown-cost sidecar', () => {
+  it('persists the unknown-model flag in a private sidecar while keeping native fields Praxis-free', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-claude-cost-sidecar-'))
+    roots.push(root)
+    const statePath = join(root, 'work', '.claude', 'claude-cost-state.json')
+    const sidecarPath = join(
+      root,
+      'config',
+      'praxis',
+      'unknown-cost-sidecar.json',
+    )
+    const lockFile = join(
+      root,
+      'config',
+      'praxis',
+      'locks',
+      'claude-state.lock',
+    )
+    const sidecarLockFile = join(
+      root,
+      'config',
+      'praxis',
+      'locks',
+      'unknown-cost-sidecar.lock',
+    )
+    await mkdir(dirname(statePath), { recursive: true })
+    await mkdir(dirname(sidecarPath), { recursive: true })
+    await mkdir(dirname(lockFile), { recursive: true })
+    const store = new ClaudeCostStateStore({
+      statePath,
+      projectIdentity: PROJECT,
+      lockFile,
+      sidecarPath,
+      sidecarLockFile,
+    })
+
+    const state = { ...baseState(), hasUnknownModelCost: true }
+    await store.save(state)
+
+    const parsed = (await readState(statePath)) as {
+      projects: Record<string, Record<string, unknown>>
+    }
+    const project = parsed.projects[PROJECT]
+    if (project === undefined) {
+      throw new Error(`expected parsed state to contain project ${PROJECT}`)
+    }
+    expect(Object.keys(project).sort()).toEqual([...OWNED_PROJECT_KEYS].sort())
+    expect(project).not.toHaveProperty('hasUnknownModelCost')
+
+    const restored = await store.load(SESSION_ID)
+    expect(restored).toEqual(state)
+
+    // A malformed sidecar fails closed without blocking the native cost load.
+    await writeRaw(sidecarPath, '{bad')
+    const recovered = await store.load(SESSION_ID)
+    expect(recovered).not.toBeNull()
+    expect(recovered?.hasUnknownModelCost).toBe(false)
+    expect(recovered?.totalCostUsd).toBe(state.totalCostUsd)
+  })
+
+  it('loads the unknown-model flag as false when no sidecar path is configured', async () => {
+    const { store } = await fixture()
+    await store.save(baseState())
+
+    const restored = await store.load(SESSION_ID)
+    expect(restored?.hasUnknownModelCost).toBe(false)
   })
 })

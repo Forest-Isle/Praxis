@@ -1267,6 +1267,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const costStateStore = new ClaudeCostStateStore({
     statePath: claudeStatePath,
     projectIdentity: await resolveClaudeProjectIdentity({ cwd }),
+    sidecarPath: join(configRoot, 'praxis', 'unknown-cost-sidecar.json'),
   })
 
   const options = {

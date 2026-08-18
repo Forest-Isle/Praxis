@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import { ExclusiveFileLease } from '../platform/exclusive-file-lease.js'
+import { UnknownCostSidecar } from './unknown-cost-sidecar.js'
 
 export interface ClaudeStoredModelCostUsage {
   readonly inputTokens: number
@@ -25,12 +26,15 @@ export interface ClaudeSessionCostState {
   readonly linesAdded: number
   readonly linesRemoved: number
   readonly modelUsage: Readonly<Record<string, ClaudeStoredModelCostUsage>>
+  readonly hasUnknownModelCost?: boolean
 }
 
 export interface ClaudeCostStateStoreOptions {
   statePath: string
   projectIdentity: string
   lockFile?: string
+  sidecarPath?: string
+  sidecarLockFile?: string
 }
 
 export interface ClaudeCostStateSaveHooks {
@@ -124,6 +128,7 @@ export class ClaudeCostStateStore {
   readonly projectIdentity: string
   readonly lockFile: string
   private readonly lease: ExclusiveFileLease
+  private readonly sidecar: UnknownCostSidecar | null
 
   constructor(options: ClaudeCostStateStoreOptions) {
     assertNonBlank(options.statePath, 'statePath')
@@ -134,6 +139,15 @@ export class ClaudeCostStateStore {
       options.lockFile ??
       join(dirname(options.statePath), '.praxis-claude-state.lock')
     this.lease = new ExclusiveFileLease(this.lockFile)
+    this.sidecar =
+      options.sidecarPath === undefined
+        ? null
+        : new UnknownCostSidecar({
+            sidecarPath: options.sidecarPath,
+            ...(options.sidecarLockFile === undefined
+              ? {}
+              : { lockFile: options.sidecarLockFile }),
+          })
   }
 
   async load(sessionId: string): Promise<ClaudeSessionCostState | null> {
@@ -142,7 +156,14 @@ export class ClaudeCostStateStore {
     if (content === null) {
       return null
     }
-    return this.restoreMatchingSession(content, sessionId)
+    const native = this.restoreMatchingSession(content, sessionId)
+    if (native === null) {
+      return null
+    }
+    const hasUnknownModelCost = this.sidecar
+      ? await this.sidecar.readFlag(sessionId)
+      : false
+    return { ...native, hasUnknownModelCost }
   }
 
   async save(
@@ -158,6 +179,10 @@ export class ClaudeCostStateStore {
     } finally {
       await handle.release()
     }
+    await this.sidecar?.writeFlag(
+      state.sessionId,
+      state.hasUnknownModelCost ?? false,
+    )
   }
 
   private async readStateFile(): Promise<{
@@ -250,6 +275,12 @@ export class ClaudeCostStateStore {
     requireMetric(state.wallDurationMs, 'wallDurationMs')
     requireCounter(state.linesAdded, 'linesAdded')
     requireCounter(state.linesRemoved, 'linesRemoved')
+    if (
+      state.hasUnknownModelCost !== undefined &&
+      typeof state.hasUnknownModelCost !== 'boolean'
+    ) {
+      throw new TypeError('hasUnknownModelCost must be a boolean')
+    }
 
     const rawUsage = requireObject(state.modelUsage, 'modelUsage')
     for (const [modelKey, rawValue] of Object.entries(rawUsage)) {
@@ -416,7 +447,7 @@ export class ClaudeCostStateStore {
   private restoreMatchingSession(
     content: string,
     sessionId: string,
-  ): ClaudeSessionCostState | null {
+  ): Omit<ClaudeSessionCostState, 'hasUnknownModelCost'> | null {
     let root: unknown
     try {
       root = JSON.parse(content)

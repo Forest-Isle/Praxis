@@ -33,7 +33,16 @@ export interface ClaudeSessionDurationsInput {
   readonly toolDurationMs?: number
 }
 
-export interface ClaudeSessionCostSnapshot extends ClaudeSessionCostState {
+export interface ClaudeSessionCostSnapshot {
+  readonly sessionId: string
+  readonly totalCostUsd: number
+  readonly apiDurationMs: number
+  readonly apiDurationWithoutRetriesMs: number
+  readonly toolDurationMs: number
+  readonly wallDurationMs: number
+  readonly linesAdded: number
+  readonly linesRemoved: number
+  readonly modelUsage: Readonly<Record<string, ClaudeStoredModelCostUsage>>
   readonly hasUnknownModelCost: boolean
 }
 
@@ -130,6 +139,7 @@ export class ClaudeSessionCostTracker {
     this.toolDurationMs = restored.toolDurationMs
     this.linesAdded = restored.linesAdded
     this.linesRemoved = restored.linesRemoved
+    this.hasUnknownModelCost = restored.hasUnknownModelCost === true
     for (const [model, usage] of Object.entries(restored.modelUsage)) {
       this.modelUsage.set(model, {
         inputTokens: usage.inputTokens,
