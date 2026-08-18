@@ -2396,7 +2396,9 @@ export function createDefaultDependencies(
           : resume?.sessionSelector === undefined
             ? {}
             : {
-                sessionFilter: createResumeSessionFilter(resume.sessionSelector),
+                sessionFilter: createResumeSessionFilter(
+                  resume.sessionSelector,
+                ),
                 requireSession: true,
                 missingSessionMessage: isClaudeSessionId(resume.sessionSelector)
                   ? `No conversation found with session ID: ${resume.sessionSelector}`
