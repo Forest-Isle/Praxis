@@ -4165,16 +4165,23 @@ function eventSink(
 ): RuntimeEventSink {
   const sensitiveValues = sensitiveEnvironmentValues(process.env)
   if (legacyJson) {
-    return (event) =>
+    return (event) => {
+      if (event.type === 'warning') {
+        io.stderr(
+          `Warning: ${redactSensitiveText(event.message, sensitiveValues)}\n`,
+        )
+        return
+      }
       writeJson(
         io,
-        event.type === 'warning' || event.type === 'failed'
+        event.type === 'failed'
           ? {
               ...event,
               message: redactSensitiveText(event.message, sensitiveValues),
             }
           : event,
       )
+    }
   }
   if (outputFormat !== 'text') return () => undefined
   return (event) => {
@@ -5263,8 +5270,17 @@ async function execute(
     eventSink:
       outputFormat === 'stream-json' && !invocation.legacyJson
         ? (event) => {
+            if (event.type === 'warning') {
+              io.stderr(
+                `Warning: ${redactSensitiveText(
+                  event.message,
+                  sensitiveEnvironmentValues(process.env),
+                )}\n`,
+              )
+              return
+            }
             const safeEvent =
-              event.type === 'warning' || event.type === 'failed'
+              event.type === 'failed'
                 ? {
                     ...event,
                     message: redactSensitiveText(

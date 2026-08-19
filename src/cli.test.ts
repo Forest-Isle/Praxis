@@ -2680,6 +2680,31 @@ describe('Praxis CLI', () => {
     expect(capture.stderr).toEqual(['Warning: hook failed\n'])
   })
 
+  it('keeps legacy JSON output parseable when MCP startup fails and warns on stderr', async () => {
+    const capture = captureIO()
+    const base = dependencies()
+    const mcpStartupFailure: CliDependencies = {
+      async createService(options) {
+        options.eventSink({
+          type: 'warning',
+          message: 'MCP server broken unavailable: connection refused',
+        })
+        return base.createService(options)
+      },
+    }
+
+    await expect(
+      run(['run', '--json', 'hello'], capture.io, mcpStartupFailure),
+    ).resolves.toBe(0)
+    expect(capture.stdout.map((line) => JSON.parse(line))).toEqual([
+      { type: 'text-delta', delta: 'answer:hello' },
+      expect.objectContaining({ type: 'result', text: 'answer:hello' }),
+    ])
+    expect(capture.stderr).toEqual([
+      'Warning: MCP server broken unavailable: connection refused\n',
+    ])
+  })
+
   it('redacts ambient credentials from warnings and structured failures', async () => {
     const secret = 'cli-diagnostic-secret-canary'
     const variable = 'PRAXIS_TEST_API_KEY'
