@@ -871,12 +871,20 @@ describe('ClaudeTranscriptStore', () => {
       sourceToolAssistantUUID: assistantUuid,
     })
     // Unknown, duplicate, and malformed results remain unrecovered.
-    expect(snapshot.entries[3]!.sourceToolAssistantUUID).toBeUndefined()
-    expect(snapshot.entries[4]!.sourceToolAssistantUUID).toBeUndefined()
-    expect(snapshot.entries[5]!.sourceToolAssistantUUID).toBeUndefined()
-    expect(snapshot.entries[7]!.sourceToolAssistantUUID).toBeUndefined()
+    const entry3 = snapshot.entries[3]
+    const entry4 = snapshot.entries[4]
+    const entry5 = snapshot.entries[5]
+    const entry7 = snapshot.entries[7]
+    if (!entry3 || !entry4 || !entry5 || !entry7)
+      throw new Error('Fixture recovery entries missing')
+    expect(entry3.sourceToolAssistantUUID).toBeUndefined()
+    expect(entry4.sourceToolAssistantUUID).toBeUndefined()
+    expect(entry5.sourceToolAssistantUUID).toBeUndefined()
+    expect(entry7.sourceToolAssistantUUID).toBeUndefined()
     // An already-correct link is never rewritten.
-    expect(snapshot.entries[6]!.sourceToolAssistantUUID).toBe(assistantUuid)
+    const entry6 = snapshot.entries[6]
+    if (!entry6) throw new Error('Fixture recovery entry missing')
+    expect(entry6.sourceToolAssistantUUID).toBe(assistantUuid)
 
     // Resume projection retains the recovered result and sees the call as
     // completed rather than unresolved.
