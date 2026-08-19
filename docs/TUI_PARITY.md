@@ -64,36 +64,36 @@ are registered CLI commands in the authoritative source snapshot.
 
 ## State matrix
 
-| State         | Observable Claude Code shape             | Praxis evidence                                              |
-| ------------- | ---------------------------------------- | ------------------------------------------------------------ |
-| Launch        | bordered identity/help card              | 2.1.208-parity border-title + 11-row `WelcomePanel` fixtures |
-| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate                               |
-| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests                              |
-| Slash command | filterable command name and description  | expanded catalog, selection, and PTY fixtures                |
-| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures                        |
-| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures                     |
-| Tool          | named call with indented input/result    | structured tool and diff fixtures                            |
-| Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures                   |
-| Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures                  |
-| Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures                  |
-| Keybindings   | shared template and editor round trip    | black-box, parser, interaction, and PTY gates                |
-| Clipboard     | cursor text/image paste with markers     | parser, interaction, image, and PTY fixtures                 |
-| Suspend       | stopped shell job plus `fg` recovery     | process, busy-state, and zsh PTY fixtures                    |
-| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures                        |
-| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures                      |
-| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures                    |
-| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures                     |
-| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures                     |
-| Decision      | tool-specific bordered, numbered choices | permission/question/plan/MCP tests                           |
-| Resume        | selectable list plus active history      | projection, picker, interaction, and Ink tests               |
-| Export        | clipboard/file method and filename flow  | formatter, interaction, and PTY fixtures                     |
-| Compact       | progress, marker, expandable summary     | service, projection, interaction, and PTY gates              |
-| Rewind        | bounded checkpoints and restore actions  | native JSONL/file-history and interaction gates              |
-| Cwd           | local result plus relocated session      | service, interaction, and installed PTY gates                |
-| Side question | local history panel and Agent handoff    | black-box, service, Ink, and JSONL fixtures                  |
-| Background    | blocked job handoff and terminal restore | black-box, manager, Ink, and PTY gate                        |
-| Hooks         | read-only event/matcher/hook browser     | live Claude, projection, Ink, and PTY gates                  |
-| Accessibility | decoration-free semantic text            | screen-reader fixture                                        |
+| State         | Observable Claude Code shape             | Praxis evidence                                                                                              |
+| ------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Launch        | compact identity/help surface            | Praxis border-title + responsive `WelcomePanel` fixtures; startup tips follow the shared `Show tips` setting |
+| Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate                                                                               |
+| Streaming     | animated-status hierarchy above composer | runtime-event interaction tests                                                                              |
+| Slash command | filterable command name and description  | expanded catalog, selection, and PTY fixtures                                                                |
+| Help          | shortcut grid plus tabbed command lists  | component, keyboard, and PTY fixtures                                                                        |
+| Thinking      | live reasoning plus expandable retention | event, expansion, and redaction fixtures                                                                     |
+| Tool          | named call with indented input/result    | structured tool and diff fixtures                                                                            |
+| Shell         | ruled `!` composer and immediate result  | runtime, transcript, Ink, and PTY fixtures                                                                   |
+| Mentions      | mixed file and described agent entries   | catalog, Ink, interaction, and PTY fixtures                                                                  |
+| Editor        | suspended TUI plus external prompt file  | process, Ink, interaction, and PTY fixtures                                                                  |
+| Keybindings   | shared template and editor round trip    | black-box, parser, interaction, and PTY gates                                                                |
+| Clipboard     | cursor text/image paste with markers     | parser, interaction, image, and PTY fixtures                                                                 |
+| Suspend       | stopped shell job plus `fg` recovery     | process, busy-state, and zsh PTY fixtures                                                                    |
+| Diff          | source tabs, file list, patch drill-down | keyboard, component, and PTY fixtures                                                                        |
+| Permissions   | tabbed rules, search, scoped add flow    | settings, interaction, and PTY fixtures                                                                      |
+| Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures                                                                    |
+| Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures                                                                     |
+| Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures                                                                     |
+| Decision      | tool-specific bordered, numbered choices | permission/question/plan/MCP tests                                                                           |
+| Resume        | selectable list plus active history      | projection, picker, interaction, and Ink tests                                                               |
+| Export        | clipboard/file method and filename flow  | formatter, interaction, and PTY fixtures                                                                     |
+| Compact       | progress, marker, expandable summary     | service, projection, interaction, and PTY gates                                                              |
+| Rewind        | bounded checkpoints and restore actions  | native JSONL/file-history and interaction gates                                                              |
+| Cwd           | local result plus relocated session      | service, interaction, and installed PTY gates                                                                |
+| Side question | local history panel and Agent handoff    | black-box, service, Ink, and JSONL fixtures                                                                  |
+| Background    | blocked job handoff and terminal restore | black-box, manager, Ink, and PTY gate                                                                        |
+| Hooks         | read-only event/matcher/hook browser     | live Claude, projection, Ink, and PTY gates                                                                  |
+| Accessibility | decoration-free semantic text            | screen-reader fixture                                                                                        |
 
 ## Architecture
 
@@ -126,9 +126,10 @@ is passed from the CLI composition root and never written to shared JSONL.
 
 ## Components
 
-- `WelcomePanel`: responsive product card and local-first help, with the
-  version title embedded in the top border row and a fixed 11-row card,
-  matching the Claude 2.1.208 launch frame.
+- `WelcomePanel`: compact responsive product identity and local-first help,
+  with the version title embedded in the top border row. Long release-note
+  copy is kept out of the launch surface, and the panel follows the shared
+  `Show tips` setting so the composer remains the primary first-run action.
 - `SessionPicker`: selected-row hierarchy, local search, and bounded session
   identity behind the Claude-compatible `/resume` name (`/sessions` remains a
   hidden compatibility alias).

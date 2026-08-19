@@ -119,19 +119,26 @@ function selectionPrefix(selected: boolean, screenReader: boolean): string {
 export function WelcomePanel({
   display,
   width,
+  showTips,
 }: {
   display: TuiDisplayMetadata
   width: number
+  showTips: boolean
 }) {
   const palette = useTuiPalette()
+  if (!showTips) return null
   const panelWidth = Math.min(100, Math.max(32, width))
   const wide = panelWidth >= 68
   const brand = 'Praxis'
-  // Claude 2.1.208 embeds the title in the top border row:
-  //   ╭───Claude Code v2.1.208 ───...───╮
-  // Title block = "╭" + "───" + "Praxis Code vX.Y.Z" + " " = 4 + title.length + 1 chars.
-  const title = `${brand} Code v${display.version}`
-  const fill = Math.max(1, panelWidth - title.length - 6)
+  const model = display.model ?? 'provider default'
+  const effort = display.effort ? ` · ${display.effort} effort` : ''
+  const cwd = compactPath(display.cwd)
+  // Title lives in the top border row:
+  //   ╭───Praxis Code vX.Y.Z ───...───╮
+  // Fixed prefix/suffix = "╭───"(4) + "Praxis"(6) + " Code vX.Y.Z "(8 + version)
+  // + "╮"(1), so the fill keeps the row exactly at panelWidth.
+  const fill = Math.max(1, panelWidth - display.version.length - 19)
+  const identity = `Welcome to ${brand} · ${model}${effort} · ${cwd}`
   return (
     <Box flexDirection="column" width={panelWidth}>
       <Text color={palette.muted}>
@@ -143,67 +150,23 @@ export function WelcomePanel({
         <Text dimColor>{'─'.repeat(fill)}</Text>
         {'╮'}
       </Text>
-      <Box
-        borderStyle="round"
-        borderColor={palette.muted}
-        borderTop={false}
-        flexDirection="column"
-        width={panelWidth}
-        paddingX={1}
-      >
-        <Box flexDirection={wide ? 'row' : 'column'}>
-          <Box
-            alignItems={wide ? 'center' : undefined}
-            flexDirection="column"
-            width={wide ? '50%' : '100%'}
-          >
-            <Text> </Text>
-            <Text bold>Welcome back!</Text>
-            <Text> </Text>
-            <Text color={palette.brand} bold>
-              ▐▛███▜▌
-            </Text>
-            <Text color={palette.brand}>▝▜█████▛▘</Text>
-            <Text color={palette.brand}> ▘▘ ▝▝</Text>
-            <Text> </Text>
-            <Text>
-              {display.model ?? 'provider default'}
-              {display.effort ? (
-                <Text dimColor> · {display.effort} effort</Text>
-              ) : null}
-            </Text>
-            <Text dimColor>{compactPath(display.cwd)}</Text>
-          </Box>
-          <Box
-            flexDirection="column"
-            width={wide ? '50%' : '100%'}
-            marginTop={wide ? 0 : 1}
-          >
-            <Text bold>Tips for getting started</Text>
-            <Text>
-              Run /init to create a CLAUDE.md file with instructions for Claude
-            </Text>
-            <Text dimColor>───────────────────────</Text>
-            <Text bold>What's new</Text>
-            <Text>
-              {
-                'Subagent forking is now on by default: a `subagent_type: "fork"` subagent inherits the full conversation and prompt cache, and non-teammate agent spawns in interactive sessions now run in the background by default'
-              }
-            </Text>
-            <Text>
-              {
-                'Type `@` in the prompt to mention another Claude session by name; Claude then uses `SendMessage` to reach that session directly'
-              }
-            </Text>
-            <Text>
-              {
-                '`SendMessage` now delivers to a bare name that exactly matches one live session, instead of asking to confirm with a ref first'
-              }
-            </Text>
-            <Text dimColor>/release-notes for more</Text>
-          </Box>
-        </Box>
-      </Box>
+      {wide ? (
+        <>
+          <Text>{identity}</Text>
+          <Text>/init to create CLAUDE.md · /config to open settings</Text>
+        </>
+      ) : (
+        <>
+          <Text>Welcome to {brand}</Text>
+          <Text>
+            {model}
+            {effort}
+          </Text>
+          <Text>{cwd}</Text>
+          <Text>/init to create CLAUDE.md</Text>
+          <Text>/config to open settings</Text>
+        </>
+      )}
     </Box>
   )
 }

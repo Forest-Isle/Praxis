@@ -1601,8 +1601,8 @@ expect {
   timeout { puts stderr "DBG header timeout elapsed=[expr {[clock milliseconds]-$t0}]ms welcome header did not render"; exit 1 }
   eof { puts stderr "Praxis exited before welcome header"; exit 1 }
 }
-expect -re {Tips for getting started} { puts stderr "DBG Tips at [expr {[clock milliseconds]-$t0}]ms" }
-expect -re {Welcome back!} { puts stderr "DBG Welcome at [expr {[clock milliseconds]-$t0}]ms" }
+expect -re {Welcome to Praxis} { puts stderr "DBG Welcome at [expr {[clock milliseconds]-$t0}]ms" }
+expect -re {/init to create CLAUDE\.md} { puts stderr "DBG init at [expr {[clock milliseconds]-$t0}]ms" }
 expect -re {Try.*review this project} { puts stderr "DBG Try at [expr {[clock milliseconds]-$t0}]ms" }
 expect -re {bypass permissions on} { puts stderr "DBG bypass at [expr {[clock milliseconds]-$t0}]ms" }
 set phase "shortcut help"
