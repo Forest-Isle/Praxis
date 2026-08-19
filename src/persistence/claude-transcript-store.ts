@@ -10,6 +10,7 @@ import type {
 import {
   getClaudeContentBlocks,
   indexClaudeToolLinks,
+  recoverClaudeToolResultLinks,
 } from '../compatibility/claude/tool-links.js'
 import { ExclusiveFileLease } from '../platform/exclusive-file-lease.js'
 
@@ -313,11 +314,15 @@ export class ClaudeTranscriptStore {
 
   async load(): Promise<TranscriptSnapshot> {
     const { entries, tail } = this.parseSource(await this.readSource(), false)
-    return { entries, tail }
+    return { entries: recoverClaudeToolResultLinks(entries), tail }
   }
 
   async loadReadOnly(): Promise<TranscriptRecovery> {
-    return this.parseSource(await this.readSource(), true)
+    const recovery = this.parseSource(await this.readSource(), true)
+    return {
+      ...recovery,
+      entries: recoverClaudeToolResultLinks(recovery.entries),
+    }
   }
 
   async exportReadOnly(): Promise<Buffer> {

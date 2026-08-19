@@ -12,7 +12,9 @@ import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { selectClaudeActiveTranscript } from '../compatibility/claude/history.js'
 import { selectClaudeSchemaAdapter } from '../compatibility/claude/schema.js'
+import { findUnresolvedClaudeToolCalls } from '../compatibility/claude/tool-links.js'
 import {
   ClaudeTranscriptStore,
   classifyTranscriptAppend,
@@ -703,6 +705,208 @@ describe('ClaudeTranscriptStore', () => {
       status: 'completed',
       value: 'recovered',
     })
+  })
+
+  it('recovers an orphaned parallel tool result on both load paths without touching the source', async () => {
+    const { sessionFile, store } = await createStore()
+    const assistantUuid = 'rrrr0000-0000-4000-8000-000000000002'
+    const resultUuid = 'rrrr0000-0000-4000-8000-000000000003'
+    const entries = [
+      {
+        type: 'user',
+        uuid: 'rrrr0000-0000-4000-8000-000000000001',
+        parentUuid: null,
+        message: { role: 'user', content: 'start' },
+      },
+      {
+        type: 'assistant',
+        uuid: assistantUuid,
+        parentUuid: 'rrrr0000-0000-4000-8000-000000000001',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_orphan',
+              name: 'Bash',
+              input: { command: 'pwd' },
+            },
+            {
+              type: 'tool_use',
+              id: 'call_linked',
+              name: 'Bash',
+              input: { command: 'true' },
+            },
+            {
+              type: 'tool_use',
+              id: 'call_dup',
+              name: 'Bash',
+              input: { command: 'true' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: resultUuid,
+        parentUuid: assistantUuid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_orphan',
+              content: 'ok',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'rrrr0000-0000-4000-8000-000000000004',
+        parentUuid: assistantUuid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_missing',
+              content: 'unknown',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'rrrr0000-0000-4000-8000-000000000005',
+        parentUuid: assistantUuid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_dup',
+              content: 'first',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'rrrr0000-0000-4000-8000-000000000006',
+        parentUuid: assistantUuid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_dup',
+              content: 'second',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'rrrr0000-0000-4000-8000-000000000007',
+        parentUuid: assistantUuid,
+        sourceToolAssistantUUID: assistantUuid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_linked',
+              content: 'linked',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'rrrr0000-0000-4000-8000-000000000008',
+        parentUuid: assistantUuid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 42,
+              content: 'malformed',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'rrrr0000-0000-4000-8000-000000000009',
+        parentUuid: assistantUuid,
+        message: { role: 'user', content: 'continue' },
+      },
+      {
+        type: 'assistant',
+        uuid: 'rrrr0000-0000-4000-8000-000000000010',
+        parentUuid: 'rrrr0000-0000-4000-8000-000000000009',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'done' }],
+        },
+      },
+    ]
+    const encodedLines = entries.map((entry) => JSON.stringify(entry))
+    const source = `${encodedLines.join('\n')}\n`
+    await writeFile(sessionFile, source)
+
+    const snapshot = await store.load()
+
+    // The orphaned result is linked in memory to its unique assistant tool_use.
+    expect(snapshot.entries[2]).toMatchObject({
+      uuid: resultUuid,
+      sourceToolAssistantUUID: assistantUuid,
+    })
+    // Unknown, duplicate, and malformed results remain unrecovered.
+    const entry3 = snapshot.entries[3]
+    const entry4 = snapshot.entries[4]
+    const entry5 = snapshot.entries[5]
+    const entry7 = snapshot.entries[7]
+    if (!entry3 || !entry4 || !entry5 || !entry7)
+      throw new Error('Fixture recovery entries missing')
+    expect(entry3.sourceToolAssistantUUID).toBeUndefined()
+    expect(entry4.sourceToolAssistantUUID).toBeUndefined()
+    expect(entry5.sourceToolAssistantUUID).toBeUndefined()
+    expect(entry7.sourceToolAssistantUUID).toBeUndefined()
+    // An already-correct link is never rewritten.
+    const entry6 = snapshot.entries[6]
+    if (!entry6) throw new Error('Fixture recovery entry missing')
+    expect(entry6.sourceToolAssistantUUID).toBe(assistantUuid)
+
+    // Resume projection retains the recovered result and sees the call as
+    // completed rather than unresolved.
+    const active = selectClaudeActiveTranscript(snapshot.entries)
+    expect(active.some((entry) => entry.uuid === resultUuid)).toBe(true)
+    const unresolved = findUnresolvedClaudeToolCalls(snapshot.entries)
+    expect(unresolved.map((call) => call.id)).not.toContain('call_orphan')
+    expect(unresolved.map((call) => call.id)).toEqual(['call_dup'])
+
+    // The read-only load path recovers the same in-memory link.
+    const recovery = await store.loadReadOnly()
+    expect(recovery.entries[2]).toMatchObject({
+      uuid: resultUuid,
+      sourceToolAssistantUUID: assistantUuid,
+    })
+    expect(recovery.issue).toBeNull()
+
+    // Recovery never mutates the JSONL source bytes.
+    expect(await readFile(sessionFile, 'utf8')).toBe(source)
+    expect(Buffer.from(await store.exportReadOnly())).toEqual(
+      Buffer.from(source),
+    )
   })
 
   it('reports corrupt JSONL position and exposes read-only recovery', async () => {
