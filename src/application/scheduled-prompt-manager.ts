@@ -17,6 +17,16 @@ const DYNAMIC_CACHE_TTL_MS = 300_000
 const DEFAULT_DYNAMIC_CACHE_LEAD_MS = 15_000
 const MAX_TIMER_MS = 2_147_000_000
 const DURABLE_REFRESH_MS = 5_000
+export const MAX_JOBS = 50
+
+export class ScheduledJobLimitError extends Error {
+  constructor(readonly maxJobs: number) {
+    super(
+      `Scheduled job limit reached: at most ${maxJobs} active scheduled jobs. Delete or wait for an existing job before scheduling another.`,
+    )
+    this.name = 'ScheduledJobLimitError'
+  }
+}
 
 export interface ScheduledPromptManagerOptions {
   filePath: string
@@ -180,6 +190,10 @@ export class ScheduledPromptManager {
     await this.initialize()
     assertCronExpression(input.cron)
     if (!input.prompt) throw new Error('prompt must be a non-empty string')
+    const activeJobs = await this.list()
+    if (activeJobs.length >= MAX_JOBS) {
+      throw new ScheduledJobLimitError(MAX_JOBS)
+    }
     const createdAt = this.now()
     const base = {
       cron: input.cron,

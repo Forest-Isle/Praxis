@@ -348,11 +348,10 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
                 : `Loop stopped — cancelled ${cancelledWakeups} pending wakeup(s); no further dynamic-loop wakeups scheduled. If you armed a Monitor for this loop, TaskStop it now; otherwise nothing more to do this turn.`,
             isError: false,
             nativeToolUseResult: {
-              scheduledFor: 0,
-              clampedDelaySeconds: 0,
-              wasClamped: false,
               stopped: true,
-              cancelledWakeups,
+              nextWakeupMs: 0,
+              delaySeconds: 0,
+              reason: '',
             },
           }
         }
@@ -376,9 +375,10 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
               content: `Next wakeup scheduled for ${scheduledTime} (in ${secondsUntilWakeup}s)${clampNotice}. Nothing more to do this turn — the harness re-invokes you when the wakeup fires or a task-notification arrives.`,
               isError: false,
               nativeToolUseResult: {
-                scheduledFor: wakeup.scheduledFor,
-                clampedDelaySeconds: wakeup.clampedDelaySeconds,
-                wasClamped: wakeup.wasClamped,
+                stopped: false,
+                nextWakeupMs: wakeup.scheduledFor,
+                delaySeconds: wakeup.clampedDelaySeconds,
+                reason: String(call.input.reason),
               },
             }
           }
@@ -388,9 +388,10 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
             'Wakeup not scheduled. Either the /loop dynamic runtime gate is off or the loop reached its maximum duration — the loop has ended; do not re-issue.',
           isError: false,
           nativeToolUseResult: {
-            scheduledFor: 0,
-            clampedDelaySeconds: 0,
-            wasClamped: false,
+            stopped: false,
+            nextWakeupMs: 0,
+            delaySeconds: 0,
+            reason: String(call.input.reason),
           },
         }
       default:
