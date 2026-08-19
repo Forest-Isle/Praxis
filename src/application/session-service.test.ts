@@ -28,7 +28,10 @@ import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
 } from '../compatibility/claude/context.js'
-import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import {
+  resolveClaudePaths,
+  sanitizeClaudeProjectPath,
+} from '../compatibility/claude/paths.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
@@ -6709,6 +6712,97 @@ describe('ClaudeSessionService', () => {
       { kind: 'assistant', text: 'first answer' },
     ])
     expect(await readFile(sessionFile, 'utf8')).toBe(source)
+  })
+
+  it('lists, inspects, and resumes a transcript in an alternate long-path project root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-alternate-root-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd =
+      '/private/tmp/praxis-claude-long-probe.ZwF0h0/' +
+      [1, 2, 3, 4, 5, 6]
+        .map(
+          (index) => `segment-segment-segment-segment-segment-segment-${index}`,
+        )
+        .join('/')
+    const sessionId = '12121212-1212-4212-8212-121212121212'
+    const sanitized = sanitizeClaudeProjectPath(cwd)
+    expect(sanitized.length).toBeGreaterThan(200)
+    const prefix = sanitized.slice(0, 200)
+    const alternateRoot = join(
+      configRoot,
+      'projects',
+      `${prefix}-alternate-hash`,
+    )
+    const sessionFile = join(alternateRoot, `${sessionId}.jsonl`)
+    await mkdir(alternateRoot, { recursive: true })
+    await writeFile(
+      sessionFile,
+      `${JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: 'inspect me' },
+        uuid: '13131313-1313-4313-8313-131313131313',
+        sessionId,
+        timestamp: '2026-01-01T00:00:00.000Z',
+        cwd,
+        version: '2.1.208',
+        gitBranch: null,
+      })}\n`,
+    )
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['resumed answer']),
+    })
+
+    await expect(service.sessions()).resolves.toEqual([
+      expect.objectContaining({
+        sessionId,
+        lastPrompt: null,
+        status: 'ready',
+        issue: null,
+      }),
+    ])
+    await expect(service.inspect(sessionId)).resolves.toMatchObject({
+      sessionId,
+      status: 'ready',
+      writeMode: 'read-write',
+      lastPrompt: null,
+      issue: null,
+    })
+    await expect(
+      service.resume(sessionId, 'continue here'),
+    ).resolves.toMatchObject({ sessionId, text: 'resumed answer' })
+    expect(await readFile(sessionFile, 'utf8')).toContain(
+      '"type":"last-prompt"',
+    )
+
+    // A long-path prefix with two candidate project directories is never
+    // silently assigned to either candidate by a fresh service.
+    const secondRoot = join(configRoot, 'projects', `${prefix}-second-hash`)
+    const secondSessionId = '14141414-1414-4414-8414-141414141414'
+    await mkdir(secondRoot, { recursive: true })
+    await writeFile(
+      join(secondRoot, `${secondSessionId}.jsonl`),
+      `${JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: 'other session' },
+        uuid: '15151515-1515-4515-8515-151515151515',
+        sessionId: secondSessionId,
+        timestamp: '2026-01-01T00:00:00.000Z',
+        cwd,
+        version: '2.1.208',
+        gitBranch: null,
+      })}\n`,
+    )
+    const ambiguousService = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+    })
+    await expect(ambiguousService.sessions()).resolves.toEqual([])
   })
 
   it('projects native PR links into summaries and preserves them across forks', async () => {

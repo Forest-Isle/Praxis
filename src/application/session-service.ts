@@ -11,7 +11,14 @@ import {
   unlink,
 } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, extname, isAbsolute, join, relative } from 'node:path'
+import {
+  basename,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from 'node:path'
 
 import {
   AGENT_COLOR_DEFAULT,
@@ -28,6 +35,7 @@ import {
   getCumulativeDroppedTokens,
 } from '../compatibility/claude/compaction.js'
 import {
+  discoverClaudeProjectRoot,
   isClaudeSessionId,
   resolveClaudePaths,
   resolveClaudeScheduledTaskFile,
@@ -690,6 +698,7 @@ export class ClaudeSessionService {
   private readonly backgroundTasks: BackgroundTaskRuntime
   private readonly worktreeManager: SessionWorktreeManager | null
   private readonly sessionCwds = new Map<string, string>()
+  private readonly discoveredProjectRoots = new Map<string, string>()
   private readonly sessionPermissionUpdates = new Map<
     string,
     PermissionUpdate[]
@@ -1437,54 +1446,61 @@ export class ClaudeSessionService {
   }
 
   async sessions(): Promise<SessionSummary[]> {
-    const paths = this.paths(randomUUID())
+    const discoveredRoot = await discoverClaudeProjectRoot({
+      configRoot: this.options.configRoot,
+      cwd: this.activeCwd(),
+    })
+    const projectRoot = discoveredRoot ?? this.paths(randomUUID()).projectRoot
     let names: string[]
     try {
-      names = await readdir(paths.projectRoot)
+      names = await readdir(projectRoot)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
       throw error
     }
 
+    const sessionIds = names
+      .filter((name) => extname(name) === '.jsonl')
+      .map((name) => basename(name, '.jsonl'))
+      .filter((sessionId) => isClaudeSessionId(sessionId))
+    if (discoveredRoot !== undefined) {
+      for (const sessionId of sessionIds) {
+        this.discoveredProjectRoots.set(sessionId, projectRoot)
+      }
+    }
+
     const summaries = await Promise.all(
-      names
-        .filter((name) => extname(name) === '.jsonl')
-        .map(async (name) => {
-          const sessionId = basename(name, '.jsonl')
-          if (!isClaudeSessionId(sessionId)) return null
-          const sessionFile = join(paths.projectRoot, name)
-          try {
-            const metadata = await lstat(sessionFile)
-            if (!metadata.isFile()) return null
-            const recovery = await this.store(sessionId).loadReadOnly()
-            if (!(await lstat(sessionFile)).isFile()) return null
-            const name = this.sessionName(recovery.entries)
-            const prLink = getClaudePrLink(recovery.entries, sessionId)
-            return {
-              sessionId,
-              ...(name === null ? {} : { name }),
-              lastPrompt: getClaudeLastPrompt(recovery.entries),
-              updatedAt: metadata.mtime.toISOString(),
-              status: this.sessionStatus(
-                recovery.issue,
-                recovery.entries.length,
-              ),
-              issue: recovery.issue,
-              ...(prLink
-                ? {
-                    prNumber: prLink.prNumber,
-                    prUrl: prLink.prUrl,
-                    prRepository: prLink.prRepository,
-                  }
-                : {}),
-            }
-          } catch (error) {
-            if (typeof (error as NodeJS.ErrnoException).code === 'string') {
-              return null
-            }
-            throw error
+      sessionIds.map(async (sessionId) => {
+        const sessionFile = join(projectRoot, `${sessionId}.jsonl`)
+        try {
+          const metadata = await lstat(sessionFile)
+          if (!metadata.isFile()) return null
+          const recovery = await this.store(sessionId).loadReadOnly()
+          if (!(await lstat(sessionFile)).isFile()) return null
+          const name = this.sessionName(recovery.entries)
+          const prLink = getClaudePrLink(recovery.entries, sessionId)
+          return {
+            sessionId,
+            ...(name === null ? {} : { name }),
+            lastPrompt: getClaudeLastPrompt(recovery.entries),
+            updatedAt: metadata.mtime.toISOString(),
+            status: this.sessionStatus(recovery.issue, recovery.entries.length),
+            issue: recovery.issue,
+            ...(prLink
+              ? {
+                  prNumber: prLink.prNumber,
+                  prUrl: prLink.prUrl,
+                  prRepository: prLink.prRepository,
+                }
+              : {}),
           }
-        }),
+        } catch (error) {
+          if (typeof (error as NodeJS.ErrnoException).code === 'string') {
+            return null
+          }
+          throw error
+        }
+      }),
     )
     return summaries
       .filter((summary): summary is SessionSummary => summary !== null)
@@ -1493,6 +1509,7 @@ export class ClaudeSessionService {
 
   async inspect(sessionId: string): Promise<SessionInspection> {
     this.assertSessionPersistence()
+    await this.discoverProjectRoot(sessionId)
     const paths = this.paths(sessionId)
     let metadata
     try {
@@ -1536,6 +1553,7 @@ export class ClaudeSessionService {
 
   async export(sessionId: string): Promise<Buffer> {
     this.assertSessionPersistence()
+    await this.discoverProjectRoot(sessionId)
     try {
       return await this.store(sessionId).exportReadOnly()
     } catch (error) {
@@ -1550,6 +1568,7 @@ export class ClaudeSessionService {
     sessionId: string,
     resumeSessionAt?: string,
   ): Promise<ClaudeDisplayTranscriptItem[]> {
+    await this.discoverProjectRoot(sessionId)
     try {
       const recovery = await this.store(sessionId).loadReadOnly()
       if (recovery.entries.length === 0) {
@@ -1708,6 +1727,9 @@ export class ClaudeSessionService {
             `Claude transcript relocation conflict: ${relocated.reason}`,
           )
         }
+        // The transcript moved to the exact root for the new cwd; any
+        // previously discovered alternate-hash root is now stale.
+        this.discoveredProjectRoots.delete(sessionId)
       } else {
         await this.appendCdCommand(sessionId, cwd)
       }
@@ -2527,6 +2549,9 @@ export class ClaudeSessionService {
       this.options.workspace?.setCwd(pinnedCwd)
     }
     this.runtimeCwd = pinnedCwd
+    if (requireExisting) {
+      await this.discoverProjectRoot(sessionId)
+    }
     const sessionPaths = this.paths(sessionId)
     const toolResultDirectory = join(
       sessionPaths.projectRoot,
@@ -4369,11 +4394,30 @@ export class ClaudeSessionService {
   }
 
   private paths(sessionId: string) {
-    return resolveClaudePaths({
+    const exact = resolveClaudePaths({
       configDir: this.options.configRoot,
       cwd: this.sessionCwds.get(sessionId) ?? this.activeCwd(),
       sessionId,
     })
+    const discovered = this.discoveredProjectRoots.get(sessionId)
+    if (discovered === undefined) return exact
+    return {
+      ...exact,
+      projectRoot: discovered,
+      sessionFile: resolve(discovered, `${sessionId}.jsonl`),
+    }
+  }
+
+  private async discoverProjectRoot(sessionId: string): Promise<void> {
+    if (this.discoveredProjectRoots.has(sessionId)) return
+    const discovered = await discoverClaudeProjectRoot({
+      configRoot: this.options.configRoot,
+      cwd: this.sessionCwds.get(sessionId) ?? this.activeCwd(),
+      sessionId,
+    })
+    if (discovered !== undefined) {
+      this.discoveredProjectRoots.set(sessionId, discovered)
+    }
   }
 
   private async appendCdCommand(sessionId: string, cwd: string): Promise<void> {
