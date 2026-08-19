@@ -437,6 +437,7 @@ export class ClaudeTranscriptStore {
     let logicalTailUuid = tailLogicalUuid(expectedTail)
     const branchParentUuid = expectedTail.branchParentUuid
     let advancedLogicalTail = false
+    let staleLastPromptLeaf = false
     const lines: string[] = []
     for (const entry of entries) {
       if (this.writeProfile === 'sidechain') {
@@ -453,7 +454,8 @@ export class ClaudeTranscriptStore {
         }
       } else if (entry.type === 'last-prompt') {
         if (entry.leafUuid !== logicalTailUuid) {
-          throw new Error('Entry leafUuid does not match transcript tail')
+          staleLastPromptLeaf = true
+          continue
         }
       } else if (
         entry.type === 'system' &&
@@ -496,6 +498,10 @@ export class ClaudeTranscriptStore {
         logicalTailUuid = entry.uuid
         advancedLogicalTail = true
       }
+    }
+
+    if (staleLastPromptLeaf) {
+      return { status: 'conflict', reason: 'tail-changed' }
     }
 
     const encodedLine = Buffer.from(`${lines.join('\n')}\n`)

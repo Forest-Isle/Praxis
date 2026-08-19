@@ -4,7 +4,11 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { ScheduledPromptManager } from '../application/scheduled-prompt-manager.js'
+import {
+  MAX_JOBS,
+  ScheduledJobLimitError,
+  ScheduledPromptManager,
+} from '../application/scheduled-prompt-manager.js'
 import { LocalToolRegistry } from './local-tools.js'
 import {
   ClaudeScheduledToolRegistry,
@@ -160,9 +164,10 @@ describe('ClaudeScheduledToolRegistry', () => {
       content:
         'Wakeup not scheduled. Either the /loop dynamic runtime gate is off or the loop reached its maximum duration — the loop has ended; do not re-issue.',
       nativeToolUseResult: {
-        scheduledFor: 0,
-        clampedDelaySeconds: 0,
-        wasClamped: false,
+        stopped: false,
+        nextWakeupMs: 0,
+        delaySeconds: 0,
+        reason: 'probe clamp',
       },
     })
     await expect(
@@ -170,7 +175,9 @@ describe('ClaudeScheduledToolRegistry', () => {
     ).resolves.toMatchObject({
       nativeToolUseResult: {
         stopped: true,
-        cancelledWakeups: 0,
+        nextWakeupMs: 0,
+        delaySeconds: 0,
+        reason: '',
       },
     })
     await expect(
@@ -196,9 +203,10 @@ describe('ClaudeScheduledToolRegistry', () => {
     ).resolves.toMatchObject({
       content: `Next wakeup scheduled for ${scheduledTime} (in 60s) (clamped to 60s from your requested value). Nothing more to do this turn — the harness re-invokes you when the wakeup fires or a task-notification arrives.`,
       nativeToolUseResult: {
-        scheduledFor,
-        clampedDelaySeconds: 60,
-        wasClamped: true,
+        stopped: false,
+        nextWakeupMs: scheduledFor,
+        delaySeconds: 60,
+        reason: 'keep the loop warm',
       },
     })
     await expect(
@@ -208,13 +216,45 @@ describe('ClaudeScheduledToolRegistry', () => {
         'Loop stopped — cancelled 1 pending wakeup(s); no further dynamic-loop wakeups scheduled. If you armed a Monitor for this loop, TaskStop it now; otherwise nothing more to do this turn.',
       isError: false,
       nativeToolUseResult: {
-        scheduledFor: 0,
-        clampedDelaySeconds: 0,
-        wasClamped: false,
         stopped: true,
-        cancelledWakeups: 1,
+        nextWakeupMs: 0,
+        delaySeconds: 0,
+        reason: '',
       },
     })
+  })
+
+  it('caps active scheduled jobs at 50 and rejects the 51st without persisting', async () => {
+    const { registry, cwd, filePath } = await fixture()
+    for (let index = 0; index < MAX_JOBS; index += 1) {
+      await execute(registry, cwd, 'CronCreate', {
+        cron: '*/2 * * * *',
+        prompt: `cap probe ${index}`,
+        recurring: true,
+        durable: true,
+      })
+    }
+    await expect(
+      execute(registry, cwd, 'CronCreate', {
+        cron: '0 9 * * *',
+        prompt: 'cap overflow',
+        recurring: true,
+        durable: true,
+      }),
+    ).rejects.toBeInstanceOf(ScheduledJobLimitError)
+    await expect(
+      execute(registry, cwd, 'CronCreate', {
+        cron: '0 9 * * *',
+        prompt: 'cap overflow',
+        recurring: true,
+        durable: true,
+      }),
+    ).rejects.toThrow(
+      `Scheduled job limit reached: at most ${MAX_JOBS} active scheduled jobs. Delete or wait for an existing job before scheduling another.`,
+    )
+    expect(JSON.parse(await readFile(filePath, 'utf8')).tasks).toHaveLength(
+      MAX_JOBS,
+    )
   })
 
   it('formats observed common schedules', () => {

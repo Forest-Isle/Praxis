@@ -382,18 +382,22 @@ describe('ClaudeTranscriptStore', () => {
     )
   })
 
-  it('refuses last-prompt metadata for a non-tail leaf', async () => {
-    const { store } = await createStore()
+  it('returns a tail-changed conflict for stale last-prompt metadata without writing', async () => {
+    const { sessionFile, store } = await createStore()
     const snapshot = await store.load()
+    const before = await readFile(sessionFile, 'utf8')
+    const entry = {
+      type: 'last-prompt',
+      lastPrompt: 'stale',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      leafUuid: '22222222-2222-4222-8222-222222222222',
+    }
 
-    await expect(
-      store.append(snapshot.tail, {
-        type: 'last-prompt',
-        lastPrompt: 'stale',
-        sessionId: '11111111-1111-4111-8111-111111111111',
-        leafUuid: '22222222-2222-4222-8222-222222222222',
-      }),
-    ).rejects.toThrow('leafUuid does not match transcript tail')
+    const result = await store.append(snapshot.tail, entry)
+
+    expect(result).toEqual({ status: 'conflict', reason: 'tail-changed' })
+    expect(await readFile(sessionFile, 'utf8')).toBe(before)
+    expect((await store.load()).entries.at(-1)).not.toEqual(entry)
   })
 
   it('refuses last-prompt metadata unless the tail is an assistant in the same session', async () => {

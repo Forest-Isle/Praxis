@@ -28,11 +28,11 @@ export interface TopLevelAgentSummary {
   pid?: number
   id?: string
   cwd: string
-  kind: 'background' | 'interactive'
+  kind: 'background' | 'interactive' | 'bg' | 'daemon' | 'daemon-worker'
   startedAt: number
   sessionId: string
   name: string
-  status?: 'active' | 'idle'
+  status?: 'active' | 'idle' | 'busy' | 'waiting'
   tempo?: ClaudeJobTempo
   needs?: string
   state?: 'working' | 'stopped' | 'failed' | 'done'
@@ -167,6 +167,15 @@ function nativeClaudeSession(value: unknown): NativeClaudeSession | undefined {
     typeof record.name === 'string' &&
     ['active', 'idle'].includes(String(record.status))
   if (interactive) return record as unknown as NativeClaudeSession
+  const daemon =
+    Number.isSafeInteger(record.pid) &&
+    typeof record.cwd === 'string' &&
+    ['bg', 'daemon', 'daemon-worker'].includes(String(record.kind)) &&
+    Number.isSafeInteger(record.startedAt) &&
+    typeof record.sessionId === 'string' &&
+    typeof record.name === 'string' &&
+    ['busy', 'idle', 'waiting'].includes(String(record.status))
+  if (daemon) return record as unknown as NativeClaudeSession
   if (
     typeof record.id !== 'string' ||
     typeof record.cwd !== 'string' ||
