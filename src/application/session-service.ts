@@ -122,7 +122,10 @@ import {
   ClaudeSubagentExecutor,
   StructuredOutputRegistry,
 } from './subagent-service.js'
-import { ScheduledPromptManager } from './scheduled-prompt-manager.js'
+import {
+  ScheduledPromptManager,
+  type ScheduledPrompt,
+} from './scheduled-prompt-manager.js'
 import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
 import { ClaudeWorkflowToolRegistry } from '../tools/claude-workflow-tools.js'
@@ -150,7 +153,11 @@ import {
   CLAUDE_USER_MESSAGE_PROMPT,
   type UserMessage,
 } from '../tools/claude-user-message.js'
-import type { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
+import type {
+  ClaudeInteractiveToolCallbacks,
+  ClaudeInteractiveToolManager,
+  ClaudeQuestion,
+} from '../tools/claude-interactive-tools.js'
 import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
 import type {
   ClaudeMcpRuntime,
@@ -749,8 +756,66 @@ export class ClaudeSessionService {
     }
   }
 
-  nextScheduledPrompt(signal?: AbortSignal) {
-    return this.scheduledPrompts?.next(signal) ?? Promise.resolve(null)
+  nextScheduledPrompt(signal?: AbortSignal): Promise<ScheduledPrompt | null> {
+    const manager = this.scheduledPrompts
+    if (!manager) return Promise.resolve(null)
+    return this.nextScheduledPromptForManager(manager, signal)
+  }
+
+  private async nextScheduledPromptForManager(
+    manager: ScheduledPromptManager,
+    signal?: AbortSignal,
+  ): Promise<ScheduledPrompt | null> {
+    // Scan durable tasks so a missed one-shot surfaces as a pending
+    // confirmation instead of silently entering the normal due drain.
+    await manager.list()
+    const pending = manager.pendingScheduledPrompts()[0]
+    if (!pending) return manager.next(signal)
+    const askUser = this.options.interactiveTools?.callbacks.askUser
+    if (!askUser) return manager.next(signal)
+    const approved = await this.confirmPendingScheduledPrompt(
+      manager,
+      pending,
+      askUser,
+      signal,
+    )
+    if (!approved) return null
+    // Consume the approved prompt from the scheduler due queue exactly once.
+    return manager.next(signal)
+  }
+
+  private async confirmPendingScheduledPrompt(
+    manager: ScheduledPromptManager,
+    pending: ScheduledPrompt,
+    askUser: ClaudeInteractiveToolCallbacks['askUser'],
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const question: ClaudeQuestion = {
+      header: 'Missed scheduled prompt',
+      question: pending.prompt,
+      options: [
+        {
+          label: 'Run now',
+          description:
+            'Run this scheduled prompt that was missed while Praxis was not running.',
+        },
+        {
+          label: 'Skip',
+          description: 'Decline this scheduled prompt and discard it.',
+        },
+      ],
+      multiSelect: false,
+    }
+    const result = await askUser([question], signal)
+    const decision = result?.answers[question.question]
+    if (decision === 'Run now') {
+      return manager.approveScheduledPrompt(pending.id)
+    }
+    if (decision === 'Skip') {
+      manager.declineScheduledPrompt(pending.id)
+      return false
+    }
+    return false
   }
 
   workflows(): readonly WorkflowTaskSnapshot[] {

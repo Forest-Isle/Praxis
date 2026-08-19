@@ -155,6 +155,7 @@ export class ScheduledPromptManager {
   private readonly sessionTasks = new Map<string, ClaudeScheduledTask>()
   private readonly dueAt = new Map<string, number>()
   private readonly dueQueue: ScheduledPrompt[] = []
+  private readonly pendingConfirmations = new Map<string, ScheduledPrompt>()
   private readonly dynamicWakeups = new Map<string, ScheduledPrompt>()
   private readonly dynamicLoopStates = new Map<string, DynamicLoopState>()
   private readonly durableIds = new Set<string>()
@@ -242,10 +243,30 @@ export class ScheduledPromptManager {
   async delete(id: string): Promise<boolean> {
     await this.initialize()
     const removed = await this.removeTask(id)
-    if (removed) {
+    const declined = this.pendingConfirmations.delete(id)
+    if (removed || declined) {
       this.dueAt.delete(id)
       this.notifyChange()
     }
+    return removed || declined
+  }
+
+  pendingScheduledPrompts(): ScheduledPrompt[] {
+    return [...this.pendingConfirmations.values()]
+  }
+
+  approveScheduledPrompt(id: string): boolean {
+    const pending = this.pendingConfirmations.get(id)
+    if (!pending) return false
+    this.pendingConfirmations.delete(id)
+    this.dueQueue.push(pending)
+    this.notifyChange()
+    return true
+  }
+
+  declineScheduledPrompt(id: string): boolean {
+    const removed = this.pendingConfirmations.delete(id)
+    if (removed) this.notifyChange()
     return removed
   }
 
@@ -356,6 +377,7 @@ export class ScheduledPromptManager {
     this.sessionTasks.clear()
     this.dueAt.clear()
     this.durableIds.clear()
+    this.pendingConfirmations.clear()
     this.dueQueue.length = 0
     this.notifyChange()
   }
@@ -393,7 +415,14 @@ export class ScheduledPromptManager {
       if (await this.store.delete(task.id)) {
         if (this.closed) return
         this.durableIds.delete(task.id)
-        this.dueQueue.push({ id: task.id, prompt: task.prompt })
+        if (task.recurring) {
+          this.dueQueue.push({ id: task.id, prompt: task.prompt })
+        } else {
+          this.pendingConfirmations.set(task.id, {
+            id: task.id,
+            prompt: task.prompt,
+          })
+        }
       }
     }
   }

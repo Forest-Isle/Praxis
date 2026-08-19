@@ -76,7 +76,7 @@ describe('ScheduledPromptManager', () => {
     manager.close()
   })
 
-  it('catches up missed durable one-shot prompts and auto-deletes them', async () => {
+  it('surfaces a missed durable one-shot as a pending confirmation instead of an auto-due prompt', async () => {
     const now = new Date(2026, 0, 1, 0, 2).getTime()
     const { filePath, manager } = await fixture(() => now)
     await mkdir(join(filePath, '..'), { recursive: true })
@@ -97,9 +97,69 @@ describe('ScheduledPromptManager', () => {
         ],
       }),
     )
+    await expect(manager.drainDue()).resolves.toEqual([])
+    await expect(manager.pendingScheduledPrompts()).toEqual([
+      { id: 'abc12345', prompt: 'missed prompt' },
+    ])
+    expect(JSON.parse(await readFile(filePath, 'utf8'))).toEqual({ tasks: [] })
+  })
+
+  it('runs a pending missed one-shot exactly once after explicit approval', async () => {
+    const now = new Date(2026, 0, 1, 0, 2).getTime()
+    const { filePath, manager } = await fixture(() => now)
+    await mkdir(join(filePath, '..'), { recursive: true })
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        tasks: [
+          {
+            id: 'abc12345',
+            cron: '1 0 1 1 *',
+            prompt: 'missed prompt',
+            createdAt: new Date(2025, 11, 31, 23, 59).getTime(),
+            recurring: false,
+            createdBySessionId: sessionId,
+            createdByPid: 123,
+            createdByProcStart: 'start',
+          },
+        ],
+      }),
+    )
+    await expect(manager.drainDue()).resolves.toEqual([])
+    expect(manager.approveScheduledPrompt('abc12345')).toBe(true)
     await expect(manager.drainDue()).resolves.toEqual([
       { id: 'abc12345', prompt: 'missed prompt' },
     ])
+    await expect(manager.drainDue()).resolves.toEqual([])
+    await expect(manager.pendingScheduledPrompts()).toEqual([])
+    expect(JSON.parse(await readFile(filePath, 'utf8'))).toEqual({ tasks: [] })
+  })
+
+  it('drops a pending missed one-shot on decline and keeps the durable task deleted', async () => {
+    const now = new Date(2026, 0, 1, 0, 2).getTime()
+    const { filePath, manager } = await fixture(() => now)
+    await mkdir(join(filePath, '..'), { recursive: true })
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        tasks: [
+          {
+            id: 'abc12345',
+            cron: '1 0 1 1 *',
+            prompt: 'missed prompt',
+            createdAt: new Date(2025, 11, 31, 23, 59).getTime(),
+            recurring: false,
+            createdBySessionId: sessionId,
+            createdByPid: 123,
+            createdByProcStart: 'start',
+          },
+        ],
+      }),
+    )
+    await expect(manager.drainDue()).resolves.toEqual([])
+    expect(manager.declineScheduledPrompt('abc12345')).toBe(true)
+    await expect(manager.drainDue()).resolves.toEqual([])
+    await expect(manager.pendingScheduledPrompts()).toEqual([])
     expect(JSON.parse(await readFile(filePath, 'utf8'))).toEqual({ tasks: [] })
   })
 
@@ -136,7 +196,8 @@ describe('ScheduledPromptManager', () => {
       createdByProcStart: 'start',
     }
     await writeFile(filePath, JSON.stringify({ tasks: [task] }))
-    await expect(manager.drainDue()).resolves.toEqual([
+    await expect(manager.drainDue()).resolves.toEqual([])
+    await expect(manager.pendingScheduledPrompts()).toEqual([
       { id: task.id, prompt: task.prompt },
     ])
 
@@ -180,7 +241,8 @@ describe('ScheduledPromptManager', () => {
       }),
     )
 
-    await expect(manager.drainDue()).resolves.toEqual([
+    await expect(manager.drainDue()).resolves.toEqual([])
+    await expect(manager.pendingScheduledPrompts()).toEqual([
       { id: 'fed12345', prompt: 'stale-owner prompt' },
     ])
   })
