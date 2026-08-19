@@ -47,6 +47,29 @@ describe('Claude status line', () => {
     })
   })
 
+  it('passes a supplied terminal width as COLUMNS to the command', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-'))
+    const input = createClaudeStatusLineInput({
+      configRoot: root,
+      cwd: root,
+      projectDir: root,
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      version: '2.1.208',
+      outputStyle: 'default',
+      additionalDirectories: [],
+    })
+    const output = await executeClaudeStatusLine(
+      {
+        type: 'command',
+        command:
+          "node -e \"let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(process.env.COLUMNS))\"",
+      },
+      input,
+      { cwd: root, columns: 40 },
+    )
+    expect(output).toBe('40')
+  })
+
   it('writes structured JSON to stdin and normalizes successful output', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-'))
     const input = createClaudeStatusLineInput({

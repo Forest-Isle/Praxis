@@ -29,8 +29,8 @@ Together they establish these stable rules:
   `/background` terminal handoff, and live plugin/skill reload entries;
 - `/release-notes` uses Claude's shared changelog cache and 500 ms fetch budget,
   while `/statusline` configures and renders the shared `statusLine` command
-  beneath the composer with structured stdin, timeout, padding, ANSI, and
-  settings hot-reload behavior;
+  beneath the composer with structured stdin, current terminal-width-aware
+  `COLUMNS`, timeout, padding, ANSI, and settings hot-reload behavior;
 - permission mode, shortcut hint, and model effort share the footer row;
 - entering `?` on an empty composer immediately opens the shortcut grid;
 - entering `!` switches the composer to shell mode; submitting runs the command
@@ -55,7 +55,8 @@ Together they establish these stable rules:
 - user, assistant, tool, warning, permission, question, plan, hook/MCP
   lifecycle, and busy states have distinct hierarchy rather than sharing one
   plain text style;
-- narrow terminals collapse optional welcome content before core controls;
+- narrow terminals collapse optional welcome content before core controls and
+  keep the composer footer on one bounded, width-prioritized line;
 - screen-reader mode removes decorative boxes, animation, and visual-only help.
 
 Account/billing text and hosted features are not native parity requirements.

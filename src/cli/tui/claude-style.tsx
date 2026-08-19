@@ -111,6 +111,52 @@ function permissionLabel(mode?: string): string {
   }
 }
 
+function compactPermissionLabel(mode?: string): string {
+  switch (mode) {
+    case 'acceptEdits':
+      return 'accept edits'
+    case 'bypassPermissions':
+      return 'bypass'
+    case 'dontAsk':
+      return 'dont ask'
+    case 'plan':
+      return 'plan'
+    case 'auto':
+      return 'auto'
+    default:
+      return 'default'
+  }
+}
+
+// Width-prioritized composer footer left text. The footer is one deliberate,
+// non-wrapping line: mode and the busy/effort state always win, while
+// shortcuts/agents/thinking hints are dropped or shortened as width shrinks.
+function composerFooterLeft(
+  width: number,
+  busy: boolean,
+  hasThinking: boolean,
+  thinkingExpanded: boolean,
+  mode: string,
+  compactMode: string,
+  includeHints = true,
+): string {
+  const cancelOrShortcut = busy ? 'esc to interrupt' : '? for shortcuts'
+  if (!includeHints) {
+    if (busy) return `${width >= 60 ? mode : compactMode} · ${cancelOrShortcut}`
+    return width >= 60 ? mode : compactMode
+  }
+  if (width >= 60) {
+    let text = `${mode} · ${cancelOrShortcut}`
+    if (width >= 80) text += ' · ← for agents'
+    if (width >= 100 && hasThinking) {
+      text += ` · ctrl+o ${thinkingExpanded ? 'collapse' : 'expand'}`
+    }
+    return text
+  }
+  if (busy) return `${compactMode} · ${cancelOrShortcut}`
+  return width >= 40 ? mode : compactMode
+}
+
 function selectionPrefix(selected: boolean, screenReader: boolean): string {
   if (selected) return screenReader ? 'Selected: ' : '  ❯ '
   return screenReader ? '' : '    '
@@ -2687,6 +2733,26 @@ export function Composer({
   const line = '─'.repeat(Math.max(12, Math.min(100, width)))
   const separatorColor =
     sessionColor === undefined ? undefined : palette.sessionColors[sessionColor]
+  const footerWidth = Math.min(100, width)
+  const footerMode = `⏵⏵ ${permissionLabel(display.permissionMode)}`
+  const footerCompactMode = `⏵⏵ ${compactPermissionLabel(display.permissionMode)}`
+  const footerLeft = composerFooterLeft(
+    footerWidth,
+    busy,
+    hasThinking,
+    thinkingExpanded,
+    footerMode,
+    footerCompactMode,
+  )
+  const footerMessageLeft = composerFooterLeft(
+    footerWidth,
+    busy,
+    hasThinking,
+    thinkingExpanded,
+    footerMode,
+    footerCompactMode,
+    false,
+  )
   return (
     <Box flexDirection="column" marginTop={1}>
       {usage ? (
@@ -2763,40 +2829,45 @@ export function Composer({
       {shortcutsVisible ? (
         <ShortcutHelp width={width} />
       ) : (
-        <Box width={Math.min(100, width)}>
-          <Text dimColor>
+        <Box width={footerWidth}>
+          <Text wrap="truncate">
             {shellMode ? (
-              '! for bash mode'
+              <Text dimColor>! for bash mode</Text>
+            ) : footerMessage ? (
+              <Text>
+                <Text dimColor>{footerMessageLeft} · </Text>
+                {footerMessage.isError ? (
+                  <Text color={palette.error}>{footerMessage.text}</Text>
+                ) : (
+                  <Text dimColor>{footerMessage.text}</Text>
+                )}
+              </Text>
+            ) : prStatus ? (
+              <Text>
+                <Text dimColor>{footerLeft} · </Text>
+                <Text dimColor>{prStatus}</Text>
+              </Text>
+            ) : turnDuration ? (
+              <Text>
+                <Text dimColor>{footerLeft} · </Text>
+                <Text dimColor>Cooked for {turnDuration}</Text>
+              </Text>
+            ) : display.effort ? (
+              <Text>
+                <Text dimColor>{footerLeft}</Text>
+                <Text dimColor> · </Text>
+                <Text color={palette.accent}>● {display.effort}</Text>
+                {footerWidth >= 100 ? (
+                  <Text dimColor>
+                    {' '}
+                    · {editorMode === 'vim' ? 'vim' : '/effort'}
+                  </Text>
+                ) : null}
+              </Text>
             ) : (
-              <>
-                ⏵⏵ {permissionLabel(display.permissionMode)} ·{' '}
-                {busy ? 'esc to interrupt' : '? for shortcuts'} · ← for agents
-                {hasThinking
-                  ? ` · ctrl+o ${thinkingExpanded ? 'collapse' : 'expand'}`
-                  : ''}
-              </>
+              <Text dimColor>{footerLeft}</Text>
             )}
           </Text>
-          <Box flexGrow={1} />
-          {footerMessage ? (
-            footerMessage.isError ? (
-              <Text color={palette.error}>{footerMessage.text}</Text>
-            ) : (
-              <Text dimColor>{footerMessage.text}</Text>
-            )
-          ) : prStatus ? (
-            <Text dimColor>{prStatus}</Text>
-          ) : turnDuration ? (
-            <Text dimColor>Cooked for {turnDuration}</Text>
-          ) : display.effort ? (
-            <Text>
-              <Text color={palette.accent}>● {display.effort}</Text>
-              <Text dimColor>
-                {' '}
-                · {editorMode === 'vim' ? 'vim' : '/effort'}
-              </Text>
-            </Text>
-          ) : null}
         </Box>
       )}
     </Box>

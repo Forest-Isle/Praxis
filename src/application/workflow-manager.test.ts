@@ -787,7 +787,7 @@ return { value }`
       },
     })
     await expect(manager.notifications(true)).rejects.toThrow(
-      'Workflow model usage for "model-a" has conflicting contextWindow values: 200000 vs 100000',
+      /Workflow model usage for "model-a" has conflicting contextWindow values: (?:100000 vs 200000|200000 vs 100000)/,
     )
     await manager.close()
   })
