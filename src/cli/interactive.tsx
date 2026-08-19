@@ -7853,6 +7853,7 @@ export function InteractiveApp({
                     usage?.inputTokens,
                     usage?.outputTokens,
                   ].join(':')}
+                  width={width}
                   {...(settingSources === undefined ? {} : { settingSources })}
                 />
               </>

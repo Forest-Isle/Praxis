@@ -1,5 +1,6 @@
 import { cleanup, render } from 'ink-testing-library'
 import { Text } from 'ink'
+import type { ComponentProps } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { TuiThemeProvider } from './theme.js'
@@ -1367,6 +1368,91 @@ describe('Claude-style TUI components', () => {
       'Editor-fail quit unexpectedly (exit code 7)',
     )
     expect(failure.lastFrame()).not.toContain('● high · /effort')
+  })
+
+  it('keeps the composer footer on one bounded line at common widths', () => {
+    const renderFooter = (
+      width: number,
+      overrides: Partial<ComponentProps<typeof Composer>> = {},
+    ) => {
+      const frame = render(
+        <Composer
+          input=""
+          busy={false}
+          status="ready"
+          display={display}
+          width={width}
+          screenReader={false}
+          {...overrides}
+        />,
+      ).lastFrame()
+      return frame ?? ''
+    }
+    // A Composer without usage renders exactly five rows (blank top margin,
+    // separator, prompt, separator, footer); a wrapped footer would add a sixth.
+    const singleFooterRow = (frame: string) => {
+      expect(frame.split('\n')).toHaveLength(5)
+      return frame.split('\n')[4] ?? ''
+    }
+
+    const idle = (width: number) => singleFooterRow(renderFooter(width))
+
+    // 100 columns keeps the full idle discoverability content including /effort.
+    const at100 = idle(100)
+    expect(at100).toContain('permissions default')
+    expect(at100).toContain('? for shortcuts')
+    expect(at100).toContain('← for agents')
+    expect(at100).toContain('● high')
+    expect(at100).toContain('/effort')
+
+    // 80 columns keeps shortcuts/agents and effort without relying on a
+    // wrapped thinking hint or the /effort suffix.
+    const at80 = idle(80)
+    expect(at80).toContain('permissions default')
+    expect(at80).toContain('? for shortcuts')
+    expect(at80).toContain('← for agents')
+    expect(at80).toContain('● high')
+    expect(at80).not.toContain('/effort')
+
+    // 60 columns keeps a compact shortcuts hint and effort, dropping agents.
+    const at60 = idle(60)
+    expect(at60).toContain('permissions default')
+    expect(at60).toContain('? for shortcuts')
+    expect(at60).not.toContain('← for agents')
+    expect(at60).toContain('● high')
+    expect(at60).not.toContain('/effort')
+
+    // 40 columns keeps permission state and effort, omitting optional hints.
+    const at40 = idle(40)
+    expect(at40).toContain('permissions default')
+    expect(at40).toContain('● high')
+    expect(at40).not.toContain('/effort')
+    expect(at40).not.toContain('? for shortcuts')
+    expect(at40).not.toContain('← for agents')
+
+    // 32 columns keeps a compact mode indicator and effort.
+    const at32 = idle(32)
+    expect(at32).toContain('default')
+    expect(at32).not.toContain('permissions default')
+    expect(at32).toContain('● high')
+
+    // A busy 40-column footer keeps an explicit cancel state without wrapping.
+    const busyFrame = renderFooter(40, { busy: true, status: 'streaming' })
+    const busyFooter = singleFooterRow(busyFrame)
+    expect(busyFooter).toContain('esc to interrupt')
+    expect(busyFooter).toContain('● high')
+    expect(busyFooter).not.toContain('? for shortcuts')
+
+    // An overlong error footer message renders on one clipped line. The test
+    // harness strips color escapes, so layout (single row, clipped tail) is
+    // the assertable part of the error-color contract.
+    const longMessage = `Editor-fail quit unexpectedly: ${'detail '.repeat(30)}`
+    const errorFrame = renderFooter(40, {
+      footerMessage: { text: longMessage, isError: true },
+    })
+    const errorFooter = singleFooterRow(errorFrame)
+    expect(errorFooter).toContain('Editor-fail quit')
+    expect(errorFooter).not.toContain('detail detail')
   })
 
   it('keeps dialogs and session selection visually bounded', () => {

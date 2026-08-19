@@ -102,7 +102,12 @@ export async function loadClaudeStatusLineSetting(options: {
 export async function executeClaudeStatusLine(
   setting: ClaudeStatusLineSetting,
   input: ClaudeStatusLineInput,
-  options: { cwd: string; signal?: AbortSignal; timeoutMs?: number } = {
+  options: {
+    cwd: string
+    signal?: AbortSignal
+    timeoutMs?: number
+    columns?: number
+  } = {
     cwd: process.cwd(),
   },
 ): Promise<string | undefined> {
@@ -120,10 +125,18 @@ export async function executeClaudeStatusLine(
     }
     let child
     try {
+      const env = { ...process.env }
+      if (
+        options.columns !== undefined &&
+        Number.isFinite(options.columns) &&
+        options.columns > 0
+      ) {
+        env.COLUMNS = String(Math.trunc(options.columns))
+      }
       child = spawn(commandShell(), commandShellArguments(setting.command), {
         cwd: options.cwd,
         detached: process.platform !== 'win32',
-        env: process.env,
+        env,
         stdio: ['pipe', 'pipe', 'ignore'],
       })
     } catch {
@@ -267,12 +280,14 @@ export function StatusLine({
   cwd,
   input,
   refreshKey,
+  width,
   settingSources,
 }: {
   configRoot: string
   cwd: string
   input: ClaudeStatusLineInput
   refreshKey: string
+  width?: number
   settingSources?: readonly ClaudeResourceScope[]
 }) {
   const [text, setText] = useState<string>()
@@ -301,13 +316,17 @@ export function StatusLine({
       const result = await executeClaudeStatusLine(
         loaded.setting,
         latestInput.current,
-        { cwd, signal: current.signal },
+        {
+          cwd,
+          signal: current.signal,
+          ...(width === undefined ? {} : { columns: width }),
+        },
       )
       if (!current.signal.aborted) setText(result)
     } catch {
       if (!current.signal.aborted) setText(undefined)
     }
-  }, [configRoot, cwd, settingSources])
+  }, [configRoot, cwd, settingSources, width])
 
   const schedule = useCallback(() => {
     if (timer.current) clearTimeout(timer.current)

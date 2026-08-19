@@ -52,4 +52,41 @@ describe('StatusLine', () => {
     await delay(900)
     expect(app.lastFrame()).toContain('second')
   })
+
+  it('supplies a caller-provided TUI width to the configured command', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-ui-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'workspace')
+    await Promise.all([mkdir(configRoot), mkdir(cwd)])
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({
+        statusLine: {
+          type: 'command',
+          command:
+            "node -e \"let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log('width:'+process.env.COLUMNS))\"",
+        },
+      }),
+    )
+    const input = createClaudeStatusLineInput({
+      configRoot,
+      cwd,
+      projectDir: cwd,
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      version: '2.1.208',
+      outputStyle: 'default',
+      additionalDirectories: [],
+    })
+    const app = render(
+      <StatusLine
+        configRoot={configRoot}
+        cwd={cwd}
+        input={input}
+        refreshKey="width"
+        width={40}
+      />,
+    )
+    await delay(450)
+    expect(app.lastFrame()).toContain('width:40')
+  })
 })
