@@ -32,7 +32,11 @@ import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
-import { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
+import {
+  ClaudeInteractiveToolManager,
+  type ClaudeQuestion,
+  type ClaudeQuestionResult,
+} from '../tools/claude-interactive-tools.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import type { ClaudeSessionCostState } from '../persistence/claude-cost-state-store.js'
 import { ClaudeSessionService } from './session-service.js'
@@ -8715,6 +8719,125 @@ describe('ClaudeSessionService', () => {
       expect(snapshot.toolDurationMs).toBe(200)
     } finally {
       now.mockRestore()
+    }
+  })
+
+  it('confirms missed scheduled one-shots before returning them and honors approval or decline', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-scheduled-confirm-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(join(cwd, '.claude'), { recursive: true })
+    await writeFile(
+      join(cwd, '.claude', 'scheduled_tasks.json'),
+      JSON.stringify({
+        tasks: [
+          {
+            id: 'abc12345',
+            cron: '1 0 1 1 *',
+            prompt: 'missed approval prompt',
+            createdAt: new Date(2020, 11, 31, 23, 59).getTime(),
+            recurring: false,
+            createdBySessionId: '20202020-2020-4020-8020-202020202020',
+            createdByPid: 999_999_999,
+            createdByProcStart: 'start',
+          },
+          {
+            id: 'def12345',
+            cron: '2 0 1 1 *',
+            prompt: 'missed decline prompt',
+            createdAt: new Date(2020, 11, 31, 23, 59).getTime(),
+            recurring: false,
+            createdBySessionId: '20202020-2020-4020-8020-202020202020',
+            createdByPid: 999_999_999,
+            createdByProcStart: 'start',
+          },
+        ],
+      }),
+    )
+
+    const asked: string[] = []
+    let resolveApproval!: (result: ClaudeQuestionResult | null) => void
+    const askUser = async (
+      questions: readonly ClaudeQuestion[],
+    ): Promise<ClaudeQuestionResult | null> => {
+      const question = questions[0]
+      if (!question) return null
+      asked.push(question.question)
+      if (asked.length === 1) {
+        return new Promise<ClaudeQuestionResult | null>((resolve) => {
+          resolveApproval = resolve
+        })
+      }
+      return { answers: { [question.question]: 'Skip' } }
+    }
+
+    const interactiveTools = new ClaudeInteractiveToolManager({
+      configRoot,
+      initialMode: 'default',
+      enabledTools: ['AskUserQuestion'],
+      callbacks: {
+        askUser,
+        approvePlan: async () => ({
+          behavior: 'allow',
+          permissionMode: 'default',
+        }),
+      },
+      permissionResolverForMode: () => ({
+        resolve: () => ({ behavior: 'allow' }),
+      }),
+    })
+
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      scheduledToolNames: ['CronCreate'],
+      interactiveTools,
+    })
+
+    try {
+      // A pending missed one-shot is presented for confirmation and is not
+      // returned before the user approves it.
+      const first = service.nextScheduledPrompt()
+      await vi.waitFor(() => expect(asked).toHaveLength(1))
+      expect(asked[0]).toBe('missed approval prompt')
+      let firstSettled: 'pending' | 'resolved' | 'rejected' = 'pending'
+      void first.then(
+        () => {
+          firstSettled = 'resolved'
+        },
+        () => {
+          firstSettled = 'rejected'
+        },
+      )
+      expect(firstSettled).toBe('pending')
+      resolveApproval({
+        answers: { 'missed approval prompt': 'Run now' },
+      })
+      await expect(first).resolves.toEqual({
+        id: 'abc12345',
+        prompt: 'missed approval prompt',
+      })
+
+      // The next pending missed one-shot is declined and returns no prompt.
+      const second = service.nextScheduledPrompt()
+      await vi.waitFor(() => expect(asked).toHaveLength(2))
+      expect(asked[1]).toBe('missed decline prompt')
+      await expect(second).resolves.toBeNull()
+
+      // Nothing remains pending after approval/decline are resolved.
+      const aborted = new AbortController()
+      aborted.abort()
+      await expect(
+        service.nextScheduledPrompt(aborted.signal),
+      ).resolves.toBeNull()
+      expect(asked).toHaveLength(2)
+    } finally {
+      await service.close()
     }
   })
 })
