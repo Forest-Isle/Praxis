@@ -9,24 +9,14 @@
     ["PreToolUse", "Before tool execution"],
     ["PostToolUse", "After tool execution"],
     ["PostToolUseFailure", "After tool execution fails"],
-    ["PostToolBatch", "After a batch of tool calls resolves"],
-    ["PermissionDenied", "After auto mode classifier denies a tool call"],
-    ["Notification", "When notifications are sent"],
     ["UserPromptSubmit", "When the user submits a prompt"],
-    [
-      "UserPromptExpansion",
-      "After a user-typed slash command expands into a prompt"
-    ],
     ["SessionStart", "When a new session is started"],
     ["Stop", "Right before Claude concludes its response"],
-    ["StopFailure", "When the turn ends due to an API error"],
     ["SubagentStart", "When a subagent (Agent tool call) is started"],
     [
       "SubagentStop",
       "Right before a subagent (Agent tool call) concludes its response"
     ],
-    ["PreCompact", "Before conversation compaction"],
-    ["PostCompact", "After conversation compaction"],
     ["SessionEnd", "When a session is ending"],
     ["PermissionRequest", "When a permission dialog is displayed"]
   ],
@@ -42,11 +32,6 @@
       "Exit code 0 - stdout shown in transcript mode (ctrl+o)",
       "Exit code 2 - show stderr to model immediately",
       "Other exit code - show stderr to user only"
-    ],
-    "Notification": [
-      "Input to command is JSON with notification message and type.",
-      "Exit code 0 - stdout/stderr not shown",
-      "Other exit codes - show stderr to user only"
     ],
     "UserPromptSubmit": [
       "Input to command is JSON with original user prompt text.",
