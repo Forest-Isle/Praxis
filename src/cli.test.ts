@@ -17,6 +17,13 @@ import {
   type CliDependencies,
   type CliIO,
 } from './cli.js'
+import { DEFAULT_CLI_CONTROLS } from './cli/controls.js'
+import type { CliControls } from './cli/protocol.js'
+import {
+  createDefaultDependencies,
+  resolveRuntimeModel,
+} from './cli-runtime.js'
+import { projectRuntimeSettings } from './cli/tui/runtime-settings.js'
 
 const PACKAGE_VERSION = (
   createRequire(import.meta.url)('../package.json') as { version: string }
@@ -2302,6 +2309,91 @@ describe('Praxis CLI', () => {
       run(['--bg', '--print', 'finish task'], capture.io, dependencies()),
     ).resolves.toBe(1)
     expect(capture.stderr.join('')).toContain('--bg and --print conflict')
+  })
+
+  it('resolves runtime model precedence as --model > PRAXIS_MODEL > settings > default', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-model-precedence-'))
+    const configRoot = join(root, 'config')
+    await mkdir(configRoot, { recursive: true })
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({ model: 'settings-model' }),
+    )
+    await writeFile(join(configRoot, '.claude.json'), JSON.stringify({}))
+    try {
+      const settings = projectRuntimeSettings({
+        settings: { model: 'settings-model' },
+        state: {},
+      })
+      const defaults = projectRuntimeSettings({ settings: {}, state: {} })
+
+      // The shared resolution path covers all four precedence levels.
+      expect(resolveRuntimeModel(undefined, {}, defaults)).toBeUndefined()
+      expect(resolveRuntimeModel(undefined, {}, settings)).toBe(
+        'settings-model',
+      )
+      expect(
+        resolveRuntimeModel(undefined, { PRAXIS_MODEL: 'env-model' }, settings),
+      ).toBe('env-model')
+      expect(
+        resolveRuntimeModel(
+          'cli-model',
+          { PRAXIS_MODEL: 'env-model' },
+          settings,
+        ),
+      ).toBe('cli-model')
+      expect(
+        resolveRuntimeModel(undefined, { PRAXIS_MODEL: '' }, settings),
+      ).toBe('settings-model')
+
+      // Provider construction and status display report the same resolved
+      // model for every source that can supply one.
+      const baseEnvironment = {
+        CLAUDE_CONFIG_DIR: configRoot,
+        PRAXIS_API_KEY: 'test-key',
+        PRAXIS_PROVIDER: 'anthropic',
+      }
+      const createService = async (
+        environment: Record<string, string>,
+        controls: CliControls = DEFAULT_CLI_CONTROLS,
+      ) => {
+        const service = await createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: true,
+          cwd: root,
+          configRoot,
+          providerEnvironment: { ...baseEnvironment, ...environment },
+          controls,
+        })
+        return service
+      }
+
+      const settingsOnly = await createService({})
+      try {
+        expect(settingsOnly.runtimeInfo?.().model).toBe('settings-model')
+      } finally {
+        await settingsOnly.close?.()
+      }
+
+      const envWins = await createService({ PRAXIS_MODEL: 'env-model' })
+      try {
+        expect(envWins.runtimeInfo?.().model).toBe('env-model')
+      } finally {
+        await envWins.close?.()
+      }
+
+      const cliWins = await createService(
+        { PRAXIS_MODEL: 'env-model' },
+        { ...DEFAULT_CLI_CONTROLS, model: 'cli-model' },
+      )
+      try {
+        expect(cliWins.runtimeInfo?.().model).toBe('cli-model')
+      } finally {
+        await cliWins.close?.()
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('continues and forks the latest directory session while forwarding controls', async () => {

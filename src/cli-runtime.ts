@@ -86,6 +86,7 @@ import {
   applyRuntimeSettingDefaults,
   loadRuntimeSettings,
   runtimeSettingsSystemPrompt,
+  type PraxisRuntimeSettings,
 } from './cli/tui/runtime-settings.js'
 import { createCliDebugSink } from './cli/debug.js'
 import {
@@ -1141,6 +1142,28 @@ const consoleIO: CliIO = {
   readStdinLines: () => process.stdin,
 }
 
+/**
+ * Shared runtime model precedence used by every consumer (provider
+ * construction, status/doctor output, and the interactive display):
+ * explicit CLI selection > non-empty PRAXIS_MODEL > Praxis settings model,
+ * with the configured default (settings.model === 'default') falling through
+ * to the existing default behavior (undefined).
+ */
+export function resolveRuntimeModel(
+  explicitModel: string | undefined,
+  environment: NodeJS.ProcessEnv,
+  settings: PraxisRuntimeSettings | undefined,
+): string | undefined {
+  const envModel = environment.PRAXIS_MODEL
+  const settingsModel =
+    settings && settings.model !== 'default' ? settings.model : undefined
+  return (
+    explicitModel ??
+    (envModel !== undefined && envModel.trim() !== '' ? envModel : undefined) ??
+    settingsModel
+  )
+}
+
 const createDefaultService: CliDependencies['createService'] = async ({
   eventSink,
   requireProvider,
@@ -1219,7 +1242,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
   let providerForMainModel: ((model: string) => ModelProvider) | undefined
   const context = parseContextEnvironment(runtimeEnvironment)
   const apiKey = runtimeEnvironment.PRAXIS_API_KEY
-  const model = cli.model ?? runtimeEnvironment.PRAXIS_MODEL
+  const model = resolveRuntimeModel(
+    interactiveModel ?? controls.model,
+    runtimeEnvironment,
+    runtimeSettings,
+  )
   const providerEnvironment =
     apiKey && model
       ? parseProviderEnvironment(runtimeEnvironment)
@@ -1868,7 +1895,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ]
     const runtimeInfo: CliRuntimeInfo = {
       cwd: workspace.cwd(),
-      model: provider?.model ?? runtimeEnvironment.PRAXIS_MODEL ?? 'unknown',
+      model:
+        provider?.model ??
+        resolveRuntimeModel(
+          interactiveModel ?? controls.model,
+          runtimeEnvironment,
+          runtimeSettings,
+        ) ??
+        'unknown',
       ...(provider?.capabilities.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: provider.capabilities.contextWindowTokens }),
@@ -2093,7 +2127,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
           model:
             service.model() ??
             provider?.model ??
-            runtimeEnvironment.PRAXIS_MODEL ??
+            resolveRuntimeModel(
+              interactiveModel ?? controls.model,
+              runtimeEnvironment,
+              runtimeSettings,
+            ) ??
             'unknown',
         }
         delete staticInfo.contextWindowTokens
@@ -2134,7 +2172,14 @@ const createDefaultAutoModeCritic: NonNullable<
   CliDependencies['createAutoModeCritic']
 > = async ({ model }) => {
   const apiKey = process.env.PRAXIS_API_KEY
-  const selectedModel = model ?? process.env.PRAXIS_MODEL
+  const configRoot = resolve(
+    process.env.CLAUDE_CONFIG_DIR ?? resolve(homedir(), '.claude'),
+  )
+  const runtimeSettings = await loadRuntimeSettings({
+    configRoot,
+    statePath: join(configRoot, '.claude.json'),
+  })
+  const selectedModel = resolveRuntimeModel(model, process.env, runtimeSettings)
   if (!apiKey || !selectedModel) {
     throw new Error(
       'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
@@ -2329,6 +2374,25 @@ export function createDefaultDependencies(
         interactiveControls.addDirectories.map((directory) =>
           realpathSync(resolve(process.cwd(), directory)),
         )
+      const configuredRoot = process.env.CLAUDE_CONFIG_DIR || undefined
+      const interactiveConfigRoot = resolve(
+        configuredRoot ?? resolve(homedir(), '.claude'),
+      )
+      const interactiveStatePath = configuredRoot
+        ? join(interactiveConfigRoot, '.claude.json')
+        : resolve(homedir(), '.claude.json')
+      const interactiveRuntimeSettings =
+        interactiveControls.safeMode || interactiveControls.bare
+          ? undefined
+          : await loadRuntimeSettings({
+              configRoot: interactiveConfigRoot,
+              statePath: interactiveStatePath,
+            })
+      const effectiveModel = resolveRuntimeModel(
+        interactiveControls.model,
+        process.env,
+        interactiveRuntimeSettings,
+      )
       return runInteractive({
         factory: {
           createService: ({ additionalDirectories, cwd, ...options }) =>
@@ -2345,8 +2409,7 @@ export function createDefaultDependencies(
               interactive: true,
             }),
           scheduledPrompts: Boolean(
-            process.env.PRAXIS_API_KEY &&
-            (interactiveControls.model ?? process.env.PRAXIS_MODEL),
+            process.env.PRAXIS_API_KEY && effectiveModel,
           ),
         },
         ...(signal ? { signal } : {}),
@@ -2362,11 +2425,7 @@ export function createDefaultDependencies(
         display: {
           version: VERSION,
           cwd: process.cwd(),
-          ...(controls?.model
-            ? { model: controls.model }
-            : process.env.PRAXIS_MODEL
-              ? { model: process.env.PRAXIS_MODEL }
-              : {}),
+          ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
           effort: controls?.effort ?? 'high',
           permissionMode: controls?.dangerouslySkipPermissions
             ? 'bypassPermissions'
@@ -2884,6 +2943,11 @@ async function executeDoctorCommand(
     configRoot,
     statePath: claudeStatePath,
   })
+  const effectiveModel = resolveRuntimeModel(
+    invocation.model,
+    process.env,
+    runtimeSettings,
+  )
   const report = await runDoctor({
     version: VERSION,
     executablePath: fileURLToPath(import.meta.url),
@@ -2892,7 +2956,10 @@ async function executeDoctorCommand(
     configRoot,
     claudeStatePath,
     cwd: process.cwd(),
-    environment: process.env,
+    environment:
+      effectiveModel === undefined
+        ? process.env
+        : { ...process.env, PRAXIS_MODEL: effectiveModel },
     autoUpdateChannel: runtimeSettings.autoUpdatesChannel,
     ...(process.argv[1] === undefined
       ? {}
@@ -5211,6 +5278,10 @@ async function execute(
     const configRoot = resolve(
       process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
     )
+    const runtimeSettings = await loadRuntimeSettings({
+      configRoot,
+      statePath: join(configRoot, '.claude.json'),
+    })
     const text = dependencies.loadReleaseNotes
       ? await dependencies.loadReleaseNotes(configRoot)
       : await loadClaudeReleaseNotes({ configRoot })
@@ -5221,7 +5292,9 @@ async function execute(
     }
     const info: CliRuntimeInfo = {
       cwd: process.cwd(),
-      model: invocation.model ?? process.env.PRAXIS_MODEL ?? 'unknown',
+      model:
+        resolveRuntimeModel(invocation.model, process.env, runtimeSettings) ??
+        'unknown',
       tools: [],
       mcpServers: [],
       permissionMode: invocation.permissionMode,
@@ -5394,9 +5467,18 @@ async function execute(
       return 0
     }
 
+    const configRoot = resolve(
+      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+    )
+    const runtimeSettings = await loadRuntimeSettings({
+      configRoot,
+      statePath: join(configRoot, '.claude.json'),
+    })
     const runtimeInfo = service.runtimeInfo?.() ?? {
       cwd: process.cwd(),
-      model: process.env.PRAXIS_MODEL ?? 'unknown',
+      model:
+        resolveRuntimeModel(invocation.model, process.env, runtimeSettings) ??
+        'unknown',
       tools: [],
       mcpServers: [],
       permissionMode: 'default',
