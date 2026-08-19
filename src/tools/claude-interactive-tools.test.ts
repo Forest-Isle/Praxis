@@ -36,6 +36,7 @@ async function fixture(
   options: {
     approve?: boolean
     initialMode?: 'default' | 'bypassPermissions'
+    askForBash?: boolean
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'praxis-interactive-tools-'))
@@ -55,7 +56,9 @@ async function fixture(
       resolve: (call) =>
         mode === 'plan' && call.name === 'Write'
           ? { behavior: 'deny', reason: 'plan mode' }
-          : { behavior: 'allow' },
+          : options.askForBash && call.name === 'Bash'
+            ? { behavior: 'ask' }
+            : { behavior: 'allow' },
     }),
   )
   const manager = new ClaudeInteractiveToolManager({
@@ -245,5 +248,61 @@ describe('ClaudeInteractiveToolManager', () => {
     expect(result.isError).toBe(true)
     expect(manager.consumeTransition('call_ExitPlanMode')).toBeUndefined()
     expect(manager.contextMessage(sessionId)).toContain('Plan mode')
+  })
+
+  it('surfaces allowedPrompts at approval and pre-approves only exact approved Bash commands', async () => {
+    const { configRoot, manager, registry, approvePlan } = await fixture({
+      askForBash: true,
+    })
+    const planPath = join(configRoot, 'plans', `praxis-${sessionId}.md`)
+    const allowedPrompts = [{ tool: 'Bash', prompt: 'npm test' }]
+
+    await expect(execute(registry, 'EnterPlanMode', {})).resolves.toMatchObject(
+      { isError: false },
+    )
+    await writeFile(planPath, '# Plan\n\n1. Implement it.\n')
+    await expect(
+      execute(registry, 'ExitPlanMode', { allowedPrompts }),
+    ).resolves.toMatchObject({ isError: false })
+
+    expect(approvePlan).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedPrompts }),
+      undefined,
+    )
+    await expect(
+      manager.permissions(sessionId).resolve({
+        id: 'bash-approved',
+        name: 'Bash',
+        input: { command: 'npm test' },
+      }),
+    ).resolves.toEqual({ behavior: 'allow' })
+    await expect(
+      manager.permissions(sessionId).resolve({
+        id: 'bash-not-approved',
+        name: 'Bash',
+        input: { command: 'npm run build' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+
+    const denied = await fixture({ approve: false, askForBash: true })
+    const deniedPlanPath = join(
+      denied.configRoot,
+      'plans',
+      `praxis-${sessionId}.md`,
+    )
+    await expect(
+      execute(denied.registry, 'EnterPlanMode', {}),
+    ).resolves.toMatchObject({ isError: false })
+    await writeFile(deniedPlanPath, '# Denied plan\n')
+    await expect(
+      execute(denied.registry, 'ExitPlanMode', { allowedPrompts }),
+    ).resolves.toMatchObject({ isError: true })
+    await expect(
+      denied.manager.permissions(sessionId).resolve({
+        id: 'bash-denied',
+        name: 'Bash',
+        input: { command: 'npm test' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'ask' })
   })
 })
