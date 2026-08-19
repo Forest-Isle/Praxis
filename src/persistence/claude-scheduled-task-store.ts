@@ -39,6 +39,19 @@ export type ClaudeScheduledTaskCreateInput = Pick<
   | 'createdByProcStart'
 >
 
+export interface ClaudeScheduledTaskCreateOptions {
+  maxJobs?: number
+}
+
+export class ClaudeScheduledTaskLimitError extends Error {
+  constructor(readonly maxJobs: number) {
+    super(
+      `Scheduled job limit reached: at most ${maxJobs} active scheduled jobs. Delete or wait for an existing job before scheduling another.`,
+    )
+    this.name = 'ClaudeScheduledTaskLimitError'
+  }
+}
+
 const JOB_ID_PATTERN = /^[0-9a-f]{8}$/u
 const LOCK_WAIT_MS = 5_000
 const MAX_MUTATION_RETRIES = 16
@@ -141,10 +154,17 @@ export class ClaudeScheduledTaskStore {
 
   async create(
     input: ClaudeScheduledTaskCreateInput,
+    options: ClaudeScheduledTaskCreateOptions = {},
   ): Promise<ClaudeScheduledTask> {
     return this.withLock(async () => {
       for (let attempt = 0; attempt < MAX_MUTATION_RETRIES; attempt += 1) {
         const { document, fingerprint: expected } = await this.readRecord()
+        if (
+          options.maxJobs !== undefined &&
+          document.tasks.length >= options.maxJobs
+        ) {
+          throw new ClaudeScheduledTaskLimitError(options.maxJobs)
+        }
         const ids = new Set(document.tasks.map(({ id }) => id))
         let id = randomBytes(4).toString('hex')
         while (ids.has(id)) id = randomBytes(4).toString('hex')

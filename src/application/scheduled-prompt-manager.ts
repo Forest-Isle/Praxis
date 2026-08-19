@@ -5,6 +5,7 @@ import { promisify } from 'node:util'
 import { CronExpressionParser } from 'cron-parser'
 
 import {
+  ClaudeScheduledTaskLimitError,
   ClaudeScheduledTaskStore,
   type ClaudeScheduledTask,
 } from '../persistence/claude-scheduled-task-store.js'
@@ -17,6 +18,16 @@ const DYNAMIC_CACHE_TTL_MS = 300_000
 const DEFAULT_DYNAMIC_CACHE_LEAD_MS = 15_000
 const MAX_TIMER_MS = 2_147_000_000
 const DURABLE_REFRESH_MS = 5_000
+export const MAX_JOBS = 50
+
+export class ScheduledJobLimitError extends Error {
+  constructor(readonly maxJobs: number) {
+    super(
+      `Scheduled job limit reached: at most ${maxJobs} active scheduled jobs. Delete or wait for an existing job before scheduling another.`,
+    )
+    this.name = 'ScheduledJobLimitError'
+  }
+}
 
 export interface ScheduledPromptManagerOptions {
   filePath: string
@@ -192,7 +203,14 @@ export class ScheduledPromptManager {
     }
     let task: ClaudeScheduledTask
     if (input.durable) {
-      task = await this.store.create(base)
+      try {
+        task = await this.store.create(base, { maxJobs: MAX_JOBS })
+      } catch (error) {
+        if (error instanceof ClaudeScheduledTaskLimitError) {
+          throw new ScheduledJobLimitError(MAX_JOBS)
+        }
+        throw error
+      }
     } else {
       const occupied = new Set((await this.list()).map(({ id }) => id))
       let id = randomBytes(4).toString('hex')

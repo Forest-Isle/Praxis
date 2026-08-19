@@ -274,9 +274,10 @@ async function verifyActivePraxisWakeup() {
   assert(
     JSON.stringify(first.nativeToolUseResult) ===
       JSON.stringify({
-        scheduledFor,
-        clampedDelaySeconds: 60,
-        wasClamped: true,
+        stopped: false,
+        nextWakeupMs: scheduledFor,
+        delaySeconds: 60,
+        reason: 'probe active contract',
       }),
     'Praxis active wakeup native result changed',
   )
@@ -287,7 +288,11 @@ async function verifyActivePraxisWakeup() {
   })
   const stopped = await execute('active-stop', { stop: true })
   assert(
-    stopped.nativeToolUseResult?.cancelledWakeups === 1,
+    stopped.nativeToolUseResult?.stopped === true &&
+      stopped.nativeToolUseResult?.nextWakeupMs === 0 &&
+      stopped.nativeToolUseResult?.delaySeconds === 0 &&
+      stopped.nativeToolUseResult?.reason === '' &&
+      String(stopped.content).includes('cancelled 1 pending wakeup(s)'),
     'Praxis did not supersede the previous active wakeup',
   )
   manager.close()
