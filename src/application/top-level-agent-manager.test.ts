@@ -526,6 +526,117 @@ describe('TopLevelAgentManager', () => {
     ).resolves.toBe('NATIVE_TRANSCRIPT\n')
   })
 
+  it('lists native Claude bg/daemon registry records and rejects unknown or malformed ones', async () => {
+    const fixtureState = await fixture()
+    const sessionsDir = join(fixtureState.configRoot, 'sessions')
+    await mkdir(sessionsDir)
+    const base = {
+      pid: 12345,
+      cwd: fixtureState.cwd,
+      startedAt: 10,
+      name: 'native daemon session',
+    }
+    const nativeBgSessionId = 'aaaaaaaa-1111-4111-8111-111111111111'
+    const nativeDaemonSessionId = 'bbbbbbbb-1111-4111-8111-111111111111'
+    const nativeDaemonWorkerSessionId = 'cccccccc-1111-4111-8111-111111111111'
+    const unknownKindSessionId = 'dddddddd-1111-4111-8111-111111111111'
+    const unknownStatusSessionId = 'eeeeeeee-1111-4111-8111-111111111111'
+    await writeFile(
+      join(sessionsDir, 'bg-busy.json'),
+      JSON.stringify({
+        ...base,
+        sessionId: nativeBgSessionId,
+        kind: 'bg',
+        status: 'busy',
+      }),
+    )
+    await writeFile(
+      join(sessionsDir, 'daemon-idle.json'),
+      JSON.stringify({
+        ...base,
+        pid: 12346,
+        sessionId: nativeDaemonSessionId,
+        kind: 'daemon',
+        status: 'idle',
+      }),
+    )
+    await writeFile(
+      join(sessionsDir, 'daemon-worker-waiting.json'),
+      JSON.stringify({
+        ...base,
+        pid: 12347,
+        sessionId: nativeDaemonWorkerSessionId,
+        kind: 'daemon-worker',
+        status: 'waiting',
+      }),
+    )
+    await writeFile(
+      join(sessionsDir, 'unknown-kind.json'),
+      JSON.stringify({
+        ...base,
+        pid: 12348,
+        sessionId: unknownKindSessionId,
+        kind: 'weird',
+        status: 'busy',
+      }),
+    )
+    await writeFile(
+      join(sessionsDir, 'unknown-status.json'),
+      JSON.stringify({
+        ...base,
+        pid: 12349,
+        sessionId: unknownStatusSessionId,
+        kind: 'bg',
+        status: 'unknown',
+      }),
+    )
+    const malformedSessionId = 'ffffffff-1111-4111-8111-111111111111'
+    await writeFile(
+      join(sessionsDir, 'malformed.json'),
+      JSON.stringify({
+        ...base,
+        sessionId: malformedSessionId,
+        kind: 'bg',
+        status: 'busy',
+        cwd: undefined,
+      }),
+    )
+
+    await expect(fixtureState.manager.list({ all: true })).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pid: 12345,
+          kind: 'bg',
+          status: 'busy',
+          sessionId: nativeBgSessionId,
+          cwd: fixtureState.cwd,
+        }),
+        expect.objectContaining({
+          pid: 12346,
+          kind: 'daemon',
+          status: 'idle',
+          sessionId: nativeDaemonSessionId,
+        }),
+        expect.objectContaining({
+          pid: 12347,
+          kind: 'daemon-worker',
+          status: 'waiting',
+          sessionId: nativeDaemonWorkerSessionId,
+        }),
+      ]),
+    )
+    const listed = await fixtureState.manager.list({ all: true })
+    expect(
+      listed.some((session) => session.sessionId === unknownKindSessionId),
+    ).toBe(false)
+    expect(
+      listed.some((session) => session.sessionId === unknownStatusSessionId),
+    ).toBe(false)
+    expect(
+      listed.some((session) => session.sessionId === malformedSessionId),
+    ).toBe(false)
+  })
+
   it('does not resurrect a job stopped while its runtime is initializing', async () => {
     const fixtureState = await fixture()
     let releaseRuntime: ((runtime: TopLevelAgentRuntime) => void) | undefined
