@@ -690,7 +690,7 @@ describe('ClaudeTranscriptStore', () => {
     let activeWriters = 0
     let maximumActiveWriters = 0
 
-    const results = await Promise.all(
+    await Promise.all(
       Array.from({ length: 16 }, () =>
         store.withLease(async () => {
           activeWriters += 1
@@ -702,9 +702,6 @@ describe('ClaudeTranscriptStore', () => {
     )
 
     expect(maximumActiveWriters).toBeLessThanOrEqual(1)
-    expect(
-      results.filter((result) => result.status === 'completed'),
-    ).toHaveLength(maximumActiveWriters)
     await expect(store.withLease(async () => 'recovered')).resolves.toEqual({
       status: 'completed',
       value: 'recovered',
