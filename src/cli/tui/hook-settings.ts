@@ -1,4 +1,8 @@
 import type { ClaudeJsonResource } from '../../compatibility/claude/shared-resources.js'
+import {
+  HOOK_EVENTS,
+  type ClaudeHookEventName,
+} from '../../hooks/claude-hooks.js'
 
 export interface TuiHookEventDefinition {
   name: string
@@ -36,7 +40,7 @@ export const TUI_HOOK_MENU = {
   visibleRows: 5,
 } as const
 
-export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
+const TUI_HOOK_EVENT_DEFINITIONS: readonly TuiHookEventDefinition[] = [
   {
     name: 'PreToolUse',
     description: 'Before tool execution',
@@ -143,6 +147,11 @@ export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] = [
     detail: [],
   },
 ]
+
+export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] =
+  TUI_HOOK_EVENT_DEFINITIONS.filter((definition) =>
+    HOOK_EVENTS.includes(definition.name as ClaudeHookEventName),
+  )
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

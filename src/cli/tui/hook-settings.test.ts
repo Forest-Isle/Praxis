@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 
 import { describe, expect, it } from 'vitest'
 
+import { HOOK_EVENTS } from '../../hooks/claude-hooks.js'
 import {
   projectTuiHooks,
   TUI_HOOK_EVENTS,
@@ -35,6 +36,16 @@ describe('TUI hook settings projection', () => {
         ),
       ),
     ).toEqual(fixture.observedDetails)
+  })
+
+  it('advertises only runtime-executable hook events and excludes removed names', () => {
+    const runtimeEvents = new Set<string>(HOOK_EVENTS)
+    expect(
+      TUI_HOOK_EVENTS.every((event) => runtimeEvents.has(event.name)),
+    ).toBe(true)
+    const advertised = new Set(TUI_HOOK_EVENTS.map((event) => event.name))
+    expect(advertised.has('PostToolBatch')).toBe(false)
+    expect(advertised.has('UserPromptExpansion')).toBe(false)
   })
 
   it('matches observed scopes and hook types from the 2.1.208 fixture', async () => {
@@ -158,7 +169,7 @@ describe('TUI hook settings projection', () => {
         label: 'https://example.test/hook',
       }),
     ])
-    expect(projected.events[8]?.matchers[0]).toMatchObject({
+    expect(projected.events[4]?.matchers[0]).toMatchObject({
       matcher: 'startup|resume',
       scope: 'Local',
       scopeLabel: 'Local Settings',
