@@ -7080,7 +7080,11 @@ export function InteractiveApp({
         ) : (
           <>
             {!axScreenReader && history.length === 0 && !sessionId ? (
-              <WelcomePanel display={runtimeDisplay} width={width} />
+              <WelcomePanel
+                display={runtimeDisplay}
+                width={width}
+                showTips={runtimeSettings.tips}
+              />
             ) : null}
             {sessionId ? (
               <Text dimColor>Session {sessionId.slice(0, 8)}</Text>

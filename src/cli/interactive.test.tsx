@@ -1592,7 +1592,7 @@ describe('InteractiveApp', () => {
       />,
     )
     await flush()
-    expect(app.lastFrame()).toContain('Welcome back!')
+    expect(app.lastFrame()).toContain('Welcome to Praxis')
     expect(app.lastFrame()).not.toContain('Resume a session')
     app.stdin.write('/resume')
     await flush()
@@ -5449,7 +5449,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).not.toContain('answer:first')
-    expect(app.lastFrame()).toContain('Welcome back!')
+    expect(app.lastFrame()).toContain('Welcome to Praxis')
 
     app.stdin.write('second')
     app.stdin.write('\r')

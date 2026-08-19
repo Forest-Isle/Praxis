@@ -88,29 +88,43 @@ describe('Claude-style TUI components', () => {
     expect(accessible.lastFrame()).not.toContain('────')
   })
 
-  it('renders the wide welcome hierarchy and local identity', () => {
-    const app = render(<WelcomePanel display={display} width={100} />)
+  it('renders a compact wide welcome surface and local identity', () => {
+    const app = render(<WelcomePanel display={display} width={80} showTips />)
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('Praxis Code v0.1.2')
-    expect(frame).toContain('Welcome back!')
-    expect(frame).toContain('Tips for getting started')
+    expect(frame).toContain('Welcome to Praxis')
     expect(frame).toContain('test-model · high effort')
-    // Claude 2.1.208 launch parity: title lives in the top border row,
-    // not in a separate title line inside the card.
-    expect(frame.split('\n')[0]).toContain('╭───Praxis Code v0.1.2')
-    // No status line between card and composer; card is 19 rows tall with
-    // the Claude 2.1.208 "What's new" right column.
-    expect(frame.split('\n').length).toBe(19)
     expect(frame).toContain('/Users/test/dev/Praxis')
-    expect(frame.split('\n')[0]?.length).toBeLessThanOrEqual(100)
+    expect(frame).toContain('/init to create CLAUDE.md')
+    expect(frame).toContain('/config to open settings')
+    // Title lives in the top border row, exactly one line wide.
+    expect(frame.split('\n')[0]).toContain('╭───Praxis Code v0.1.2')
+    // Compact: a handful of rows, not the previous 19-row release-note card.
+    expect(frame.split('\n').filter(Boolean).length).toBeLessThan(6)
+    expect(frame.split('\n').every((line) => line.length <= 80)).toBe(true)
+    // No long Claude release-note copy in the startup surface.
+    expect(frame).not.toContain("What's new")
+    expect(frame).not.toContain('SendMessage')
+    expect(frame).not.toContain('/release-notes')
   })
 
-  it('collapses welcome columns on a narrow terminal', () => {
-    const app = render(<WelcomePanel display={display} width={40} />)
+  it('stays compact and within bounds on a narrow terminal', () => {
+    const app = render(<WelcomePanel display={display} width={40} showTips />)
     const frame = app.lastFrame() ?? ''
-    expect(frame).toContain('Welcome back!')
-    expect(frame).toContain('Tips for getting started')
+    expect(frame).toContain('Welcome to Praxis')
+    expect(frame).toContain('test-model · high effort')
+    expect(frame).toContain('/Users/test/dev/Praxis')
     expect(frame.split('\n').every((line) => line.length <= 40)).toBe(true)
+    expect(frame).not.toContain("What's new")
+    expect(frame).not.toContain('SendMessage')
+    expect(frame).not.toContain('/release-notes')
+  })
+
+  it('renders no startup panel when tips are disabled', () => {
+    const app = render(
+      <WelcomePanel display={display} width={80} showTips={false} />,
+    )
+    expect(app.lastFrame()).toBe('')
   })
 
   it('renders markdown hierarchy and fenced code', () => {
