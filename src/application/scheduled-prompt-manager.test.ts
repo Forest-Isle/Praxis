@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  MAX_JOBS,
+  ScheduledJobLimitError,
   ScheduledPromptManager,
   assertCronExpression,
 } from './scheduled-prompt-manager.js'
@@ -397,5 +399,59 @@ describe('ScheduledPromptManager', () => {
       "Invalid cron expression 'bad cron'. Expected 5 fields: M H DoM Mon DoW.",
     )
     expect(() => assertCronExpression('17 9 * * 1-5')).not.toThrow()
+  })
+
+  it('enforces the durable job cap atomically across managers', async () => {
+    const now = () => new Date('2026-08-05T14:00:00Z').getTime()
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cron-manager-'))
+    roots.push(root)
+    const filePath = join(root, 'work', '.claude', 'scheduled_tasks.json')
+    const options = {
+      filePath,
+      lockFile: join(root, 'config', 'praxis', 'locks', 'cron.lock'),
+      now,
+      processStart: async () => 'Wed Aug  5 14:16:36 2026',
+    }
+    const first = new ScheduledPromptManager(options)
+    const second = new ScheduledPromptManager(options)
+    for (let index = 0; index < MAX_JOBS - 1; index += 1) {
+      await first.create({
+        cron: `${(index % 59) + 1} 9 * * 1-5`,
+        prompt: `preloaded job ${index}`,
+        recurring: true,
+        durable: true,
+        sessionId,
+      })
+    }
+    const results = await Promise.allSettled([
+      first.create({
+        cron: '18 9 * * 1-5',
+        prompt: 'race winner',
+        recurring: true,
+        durable: true,
+        sessionId,
+      }),
+      second.create({
+        cron: '19 9 * * 1-5',
+        prompt: 'race loser',
+        recurring: true,
+        durable: true,
+        sessionId,
+      }),
+    ])
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1)
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    )
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]?.reason).toBeInstanceOf(ScheduledJobLimitError)
+    expect(rejected[0]?.reason).toMatchObject({ maxJobs: MAX_JOBS })
+    expect(JSON.parse(await readFile(filePath, 'utf8')).tasks).toHaveLength(
+      MAX_JOBS,
+    )
+    first.close()
+    second.close()
   })
 })

@@ -5,6 +5,7 @@ import { promisify } from 'node:util'
 import { CronExpressionParser } from 'cron-parser'
 
 import {
+  ClaudeScheduledTaskLimitError,
   ClaudeScheduledTaskStore,
   type ClaudeScheduledTask,
 } from '../persistence/claude-scheduled-task-store.js'
@@ -190,10 +191,6 @@ export class ScheduledPromptManager {
     await this.initialize()
     assertCronExpression(input.cron)
     if (!input.prompt) throw new Error('prompt must be a non-empty string')
-    const activeJobs = await this.list()
-    if (activeJobs.length >= MAX_JOBS) {
-      throw new ScheduledJobLimitError(MAX_JOBS)
-    }
     const createdAt = this.now()
     const base = {
       cron: input.cron,
@@ -206,7 +203,14 @@ export class ScheduledPromptManager {
     }
     let task: ClaudeScheduledTask
     if (input.durable) {
-      task = await this.store.create(base)
+      try {
+        task = await this.store.create(base, { maxJobs: MAX_JOBS })
+      } catch (error) {
+        if (error instanceof ClaudeScheduledTaskLimitError) {
+          throw new ScheduledJobLimitError(MAX_JOBS)
+        }
+        throw error
+      }
     } else {
       const occupied = new Set((await this.list()).map(({ id }) => id))
       let id = randomBytes(4).toString('hex')
