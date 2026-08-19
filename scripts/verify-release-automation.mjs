@@ -116,6 +116,37 @@ assert.match(releaseSource, /-f base_ref=main/u)
 assert.match(releaseSource, /-f head_ref="\$HEAD_BRANCH"/u)
 assert.doesNotMatch(releaseSource, /contexts\/[^\s"']+/u)
 
+assert.match(
+  releaseSource,
+  /steps\.release\.outputs\.prs_created == 'true' \|\| steps\.release\.outputs\.release_created != 'true'/u,
+  'Release Please must resolve a release PR both when it created one and when an unchanged one is pending',
+)
+assert.match(
+  releaseSource,
+  /gh pr list[\s\S]*--state open[\s\S]*--base main[\s\S]*--label 'autorelease: pending'/u,
+  'Release Please must look up an unchanged release PR by its autorelease label, open state, and main base',
+)
+assert.match(
+  releaseSource,
+  /PR_COUNT=\$\(jq 'length'[\s\S]*if test "\$PR_COUNT" -gt 1; then/u,
+  'Release Please must fail when more than one pending release PR matches instead of choosing one',
+)
+assert.match(
+  releaseSource,
+  /steps\.resolve-release-pr\.outputs\.pr != ''/u,
+  'Protected checks must run only when a resolved release PR exists',
+)
+assert.match(
+  releaseSource,
+  /RELEASE_PR: \$\{\{ steps\.resolve-release-pr\.outputs\.pr \}\}/u,
+  'Protected checks must consume the resolved release PR output',
+)
+assert.match(
+  releaseSource,
+  /printf 'pr=%s\\n' "\$PR_JSON" >> "\$GITHUB_OUTPUT"[\s\S]*printf 'pr=%s\\n' "\$PR_JSON" >> "\$GITHUB_OUTPUT"/u,
+  'The release PR resolver must expose the resolved JSON as the pr step output in both branches',
+)
+
 console.log(
   'Release automation dispatches exact-head checks, bounds release handoff, and provisions Linux sandbox prerequisites for publish regression',
 )

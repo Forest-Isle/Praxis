@@ -27,11 +27,47 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      - name: Run protected checks and enable automatic merge
-        if: steps.release.outputs.prs_created == 'true'
+      - name: Resolve release pull request
+        id: resolve-release-pr
+        if: steps.release.outputs.prs_created == 'true' || steps.release.outputs.release_created != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_PR: ${{ steps.release.outputs.pr }}
+          PRS_CREATED: ${{ steps.release.outputs.prs_created }}
+        run: |
+          if test "$PRS_CREATED" = "true"; then
+            PR_NUMBER=$(jq -r '.number // empty' <<< "$RELEASE_PR")
+            HEAD_BRANCH=$(jq -r '.headBranchName // empty' <<< "$RELEASE_PR")
+            test -n "$PR_NUMBER"
+            test -n "$HEAD_BRANCH"
+            PR_JSON=$(jq -cn --arg number "$PR_NUMBER" --arg headBranchName "$HEAD_BRANCH" \
+              '{number: $number, headBranchName: $headBranchName}')
+            printf 'pr=%s\n' "$PR_JSON" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          MATCHING_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --state open --base main --label 'autorelease: pending' \
+            --json number,headRefName,headRefOid)
+          PR_COUNT=$(jq 'length' <<< "$MATCHING_PR")
+          if test "$PR_COUNT" -gt 1; then
+            printf 'Multiple open autorelease: pending release pull requests for main: %s\n' \
+              "$MATCHING_PR" >&2
+            exit 1
+          fi
+          if test "$PR_COUNT" -eq 1; then
+            PR_NUMBER=$(jq -r '.[0].number // empty' <<< "$MATCHING_PR")
+            HEAD_BRANCH=$(jq -r '.[0].headRefName // empty' <<< "$MATCHING_PR")
+            test -n "$PR_NUMBER"
+            test -n "$HEAD_BRANCH"
+            PR_JSON=$(jq -cn --arg number "$PR_NUMBER" --arg headBranchName "$HEAD_BRANCH" \
+              '{number: $number, headBranchName: $headBranchName}')
+            printf 'pr=%s\n' "$PR_JSON" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run protected checks and enable automatic merge
+        if: steps.resolve-release-pr.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PR: ${{ steps.resolve-release-pr.outputs.pr }}
         run: |
           PR_NUMBER=$(jq -r '.number // empty' <<< "$RELEASE_PR")
           HEAD_BRANCH=$(jq -r '.headBranchName // empty' <<< "$RELEASE_PR")
