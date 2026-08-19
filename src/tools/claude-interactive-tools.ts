@@ -32,11 +32,17 @@ export interface ClaudeQuestionResult {
   annotations?: Readonly<Record<string, { preview?: string; notes?: string }>>
 }
 
+export interface ClaudeAllowedPrompt {
+  tool: 'Bash'
+  prompt: string
+}
+
 export interface ClaudePlanApprovalRequest {
   action: 'exit'
   planPath: string
   plan?: string
   previousMode: ClaudePermissionMode
+  allowedPrompts?: readonly ClaudeAllowedPrompt[]
 }
 
 export type ClaudePlanApprovalResult =
@@ -66,6 +72,7 @@ interface SessionPlanState {
   mode: ClaudePermissionMode
   previousMode: ClaudePermissionMode
   planPath: string
+  allowedPrompts?: readonly ClaudeAllowedPrompt[]
 }
 
 const ASK_USER_QUESTION: ModelToolDefinition = {
@@ -156,7 +163,8 @@ const EXIT_PLAN_MODE: ModelToolDefinition = {
     type: 'object',
     properties: {
       allowedPrompts: {
-        description: 'Deprecated: no longer used.',
+        description:
+          'Bash commands to pre-approve once the plan is approved. Each entry must declare tool "Bash" and a non-empty prompt string.',
         type: 'array',
         items: {
           type: 'object',
@@ -276,6 +284,26 @@ function questionsFrom(input: Record<string, unknown>): ClaudeQuestion[] {
         }
       }),
       multiSelect: question.multiSelect,
+    }
+  })
+}
+
+function allowedPromptsFrom(
+  input: Record<string, unknown>,
+): readonly ClaudeAllowedPrompt[] {
+  if (input.allowedPrompts === undefined) return []
+  if (!Array.isArray(input.allowedPrompts)) {
+    throw new Error('allowedPrompts must be an array')
+  }
+  return input.allowedPrompts.map((rawEntry, index) => {
+    const entry = object(rawEntry, `allowedPrompts[${index}]`)
+    strictKeys(entry, ['tool', 'prompt'], `allowedPrompts[${index}]`)
+    if (entry.tool !== 'Bash') {
+      throw new Error(`allowedPrompts[${index}].tool must be "Bash"`)
+    }
+    return {
+      tool: 'Bash',
+      prompt: nonEmptyString(entry.prompt, `allowedPrompts[${index}].prompt`),
     }
   })
 }
@@ -475,11 +503,11 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
     return resolver
   }
 
-  private resolve(
+  private async resolve(
     sessionId: string,
     call: ModelToolCall,
     context?: PermissionResolutionContext,
-  ): PermissionDecision | Promise<PermissionDecision> {
+  ): Promise<PermissionDecision> {
     const state = this.state(sessionId)
     if (this.enabledNames.has(call.name)) return { behavior: 'allow' }
     if (
@@ -489,10 +517,23 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
     ) {
       return this.resolvePlanFile(state, call, context)
     }
-    return this.resolver(this.planPermissionMode(sessionId)).resolve(
-      call,
-      context,
-    )
+    const decision = await this.resolver(
+      this.planPermissionMode(sessionId),
+    ).resolve(call, context)
+    return this.applyRetainedPrompts(state, call, decision)
+  }
+
+  private applyRetainedPrompts(
+    state: SessionPlanState,
+    call: ModelToolCall,
+    decision: PermissionDecision,
+  ): PermissionDecision {
+    if (decision.behavior !== 'ask' || call.name !== 'Bash') return decision
+    if (typeof call.input.command !== 'string') return decision
+    const retained = state.allowedPrompts ?? []
+    return retained.some(({ prompt }) => prompt === call.input.command)
+      ? { behavior: 'allow' }
+      : decision
   }
 
   private async resolvePlanFile(
@@ -562,6 +603,7 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
         isError: true,
       }
     }
+    const allowedPrompts = allowedPromptsFrom(call.input)
     let plan: string | undefined
     try {
       plan = await readFile(state.planPath, 'utf8')
@@ -579,11 +621,13 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
         action: 'exit',
         planPath: state.planPath,
         previousMode: state.previousMode,
+        allowedPrompts,
         ...(plan === undefined ? {} : { plan }),
       },
       signal,
     )
     if (approval.behavior === 'deny') {
+      delete state.allowedPrompts
       return {
         content: approval.feedback
           ? `User declined the plan with feedback: ${approval.feedback}\n\nRemain in plan mode and revise it.`
@@ -592,6 +636,7 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
       }
     }
     state.mode = approval.permissionMode
+    state.allowedPrompts = allowedPrompts
     this.transitions.set(call.id, state.mode)
     return {
       content: plan?.trim()
