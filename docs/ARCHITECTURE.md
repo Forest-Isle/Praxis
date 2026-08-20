@@ -61,8 +61,12 @@ through a bounded window of stable Markdown lines plus a plain pending tail so
 an incomplete fence or heading cannot corrupt the frame and the growing
 document is not reparsed every frame; completed turns still render the full
 Markdown transcript exactly. Fullscreen mode
-also bounds the Ink root to live terminal rows and keeps the composer/status
-area outside the shrinkable transcript region. TUI-only display
+also bounds the Ink root to live terminal rows, projects the newest transcript
+tail through a deterministic suffix viewport
+(`src/cli/tui/transcript-viewport.ts`) so the newest user/assistant content
+and the active stream stay visible while active, and keeps the composer/status
+area outside the shrinkable transcript region. Classic mode retains full-history
+semantics. TUI-only display
 metadata never enters shared transcripts. React and Ink do not enter `core`,
 application services, providers, tools, or shared persistence. Headless text
 and NDJSON modes retain the same runtime ports without terminal prompts. See

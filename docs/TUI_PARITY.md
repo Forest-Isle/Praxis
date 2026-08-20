@@ -20,9 +20,11 @@ Together they establish these stable rules:
 - after a fresh session receives its first user or assistant entry, the full
   welcome card gives way to a compact version/model/effort/cwd identity above
   the transcript; restored conversations do not add fresh-session identity UI;
-- fullscreen rendering is bounded to the live terminal row count, clips the
-  shrinkable transcript region, and keeps the composer/status area
-  non-shrinkable and anchored to the bottom even when the transcript grows;
+- fullscreen rendering is bounded to the live terminal row count, projects the
+  newest transcript tail into the shrinkable transcript region while active
+  (classic mode continues to render the full history), and keeps the
+  composer/status area non-shrinkable and anchored to the bottom even when the
+  transcript grows;
 - conversation and composer remain separate regions;
 - composer uses full-width horizontal rules and a `❯` prompt;
 - entering `/` opens an unboxed, named, described, filterable command list
@@ -148,7 +150,11 @@ is passed from the CLI composition root and never written to shared JSONL.
   hidden compatibility alias).
 - `Transcript`: user/assistant/tool/shell/result/notice/warning and operational
   lifecycle presentation, with grouped results, compact long output, inline
-  edit replacements, and global detailed expansion.
+  edit replacements, and global detailed expansion. In fullscreen the history
+  is pre-projected through a pure suffix viewport
+  (`transcript-viewport.ts`) so the newest user/assistant tail and the active
+  stream stay visible; ordering and item identity are preserved and history is
+  never mutated.
 - `DiffDashboard`: current and file-mutating-turn snapshot tabs, file selection,
   and bounded patch scrolling. `git-diff` loads worktree state with path-safe
   argument arrays and never writes repository state.

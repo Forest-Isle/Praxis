@@ -1582,6 +1582,78 @@ describe('InteractiveApp', () => {
     expect(defaultBody.length).toBeGreaterThan(24)
   })
 
+  it('projects the newest transcript tail into a fixed fullscreen viewport', async () => {
+    const turnCount = 21
+    const history = Array.from({ length: turnCount }, (_, index) => [
+      { kind: 'user' as const, text: `prompt ${index + 1}` },
+      {
+        kind: 'assistant' as const,
+        text: `reply ${index + 1}\n- note ${index + 1} a\n- note ${index + 1} b\n- note ${index + 1} c`,
+      },
+    ]).flat()
+    const renderApp = (tui: 'default' | 'fullscreen') =>
+      render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          initialHistory={history}
+          runtimeSettings={{
+            ...projectRuntimeSettings({ settings: {}, state: {} }),
+            tui,
+          }}
+        />,
+      )
+    const frameRows = (frame: string | undefined): string[] => {
+      const lines = (frame ?? '').split('\n')
+      return lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
+    }
+
+    // A 105-line multi-turn history far exceeds the fixed 24-row viewport. The
+    // fullscreen tail projection must show the newest prompt/reply instead of
+    // clipping it below the fold, and the transcript must not render empty.
+    const app = renderApp('fullscreen')
+    await flush()
+    Object.assign(app.stdout, { rows: 24 })
+    app.stdout.emit('resize')
+    const body = await waitFor(() => {
+      const candidate = frameRows(app.lastFrame())
+      return candidate.length === 24 ? candidate : undefined
+    })
+    const frame = body.join('\n')
+    expect(frame).toContain(`❯ prompt ${turnCount}`)
+    expect(frame).toContain(`reply ${turnCount}`)
+    expect(frame).toContain(`note ${turnCount} c`)
+    expect(frame).not.toContain('prompt 1')
+
+    // Composer and status footer stay anchored to the bottom of the viewport.
+    const footerIndex = body.findIndex((line) => line.includes('⏵⏵'))
+    expect(footerIndex).toBeGreaterThanOrEqual(body.length - 2)
+    const promptIndex = body.findIndex((line) =>
+      line.includes('Try "review this project"'),
+    )
+    expect(promptIndex).toBeGreaterThanOrEqual(body.length - 6)
+
+    // Classic mode keeps the full multi-turn history.
+    const defaultApp = renderApp('default')
+    await flush()
+    Object.assign(defaultApp.stdout, { rows: 24 })
+    defaultApp.stdout.emit('resize')
+    const defaultBody = await waitFor(() => {
+      const candidate = frameRows(defaultApp.lastFrame())
+      return candidate.length > 0 && candidate.length > 24
+        ? candidate
+        : undefined
+    })
+    expect(defaultBody.length).toBeGreaterThan(24)
+    expect(defaultBody.join('\n')).toContain('prompt 1')
+    expect(defaultBody.join('\n')).toContain(`❯ prompt ${turnCount}`)
+    expect(defaultBody.join('\n')).toContain(`reply ${turnCount}`)
+  })
+
   it('coalesces streamed deltas into bounded frames and preserves the exact final text', async () => {
     const chunks = Array.from({ length: 200 }, (_, index) => `chunk-${index}`)
     let release: (() => void) | undefined
