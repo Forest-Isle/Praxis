@@ -258,32 +258,39 @@ Claude Code's local format is an implementation contract and can change.
 Praxis maintains versioned compatibility adapters rather than one permissive
 parser.
 
-Ordinary Praxis session runtime always emits the verified Claude Code `2.1.208`
-write profile and never derives it from the installed Claude version:
+Every semver-like Claude Code producer version is structurally validated and is
+read/write compatible when its entry shape is supported. Schema adapters are
+selected from each transcript entry's structure rather than from an installed
+or producer-version allowlist:
 
 ```text
-Verified write profile (Claude Code 2.1.208)
-  -> read/validate
+Structural validation (any semver-like producer version)
+  -> read/validate entry shape
   -> append native entry
   -> re-open validation
 ```
 
-Explicit schema adapters and fork creation remain separate and fail closed for
-an unverified write profile: an explicitly supplied version selects the adapter,
-and only the verified `2.1.208` profile is writable for generated append and
-sidechain writes. Native fork creation is a restricted lossless copy path rather
-than a generated write: it preserves each existing source record's producer
-version, so it can copy specific black-box-verified foreign shapes such as the
-observed Claude Code `2.1.233` records. Unsupported record shapes and unknown
-versions still fail closed before any fork write, and unknown versions keep
+Generated append and sidechain writes are validated against the active schema's
+supported entry shapes, never against a single fixed producer version. Each
+transcript record keeps its original producer version, and supported shapes may
+be mixed across versions in one session. Malformed or structurally unsupported
+shapes are explicitly rejected before any write; byte-identical support for
+arbitrary unknown shapes is not claimed. Unknown or unsupported versions keep
 read-only inspection and export paths for generated writes. This safety policy
-is never weakened for unverified versions.
+is never weakened for unverified shapes.
+
+Native fork creation is a restricted lossless copy path rather than a generated
+write: it preserves each existing source record's producer version, so it can
+copy specific black-box-verified foreign shapes such as the observed Claude
+Code `2.1.233` records. Unsupported record shapes and unknown versions still
+fail closed before any fork write.
 
 Support policy:
 
-- read-write compatibility with explicitly tested Claude Code `2.1.208`;
+- read-write compatibility for every semver-like producer version whose entry
+  shapes are structurally supported;
 - preserve unknown fields when round-tripping;
-- fail closed before writing an unsupported schema;
+- fail closed before writing an unsupported or malformed schema;
 - offer read-only recovery/export when write compatibility is unknown.
 
 `praxis sessions`, `praxis inspect`, and `praxis export` never require a model
@@ -372,9 +379,8 @@ and recurring jobs execute once more at seven-day expiry before deletion.
 
 Fork uses a separate versioned creation profile because it copies existing
 native records rather than appending newly generated records. It preserves each
-copied record's original producer version, so the fixed `2.1.208`
-generated-write restriction does not apply to this lossless copy path: observed
-Claude Code `2.1.233` main-chain shapes are copied alongside `2.1.208` sources.
+copied record's original producer version, so observed Claude Code `2.1.233`
+main-chain shapes are copied alongside `2.1.208` sources.
 For Claude Code `2.1.208` sources it losslessly copies supported main-chain
 `user`, `assistant`, `system`, `attachment`, and `agent-setting` entries plus
 `custom-title`, `agent-name`, `ai-title`, `mode`, `permission-mode`, and

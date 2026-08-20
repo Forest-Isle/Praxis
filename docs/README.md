@@ -61,6 +61,8 @@ authoritative CLI surface.
 - [Workflow Contract](STAGE23_WORKFLOW.md)
 - [Dynamic Wakeup Contract](STAGE24_DYNAMIC_WAKEUP.md)
 - [Native Worktrees](STAGE25_WORKTREES.md)
+- [Core Runtime Parity Plan](CORE_RUNTIME_PARITY_PLAN.md) — core-runtime parity
+  design decisions, implementation status, and validation evidence.
 
 These focused records explain implementation decisions. New users normally
 need only Getting Started, CLI Reference, and the compatibility contract.

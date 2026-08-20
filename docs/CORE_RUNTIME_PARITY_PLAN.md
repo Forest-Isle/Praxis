@@ -81,6 +81,49 @@ crash and never writes shared transcript entry types.
    prompt-too-long recovery, session-memory extraction, resume/fork, and every
    supported transcript producer version.
 
+## Implementation Status
+
+The Phase 1 modules and later sequential phases are implemented and merged on
+this branch:
+
+- **Capability resolver** — `ClaudeToolCapabilities` derives tool exposure from
+  role, interactive/simple mode, explicit CLI controls, and environment/build
+  gates, never from an installed Claude version; `CLAUDE_CODE_SIMPLE` changes
+  the CLI/runtime surface.
+- **Context accounting and recovery** — staged preflight, micro-compact,
+  auto-compact, and reactive-retry decisions with provider-reported usage
+  authoritative and heuristic estimates as the preflight fallback.
+- **Session Memory** — `summary.md` and progress metadata persist under
+  `<configRoot>/praxis/session-memory/<sessionId>/`; private session-memory
+  progress stays under `<configRoot>/praxis/` and the shared JSONL remains
+  Claude-compatible append-only data without Praxis-only entry types or fields.
+- **Transcript read/write** — schema adapters are selected from entry structure
+  rather than an installed/producer-version allowlist; every semver-like
+  producer version is read/write compatible when its entry shape is supported,
+  and malformed or unsupported shapes fail closed before writes.
+- **Loop integration and compact reinjection** — the three contracts feed
+  `SessionService`; post-compact reinjection restores memory, skills, hooks,
+  MCP, file history, and agent listing.
+- **AgentTool/background/sidechain parity** — filtering, notifications,
+  stop/retry semantics, and sidechain discovery follow the stabilized loop
+  contract for current and older Claude layouts.
+- **Verification** — focused Vitest tests and negative paths, the
+  task/workflow/cron/background capability matrices, prompt-too-long recovery,
+  session-memory extraction, resume/fork, and supported-transcript-producer
+  verification pass in this local environment. The full current-Claude
+  compatibility matrix remains blocked here because the externally routed
+  `haiku` model request maps to a local provider model that reports
+  `unrecognized_model`; this is an external model-routing failure, not a
+  schema/version assertion failure. Ordinary current-Claude compatibility and
+  probe gates accept a detected semver-like producer version; historical
+  cross-version tests retain their explicitly pinned reference binaries.
+
+Known caveat: current Claude Code's internal model routing (which upstream
+model serves a given request) is external to the local compatibility contract
+and is not observable from the shared filesystem or probe gates. Praxis routes
+provider requests through its configured `ModelProvider`, so model-level
+routing parity with the current Claude release is not claimed.
+
 ## Acceptance Gates
 
 - Focused Vitest tests for each module and its negative paths.
