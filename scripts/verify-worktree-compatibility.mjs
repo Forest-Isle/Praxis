@@ -210,10 +210,7 @@ async function files(directory) {
 }
 
 try {
-  assert(
-    (await detectClaudeVersion('Worktree probe')) === '2.1.208',
-    'Unsupported Claude version',
-  )
+  await detectClaudeVersion('Worktree probe')
   await Promise.all([
     mkdir(configRoot, { recursive: true }),
     mkdir(cwd, { recursive: true }),

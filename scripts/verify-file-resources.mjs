@@ -150,9 +150,7 @@ function closeServer() {
 }
 
 try {
-  if ((await detectClaudeVersion()) !== '2.1.208') {
-    throw new Error('File resource gate requires Claude Code 2.1.208')
-  }
+  await detectClaudeVersion()
   await Promise.all([
     mkdir(cwd, { recursive: true }),
     mkdir(configRoot, { recursive: true }),

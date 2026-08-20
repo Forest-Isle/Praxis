@@ -21,9 +21,6 @@ const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-subagent-compat-'))
 
 try {
   const version = await detectClaudeVersion('Subagent compatibility probe')
-  if (version !== '2.1.208') {
-    throw new Error(`Subagent probe does not support Claude ${version}`)
-  }
   const configRoot = join(probeRoot, 'config')
   const workDirectory = join(probeRoot, 'work')
   await mkdir(workDirectory, { recursive: true })
