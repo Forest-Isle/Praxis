@@ -165,6 +165,18 @@ describe('Claude-style TUI components', () => {
     expect(frame.split('\n').every((line) => line.length <= 40)).toBe(true)
   })
 
+  it('truncates every identity line to a width below 32', () => {
+    const narrowDisplay = {
+      version: '0.1.2',
+      cwd: '/a/very/long/path/that/would/overflow/the/narrow/terminal/width',
+      model: 'claude-opus-4-5-sonnet-20261010-superlong-model-name',
+      effort: 'max',
+    }
+    const app = render(<SessionIdentity display={narrowDisplay} width={16} />)
+    const frame = app.lastFrame() ?? ''
+    expect(frame.split('\n').every((line) => line.length <= 16)).toBe(true)
+  })
+
   it('renders markdown hierarchy and fenced code', () => {
     const app = render(
       <MarkdownText

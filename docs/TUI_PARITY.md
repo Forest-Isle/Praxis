@@ -17,6 +17,9 @@ Together they establish these stable rules:
 
 - full terminal-width (up to 100 columns) bordered welcome card with
   product/version, identity, cwd, and a concise help area;
+- after a fresh session receives its first user or assistant entry, the full
+  welcome card gives way to a compact version/model/effort/cwd identity above
+  the transcript; restored conversations do not add fresh-session identity UI;
 - fullscreen rendering is bounded to the live terminal row count, clips the
   transcript region, and keeps the composer/status area non-shrinkable;
 - conversation and composer remain separate regions;
@@ -70,6 +73,7 @@ are registered CLI commands in the authoritative source snapshot.
 | State         | Observable Claude Code shape             | Praxis evidence                                                                                              |
 | ------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Launch        | compact identity/help surface            | Praxis border-title + responsive `WelcomePanel` fixtures; startup tips follow the shared `Show tips` setting |
+| Conversation  | compact identity above transcript        | `SessionIdentity` fixtures plus fresh, empty-ID, operational-only, and resumed-session interaction tests     |
 | Idle          | ruled `❯` composer plus mode footer      | component fixture and PTY gate                                                                               |
 | Streaming     | animated-status hierarchy above composer | runtime-event interaction tests                                                                              |
 | Slash command | filterable command name and description  | expanded catalog, selection, and PTY fixtures                                                                |
@@ -134,6 +138,10 @@ is passed from the CLI composition root and never written to shared JSONL.
   commands, and the shared Claude Code capability line. Long release-note copy
   is kept out of the launch surface, and the panel follows the shared Show tips
   setting so the composer remains the primary first-run action.
+- `SessionIdentity`: compact version, model/effort, and cwd context shown above
+  a fresh session's transcript after its first user or assistant entry. It
+  remains width-bounded, while genuinely restored transcripts do not render a
+  new-session identity surface.
 - `SessionPicker`: selected-row hierarchy, local search, and bounded session
   identity behind the Claude-compatible `/resume` name (`/sessions` remains a
   hidden compatibility alias).

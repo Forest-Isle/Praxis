@@ -268,8 +268,8 @@ export function WelcomePanel({
 }
 
 // Compact identity header shown above the transcript once a fresh session has
-// conversation content or a session ID. Keeps the same product/model/cwd facts
-// as WelcomePanel in a small fixed footprint, truncating to the terminal width.
+// conversation content. Keeps the same product/model/cwd facts as WelcomePanel
+// in a small fixed footprint, truncating every line to the supplied width.
 export function SessionIdentity({
   display,
   width,
@@ -278,24 +278,23 @@ export function SessionIdentity({
   width: number
 }) {
   const palette = useTuiPalette()
-  const identityWidth = Math.max(32, width)
+  const identityWidth = Math.max(1, Math.floor(width))
   const model = display.model ?? 'provider default'
   const effort = display.effort ? ` · ${display.effort} effort` : ''
   const cwd = compactPath(display.cwd)
-  const clip = (line: string) =>
-    line.length <= identityWidth ? line : `${line.slice(0, identityWidth - 1)}…`
-  const modelLine = clip(`${model}${effort}`)
-  const cwdLine = clip(cwd)
   return (
     <Box flexDirection="column" width={identityWidth}>
-      <Text>
+      <Text wrap="truncate-end">
         <Text color={palette.brand} bold>
           {`Praxis Code v${display.version}`}
         </Text>
       </Text>
-      <Text wrap="truncate-end">{modelLine}</Text>
+      <Text wrap="truncate-end">
+        {model}
+        {effort}
+      </Text>
       <Text dimColor wrap="truncate-end">
-        {cwdLine}
+        {cwd}
       </Text>
     </Box>
   )

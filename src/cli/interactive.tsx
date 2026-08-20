@@ -1318,16 +1318,21 @@ export function InteractiveApp({
   const [history, setHistory] = useState<TranscriptItem[]>([...initialHistory])
   // Startup diagnostics are useful before the first prompt, but they are not
   // conversation history and must not suppress the new-session welcome panel.
-  const hasConversationHistory = history.some(
-    (item) =>
-      item.kind !== 'notice' &&
-      item.kind !== 'warning' &&
-      item.kind !== 'local-result',
-  )
-  // A session is fresh only when it was not opened through `resume` and it has
-  // no real conversation content yet. Resumed sessions render neither the full
-  // welcome panel nor the compact identity header.
-  const resumed = resume !== undefined
+  // Only real user/assistant transcript entries start a conversation; every
+  // other kind (thinking, context, tool, shell, notices, results, and so on)
+  // is operational bookkeeping that must not hide the fresh-session welcome.
+  const isRealConversation = (item: TranscriptItem) =>
+    item.kind === 'user' || item.kind === 'assistant'
+  // The original loaded transcript decides whether the session was resumed,
+  // separately from the live history that grows while the session runs.
+  const resumedWithTranscript = initialHistory.some(isRealConversation)
+  const hasConversationHistory = history.some(isRealConversation)
+  // A session is resumed only when it was opened through `resume` and the
+  // original transcript already contained real conversation content. Supplying
+  // a session ID alone with an empty transcript keeps the session fresh, so the
+  // full welcome panel renders and the compact identity stays hidden until real
+  // conversation content appears.
+  const resumed = resume !== undefined && resumedWithTranscript
   const freshSession = !resumed && !hasConversationHistory
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
@@ -7102,7 +7107,7 @@ export function InteractiveApp({
           />
         ) : (
           <>
-            {!axScreenReader && freshSession && !sessionId ? (
+            {!axScreenReader && freshSession ? (
               <WelcomePanel
                 display={runtimeDisplay}
                 width={width}
@@ -7112,9 +7117,7 @@ export function InteractiveApp({
             {sessionId ? (
               <Text dimColor>Session {sessionId.slice(0, 8)}</Text>
             ) : null}
-            {!axScreenReader &&
-            !resumed &&
-            (hasConversationHistory || sessionId) ? (
+            {!axScreenReader && !resumed && hasConversationHistory ? (
               <SessionIdentity display={runtimeDisplay} width={width} />
             ) : null}
             <Transcript
