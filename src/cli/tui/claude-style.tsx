@@ -1059,6 +1059,7 @@ export function Transcript({
   items,
   activeText,
   activeThinking = '',
+  activeStreamVisible = true,
   thinkingExpanded = false,
   detailedTranscript = false,
   screenReader,
@@ -1066,6 +1067,7 @@ export function Transcript({
   items: readonly TranscriptItem[]
   activeText: string
   activeThinking?: string
+  activeStreamVisible?: boolean
   thinkingExpanded?: boolean
   detailedTranscript?: boolean
   screenReader: boolean
@@ -1317,14 +1319,14 @@ export function Transcript({
           </Text>
         )
       })}
-      {activeThinking ? (
+      {activeStreamVisible && activeThinking ? (
         <ThinkingBlock
           text={activeThinking}
           active
           expanded={detailed}
           screenReader={screenReader}
         />
-      ) : activeText ? (
+      ) : activeStreamVisible && activeText ? (
         <Box marginTop={1}>
           {screenReader ? (
             <Text>Praxis: </Text>
