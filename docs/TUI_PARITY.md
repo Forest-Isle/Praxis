@@ -21,7 +21,8 @@ Together they establish these stable rules:
   welcome card gives way to a compact version/model/effort/cwd identity above
   the transcript; restored conversations do not add fresh-session identity UI;
 - fullscreen rendering is bounded to the live terminal row count, clips the
-  transcript region, and keeps the composer/status area non-shrinkable;
+  shrinkable transcript region, and keeps the composer/status area
+  non-shrinkable and anchored to the bottom even when the transcript grows;
 - conversation and composer remain separate regions;
 - composer uses full-width horizontal rules and a `❯` prompt;
 - entering `/` opens an unboxed, named, described, filterable command list
@@ -411,7 +412,16 @@ is passed from the CLI composition root and never written to shared JSONL.
   composer navigation, while unrelated non-printable bytes are never inserted.
 - Permission policy, MCP elicitation completion, and hook lifecycle events
   remain visible as compact operational feedback.
-- Streaming text is rendered once and replaced by the completed assistant turn.
+- High-frequency text/thinking deltas are coalesced into bounded presentation
+  frames at the renderer cadence instead of re-rendering once per provider
+  delta; lifecycle boundaries (thinking-stop, tool/result, permission/dialog,
+  completion/cancellation) flush pending deltas before publishing the boundary
+  transcript state, so deltas are never lost or reordered.
+- Active streaming text renders through a bounded window of stable Markdown
+  lines plus a plain pending tail, so an unterminated fence or heading can
+  never corrupt the frame and the whole growing document is not reparsed every
+  frame. Completed assistant turns still render the full Markdown document
+  exactly, and screen-reader output exposes the full stream.
 - Empty input shows a suggestion; typed input never gets replaced.
 - Per-turn cost comes from the actual model result; context capacity comes from
   the active provider capability rather than a TUI constant.

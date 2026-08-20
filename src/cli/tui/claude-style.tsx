@@ -1004,6 +1004,57 @@ export function MarkdownText({ text }: { text: string }) {
   return cachedMarkdownTextElement(text, palette)
 }
 
+// Bounded streaming-text presentation. While a turn is in progress the active
+// assistant text grows on every frame; re-parsing the entire Markdown document
+// each frame would reflow the whole growing body and could let an unterminated
+// fence or heading corrupt the terminal frame. Instead only a bounded window of
+// the most recent complete lines is rendered through MarkdownText, and the
+// trailing partial line is rendered as plain text so incomplete Markdown stays
+// inert. Completed assistant turns still render the full document through the
+// regular history Markdown path, so observable final text is unchanged.
+export const ACTIVE_STREAM_MAX_LINES = 40
+
+export function activeStreamWindow(text: string): {
+  stableText: string
+  pendingText: string
+  truncated: boolean
+} {
+  const lastBreak = text.lastIndexOf('\n')
+  if (lastBreak === -1) {
+    return { stableText: '', pendingText: text, truncated: false }
+  }
+  const pendingText = text.slice(lastBreak + 1)
+  let cursor = lastBreak
+  let lines = 0
+  // Walk backwards to the newline that starts the bounded window's first line.
+  while (lines < ACTIVE_STREAM_MAX_LINES) {
+    const previous = cursor > 0 ? text.lastIndexOf('\n', cursor - 1) : -1
+    if (previous === -1) {
+      cursor = 0
+      break
+    }
+    cursor = previous
+    lines += 1
+  }
+  const windowStart = cursor === 0 ? 0 : cursor + 1
+  return {
+    stableText: text.slice(windowStart, lastBreak + 1),
+    pendingText,
+    truncated: windowStart > 0,
+  }
+}
+
+function ActiveStreamText({ text }: { text: string }) {
+  const { stableText, pendingText, truncated } = activeStreamWindow(text)
+  return (
+    <Box flexDirection="column">
+      {truncated ? <Text dimColor>… earlier streaming content …</Text> : null}
+      {stableText ? <MarkdownText text={stableText} /> : null}
+      {pendingText ? <Text>{pendingText}</Text> : null}
+    </Box>
+  )
+}
+
 export function Transcript({
   items,
   activeText,
@@ -1280,7 +1331,11 @@ export function Transcript({
           ) : (
             <Text color={palette.accent}>✳ </Text>
           )}
-          <MarkdownText text={activeText} />
+          {screenReader ? (
+            <MarkdownText text={activeText} />
+          ) : (
+            <ActiveStreamText text={activeText} />
+          )}
         </Box>
       ) : null}
     </Box>
