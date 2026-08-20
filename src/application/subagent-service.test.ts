@@ -2214,6 +2214,127 @@ describe('foreground Claude Agent execution', () => {
     )
   })
 
+  it('exposes ExitPlanMode only to effective plan-mode subagents', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-plan-mode-tools-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let exitPlanExecutions = 0
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'ExitPlanMode',
+          description: 'Exit plan mode.',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async () => {
+        exitPlanExecutions += 1
+        return { content: 'EXIT_PLAN_RESULT', isError: false }
+      },
+    }
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'planner.md'),
+          scope: 'user',
+          content:
+            '---\nname: planner\ndescription: Plan only.\npermissionMode: plan\n---\nPLANNER_POLICY',
+        },
+      ],
+    })
+    const childToolSets: string[][] = []
+    const provider = (): ModelProvider => {
+      let childTurn = 0
+      return {
+        model: 'plan-mode-fixture-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          const exposed =
+            request.tools?.some(({ name }) => name === 'ExitPlanMode') ?? false
+          if (childTurn++ === 0) {
+            childToolSets.push(request.tools?.map(({ name }) => name) ?? [])
+            if (exposed) {
+              yield {
+                type: 'tool-call',
+                call: {
+                  id: `call_exit_${childToolSets.length}`,
+                  name: 'ExitPlanMode',
+                  input: {},
+                },
+              }
+              return
+            }
+          }
+          yield {
+            type: 'text-delta',
+            delta: `CHILD_${childToolSets.length}_DONE`,
+          }
+        },
+      }
+    }
+    const createExecutor = (parentMode: AgentPermissionMode = 'default') =>
+      new ClaudeSubagentExecutor({
+        configRoot,
+        cwd,
+        claudeVersion: '2.1.208',
+        provider: provider(),
+        baseTools: tools,
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+        permissionResolverForMode: () => ({
+          resolve: () => ({ behavior: 'allow' }),
+        }),
+        parentPermissionMode: () => parentMode,
+        extensions,
+      })
+    const runChild = async (
+      executor: ClaudeSubagentExecutor,
+      subagentType: string,
+      mode?: string,
+    ) => {
+      const registry = executor.registry(
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        0,
+        () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      )
+      const prepared = await registry.prepare(
+        {
+          id: `call_${subagentType}_${childToolSets.length}`,
+          name: 'Agent',
+          input: {
+            description: subagentType,
+            prompt: 'Plan the work',
+            subagent_type: subagentType,
+            ...(mode ? { mode } : {}),
+            run_in_background: false,
+          },
+        },
+        { cwd },
+      )
+      return registry.execute(prepared, { cwd })
+    }
+
+    const planResult = await runChild(createExecutor(), 'planner')
+    expect(planResult.content).toContain('CHILD_1_DONE')
+    const overrideResult = await runChild(
+      createExecutor(),
+      'general-purpose',
+      'plan',
+    )
+    expect(overrideResult.content).toContain('CHILD_2_DONE')
+    await runChild(createExecutor(), 'general-purpose')
+    await runChild(createExecutor('bypassPermissions'), 'planner')
+
+    expect(childToolSets[0]).toContain('ExitPlanMode')
+    expect(childToolSets[1]).toContain('ExitPlanMode')
+    expect(childToolSets[2]).not.toContain('ExitPlanMode')
+    expect(childToolSets[3]).not.toContain('ExitPlanMode')
+    expect(exitPlanExecutions).toBe(2)
+  })
+
   it('runs an isolated Agent in a clean worktree and removes it', async () => {
     const { configRoot, cwd } = await gitRepository(
       'praxis-agent-worktree-clean-',
