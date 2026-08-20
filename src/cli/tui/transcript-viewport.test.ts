@@ -4,6 +4,7 @@ import type { TranscriptItem } from './claude-style.js'
 import {
   estimateTranscriptLines,
   projectTranscriptTail,
+  projectTranscriptWindow,
   TRANSCRIPT_TRUNCATION_MARKER,
 } from './transcript-viewport.js'
 
@@ -124,6 +125,16 @@ describe('projectTranscriptTail', () => {
     expect(projected).toEqual(items.slice(3))
     expect(projected[0]).toBe(items[3])
     expect(projected[2]).toBe(items[5])
+  })
+
+  it('projects an older window without changing the newest tail', () => {
+    const items = Array.from({ length: 12 }, (_, index) =>
+      user(`prompt ${index}`),
+    )
+    const projected = projectTranscriptWindow(items, 3, 80, 3)
+    expect(
+      projected.map((item) => (item.kind === 'user' ? item.text : '')),
+    ).toEqual(['prompt 6', 'prompt 7', 'prompt 8'])
   })
 })
 

@@ -135,6 +135,16 @@ export function estimateTranscriptLines(
   }
 }
 
+export function transcriptLineCount(
+  items: readonly TranscriptItem[],
+  width: number,
+): number {
+  return items.reduce(
+    (total, item) => total + estimateTranscriptLines(item, width),
+    0,
+  )
+}
+
 /**
  * Pure, deterministic suffix projector for the fullscreen transcript region.
  *
@@ -172,4 +182,31 @@ export function projectTranscriptTail(
     start = index
   }
   return items.slice(start)
+}
+
+/** Projects a fixed-size transcript window, measured upward from the newest row. */
+export function projectTranscriptWindow(
+  items: readonly TranscriptItem[],
+  budget: number,
+  width: number,
+  scrollOffset: number,
+): readonly TranscriptItem[] {
+  if (scrollOffset <= 0) return projectTranscriptTail(items, budget, width)
+  const endRows = Math.max(0, transcriptLineCount(items, width) - scrollOffset)
+  const startRows = Math.max(0, endRows - budget)
+  let rows = 0
+  let start = 0
+  let end = 0
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]
+    if (!item) break
+    const nextRows = rows + estimateTranscriptLines(item, width)
+    if (nextRows <= startRows) {
+      start = index + 1
+    }
+    if (rows < endRows) end = index + 1
+    rows = nextRows
+    if (rows >= endRows) break
+  }
+  return items.slice(start, end)
 }
