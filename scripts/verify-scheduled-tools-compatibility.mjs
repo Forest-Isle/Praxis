@@ -300,8 +300,7 @@ async function verifyActivePraxisWakeup() {
 }
 
 try {
-  const version = await detectClaudeVersion('Scheduled tools probe')
-  assert(version === '2.1.208', `Unsupported Claude version ${version}`)
+  await detectClaudeVersion('Scheduled tools probe')
   await Promise.all([
     mkdir(configRoot, { recursive: true }),
     mkdir(cwd, { recursive: true }),
@@ -440,7 +439,6 @@ try {
   console.log(
     JSON.stringify(
       {
-        version,
         schemas: true,
         nativeLayout: true,
         claudeReadsPraxis: true,

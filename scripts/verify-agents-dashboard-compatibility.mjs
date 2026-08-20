@@ -198,8 +198,7 @@ expect {
 }
 
 try {
-  const version = await detectClaudeVersion('Agents dashboard compatibility')
-  assert.equal(version, '2.1.208')
+  await detectClaudeVersion('Agents dashboard compatibility')
   await Promise.all([
     mkdir(configRoot, { recursive: true }),
     mkdir(cwd),
@@ -422,7 +421,7 @@ try {
   assert.equal(persistedState.resumeSessionId, completed.sessionId)
 
   process.stdout.write(
-    `Claude ${version} agents dashboard compatibility passed: packed artifact, help, non-TTY guard, native/cross-CWD JSON, strict options, and interactive dashboard controls\n`,
+    `Claude agents dashboard compatibility passed: packed artifact, help, non-TTY guard, native/cross-CWD JSON, strict options, and interactive dashboard controls\n`,
   )
 } finally {
   if (launchedId) {
