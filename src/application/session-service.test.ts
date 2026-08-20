@@ -1164,6 +1164,109 @@ describe('ClaudeSessionService', () => {
     expect(snapshot.apiDurationWithoutRetriesMs).toBe(55 + 20)
   })
 
+  it('reactively retries a prompt-too-long failure once after auto-compacting', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-reactive-retry-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let completions = 0
+    const provider: ModelProvider = {
+      model: 'reactive-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 200_000,
+      },
+      async *complete() {
+        completions += 1
+        if (completions === 1) {
+          throw new ModelProviderError('prompt is too long for the context', {
+            retryable: true,
+          })
+        }
+        yield { type: 'text-delta', delta: 'recovered answer' }
+        yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
+      },
+    }
+    const events: RuntimeEvent[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      eventSink: (event) => events.push(event),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'REACTIVE_RETRY_SUMMARY',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 1,
+            model: 'reactive-model',
+          }
+        },
+      },
+    })
+
+    const result = await service.run('start')
+
+    expect(result.text).toBe('recovered answer')
+    // One reactive compaction retry, then a clean second attempt.
+    expect(completions).toBe(2)
+    expect(events).toContainEqual({ type: 'state', state: 'compacting' })
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'compact-boundary' && event.trigger === 'auto',
+      ),
+    ).toBe(true)
+  })
+
+  it('fails deterministically after the single reactive prompt-too-long retry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-reactive-retry-blocked-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let completions = 0
+    const provider: ModelProvider = {
+      model: 'reactive-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 200_000,
+      },
+      async *complete() {
+        completions += 1
+        throw new ModelProviderError('prompt is too long for the context', {
+          retryable: true,
+        })
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      compactor: {
+        async compact() {
+          return {
+            summary: 'REACTIVE_RETRY_SUMMARY',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 1,
+            model: 'reactive-model',
+          }
+        },
+      },
+    })
+
+    await expect(service.run('start')).rejects.toThrow(
+      'prompt is too long for the context',
+    )
+    // The retry is attempted exactly once before the original error surfaces.
+    expect(completions).toBe(2)
+  })
+
   it('records manual compact usage without cost and diagnoses an unknown model price', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-unknown-'))
     roots.push(root)

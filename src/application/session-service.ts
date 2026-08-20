@@ -73,6 +73,7 @@ import {
 } from '../compatibility/claude/translation.js'
 import {
   AgentRunCancelledError,
+  AgentRunResult,
   AgentRuntime,
   type ModelContentBlock,
   type ModelDocument,
@@ -98,7 +99,9 @@ import type { ModelPricingRegistry } from '../core/usage.js'
 import type { CompactionResult, Compactor } from '../core/compaction.js'
 import {
   ContextBudget,
+  ContextRecoveryPlanner,
   estimateModelRequestTokens,
+  isPromptTooLongError,
 } from '../core/context-budget.js'
 import {
   injectFirstUserMessageContext,
@@ -1281,6 +1284,7 @@ export class ClaudeSessionService {
           this.recordAuxiliaryMetrics(activeSessionId, recorded),
       },
     )
+    budget?.observeUsage(metrics.usage)
     if (metrics.toolCalls.length > 0) {
       throw new Error('Side questions cannot call tools; press f to fork')
     }
@@ -3363,6 +3367,7 @@ export class ClaudeSessionService {
           ? (structuredTools?.definitions() ?? [])
           : []
         const budget = this.contextBudget(provider)
+        const recoveryPlanner = new ContextRecoveryPlanner()
         const pendingUserMessages = expandedMessages.map((message, index) => ({
           role: 'user' as const,
           content: message.text,
@@ -3433,6 +3438,7 @@ export class ClaudeSessionService {
             content: string
           }[] = [],
           preservedUserMessages: readonly string[] = [],
+          options: { promptTooLong?: boolean } = {},
         ) => {
           if (!budget || this.options.autoCompact === false) return
           const historyMessages = projectClaudeModelMessages(snapshot.entries)
@@ -3442,6 +3448,7 @@ export class ClaudeSessionService {
               ...injectTurnContext([...historyMessages, ...pendingMessages]),
             ],
             definitions,
+            options,
           )
           if (!predicted.shouldCompact) return
           const irreducibleMessages = [
@@ -4005,9 +4012,54 @@ export class ClaudeSessionService {
           onPermissionUpdates: (updates: readonly PermissionUpdate[]) =>
             this.applyPermissionUpdates(sessionId, updates),
         }
-        const result = signal
-          ? await runtime.run({ ...runtimeRequest, signal })
-          : await runtime.run(runtimeRequest)
+        const attemptMainTurn = () =>
+          signal
+            ? runtime.run({ ...runtimeRequest, signal })
+            : runtime.run(runtimeRequest)
+        let result: AgentRunResult
+        try {
+          result = await attemptMainTurn()
+        } catch (error) {
+          if (!budget || !isPromptTooLongError(error)) throw error
+          if (recoveryPlanner.consumeReactiveRetry() !== 'reactive-retry')
+            throw error
+          try {
+            await compactIfNeeded([], currentTurnUserMessages ?? [], {
+              promptTooLong: true,
+            })
+          } catch {
+            // Compaction could not free the provider-bounded context; surface
+            // the original prompt-too-long error rather than the compaction
+            // failure.
+            throw error
+          }
+          // The single reactive retry must use the compacted transcript, not
+          // the stale request copy captured before the compact boundary.
+          runtimeRequest.messages = [
+            ...contextMessages,
+            ...injectTurnContext(projectClaudeModelMessages(snapshot.entries)),
+          ]
+          try {
+            result = await attemptMainTurn()
+          } catch {
+            // Exactly one reactive retry is consumed; fail deterministically
+            // and surface the original prompt-too-long error.
+            recoveryPlanner.recordFailure()
+            throw error
+          }
+        }
+        recoveryPlanner.recordSuccess()
+        const mainModel =
+          provider.model !== undefined && provider.model.trim() !== ''
+            ? provider.model
+            : undefined
+        const observedUsage =
+          (mainModel !== undefined
+            ? result.modelUsage?.[mainModel]
+            : undefined) ??
+          Object.values(result.modelUsage ?? {})[0] ??
+          result.usage
+        budget?.observeUsage(observedUsage)
 
         if (structuredCapture && structuredCapture.calls !== 1) {
           throw new Error(
@@ -5034,6 +5086,7 @@ export class ClaudeSessionService {
     if (contextWindowTokens === undefined) return null
     return new ContextBudget({
       contextWindowTokens,
+      windowSource: 'capability',
       ...(this.options.contextReserveTokens === undefined
         ? {}
         : { reserveTokens: this.options.contextReserveTokens }),

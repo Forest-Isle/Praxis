@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest'
 import {
   ContextBudget,
   ContextOverflowError,
+  ContextRecoveryPlanner,
   estimateModelRequestTokens,
+  isPromptTooLongError,
 } from './context-budget.js'
+import { ModelProviderError } from './runtime.js'
 
 describe('ContextBudget', () => {
   it('counts signed and redacted thinking retained for provider resume', () => {
@@ -91,5 +94,177 @@ describe('ContextBudget', () => {
     expect(() => budget.assertFits(report)).toThrow(
       /estimated=.*window=100.*reserve=20.*available=80/,
     )
+  })
+
+  it('reports the provider usage window as authoritative over the estimate', () => {
+    const budget = new ContextBudget({
+      contextWindowTokens: 100,
+      reserveTokens: 20,
+    })
+    const report = budget.evaluate(
+      [{ role: 'user', content: 'x'.repeat(400) }],
+      [],
+      {
+        lastUsage: {
+          inputTokens: 40,
+          outputTokens: 10,
+          contextWindow: 300,
+        },
+      },
+    )
+
+    expect(report.contextWindowTokens).toBe(300)
+    expect(report.availableTokens).toBe(280)
+    expect(report.source).toBe('provider')
+    expect(report.shouldCompact).toBe(false)
+  })
+
+  it('ignores malformed provider usage and never shrinks the configured window', () => {
+    const budget = new ContextBudget({
+      contextWindowTokens: 100,
+      reserveTokens: 20,
+    })
+    const report = budget.evaluate(
+      [{ role: 'user', content: 'x'.repeat(400) }],
+      [],
+      {
+        lastUsage: { inputTokens: 0, outputTokens: 0, contextWindow: -5 },
+      },
+    )
+
+    expect(report.contextWindowTokens).toBe(100)
+    expect(report.availableTokens).toBe(80)
+    expect(report.shouldCompact).toBe(true)
+  })
+
+  it('keeps the no-usage fallback unchanged and tags capability-derived windows', () => {
+    const budget = new ContextBudget({
+      contextWindowTokens: 100,
+      reserveTokens: 20,
+      windowSource: 'capability',
+    })
+    const report = budget.evaluate([{ role: 'user', content: 'x'.repeat(400) }])
+
+    expect(report).toMatchObject({
+      contextWindowTokens: 100,
+      reserveTokens: 20,
+      availableTokens: 80,
+      shouldCompact: true,
+    })
+    expect(report.source).toBe('capability')
+  })
+
+  it('observes provider usage for subsequent decisions', () => {
+    const budget = new ContextBudget({ contextWindowTokens: 100 })
+    budget.observeUsage({ inputTokens: 5, outputTokens: 2, contextWindow: 400 })
+
+    expect(budget.effectiveContextWindow()).toBe(400)
+    expect(
+      budget.effectiveContextWindow({
+        inputTokens: 1,
+        outputTokens: 1,
+        contextWindow: 250,
+      }),
+    ).toBe(250)
+    // A malformed explicit window is ignored and never shrinks the configured
+    // window below the safe configured fallback.
+    expect(
+      budget.effectiveContextWindow({
+        inputTokens: 1,
+        outputTokens: 1,
+        contextWindow: 1.5,
+      }),
+    ).toBe(100)
+    const report = budget.evaluate([{ role: 'user', content: 'hello' }])
+    expect(report.contextWindowTokens).toBe(400)
+    expect(report.source).toBe('provider')
+  })
+
+  it('forces compaction on a prompt-too-long provider signal and reserves output', () => {
+    const budget = new ContextBudget({ contextWindowTokens: 100 })
+    const forced = budget.evaluate([{ role: 'user', content: 'hello' }], [], {
+      promptTooLong: true,
+    })
+    expect(forced.shouldCompact).toBe(true)
+    expect(forced.source).toBe('estimate')
+
+    const overflowing = budget.evaluate(
+      [{ role: 'user', content: 'hello' }],
+      [],
+      { outputTokens: 120 },
+    )
+    expect(overflowing.shouldCompact).toBe(true)
+
+    const malformedOutput = budget.evaluate(
+      [{ role: 'user', content: 'hello' }],
+      [],
+      { outputTokens: -1 },
+    )
+    expect(malformedOutput.shouldCompact).toBe(false)
+  })
+})
+
+describe('ContextRecoveryPlanner', () => {
+  it('advances through bounded recovery stages and stays blocked', () => {
+    const planner = new ContextRecoveryPlanner()
+    expect(planner.stage).toBe('preflight')
+    expect(planner.advance()).toBe('microcompact')
+    expect(planner.advance()).toBe('auto-compact')
+    expect(planner.advance()).toBe('reactive-retry')
+    expect(planner.advance()).toBe('blocked')
+    expect(planner.advance()).toBe('blocked')
+  })
+
+  it('allows a single reactive retry before reporting blocked', () => {
+    const planner = new ContextRecoveryPlanner()
+    expect(planner.reactiveRetriesRemaining).toBe(1)
+    expect(planner.consumeReactiveRetry()).toBe('reactive-retry')
+    expect(planner.reactiveRetriesRemaining).toBe(0)
+    expect(planner.consumeReactiveRetry()).toBe('blocked')
+    expect(planner.consumeReactiveRetry()).toBe('blocked')
+  })
+
+  it('trips a consecutive-failure circuit breaker of three', () => {
+    const planner = new ContextRecoveryPlanner()
+    planner.recordFailure()
+    expect(planner.stage).toBe('preflight')
+    planner.recordFailure()
+    expect(planner.stage).toBe('preflight')
+    planner.recordFailure()
+    expect(planner.stage).toBe('blocked')
+    planner.recordSuccess()
+    expect(planner.stage).toBe('preflight')
+    expect(planner.reactiveRetriesRemaining).toBe(1)
+  })
+
+  it('validates planner bounds', () => {
+    expect(
+      () => new ContextRecoveryPlanner({ maxReactiveRetries: -1 }),
+    ).toThrow('maxReactiveRetries must be a nonnegative integer')
+    expect(
+      () => new ContextRecoveryPlanner({ consecutiveFailureThreshold: 0 }),
+    ).toThrow('consecutiveFailureThreshold must be a positive integer')
+  })
+})
+
+describe('isPromptTooLongError', () => {
+  it('recognizes provider context-overflow messages', () => {
+    const tooLong = new ModelProviderError(
+      'The prompt is too long for the model context window',
+      { retryable: false },
+    )
+    expect(isPromptTooLongError(tooLong)).toBe(true)
+
+    const contextLength = new ModelProviderError(
+      "This model's maximum context length is 200000 tokens",
+      { retryable: false },
+    )
+    expect(isPromptTooLongError(contextLength)).toBe(true)
+
+    const unrelated = new ModelProviderError('Rate limit exceeded', {
+      retryable: true,
+    })
+    expect(isPromptTooLongError(unrelated)).toBe(false)
+    expect(isPromptTooLongError(new Error('prompt is too long'))).toBe(false)
   })
 })
