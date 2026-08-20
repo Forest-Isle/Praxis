@@ -111,9 +111,11 @@ claude --version
 praxis doctor
 ```
 
-Claude Code 2.1.208 is the validated read-write profile. Unknown versions remain
-available for safe inspection and export but fail closed for transcript writes.
-See [COMPATIBILITY.md](COMPATIBILITY.md) for the exact contract.
+Every semver-like Claude Code producer version is structurally validated and
+read/write compatible when its entry shapes are supported. Malformed or
+unsupported shapes remain available for safe inspection and export but fail
+closed for transcript writes. See [COMPATIBILITY.md](COMPATIBILITY.md) for the
+exact contract.
 
 ## Safe and isolated runs
 

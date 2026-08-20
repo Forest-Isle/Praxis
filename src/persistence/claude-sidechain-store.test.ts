@@ -115,18 +115,29 @@ describe('ClaudeSidechainStore', () => {
     ).rejects.toThrow('Sidechain entry parentUuid does not match tail')
   })
 
-  it('rejects roots for unsupported Claude versions', async () => {
-    const { paths, root, metadata, store } = await createStore()
+  it('persists compatible non-baseline versions through create and append', async () => {
+    const { root, metadata, store } = await createStore()
+    const versioned = { ...root, version: '2.1.209' }
 
-    await expect(
-      store.create({ ...root, version: '2.1.209' }, metadata),
-    ).rejects.toThrow('Claude sidechain append must target Claude Code 2.1.208')
-    await expect(readFile(paths.metadataFile, 'utf8')).rejects.toMatchObject({
-      code: 'ENOENT',
+    await expect(store.create(versioned, metadata)).resolves.toBeUndefined()
+    expect(await store.metadata()).toEqual(metadata)
+
+    await store.withLease(async (lease) => {
+      const snapshot = await lease.load()
+      const result = await lease.append(snapshot.tail, {
+        ...versioned,
+        parentUuid: root.uuid,
+        uuid: '33333333-3333-4333-8333-333333333333',
+        message: { role: 'user', content: 'Follow up in 2.1.209.' },
+      })
+      expect(result.status).toBe('appended')
     })
-    await expect(readFile(paths.transcriptFile, 'utf8')).rejects.toMatchObject({
-      code: 'ENOENT',
-    })
+
+    const persisted = await store.loadReadOnly()
+    expect(persisted.entries.map((entry) => entry.version)).toEqual([
+      '2.1.209',
+      '2.1.209',
+    ])
   })
 
   it('preserves existing metadata when creation collides', async () => {

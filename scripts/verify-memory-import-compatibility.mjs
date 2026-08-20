@@ -117,8 +117,7 @@ await new Promise((resolve, reject) => {
 })
 
 try {
-  const version = await detectClaudeVersion('Memory import probe')
-  assert(version === contract.version, `Unexpected contract version ${version}`)
+  await detectClaudeVersion('Memory import probe')
   await Promise.all([
     writeFixture(
       join(configRoot, 'CLAUDE.md'),

@@ -79,6 +79,54 @@ describe('BackgroundAgentManager', () => {
     })
   })
 
+  it('reports timeout retrieval status for zero and expired block waits', async () => {
+    let finish: ((result: BackgroundAgentRunResult) => void) | undefined
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve
+          }),
+      ),
+    )
+
+    // Non-blocking retrieval of a live task stays not_ready.
+    await expect(
+      manager.output('a0123456789abcdef', { block: false, timeout: 0 }),
+    ).resolves.toContain('<retrieval_status>not_ready</retrieval_status>')
+
+    // block: true with timeout 0 returns an immediate timeout without waiting.
+    await expect(
+      manager.output('a0123456789abcdef', { block: true, timeout: 0 }),
+    ).resolves.toContain('<retrieval_status>timeout</retrieval_status>')
+    expect(manager.snapshots()[0]?.status).toBe('running')
+
+    // An expired positive block timeout returns timeout and leaves the task live.
+    await expect(
+      manager.output('a0123456789abcdef', { block: true, timeout: 10 }),
+    ).resolves.toContain('<retrieval_status>timeout</retrieval_status>')
+    expect(manager.snapshots()[0]?.status).toBe('running')
+
+    // Resolving before a positive timeout returns success.
+    const blocking = manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    finish?.(completed('RESULT'))
+    await expect(blocking).resolves.toContain(
+      '<retrieval_status>success</retrieval_status>',
+    )
+
+    // Timed-out retrievals never consumed the completion notification.
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).resolves.toEqual({
+      messages: [expect.stringContaining('<result>RESULT</result>')],
+      usage: { inputTokens: 2, outputTokens: 1 },
+    })
+  })
+
   it('returns API durations once and preserves an explicit zero retry-free duration', async () => {
     const manager = new BackgroundAgentManager()
     manager.launch(

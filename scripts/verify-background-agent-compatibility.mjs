@@ -206,8 +206,7 @@ function closeProvider() {
 }
 
 try {
-  const version = await detectClaudeVersion('Background agent probe')
-  assert(version === '2.1.208', `Unsupported Claude version ${version}`)
+  await detectClaudeVersion('Background agent probe')
   await Promise.all([
     mkdir(configRoot, { recursive: true }),
     mkdir(cwd, { recursive: true }),
@@ -361,7 +360,7 @@ try {
   )
 
   console.log(
-    `Claude ${version} background agent compatibility passed: schemas, async launch, output polling, same-ID messaging, completion notification, sidechain persistence, and Claude resume`,
+    `Claude background agent compatibility passed: schemas, async launch, output polling, same-ID messaging, completion notification, sidechain persistence, and Claude resume`,
   )
 } finally {
   await closeProvider().catch(() => undefined)

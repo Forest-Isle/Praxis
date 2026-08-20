@@ -52,14 +52,13 @@ JSONL.
 
 ## Runtime matrix
 
-| Surface                             | Matrix                                   | Expected behavior                             |
-| ----------------------------------- | ---------------------------------------- | --------------------------------------------- |
-| Node.js                             | 24 and 25                                | clean install and full installed CLI loop     |
-| OS                                  | current macOS and Ubuntu GitHub runners  | package and performance gates                 |
-| Provider API                        | OpenAI-compatible and Anthropic Messages | identical installed tool/resume/fork scenario |
-| Claude Code 2.1.208                 | verified native profile                  | read-write plus all compatibility probes      |
-| Claude Code 2.1.207, 2.1.209, 3.0.0 | unverified profiles                      | read-only parse; append and fork fail closed  |
-| Any other Claude version            | unverified profile                       | read-only until promoted below                |
+| Surface                          | Matrix                                   | Expected behavior                                                                                  |
+| -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Node.js                          | 24 and 25                                | clean install and full installed CLI loop                                                          |
+| OS                               | current macOS and Ubuntu GitHub runners  | package and performance gates                                                                      |
+| Provider API                     | OpenAI-compatible and Anthropic Messages | identical installed tool/resume/fork scenario                                                      |
+| Claude Code semver-like versions | structurally validated producer profiles | read-write for supported entry shapes; append/fork fail closed for malformed or unsupported shapes |
+| Non-semver or malformed version  | unverified profile                       | read-only parse/export; append and fork fail closed                                                |
 
 Stage 53 clean-room evidence: `test:package` and `test:performance` passed in
 all four combinations macOS/Node 24, macOS/Node 25, Linux ARM64/Node 24, and

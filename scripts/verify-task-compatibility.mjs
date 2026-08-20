@@ -281,8 +281,7 @@ async function runPraxis(args, port) {
 }
 
 try {
-  const version = await detectClaudeVersion('Durable task probe')
-  assert(version === '2.1.208', `Unsupported Claude version ${version}`)
+  await detectClaudeVersion('Durable task probe')
   await Promise.all([
     mkdir(configRoot, { recursive: true }),
     mkdir(cwd, { recursive: true }),
@@ -469,7 +468,7 @@ try {
   )
 
   console.log(
-    `Claude ${version} durable task compatibility passed: schemas, shared graph, background Bash, native results, notifications, and bidirectional resume`,
+    `Claude durable task compatibility passed: schemas, shared graph, background Bash, native results, notifications, and bidirectional resume`,
   )
 } finally {
   await closeProvider().catch(() => undefined)

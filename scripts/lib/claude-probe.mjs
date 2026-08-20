@@ -13,9 +13,6 @@ export async function detectClaudeVersion(
 ) {
   const { stdout } = await execFileAsync(executable, ['--version'])
   const version = parseClaudeVersionOutput(stdout)
-  if (version !== '2.1.208') {
-    throw new Error(`${probeName} does not support Claude ${version}`)
-  }
   return version
 }
 

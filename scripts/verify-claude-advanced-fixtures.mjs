@@ -98,8 +98,10 @@ const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-claude-advanced-'))
 try {
   const version = await detectClaudeVersion('Advanced fixture probe')
   const schema = selectClaudeSchemaAdapter(version)
-  if (version !== '2.1.208' || schema.writeMode !== 'read-write') {
-    throw new Error(`Advanced fixture probe does not support Claude ${version}`)
+  if (schema.writeMode !== 'read-write') {
+    throw new Error(
+      `Advanced fixture probe requires a read-write schema adapter (Claude ${version})`,
+    )
   }
 
   const configRoot = join(probeRoot, 'config')

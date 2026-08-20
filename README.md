@@ -170,14 +170,17 @@ Praxis ──────┘
 ```
 
 Praxis can resume Claude Code sessions, and Claude Code can resume compatible
-sessions written by Praxis. Ordinary Praxis session runtime always emits the
-verified Claude Code 2.1.208 write profile and never derives it from an
-installed Claude version; this fixed profile governs generated append and
-sidechain writes. Native fork creation is a separate restricted lossless copy
-path that preserves each existing source record's producer version, so it can
-copy specific black-box-verified foreign shapes such as the observed Claude
-Code 2.1.233 records; unsupported record shapes and unverified versions still
-fail closed and remain read-only. Maintainers can prove mixed-version Claude JSONL interoperability with
+sessions written by Praxis. Every semver-like Claude Code producer version is
+structurally validated and is read/write compatible when its entry shape is
+supported; schema adapters are selected from transcript entry structure rather
+than an installed or fixed producer version, and malformed or unsupported
+shapes fail closed before any write. Each transcript record keeps its original
+producer version, so supported shapes may be mixed across versions in one
+session. Native fork creation is a separate restricted lossless copy path that
+preserves each existing source record's producer version, so it can copy
+specific black-box-verified foreign shapes such as the observed Claude Code
+2.1.233 records; unsupported record shapes and unverified versions still fail
+closed and remain read-only. Maintainers can prove mixed-version Claude JSONL interoperability with
 `npm run test:cross-version-session-compat`, `test:cross-version-fork-compat`,
 `test:cross-version-sidechain-compat`, `test:cross-version-compaction-compat`,
 and `test:cross-version-resume-at-compat`, covering linear resume, native fork,

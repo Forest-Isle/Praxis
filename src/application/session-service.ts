@@ -73,6 +73,7 @@ import {
 } from '../compatibility/claude/translation.js'
 import {
   AgentRunCancelledError,
+  type AgentRunResult,
   AgentRuntime,
   type ModelContentBlock,
   type ModelDocument,
@@ -98,10 +99,13 @@ import type { ModelPricingRegistry } from '../core/usage.js'
 import type { CompactionResult, Compactor } from '../core/compaction.js'
 import {
   ContextBudget,
+  ContextRecoveryPlanner,
   estimateModelRequestTokens,
+  isPromptTooLongError,
 } from '../core/context-budget.js'
 import {
   injectFirstUserMessageContext,
+  type AssembledContext,
   type ContextAssembler,
 } from '../core/context.js'
 import type {
@@ -154,7 +158,19 @@ import {
 } from './session-cost-tracker.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
 import { completeMeteredModelRequest } from './metered-model-completion.js'
+import {
+  SessionMemoryController,
+  SessionMemoryStateError,
+  SessionMemoryStore,
+  type SessionMemoryExtractorInput,
+} from './session-memory.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
+import {
+  ClaudeCapabilityToolRegistry,
+  resolveClaudeToolCapabilities,
+  type ClaudeToolCapabilityInput,
+  type ClaudeToolRole,
+} from '../tools/claude-capabilities.js'
 import { generateToolUseSummary } from './tool-use-summary.js'
 import {
   ClaudeUserMessageToolRegistry,
@@ -204,6 +220,10 @@ export interface ClaudeSessionServiceOptions {
   subagentToolNames?: readonly string[]
   taskToolNames?: readonly string[]
   scheduledToolNames?: readonly string[]
+  /** Runtime gates for Claude capability-driven tool exposure. */
+  toolRole?: ClaudeToolRole
+  toolCapabilityEnvironment?: Readonly<Record<string, string | undefined>>
+  simpleMode?: boolean
   enableDynamicWakeups?: boolean
   enableWorkflows?: boolean
   providerForModel?: (model: string) => ModelProvider
@@ -222,6 +242,10 @@ export interface ClaudeSessionServiceOptions {
   brief?: boolean
   collectMetrics?: boolean
   sessionPersistence?: boolean
+  /** Enable durable per-session memory extraction and injection. Defaults to
+   *  enabled whenever session persistence is enabled; ignored when
+   *  `sessionPersistence === false`. */
+  enableSessionMemory?: boolean
   sessionKind?: 'bg'
   workspace?: WorkspaceContext
   initialWorktree?: boolean
@@ -674,6 +698,21 @@ Use 2-12 words. Do not ask a question, evaluate the prior response, introduce a 
 const SESSION_NAME_INSTRUCTION = `Generate a concise name for this coding session based on the conversation.
 Use 2-5 short words in kebab-case. Reply with ONLY the name, without quotes, punctuation, or explanation.`
 
+const SESSION_MEMORY_MAX_LINES = 200
+const SESSION_MEMORY_MAX_CHARS = 32_000
+
+const SESSION_MEMORY_EXTRACTION_PROMPT = `You maintain durable session memory for one coding session.
+
+Update the durable session memory from the conversation so far. Preserve:
+- The user's intent and current goals
+- Decisions made and the reasoning behind them
+- Active constraints, requirements, and preferences
+- Pending work, blockers, and next steps
+
+Omit transient chatter, credentials, secrets, or personal data.
+
+Return ONLY an updated Markdown document that becomes the session's durable memory. Do not call tools. Do not include any prose outside the Markdown document.`
+
 function validPromptSuggestion(value: string): string | null {
   const suggestion = value.trim()
   if (!suggestion) return null
@@ -721,6 +760,10 @@ export class ClaudeSessionService {
   >()
   private activeCostSessionId: string | undefined
   private closeCostSavePromise: Promise<void> | undefined
+  private readonly sessionMemoryControllers = new Map<
+    string,
+    SessionMemoryController
+  >()
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
@@ -891,6 +934,7 @@ export class ClaudeSessionService {
     await Promise.all([...this.backgroundNotificationWrites.values()])
     this.hostedSubagents.clear()
     this.backgroundTasks.clear()
+    this.sessionMemoryControllers.clear()
     await this.workflowManager?.close()
     this.closeCostSavePromise ??= this.persistActiveSessionCost()
     await this.closeCostSavePromise
@@ -902,8 +946,17 @@ export class ClaudeSessionService {
     const baseTools = this.options.tools
     if (!baseTools) throw new Error('Hosted tool registry requires base tools')
     const paths = this.paths(sessionId)
+    const capabilities = this.toolCapabilities()
+    const taskToolNames = this.capabilityToolNames(
+      this.options.taskToolNames,
+      capabilities,
+    )
+    const scheduledToolNames = this.capabilityToolNames(
+      this.options.scheduledToolNames,
+      capabilities,
+    )
     const taskTools =
-      (this.options.taskToolNames?.length ?? 0) > 0
+      taskToolNames.length > 0
         ? new ClaudeTaskToolRegistry({
             base: baseTools,
             cwd: this.activeCwd(),
@@ -914,22 +967,17 @@ export class ClaudeSessionService {
             ...(this.options.eventSink
               ? { eventSink: this.options.eventSink }
               : {}),
-            ...(this.options.taskToolNames
-              ? { enabledTools: this.options.taskToolNames }
-              : {}),
+            enabledTools: taskToolNames,
           })
         : null
     if (taskTools) this.backgroundTasks.registerBash(sessionId, taskTools)
     const scheduledTools =
-      this.scheduledPrompts &&
-      (this.options.scheduledToolNames?.length ?? 0) > 0
+      this.scheduledPrompts && scheduledToolNames.length > 0
         ? new ClaudeScheduledToolRegistry({
             base: taskTools ?? baseTools,
             manager: this.scheduledPrompts,
             sessionId,
-            ...(this.options.scheduledToolNames
-              ? { enabledTools: this.options.scheduledToolNames }
-              : {}),
+            enabledTools: scheduledToolNames,
           })
         : null
     const wrappedBase = scheduledTools ?? taskTools ?? baseTools
@@ -967,7 +1015,12 @@ export class ClaudeSessionService {
                   this.options.permissionMode,
               ),
             ...(this.options.subagentToolNames
-              ? { toolNames: this.options.subagentToolNames }
+              ? {
+                  toolNames: this.capabilityToolNames(
+                    this.options.subagentToolNames,
+                    capabilities,
+                  ),
+                }
               : {}),
             ...(this.options.extensions
               ? { extensions: this.options.extensions }
@@ -1023,7 +1076,7 @@ export class ClaudeSessionService {
             promptIdForCall: (callId) => callId,
             defaultModel: this.options.provider?.model ?? 'praxis/provider',
             tokenBudget: null,
-            enabled: true,
+            enabled: capabilities.has('Workflow'),
           })
         : agentTools
     if (this.worktreeManager) this.worktreeManager.bindSession(sessionId)
@@ -1053,6 +1106,10 @@ export class ClaudeSessionService {
     const interactiveRegistry = this.options.interactiveTools
       ? this.options.interactiveTools.registry(messageRegistry, sessionId)
       : messageRegistry
+    const capabilityRegistry = new ClaudeCapabilityToolRegistry(
+      interactiveRegistry,
+      capabilities,
+    )
     const preferredOrder = [
       'Agent',
       'AskUserQuestion',
@@ -1088,7 +1145,7 @@ export class ClaudeSessionService {
     ]
     const hostedRegistry: ToolRegistry = {
       definitions: () => {
-        const definitions = interactiveRegistry.definitions()
+        const definitions = capabilityRegistry.definitions()
         return [...definitions].sort((left, right) => {
           const leftIndex = preferredOrder.indexOf(left.name)
           const rightIndex = preferredOrder.indexOf(right.name)
@@ -1098,8 +1155,8 @@ export class ClaudeSessionService {
           )
         })
       },
-      prepare: (call, context) => interactiveRegistry.prepare(call, context),
-      execute: (call, context) => interactiveRegistry.execute(call, context),
+      prepare: (call, context) => capabilityRegistry.prepare(call, context),
+      execute: (call, context) => capabilityRegistry.execute(call, context),
     }
     if (subagentExecutor) {
       this.hostedSubagentsByRegistry.set(hostedRegistry, subagentExecutor)
@@ -1258,6 +1315,7 @@ export class ClaudeSessionService {
           this.recordAuxiliaryMetrics(activeSessionId, recorded),
       },
     )
+    budget?.observeUsage(metrics.usage)
     if (metrics.toolCalls.length > 0) {
       throw new Error('Side questions cannot call tools; press f to fork')
     }
@@ -2721,8 +2779,17 @@ export class ClaudeSessionService {
         snapshot = { entries: history, tail: appendResult.tail }
         pendingRecoveryHookOutcomes.length = 0
       }
+      const capabilities = this.toolCapabilities()
+      const taskToolNames = this.capabilityToolNames(
+        this.options.taskToolNames,
+        capabilities,
+      )
+      const scheduledToolNames = this.capabilityToolNames(
+        this.options.scheduledToolNames,
+        capabilities,
+      )
       const taskTools =
-        this.options.tools && (this.options.taskToolNames?.length ?? 0) > 0
+        this.options.tools && taskToolNames.length > 0
           ? new ClaudeTaskToolRegistry({
               base: this.options.tools,
               cwd: this.activeCwd(),
@@ -2733,22 +2800,18 @@ export class ClaudeSessionService {
               ...(this.options.eventSink
                 ? { eventSink: this.options.eventSink }
                 : {}),
-              ...(this.options.taskToolNames
-                ? { enabledTools: this.options.taskToolNames }
-                : {}),
+              enabledTools: taskToolNames,
             })
           : null
       const scheduledTools =
         this.scheduledPrompts &&
         this.options.tools &&
-        (this.options.scheduledToolNames?.length ?? 0) > 0
+        scheduledToolNames.length > 0
           ? new ClaudeScheduledToolRegistry({
               base: taskTools ?? this.options.tools,
               manager: this.scheduledPrompts,
               sessionId,
-              ...(this.options.scheduledToolNames
-                ? { enabledTools: this.options.scheduledToolNames }
-                : {}),
+              enabledTools: scheduledToolNames,
             })
           : null
       const baseTools = scheduledTools ?? taskTools ?? this.options.tools
@@ -2784,7 +2847,12 @@ export class ClaudeSessionService {
                     this.options.permissionMode,
                 ),
               ...(this.options.subagentToolNames
-                ? { toolNames: this.options.subagentToolNames }
+                ? {
+                    toolNames: this.capabilityToolNames(
+                      this.options.subagentToolNames,
+                      capabilities,
+                    ),
+                  }
                 : {}),
               ...(this.options.extensions
                 ? { extensions: this.options.extensions }
@@ -2853,7 +2921,7 @@ export class ClaudeSessionService {
                 this.promptIdForToolCall(snapshot.entries, callId),
               defaultModel: provider.model ?? 'praxis/provider',
               tokenBudget: workflowTokenTarget(effectivePrompt),
-              enabled: true,
+              enabled: capabilities.has('Workflow'),
             })
           : agentTools
       const workspaceTools =
@@ -2948,15 +3016,18 @@ export class ClaudeSessionService {
               },
             }
           : interactiveMessageTools
+      const capabilityTools = fileHistoryTools
+        ? new ClaudeCapabilityToolRegistry(fileHistoryTools, capabilities)
+        : undefined
       const structuredCapture = this.options.structuredOutputSchema
         ? { calls: 0, value: undefined as unknown }
         : undefined
       const agentScopedTools =
-        agent && fileHistoryTools
-          ? new FilteredToolRegistry(fileHistoryTools, {
-              tools: mainAgentToolNames(fileHistoryTools, agent),
+        agent && capabilityTools
+          ? new FilteredToolRegistry(capabilityTools, {
+              tools: mainAgentToolNames(capabilityTools, agent),
             })
-          : fileHistoryTools
+          : capabilityTools
       const structuredTools =
         this.options.structuredOutputSchema && structuredCapture
           ? new StructuredOutputRegistry(
@@ -3012,6 +3083,7 @@ export class ClaudeSessionService {
             }),
       })
       let currentTurnUserMessages: string[] | null = null
+      let currentTurnToolCalls = 0
       const observer = {
         assistantCompleted: async (message: {
           content: string
@@ -3053,6 +3125,7 @@ export class ClaudeSessionService {
             nativeMcpMeta?: Record<string, unknown>
           },
         ) => {
+          currentTurnToolCalls += 1
           const transition = this.worktreeManager?.consumeTransition(call.id)
           if (transition) {
             const stateEntry: ClaudeTranscriptEntry = {
@@ -3255,42 +3328,57 @@ export class ClaudeSessionService {
           }
         }
 
-        const assembledContext = await this.options.contextAssembler?.assemble({
-          cwd: this.activeCwd(),
-        })
-        const agentSystem = await this.mainAgentSystemPrompt(agent)
-        const assembledSystemMessages = this.assembledSystemMessages(
-          agent,
-          assembledContext?.systemMessages ?? [],
-        )
-        const planModeMessage =
-          this.options.interactiveTools?.contextMessage(sessionId)
-        const contextMessages = [
-          ...(agentSystem
-            ? [{ role: 'system' as const, content: agentSystem }]
-            : []),
-          ...assembledSystemMessages,
-          ...(planModeMessage
-            ? [{ role: 'system' as const, content: planModeMessage }]
-            : []),
-          ...(this.options.brief
-            ? [
-                {
-                  role: 'system' as const,
-                  content: CLAUDE_USER_MESSAGE_PROMPT,
-                },
-              ]
-            : []),
-          ...(this.options.structuredOutputSchema
-            ? [
-                {
-                  role: 'system' as const,
-                  content:
-                    'You MUST call StructuredOutput exactly once at the end with a value matching the requested JSON Schema.',
-                },
-              ]
-            : []),
-        ]
+        const sessionMemory = this.sessionMemoryController(sessionId)
+        let assembledContext: AssembledContext | undefined
+        let agentSystem: string | null = null
+        let planModeMessage: string | null | undefined
+        let sessionMemoryMessage: string | null = null
+        let contextMessages: ModelMessage[] = []
+        const refreshRuntimeContext = async () => {
+          assembledContext = await this.options.contextAssembler?.assemble({
+            cwd: this.activeCwd(),
+          })
+          agentSystem = await this.mainAgentSystemPrompt(agent)
+          const assembledSystemMessages = this.assembledSystemMessages(
+            agent,
+            assembledContext?.systemMessages ?? [],
+          )
+          planModeMessage =
+            this.options.interactiveTools?.contextMessage(sessionId)
+          sessionMemoryMessage = sessionMemory
+            ? this.sessionMemoryMessage(await sessionMemory.summary())
+            : null
+          contextMessages = [
+            ...(agentSystem
+              ? [{ role: 'system' as const, content: agentSystem }]
+              : []),
+            ...assembledSystemMessages,
+            ...(planModeMessage
+              ? [{ role: 'system' as const, content: planModeMessage }]
+              : []),
+            ...(sessionMemoryMessage
+              ? [{ role: 'system' as const, content: sessionMemoryMessage }]
+              : []),
+            ...(this.options.brief
+              ? [
+                  {
+                    role: 'system' as const,
+                    content: CLAUDE_USER_MESSAGE_PROMPT,
+                  },
+                ]
+              : []),
+            ...(this.options.structuredOutputSchema
+              ? [
+                  {
+                    role: 'system' as const,
+                    content:
+                      'You MUST call StructuredOutput exactly once at the end with a value matching the requested JSON Schema.',
+                  },
+                ]
+              : []),
+          ]
+        }
+        await refreshRuntimeContext()
 
         const expansion = skipUserPrompt
           ? { userMessages: [] as string[] }
@@ -3327,6 +3415,7 @@ export class ClaudeSessionService {
           ? (structuredTools?.definitions() ?? [])
           : []
         const budget = this.contextBudget(provider)
+        const recoveryPlanner = new ContextRecoveryPlanner()
         const pendingUserMessages = expandedMessages.map((message, index) => ({
           role: 'user' as const,
           content: message.text,
@@ -3397,6 +3486,7 @@ export class ClaudeSessionService {
             content: string
           }[] = [],
           preservedUserMessages: readonly string[] = [],
+          options: { promptTooLong?: boolean } = {},
         ) => {
           if (!budget || this.options.autoCompact === false) return
           const historyMessages = projectClaudeModelMessages(snapshot.entries)
@@ -3406,6 +3496,7 @@ export class ClaudeSessionService {
               ...injectTurnContext([...historyMessages, ...pendingMessages]),
             ],
             definitions,
+            options,
           )
           if (!predicted.shouldCompact) return
           const irreducibleMessages = [
@@ -3429,6 +3520,9 @@ export class ClaudeSessionService {
             throw new Error(
               'Cannot compact a Claude session with unresolved tool calls',
             )
+          }
+          if (sessionMemory) {
+            await sessionMemory.waitForIdle()
           }
           this.options.eventSink?.({ type: 'state', state: 'compacting' })
           const compactEnvelope = budget.evaluate(
@@ -3629,6 +3723,28 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, ...entries],
             tail: appendResult.tail,
           }
+          // The boundary is durable: mirror Claude's full-compact behavior by
+          // rerunning SessionStart with source compact and refreshing the
+          // runtime-only context so the next request retains current
+          // instructions, plan state, session memory, and hook context.
+          if (this.options.hooks) {
+            const outcome = await this.options.hooks.run(
+              {
+                ...hookSession,
+                hook_event_name: 'SessionStart',
+                source: 'compact',
+              },
+              'compact',
+              signal,
+            )
+            await recordHookOutcome(outcome)
+            if (outcome.blockedReason) {
+              throw new Error(
+                `SessionStart hook error: ${outcome.blockedReason}`,
+              )
+            }
+          }
+          await refreshRuntimeContext()
           this.options.eventSink?.({
             type: 'compact-boundary',
             trigger: 'auto',
@@ -3969,9 +4085,54 @@ export class ClaudeSessionService {
           onPermissionUpdates: (updates: readonly PermissionUpdate[]) =>
             this.applyPermissionUpdates(sessionId, updates),
         }
-        const result = signal
-          ? await runtime.run({ ...runtimeRequest, signal })
-          : await runtime.run(runtimeRequest)
+        const attemptMainTurn = () =>
+          signal
+            ? runtime.run({ ...runtimeRequest, signal })
+            : runtime.run(runtimeRequest)
+        let result: AgentRunResult
+        try {
+          result = await attemptMainTurn()
+        } catch (error) {
+          if (!budget || !isPromptTooLongError(error)) throw error
+          if (recoveryPlanner.consumeReactiveRetry() !== 'reactive-retry')
+            throw error
+          try {
+            await compactIfNeeded([], currentTurnUserMessages ?? [], {
+              promptTooLong: true,
+            })
+          } catch {
+            // Compaction could not free the provider-bounded context; surface
+            // the original prompt-too-long error rather than the compaction
+            // failure.
+            throw error
+          }
+          // The single reactive retry must use the compacted transcript, not
+          // the stale request copy captured before the compact boundary.
+          runtimeRequest.messages = [
+            ...contextMessages,
+            ...injectTurnContext(projectClaudeModelMessages(snapshot.entries)),
+          ]
+          try {
+            result = await attemptMainTurn()
+          } catch {
+            // Exactly one reactive retry is consumed; fail deterministically
+            // and surface the original prompt-too-long error.
+            recoveryPlanner.recordFailure()
+            throw error
+          }
+        }
+        recoveryPlanner.recordSuccess()
+        const mainModel =
+          provider.model !== undefined && provider.model.trim() !== ''
+            ? provider.model
+            : undefined
+        const observedUsage =
+          (mainModel !== undefined
+            ? result.modelUsage?.[mainModel]
+            : undefined) ??
+          Object.values(result.modelUsage ?? {})[0] ??
+          result.usage
+        budget?.observeUsage(observedUsage)
 
         if (structuredCapture && structuredCapture.calls !== 1) {
           throw new Error(
@@ -4097,6 +4258,27 @@ export class ClaudeSessionService {
               ? {}
               : { linesRemoved: foregroundLineChanges.linesRemoved }),
           })
+        }
+        if (sessionMemory && finalLeafUuid) {
+          const turnInputTokens = result.usage?.inputTokens ?? 0
+          try {
+            await sessionMemory.observeDelta(
+              turnInputTokens,
+              currentTurnToolCalls,
+              finalLeafUuid,
+              projectClaudeModelMessages(snapshot.entries),
+            )
+            await sessionMemory.waitForIdle()
+          } catch (error) {
+            // A failed extraction must not fail the user turn; the sidecar
+            // retains a retryable error for the next observation.
+            this.options.eventSink?.({
+              type: 'warning',
+              message: `Session memory extraction failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            })
+          }
         }
         return {
           sessionId,
@@ -4998,10 +5180,181 @@ export class ClaudeSessionService {
     if (contextWindowTokens === undefined) return null
     return new ContextBudget({
       contextWindowTokens,
+      windowSource: 'capability',
       ...(this.options.contextReserveTokens === undefined
         ? {}
         : { reserveTokens: this.options.contextReserveTokens }),
     })
+  }
+
+  private sessionMemoryEnabled(): boolean {
+    if (this.options.enableSessionMemory === false) return false
+    if (this.options.sessionPersistence === false) return false
+    return true
+  }
+
+  private sessionMemoryController(
+    sessionId: string,
+  ): SessionMemoryController | null {
+    if (!this.sessionMemoryEnabled() || !isClaudeSessionId(sessionId)) {
+      return null
+    }
+    let controller = this.sessionMemoryControllers.get(sessionId)
+    if (!controller) {
+      controller = new SessionMemoryController({
+        store: new SessionMemoryStore({
+          configRoot: this.options.configRoot,
+          sessionId,
+        }),
+        extractor: (input) => this.extractSessionMemory(sessionId, input),
+      })
+      this.sessionMemoryControllers.set(sessionId, controller)
+    }
+    return controller
+  }
+
+  private sessionMemoryMessage(summary: string): string | null {
+    const bounded = this.boundSessionMemorySummary(summary.trim())
+    if (bounded.length === 0) return null
+    return `# Session Memory\n\n${bounded}`
+  }
+
+  private boundSessionMemorySummary(summary: string): string {
+    const lines = summary.split('\n')
+    const content =
+      lines.length > SESSION_MEMORY_MAX_LINES
+        ? lines.slice(0, SESSION_MEMORY_MAX_LINES).join('\n')
+        : summary
+    return content.length > SESSION_MEMORY_MAX_CHARS
+      ? content.slice(0, SESSION_MEMORY_MAX_CHARS)
+      : content
+  }
+
+  private formatSessionMemoryConversation(
+    messages: readonly ModelMessage[],
+  ): string {
+    const parts: string[] = []
+    for (const message of messages) {
+      if (message.role === 'system') {
+        parts.push(`System: ${message.content}`)
+      } else if (message.role === 'user') {
+        const body =
+          message.contentBlocks === undefined
+            ? message.content
+            : message.contentBlocks
+                .map((block) =>
+                  block.type === 'text'
+                    ? block.text
+                    : block.type === 'image'
+                      ? '[image]'
+                      : '[document]',
+                )
+                .join('\n')
+        parts.push(`User: ${body}`)
+      } else if (message.role === 'assistant') {
+        const toolCalls =
+          message.toolCalls === undefined || message.toolCalls.length === 0
+            ? ''
+            : `\n${message.toolCalls
+                .map((call) => `${call.name}(${JSON.stringify(call.input)})`)
+                .join('\n')}`
+        parts.push(`Assistant: ${message.content}${toolCalls}`)
+      } else {
+        parts.push(`Tool result: ${message.content}`)
+      }
+    }
+    return this.boundSessionMemorySummary(parts.join('\n\n'))
+  }
+
+  private async extractSessionMemory(
+    sessionId: string,
+    input: SessionMemoryExtractorInput,
+  ): Promise<string> {
+    const provider = this.provider()
+    const messages: ModelMessage[] = [
+      { role: 'system', content: SESSION_MEMORY_EXTRACTION_PROMPT },
+      ...(input.summary.trim().length === 0
+        ? []
+        : [
+            {
+              role: 'system' as const,
+              content: `Previous session memory summary:\n\n${this.boundSessionMemorySummary(input.summary)}`,
+            },
+          ]),
+      ...(input.messages === undefined || input.messages.length === 0
+        ? []
+        : [
+            {
+              role: 'user' as const,
+              content: `Conversation so far:\n\n${this.formatSessionMemoryConversation(input.messages)}`,
+            },
+          ]),
+    ]
+    const metrics = await completeMeteredModelRequest(
+      provider,
+      { messages },
+      {
+        onMetrics: (recorded) =>
+          this.recordAuxiliaryMetrics(sessionId, recorded),
+      },
+    )
+    if (metrics.toolCalls.length > 0) {
+      throw new SessionMemoryStateError(
+        'Session memory extraction must not call tools',
+      )
+    }
+    const summary = metrics.text.trim()
+    if (summary.length === 0) {
+      throw new SessionMemoryStateError(
+        'Session memory extractor returned an empty summary',
+      )
+    }
+    return summary
+  }
+
+  private toolCapabilities(): ReadonlySet<string> {
+    const taskNames = this.options.taskToolNames ?? []
+    const input: ClaudeToolCapabilityInput = {
+      role: this.options.toolRole ?? 'main',
+      interactive: this.options.interactiveTools !== undefined,
+      simpleMode: this.options.simpleMode ?? false,
+      tasks: taskNames.some((name) =>
+        ['TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate'].includes(name),
+      ),
+      agentTriggers: (this.options.scheduledToolNames?.length ?? 0) > 0,
+      backgroundAgents: taskNames.some((name) =>
+        ['TaskOutput', 'TaskStop'].includes(name),
+      ),
+      ...(this.options.enableWorkflows === undefined
+        ? {}
+        : { workflowScripts: this.options.enableWorkflows }),
+      ...(this.options.enableSubagents === undefined
+        ? {}
+        : { subagents: this.options.enableSubagents }),
+      ...(this.options.toolCapabilityEnvironment
+        ? { env: this.options.toolCapabilityEnvironment }
+        : {}),
+    }
+    return resolveClaudeToolCapabilities(input)
+  }
+
+  private capabilityToolNames(
+    names: readonly string[] | undefined,
+    capabilities: ReadonlySet<string>,
+  ): readonly string[] {
+    return (names ?? [])
+      .filter((name) => !name.startsWith('Task') || capabilities.has(name))
+      .filter(
+        (name) =>
+          ![
+            'Workflow',
+            'Agent',
+            'CronCreate',
+            'CronDelete',
+            'CronList',
+            'ScheduleWakeup',
+          ].includes(name) || capabilities.has(name),
+      )
   }
 
   private async append(

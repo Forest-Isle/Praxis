@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { lstat, mkdir, readFile, readdir } from 'node:fs/promises'
+import { join, relative } from 'node:path'
 
 import { Ajv2020 } from 'ajv/dist/2020.js'
 
@@ -13,6 +13,7 @@ import {
   createClaudeSidechainRoot,
   resolveClaudeSidechainPaths,
   toClaudeSidechainEntry,
+  type ClaudeSidechainMetadata,
   type ClaudeSidechainPermissionMode,
   type ClaudeSidechainPaths,
 } from '../compatibility/claude/sidechain.js'
@@ -83,6 +84,8 @@ const DEFAULT_MAX_DEPTH = 4
 const DEFAULT_MAX_CALLS = 16
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 
+const SIDECHAIN_DISCOVERY_MAX_DEPTH = 4
+
 const structuredOnlyTools: ToolRegistry = {
   definitions: () => [],
   prepare: async (call) => call,
@@ -129,6 +132,26 @@ interface AgentInput {
   permissionMode?: AgentPermissionMode
   isolation?: 'worktree'
   runInBackground: boolean
+}
+
+interface DiscoveredSidechainCandidate {
+  agentId: string
+  paths: ClaudeSidechainPaths
+  metadataModifiedAt?: number
+  name?: string
+}
+
+async function readSidechainMetadataName(
+  metadataFile: string,
+): Promise<string | undefined> {
+  try {
+    const value: unknown = JSON.parse(await readFile(metadataFile, 'utf8'))
+    if (!value || typeof value !== 'object') return undefined
+    const name = (value as Record<string, unknown>).name
+    return typeof name === 'string' ? name : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export type AgentPermissionMode = ClaudeSidechainPermissionMode
@@ -276,6 +299,7 @@ function enabledAgentToolNames(
   base: ToolRegistry,
   definition: ClaudeAgentRuntimeDefinition | null,
   background: boolean,
+  permissionMode: AgentPermissionMode | undefined,
   additiveTools: ReadonlySet<string> = new Set(),
 ): readonly string[] {
   const requested = definition?.tools
@@ -294,7 +318,12 @@ function enabledAgentToolNames(
     .map(({ name }) => name)
     .filter((name) => {
       if (additiveTools.has(name)) return true
-      if (AGENT_UNAVAILABLE_TOOLS.has(name)) return false
+      if (
+        AGENT_UNAVAILABLE_TOOLS.has(name) &&
+        !(name === 'ExitPlanMode' && permissionMode === 'plan')
+      ) {
+        return false
+      }
       if (
         background &&
         !name.startsWith('mcp__') &&
@@ -1339,32 +1368,30 @@ export class ClaudeSubagentExecutor {
       cwd: this.cwd(),
       sessionId,
     })
-    const agentId = await this.resolvePersistedAgentId(
+    const sidechainPaths = await this.resolvePersistedSidechain(
       paths.projectRoot,
       sessionId,
       identifier,
     )
-    if (!agentId) return
-    const sidechainPaths = resolveClaudeSidechainPaths(
-      paths.projectRoot,
-      sessionId,
-      agentId,
-    )
+    if (!sidechainPaths) return
+    const agentId = sidechainPaths.agentId
     const sidechain = new ClaudeSidechainStore(
       sidechainPaths,
       join(paths.praxisRoot, 'locks', `${sessionId}-${agentId}.lock`),
       this.schema,
     )
-    let metadata
     let snapshot
     try {
-      ;[metadata, snapshot] = await Promise.all([
-        sidechain.metadata(),
-        sidechain.loadReadOnly(),
-      ])
+      snapshot = await sidechain.loadReadOnly()
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
       throw error
+    }
+    let metadata: ClaudeSidechainMetadata | null = null
+    try {
+      metadata = await sidechain.metadata()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
     const root = snapshot.entries[0]
     if (!root || root.type !== 'user') {
@@ -1385,15 +1412,20 @@ export class ClaudeSubagentExecutor {
     ) {
       throw new Error(`Background agent ${agentId} is not completed`)
     }
+    const agentType = metadata?.agentType ?? 'general-purpose'
+    const description = metadata?.description ?? 'Recovered Claude sidechain'
+    const toolUseId = metadata?.toolUseId ?? `recovered:${agentId}`
+    const spawnDepth = metadata?.spawnDepth ?? 1
+    const name = metadata?.name
+    const permissionMode = metadata?.permissionMode
+    const isolation = metadata?.isolation
     const input: AgentInput = {
-      description: metadata.description,
+      description,
       prompt,
-      subagentType: metadata.agentType,
-      ...(metadata.name ? { name: metadata.name } : {}),
-      ...(metadata.permissionMode
-        ? { permissionMode: metadata.permissionMode }
-        : {}),
-      ...(metadata.isolation ? { isolation: metadata.isolation } : {}),
+      subagentType: agentType,
+      ...(name ? { name } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(isolation ? { isolation } : {}),
       runInBackground: true,
     }
     const provider = this.options.provider
@@ -1409,9 +1441,9 @@ export class ClaudeSubagentExecutor {
             input,
             provider,
             agentId,
-            spawnDepth: metadata.spawnDepth,
+            spawnDepth,
             promptId: String(root.promptId ?? randomUUID()),
-            toolUseId: metadata.toolUseId,
+            toolUseId,
             transcriptPath: sidechainPaths.transcriptFile,
             toolResultDirectory: join(
               paths.projectRoot,
@@ -1427,11 +1459,11 @@ export class ClaudeSubagentExecutor {
     this.background.registerCompleted(
       {
         agentId,
-        ...(metadata.name ? { name: metadata.name } : {}),
-        agentType: metadata.agentType,
-        description: metadata.description,
+        ...(name ? { name } : {}),
+        agentType,
+        description,
         prompt,
-        toolUseId: metadata.toolUseId,
+        toolUseId,
         outputFile: sidechainPaths.transcriptFile,
         resolvedModel: provider.model ?? 'praxis/provider',
         run,
@@ -1445,59 +1477,131 @@ export class ClaudeSubagentExecutor {
     )
   }
 
-  private async resolvePersistedAgentId(
+  private async resolvePersistedSidechain(
     projectRoot: string,
     sessionId: string,
     identifier: string,
-  ): Promise<string | null> {
-    if (/^a[0-9a-f]{16}$/u.test(identifier)) return identifier
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(identifier)) return null
-    const directory = join(projectRoot, sessionId, 'subagents')
-    let names: string[]
+  ): Promise<ClaudeSidechainPaths | null> {
+    const isAgentId = /^a[0-9a-f]{16}$/u.test(identifier)
+    const isName = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(identifier)
+    if (!isAgentId && !isName) return null
+    const candidates = await this.discoverSidechainCandidates(
+      projectRoot,
+      sessionId,
+    )
+    const matches = candidates.filter((candidate) =>
+      isAgentId
+        ? candidate.agentId === identifier
+        : candidate.name === identifier,
+    )
+    matches.sort(
+      (left, right) =>
+        (right.metadataModifiedAt ?? -Infinity) -
+          (left.metadataModifiedAt ?? -Infinity) ||
+        left.agentId.localeCompare(right.agentId) ||
+        left.paths.directory.localeCompare(right.paths.directory),
+    )
+    return matches[0]?.paths ?? null
+  }
+
+  private async discoverSidechainCandidates(
+    projectRoot: string,
+    sessionId: string,
+  ): Promise<DiscoveredSidechainCandidate[]> {
+    const rootDirectory = join(projectRoot, sessionId, 'subagents')
+    let rootStat
     try {
-      names = await readdir(directory)
+      rootStat = await lstat(rootDirectory)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
       throw error
     }
-    const matches = await Promise.all(
-      names
-        .map((name) => /^agent-(a[0-9a-f]{16})\.meta\.json$/u.exec(name)?.[1])
-        .filter((agentId): agentId is string => agentId !== undefined)
-        .map(async (agentId) => {
-          const sidechainPaths = resolveClaudeSidechainPaths(
-            projectRoot,
-            sessionId,
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return []
+    const candidates: DiscoveredSidechainCandidate[] = []
+    const walk = async (directory: string, depth: number): Promise<void> => {
+      if (depth > SIDECHAIN_DISCOVERY_MAX_DEPTH) return
+      let entries
+      try {
+        entries = await readdir(directory, { withFileTypes: true })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+        throw error
+      }
+      const byName = new Map(entries.map((entry) => [entry.name, entry]))
+      const subdirectory = relative(rootDirectory, directory).replaceAll(
+        '\\',
+        '/',
+      )
+      await Promise.all(
+        entries.map(async (entry) => {
+          if (entry.isSymbolicLink()) return
+          const entryPath = join(directory, entry.name)
+          if (entry.isDirectory()) {
+            await walk(entryPath, depth + 1)
+            return
+          }
+          if (!entry.isFile()) return
+          const metadataMatch = /^agent-(a[0-9a-f]{16})\.meta\.json$/u.exec(
+            entry.name,
+          )
+          if (metadataMatch) {
+            const agentId = metadataMatch[1]
+            if (agentId === undefined) return
+            const transcriptEntry = byName.get(`agent-${agentId}.jsonl`)
+            if (
+              !transcriptEntry ||
+              transcriptEntry.isSymbolicLink() ||
+              !transcriptEntry.isFile()
+            ) {
+              return
+            }
+            const paths = resolveClaudeSidechainPaths(
+              projectRoot,
+              sessionId,
+              agentId,
+              subdirectory === '' ? {} : { subdirectory },
+            )
+            let metadataStat
+            try {
+              metadataStat = await lstat(paths.metadataFile)
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+              throw error
+            }
+            if (metadataStat.isSymbolicLink() || !metadataStat.isFile()) return
+            const name = await readSidechainMetadataName(paths.metadataFile)
+            candidates.push({
+              agentId,
+              paths,
+              metadataModifiedAt: metadataStat.mtimeMs,
+              ...(name === undefined ? {} : { name }),
+            })
+            return
+          }
+          const transcriptMatch = /^agent-(a[0-9a-f]{16})\.jsonl$/u.exec(
+            entry.name,
+          )
+          if (!transcriptMatch) return
+          const agentId = transcriptMatch[1]
+          if (agentId === undefined) return
+          // A metadata companion (even an invalid one) is owned by the
+          // metadata branch; only a bare transcript without metadata is a
+          // legacy candidate.
+          if (byName.has(`agent-${agentId}.meta.json`)) return
+          candidates.push({
             agentId,
-          )
-          const sidechain = new ClaudeSidechainStore(
-            sidechainPaths,
-            join(
-              this.options.configRoot,
-              'praxis',
-              'locks',
-              `${sessionId}-${agentId}.lock`,
+            paths: resolveClaudeSidechainPaths(
+              projectRoot,
+              sessionId,
+              agentId,
+              subdirectory === '' ? {} : { subdirectory },
             ),
-            this.schema,
-          )
-          const metadata = await sidechain.metadata()
-          if (metadata.name !== identifier) return null
-          const file = await stat(sidechainPaths.metadataFile)
-          return { agentId, modifiedAt: file.mtimeMs }
+          })
         }),
-    )
-    return (
-      matches
-        .filter(
-          (match): match is { agentId: string; modifiedAt: number } =>
-            match !== null,
-        )
-        .sort(
-          (left, right) =>
-            right.modifiedAt - left.modifiedAt ||
-            right.agentId.localeCompare(left.agentId),
-        )[0]?.agentId ?? null
-    )
+      )
+    }
+    await walk(rootDirectory, 0)
+    return candidates
   }
 
   private asyncLaunchResult(options: {
@@ -1663,6 +1767,7 @@ export class ClaudeSubagentExecutor {
         agentToolBase,
         customAgent,
         options.input.runInBackground,
+        options.input.permissionMode,
         additiveAgentToolNames,
       ),
     )

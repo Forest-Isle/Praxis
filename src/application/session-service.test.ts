@@ -41,6 +41,7 @@ import {
   type ClaudeQuestionResult,
 } from '../tools/claude-interactive-tools.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
+import { CLAUDE_CODE_DISABLE_CRON } from '../tools/claude-capabilities.js'
 import type { ClaudeSessionCostState } from '../persistence/claude-cost-state-store.js'
 import { ClaudeSessionService } from './session-service.js'
 import { WorkspaceContext } from './session-worktree.js'
@@ -1162,6 +1163,513 @@ describe('ClaudeSessionService', () => {
     })
     expect(snapshot.apiDurationMs).toBeGreaterThanOrEqual(70)
     expect(snapshot.apiDurationWithoutRetriesMs).toBe(55 + 20)
+  })
+
+  it('reactively retries a prompt-too-long failure once after auto-compacting', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-reactive-retry-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let completions = 0
+    const provider: ModelProvider = {
+      model: 'reactive-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 200_000,
+      },
+      async *complete() {
+        completions += 1
+        if (completions === 1) {
+          throw new ModelProviderError('prompt is too long for the context', {
+            retryable: true,
+          })
+        }
+        yield { type: 'text-delta', delta: 'recovered answer' }
+        yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
+      },
+    }
+    const events: RuntimeEvent[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      eventSink: (event) => events.push(event),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'REACTIVE_RETRY_SUMMARY',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 1,
+            model: 'reactive-model',
+          }
+        },
+      },
+    })
+
+    const result = await service.run('start')
+
+    expect(result.text).toBe('recovered answer')
+    // One reactive compaction retry, then a clean second attempt.
+    expect(completions).toBe(2)
+    expect(events).toContainEqual({ type: 'state', state: 'compacting' })
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'compact-boundary' && event.trigger === 'auto',
+      ),
+    ).toBe(true)
+  })
+
+  it('fails deterministically after the single reactive prompt-too-long retry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-reactive-retry-blocked-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let completions = 0
+    const provider: ModelProvider = {
+      model: 'reactive-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 200_000,
+      },
+      async *complete() {
+        completions += 1
+        // Delegating to an empty iterable satisfies `require-yield` without
+        // emitting a value before the intentional failure.
+        yield* []
+        throw new ModelProviderError('prompt is too long for the context', {
+          retryable: true,
+        })
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      compactor: {
+        async compact() {
+          return {
+            summary: 'REACTIVE_RETRY_SUMMARY',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 1,
+            model: 'reactive-model',
+          }
+        },
+      },
+    })
+
+    await expect(service.run('start')).rejects.toThrow(
+      'prompt is too long for the context',
+    )
+    // The retry is attempted exactly once before the original error surfaces.
+    expect(completions).toBe(2)
+  })
+
+  it('extracts durable session memory, injects it on resume, and coordinates with auto compact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const events: RuntimeEvent[] = []
+    let calls = 0
+    let compactions = 0
+    const provider: ModelProvider = {
+      model: 'session-memory-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 2_500,
+      },
+      async *complete(request) {
+        requests.push(request)
+        const call = calls++
+        if (call === 0) {
+          // Turn 1: large transcript plus usage that crosses the extraction
+          // threshold so extraction runs before the turn result returns.
+          yield {
+            type: 'text-delta',
+            delta: `initial ${'discarded '.repeat(600)}`,
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 12_000, outputTokens: 50 },
+          }
+          return
+        }
+        if (call === 1) {
+          // Session memory extraction: provider-backed, no tools.
+          yield { type: 'text-delta', delta: 'Durable intent: initial task.' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 20 },
+          }
+          return
+        }
+        // Resume turn 2.
+        yield { type: 'text-delta', delta: 'resumed answer' }
+        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      contextReserveTokens: 1_500,
+      eventSink: (event) => events.push(event),
+      compactor: {
+        async compact() {
+          compactions += 1
+          return {
+            summary: 'COMPACTED_SESSION_MEMORY',
+            usage: { inputTokens: 3, outputTokens: 2 },
+            durationMs: 1,
+            model: 'session-memory-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('first task')
+    expect(run.text.startsWith('initial')).toBe(true)
+
+    const memoryDir = join(
+      configRoot,
+      'praxis',
+      'session-memory',
+      run.sessionId,
+    )
+    // Extraction completed before the turn result returned.
+    const summary = await readFile(join(memoryDir, 'summary.md'), 'utf8')
+    expect(summary).toContain('Durable intent: initial task.')
+    // Extraction is a no-tool provider call, not a shared transcript entry.
+    expect(requests[1]?.tools).toBeUndefined()
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('# Session Memory')
+
+    const resumed = await service.resume(run.sessionId, 'Continue the task.')
+    expect(resumed.text).toBe('resumed answer')
+
+    const resumedRequest = requests[2]
+    const memorySystemMessage = resumedRequest?.messages.find(
+      (message): message is { role: 'system'; content: string } =>
+        message.role === 'system' &&
+        typeof message.content === 'string' &&
+        message.content.includes('# Session Memory'),
+    )
+    expect(memorySystemMessage?.content).toContain(
+      'Durable intent: initial task.',
+    )
+
+    // The oversized transcript is compacted automatically while session memory
+    // stays enabled; the compact wait runs without racing an extraction.
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'compact-boundary' && event.trigger === 'auto',
+      ),
+    ).toBe(true)
+    expect(compactions).toBeGreaterThanOrEqual(1)
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'warning' &&
+          String(event.message).includes('Session memory'),
+      ),
+    ).toBe(false)
+
+    await service.close()
+
+    // A failed extraction leaves the foreground turn successful and records a
+    // retryable sidecar error for the next observation.
+    const failureRoot = await mkdtemp(
+      join(tmpdir(), 'praxis-session-memory-failure-'),
+    )
+    roots.push(failureRoot)
+    const failureConfigRoot = join(failureRoot, 'config')
+    const failureCwd = join(failureRoot, 'project')
+    const failureEvents: RuntimeEvent[] = []
+    let failureCalls = 0
+    const failingProvider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        const call = failureCalls++
+        if (call === 0) {
+          yield { type: 'text-delta', delta: 'failing turn answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 12_000, outputTokens: 50 },
+          }
+          return
+        }
+        throw new ModelProviderError('session-memory provider failed', {
+          retryable: true,
+        })
+      },
+    }
+    const failureService = new ClaudeSessionService({
+      configRoot: failureConfigRoot,
+      cwd: failureCwd,
+      claudeVersion: '2.1.208',
+      provider: failingProvider,
+      eventSink: (event) => failureEvents.push(event),
+    })
+    const failedRun = await failureService.run('failing task')
+    expect(failedRun.text).toBe('failing turn answer')
+    expect(
+      failureEvents.some(
+        (event) =>
+          event.type === 'warning' &&
+          String(event.message).includes('Session memory'),
+      ),
+    ).toBe(true)
+    const failureState = JSON.parse(
+      await readFile(
+        join(
+          failureConfigRoot,
+          'praxis',
+          'session-memory',
+          failedRun.sessionId,
+          'state.json',
+        ),
+        'utf8',
+      ),
+    ) as { extractionError: string | null }
+    expect(failureState.extractionError).toContain(
+      'session-memory provider failed',
+    )
+    await failureService.close()
+  })
+
+  it('reruns SessionStart with compact source and refreshes runtime context after an automatic compact boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-compact-hook-context-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      model: 'compact-hook-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 2_500,
+      },
+      async *complete(request) {
+        requests.push(request)
+        const call = calls++
+        if (call === 0) {
+          yield {
+            type: 'text-delta',
+            delta: `initial ${'discarded '.repeat(600)}`,
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 12_000, outputTokens: 50 },
+          }
+          return
+        }
+        if (call === 1) {
+          // Session memory extraction: provider-backed, no tools.
+          yield { type: 'text-delta', delta: 'Durable intent: initial task.' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 20 },
+          }
+          return
+        }
+        // Resume turn after the automatic compact boundary.
+        yield { type: 'text-delta', delta: 'final answer' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 2, outputTokens: 1 },
+        }
+      },
+    }
+    let contextVersion = 0
+    let compactHookCalls = 0
+    const hookEvents: string[] = []
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              SessionStart: [
+                {
+                  hooks: [{ type: 'command', command: 'SessionStart' }],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async (_command, input) => {
+        hookEvents.push(input.hook_event_name)
+        if (input.source === 'compact') {
+          compactHookCalls += 1
+          return {
+            stdout: 'COMPACT_HOOK_CONTEXT\n',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        }
+        return {
+          stdout:
+            input.source === 'resume'
+              ? 'RESUME_HOOK_CONTEXT\n'
+              : 'STARTUP_HOOK_CONTEXT\n',
+          stderr: '',
+          exitCode: 0,
+          durationMs: 1,
+        }
+      },
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      hooks,
+      contextReserveTokens: 1_500,
+      contextAssembler: {
+        async assemble() {
+          contextVersion += 1
+          return {
+            systemMessages: [
+              {
+                role: 'system' as const,
+                content: `SYSTEM_CONTEXT_${contextVersion}`,
+              },
+            ],
+            firstUserMessageContext: `DYNAMIC_CONTEXT_${contextVersion}`,
+          }
+        },
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'COMPACTED_SUMMARY',
+            usage: { inputTokens: 3, outputTokens: 2 },
+            durationMs: 1,
+            model: 'compact-hook-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('first task')
+    expect(run.text.startsWith('initial')).toBe(true)
+
+    // The oversized first turn triggers durable session memory extraction.
+    const memoryDir = join(
+      configRoot,
+      'praxis',
+      'session-memory',
+      run.sessionId,
+    )
+    const summary = await readFile(join(memoryDir, 'summary.md'), 'utf8')
+    expect(summary).toContain('Durable intent: initial task.')
+
+    const resumed = await service.resume(run.sessionId, 'Continue the task.')
+    expect(resumed.text).toBe('final answer')
+
+    // One successful automatic compact produces exactly one compact-source
+    // SessionStart invocation alongside the preserved startup/resume ones.
+    expect(compactHookCalls).toBe(1)
+    expect(hookEvents).toEqual(['SessionStart', 'SessionStart', 'SessionStart'])
+
+    // The context assembler runs once for the startup turn, once for the
+    // resume, and once more after the compact boundary refresh.
+    expect(contextVersion).toBe(3)
+    const postCompactRequest = requests[2]
+    expect(
+      postCompactRequest?.messages.find(
+        (message) =>
+          message.role === 'system' &&
+          typeof message.content === 'string' &&
+          message.content.includes('SYSTEM_CONTEXT_3'),
+      ),
+    ).toBeDefined()
+    expect(JSON.stringify(postCompactRequest?.messages)).toContain(
+      'DYNAMIC_CONTEXT_3',
+    )
+    // The compact-source hook output reaches the post-compact request while
+    // the pre-compact runtime context and pre-boundary hook output do not
+    // reappear (pre-boundary attachments are compacted away with history).
+    expect(JSON.stringify(postCompactRequest?.messages)).toContain(
+      'COMPACT_HOOK_CONTEXT',
+    )
+    expect(JSON.stringify(postCompactRequest?.messages)).not.toContain(
+      'RESUME_HOOK_CONTEXT',
+    )
+    expect(JSON.stringify(postCompactRequest?.messages)).not.toContain(
+      'STARTUP_HOOK_CONTEXT',
+    )
+    expect(JSON.stringify(postCompactRequest?.messages)).not.toContain(
+      'SYSTEM_CONTEXT_2',
+    )
+    expect(
+      postCompactRequest?.messages.find(
+        (message) =>
+          message.role === 'system' &&
+          typeof message.content === 'string' &&
+          message.content.includes('# Session Memory'),
+      )?.content,
+    ).toContain('Durable intent: initial task.')
+
+    // Only the existing Claude hook attachment representation is persisted;
+    // refreshed runtime-only session memory never becomes a JSONL entry.
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('COMPACT_HOOK_CONTEXT')
+    expect(transcript).toContain('RESUME_HOOK_CONTEXT')
+    expect(transcript).toContain('STARTUP_HOOK_CONTEXT')
+    expect(transcript).not.toContain('# Session Memory')
+    expect(transcript).not.toContain('SYSTEM_CONTEXT')
+    expect(transcript).not.toContain('DYNAMIC_CONTEXT')
+    const entries = transcript
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const hookAttachments = entries.filter(
+      (entry) => entry.type === 'attachment',
+    )
+    expect(hookAttachments.map((entry) => entry.attachment.type)).toEqual([
+      'hook_success',
+      'hook_success',
+      'hook_success',
+    ])
+    expect(hookAttachments.map((entry) => entry.attachment.content)).toEqual([
+      'STARTUP_HOOK_CONTEXT',
+      'RESUME_HOOK_CONTEXT',
+      'COMPACT_HOOK_CONTEXT',
+    ])
   })
 
   it('records manual compact usage without cost and diagnoses an unknown model price', async () => {
@@ -3544,6 +4052,91 @@ describe('ClaudeSessionService', () => {
         content: expect.stringContaining('#1 [pending] Build'),
         isError: false,
       })
+    } finally {
+      await service.close()
+    }
+  })
+
+  it('suppresses scheduled tools when toolCapabilityEnvironment disables cron', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cron-disable-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['hosted response']),
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      scheduledToolNames: [
+        'CronCreate',
+        'CronDelete',
+        'CronList',
+        'ScheduleWakeup',
+      ],
+      sessionPersistence: true,
+      toolCapabilityEnvironment: { [CLAUDE_CODE_DISABLE_CRON]: 'true' },
+    })
+
+    try {
+      const registry = service.createHostedToolRegistry(sessionId)
+      expect(registry.definitions().map(({ name }) => name)).not.toEqual(
+        expect.arrayContaining([
+          'CronCreate',
+          'CronDelete',
+          'CronList',
+          'ScheduleWakeup',
+        ]),
+      )
+      await expect(
+        registry.prepare(
+          { id: 'create', name: 'CronCreate', input: {} },
+          { cwd },
+        ),
+      ).rejects.toThrow('unavailable')
+    } finally {
+      await service.close()
+    }
+  })
+
+  it('filters hosted tool exposure by role capabilities before prepare or execution', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-capability-registry-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['hosted response']),
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      taskToolNames: ['TaskCreate', 'TaskOutput', 'TaskStop'],
+      enableSubagents: true,
+      subagentToolNames: ['Agent'],
+      toolRole: 'worker',
+      sessionPersistence: true,
+    })
+
+    try {
+      const registry = service.createHostedToolRegistry(sessionId)
+      const names = registry.definitions().map(({ name }) => name)
+      expect(names).toContain('TaskCreate')
+      expect(names).not.toEqual(
+        expect.arrayContaining(['Agent', 'TaskOutput', 'TaskStop']),
+      )
+      await expect(
+        registry.prepare({ id: 'agent', name: 'Agent', input: {} }, { cwd }),
+      ).rejects.toThrow('unavailable')
+      await expect(
+        registry.execute(
+          { id: 'output', name: 'TaskOutput', input: {} },
+          { cwd },
+        ),
+      ).rejects.toThrow('unavailable')
     } finally {
       await service.close()
     }
@@ -7892,9 +8485,8 @@ describe('ClaudeSessionService', () => {
     })
   })
 
-  it('fails closed for unsupported Claude write versions', async () => {
-    const { configRoot, cwd, service: writable } = await createService()
-    const existing = await writable.run('read this')
+  it('writes sessions for structurally supported Claude versions', async () => {
+    const { configRoot, cwd } = await createService()
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
@@ -7902,15 +8494,102 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['unused']),
     })
 
-    await expect(service.run('hello')).rejects.toThrow('read-only')
-    await expect(service.inspect(existing.sessionId)).resolves.toMatchObject({
-      status: 'read-only',
-      writeMode: 'read-only',
-      lastPrompt: 'read this',
+    const result = await service.run('hello')
+    await expect(service.inspect(result.sessionId)).resolves.toMatchObject({
+      status: 'ready',
+      writeMode: 'read-write',
+      lastPrompt: 'hello',
     })
-    expect((await service.export(existing.sessionId)).toString()).toContain(
-      'read this',
+    expect((await service.export(result.sessionId)).toString()).toContain(
+      '"version":"9.0.0"',
     )
+  })
+
+  it('preserves a structurally supported Claude version across auto compaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-version-auto-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '9.0.0',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield {
+            type: 'text-delta',
+            delta: `old-context ${'discarded '.repeat(600)}`,
+          }
+        },
+      },
+    })
+    const first = await origin.run('CURRENT_TASK')
+
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '9.0.0',
+      provider: {
+        model: 'version-regression-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 2_500,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'final answer' }
+          yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
+        },
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'VERSIONED_COMPACT_SUMMARY',
+            usage: { inputTokens: 6, outputTokens: 4 },
+            durationMs: 40,
+            durationWithoutRetriesMs: 25,
+            model: 'version-regression-model',
+          }
+        },
+      },
+      contextReserveTokens: 1_500,
+    })
+
+    const result = await service.resume(first.sessionId, 'Continue the task.')
+    expect(result.text).toBe('final answer')
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    const entries = transcript
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+
+    const compactBoundaries = entries.filter(
+      (entry) =>
+        entry.type === 'system' && entry.subtype === 'compact_boundary',
+    )
+    const compactSummaries = entries.filter(
+      (entry) => entry.type === 'user' && entry.isCompactSummary === true,
+    )
+    expect(compactBoundaries).toHaveLength(1)
+    expect(compactSummaries).toHaveLength(1)
+    expect(compactBoundaries[0]?.version).toBe('9.0.0')
+    expect(compactSummaries[0]?.version).toBe('9.0.0')
+
+    const versioned = entries.filter((entry) => 'version' in entry)
+    expect(versioned.length).toBeGreaterThan(0)
+    for (const entry of versioned) {
+      expect(entry.version).toBe('9.0.0')
+    }
   })
 
   it('keeps a completed user entry when the provider fails', async () => {
