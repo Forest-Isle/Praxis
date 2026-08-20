@@ -2236,6 +2236,9 @@ export function CommandPalette({
   screenReader: boolean
 }) {
   const palette = useTuiPalette()
+  const paletteWidth = Math.max(1, Math.min(100, width))
+  const nameWidth = Math.min(30, paletteWidth)
+  const descriptionWidth = Math.max(0, paletteWidth - nameWidth)
   const maxVisible = 12
   const start = Math.max(
     0,
@@ -2262,7 +2265,7 @@ export function CommandPalette({
     )
   }
   return (
-    <Box flexDirection="column" width={Math.min(100, width)}>
+    <Box flexDirection="column" width={paletteWidth}>
       {visible.length === 0 ? (
         <Text dimColor>No matching commands.</Text>
       ) : (
@@ -2270,16 +2273,19 @@ export function CommandPalette({
           const index = start + visibleIndex
           const selected = index === selectedIndex
           return (
-            <Box key={command.name} flexDirection="row">
-              <Box width={30}>
+            <Box key={command.name} flexDirection="row" width={paletteWidth}>
+              <Box width={nameWidth} flexShrink={0}>
                 <Text
+                  wrap="truncate-end"
                   {...(selected ? { color: palette.brand, bold: true } : {})}
                 >
                   /{command.name}
                 </Text>
               </Box>
-              <Box flexGrow={1}>
-                <Text dimColor>{command.description}</Text>
+              <Box width={descriptionWidth} flexShrink={1}>
+                <Text dimColor wrap="truncate-end">
+                  {command.description}
+                </Text>
               </Box>
             </Box>
           )
