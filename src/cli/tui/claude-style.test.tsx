@@ -452,6 +452,19 @@ describe('Claude-style TUI components', () => {
     expect(frame).not.toContain('earlier streaming content')
   })
 
+  it('hides the live stream while viewing an older transcript window', () => {
+    const app = render(
+      <Transcript
+        screenReader={false}
+        activeText="live output below"
+        activeStreamVisible={false}
+        items={[{ kind: 'assistant', text: 'older reply' }]}
+      />,
+    )
+    expect(app.lastFrame()).toContain('older reply')
+    expect(app.lastFrame()).not.toContain('live output below')
+  })
+
   it('splits active streaming text into a bounded stable window and plain tail', () => {
     expect(activeStreamWindow('partial line')).toEqual({
       stableText: '',

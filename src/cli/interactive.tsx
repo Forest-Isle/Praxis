@@ -7230,6 +7230,7 @@ export function InteractiveApp({
                 items={projectedHistory}
                 activeText={activeText}
                 activeThinking={activeThinking}
+                activeStreamVisible={transcriptScrollOffset === 0}
                 thinkingExpanded={thinkingExpanded}
                 detailedTranscript={thinkingExpanded || runtimeSettings.verbose}
                 screenReader={axScreenReader}
