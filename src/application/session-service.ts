@@ -73,7 +73,7 @@ import {
 } from '../compatibility/claude/translation.js'
 import {
   AgentRunCancelledError,
-  AgentRunResult,
+  type AgentRunResult,
   AgentRuntime,
   type ModelContentBlock,
   type ModelDocument,
