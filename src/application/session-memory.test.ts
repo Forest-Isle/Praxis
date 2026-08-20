@@ -161,6 +161,37 @@ describe('SessionMemoryController', () => {
     expect(state.lastSummarizedMessageId).toBe('m5')
   })
 
+  it('observeDelta accumulates deltas and extracts once at the update threshold', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    const received: Array<{ tokens: number; toolCalls: number }> = []
+    const controller = new SessionMemoryController({
+      store,
+      initTokens: 10_000,
+      updateTokens: 5_000,
+      updateToolCalls: 20,
+      extractor: async ({ tokens, toolCalls }) => {
+        received.push({ tokens, toolCalls })
+        return `extracted ${tokens} tokens / ${toolCalls} tool calls`
+      },
+    })
+    // Initialize with the absolute-total observe API.
+    expect(await controller.observe(12_000, 5, 'm-init')).toBe(true)
+    await controller.waitForIdle()
+    expect(received).toHaveLength(1)
+    // A delta below the update threshold is retained for the next call.
+    expect(await controller.observeDelta(3_000, 0, 'm-below')).toBe(false)
+    // The next delta reaches exactly +5000 accumulated tokens and extracts once.
+    expect(await controller.observeDelta(2_000, 0, 'm-cross')).toBe(true)
+    await controller.waitForIdle()
+    expect(received).toHaveLength(2)
+    expect(received[1]).toEqual({ tokens: 17_000, toolCalls: 5 })
+    const state = await store.load()
+    expect(state.lastObservedTokens).toBe(17_000)
+    expect(state.lastObservedToolCalls).toBe(5)
+    expect(state.lastSummarizedMessageId).toBe('m-cross')
+  })
+
   it('serializes concurrent observations onto one extraction', async () => {
     const configRoot = await tempConfigRoot()
     const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })

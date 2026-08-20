@@ -157,6 +157,12 @@ import {
 } from './session-cost-tracker.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
 import { completeMeteredModelRequest } from './metered-model-completion.js'
+import {
+  SessionMemoryController,
+  SessionMemoryStateError,
+  SessionMemoryStore,
+  type SessionMemoryExtractorInput,
+} from './session-memory.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import {
   ClaudeCapabilityToolRegistry,
@@ -235,6 +241,10 @@ export interface ClaudeSessionServiceOptions {
   brief?: boolean
   collectMetrics?: boolean
   sessionPersistence?: boolean
+  /** Enable durable per-session memory extraction and injection. Defaults to
+   *  enabled whenever session persistence is enabled; ignored when
+   *  `sessionPersistence === false`. */
+  enableSessionMemory?: boolean
   sessionKind?: 'bg'
   workspace?: WorkspaceContext
   initialWorktree?: boolean
@@ -687,6 +697,21 @@ Use 2-12 words. Do not ask a question, evaluate the prior response, introduce a 
 const SESSION_NAME_INSTRUCTION = `Generate a concise name for this coding session based on the conversation.
 Use 2-5 short words in kebab-case. Reply with ONLY the name, without quotes, punctuation, or explanation.`
 
+const SESSION_MEMORY_MAX_LINES = 200
+const SESSION_MEMORY_MAX_CHARS = 32_000
+
+const SESSION_MEMORY_EXTRACTION_PROMPT = `You maintain durable session memory for one coding session.
+
+Update the durable session memory from the conversation so far. Preserve:
+- The user's intent and current goals
+- Decisions made and the reasoning behind them
+- Active constraints, requirements, and preferences
+- Pending work, blockers, and next steps
+
+Omit transient chatter, credentials, secrets, or personal data.
+
+Return ONLY an updated Markdown document that becomes the session's durable memory. Do not call tools. Do not include any prose outside the Markdown document.`
+
 function validPromptSuggestion(value: string): string | null {
   const suggestion = value.trim()
   if (!suggestion) return null
@@ -734,6 +759,10 @@ export class ClaudeSessionService {
   >()
   private activeCostSessionId: string | undefined
   private closeCostSavePromise: Promise<void> | undefined
+  private readonly sessionMemoryControllers = new Map<
+    string,
+    SessionMemoryController
+  >()
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
@@ -904,6 +933,7 @@ export class ClaudeSessionService {
     await Promise.all([...this.backgroundNotificationWrites.values()])
     this.hostedSubagents.clear()
     this.backgroundTasks.clear()
+    this.sessionMemoryControllers.clear()
     await this.workflowManager?.close()
     this.closeCostSavePromise ??= this.persistActiveSessionCost()
     await this.closeCostSavePromise
@@ -3052,6 +3082,7 @@ export class ClaudeSessionService {
             }),
       })
       let currentTurnUserMessages: string[] | null = null
+      let currentTurnToolCalls = 0
       const observer = {
         assistantCompleted: async (message: {
           content: string
@@ -3093,6 +3124,7 @@ export class ClaudeSessionService {
             nativeMcpMeta?: Record<string, unknown>
           },
         ) => {
+          currentTurnToolCalls += 1
           const transition = this.worktreeManager?.consumeTransition(call.id)
           if (transition) {
             const stateEntry: ClaudeTranscriptEntry = {
@@ -3305,6 +3337,10 @@ export class ClaudeSessionService {
         )
         const planModeMessage =
           this.options.interactiveTools?.contextMessage(sessionId)
+        const sessionMemory = this.sessionMemoryController(sessionId)
+        const sessionMemoryMessage = sessionMemory
+          ? this.sessionMemoryMessage(await sessionMemory.summary())
+          : null
         const contextMessages = [
           ...(agentSystem
             ? [{ role: 'system' as const, content: agentSystem }]
@@ -3312,6 +3348,9 @@ export class ClaudeSessionService {
           ...assembledSystemMessages,
           ...(planModeMessage
             ? [{ role: 'system' as const, content: planModeMessage }]
+            : []),
+          ...(sessionMemoryMessage
+            ? [{ role: 'system' as const, content: sessionMemoryMessage }]
             : []),
           ...(this.options.brief
             ? [
@@ -3472,6 +3511,9 @@ export class ClaudeSessionService {
             throw new Error(
               'Cannot compact a Claude session with unresolved tool calls',
             )
+          }
+          if (sessionMemory) {
+            await sessionMemory.waitForIdle()
           }
           this.options.eventSink?.({ type: 'state', state: 'compacting' })
           const compactEnvelope = budget.evaluate(
@@ -4185,6 +4227,27 @@ export class ClaudeSessionService {
               ? {}
               : { linesRemoved: foregroundLineChanges.linesRemoved }),
           })
+        }
+        if (sessionMemory && finalLeafUuid) {
+          const turnInputTokens = result.usage?.inputTokens ?? 0
+          try {
+            await sessionMemory.observeDelta(
+              turnInputTokens,
+              currentTurnToolCalls,
+              finalLeafUuid,
+              projectClaudeModelMessages(snapshot.entries),
+            )
+            await sessionMemory.waitForIdle()
+          } catch (error) {
+            // A failed extraction must not fail the user turn; the sidecar
+            // retains a retryable error for the next observation.
+            this.options.eventSink?.({
+              type: 'warning',
+              message: `Session memory extraction failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            })
+          }
         }
         return {
           sessionId,
@@ -5091,6 +5154,131 @@ export class ClaudeSessionService {
         ? {}
         : { reserveTokens: this.options.contextReserveTokens }),
     })
+  }
+
+  private sessionMemoryEnabled(): boolean {
+    if (this.options.enableSessionMemory === false) return false
+    if (this.options.sessionPersistence === false) return false
+    return true
+  }
+
+  private sessionMemoryController(
+    sessionId: string,
+  ): SessionMemoryController | null {
+    if (!this.sessionMemoryEnabled() || !isClaudeSessionId(sessionId)) {
+      return null
+    }
+    let controller = this.sessionMemoryControllers.get(sessionId)
+    if (!controller) {
+      controller = new SessionMemoryController({
+        store: new SessionMemoryStore({
+          configRoot: this.options.configRoot,
+          sessionId,
+        }),
+        extractor: (input) => this.extractSessionMemory(sessionId, input),
+      })
+      this.sessionMemoryControllers.set(sessionId, controller)
+    }
+    return controller
+  }
+
+  private sessionMemoryMessage(summary: string): string | null {
+    const bounded = this.boundSessionMemorySummary(summary.trim())
+    if (bounded.length === 0) return null
+    return `# Session Memory\n\n${bounded}`
+  }
+
+  private boundSessionMemorySummary(summary: string): string {
+    const lines = summary.split('\n')
+    const content =
+      lines.length > SESSION_MEMORY_MAX_LINES
+        ? lines.slice(0, SESSION_MEMORY_MAX_LINES).join('\n')
+        : summary
+    return content.length > SESSION_MEMORY_MAX_CHARS
+      ? content.slice(0, SESSION_MEMORY_MAX_CHARS)
+      : content
+  }
+
+  private formatSessionMemoryConversation(
+    messages: readonly ModelMessage[],
+  ): string {
+    const parts: string[] = []
+    for (const message of messages) {
+      if (message.role === 'system') {
+        parts.push(`System: ${message.content}`)
+      } else if (message.role === 'user') {
+        const body =
+          message.contentBlocks === undefined
+            ? message.content
+            : message.contentBlocks
+                .map((block) =>
+                  block.type === 'text'
+                    ? block.text
+                    : block.type === 'image'
+                      ? '[image]'
+                      : '[document]',
+                )
+                .join('\n')
+        parts.push(`User: ${body}`)
+      } else if (message.role === 'assistant') {
+        const toolCalls =
+          message.toolCalls === undefined || message.toolCalls.length === 0
+            ? ''
+            : `\n${message.toolCalls
+                .map((call) => `${call.name}(${JSON.stringify(call.input)})`)
+                .join('\n')}`
+        parts.push(`Assistant: ${message.content}${toolCalls}`)
+      } else {
+        parts.push(`Tool result: ${message.content}`)
+      }
+    }
+    return this.boundSessionMemorySummary(parts.join('\n\n'))
+  }
+
+  private async extractSessionMemory(
+    sessionId: string,
+    input: SessionMemoryExtractorInput,
+  ): Promise<string> {
+    const provider = this.provider()
+    const messages: ModelMessage[] = [
+      { role: 'system', content: SESSION_MEMORY_EXTRACTION_PROMPT },
+      ...(input.summary.trim().length === 0
+        ? []
+        : [
+            {
+              role: 'system' as const,
+              content: `Previous session memory summary:\n\n${this.boundSessionMemorySummary(input.summary)}`,
+            },
+          ]),
+      ...(input.messages === undefined || input.messages.length === 0
+        ? []
+        : [
+            {
+              role: 'user' as const,
+              content: `Conversation so far:\n\n${this.formatSessionMemoryConversation(input.messages)}`,
+            },
+          ]),
+    ]
+    const metrics = await completeMeteredModelRequest(
+      provider,
+      { messages },
+      {
+        onMetrics: (recorded) =>
+          this.recordAuxiliaryMetrics(sessionId, recorded),
+      },
+    )
+    if (metrics.toolCalls.length > 0) {
+      throw new SessionMemoryStateError(
+        'Session memory extraction must not call tools',
+      )
+    }
+    const summary = metrics.text.trim()
+    if (summary.length === 0) {
+      throw new SessionMemoryStateError(
+        'Session memory extractor returned an empty summary',
+      )
+    }
+    return summary
   }
 
   private toolCapabilities(): ReadonlySet<string> {

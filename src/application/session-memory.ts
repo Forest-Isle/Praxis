@@ -1,6 +1,7 @@
 import { readFile, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
+import type { ModelMessage } from '../core/runtime.js'
 import { isClaudeSessionId } from '../compatibility/claude/paths.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 
@@ -224,6 +225,7 @@ export interface SessionMemoryExtractorInput {
   summary: string
   tokens: number
   toolCalls: number
+  messages?: readonly ModelMessage[]
 }
 
 export type SessionMemoryExtractor = (
@@ -250,10 +252,12 @@ export class SessionMemoryController {
   private readonly updateTokens: number
   private readonly updateToolCalls: number
   private readonly waitTimeoutMs: number
-  private state: SessionMemoryState | null = null
-  private summary = ''
+  private stateValue: SessionMemoryState | null = null
+  private summaryValue = ''
   private inFlight: Promise<void> | null = null
   private loading: Promise<void> | null = null
+  private observedTokens = 0
+  private observedToolCalls = 0
 
   constructor(private readonly options: SessionMemoryControllerOptions) {
     this.initTokens = options.initTokens ?? 10_000
@@ -286,9 +290,10 @@ export class SessionMemoryController {
     tokens: number,
     toolCalls: number,
     messageId: string,
+    messages?: readonly ModelMessage[],
   ): Promise<boolean> {
     await this.ensureLoaded()
-    const state = this.state
+    const state = this.stateValue
     if (state === null) {
       throw new SessionMemoryStateError('Session memory state is unavailable')
     }
@@ -313,9 +318,18 @@ export class SessionMemoryController {
         `Session memory observed counters regressed (tokens ${tokens} < ${state.lastObservedTokens}, toolCalls ${toolCalls} < ${state.lastObservedToolCalls})`,
       )
     }
-    if (!this.isExtractionDue(tokens, toolCalls)) return false
+    this.observedTokens = Math.max(this.observedTokens, tokens)
+    this.observedToolCalls = Math.max(this.observedToolCalls, toolCalls)
+    if (!this.isExtractionDue(this.observedTokens, this.observedToolCalls)) {
+      return false
+    }
     if (this.inFlight === null) {
-      const extraction = this.runExtraction(tokens, toolCalls, messageId)
+      const extraction = this.runExtraction(
+        this.observedTokens,
+        this.observedToolCalls,
+        messageId,
+        messages,
+      )
       this.inFlight = extraction
       extraction
         .catch(() => undefined)
@@ -324,6 +338,60 @@ export class SessionMemoryController {
         })
     }
     return true
+  }
+
+  /**
+   * Adds non-negative deltas to the current cumulative observed totals and
+   * delegates to the serialized extraction path with those cumulative totals.
+   * The persisted counters only advance once an extraction succeeds.
+   */
+  async observeDelta(
+    inputTokens: number,
+    toolCalls: number,
+    messageId: string,
+    messages?: readonly ModelMessage[],
+  ): Promise<boolean> {
+    await this.ensureLoaded()
+    const state = this.stateValue
+    if (state === null) {
+      throw new SessionMemoryStateError('Session memory state is unavailable')
+    }
+    if (
+      !isNonNegativeSafeInteger(inputTokens) ||
+      !isNonNegativeSafeInteger(toolCalls)
+    ) {
+      throw new SessionMemoryStateError(
+        'Session memory observed deltas must be non-negative safe integers',
+      )
+    }
+    if (typeof messageId !== 'string' || messageId.length === 0) {
+      throw new SessionMemoryStateError(
+        'Session memory message ID must be a non-empty string',
+      )
+    }
+    this.observedTokens += inputTokens
+    this.observedToolCalls += toolCalls
+    return this.observe(
+      this.observedTokens,
+      this.observedToolCalls,
+      messageId,
+      messages,
+    )
+  }
+
+  /** Safe snapshot of the loaded durable summary; empty when none exists. */
+  async summary(): Promise<string> {
+    await this.ensureLoaded()
+    return this.summaryValue
+  }
+
+  /** Safe snapshot of the loaded session memory state. */
+  async state(): Promise<SessionMemoryState> {
+    await this.ensureLoaded()
+    if (this.stateValue === null) {
+      throw new SessionMemoryStateError('Session memory state is unavailable')
+    }
+    return { ...this.stateValue }
   }
 
   /** Resolves when no extraction is running; rejects on failure or timeout. */
@@ -358,8 +426,11 @@ export class SessionMemoryController {
       )
     }
     await this.options.store.clear()
-    this.state = createFreshSessionMemoryState()
-    this.summary = ''
+    const fresh = createFreshSessionMemoryState()
+    this.stateValue = fresh
+    this.observedTokens = fresh.lastObservedTokens
+    this.observedToolCalls = fresh.lastObservedToolCalls
+    this.summaryValue = ''
   }
 
   private ensureLoaded(): Promise<void> {
@@ -391,15 +462,17 @@ export class SessionMemoryController {
             : 'Session memory extraction was interrupted',
       }
       await this.options.store.writeState(recovered)
-      this.state = recovered
+      this.stateValue = recovered
     } else {
-      this.state = state
+      this.stateValue = state
     }
-    this.summary = summary
+    this.observedTokens = this.stateValue.lastObservedTokens
+    this.observedToolCalls = this.stateValue.lastObservedToolCalls
+    this.summaryValue = summary
   }
 
   private isExtractionDue(tokens: number, toolCalls: number): boolean {
-    const state = this.state
+    const state = this.stateValue
     if (state === null) return false
     if (!state.initialized) return tokens >= this.initTokens
     return (
@@ -412,23 +485,25 @@ export class SessionMemoryController {
     tokens: number,
     toolCalls: number,
     messageId: string,
+    messages?: readonly ModelMessage[],
   ): Promise<void> {
-    const state = this.state
+    const state = this.stateValue
     if (state === null) {
       throw new SessionMemoryStateError('Session memory state is unavailable')
     }
-    this.state = {
+    this.stateValue = {
       ...state,
       extractionStartedAt: Date.now(),
       extractionCompletedAt: null,
       extractionError: null,
     }
-    await this.options.store.writeState(this.state)
+    await this.options.store.writeState(this.stateValue)
     try {
       const summary = await this.options.extractor({
-        summary: this.summary,
+        summary: this.summaryValue,
         tokens,
         toolCalls,
+        ...(messages?.length ? { messages } : {}),
       })
       if (typeof summary !== 'string' || summary.trim().length === 0) {
         throw new SessionMemoryStateError(
@@ -438,8 +513,8 @@ export class SessionMemoryController {
       // Persist the summary before the completed state so a crash in between
       // is recovered as a stale extraction and safely re-extracted.
       await this.options.store.writeSummary(summary)
-      this.state = {
-        ...this.state,
+      this.stateValue = {
+        ...this.stateValue,
         initialized: true,
         lastObservedTokens: tokens,
         lastObservedToolCalls: toolCalls,
@@ -448,17 +523,19 @@ export class SessionMemoryController {
         extractionCompletedAt: Date.now(),
         extractionError: null,
       }
-      await this.options.store.writeState(this.state)
-      this.summary = summary
+      await this.options.store.writeState(this.stateValue)
+      this.summaryValue = summary
     } catch (error) {
       const failure = error instanceof Error ? error.message : String(error)
-      this.state = {
-        ...this.state,
+      this.stateValue = {
+        ...this.stateValue,
         extractionStartedAt: null,
         extractionCompletedAt: null,
         extractionError: failure,
       }
-      await this.options.store.writeState(this.state).catch(() => undefined)
+      await this.options.store
+        .writeState(this.stateValue)
+        .catch(() => undefined)
       throw error
     }
   }

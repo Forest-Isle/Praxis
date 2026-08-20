@@ -1267,6 +1267,191 @@ describe('ClaudeSessionService', () => {
     expect(completions).toBe(2)
   })
 
+  it('extracts durable session memory, injects it on resume, and coordinates with auto compact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    const events: RuntimeEvent[] = []
+    let calls = 0
+    let compactions = 0
+    const provider: ModelProvider = {
+      model: 'session-memory-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 2_500,
+      },
+      async *complete(request) {
+        requests.push(request)
+        const call = calls++
+        if (call === 0) {
+          // Turn 1: large transcript plus usage that crosses the extraction
+          // threshold so extraction runs before the turn result returns.
+          yield {
+            type: 'text-delta',
+            delta: `initial ${'discarded '.repeat(600)}`,
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 12_000, outputTokens: 50 },
+          }
+          return
+        }
+        if (call === 1) {
+          // Session memory extraction: provider-backed, no tools.
+          yield { type: 'text-delta', delta: 'Durable intent: initial task.' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 20 },
+          }
+          return
+        }
+        // Resume turn 2.
+        yield { type: 'text-delta', delta: 'resumed answer' }
+        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      contextReserveTokens: 1_500,
+      eventSink: (event) => events.push(event),
+      compactor: {
+        async compact() {
+          compactions += 1
+          return {
+            summary: 'COMPACTED_SESSION_MEMORY',
+            usage: { inputTokens: 3, outputTokens: 2 },
+            durationMs: 1,
+            model: 'session-memory-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('first task')
+    expect(run.text.startsWith('initial')).toBe(true)
+
+    const memoryDir = join(
+      configRoot,
+      'praxis',
+      'session-memory',
+      run.sessionId,
+    )
+    // Extraction completed before the turn result returned.
+    const summary = await readFile(join(memoryDir, 'summary.md'), 'utf8')
+    expect(summary).toContain('Durable intent: initial task.')
+    // Extraction is a no-tool provider call, not a shared transcript entry.
+    expect(requests[1]?.tools).toBeUndefined()
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('# Session Memory')
+
+    const resumed = await service.resume(run.sessionId, 'Continue the task.')
+    expect(resumed.text).toBe('resumed answer')
+
+    const resumedRequest = requests[2]
+    const memorySystemMessage = resumedRequest?.messages.find(
+      (message): message is { role: 'system'; content: string } =>
+        message.role === 'system' &&
+        typeof message.content === 'string' &&
+        message.content.includes('# Session Memory'),
+    )
+    expect(memorySystemMessage?.content).toContain(
+      'Durable intent: initial task.',
+    )
+
+    // The oversized transcript is compacted automatically while session memory
+    // stays enabled; the compact wait runs without racing an extraction.
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'compact-boundary' && event.trigger === 'auto',
+      ),
+    ).toBe(true)
+    expect(compactions).toBeGreaterThanOrEqual(1)
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'warning' &&
+          String(event.message).includes('Session memory'),
+      ),
+    ).toBe(false)
+
+    await service.close()
+
+    // A failed extraction leaves the foreground turn successful and records a
+    // retryable sidecar error for the next observation.
+    const failureRoot = await mkdtemp(
+      join(tmpdir(), 'praxis-session-memory-failure-'),
+    )
+    roots.push(failureRoot)
+    const failureConfigRoot = join(failureRoot, 'config')
+    const failureCwd = join(failureRoot, 'project')
+    const failureEvents: RuntimeEvent[] = []
+    let failureCalls = 0
+    const failingProvider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        const call = failureCalls++
+        if (call === 0) {
+          yield { type: 'text-delta', delta: 'failing turn answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 12_000, outputTokens: 50 },
+          }
+          return
+        }
+        throw new ModelProviderError('session-memory provider failed', {
+          retryable: true,
+        })
+      },
+    }
+    const failureService = new ClaudeSessionService({
+      configRoot: failureConfigRoot,
+      cwd: failureCwd,
+      claudeVersion: '2.1.208',
+      provider: failingProvider,
+      eventSink: (event) => failureEvents.push(event),
+    })
+    const failedRun = await failureService.run('failing task')
+    expect(failedRun.text).toBe('failing turn answer')
+    expect(
+      failureEvents.some(
+        (event) =>
+          event.type === 'warning' &&
+          String(event.message).includes('Session memory'),
+      ),
+    ).toBe(true)
+    const failureState = JSON.parse(
+      await readFile(
+        join(
+          failureConfigRoot,
+          'praxis',
+          'session-memory',
+          failedRun.sessionId,
+          'state.json',
+        ),
+        'utf8',
+      ),
+    ) as { extractionError: string | null }
+    expect(failureState.extractionError).toContain(
+      'session-memory provider failed',
+    )
+    await failureService.close()
+  })
+
   it('records manual compact usage without cost and diagnoses an unknown model price', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-unknown-'))
     roots.push(root)
