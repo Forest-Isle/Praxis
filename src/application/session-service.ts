@@ -155,6 +155,12 @@ import {
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
 import { completeMeteredModelRequest } from './metered-model-completion.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
+import {
+  ClaudeCapabilityToolRegistry,
+  resolveClaudeToolCapabilities,
+  type ClaudeToolCapabilityInput,
+  type ClaudeToolRole,
+} from '../tools/claude-capabilities.js'
 import { generateToolUseSummary } from './tool-use-summary.js'
 import {
   ClaudeUserMessageToolRegistry,
@@ -204,6 +210,10 @@ export interface ClaudeSessionServiceOptions {
   subagentToolNames?: readonly string[]
   taskToolNames?: readonly string[]
   scheduledToolNames?: readonly string[]
+  /** Runtime gates for Claude capability-driven tool exposure. */
+  toolRole?: ClaudeToolRole
+  toolCapabilityEnvironment?: Readonly<Record<string, string | undefined>>
+  simpleMode?: boolean
   enableDynamicWakeups?: boolean
   enableWorkflows?: boolean
   providerForModel?: (model: string) => ModelProvider
@@ -902,8 +912,17 @@ export class ClaudeSessionService {
     const baseTools = this.options.tools
     if (!baseTools) throw new Error('Hosted tool registry requires base tools')
     const paths = this.paths(sessionId)
+    const capabilities = this.toolCapabilities()
+    const taskToolNames = this.capabilityToolNames(
+      this.options.taskToolNames,
+      capabilities,
+    )
+    const scheduledToolNames = this.capabilityToolNames(
+      this.options.scheduledToolNames,
+      capabilities,
+    )
     const taskTools =
-      (this.options.taskToolNames?.length ?? 0) > 0
+      taskToolNames.length > 0
         ? new ClaudeTaskToolRegistry({
             base: baseTools,
             cwd: this.activeCwd(),
@@ -914,22 +933,17 @@ export class ClaudeSessionService {
             ...(this.options.eventSink
               ? { eventSink: this.options.eventSink }
               : {}),
-            ...(this.options.taskToolNames
-              ? { enabledTools: this.options.taskToolNames }
-              : {}),
+            enabledTools: taskToolNames,
           })
         : null
     if (taskTools) this.backgroundTasks.registerBash(sessionId, taskTools)
     const scheduledTools =
-      this.scheduledPrompts &&
-      (this.options.scheduledToolNames?.length ?? 0) > 0
+      this.scheduledPrompts && scheduledToolNames.length > 0
         ? new ClaudeScheduledToolRegistry({
             base: taskTools ?? baseTools,
             manager: this.scheduledPrompts,
             sessionId,
-            ...(this.options.scheduledToolNames
-              ? { enabledTools: this.options.scheduledToolNames }
-              : {}),
+            enabledTools: scheduledToolNames,
           })
         : null
     const wrappedBase = scheduledTools ?? taskTools ?? baseTools
@@ -967,7 +981,12 @@ export class ClaudeSessionService {
                   this.options.permissionMode,
               ),
             ...(this.options.subagentToolNames
-              ? { toolNames: this.options.subagentToolNames }
+              ? {
+                  toolNames: this.capabilityToolNames(
+                    this.options.subagentToolNames,
+                    capabilities,
+                  ),
+                }
               : {}),
             ...(this.options.extensions
               ? { extensions: this.options.extensions }
@@ -1023,7 +1042,7 @@ export class ClaudeSessionService {
             promptIdForCall: (callId) => callId,
             defaultModel: this.options.provider?.model ?? 'praxis/provider',
             tokenBudget: null,
-            enabled: true,
+            enabled: capabilities.has('Workflow'),
           })
         : agentTools
     if (this.worktreeManager) this.worktreeManager.bindSession(sessionId)
@@ -1053,6 +1072,10 @@ export class ClaudeSessionService {
     const interactiveRegistry = this.options.interactiveTools
       ? this.options.interactiveTools.registry(messageRegistry, sessionId)
       : messageRegistry
+    const capabilityRegistry = new ClaudeCapabilityToolRegistry(
+      interactiveRegistry,
+      capabilities,
+    )
     const preferredOrder = [
       'Agent',
       'AskUserQuestion',
@@ -1088,7 +1111,7 @@ export class ClaudeSessionService {
     ]
     const hostedRegistry: ToolRegistry = {
       definitions: () => {
-        const definitions = interactiveRegistry.definitions()
+        const definitions = capabilityRegistry.definitions()
         return [...definitions].sort((left, right) => {
           const leftIndex = preferredOrder.indexOf(left.name)
           const rightIndex = preferredOrder.indexOf(right.name)
@@ -1098,8 +1121,8 @@ export class ClaudeSessionService {
           )
         })
       },
-      prepare: (call, context) => interactiveRegistry.prepare(call, context),
-      execute: (call, context) => interactiveRegistry.execute(call, context),
+      prepare: (call, context) => capabilityRegistry.prepare(call, context),
+      execute: (call, context) => capabilityRegistry.execute(call, context),
     }
     if (subagentExecutor) {
       this.hostedSubagentsByRegistry.set(hostedRegistry, subagentExecutor)
@@ -2721,8 +2744,17 @@ export class ClaudeSessionService {
         snapshot = { entries: history, tail: appendResult.tail }
         pendingRecoveryHookOutcomes.length = 0
       }
+      const capabilities = this.toolCapabilities()
+      const taskToolNames = this.capabilityToolNames(
+        this.options.taskToolNames,
+        capabilities,
+      )
+      const scheduledToolNames = this.capabilityToolNames(
+        this.options.scheduledToolNames,
+        capabilities,
+      )
       const taskTools =
-        this.options.tools && (this.options.taskToolNames?.length ?? 0) > 0
+        this.options.tools && taskToolNames.length > 0
           ? new ClaudeTaskToolRegistry({
               base: this.options.tools,
               cwd: this.activeCwd(),
@@ -2733,22 +2765,18 @@ export class ClaudeSessionService {
               ...(this.options.eventSink
                 ? { eventSink: this.options.eventSink }
                 : {}),
-              ...(this.options.taskToolNames
-                ? { enabledTools: this.options.taskToolNames }
-                : {}),
+              enabledTools: taskToolNames,
             })
           : null
       const scheduledTools =
         this.scheduledPrompts &&
         this.options.tools &&
-        (this.options.scheduledToolNames?.length ?? 0) > 0
+        scheduledToolNames.length > 0
           ? new ClaudeScheduledToolRegistry({
               base: taskTools ?? this.options.tools,
               manager: this.scheduledPrompts,
               sessionId,
-              ...(this.options.scheduledToolNames
-                ? { enabledTools: this.options.scheduledToolNames }
-                : {}),
+              enabledTools: scheduledToolNames,
             })
           : null
       const baseTools = scheduledTools ?? taskTools ?? this.options.tools
@@ -2784,7 +2812,12 @@ export class ClaudeSessionService {
                     this.options.permissionMode,
                 ),
               ...(this.options.subagentToolNames
-                ? { toolNames: this.options.subagentToolNames }
+                ? {
+                    toolNames: this.capabilityToolNames(
+                      this.options.subagentToolNames,
+                      capabilities,
+                    ),
+                  }
                 : {}),
               ...(this.options.extensions
                 ? { extensions: this.options.extensions }
@@ -2853,7 +2886,7 @@ export class ClaudeSessionService {
                 this.promptIdForToolCall(snapshot.entries, callId),
               defaultModel: provider.model ?? 'praxis/provider',
               tokenBudget: workflowTokenTarget(effectivePrompt),
-              enabled: true,
+              enabled: capabilities.has('Workflow'),
             })
           : agentTools
       const workspaceTools =
@@ -2948,15 +2981,18 @@ export class ClaudeSessionService {
               },
             }
           : interactiveMessageTools
+      const capabilityTools = fileHistoryTools
+        ? new ClaudeCapabilityToolRegistry(fileHistoryTools, capabilities)
+        : undefined
       const structuredCapture = this.options.structuredOutputSchema
         ? { calls: 0, value: undefined as unknown }
         : undefined
       const agentScopedTools =
-        agent && fileHistoryTools
-          ? new FilteredToolRegistry(fileHistoryTools, {
-              tools: mainAgentToolNames(fileHistoryTools, agent),
+        agent && capabilityTools
+          ? new FilteredToolRegistry(capabilityTools, {
+              tools: mainAgentToolNames(capabilityTools, agent),
             })
-          : fileHistoryTools
+          : capabilityTools
       const structuredTools =
         this.options.structuredOutputSchema && structuredCapture
           ? new StructuredOutputRegistry(
@@ -5002,6 +5038,51 @@ export class ClaudeSessionService {
         ? {}
         : { reserveTokens: this.options.contextReserveTokens }),
     })
+  }
+
+  private toolCapabilities(): ReadonlySet<string> {
+    const taskNames = this.options.taskToolNames ?? []
+    const input: ClaudeToolCapabilityInput = {
+      role: this.options.toolRole ?? 'main',
+      interactive: this.options.interactiveTools !== undefined,
+      simpleMode: this.options.simpleMode ?? false,
+      tasks: taskNames.some((name) =>
+        ['TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate'].includes(name),
+      ),
+      agentTriggers: (this.options.scheduledToolNames?.length ?? 0) > 0,
+      backgroundAgents: taskNames.some((name) =>
+        ['TaskOutput', 'TaskStop'].includes(name),
+      ),
+      ...(this.options.enableWorkflows === undefined
+        ? {}
+        : { workflowScripts: this.options.enableWorkflows }),
+      ...(this.options.enableSubagents === undefined
+        ? {}
+        : { subagents: this.options.enableSubagents }),
+      ...(this.options.toolCapabilityEnvironment
+        ? { env: this.options.toolCapabilityEnvironment }
+        : {}),
+    }
+    return resolveClaudeToolCapabilities(input)
+  }
+
+  private capabilityToolNames(
+    names: readonly string[] | undefined,
+    capabilities: ReadonlySet<string>,
+  ): readonly string[] {
+    return (names ?? [])
+      .filter((name) => !name.startsWith('Task') || capabilities.has(name))
+      .filter(
+        (name) =>
+          ![
+            'Workflow',
+            'Agent',
+            'CronCreate',
+            'CronDelete',
+            'CronList',
+            'ScheduleWakeup',
+          ].includes(name) || capabilities.has(name),
+      )
   }
 
   private async append(

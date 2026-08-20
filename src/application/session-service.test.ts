@@ -3549,6 +3549,47 @@ describe('ClaudeSessionService', () => {
     }
   })
 
+  it('filters hosted tool exposure by role capabilities before prepare or execution', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-capability-registry-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['hosted response']),
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      taskToolNames: ['TaskCreate', 'TaskOutput', 'TaskStop'],
+      enableSubagents: true,
+      subagentToolNames: ['Agent'],
+      toolRole: 'worker',
+      sessionPersistence: true,
+    })
+
+    try {
+      const registry = service.createHostedToolRegistry(sessionId)
+      const names = registry.definitions().map(({ name }) => name)
+      expect(names).toContain('TaskCreate')
+      expect(names).not.toEqual(
+        expect.arrayContaining(['Agent', 'TaskOutput', 'TaskStop']),
+      )
+      await expect(
+        registry.prepare({ id: 'agent', name: 'Agent', input: {} }, { cwd }),
+      ).rejects.toThrow('unavailable')
+      await expect(
+        registry.execute(
+          { id: 'output', name: 'TaskOutput', input: {} },
+          { cwd },
+        ),
+      ).rejects.toThrow('unavailable')
+    } finally {
+      await service.close()
+    }
+  })
+
   it('wires provider-backed tool-use summaries through the session event sink', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-summary-session-'))
     roots.push(root)
