@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { TuiThemeProvider } from './theme.js'
 import {
+  ACTIVE_STREAM_MAX_LINES,
   CommandPalette,
   Composer,
   DiffDashboard,
@@ -25,6 +26,7 @@ import {
   ThemePicker,
   Transcript,
   WelcomePanel,
+  activeStreamWindow,
 } from './claude-style.js'
 import { projectTuiHooks } from './hook-settings.js'
 
@@ -381,6 +383,101 @@ describe('Claude-style TUI components', () => {
     expect(accessible).toContain('Praxis: streaming tail')
     expect(accessible).toContain('const ok = true')
     expect(accessible).not.toContain('✳')
+  })
+
+  it('renders incomplete streaming Markdown without corrupting the frame', () => {
+    const app = render(
+      <Transcript
+        screenReader={false}
+        activeText="# Unfinished\n```ts\nconst partial = "
+        items={[]}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    // The completed heading line still renders through the Markdown path.
+    expect(frame).toContain('✳')
+    expect(frame).toContain('Unfinished')
+    // The unterminated code fence cannot swallow the pending partial line or
+    // produce a spurious close; every row stays within the viewport width.
+    expect(frame).toContain('const partial =')
+    expect(frame).not.toContain('╰─')
+    expect(frame.split('\n').every((line) => line.length <= 80)).toBe(true)
+  })
+
+  it('bounds the active streaming window while completed turns stay full', () => {
+    const lines = Array.from(
+      { length: 60 },
+      (_, index) => `stream line ${index}`,
+    )
+    const app = render(
+      <Transcript
+        screenReader={false}
+        activeText={`${lines.join('\n')}\npending tail`}
+        items={[]}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    // The bounded window keeps the most recent lines and the plain pending
+    // tail, and marks the dropped earlier content instead of re-rendering it.
+    expect(frame).toContain('earlier streaming content')
+    expect(frame).toContain('stream line 59')
+    expect(frame).toContain('pending tail')
+    expect(frame).not.toContain('stream line 0')
+
+    // Completed assistant entries still render the full document through the
+    // regular history Markdown path, so observable final text is unchanged.
+    const completed = render(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        items={[{ kind: 'assistant', text: lines.join('\n') }]}
+      />,
+    )
+    expect(completed.lastFrame()).toContain('stream line 0')
+    expect(completed.lastFrame()).toContain('stream line 59')
+  })
+
+  it('keeps the full active stream for screen readers', () => {
+    const lines = Array.from(
+      { length: 60 },
+      (_, index) => `stream line ${index}`,
+    )
+    const app = render(
+      <Transcript screenReader activeText={lines.join('\n')} items={[]} />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Praxis:')
+    expect(frame).toContain('stream line 0')
+    expect(frame).toContain('stream line 59')
+    expect(frame).not.toContain('earlier streaming content')
+  })
+
+  it('splits active streaming text into a bounded stable window and plain tail', () => {
+    expect(activeStreamWindow('partial line')).toEqual({
+      stableText: '',
+      pendingText: 'partial line',
+      truncated: false,
+    })
+    expect(activeStreamWindow('head\nbody')).toEqual({
+      stableText: 'head\n',
+      pendingText: 'body',
+      truncated: false,
+    })
+    expect(activeStreamWindow('one\n')).toEqual({
+      stableText: 'one\n',
+      pendingText: '',
+      truncated: false,
+    })
+    const many = Array.from(
+      { length: ACTIVE_STREAM_MAX_LINES + 10 },
+      (_, index) => `line ${index}`,
+    ).join('\n')
+    const window = activeStreamWindow(`${many}\ntail`)
+    expect(window.truncated).toBe(true)
+    expect(window.pendingText).toBe('tail')
+    expect(window.stableText.startsWith('line 10')).toBe(true)
+    expect(window.stableText).toContain('line 49')
+    expect(window.stableText).not.toContain('line 0')
   })
 
   it('gives user, assistant, tool, result, and warning distinct shapes', () => {

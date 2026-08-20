@@ -88,6 +88,7 @@ import {
   type TuiMemoryFiles,
 } from './tui/memory-files.js'
 import { loadClaudeReleaseNotes } from './tui/release-notes.js'
+import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import {
   loadGitDiff,
@@ -1308,6 +1309,20 @@ export function InteractiveApp({
   const [status, setStatus] = useState('ready')
   const [activeText, setActiveText] = useState('')
   const [activeThinking, setActiveThinking] = useState('')
+  // One provider-neutral streaming frame buffer per mounted app. RuntimeEvent
+  // text/thinking deltas accumulate here and are coalesced into bounded frames
+  // instead of causing a React state update per delta. The React state is only
+  // ever written through the buffer's publish callback so the buffer's committed
+  // prefix and the displayed text stay in sync. Disposed on unmount.
+  const streamingFrameRef = useRef<StreamingFrameBuffer | null>(null)
+  if (streamingFrameRef.current === null) {
+    streamingFrameRef.current = new StreamingFrameBuffer({
+      publish: (frame) => {
+        setActiveText(frame.text)
+        setActiveThinking(frame.thinking)
+      },
+    })
+  }
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
   const [turnDuration, setTurnDuration] = useState<number | undefined>()
   const [usage, setUsage] = useState<ModelUsage | undefined>()
@@ -1661,6 +1676,7 @@ export function InteractiveApp({
   useEffect(
     () => () => {
       componentMountedRef.current = false
+      streamingFrameRef.current?.dispose()
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
@@ -1678,8 +1694,13 @@ export function InteractiveApp({
     [],
   )
 
-  const append = (line: TranscriptItem) =>
+  const append = (line: TranscriptItem) => {
+    // Any unflushed streaming deltas must be published before the boundary
+    // transcript state so the active stream never renders below a tool,
+    // thinking, or completion entry that it textually precedes.
+    streamingFrameRef.current?.flush()
     setHistory((current) => [...current, line])
+  }
 
   useEffect(() => {
     if (initialThemeSettings !== undefined) {
@@ -2152,19 +2173,19 @@ export function InteractiveApp({
   const handleEvent = (event: RuntimeEvent) => {
     switch (event.type) {
       case 'text-delta':
-        setActiveText((current) => current + event.delta)
+        streamingFrameRef.current?.appendText(event.delta)
         break
       case 'thinking-start':
-        setActiveThinking(
-          event.block.type === 'thinking'
-            ? redactSensitiveText(event.block.thinking, sensitiveValues)
-            : '',
-        )
+        streamingFrameRef.current?.resetThinking()
+        if (event.block.type === 'thinking') {
+          streamingFrameRef.current?.appendThinking(
+            redactSensitiveText(event.block.thinking, sensitiveValues),
+          )
+        }
         break
       case 'thinking-delta':
-        setActiveThinking(
-          (current) =>
-            current + redactSensitiveText(event.delta, sensitiveValues),
+        streamingFrameRef.current?.appendThinking(
+          redactSensitiveText(event.delta, sensitiveValues),
         )
         break
       case 'thinking-signature-delta':
@@ -2172,14 +2193,18 @@ export function InteractiveApp({
         // intentionally not part of the user-visible reasoning summary.
         break
       case 'thinking-stop':
+        // append flushes pending thinking deltas before the retained boundary
+        // item, keeping streaming order correct; the effective thinking getter
+        // already includes any deltas not yet published.
         append({
           kind: 'thinking',
           text:
             event.block.type === 'thinking'
               ? redactSensitiveText(event.block.thinking, sensitiveValues)
-              : activeThinking,
+              : (streamingFrameRef.current?.thinking ?? ''),
         })
-        setActiveThinking('')
+        streamingFrameRef.current?.resetThinking()
+        streamingFrameRef.current?.flush()
         break
       case 'user-message':
         append({ kind: 'assistant', text: event.message })
@@ -3793,8 +3818,9 @@ export function InteractiveApp({
         )?.progressMessage
       : undefined
     setStatus(commandProgressMessage ?? 'assembling-context')
-    setActiveText('')
-    setActiveThinking('')
+    streamingFrameRef.current?.resetText()
+    streamingFrameRef.current?.resetThinking()
+    streamingFrameRef.current?.flush()
     if (runtimeSettingsRef.current.tips && !commandProgressMessage) {
       setStatus(spinnerTip(runtimeSettingsRef.current) ?? 'assembling-context')
     }
@@ -3881,8 +3907,9 @@ export function InteractiveApp({
           // Diff snapshots are a local presentation aid and must not fail a turn.
         }
       }
-      setActiveText('')
-      setActiveThinking('')
+      streamingFrameRef.current?.resetText()
+      streamingFrameRef.current?.resetThinking()
+      streamingFrameRef.current?.flush()
       setStatus('ready')
       setTurnDuration(Date.now() - turnStartedAt)
       if (
@@ -6592,8 +6619,9 @@ export function InteractiveApp({
         setHistory([])
         setUsage(undefined)
         setCostUsd(undefined)
-        setActiveText('')
-        setActiveThinking('')
+        streamingFrameRef.current?.resetText()
+        streamingFrameRef.current?.resetThinking()
+        streamingFrameRef.current?.flush()
         setThinkingExpanded(false)
         setStatus('ready')
         inputHistoryRef.current = []
@@ -7120,14 +7148,24 @@ export function InteractiveApp({
             {!axScreenReader && !resumed && hasConversationHistory ? (
               <SessionIdentity display={runtimeDisplay} width={width} />
             ) : null}
-            <Transcript
-              items={history}
-              activeText={activeText}
-              activeThinking={activeThinking}
-              thinkingExpanded={thinkingExpanded}
-              detailedTranscript={thinkingExpanded || runtimeSettings.verbose}
-              screenReader={axScreenReader}
-            />
+            <Box
+              {...(fixedViewport
+                ? {
+                    flexShrink: 1,
+                    minHeight: 0,
+                    overflowY: 'hidden' as const,
+                  }
+                : {})}
+            >
+              <Transcript
+                items={history}
+                activeText={activeText}
+                activeThinking={activeThinking}
+                thinkingExpanded={thinkingExpanded}
+                detailedTranscript={thinkingExpanded || runtimeSettings.verbose}
+                screenReader={axScreenReader}
+              />
+            </Box>
             {externalEditorRequest !== null ||
             keybindingsEditing ||
             memoryEditorRequest !== null ? (

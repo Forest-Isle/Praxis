@@ -1520,6 +1520,134 @@ describe('InteractiveApp', () => {
     ).toBeLessThanOrEqual(1)
   })
 
+  it('keeps the composer and status anchored when the fullscreen transcript grows', async () => {
+    const longText = Array.from(
+      { length: 120 },
+      (_, index) => `stream line ${index}`,
+    ).join('\n')
+    const renderApp = (tui: 'default' | 'fullscreen') =>
+      render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          initialHistory={[
+            { kind: 'user', text: 'long prompt' },
+            { kind: 'assistant', text: longText },
+          ]}
+          runtimeSettings={{
+            ...projectRuntimeSettings({ settings: {}, state: {} }),
+            tui,
+          }}
+        />,
+      )
+    const frameRows = (frame: string | undefined): string[] => {
+      const lines = (frame ?? '').split('\n')
+      return lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
+    }
+
+    // A 120-line transcript far exceeds the fixed 24-row viewport. The
+    // transcript region must clip while the composer/status footer stays pinned
+    // to the bottom instead of being pushed below the visible frame.
+    const app = renderApp('fullscreen')
+    await flush()
+    Object.assign(app.stdout, { rows: 24 })
+    app.stdout.emit('resize')
+    const body = await waitFor(() => {
+      const candidate = frameRows(app.lastFrame())
+      return candidate.length === 24 ? candidate : undefined
+    })
+
+    const footerIndex = body.findIndex((line) => line.includes('⏵⏵'))
+    expect(footerIndex).toBeGreaterThanOrEqual(body.length - 2)
+    const promptIndex = body.findIndex((line) =>
+      line.includes('Try "review this project"'),
+    )
+    expect(promptIndex).toBeGreaterThanOrEqual(body.length - 6)
+
+    // Classic mode stays content-sized and never pins the footer to 24 rows.
+    const defaultApp = renderApp('default')
+    await flush()
+    Object.assign(defaultApp.stdout, { rows: 24 })
+    defaultApp.stdout.emit('resize')
+    const defaultBody = await waitFor(() => {
+      const candidate = frameRows(defaultApp.lastFrame())
+      return candidate.length > 0 && candidate.length > 24
+        ? candidate
+        : undefined
+    })
+    expect(defaultBody.length).toBeGreaterThan(24)
+  })
+
+  it('coalesces streamed deltas into bounded frames and preserves the exact final text', async () => {
+    const chunks = Array.from({ length: 200 }, (_, index) => `chunk-${index}`)
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const factory: InteractiveServiceFactory = {
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            for (const chunk of chunks) {
+              eventSink({ type: 'text-delta', delta: chunk })
+            }
+            await gate
+            return {
+              sessionId: 'session-1',
+              text: chunks.join(''),
+              usage: { inputTokens: 1, outputTokens: chunks.length },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    await flush()
+    app.stdin.write('burst')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    // The delta burst is buffered, not rendered synchronously per delta.
+    expect(app.lastFrame()).not.toContain('chunk-0')
+
+    // The first bounded frame publishes the full accumulated stream. Ink wraps
+    // the long single-line body, so strip whitespace to compare the contiguous
+    // string exactly.
+    const normalized = (frame: string | undefined) =>
+      (frame ?? '').replace(/\s+/gu, '')
+    await waitFor(() => {
+      const frame = app.lastFrame()
+      return frame?.includes('✳') && normalized(frame).includes(chunks.join(''))
+        ? true
+        : undefined
+    })
+    expect(app.lastFrame()).toContain('✳')
+    expect(normalized(app.lastFrame())).toContain(chunks.join(''))
+
+    // Releasing the turn replaces streaming text with the completed assistant
+    // entry; the observable final text is identical.
+    release?.()
+    await flush()
+    expect(normalized(app.lastFrame())).toContain(chunks.join(''))
+    expect(app.lastFrame()).not.toContain('✳')
+  })
+
   it('toggles syntax highlighting in the theme picker and persists immediately', async () => {
     const saved: unknown[] = []
     const app = render(
