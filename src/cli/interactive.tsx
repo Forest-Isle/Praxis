@@ -93,6 +93,8 @@ import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import {
   FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
   projectTranscriptTail,
+  projectTranscriptWindow,
+  transcriptLineCount,
 } from './tui/transcript-viewport.js'
 import {
   loadGitDiff,
@@ -1335,6 +1337,7 @@ export function InteractiveApp({
     display.contextWindowTokens,
   )
   const [history, setHistory] = useState<TranscriptItem[]>([...initialHistory])
+  const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0)
   // Startup diagnostics are useful before the first prompt, but they are not
   // conversation history and must not suppress the new-session welcome panel.
   // Only real user/assistant transcript entries start a conversation; every
@@ -1359,11 +1362,18 @@ export function InteractiveApp({
   // history exactly as before.
   const projectedHistory =
     fixedViewport && !axScreenReader
-      ? projectTranscriptTail(
-          history,
-          Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
-          width,
-        )
+      ? transcriptScrollOffset > 0
+        ? projectTranscriptWindow(
+            history,
+            Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
+            width,
+            transcriptScrollOffset,
+          )
+        : projectTranscriptTail(
+            history,
+            Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
+            width,
+          )
       : history
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
@@ -1715,6 +1725,7 @@ export function InteractiveApp({
     // transcript state so the active stream never renders below a tool,
     // thinking, or completion entry that it textually precedes.
     streamingFrameRef.current?.flush()
+    setTranscriptScrollOffset(0)
     setHistory((current) => [...current, line])
   }
 
@@ -3812,6 +3823,7 @@ export function InteractiveApp({
     shellCommand?: string,
     images: readonly ModelImage[] = [],
   ) => {
+    setTranscriptScrollOffset(0)
     const turnNumber = turnNumberRef.current + 1
     const turnStartedAt = Date.now()
     turnNumberRef.current = turnNumber
@@ -4177,6 +4189,47 @@ export function InteractiveApp({
       return
     }
     const isKeybinding = (action: string) => keybindingAction === action
+
+    if (
+      fixedViewport &&
+      menuRef.current === null &&
+      !permission &&
+      !planApproval &&
+      !question &&
+      !elicitation &&
+      !selectingSession
+    ) {
+      const page = Math.max(
+        1,
+        (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
+      )
+      const scrollDelta = key.pageUp
+        ? page
+        : key.pageDown
+          ? -page
+          : controlKey('u') || controlKey('b')
+            ? page / 2
+            : controlKey('f') || controlKey('n')
+              ? -page / 2
+              : inputRef.current.length === 0 && key.upArrow
+                ? 1
+                : inputRef.current.length === 0 && key.downArrow
+                  ? -1
+                  : 0
+      if (scrollDelta !== 0) {
+        setTranscriptScrollOffset((current) =>
+          Math.min(
+            Math.max(
+              0,
+              transcriptLineCount(history, width) -
+                Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
+            ),
+            Math.max(0, current + Math.trunc(scrollDelta)),
+          ),
+        )
+        return
+      }
+    }
 
     if (
       runtimeSettingsRef.current.editor === 'vim' &&
