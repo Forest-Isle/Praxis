@@ -31,7 +31,54 @@ describe('resolveClaudeToolCapabilities', () => {
         simpleMode: true,
         env: { [CLAUDE_CODE_ENABLE_TASKS]: 'true' },
       }),
-    ).toContain('TaskCreate')
+    ).not.toContain('TaskCreate')
+  })
+
+  it('cannot re-enable gated tools in simple mode via gates, env, allow-list, or coordinator role', () => {
+    const base = {
+      role: 'main' as const,
+      interactive: true,
+      simpleMode: true,
+    }
+    const allowList = [
+      'TaskCreate',
+      'TaskGet',
+      'TaskList',
+      'TaskUpdate',
+      'Workflow',
+      'CronCreate',
+      'CronDelete',
+      'CronList',
+      'ScheduleWakeup',
+      'Agent',
+      'TaskOutput',
+      'TaskStop',
+      'SendMessage',
+    ]
+    expect(
+      names({
+        ...base,
+        tasks: true,
+        workflowScripts: true,
+        agentTriggers: true,
+        backgroundAgents: true,
+        subagents: true,
+        env: {
+          [CLAUDE_CODE_ENABLE_TASKS]: 'true',
+          [PRAXIS_ENABLE_WORKFLOW_SCRIPTS]: 'true',
+          [CLAUDE_CODE_DISABLE_CRON]: 'false',
+        },
+      }),
+    ).toEqual([])
+    expect(names({ ...base, tools: allowList })).toEqual([])
+    expect(
+      names({
+        role: 'coordinator',
+        interactive: true,
+        simpleMode: true,
+        tools: ['SendMessage'],
+      }),
+    ).toEqual([])
   })
 
   it('applies workflow and cron gates with explicit booleans over environment', () => {
