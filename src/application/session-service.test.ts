@@ -41,6 +41,7 @@ import {
   type ClaudeQuestionResult,
 } from '../tools/claude-interactive-tools.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
+import { CLAUDE_CODE_DISABLE_CRON } from '../tools/claude-capabilities.js'
 import type { ClaudeSessionCostState } from '../persistence/claude-cost-state-store.js'
 import { ClaudeSessionService } from './session-service.js'
 import { WorkspaceContext } from './session-worktree.js'
@@ -4048,6 +4049,50 @@ describe('ClaudeSessionService', () => {
         content: expect.stringContaining('#1 [pending] Build'),
         isError: false,
       })
+    } finally {
+      await service.close()
+    }
+  })
+
+  it('suppresses scheduled tools when toolCapabilityEnvironment disables cron', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cron-disable-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['hosted response']),
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      scheduledToolNames: [
+        'CronCreate',
+        'CronDelete',
+        'CronList',
+        'ScheduleWakeup',
+      ],
+      sessionPersistence: true,
+      toolCapabilityEnvironment: { [CLAUDE_CODE_DISABLE_CRON]: 'true' },
+    })
+
+    try {
+      const registry = service.createHostedToolRegistry(sessionId)
+      expect(registry.definitions().map(({ name }) => name)).not.toEqual(
+        expect.arrayContaining([
+          'CronCreate',
+          'CronDelete',
+          'CronList',
+          'ScheduleWakeup',
+        ]),
+      )
+      await expect(
+        registry.prepare(
+          { id: 'create', name: 'CronCreate', input: {} },
+          { cwd },
+        ),
+      ).rejects.toThrow('unavailable')
     } finally {
       await service.close()
     }

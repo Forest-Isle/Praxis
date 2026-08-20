@@ -61,6 +61,34 @@ describe('resolveClaudeToolCapabilities', () => {
     ).not.toEqual(expect.arrayContaining(['Workflow', 'CronCreate']))
   })
 
+  it('gives a truthy CLAUDE_CODE_DISABLE_CRON priority over an enabled agentTriggers gate', () => {
+    const cronTools = ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup']
+    const base = {
+      role: 'main' as const,
+      interactive: true,
+      simpleMode: false,
+    }
+    expect(names({ ...base, agentTriggers: true })).toEqual(
+      expect.arrayContaining(cronTools),
+    )
+    for (const value of ['1', 'true', 'yes', 'on', 'TRUE']) {
+      expect(
+        names({
+          ...base,
+          agentTriggers: true,
+          env: { [CLAUDE_CODE_DISABLE_CRON]: value },
+        }),
+      ).not.toEqual(expect.arrayContaining(cronTools))
+    }
+    expect(
+      names({
+        ...base,
+        agentTriggers: true,
+        env: { [CLAUDE_CODE_DISABLE_CRON]: 'false' },
+      }),
+    ).toEqual(expect.arrayContaining(cronTools))
+  })
+
   it('suppresses recursive worker tools and applies allow then deny precedence', () => {
     expect(
       names({

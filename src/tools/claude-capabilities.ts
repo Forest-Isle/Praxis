@@ -141,6 +141,12 @@ export function resolveClaudeToolCapabilities(
     const disableCron = envBoolean(env, CLAUDE_CODE_DISABLE_CRON)
     agentTriggers = disableCron === undefined ? false : !disableCron
   }
+  // The local kill switch takes priority over the internal agentTriggers
+  // capability input: a truthy CLAUDE_CODE_DISABLE_CRON suppresses the cron
+  // tools even when selected scheduled names would otherwise enable them.
+  if (envBoolean(env, CLAUDE_CODE_DISABLE_CRON) === true) {
+    agentTriggers = false
+  }
   const backgroundAgents = input.backgroundAgents ?? false
   const subagents = input.subagents ?? false
 
