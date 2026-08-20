@@ -91,6 +91,10 @@ import { loadClaudeReleaseNotes } from './tui/release-notes.js'
 import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import {
+  FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
+  projectTranscriptTail,
+} from './tui/transcript-viewport.js'
+import {
   loadGitDiff,
   visiblePatchLines,
   type TuiDiffSnapshot,
@@ -1349,6 +1353,18 @@ export function InteractiveApp({
   // conversation content appears.
   const resumed = resume !== undefined && resumedWithTranscript
   const freshSession = !resumed && !hasConversationHistory
+  // Fullscreen projects only the newest transcript tail that fits the fixed
+  // viewport, leaving the composer/status chrome intact and keeping the active
+  // stream visible. Classic and screen-reader modes always render the full
+  // history exactly as before.
+  const projectedHistory =
+    fixedViewport && !axScreenReader
+      ? projectTranscriptTail(
+          history,
+          Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
+          width,
+        )
+      : history
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -7158,7 +7174,7 @@ export function InteractiveApp({
                 : {})}
             >
               <Transcript
-                items={history}
+                items={projectedHistory}
                 activeText={activeText}
                 activeThinking={activeThinking}
                 thinkingExpanded={thinkingExpanded}
