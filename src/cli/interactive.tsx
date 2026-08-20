@@ -7805,6 +7805,7 @@ export function InteractiveApp({
                     Press Ctrl-C again to exit
                   </Text>
                 ) : null}
+                {fixedViewport ? <Box flexGrow={1} /> : null}
                 <Composer
                   input={shellMode ? input.slice(1) : input}
                   cursor={
