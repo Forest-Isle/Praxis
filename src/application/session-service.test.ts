@@ -8457,6 +8457,93 @@ describe('ClaudeSessionService', () => {
     )
   })
 
+  it('preserves a structurally supported Claude version across auto compaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-version-auto-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const origin = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '9.0.0',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield {
+            type: 'text-delta',
+            delta: `old-context ${'discarded '.repeat(600)}`,
+          }
+        },
+      },
+    })
+    const first = await origin.run('CURRENT_TASK')
+
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '9.0.0',
+      provider: {
+        model: 'version-regression-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 2_500,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'final answer' }
+          yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
+        },
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'VERSIONED_COMPACT_SUMMARY',
+            usage: { inputTokens: 6, outputTokens: 4 },
+            durationMs: 40,
+            durationWithoutRetriesMs: 25,
+            model: 'version-regression-model',
+          }
+        },
+      },
+      contextReserveTokens: 1_500,
+    })
+
+    const result = await service.resume(first.sessionId, 'Continue the task.')
+    expect(result.text).toBe('final answer')
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    const entries = transcript
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+
+    const compactBoundaries = entries.filter(
+      (entry) =>
+        entry.type === 'system' && entry.subtype === 'compact_boundary',
+    )
+    const compactSummaries = entries.filter(
+      (entry) => entry.type === 'user' && entry.isCompactSummary === true,
+    )
+    expect(compactBoundaries).toHaveLength(1)
+    expect(compactSummaries).toHaveLength(1)
+    expect(compactBoundaries[0]?.version).toBe('9.0.0')
+    expect(compactSummaries[0]?.version).toBe('9.0.0')
+
+    const versioned = entries.filter((entry) => 'version' in entry)
+    expect(versioned.length).toBeGreaterThan(0)
+    for (const entry of versioned) {
+      expect(entry.version).toBe('9.0.0')
+    }
+  })
+
   it('keeps a completed user entry when the provider fails', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-test-'))
     roots.push(root)
