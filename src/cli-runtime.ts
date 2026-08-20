@@ -1203,8 +1203,13 @@ const createDefaultService: CliDependencies['createService'] = async ({
     requestedConfigRoot || configuredRoot
       ? join(configRoot, '.claude.json')
       : resolve(homedir(), '.claude.json')
+  const simpleMode =
+    controls.bare ||
+    /^(?:1|true|yes|on)$/iu.test(
+      (runtimeEnvironment.CLAUDE_CODE_SIMPLE ?? '').trim(),
+    )
   const runtimeSettings =
-    controls.safeMode || controls.bare
+    controls.safeMode || simpleMode
       ? undefined
       : await loadRuntimeSettings({ configRoot, statePath: claudeStatePath })
   const runtimeSettingsPrompt = runtimeSettingsSystemPrompt(runtimeSettings)
@@ -1306,6 +1311,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     eventSink: runtimeEventSink,
     sessionPersistence: cli.sessionPersistence,
     costStateStore,
+    simpleMode,
     explicitModel:
       interactiveModel !== undefined || controls.model !== undefined,
     explicitSystemPrompt: cli.systemPrompt !== undefined,
@@ -1358,7 +1364,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       loadClaudeSettings({
         configRoot,
         cwd,
-        ...(cli.bare
+        ...(simpleMode
           ? { settingSources: [] }
           : cli.settingSources === undefined
             ? {}
@@ -1371,7 +1377,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         pluginUrls: cli.pluginUrls,
         strictPluginDirectories:
           cli.pluginDirectories.length + cli.pluginUrls.length > 0,
-        loadInstalled: !cli.safeMode && !cli.bare,
+        loadInstalled: !cli.safeMode && !simpleMode,
         readOnlyHooks: true,
         environment: runtimeEnvironment,
       }),
@@ -1423,12 +1429,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
       : toolProvider
 
   const automaticSettingSources =
-    cli.safeMode || cli.bare ? [] : cli.settingSources
+    cli.safeMode || simpleMode ? [] : cli.settingSources
   const settings = [
     ...(await loadClaudeSettings({
       configRoot,
       cwd,
-      ...(cli.bare
+      ...(simpleMode
         ? { settingSources: [] }
         : cli.settingSources === undefined
           ? {}
@@ -1451,7 +1457,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     pluginUrls: cli.pluginUrls,
     strictPluginDirectories:
       cli.pluginDirectories.length + cli.pluginUrls.length > 0,
-    loadInstalled: !cli.safeMode && !cli.bare,
+    loadInstalled: !cli.safeMode && !simpleMode,
     environment: runtimeEnvironment,
   })
   for (const plugin of pluginResources.plugins) {
@@ -1498,7 +1504,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     disableSlashCommands: cli.disableSlashCommands,
   })
   const memoryDirectory =
-    cli.safeMode || cli.bare
+    cli.safeMode || simpleMode
       ? undefined
       : await resolveClaudeProjectMemoryDirectory({ configRoot, cwd })
   if (memoryDirectory) await mkdir(memoryDirectory, { recursive: true })
@@ -1597,7 +1603,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     return filterDisabledMcpResources(candidates, await management.disabled())
   }
   const mcpTools = await ClaudeMcpToolRegistry.connect({
-    base: cli.bare
+    base: simpleMode
       ? localTools
       : new WebToolRegistry({
           base: localTools,
@@ -1656,7 +1662,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const lspEnabled =
       interactive &&
       !cli.safeMode &&
-      !cli.bare &&
+      !simpleMode &&
       pluginResources.lsp.length > 0
     lspTools = lspEnabled
       ? new ClaudeLspToolManager({
@@ -1705,7 +1711,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const selectedTaskTools = taskToolNames.filter(
       (name) =>
         cli.sessionPersistence &&
-        !cli.bare &&
+        !simpleMode &&
         (cli.tools === undefined ||
           cli.tools.includes('default') ||
           cli.tools.includes(name)) &&
@@ -1713,7 +1719,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     )
     const selectedScheduledTools = scheduledToolNames.filter(
       (name) =>
-        !cli.bare &&
+        !simpleMode &&
         (cli.tools === undefined ||
           cli.tools.includes('default') ||
           cli.tools.includes(name)) &&
@@ -1723,7 +1729,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       (name) =>
         (runtimeSettings?.workflows ?? true) &&
         cli.sessionPersistence &&
-        !cli.bare &&
+        !simpleMode &&
         (cli.tools === undefined ||
           cli.tools.includes('default') ||
           cli.tools.includes(name)) &&
@@ -1731,7 +1737,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     )
     const selectedWorktreeTools = worktreeToolNames.filter(
       (name) =>
-        !cli.bare &&
+        !simpleMode &&
         (cli.tools === undefined ||
           cli.tools.includes('default') ||
           cli.tools.includes(name)) &&
@@ -1747,7 +1753,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     )
     const enableBackgroundBash =
       cli.sessionPersistence &&
-      !cli.bare &&
+      !simpleMode &&
       (cli.tools === undefined ||
         cli.tools.includes('default') ||
         cli.tools.includes('Bash')) &&
@@ -1778,19 +1784,19 @@ const createDefaultService: CliDependencies['createService'] = async ({
         !interactiveToolNames.includes(
           name as (typeof interactiveToolNames)[number],
         ) &&
-        (!cli.bare || (name !== 'WebFetch' && name !== 'WebSearch')),
+        (!simpleMode || (name !== 'WebFetch' && name !== 'WebSearch')),
     )
     const filteredTools = new FilteredToolRegistry(extensionAndLspTools, {
       ...(cli.tools === undefined
-        ? cli.bare
+        ? simpleMode
           ? { tools: ['Bash', 'Edit', 'Read'] }
           : {}
         : { tools: selectedBaseTools ?? [] }),
       disallowedTools: cli.disallowedTools,
     })
-    const enableSubagents = !cli.bare && selectedAgentTools.length > 0
+    const enableSubagents = !simpleMode && selectedAgentTools.length > 0
     const hooks =
-      cli.safeMode || cli.bare
+      cli.safeMode || simpleMode
         ? undefined
         : new ClaudeHookRunner({
             settings,
