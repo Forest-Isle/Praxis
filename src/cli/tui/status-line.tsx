@@ -354,7 +354,7 @@ export function StatusLine({
 
   if (!text) return null
   return (
-    <Box paddingX={padding}>
+    <Box paddingX={padding} flexShrink={0}>
       <Text dimColor wrap="truncate">
         {text}
       </Text>
