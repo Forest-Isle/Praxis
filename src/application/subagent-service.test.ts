@@ -1969,6 +1969,7 @@ describe('foreground Claude Agent execution', () => {
         model: 'fixture-model',
         capabilities: { streaming: true, usage: true, tools: true },
         async *complete() {
+          yield* []
           throw new Error('A recovered sidechain must not call the provider')
         },
       },
