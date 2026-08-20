@@ -8221,9 +8221,8 @@ describe('ClaudeSessionService', () => {
     })
   })
 
-  it('fails closed for unsupported Claude write versions', async () => {
-    const { configRoot, cwd, service: writable } = await createService()
-    const existing = await writable.run('read this')
+  it('writes sessions for structurally supported Claude versions', async () => {
+    const { configRoot, cwd } = await createService()
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
@@ -8231,14 +8230,14 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['unused']),
     })
 
-    await expect(service.run('hello')).rejects.toThrow('read-only')
-    await expect(service.inspect(existing.sessionId)).resolves.toMatchObject({
-      status: 'read-only',
-      writeMode: 'read-only',
-      lastPrompt: 'read this',
+    const result = await service.run('hello')
+    await expect(service.inspect(result.sessionId)).resolves.toMatchObject({
+      status: 'ready',
+      writeMode: 'read-write',
+      lastPrompt: 'hello',
     })
-    expect((await service.export(existing.sessionId)).toString()).toContain(
-      'read this',
+    expect((await service.export(result.sessionId)).toString()).toContain(
+      '"version":"9.0.0"',
     )
   })
 
