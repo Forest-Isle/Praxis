@@ -19,6 +19,7 @@ import {
   MentionPicker,
   PermissionDashboard,
   SelectionMenu,
+  SessionIdentity,
   SessionPicker,
   ShortcutHelp,
   ThemePicker,
@@ -129,6 +130,39 @@ describe('Claude-style TUI components', () => {
       <WelcomePanel display={display} width={80} showTips={false} />,
     )
     expect(app.lastFrame()).toBe('')
+  })
+
+  it('renders a compact session identity with version, model, effort, and cwd', () => {
+    const app = render(<SessionIdentity display={display} width={80} />)
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Praxis Code v0.1.2')
+    expect(frame).toContain('test-model')
+    expect(frame).toContain('high effort')
+    expect(frame).toContain('/Users/test/dev/Praxis')
+    expect(frame).not.toContain('Welcome to Praxis')
+    expect(frame.split('\n').every((line) => line.length <= 80)).toBe(true)
+  })
+
+  it('keeps every identity line at or below 40 columns', () => {
+    const app = render(<SessionIdentity display={display} width={40} />)
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Praxis Code v0.1.2')
+    expect(frame).toContain('test-model')
+    expect(frame).toContain('high effort')
+    expect(frame).toContain('/Users/test/dev/Praxis')
+    expect(frame.split('\n').every((line) => line.length <= 40)).toBe(true)
+  })
+
+  it('truncates long model and cwd lines to the supplied width', () => {
+    const longDisplay = {
+      version: '0.1.2',
+      cwd: '/a/very/long/path/that/would/overflow/the/narrow/terminal/width',
+      model: 'claude-opus-4-5-sonnet-20261010-superlong-model-name',
+      effort: 'max',
+    }
+    const app = render(<SessionIdentity display={longDisplay} width={40} />)
+    const frame = app.lastFrame() ?? ''
+    expect(frame.split('\n').every((line) => line.length <= 40)).toBe(true)
   })
 
   it('renders markdown hierarchy and fenced code', () => {

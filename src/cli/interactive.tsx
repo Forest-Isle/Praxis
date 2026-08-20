@@ -72,6 +72,7 @@ import {
   SessionPicker,
   ThemePicker,
   CustomThemeEditor,
+  SessionIdentity,
   Transcript,
   WelcomePanel,
   useTerminalRows,
@@ -1323,6 +1324,11 @@ export function InteractiveApp({
       item.kind !== 'warning' &&
       item.kind !== 'local-result',
   )
+  // A session is fresh only when it was not opened through `resume` and it has
+  // no real conversation content yet. Resumed sessions render neither the full
+  // welcome panel nor the compact identity header.
+  const resumed = resume !== undefined
+  const freshSession = !resumed && !hasConversationHistory
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -7096,7 +7102,7 @@ export function InteractiveApp({
           />
         ) : (
           <>
-            {!axScreenReader && !hasConversationHistory && !sessionId ? (
+            {!axScreenReader && freshSession && !sessionId ? (
               <WelcomePanel
                 display={runtimeDisplay}
                 width={width}
@@ -7105,6 +7111,11 @@ export function InteractiveApp({
             ) : null}
             {sessionId ? (
               <Text dimColor>Session {sessionId.slice(0, 8)}</Text>
+            ) : null}
+            {!axScreenReader &&
+            !resumed &&
+            (hasConversationHistory || sessionId) ? (
+              <SessionIdentity display={runtimeDisplay} width={width} />
             ) : null}
             <Transcript
               items={history}

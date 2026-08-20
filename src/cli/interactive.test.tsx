@@ -83,6 +83,47 @@ describe('InteractiveApp', () => {
     app.unmount()
   })
 
+  it('shows compact identity above a started conversation and none on resume', () => {
+    const fresh = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[{ kind: 'user', text: 'review the diff' }]}
+        display={{ version: '0.20.20', cwd: '/Users/test/dev-tools' }}
+      />,
+    )
+    const freshFrame = fresh.lastFrame() ?? ''
+    expect(freshFrame).toContain('Praxis Code v0.20.20')
+    expect(freshFrame).toContain('provider default')
+    expect(freshFrame).toContain('dev-tools')
+    expect(freshFrame).toContain('review the diff')
+    expect(freshFrame).not.toContain('Welcome to Praxis')
+    fresh.unmount()
+
+    const resumed = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[{ kind: 'user', text: 'continue the work' }]}
+        resume={{ sessionId: 'active-session' }}
+        display={{ version: '0.20.20', cwd: '/Users/test/dev-tools' }}
+      />,
+    )
+    const resumedFrame = resumed.lastFrame() ?? ''
+    expect(resumedFrame).toContain('continue the work')
+    expect(resumedFrame).not.toContain('Praxis Code v')
+    expect(resumedFrame).not.toContain('Welcome to Praxis')
+    resumed.unmount()
+  })
+
   it('configures sandbox mode, overrides, and config through /sandbox', async () => {
     let snapshot: TuiSandboxSnapshot = {
       settings: {
