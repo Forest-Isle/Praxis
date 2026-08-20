@@ -154,6 +154,12 @@ export function resolveClaudeToolCapabilities(
   if (input.disallowedTools)
     validateNames(input.disallowedTools, '--disallowedTools')
 
+  // Simple mode is an absolute suppressor for every capability-gated tool,
+  // regardless of role, explicit gates, environment overrides, or allow-list.
+  if (input.simpleMode) {
+    return new Set<string>()
+  }
+
   const enabled = new Set<string>(CLAUDE_COORDINATION_TOOLS)
   if (tasks) {
     for (const name of CLAUDE_TASK_V2_TOOLS) enabled.add(name)
