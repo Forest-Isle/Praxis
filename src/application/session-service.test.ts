@@ -1239,6 +1239,9 @@ describe('ClaudeSessionService', () => {
       },
       async *complete() {
         completions += 1
+        // Delegating to an empty iterable satisfies `require-yield` without
+        // emitting a value before the intentional failure.
+        yield* []
         throw new ModelProviderError('prompt is too long for the context', {
           retryable: true,
         })
@@ -1549,7 +1552,7 @@ describe('ClaudeSessionService', () => {
       hooks,
       contextReserveTokens: 1_500,
       contextAssembler: {
-        async assemble(options) {
+        async assemble() {
           contextVersion += 1
           return {
             systemMessages: [
