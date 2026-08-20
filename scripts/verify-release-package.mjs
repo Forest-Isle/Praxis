@@ -2086,9 +2086,10 @@ try {
   )
   const versionMatrix = [
     ['2.1.208', 'read-write'],
-    ['2.1.207', 'read-only'],
-    ['2.1.209', 'read-only'],
-    ['3.0.0', 'read-only'],
+    ['2.1.207', 'read-write'],
+    ['2.1.209', 'read-write'],
+    ['3.0.0', 'read-write'],
+    ['latest', 'read-only'],
   ]
   const matrixWorkDirectory = await realpath(workDirectory)
   for (const [claudeVersion, writeMode] of versionMatrix) {
@@ -2121,6 +2122,94 @@ try {
       if (matrixSessions.length !== 2) {
         throw new Error(
           `Claude ${claudeVersion} write/fork matrix created ${matrixSessions.length} sessions`,
+        )
+      }
+      const cliSessionId = matrixSessions[0].sessionId
+      const cliSessionFile = pathsModule.resolveClaudePaths({
+        configDir: matrixConfigRoot,
+        cwd: matrixWorkDirectory,
+        sessionId: cliSessionId,
+      }).sessionFile
+      const cliSource = await readFile(cliSessionFile)
+      const corruptSessionId = '88888888-8888-4888-8888-888888888888'
+      const corruptSessionFile = pathsModule.resolveClaudePaths({
+        configDir: matrixConfigRoot,
+        cwd: matrixWorkDirectory,
+        sessionId: corruptSessionId,
+      }).sessionFile
+      const corruptSource = Buffer.concat([
+        cliSource,
+        Buffer.from([0xff, 0x0a]),
+      ])
+      await writeFile(corruptSessionFile, corruptSource)
+      await writeFile(
+        join(fakeBin, 'claude'),
+        `#!/bin/sh\nprintf '${claudeVersion} (Claude Code)\\n'\n`,
+        { mode: 0o755 },
+      )
+      const cliEnvironment = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: matrixConfigRoot,
+        PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+      }
+      for (const name of [
+        'PRAXIS_PROVIDER',
+        'PRAXIS_API_KEY',
+        'PRAXIS_MODEL',
+        'PRAXIS_BASE_URL',
+        'PRAXIS_MAX_OUTPUT_TOKENS',
+        'PRAXIS_ANTHROPIC_VERSION',
+      ]) {
+        delete cliEnvironment[name]
+      }
+      const cliSessions = JSON.parse(
+        (
+          await run(praxis, ['sessions', '--json'], {
+            cwd: workDirectory,
+            env: cliEnvironment,
+          })
+        ).stdout,
+      )
+      const cliReady = cliSessions.sessions?.find(
+        (summary) => summary.sessionId === cliSessionId,
+      )
+      const cliCorrupt = cliSessions.sessions?.find(
+        (summary) => summary.sessionId === corruptSessionId,
+      )
+      const cliInspection = JSON.parse(
+        (
+          await run(praxis, ['inspect', '--json', cliSessionId], {
+            cwd: workDirectory,
+            env: cliEnvironment,
+          })
+        ).stdout,
+      )
+      const cliCorruptInspection = JSON.parse(
+        (
+          await run(praxis, ['inspect', '--json', corruptSessionId], {
+            cwd: workDirectory,
+            env: cliEnvironment,
+          })
+        ).stdout,
+      )
+      const cliReadWriteExport = await run(praxis, ['export', cliSessionId], {
+        cwd: workDirectory,
+        env: cliEnvironment,
+      })
+      const cliCorruptExport = await run(praxis, ['export', corruptSessionId], {
+        cwd: workDirectory,
+        env: cliEnvironment,
+      })
+      if (
+        cliReady?.status !== 'ready' ||
+        cliCorrupt?.status !== 'corrupt' ||
+        cliInspection.session?.writeMode !== 'read-write' ||
+        cliCorruptInspection.session?.status !== 'corrupt' ||
+        !cliReadWriteExport.stdoutBytes.equals(cliSource) ||
+        !cliCorruptExport.stdoutBytes.equals(corruptSource)
+      ) {
+        throw new Error(
+          `Installed Claude ${claudeVersion} ordinary CLI schema-independence proof failed`,
         )
       }
       continue
@@ -2175,76 +2264,6 @@ try {
         `Claude ${claudeVersion} read-only inspection/export failed`,
       )
     }
-    await writeFile(
-      join(fakeBin, 'claude'),
-      `#!/bin/sh\nprintf '${claudeVersion} (Claude Code)\\n'\n`,
-      { mode: 0o755 },
-    )
-    const cliEnvironment = {
-      ...process.env,
-      CLAUDE_CONFIG_DIR: matrixConfigRoot,
-      PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
-    }
-    for (const name of [
-      'PRAXIS_PROVIDER',
-      'PRAXIS_API_KEY',
-      'PRAXIS_MODEL',
-      'PRAXIS_BASE_URL',
-      'PRAXIS_MAX_OUTPUT_TOKENS',
-      'PRAXIS_ANTHROPIC_VERSION',
-    ]) {
-      delete cliEnvironment[name]
-    }
-    const cliSessions = JSON.parse(
-      (
-        await run(praxis, ['sessions', '--json'], {
-          cwd: workDirectory,
-          env: cliEnvironment,
-        })
-      ).stdout,
-    )
-    const cliReady = cliSessions.sessions?.find(
-      (summary) => summary.sessionId === readOnlySessionId,
-    )
-    const cliCorrupt = cliSessions.sessions?.find(
-      (summary) => summary.sessionId === corruptSessionId,
-    )
-    const cliInspection = JSON.parse(
-      (
-        await run(praxis, ['inspect', '--json', readOnlySessionId], {
-          cwd: workDirectory,
-          env: cliEnvironment,
-        })
-      ).stdout,
-    )
-    const cliCorruptInspection = JSON.parse(
-      (
-        await run(praxis, ['inspect', '--json', corruptSessionId], {
-          cwd: workDirectory,
-          env: cliEnvironment,
-        })
-      ).stdout,
-    )
-    const cliReadOnlyExport = await run(praxis, ['export', readOnlySessionId], {
-      cwd: workDirectory,
-      env: cliEnvironment,
-    })
-    const cliCorruptExport = await run(praxis, ['export', corruptSessionId], {
-      cwd: workDirectory,
-      env: cliEnvironment,
-    })
-    if (
-      cliReady?.status !== 'ready' ||
-      cliCorrupt?.status !== 'corrupt' ||
-      cliInspection.session?.writeMode !== 'read-write' ||
-      cliCorruptInspection.session?.status !== 'corrupt' ||
-      !cliReadOnlyExport.stdoutBytes.equals(Buffer.from(readOnlySource)) ||
-      !cliCorruptExport.stdoutBytes.equals(corruptSource)
-    ) {
-      throw new Error(
-        `Installed Claude ${claudeVersion} ordinary CLI schema-independence proof failed`,
-      )
-    }
     await expectRejected(() => service.run('must stay read-only'), 'read-only')
     await expectRejected(() => service.fork(readOnlySessionId), 'read-only')
     if (
@@ -2259,7 +2278,7 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install with zero high-risk production advisories, installed provider-free /cost text/JSON/stream-json gates with zero artifacts, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 write-safety matrix with installed ordinary CLI schema-independence proof`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install with zero high-risk production advisories, installed provider-free /cost text/JSON/stream-json gates with zero artifacts, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 semver read/write matrix with installed ordinary CLI schema-independence proof and malformed-version fail-closed read-only check`,
   )
 } finally {
   try {
