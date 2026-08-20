@@ -17,6 +17,8 @@ Together they establish these stable rules:
 
 - full terminal-width (up to 100 columns) bordered welcome card with
   product/version, identity, cwd, and a concise help area;
+- fullscreen rendering is bounded to the live terminal row count, clips the
+  transcript region, and keeps the composer/status area non-shrinkable;
 - conversation and composer remain separate regions;
 - composer uses full-width horizontal rules and a `❯` prompt;
 - entering `/` opens an unboxed, named, described, filterable command list
@@ -127,10 +129,11 @@ is passed from the CLI composition root and never written to shared JSONL.
 
 ## Components
 
-- `WelcomePanel`: compact responsive product identity and local-first help,
-  with the version title embedded in the top border row. Long release-note
-  copy is kept out of the launch surface, and the panel follows the shared
-  `Show tips` setting so the composer remains the primary first-run action.
+- `WelcomePanel`: complete responsive product identity and local-first help,
+  with the version title embedded in the top border row, a brand mark, startup
+  commands, and the shared Claude Code capability line. Long release-note copy
+  is kept out of the launch surface, and the panel follows the shared Show tips
+  setting so the composer remains the primary first-run action.
 - `SessionPicker`: selected-row hierarchy, local search, and bounded session
   identity behind the Claude-compatible `/resume` name (`/sessions` remains a
   hidden compatibility alias).
