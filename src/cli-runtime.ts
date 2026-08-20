@@ -1819,6 +1819,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(providerForModel ? { providerForModel } : {}),
       ...(providerForMainModel ? { providerForMainModel } : {}),
       tools: filteredTools,
+      toolCapabilityEnvironment: runtimeEnvironment,
       mcp: mcpTools,
       permissions,
       permissionResolverForMode,
