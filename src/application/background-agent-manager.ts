@@ -376,14 +376,24 @@ export class BackgroundAgentManager {
     }
     const task = this.tasks.get(agentId)
     if (!task) throw new Error(`No task found with ID: ${agentId}`)
-    if (options.block && task.promise) {
-      if (options.timeout === 0) {
-        await task.promise
-      } else {
-        await waitBounded(task.promise, options.timeout)
-      }
+
+    // A positive block wait settles a pending task chain — a stopped task's
+    // cleanup chain included — or lets the timeout elapse. Zero-timeout and
+    // non-blocking retrievals never wait.
+    if (options.block && options.timeout > 0 && task.promise) {
+      await waitBounded(task.promise, options.timeout)
     }
-    return this.formatOutput(task)
+
+    // The retrieval outcome reflects the task's state after any wait: success
+    // once terminal, not_ready for non-blocking retrievals, and timeout for a
+    // blocking retrieval whose window (including zero) closed while live.
+    const retrieval: 'not_ready' | 'success' | 'timeout' =
+      task.status !== 'running'
+        ? 'success'
+        : options.block
+          ? 'timeout'
+          : 'not_ready'
+    return this.formatOutput(task, retrieval)
   }
 
   stop(agentId: string): string {
@@ -647,9 +657,11 @@ export class BackgroundAgentManager {
     }
   }
 
-  private formatOutput(task: BackgroundAgentTask): string {
+  private formatOutput(
+    task: BackgroundAgentTask,
+    retrieval: 'not_ready' | 'success' | 'timeout',
+  ): string {
     const output = task.result?.text ?? task.error ?? ''
-    const retrieval = task.status === 'running' ? 'not_ready' : 'success'
     return [
       `<retrieval_status>${retrieval}</retrieval_status>`,
       `<task_id>${task.spec.agentId}</task_id>`,
