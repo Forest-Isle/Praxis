@@ -83,7 +83,7 @@ describe('ClaudeSchemaAdapter', () => {
     )
   })
 
-  it('forks a cross-version producer entry while append stays rejected', async () => {
+  it('forks and appends a cross-version producer entry without changing its version', async () => {
     const source = await readFile(fixtureUrl, 'utf8')
     const userLine = source.trimEnd().split('\n')[0]
     const adapter = selectClaudeSchemaAdapter('2.1.208')
@@ -97,9 +97,8 @@ describe('ClaudeSchemaAdapter', () => {
     expect(forkLine).toBe(adapter.serialize(copied))
     expect(forkLine).toContain('"version":"2.1.233"')
     expect(forkLine).toContain('"sessionId":"target"')
-    expect(() => adapter.serializeForAppend(copied)).toThrow(
-      'must target Claude Code 2.1.208',
-    )
+    expect(adapter.serializeForAppend(copied)).toContain('"version":"2.1.233"')
+    expect(adapter.serializeForAppend(copied)).toContain('"sessionId":"target"')
   })
 
   it('accepts only the native append profile', async () => {
@@ -216,12 +215,12 @@ describe('ClaudeSchemaAdapter', () => {
       }),
     ).toThrow('invalid metadata')
 
-    expect(() =>
+    expect(
       adapter.serializeForAppend({
         ...adapter.parse(userLine ?? ''),
         version: '2.1.209',
       }),
-    ).toThrow('must target Claude Code 2.1.208')
+    ).toContain('"version":"2.1.209"')
     for (const serialize of [
       adapter.serializeForAppend.bind(adapter),
       adapter.serializeForFork.bind(adapter),
@@ -401,14 +400,67 @@ describe('ClaudeSchemaAdapter', () => {
     ).toThrow('invalid hook context attachment')
   })
 
-  it('falls back to read-only parsing for unknown Claude versions', () => {
-    const adapter = selectClaudeSchemaAdapter('9.0.0')
-    const entry = adapter.parse('{"type":"user","unknown":true}')
+  it('fails closed to read-only parsing for empty or malformed versions', () => {
+    for (const malformed of ['', '2.1', 'latest', '2.x.y', '2.1.208.1']) {
+      const adapter = selectClaudeSchemaAdapter(malformed)
+      const entry = adapter.parse('{"type":"user","unknown":true}')
 
-    expect(adapter.writeMode).toBe('read-only')
-    expect(entry).toEqual({ type: 'user', unknown: true })
-    expect(() => adapter.serializeForAppend(entry)).toThrow(
-      'Unsupported Claude Code transcript version',
+      expect(adapter.writeMode).toBe('read-only')
+      expect(entry).toEqual({ type: 'user', unknown: true })
+      expect(() => adapter.serializeForAppend(entry)).toThrow(
+        'Unsupported Claude Code transcript version',
+      )
+      expect(() => adapter.serializeForSidechainAppend(entry)).toThrow(
+        'Unsupported Claude Code transcript version',
+      )
+      expect(() => adapter.serializeForFork(entry)).toThrow(
+        'Unsupported Claude Code transcript version',
+      )
+    }
+  })
+
+  it('appends and forks entries produced by alternate Claude versions', async () => {
+    const source = await readFile(fixtureUrl, 'utf8')
+    const [userLine, assistantLine] = source.trimEnd().split('\n')
+    for (const version of ['2.1.150', '2.1.233']) {
+      const adapter = selectClaudeSchemaAdapter(version)
+      expect(adapter.writeMode).toBe('read-write')
+      const user = { ...adapter.parse(userLine ?? ''), version }
+      const assistant = { ...adapter.parse(assistantLine ?? ''), version }
+
+      expect(adapter.serializeForAppend(user)).toContain(
+        `"version":"${version}"`,
+      )
+      expect(adapter.serializeForAppend(assistant)).toContain(
+        `"version":"${version}"`,
+      )
+      expect(adapter.serializeForFork(user)).toContain(`"version":"${version}"`)
+    }
+  })
+
+  it('sidechain-appends entries produced by an alternate Claude version', () => {
+    const adapter = selectClaudeSchemaAdapter('2.1.150')
+    const sidechain = {
+      ...createClaudeSidechainRoot({
+        sessionId: 'session',
+        promptId: 'prompt',
+        prompt: 'hello',
+        agentId: '0123456789abcdef',
+        cwd: '/tmp/project',
+        claudeVersion: '2.1.150',
+        gitBranch: null,
+        uuid: 'sidechain-root',
+        timestamp: '2026-08-04T00:00:00.000Z',
+      }),
+      parentUuid: null,
+    }
+
+    expect(adapter.writeMode).toBe('read-write')
+    expect(adapter.serializeForSidechainAppend(sidechain)).toContain(
+      '"version":"2.1.150"',
+    )
+    expect(adapter.serializeForSidechainAppend(sidechain)).toContain(
+      '"isSidechain":true',
     )
   })
 
