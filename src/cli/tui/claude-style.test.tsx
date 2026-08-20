@@ -89,7 +89,7 @@ describe('Claude-style TUI components', () => {
     expect(accessible.lastFrame()).not.toContain('────')
   })
 
-  it('renders a compact wide welcome surface and local identity', () => {
+  it('renders a complete wide welcome surface and local identity', () => {
     const app = render(<WelcomePanel display={display} width={80} showTips />)
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('Praxis Code v0.1.2')
@@ -98,10 +98,11 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('/Users/test/dev/Praxis')
     expect(frame).toContain('/init to create CLAUDE.md')
     expect(frame).toContain('/config to open settings')
+    expect(frame).toContain('Get started')
+    expect(frame).toContain('Shared with Claude Code')
+    expect(frame).toContain('Sessions · memory · skills')
     // Title lives in the top border row, exactly one line wide.
     expect(frame.split('\n')[0]).toContain('╭───Praxis Code v0.1.2')
-    // Compact: a handful of rows, not the previous 19-row release-note card.
-    expect(frame.split('\n').filter(Boolean).length).toBeLessThan(6)
     expect(frame.split('\n').every((line) => line.length <= 80)).toBe(true)
     // No long Claude release-note copy in the startup surface.
     expect(frame).not.toContain("What's new")
@@ -109,12 +110,14 @@ describe('Claude-style TUI components', () => {
     expect(frame).not.toContain('/release-notes')
   })
 
-  it('stays compact and within bounds on a narrow terminal', () => {
+  it('stays complete and within bounds on a narrow terminal', () => {
     const app = render(<WelcomePanel display={display} width={40} showTips />)
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('Welcome to Praxis')
     expect(frame).toContain('test-model · high effort')
     expect(frame).toContain('/Users/test/dev/Praxis')
+    expect(frame).toContain('Get started')
+    expect(frame).toContain('Shared with Claude Code')
     expect(frame.split('\n').every((line) => line.length <= 40)).toBe(true)
     expect(frame).not.toContain("What's new")
     expect(frame).not.toContain('SendMessage')

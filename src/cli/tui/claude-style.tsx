@@ -87,6 +87,26 @@ export function useTerminalWidth(override?: number): number {
   return Math.max(32, width)
 }
 
+export function useTerminalRows(override?: number): number | undefined {
+  const { stdout } = useStdout()
+  const initialRows = override ?? (stdout.isTTY ? stdout.rows : undefined)
+  const [rows, setRows] = useState(initialRows)
+
+  useEffect(() => {
+    if (override !== undefined) {
+      setRows(override)
+      return
+    }
+    const resize = () => setRows(stdout.rows)
+    stdout.on('resize', resize)
+    return () => {
+      stdout.off('resize', resize)
+    }
+  }, [override, stdout])
+
+  return rows === undefined ? undefined : Math.max(12, rows)
+}
+
 function compactPath(cwd: string): string {
   const home = process.env.HOME
   return home && cwd.startsWith(`${home}/`)
@@ -174,7 +194,7 @@ export function WelcomePanel({
   const palette = useTuiPalette()
   if (!showTips) return null
   const panelWidth = Math.min(100, Math.max(32, width))
-  const wide = panelWidth >= 68
+  const wide = panelWidth >= 72
   const brand = 'Praxis'
   const model = display.model ?? 'provider default'
   const effort = display.effort ? ` · ${display.effort} effort` : ''
@@ -183,8 +203,10 @@ export function WelcomePanel({
   //   ╭───Praxis Code vX.Y.Z ───...───╮
   // Fixed prefix/suffix = "╭───"(4) + "Praxis"(6) + " Code vX.Y.Z "(8 + version)
   // + "╮"(1), so the fill keeps the row exactly at panelWidth.
-  const fill = Math.max(1, panelWidth - display.version.length - 19)
-  const identity = `Welcome to ${brand} · ${model}${effort} · ${cwd}`
+  const title = `${brand} Code v${display.version}`
+  const fill = Math.max(1, panelWidth - title.length - 6)
+  const leftWidth = Math.max(12, Math.floor((panelWidth - 4) / 2))
+  const rightWidth = Math.max(12, panelWidth - leftWidth - 4)
   return (
     <Box flexDirection="column" width={panelWidth}>
       <Text color={palette.muted}>
@@ -196,23 +218,51 @@ export function WelcomePanel({
         <Text dimColor>{'─'.repeat(fill)}</Text>
         {'╮'}
       </Text>
-      {wide ? (
-        <>
-          <Text>{identity}</Text>
-          <Text>/init to create CLAUDE.md · /config to open settings</Text>
-        </>
-      ) : (
-        <>
-          <Text>Welcome to {brand}</Text>
-          <Text>
+      <Box
+        borderStyle="round"
+        borderColor={palette.muted}
+        borderTop={false}
+        flexDirection={wide ? 'row' : 'column'}
+        width={panelWidth}
+        paddingX={1}
+      >
+        <Box
+          alignItems={wide ? 'center' : undefined}
+          flexDirection="column"
+          width={wide ? leftWidth : '100%'}
+        >
+          <Text> </Text>
+          <Text bold>Welcome to {brand}</Text>
+          <Text> </Text>
+          <Text color={palette.brand} bold>
+            ▐▛███▜▌
+          </Text>
+          <Text color={palette.brand}>▝▜█████▛▘</Text>
+          <Text color={palette.brand}> ▘▘ ▝▝</Text>
+          <Text> </Text>
+          <Text wrap="truncate-end">
             {model}
             {effort}
           </Text>
-          <Text>{cwd}</Text>
-          <Text>/init to create CLAUDE.md</Text>
-          <Text>/config to open settings</Text>
-        </>
-      )}
+          <Text dimColor wrap="truncate-end">
+            {cwd}
+          </Text>
+        </Box>
+        <Box
+          flexDirection="column"
+          width={wide ? rightWidth : '100%'}
+          marginTop={wide ? 0 : 1}
+        >
+          <Text bold>Get started</Text>
+          <Text wrap="truncate-end">/init to create CLAUDE.md</Text>
+          <Text wrap="truncate-end">/config to open settings</Text>
+          <Text dimColor> </Text>
+          <Text bold>Shared with Claude Code</Text>
+          <Text dimColor wrap="truncate-end">
+            Sessions · memory · skills
+          </Text>
+        </Box>
+      </Box>
     </Box>
   )
 }
@@ -2754,7 +2804,7 @@ export function Composer({
     false,
   )
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={1} flexShrink={0}>
       {usage ? (
         <Text dimColor>
           Context · {usage.inputTokens + usage.outputTokens} tokens

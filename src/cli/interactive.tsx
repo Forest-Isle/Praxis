@@ -74,6 +74,7 @@ import {
   CustomThemeEditor,
   Transcript,
   WelcomePanel,
+  useTerminalRows,
   useTerminalWidth,
   type TranscriptItem,
   type TuiBtwEntry,
@@ -1061,6 +1062,7 @@ export function InteractiveApp({
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const width = useTerminalWidth(terminalWidth)
+  const rows = useTerminalRows()
   const keybindingsRoot = useMemo(
     () =>
       resolve(
@@ -1172,6 +1174,8 @@ export function InteractiveApp({
     suppliedRuntimeSettings ??
       projectRuntimeSettings({ settings: {}, state: {} }),
   )
+  const fixedViewport =
+    runtimeSettings.tui === 'fullscreen' && rows !== undefined
   const runtimeSettingsRef = useRef(runtimeSettings)
   runtimeSettingsRef.current = runtimeSettings
   runtimeGitignoreRef.current = runtimeSettings.gitignore
@@ -7069,7 +7073,12 @@ export function InteractiveApp({
 
   return (
     <TuiThemeProvider settings={themeSettings}>
-      <Box flexDirection="column">
+      <Box
+        flexDirection="column"
+        {...(!fixedViewport
+          ? {}
+          : { height: rows, overflowY: 'hidden' as const })}
+      >
         {selectingSession ? (
           <SessionPicker
             sessions={filteredPickerChoices}
