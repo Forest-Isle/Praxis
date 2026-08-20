@@ -299,6 +299,7 @@ function enabledAgentToolNames(
   base: ToolRegistry,
   definition: ClaudeAgentRuntimeDefinition | null,
   background: boolean,
+  permissionMode: AgentPermissionMode | undefined,
   additiveTools: ReadonlySet<string> = new Set(),
 ): readonly string[] {
   const requested = definition?.tools
@@ -317,7 +318,12 @@ function enabledAgentToolNames(
     .map(({ name }) => name)
     .filter((name) => {
       if (additiveTools.has(name)) return true
-      if (AGENT_UNAVAILABLE_TOOLS.has(name)) return false
+      if (
+        AGENT_UNAVAILABLE_TOOLS.has(name) &&
+        !(name === 'ExitPlanMode' && permissionMode === 'plan')
+      ) {
+        return false
+      }
       if (
         background &&
         !name.startsWith('mcp__') &&
@@ -1761,6 +1767,7 @@ export class ClaudeSubagentExecutor {
         agentToolBase,
         customAgent,
         options.input.runInBackground,
+        options.input.permissionMode,
         additiveAgentToolNames,
       ),
     )
