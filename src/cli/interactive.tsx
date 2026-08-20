@@ -1315,6 +1315,14 @@ export function InteractiveApp({
     display.contextWindowTokens,
   )
   const [history, setHistory] = useState<TranscriptItem[]>([...initialHistory])
+  // Startup diagnostics are useful before the first prompt, but they are not
+  // conversation history and must not suppress the new-session welcome panel.
+  const hasConversationHistory = history.some(
+    (item) =>
+      item.kind !== 'notice' &&
+      item.kind !== 'warning' &&
+      item.kind !== 'local-result',
+  )
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -7088,7 +7096,7 @@ export function InteractiveApp({
           />
         ) : (
           <>
-            {!axScreenReader && history.length === 0 && !sessionId ? (
+            {!axScreenReader && !hasConversationHistory && !sessionId ? (
               <WelcomePanel
                 display={runtimeDisplay}
                 width={width}
