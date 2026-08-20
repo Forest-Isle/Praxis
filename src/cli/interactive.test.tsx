@@ -56,6 +56,33 @@ async function waitFor<T>(read: () => T | undefined): Promise<T> {
 }
 
 describe('InteractiveApp', () => {
+  it('keeps the welcome panel visible alongside startup diagnostics', () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'local-result', text: 'Using flicker-free rendering' },
+          {
+            kind: 'warning',
+            text: 'MCP server codex unavailable: connection closed',
+          },
+        ]}
+        display={{ version: '0.20.20', cwd: '/Users/test/dev-tools' }}
+      />,
+    )
+
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Using flicker-free rendering')
+    expect(frame).toContain('MCP server codex unavailable')
+    expect(frame).toContain('Welcome to Praxis')
+    app.unmount()
+  })
+
   it('configures sandbox mode, overrides, and config through /sandbox', async () => {
     let snapshot: TuiSandboxSnapshot = {
       settings: {
