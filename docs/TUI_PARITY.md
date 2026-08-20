@@ -152,7 +152,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   and bounded patch scrolling. `git-diff` loads worktree state with path-safe
   argument arrays and never writes repository state.
 - `CommandPalette`: bounded, keyboard-selectable list of built-in controls and
-  shared commands, skills, and MCP prompts.
+  shared commands, skills, and MCP prompts; command descriptions are truncated
+  to the available terminal width so each command remains on one row.
 - `MentionPicker`: bounded, filterable workspace paths and shared agent
   definitions. Files retain `+ path`; agents render as
   `* name (agent) – description` and insert Claude's quoted mention syntax.

@@ -1042,6 +1042,40 @@ describe('Claude-style TUI components', () => {
     expect(frame).not.toContain('╭')
   })
 
+  it('keeps the bounded slash command palette on one row per command with long descriptions', () => {
+    const app = render(
+      <CommandPalette
+        commands={[
+          {
+            name: 'caveman-compress',
+            description:
+              'Compress the conversation with heavy-handed simplification, dropping nuance and detail aggressively to fit the context window',
+            source: 'builtin',
+          },
+          {
+            name: 'review',
+            description: 'Review the current change.',
+            source: 'command',
+          },
+        ]}
+        selectedIndex={0}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    const lines = frame.split('\n')
+    const firstCommandRow = lines.findIndex((line) =>
+      line.includes('/caveman-compress'),
+    )
+    expect(firstCommandRow).toBeGreaterThanOrEqual(0)
+    // The palette stays a one-row-per-command surface: no line escapes the
+    // supplied width, and the second command label starts on the line directly
+    // below the first command row instead of after a wrapped description.
+    expect(lines.every((line) => line.length <= 80)).toBe(true)
+    expect(lines[firstCommandRow + 1]).toContain('/review')
+  })
+
   it('renders a Claude-shaped file picker with an accessible selection', () => {
     const visual = render(
       <FilePicker
