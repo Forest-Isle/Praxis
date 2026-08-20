@@ -112,9 +112,9 @@ try {
   const cwd = await realpath(workDirectory)
   const version = await detectClaudeVersion('Image compatibility probe')
   const schema = selectClaudeSchemaAdapter(version)
-  if (version !== '2.1.208' || schema.writeMode !== 'read-write') {
+  if (schema.writeMode !== 'read-write') {
     throw new Error(
-      `Image compatibility probe does not support Claude ${version}`,
+      `Image compatibility probe requires a read-write schema adapter (Claude ${version})`,
     )
   }
 
