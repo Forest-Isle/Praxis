@@ -1750,6 +1750,262 @@ describe('foreground Claude Agent execution', () => {
     ).toMatchObject({ name: 'reviewer', isolation: 'worktree' })
   })
 
+  it('finds and resumes nested workflow sidechains by agent ID and name', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-nested-sidechain-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const agentId = 'a1234567890abcdef'
+    const runId = 'wf_fixture_run'
+    const name = 'nested-fixture'
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const nestedDirectory = join(
+      paths.projectRoot,
+      sessionId,
+      'subagents',
+      'workflows',
+      runId,
+    )
+    await mkdir(nestedDirectory, { recursive: true })
+    const rootEntry = {
+      parentUuid: null,
+      isSidechain: true,
+      agentId,
+      promptId,
+      type: 'user',
+      message: { role: 'user', content: 'NESTED_FIXTURE_PROMPT' },
+      uuid: '11111111-1111-4111-8111-111111111111',
+      timestamp: '2026-08-20T00:00:00.000Z',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd,
+      sessionId,
+      version: '2.1.208',
+      gitBranch: null,
+    }
+    const assistantEntry = {
+      parentUuid: rootEntry.uuid,
+      isSidechain: true,
+      agentId,
+      attributionAgent: 'general-purpose',
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'NESTED_FIXTURE_DONE' }],
+      },
+      uuid: '22222222-2222-4222-8222-222222222222',
+      timestamp: '2026-08-20T00:00:01.000Z',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd,
+      sessionId,
+      version: '2.1.208',
+      gitBranch: null,
+    }
+    await writeFile(
+      join(nestedDirectory, `agent-${agentId}.jsonl`),
+      [JSON.stringify(rootEntry), JSON.stringify(assistantEntry)].join('\n') +
+        '\n',
+    )
+    await writeFile(
+      join(nestedDirectory, `agent-${agentId}.meta.json`),
+      JSON.stringify({
+        agentType: 'general-purpose',
+        description: 'Nested workflow fixture',
+        toolUseId: 'call_nested_fixture',
+        spawnDepth: 1,
+        name,
+      }),
+    )
+    const provider = (text: string): ModelProvider => ({
+      model: 'fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        yield { type: 'text-delta', delta: text }
+        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+      },
+    })
+    const options = {
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' as const }) },
+    }
+
+    const byId = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('NESTED_ID_DONE'),
+    })
+    const byIdRegistry = byId.registry(sessionId, 0, () => promptId)
+    const idOutput = await byIdRegistry.execute(
+      await byIdRegistry.prepare(
+        {
+          id: 'call_nested_output_id',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(idOutput.content).toContain('NESTED_FIXTURE_DONE')
+
+    const resumed = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('NESTED_RESUME_DONE'),
+    })
+    const resumedRegistry = resumed.registry(sessionId, 0, () => promptId)
+    const sent = await resumedRegistry.execute(
+      await resumedRegistry.prepare(
+        {
+          id: 'call_nested_message',
+          name: 'SendMessage',
+          input: {
+            to: name,
+            summary: 'resume nested fixture',
+            message: 'Continue nested work',
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(sent.content).toContain('"success":true')
+    const nameOutput = await resumedRegistry.execute(
+      await resumedRegistry.prepare(
+        {
+          id: 'call_nested_output_name',
+          name: 'TaskOutput',
+          input: { task_id: name, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(nameOutput.content).toContain('NESTED_RESUME_DONE')
+
+    const source = await readFile(
+      join(nestedDirectory, `agent-${agentId}.jsonl`),
+      'utf8',
+    )
+    expect(source).toContain('The coordinator sent a message')
+    expect(source).toContain('NESTED_RESUME_DONE')
+    await expect(
+      readFile(
+        join(
+          paths.projectRoot,
+          sessionId,
+          'subagents',
+          `agent-${agentId}.jsonl`,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('recovers a metadata-free nested sidechain transcript by exact agent ID', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-legacy-nested-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const agentId = 'a1234567890abcdef'
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const nestedDirectory = join(
+      paths.projectRoot,
+      sessionId,
+      'subagents',
+      'legacy',
+    )
+    await mkdir(nestedDirectory, { recursive: true })
+    const rootEntry = {
+      parentUuid: null,
+      isSidechain: true,
+      agentId,
+      promptId,
+      type: 'user',
+      message: { role: 'user', content: 'LEGACY_FIXTURE_PROMPT' },
+      uuid: '11111111-1111-4111-8111-111111111111',
+      timestamp: '2026-08-20T00:00:00.000Z',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd,
+      sessionId,
+      version: '2.1.208',
+      gitBranch: null,
+    }
+    const assistantEntry = {
+      parentUuid: rootEntry.uuid,
+      isSidechain: true,
+      agentId,
+      attributionAgent: 'general-purpose',
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'LEGACY_FIXTURE_DONE' }],
+      },
+      uuid: '22222222-2222-4222-8222-222222222222',
+      timestamp: '2026-08-20T00:00:01.000Z',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd,
+      sessionId,
+      version: '2.1.208',
+      gitBranch: null,
+    }
+    await writeFile(
+      join(nestedDirectory, `agent-${agentId}.jsonl`),
+      [JSON.stringify(rootEntry), JSON.stringify(assistantEntry)].join('\n') +
+        '\n',
+    )
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        model: 'fixture-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          throw new Error('A recovered sidechain must not call the provider')
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(sessionId, 0, () => promptId)
+
+    const output = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_legacy_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+
+    expect(output.content).toContain('LEGACY_FIXTURE_DONE')
+    const snapshot = executor
+      .backgroundSnapshots()
+      .find((task) => task.agentId === agentId)
+    expect(snapshot).toMatchObject({
+      agentId,
+      status: 'completed',
+      description: 'Recovered Claude sidechain',
+      name: null,
+      result: {
+        text: 'LEGACY_FIXTURE_DONE',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      },
+    })
+    expect(await readdir(nestedDirectory)).toEqual([`agent-${agentId}.jsonl`])
+  })
+
   it('publishes and preserves hosted Agent identity and permission controls', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-agent-model-test-'))
     roots.push(root)

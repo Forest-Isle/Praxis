@@ -14,6 +14,11 @@ export interface ClaudeSidechainPaths {
   metadataFile: string
 }
 
+export interface ClaudeSidechainPathOptions {
+  /** Bounded relative subdirectory under `<sessionId>/subagents` (e.g. `workflows/<runId>`). */
+  subdirectory?: string
+}
+
 export interface ClaudeSidechainMetadata {
   agentType: string
   description: string
@@ -31,6 +36,7 @@ export function resolveClaudeSidechainPaths(
   projectRoot: string,
   sessionId: string,
   agentId: string,
+  options: ClaudeSidechainPathOptions = {},
 ): ClaudeSidechainPaths {
   if (!isClaudeSessionId(sessionId)) {
     throw new Error(`Invalid Claude session ID: ${sessionId}`)
@@ -38,7 +44,23 @@ export function resolveClaudeSidechainPaths(
   if (!AGENT_ID_PATTERN.test(agentId)) {
     throw new Error(`Invalid Claude agent ID: ${agentId}`)
   }
-  const directory = resolve(projectRoot, sessionId, 'subagents')
+  const subdirectory = options.subdirectory
+  if (
+    subdirectory !== undefined &&
+    (subdirectory.length === 0 ||
+      subdirectory.startsWith('/') ||
+      subdirectory.includes('\\') ||
+      subdirectory.includes('\0') ||
+      subdirectory
+        .split('/')
+        .some((segment) => segment === '.' || segment === '..'))
+  ) {
+    throw new Error(`Invalid Claude sidechain subdirectory: ${subdirectory}`)
+  }
+  const directory =
+    subdirectory === undefined
+      ? resolve(projectRoot, sessionId, 'subagents')
+      : resolve(projectRoot, sessionId, 'subagents', subdirectory)
   return {
     sessionId,
     agentId,
