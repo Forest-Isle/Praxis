@@ -14,7 +14,19 @@ export interface ClaudeSchemaAdapter {
   serializeForFork(entry: ClaudeTranscriptEntry): string
 }
 
+/**
+ * Historical fixture/default provenance constant for the Claude Code
+ * transcript schema. It records the version Praxis fixtures and default
+ * translation paths were captured against; it is not an append gate. Any
+ * nonempty semver-like Claude Code version whose entry shape is structurally
+ * supported is writable through the append/sidechain/fork serializers.
+ */
 export const VERIFIED_CLAUDE_SCHEMA_VERSION = '2.1.208'
+const CLAUDE_CODE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/
+
+function isClaudeCodeVersion(version: string): boolean {
+  return CLAUDE_CODE_VERSION_PATTERN.test(version)
+}
 const APPENDABLE_ENTRY_TYPES = new Set([
   'agent-color',
   'agent-name',
@@ -923,11 +935,8 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
     }
   }
 
-  if (entry.version !== VERIFIED_CLAUDE_SCHEMA_VERSION) {
-    throw new Error(
-      `Claude transcript append must target Claude Code ${VERIFIED_CLAUDE_SCHEMA_VERSION}`,
-    )
-  }
+  // version is producer provenance: it must be present and nonempty (enforced
+  // above) but is not compared against a single verified writer version.
 
   if (
     !('parentUuid' in entry) ||
@@ -992,11 +1001,9 @@ function validateSidechainEntry(entry: ClaudeTranscriptEntry): void {
       throw new Error(`Claude sidechain entry is missing ${field}`)
     }
   }
-  if (entry.version !== VERIFIED_CLAUDE_SCHEMA_VERSION) {
-    throw new Error(
-      `Claude sidechain append must target Claude Code ${VERIFIED_CLAUDE_SCHEMA_VERSION}`,
-    )
-  }
+  // version is producer provenance: it must be present and nonempty (enforced
+  // above) but is not compared against a single verified writer version.
+
   if (
     !('parentUuid' in entry) ||
     (entry.parentUuid !== null && !isNonEmptyString(entry.parentUuid))
@@ -1145,9 +1152,10 @@ function validateForkableEntry(entry: ClaudeTranscriptEntry): void {
   else validateForkAssistantMessage(entry.message)
 }
 
-class ClaudeCode21208Adapter implements ClaudeSchemaAdapter {
-  readonly version = VERIFIED_CLAUDE_SCHEMA_VERSION
+class ClaudeCodeWritableAdapter implements ClaudeSchemaAdapter {
   readonly writeMode = 'read-write' as const
+
+  constructor(readonly version: string) {}
 
   parse(line: string): ClaudeTranscriptEntry {
     return parseEntry(line)
@@ -1220,8 +1228,8 @@ class ReadOnlyClaudeAdapter implements ClaudeSchemaAdapter {
 export function selectClaudeSchemaAdapter(
   version: string,
 ): ClaudeSchemaAdapter {
-  if (version === VERIFIED_CLAUDE_SCHEMA_VERSION) {
-    return new ClaudeCode21208Adapter()
+  if (isClaudeCodeVersion(version)) {
+    return new ClaudeCodeWritableAdapter(version)
   }
 
   return new ReadOnlyClaudeAdapter(version)
