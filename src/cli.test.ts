@@ -2396,6 +2396,48 @@ describe('Praxis CLI', () => {
     }
   })
 
+  it('derives simple mode from CLAUDE_CODE_SIMPLE truthy values like --bare', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-simple-mode-'))
+    const configRoot = join(root, '.claude')
+    await mkdir(configRoot, { recursive: true })
+    await writeFile(join(configRoot, '.claude.json'), JSON.stringify({}))
+    try {
+      const toolNames = async (
+        providerEnvironment: Record<string, string>,
+      ): Promise<string[]> => {
+        const service = await createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: false,
+          exposeToolRegistry: true,
+          cwd: root,
+          configRoot,
+          providerEnvironment,
+        })
+        try {
+          const registry = service.toolRegistry
+          if (!registry) throw new Error('tool registry unavailable')
+          return registry.definitions().map((definition) => definition.name)
+        } finally {
+          await service.close?.()
+        }
+      }
+
+      for (const value of ['1', 'true', 'yes', 'on', 'TRUE', ' On ']) {
+        const names = (await toolNames({ CLAUDE_CODE_SIMPLE: value })).sort()
+        expect(names).toEqual(['Bash', 'Edit', 'Read'])
+      }
+
+      for (const value of ['0', 'false', 'off', 'sometimes', '']) {
+        expect(await toolNames({ CLAUDE_CODE_SIMPLE: value })).toContain(
+          'Write',
+        )
+      }
+      expect(await toolNames({})).toContain('Write')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('continues and forks the latest directory session while forwarding controls', async () => {
     const capture = captureIO()
     const calls: string[] = []
