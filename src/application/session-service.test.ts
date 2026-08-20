@@ -1452,6 +1452,222 @@ describe('ClaudeSessionService', () => {
     await failureService.close()
   })
 
+  it('reruns SessionStart with compact source and refreshes runtime context after an automatic compact boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-compact-hook-context-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      model: 'compact-hook-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 2_500,
+      },
+      async *complete(request) {
+        requests.push(request)
+        const call = calls++
+        if (call === 0) {
+          yield {
+            type: 'text-delta',
+            delta: `initial ${'discarded '.repeat(600)}`,
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 12_000, outputTokens: 50 },
+          }
+          return
+        }
+        if (call === 1) {
+          // Session memory extraction: provider-backed, no tools.
+          yield { type: 'text-delta', delta: 'Durable intent: initial task.' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 20 },
+          }
+          return
+        }
+        // Resume turn after the automatic compact boundary.
+        yield { type: 'text-delta', delta: 'final answer' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 2, outputTokens: 1 },
+        }
+      },
+    }
+    let contextVersion = 0
+    let compactHookCalls = 0
+    const hookEvents: string[] = []
+    const hooks = new ClaudeHookRunner({
+      cwd,
+      settings: [
+        {
+          path: join(configRoot, 'settings.json'),
+          scope: 'user',
+          value: {
+            hooks: {
+              SessionStart: [
+                {
+                  hooks: [{ type: 'command', command: 'SessionStart' }],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      executeCommand: async (_command, input) => {
+        hookEvents.push(input.hook_event_name)
+        if (input.source === 'compact') {
+          compactHookCalls += 1
+          return {
+            stdout: 'COMPACT_HOOK_CONTEXT\n',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        }
+        return {
+          stdout:
+            input.source === 'resume'
+              ? 'RESUME_HOOK_CONTEXT\n'
+              : 'STARTUP_HOOK_CONTEXT\n',
+          stderr: '',
+          exitCode: 0,
+          durationMs: 1,
+        }
+      },
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      hooks,
+      contextReserveTokens: 1_500,
+      contextAssembler: {
+        async assemble(options) {
+          contextVersion += 1
+          return {
+            systemMessages: [
+              {
+                role: 'system' as const,
+                content: `SYSTEM_CONTEXT_${contextVersion}`,
+              },
+            ],
+            firstUserMessageContext: `DYNAMIC_CONTEXT_${contextVersion}`,
+          }
+        },
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'COMPACTED_SUMMARY',
+            usage: { inputTokens: 3, outputTokens: 2 },
+            durationMs: 1,
+            model: 'compact-hook-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('first task')
+    expect(run.text.startsWith('initial')).toBe(true)
+
+    // The oversized first turn triggers durable session memory extraction.
+    const memoryDir = join(
+      configRoot,
+      'praxis',
+      'session-memory',
+      run.sessionId,
+    )
+    const summary = await readFile(join(memoryDir, 'summary.md'), 'utf8')
+    expect(summary).toContain('Durable intent: initial task.')
+
+    const resumed = await service.resume(run.sessionId, 'Continue the task.')
+    expect(resumed.text).toBe('final answer')
+
+    // One successful automatic compact produces exactly one compact-source
+    // SessionStart invocation alongside the preserved startup/resume ones.
+    expect(compactHookCalls).toBe(1)
+    expect(hookEvents).toEqual(['SessionStart', 'SessionStart', 'SessionStart'])
+
+    // The context assembler runs once for the startup turn, once for the
+    // resume, and once more after the compact boundary refresh.
+    expect(contextVersion).toBe(3)
+    const postCompactRequest = requests[2]
+    expect(
+      postCompactRequest?.messages.find(
+        (message) =>
+          message.role === 'system' &&
+          typeof message.content === 'string' &&
+          message.content.includes('SYSTEM_CONTEXT_3'),
+      ),
+    ).toBeDefined()
+    expect(JSON.stringify(postCompactRequest?.messages)).toContain(
+      'DYNAMIC_CONTEXT_3',
+    )
+    // The compact-source hook output reaches the post-compact request while
+    // the pre-compact runtime context and pre-boundary hook output do not
+    // reappear (pre-boundary attachments are compacted away with history).
+    expect(JSON.stringify(postCompactRequest?.messages)).toContain(
+      'COMPACT_HOOK_CONTEXT',
+    )
+    expect(JSON.stringify(postCompactRequest?.messages)).not.toContain(
+      'RESUME_HOOK_CONTEXT',
+    )
+    expect(JSON.stringify(postCompactRequest?.messages)).not.toContain(
+      'STARTUP_HOOK_CONTEXT',
+    )
+    expect(JSON.stringify(postCompactRequest?.messages)).not.toContain(
+      'SYSTEM_CONTEXT_2',
+    )
+    expect(
+      postCompactRequest?.messages.find(
+        (message) =>
+          message.role === 'system' &&
+          typeof message.content === 'string' &&
+          message.content.includes('# Session Memory'),
+      )?.content,
+    ).toContain('Durable intent: initial task.')
+
+    // Only the existing Claude hook attachment representation is persisted;
+    // refreshed runtime-only session memory never becomes a JSONL entry.
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('COMPACT_HOOK_CONTEXT')
+    expect(transcript).toContain('RESUME_HOOK_CONTEXT')
+    expect(transcript).toContain('STARTUP_HOOK_CONTEXT')
+    expect(transcript).not.toContain('# Session Memory')
+    expect(transcript).not.toContain('SYSTEM_CONTEXT')
+    expect(transcript).not.toContain('DYNAMIC_CONTEXT')
+    const entries = transcript
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const hookAttachments = entries.filter(
+      (entry) => entry.type === 'attachment',
+    )
+    expect(hookAttachments.map((entry) => entry.attachment.type)).toEqual([
+      'hook_success',
+      'hook_success',
+      'hook_success',
+    ])
+    expect(hookAttachments.map((entry) => entry.attachment.content)).toEqual([
+      'STARTUP_HOOK_CONTEXT',
+      'RESUME_HOOK_CONTEXT',
+      'COMPACT_HOOK_CONTEXT',
+    ])
+  })
+
   it('records manual compact usage without cost and diagnoses an unknown model price', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-unknown-'))
     roots.push(root)

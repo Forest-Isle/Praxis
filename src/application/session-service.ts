@@ -105,6 +105,7 @@ import {
 } from '../core/context-budget.js'
 import {
   injectFirstUserMessageContext,
+  type AssembledContext,
   type ContextAssembler,
 } from '../core/context.js'
 import type {
@@ -3327,49 +3328,57 @@ export class ClaudeSessionService {
           }
         }
 
-        const assembledContext = await this.options.contextAssembler?.assemble({
-          cwd: this.activeCwd(),
-        })
-        const agentSystem = await this.mainAgentSystemPrompt(agent)
-        const assembledSystemMessages = this.assembledSystemMessages(
-          agent,
-          assembledContext?.systemMessages ?? [],
-        )
-        const planModeMessage =
-          this.options.interactiveTools?.contextMessage(sessionId)
         const sessionMemory = this.sessionMemoryController(sessionId)
-        const sessionMemoryMessage = sessionMemory
-          ? this.sessionMemoryMessage(await sessionMemory.summary())
-          : null
-        const contextMessages = [
-          ...(agentSystem
-            ? [{ role: 'system' as const, content: agentSystem }]
-            : []),
-          ...assembledSystemMessages,
-          ...(planModeMessage
-            ? [{ role: 'system' as const, content: planModeMessage }]
-            : []),
-          ...(sessionMemoryMessage
-            ? [{ role: 'system' as const, content: sessionMemoryMessage }]
-            : []),
-          ...(this.options.brief
-            ? [
-                {
-                  role: 'system' as const,
-                  content: CLAUDE_USER_MESSAGE_PROMPT,
-                },
-              ]
-            : []),
-          ...(this.options.structuredOutputSchema
-            ? [
-                {
-                  role: 'system' as const,
-                  content:
-                    'You MUST call StructuredOutput exactly once at the end with a value matching the requested JSON Schema.',
-                },
-              ]
-            : []),
-        ]
+        let assembledContext: AssembledContext | undefined
+        let agentSystem: string | null = null
+        let planModeMessage: string | null | undefined
+        let sessionMemoryMessage: string | null = null
+        let contextMessages: ModelMessage[] = []
+        const refreshRuntimeContext = async () => {
+          assembledContext = await this.options.contextAssembler?.assemble({
+            cwd: this.activeCwd(),
+          })
+          agentSystem = await this.mainAgentSystemPrompt(agent)
+          const assembledSystemMessages = this.assembledSystemMessages(
+            agent,
+            assembledContext?.systemMessages ?? [],
+          )
+          planModeMessage =
+            this.options.interactiveTools?.contextMessage(sessionId)
+          sessionMemoryMessage = sessionMemory
+            ? this.sessionMemoryMessage(await sessionMemory.summary())
+            : null
+          contextMessages = [
+            ...(agentSystem
+              ? [{ role: 'system' as const, content: agentSystem }]
+              : []),
+            ...assembledSystemMessages,
+            ...(planModeMessage
+              ? [{ role: 'system' as const, content: planModeMessage }]
+              : []),
+            ...(sessionMemoryMessage
+              ? [{ role: 'system' as const, content: sessionMemoryMessage }]
+              : []),
+            ...(this.options.brief
+              ? [
+                  {
+                    role: 'system' as const,
+                    content: CLAUDE_USER_MESSAGE_PROMPT,
+                  },
+                ]
+              : []),
+            ...(this.options.structuredOutputSchema
+              ? [
+                  {
+                    role: 'system' as const,
+                    content:
+                      'You MUST call StructuredOutput exactly once at the end with a value matching the requested JSON Schema.',
+                  },
+                ]
+              : []),
+          ]
+        }
+        await refreshRuntimeContext()
 
         const expansion = skipUserPrompt
           ? { userMessages: [] as string[] }
@@ -3714,6 +3723,28 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, ...entries],
             tail: appendResult.tail,
           }
+          // The boundary is durable: mirror Claude's full-compact behavior by
+          // rerunning SessionStart with source compact and refreshing the
+          // runtime-only context so the next request retains current
+          // instructions, plan state, session memory, and hook context.
+          if (this.options.hooks) {
+            const outcome = await this.options.hooks.run(
+              {
+                ...hookSession,
+                hook_event_name: 'SessionStart',
+                source: 'compact',
+              },
+              'compact',
+              signal,
+            )
+            await recordHookOutcome(outcome)
+            if (outcome.blockedReason) {
+              throw new Error(
+                `SessionStart hook error: ${outcome.blockedReason}`,
+              )
+            }
+          }
+          await refreshRuntimeContext()
           this.options.eventSink?.({
             type: 'compact-boundary',
             trigger: 'auto',
