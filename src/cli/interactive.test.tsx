@@ -1438,6 +1438,88 @@ describe('InteractiveApp', () => {
     expect(rendererChanges).toEqual([{ mode: 'fullscreen', sessionId: null }])
   })
 
+  it('anchors the composer and status footer to the bottom of a fixed fullscreen viewport', async () => {
+    const renderApp = (tui: 'default' | 'fullscreen') =>
+      render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          runtimeSettings={{
+            ...projectRuntimeSettings({ settings: {}, state: {} }),
+            tui,
+          }}
+        />,
+      )
+    const frameRows = (frame: string | undefined): string[] => {
+      const lines = (frame ?? '').split('\n')
+      return lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
+    }
+
+    // Fullscreen mode fixes the viewport to the deterministic terminal height
+    // and pushes the composer/status footer down to the bottom of the frame.
+    const app = renderApp('fullscreen')
+    await flush()
+    Object.assign(app.stdout, { rows: 24 })
+    app.stdout.emit('resize')
+    const body = await waitFor(() => {
+      const candidate = frameRows(app.lastFrame())
+      return candidate.length === 24 ? candidate : undefined
+    })
+
+    // The welcome panel stays anchored to the top of the fixed viewport.
+    expect(body[0]?.includes('╭')).toBe(true)
+    expect(body[0]?.includes('Praxis')).toBe(true)
+
+    // The composer footer reaches the bottom portion of the 24-row frame.
+    const footerIndex = body.findIndex((line) => line.includes('⏵⏵'))
+    expect(footerIndex).toBeGreaterThanOrEqual(body.length - 2)
+
+    // Blank spacer rows separate the welcome panel from the composer.
+    const welcomeLastIndex = body.findLastIndex((line) => line.includes('╰'))
+    expect(welcomeLastIndex).toBeGreaterThanOrEqual(0)
+    const promptIndex = body.findIndex((line) =>
+      line.includes('Try "review this project"'),
+    )
+    expect(promptIndex).toBeGreaterThan(welcomeLastIndex)
+    const gap = body.slice(welcomeLastIndex + 1, promptIndex)
+    expect(gap.length).toBeGreaterThanOrEqual(2)
+    expect(
+      gap.filter((line) => line.trim() === '').length,
+    ).toBeGreaterThanOrEqual(2)
+
+    // Default renderer mode ignores the fixed viewport: the frame stays
+    // content-sized and the composer follows the welcome panel closely.
+    const defaultApp = renderApp('default')
+    await flush()
+    Object.assign(defaultApp.stdout, { rows: 24 })
+    defaultApp.stdout.emit('resize')
+    const defaultBody = await waitFor(() => {
+      const candidate = frameRows(defaultApp.lastFrame())
+      return candidate.length > 0 && candidate.length < 24
+        ? candidate
+        : undefined
+    })
+    expect(defaultBody.length).toBeLessThan(24)
+    const defaultWelcomeLastIndex = defaultBody.findLastIndex((line) =>
+      line.includes('╰'),
+    )
+    const defaultPromptIndex = defaultBody.findIndex((line) =>
+      line.includes('Try "review this project"'),
+    )
+    expect(defaultPromptIndex).toBeGreaterThan(defaultWelcomeLastIndex)
+    const defaultGap = defaultBody.slice(
+      defaultWelcomeLastIndex + 1,
+      defaultPromptIndex,
+    )
+    expect(
+      defaultGap.filter((line) => line.trim() === '').length,
+    ).toBeLessThanOrEqual(1)
+  })
+
   it('toggles syntax highlighting in the theme picker and persists immediately', async () => {
     const saved: unknown[] = []
     const app = render(
