@@ -6,10 +6,14 @@ import { promisify } from 'node:util'
 
 import { randomUUID } from 'node:crypto'
 
+import type { DataPlane } from '../persistence/data-plane.js'
+
 const execFileAsync = promisify(execFile)
 
 export interface WorktreeSessionState {
   originalCwd: string
+  /** Repository root used to validate the persisted worktree path on restore. */
+  repositoryRoot?: string
   preEnterOriginalCwd: string
   worktreePath: string
   worktreeName: string
@@ -97,8 +101,18 @@ export class SessionWorktreeManager {
       workspace: WorkspaceContext
       sessionId: string
       baseRef?: 'fresh' | 'head'
+      /** Claude compatibility retains its established project worktree path. */
+      dataPlane?: DataPlane
     },
   ) {}
+
+  private worktreeRoot(repositoryRoot: string): string {
+    return join(
+      repositoryRoot,
+      this.options.dataPlane === 'native' ? '.praxis' : '.claude',
+      'worktrees',
+    )
+  }
 
   bindSession(sessionId: string): void {
     if (this.active && this.active.sessionId !== sessionId) {
@@ -123,7 +137,9 @@ export class SessionWorktreeManager {
     if (this.active) return
     if (state.sessionId !== this.options.sessionId) return
     const worktreePath = resolve(state.worktreePath)
-    const allowedRoot = resolve(state.originalCwd, '.claude', 'worktrees')
+    const allowedRoot = this.worktreeRoot(
+      state.repositoryRoot ?? state.originalCwd,
+    )
     if (!isWithin(allowedRoot, worktreePath)) return
     // A crashed session can leave the directory behind after Git has
     // deregistered the worktree. Only restore directories that still carry
@@ -193,14 +209,15 @@ export class SessionWorktreeManager {
           'Worktree name must use slash-separated letters, digits, dots, underscores, or dashes and be at most 64 characters',
         )
       }
-      const worktreePath = join(root, '.claude', 'worktrees', name)
+      const worktreeRoot = this.worktreeRoot(root)
+      const worktreePath = join(worktreeRoot, name)
       const branch = `worktree-${nameFromPath(name)}`
       const baseCommit =
         this.options.baseRef === 'head'
           ? originalHeadCommit
           : ((await gitOptional(root, ['merge-base', 'HEAD', '@{upstream}'])) ??
             originalHeadCommit)
-      await mkdir(join(root, '.claude', 'worktrees'), { recursive: true })
+      await mkdir(worktreeRoot, { recursive: true })
       try {
         await git(root, [
           'worktree',
@@ -235,6 +252,7 @@ export class SessionWorktreeManager {
       }
       const state: WorktreeSessionState = {
         originalCwd,
+        repositoryRoot: root,
         preEnterOriginalCwd: originalCwd,
         worktreePath,
         worktreeName: name,
@@ -372,9 +390,11 @@ export class SessionWorktreeManager {
     requestedPath: string,
   ): Promise<WorktreeSessionState> {
     const worktreePath = await realpath(resolve(originalCwd, requestedPath))
-    const allowedRoot = resolve(root, '.claude', 'worktrees')
+    const allowedRoot = this.worktreeRoot(root)
     if (!isWithin(allowedRoot, worktreePath)) {
-      throw new Error('Worktree path must be inside .claude/worktrees')
+      throw new Error(
+        `Worktree path must be inside ${this.options.dataPlane === 'native' ? '.praxis' : '.claude'}/worktrees`,
+      )
     }
     const worktrees = parseWorktrees(
       await git(root, ['worktree', 'list', '--porcelain']),
@@ -388,6 +408,7 @@ export class SessionWorktreeManager {
     if (invalidName(name)) throw new Error('Worktree path has an invalid name')
     return {
       originalCwd,
+      repositoryRoot: root,
       preEnterOriginalCwd: originalCwd,
       worktreePath,
       worktreeName: name,

@@ -15,6 +15,8 @@ import {
   type ClaudeJsonResource,
   type ClaudeResourceScope,
 } from '../compatibility/claude/shared-resources.js'
+import type { DataPlane } from '../persistence/data-plane.js'
+import { loadNativeSharedResources } from '../persistence/native-resources.js'
 
 export type McpScope = ClaudeResourceScope
 export type McpServerConfig = Record<string, unknown>
@@ -27,7 +29,9 @@ export interface McpServerRecord {
 }
 
 interface McpManagementOptions {
+  dataPlane?: DataPlane
   configRoot?: string
+  statePath?: string
   cwd: string
   beforeCommit?: (path: string, attempt: number) => Promise<void>
 }
@@ -262,26 +266,42 @@ function disabledServerNames(
 }
 
 export class ClaudeMcpManagement {
+  private readonly dataPlane: DataPlane
   private readonly configRoot: string
+  private readonly statePath: string
   private readonly cwd: string
   private readonly beforeCommit?: McpManagementOptions['beforeCommit']
 
   constructor(options: McpManagementOptions) {
+    this.dataPlane = options.dataPlane ?? 'claude'
     this.configRoot = resolve(
       options.configRoot ??
         process.env.CLAUDE_CONFIG_DIR ??
         join(homedir(), '.claude'),
+    )
+    this.statePath = resolve(
+      options.statePath ??
+        join(
+          this.configRoot,
+          this.dataPlane === 'native' ? 'state.json' : '.claude.json',
+        ),
     )
     this.cwd = resolve(options.cwd)
     this.beforeCommit = options.beforeCommit
   }
 
   async list(scope?: McpScope): Promise<McpServerRecord[]> {
-    const resources = await loadClaudeSharedResources({
-      configRoot: this.configRoot,
-      cwd: this.cwd,
-      settingSources: ['user', 'project', 'local'],
-    })
+    const resources =
+      this.dataPlane === 'native'
+        ? await loadNativeSharedResources({
+            root: this.configRoot,
+            cwd: this.cwd,
+          })
+        : await loadClaudeSharedResources({
+            configRoot: this.configRoot,
+            cwd: this.cwd,
+            settingSources: ['user', 'project', 'local'],
+          })
     const records = new Map<string, McpServerRecord>()
     for (const resource of resources.mcp) {
       for (const [name, config] of Object.entries(
@@ -360,7 +380,7 @@ export class ClaudeMcpManagement {
   }
 
   async resetProjectChoices(): Promise<void> {
-    const path = join(this.configRoot, '.claude.json')
+    const path = this.statePath
     const identity = await resolveClaudeProjectIdentity({ cwd: this.cwd })
     await mutateJson(
       path,
@@ -379,7 +399,7 @@ export class ClaudeMcpManagement {
   }
 
   async disabled(): Promise<readonly string[]> {
-    const path = join(this.configRoot, '.claude.json')
+    const path = this.statePath
     const identity = await resolveClaudeProjectIdentity({ cwd: this.cwd })
     const root = (await readJsonSource(path, true)).value
     return disabledServerNames(projectState(root, identity, path), path)
@@ -392,7 +412,7 @@ export class ClaudeMcpManagement {
   ): Promise<void> {
     this.validateName(name)
     await this.get(name, scope)
-    const path = join(this.configRoot, '.claude.json')
+    const path = this.statePath
     const identity = await resolveClaudeProjectIdentity({ cwd: this.cwd })
     await mutateJson(
       path,
@@ -419,8 +439,18 @@ export class ClaudeMcpManagement {
   }
 
   private async target(scope: McpScope): Promise<McpTarget> {
+    if (this.dataPlane === 'native') {
+      if (scope === 'user') return { path: join(this.configRoot, 'mcp.json') }
+      return {
+        path: join(
+          this.cwd,
+          '.praxis',
+          scope === 'local' ? 'mcp.local.json' : 'mcp.json',
+        ),
+      }
+    }
     if (scope === 'project') return { path: join(this.cwd, '.mcp.json') }
-    const path = join(this.configRoot, '.claude.json')
+    const path = this.statePath
     if (scope === 'user') return { path }
     const projectIdentity = await resolveClaudeProjectIdentity({
       cwd: this.cwd,

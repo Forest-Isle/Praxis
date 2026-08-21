@@ -28,6 +28,45 @@ afterEach(async () => {
 })
 
 describe('ClaudeMcpManagement', () => {
+  it('writes and reads native user, project, and local scopes under Praxis paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-mcp-management-'))
+    roots.push(root)
+    const configRoot = join(root, 'praxis')
+    const cwd = join(root, 'project')
+    const management = new ClaudeMcpManagement({
+      dataPlane: 'native',
+      configRoot,
+      cwd,
+    })
+
+    await management.add('user', { command: 'user' }, 'user')
+    await management.add('project', { command: 'project' }, 'project')
+    await management.add('local', { command: 'local' }, 'local')
+    await management.setEnabled('project', 'project', false)
+
+    await expect(management.list()).resolves.toEqual([
+      expect.objectContaining({ name: 'local', scope: 'local' }),
+      expect.objectContaining({ name: 'project', scope: 'project' }),
+      expect.objectContaining({ name: 'user', scope: 'user' }),
+    ])
+    await expect(
+      readFile(join(configRoot, 'mcp.json'), 'utf8'),
+    ).resolves.toContain('"user"')
+    await expect(
+      readFile(join(cwd, '.praxis', 'mcp.json'), 'utf8'),
+    ).resolves.toContain('"project"')
+    await expect(
+      readFile(join(cwd, '.praxis', 'mcp.local.json'), 'utf8'),
+    ).resolves.toContain('"local"')
+    await expect(management.disabled()).resolves.toEqual(['project'])
+    await expect(
+      readFile(join(configRoot, 'state.json'), 'utf8'),
+    ).resolves.toContain('disabledMcpServers')
+    await expect(
+      readFile(join(configRoot, '.claude.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('removes disabled effective servers from the live registry and restores them on enable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-mcp-management-'))
     roots.push(root)

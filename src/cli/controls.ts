@@ -14,6 +14,7 @@ import {
 import type { CliControls } from './protocol.js'
 
 export const DEFAULT_CLI_CONTROLS: CliControls = {
+  forwardSubagentText: false,
   settings: undefined,
   settingSources: undefined,
   safeMode: false,
@@ -207,6 +208,12 @@ export async function resolveCliControls(
   ])
 
   return {
+    ...(controls.dataPlane === undefined
+      ? {}
+      : { dataPlane: controls.dataPlane }),
+    ...(controls.autocompact === undefined
+      ? {}
+      : { autocompact: controls.autocompact }),
     settingSources: controls.settingSources,
     safeMode: controls.safeMode,
     bare: controls.bare,
@@ -267,6 +274,7 @@ export async function resolveCliControls(
       : { debugFile: controls.debugFile }),
     ...(controls.brief ? { brief: true } : {}),
     ...(controls.axScreenReader ? { axScreenReader: true } : {}),
+    forwardSubagentText: controls.forwardSubagentText,
     fileResources: parseClaudeFileSpecs(controls.fileResources),
     ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
     inlineAgents: resolveInlineAgents(controls.agentDefinitions),

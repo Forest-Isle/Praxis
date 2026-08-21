@@ -209,14 +209,12 @@ async function runPraxisStream(args, prompt, environment) {
 function assertRelocated(request, prompt, label) {
   const system = systemText(request)
   const firstUser = firstUserText(request)
-  for (const marker of [
-    'Primary working directory:',
-    '# Memory',
-    '# gitStatus',
-  ]) {
+  for (const marker of ['Primary working directory:', '# gitStatus']) {
     assertNotContains(system, marker, `${label} system`)
     assertContains(firstUser, marker, `${label} first user`)
   }
+  assertContains(system, '# Memory', `${label} system`)
+  assertNotContains(firstUser, '# Memory', `${label} first user`)
   assertContains(firstUser, prompt, `${label} first user`)
   assertContains(firstUser, '<system-reminder>', `${label} first user`)
 }

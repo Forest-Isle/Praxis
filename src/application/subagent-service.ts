@@ -62,6 +62,10 @@ import type {
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { ClaudeSidechainStore } from '../persistence/claude-sidechain-store.js'
 import { InMemorySidechainStore } from '../persistence/in-memory-sidechain-store.js'
+import {
+  resolveDataPlanePaths,
+  type DataPlane,
+} from '../persistence/data-plane.js'
 import type {
   ClaudeTranscriptLease,
   TranscriptSnapshot,
@@ -341,6 +345,7 @@ function agentMemoryDirectory(
   cwd: string,
   agentType: string,
   scope: NonNullable<ClaudeAgentRuntimeDefinition['memory']>,
+  dataPlane: DataPlane,
 ): string {
   const directoryName = agentType.replaceAll(':', '-')
   if (scope === 'user') {
@@ -348,7 +353,7 @@ function agentMemoryDirectory(
   }
   return join(
     cwd,
-    '.claude',
+    dataPlane === 'native' ? '.praxis' : '.claude',
     scope === 'project' ? 'agent-memory' : 'agent-memory-local',
     directoryName,
   )
@@ -358,6 +363,7 @@ export async function agentMemoryPrompt(
   configRoot: string,
   cwd: string,
   definition: ClaudeAgentRuntimeDefinition | null,
+  dataPlane: DataPlane,
 ): Promise<string | null> {
   if (!definition?.memory) return null
   const directory = agentMemoryDirectory(
@@ -365,6 +371,7 @@ export async function agentMemoryPrompt(
     cwd,
     definition.name,
     definition.memory,
+    dataPlane,
   )
   await mkdir(directory, { recursive: true }).catch(() => undefined)
   let source = ''
@@ -453,6 +460,7 @@ function agentHookSettings(
 
 export interface ClaudeSubagentExecutorOptions {
   configRoot: string
+  dataPlane: DataPlane
   cwd: string
   cwdProvider?: () => string
   claudeVersion: string
@@ -687,7 +695,7 @@ export class ClaudeSubagentExecutor {
           },
           run_in_background: {
             description:
-              'Agents run in the background by default; you will be notified when one completes. Set to false to run this agent synchronously when you need its result before continuing.',
+              "Agents run in the background by default; you will be notified when one completes. Set to false only when your very next action depends on this agent's result and nothing else could usefully happen while it runs — otherwise leave it in the background so the user can hand you other work.",
             type: 'boolean',
           },
           isolation: {
@@ -712,7 +720,14 @@ export class ClaudeSubagentExecutor {
           $schema: 'https://json-schema.org/draft/2020-12/schema',
           type: 'object',
           properties: {
-            to: { description: 'Recipient: teammate name', type: 'string' },
+            to: {
+              description: 'Recipient: teammate name',
+              type: 'string',
+              allOf: [
+                { pattern: '^[^\\n\\r]*$' },
+                { pattern: '^[\\s\\S]{0,300}$' },
+              ],
+            },
             summary: {
               description:
                 'A 5-10 word summary shown as a preview in the UI (required when message is a string)',
@@ -835,11 +850,7 @@ export class ClaudeSubagentExecutor {
     const input = this.resolveAgentInput(parseAgentInput(call))
     const spawnDepth = depth + 1
     const agentId = `a${randomBytes(8).toString('hex')}`
-    const paths = resolveClaudePaths({
-      configDir: this.options.configRoot,
-      cwd: this.cwd(),
-      sessionId,
-    })
+    const paths = this.sessionPaths(sessionId)
     const initialIsolation = input.isolation
       ? await this.createAgentWorktree(paths.praxisRoot, sessionId, agentId)
       : undefined
@@ -849,7 +860,12 @@ export class ClaudeSubagentExecutor {
       sessionId,
       agentId,
     )
-    const sidechain = this.sidechainStore(sessionId, agentId, sidechainPaths)
+    const sidechain = this.sidechainStore(
+      sessionId,
+      agentId,
+      sidechainPaths,
+      paths.praxisRoot,
+    )
     const root = createClaudeSidechainRoot({
       sessionId,
       promptId,
@@ -1009,16 +1025,12 @@ export class ClaudeSubagentExecutor {
     sessionId: string,
     agentId: string,
     paths: ClaudeSidechainPaths,
+    lockRoot: string,
   ): ClaudeSidechainStore | InMemorySidechainStore {
     if (this.options.persistence !== 'memory') {
       return new ClaudeSidechainStore(
         paths,
-        join(
-          this.options.configRoot,
-          'praxis',
-          'locks',
-          `${sessionId}-${agentId}.lock`,
-        ),
+        join(lockRoot, 'locks', `${sessionId}-${agentId}.lock`),
         this.schema,
       )
     }
@@ -1029,6 +1041,21 @@ export class ClaudeSubagentExecutor {
       this.ephemeralSidechains.set(key, store)
     }
     return store
+  }
+
+  private sessionPaths(sessionId: string) {
+    return this.options.dataPlane === 'native'
+      ? resolveDataPlanePaths({
+          dataPlane: 'native',
+          root: this.options.configRoot,
+          cwd: this.cwd(),
+          sessionId,
+        })
+      : resolveClaudePaths({
+          configDir: this.options.configRoot,
+          cwd: this.cwd(),
+          sessionId,
+        })
   }
 
   private createAgentWorktree(
@@ -1173,25 +1200,20 @@ export class ClaudeSubagentExecutor {
       transcriptFile: agentFiles.transcriptFile,
       metadataFile: agentFiles.metadataFile,
     }
+    const sessionPaths = this.sessionPaths(options.sessionId)
     const sidechain = new ClaudeSidechainStore(
       paths,
       join(
-        this.options.configRoot,
-        'praxis',
+        sessionPaths.praxisRoot,
         'locks',
         `${options.sessionId}-${options.runId}-${options.agentId}.lock`,
       ),
       this.schema,
     )
-    const claudePaths = resolveClaudePaths({
-      configDir: this.options.configRoot,
-      cwd: this.cwd(),
-      sessionId: options.sessionId,
-    })
     const isolation = options.isolation
       ? await createWorkflowWorktree({
           cwd: this.cwd(),
-          praxisRoot: claudePaths.praxisRoot,
+          praxisRoot: sessionPaths.praxisRoot,
           runId: options.runId,
           agentId: options.agentId,
         })
@@ -1228,7 +1250,7 @@ export class ClaudeSubagentExecutor {
           promptId: options.promptId,
           transcriptPath: paths.transcriptFile,
           toolResultDirectory: join(
-            claudePaths.projectRoot,
+            sessionPaths.projectRoot,
             options.sessionId,
             'tool-results',
           ),
@@ -1363,11 +1385,7 @@ export class ClaudeSubagentExecutor {
     identifier: string,
   ): Promise<void> {
     if (this.background.has(identifier)) return
-    const paths = resolveClaudePaths({
-      configDir: this.options.configRoot,
-      cwd: this.cwd(),
-      sessionId,
-    })
+    const paths = this.sessionPaths(sessionId)
     const sidechainPaths = await this.resolvePersistedSidechain(
       paths.projectRoot,
       sessionId,
@@ -1981,6 +1999,7 @@ export class ClaudeSubagentExecutor {
         this.options.configRoot,
         cwd,
         customAgent,
+        this.options.dataPlane,
       )
       const agentSystem = memoryPrompt
         ? `${baseSystem}\n\n${memoryPrompt}`

@@ -23,7 +23,10 @@ afterEach(async () => {
   )
 })
 
-async function fixture(dynamicWakeupsEnabled = false) {
+async function fixture(
+  dynamicWakeupsEnabled = false,
+  dataPlane: 'native' | 'claude' = 'claude',
+) {
   const root = await mkdtemp(join(tmpdir(), 'praxis-cron-tools-'))
   roots.push(root)
   const cwd = join(root, 'work')
@@ -43,6 +46,7 @@ async function fixture(dynamicWakeupsEnabled = false) {
       manager,
       sessionId: '20202020-2020-4020-8020-202020202020',
       now,
+      dataPlane,
     }),
   }
 }
@@ -150,6 +154,26 @@ describe('ClaudeScheduledToolRegistry', () => {
     await expect(
       execute(registry, cwd, 'CronDelete', { id }),
     ).resolves.toMatchObject({ content: `Cancelled job ${id}.` })
+  })
+
+  it('describes native durable storage without directing writes to Claude', async () => {
+    const { registry, cwd } = await fixture(false, 'native')
+    const definition = registry
+      .definitions()
+      .find(({ name }) => name === 'CronCreate')
+    expect(definition?.description).toContain(
+      '~/.praxis/scheduled/<project>.json',
+    )
+    expect(definition?.description).not.toContain('.claude')
+
+    const created = await execute(registry, cwd, 'CronCreate', {
+      cron: '17 9 * * 1-5',
+      prompt: 'run native probe',
+      durable: true,
+    })
+    expect(created.content).toContain(
+      'Persisted to ~/.praxis/scheduled/<project>.json.',
+    )
   })
 
   it('matches the inactive dynamic-loop result and validates cron input', async () => {

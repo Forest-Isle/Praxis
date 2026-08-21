@@ -126,6 +126,7 @@ function parseSessionMemoryState(source: string): SessionMemoryState {
 export interface SessionMemoryStoreOptions {
   configRoot: string
   sessionId: string
+  sidecarRoot?: string
 }
 
 /**
@@ -154,8 +155,7 @@ export class SessionMemoryStore {
       )
     }
     this.directory = resolve(
-      options.configRoot,
-      'praxis',
+      options.sidecarRoot ?? resolve(options.configRoot, 'praxis'),
       'session-memory',
       options.sessionId,
     )

@@ -78,6 +78,8 @@ try {
       env: {
         ...process.env,
         CLAUDE_CONFIG_DIR: configRoot,
+        PRAXIS_DATA_PLANE: 'claude',
+        PRAXIS_PROVIDER: 'openai',
         PRAXIS_API_KEY: 'fixture-key',
         PRAXIS_MODEL: 'fixture-model',
         PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
@@ -103,6 +105,8 @@ try {
       env: {
         ...process.env,
         CLAUDE_CONFIG_DIR: configRoot,
+        PRAXIS_DATA_PLANE: 'claude',
+        PRAXIS_PROVIDER: 'openai',
         PRAXIS_API_KEY: 'fixture-key',
         PRAXIS_MODEL: 'fixture-model',
         PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
@@ -170,7 +174,11 @@ try {
     [cli, 'fork', '--json', result.sessionId],
     {
       cwd: workDirectory,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot },
+      env: {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: configRoot,
+        PRAXIS_DATA_PLANE: 'claude',
+      },
       maxBuffer: 8 * 1024 * 1024,
       timeout: 120_000,
     },

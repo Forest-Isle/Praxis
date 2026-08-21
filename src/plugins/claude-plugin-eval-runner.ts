@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { RuntimeEvent } from '../core/runtime.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 import {
   BoundedProcessRunner,
   joinedProcessOutput,
@@ -30,6 +31,7 @@ export interface PluginEvalRuntime {
 }
 export interface PluginEvalRuntimeFactory {
   create(options: {
+    dataPlane: DataPlane
     cwd: string
     configRoot: string
     home: string
@@ -167,6 +169,7 @@ export async function runClaudePluginEvalOnce(options: {
   allowTools?: readonly string[]
   scaffold: boolean
   signal?: AbortSignal
+  dataPlane?: DataPlane
 }): Promise<EvalSingleRunResult> {
   const tempRoot = await mkdtemp(join(tmpdir(), 'praxis-eval-'))
   const cwd = join(tempRoot, 'cwd')
@@ -212,6 +215,7 @@ export async function runClaudePluginEvalOnce(options: {
         )
       : undefined
     runtime = await options.factory.create({
+      dataPlane: options.dataPlane ?? 'native',
       cwd,
       configRoot,
       home,

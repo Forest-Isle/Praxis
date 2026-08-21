@@ -1,8 +1,8 @@
 import { copyFile, mkdir, rm, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { writeFileAtomically } from '../platform/atomic-write.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 import { discoverClaudePluginEvals } from './claude-plugin-eval-discovery.js'
 import {
   gradeClaudePluginEvalRun,
@@ -25,13 +25,17 @@ Options:
   --ablation <mode>        Ablation mode: none or with-without (default depends on target)
   --allow-tools <tools...> Operator grant for gated case tools such as Bash or Write
   --case <glob>            Filter safe case names with a glob
-  --json                   Print aggregate JSON
+  --eval-dir <dir>         Directory below the plugin that holds eval cases
+  --json [path]            Print aggregate JSON or write it to a file
   --judge-model <model>    Judge model (default: haiku)
   --keep-temp              Keep isolated run directories
   --max-cost-usd <usd>     Stop before next run at ceiling; one active run may overrun
   --model <model>          Override case model
   --no-scaffold            Disable opt-in scaffold scripts (default)
+  --no-publish             Keep the report local
   --output-dir <dir>       Results directory (default: evals/results/<timestamp>)
+  --publish-report         Request report publishing when available
+  --report <path>          Select the HTML report path
   --runs <n>               Override case run count
   --scaffold               Enable contained, bounded scaffold scripts
   --tag <tag...>           Include cases matching any tag
@@ -46,8 +50,10 @@ Commands:
 export const PLUGIN_EVAL_INIT_HELP = `Usage: praxis plugin eval init [options] [name]
 
 Options:
-  --bare      Write starter files without an interview
-  -h, --help  Display help for command
+  --bare             Write starter files without an interview
+  --eval-dir <dir>   Directory below the current directory to write cases into
+  -h, --help         Display help for command
+  -i, --interactive  Require the authoring interview
 `
 
 export interface PluginEvalIo {
@@ -58,7 +64,11 @@ export interface PluginEvalIo {
 export interface PluginEvalDependencies {
   runtimeFactory: PluginEvalRuntimeFactory
   judge?: EvalJudge
-  interactiveInit?(options: { cwd: string; name?: string }): Promise<number>
+  interactiveInit?(options: {
+    cwd: string
+    name?: string
+    evalDir?: string
+  }): Promise<number>
   claudeVersion?: string
 }
 
@@ -68,11 +78,15 @@ interface EvalOptions {
   allowTools: string[]
   caseGlob?: string
   json: boolean
+  jsonPath?: string
   judgeModel: string
   keepTemp: boolean
+  evalDir?: string
   maxCostUsd?: number
   model?: string
   outputDir?: string
+  publishReport?: boolean
+  reportPath?: string
   runs?: number
   scaffold: boolean
   tags: string[]
@@ -107,8 +121,16 @@ function parseOptions(argv: readonly string[]): EvalOptions {
         throw new Error(`${value} requires a value`)
       return next
     }
-    if (value === '--json') result.json = true
-    else if (value === '--keep-temp') result.keepTemp = true
+    if (value === '--json') {
+      result.json = true
+      const next = argv[index + 1]
+      if (next && !next.startsWith('-')) {
+        result.jsonPath = next
+        index += 1
+      }
+    } else if (value === '--keep-temp') result.keepTemp = true
+    else if (value === '--no-publish') result.publishReport = false
+    else if (value === '--publish-report') result.publishReport = true
     else if (value === '--scaffold') result.scaffold = true
     else if (value === '--no-scaffold') result.scaffold = false
     else if (value === '--verbose') result.verbose = true
@@ -118,6 +140,7 @@ function parseOptions(argv: readonly string[]): EvalOptions {
         throw new Error('--ablation must be none or with-without')
       result.ablation = mode
     } else if (value === '--case') result.caseGlob = take()
+    else if (value === '--eval-dir') result.evalDir = take()
     else if (value === '--judge-model') result.judgeModel = take()
     else if (value === '--max-cost-usd') {
       result.maxCostUsd = numberValue(take(), value)
@@ -125,6 +148,7 @@ function parseOptions(argv: readonly string[]): EvalOptions {
         throw new Error('--max-cost-usd must be non-negative')
     } else if (value === '--model') result.model = take()
     else if (value === '--output-dir') result.outputDir = take()
+    else if (value === '--report') result.reportPath = take()
     else if (value === '--runs') {
       result.runs = numberValue(take(), value)
       if (!Number.isInteger(result.runs) || result.runs < 1 || result.runs > 50)
@@ -154,12 +178,13 @@ const INIT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u
 async function writeEvalTemplate(options: {
   cwd: string
   name: string
+  evalDir?: string
   prompt: string
   grader: string
 }): Promise<void> {
   if (!INIT_NAME.test(options.name) || options.name === '..')
     throw new Error(`Eval name must match ${INIT_NAME}`)
-  const dir = join(options.cwd, 'evals', options.name)
+  const dir = join(options.cwd, options.evalDir ?? 'evals', options.name)
   try {
     await stat(dir)
     throw new Error(`Eval case already exists: ${dir}`)
@@ -182,6 +207,7 @@ async function writeEvalTemplate(options: {
 async function interactiveEvalInit(options: {
   cwd: string
   name?: string
+  evalDir?: string
 }): Promise<number> {
   const { createInterface } = await import('node:readline/promises')
   const interview = createInterface({
@@ -200,6 +226,7 @@ async function interactiveEvalInit(options: {
     await writeEvalTemplate({
       cwd: options.cwd,
       name,
+      ...(options.evalDir ? { evalDir: options.evalDir } : {}),
       prompt: `---\nmax_turns: 10\nallowed_tools: [Read, Glob, Grep, Skill]\n---\n${prompt}\n`,
       grader: `---\ntype: llm\nweight: 1\n---\n${criteria}\n`,
     })
@@ -215,6 +242,7 @@ export async function initClaudePluginEval(options: {
   bare: boolean
   interactive: boolean
   isTTY: boolean
+  evalDir?: string
   interactiveInit?: PluginEvalDependencies['interactiveInit']
 }): Promise<number> {
   if (!options.name && (!options.isTTY || options.bare))
@@ -223,16 +251,20 @@ export async function initClaudePluginEval(options: {
         ? 'plugin eval init --bare requires a name'
         : 'plugin eval init requires a name when stdin is not a TTY',
     )
+  if (options.interactive && !options.isTTY)
+    throw new Error('plugin eval init --interactive requires a TTY')
   if (!options.bare && (options.interactive || options.isTTY)) {
     return (options.interactiveInit ?? interactiveEvalInit)({
       cwd: options.cwd,
       ...(options.name ? { name: options.name } : {}),
+      ...(options.evalDir ? { evalDir: options.evalDir } : {}),
     })
   }
   const name = options.name as string
   await writeEvalTemplate({
     cwd: options.cwd,
     name,
+    ...(options.evalDir ? { evalDir: options.evalDir } : {}),
     prompt:
       '---\nmax_turns: 10\nallowed_tools: [Read, Glob, Grep, Skill]\n---\nInspect the current directory and summarize relevant findings.\n',
     grader: '---\ntype: regex\nweight: 1\nmatch: contains\n---\n.+\n',
@@ -268,6 +300,7 @@ export async function runClaudePluginEval(
   options: EvalOptions & {
     cwd: string
     configRoot: string
+    dataPlane?: DataPlane
     dependencies: PluginEvalDependencies
     signal?: AbortSignal
   },
@@ -284,13 +317,14 @@ export async function runClaudePluginEval(
     configRoot: options.configRoot,
     ...(options.caseGlob ? { caseGlob: options.caseGlob } : {}),
     ...(options.tags.length ? { tags: options.tags } : {}),
+    ...(options.evalDir ? { evalDir: options.evalDir } : {}),
     ablation: defaultAblation,
   })
   if (discovered.cases.length === 0) throw new Error('No eval cases found')
   const timestamp = new Date().toISOString().replace(/[:.]/gu, '-')
   const outputDir = resolve(
     options.cwd,
-    options.outputDir ?? join('evals', 'results', timestamp),
+    options.outputDir ?? join(options.evalDir ?? 'evals', 'results', timestamp),
   )
   await mkdir(outputDir, { recursive: true })
   const started = Date.now()
@@ -328,6 +362,7 @@ export async function runClaudePluginEval(
         if (options.verbose)
           process.stderr.write(`Running ${caseDef.name} ${arm} ${index + 1}\n`)
         const single = await runClaudePluginEvalOnce({
+          ...(options.dataPlane ? { dataPlane: options.dataPlane } : {}),
           case: caseDef,
           factory: options.dependencies.runtimeFactory,
           pluginDirectories:
@@ -489,7 +524,9 @@ export async function executeClaudePluginEvalCommand(
   argv: readonly string[],
   io: PluginEvalIo,
   dependencies: PluginEvalDependencies,
+  configRoot: string,
   signal?: AbortSignal,
+  dataPlane: DataPlane = 'native',
 ): Promise<number> {
   if (argv.includes('--help') || argv.includes('-h')) {
     io.stdout(argv[0] === 'init' ? PLUGIN_EVAL_INIT_HELP : PLUGIN_EVAL_HELP)
@@ -497,10 +534,19 @@ export async function executeClaudePluginEvalCommand(
   }
   if (argv[0] === 'init') {
     let bare = false
+    let interactive = false
+    let evalDir: string | undefined
     const operands: string[] = []
-    for (const value of argv.slice(1)) {
+    for (let index = 1; index < argv.length; index += 1) {
+      const value = argv[index] as string
       if (value === '--bare') bare = true
-      else if (value.startsWith('-'))
+      else if (value === '-i' || value === '--interactive') interactive = true
+      else if (value === '--eval-dir') {
+        const next = argv[++index]
+        if (!next || next.startsWith('-'))
+          throw new Error('--eval-dir requires a value')
+        evalDir = next
+      } else if (value.startsWith('-'))
         throw new Error(`Unknown plugin eval init option: ${value}`)
       else operands.push(value)
     }
@@ -512,8 +558,9 @@ export async function executeClaudePluginEvalCommand(
       cwd: process.cwd(),
       ...(operands[0] ? { name: operands[0] } : {}),
       bare: bare || !io.isTTY,
-      interactive: false,
+      interactive,
       isTTY: Boolean(io.isTTY),
+      ...(evalDir ? { evalDir } : {}),
       ...(dependencies.interactiveInit
         ? { interactiveInit: dependencies.interactiveInit }
         : {}),
@@ -523,13 +570,17 @@ export async function executeClaudePluginEvalCommand(
   const result = await runClaudePluginEval({
     ...parsed,
     cwd: process.cwd(),
-    configRoot: resolve(
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
-    ),
+    configRoot: resolve(configRoot),
+    dataPlane,
     dependencies,
     ...(signal ? { signal } : {}),
   })
-  if (parsed.json) io.stdout(`${JSON.stringify(result.aggregate)}\n`)
+  if (parsed.jsonPath) {
+    await writeFileAtomically(
+      resolve(process.cwd(), parsed.jsonPath),
+      `${JSON.stringify(result.aggregate)}\n`,
+    )
+  } else if (parsed.json) io.stdout(`${JSON.stringify(result.aggregate)}\n`)
   else
     io.stdout(
       `Evaluated ${(result.aggregate.cases as unknown[]).length} case(s). Results written.\n`,

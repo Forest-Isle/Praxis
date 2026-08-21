@@ -9,9 +9,11 @@
 - Keep the agent loop small. Add abstractions only when a second implementation
   or a verified boundary requires one.
 - Keep provider-specific optimizations inside capability-aware adapters.
-- Treat Claude Code's `.claude` layout as the shared data plane. Do not create a
-  competing session, memory, skill, or project-instruction ecosystem.
-- Store authoritative transcripts as Claude Code-compatible append-only JSONL.
+- Treat `~/.praxis` and project `.praxis` as the default native data plane.
+  Claude Code's `.claude` layout is an explicit compatibility mode, never an
+  implicit dependency of native runs.
+- Store authoritative transcripts as append-only JSONL. Claude compatibility
+  mode must retain Claude Code-compatible entries and paths.
 - Never add Praxis-specific entry types or fields to shared transcripts unless
   compatibility tests prove Claude Code accepts them. Use sidecars under the
   Claude config root for private operational state.

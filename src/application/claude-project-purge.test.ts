@@ -9,15 +9,18 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
+import type { DataPlane } from '../persistence/data-plane.js'
+import { resolveDataPlaneRoot } from '../persistence/data-plane.js'
 import {
   executeClaudeProjectPurge,
   planClaudeProjectPurge,
 } from './claude-project-purge.js'
+import { topLevelAgentProcessRegistryRoot } from './top-level-agent-manager.js'
 
 const roots: string[] = []
 const SESSION_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -234,7 +237,7 @@ describe('Claude project purge', () => {
 
   it('includes Claude project directories for worktrees below the target project', async () => {
     const { configRoot, statePath, project } = await fixture()
-    const worktree = join(project, '.worktrees', 'feature')
+    const worktree = join(project, '.claude', 'worktrees', 'feature')
     const targetRoot = join(
       configRoot,
       'projects',
@@ -261,6 +264,46 @@ describe('Claude project purge', () => {
     expect(plan.projectRootPaths).toEqual([targetRoot, worktreeRoot])
     expect(plan.sessionIds).toEqual([SESSION_A, SESSION_B])
     expect(plan.items.filter((item) => item.kind === 'project')).toHaveLength(2)
+    const result = await executeClaudeProjectPurge(plan)
+    expect(result.failures).toEqual([])
+    await Promise.all([
+      expect(missing(targetRoot)).resolves.toBe(true),
+      expect(missing(worktreeRoot)).resolves.toBe(true),
+      expect(missing(join(configRoot, 'tasks', SESSION_A))).resolves.toBe(true),
+      expect(missing(join(configRoot, 'tasks', SESSION_B))).resolves.toBe(true),
+    ])
+  })
+
+  it('includes native Praxis worktree transcripts and tasks', async () => {
+    const { configRoot, project } = await fixture()
+    const statePath = join(configRoot, 'state.json')
+    const worktree = join(project, '.praxis', 'worktrees', 'feature')
+    const targetRoot = join(
+      configRoot,
+      'sessions',
+      sanitizeClaudeProjectPath(project),
+    )
+    const worktreeRoot = join(
+      configRoot,
+      'sessions',
+      sanitizeClaudeProjectPath(worktree),
+    )
+    await Promise.all([
+      writeFixture(join(targetRoot, `${SESSION_A}.jsonl`)),
+      writeFixture(join(worktreeRoot, `${SESSION_B}.jsonl`)),
+      writeFixture(join(configRoot, 'tasks', SESSION_A, '1.json')),
+      writeFixture(join(configRoot, 'tasks', SESSION_B, '1.json')),
+      writeFixture(statePath, JSON.stringify({ projects: {} })),
+    ])
+
+    const plan = await planClaudeProjectPurge({
+      dataPlane: 'native',
+      cwd: project,
+      configRoot,
+      statePath,
+    })
+    expect(plan.projectRootPaths).toEqual([targetRoot, worktreeRoot])
+    expect(plan.sessionIds).toEqual([SESSION_A, SESSION_B])
     const result = await executeClaudeProjectPurge(plan)
     expect(result.failures).toEqual([])
     await Promise.all([
@@ -335,6 +378,133 @@ describe('Claude project purge', () => {
     })
   })
 
+  it('purges native project memory and scheduled prompts for one project', async () => {
+    const { configRoot, statePath, project, otherProject } = await fixture()
+    const projectKey = sanitizeClaudeProjectPath(project)
+    const otherKey = sanitizeClaudeProjectPath(otherProject)
+    const projectRoot = join(configRoot, 'sessions', projectKey)
+    await Promise.all([
+      writeFixture(join(projectRoot, `${SESSION_A}.jsonl`)),
+      writeFixture(join(configRoot, 'memory', projectKey, 'MEMORY.md')),
+      writeFixture(join(configRoot, 'scheduled', `${projectKey}.json`), '{}'),
+      writeFixture(join(configRoot, 'memory', otherKey, 'MEMORY.md'), 'keep'),
+      writeFixture(join(configRoot, 'scheduled', `${otherKey}.json`), '{}'),
+      writeFixture(statePath, JSON.stringify({ projects: {} })),
+    ])
+
+    const plan = await planClaudeProjectPurge({
+      dataPlane: 'native',
+      cwd: project,
+      configRoot,
+      statePath,
+    })
+    expect(plan.items.map((item) => item.kind)).toEqual([
+      'memory',
+      'scheduled',
+      'project',
+    ])
+    await expect(executeClaudeProjectPurge(plan)).resolves.toMatchObject({
+      failures: [],
+    })
+    await Promise.all([
+      expect(missing(projectRoot)).resolves.toBe(true),
+      expect(missing(join(configRoot, 'memory', projectKey))).resolves.toBe(
+        true,
+      ),
+      expect(
+        missing(join(configRoot, 'scheduled', `${projectKey}.json`)),
+      ).resolves.toBe(true),
+      access(join(configRoot, 'memory', otherKey, 'MEMORY.md')),
+      access(join(configRoot, 'scheduled', `${otherKey}.json`)),
+    ])
+  })
+
+  it('purges all native memory and scheduled prompt roots with --all', async () => {
+    const { configRoot, statePath, project } = await fixture()
+    const projectKey = sanitizeClaudeProjectPath(project)
+    await Promise.all([
+      writeFixture(
+        join(configRoot, 'sessions', projectKey, `${SESSION_A}.jsonl`),
+      ),
+      writeFixture(join(configRoot, 'memory', projectKey, 'MEMORY.md')),
+      writeFixture(join(configRoot, 'scheduled', `${projectKey}.json`), '{}'),
+      writeFixture(
+        join(
+          topLevelAgentProcessRegistryRoot(configRoot, 'native'),
+          '12345.json',
+        ),
+        JSON.stringify({ pid: 12345, status: 'working' }),
+      ),
+      writeFixture(statePath, JSON.stringify({ projects: {} })),
+    ])
+
+    const plan = await planClaudeProjectPurge({
+      dataPlane: 'native',
+      cwd: project,
+      all: true,
+      configRoot,
+      statePath,
+    })
+    expect(plan.items.map((item) => item.kind)).toEqual([
+      'project',
+      'memory',
+      'scheduled',
+    ])
+    await expect(executeClaudeProjectPurge(plan)).resolves.toMatchObject({
+      failures: [],
+    })
+    await Promise.all(
+      ['sessions', 'memory', 'scheduled'].map((name) =>
+        expect(missing(join(configRoot, name))).resolves.toBe(true),
+      ),
+    )
+    await expect(
+      readFile(
+        join(
+          topLevelAgentProcessRegistryRoot(configRoot, 'native'),
+          '12345.json',
+        ),
+        'utf8',
+      ),
+    ).resolves.toContain('12345')
+  })
+
+  it('never resolves a whitespace PRAXIS_HOME to the working directory for purge-all', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-project-purge-root-')),
+    )
+    roots.push(root)
+    const home = join(root, 'home')
+    const cwd = join(root, 'workspace')
+    const configRoot = resolveDataPlaneRoot({
+      dataPlane: 'native',
+      environment: { PRAXIS_HOME: '   ' },
+      homeDirectory: home,
+    })
+    const statePath = join(configRoot, 'state.json')
+    await Promise.all([
+      writeFixture(join(configRoot, 'sessions', 'native', 'session.jsonl')),
+      writeFixture(statePath, '{}'),
+      writeFixture(join(cwd, 'sessions', 'keep', 'session.jsonl'), 'keep'),
+    ])
+
+    const plan = await planClaudeProjectPurge({
+      dataPlane: 'native',
+      cwd,
+      all: true,
+      configRoot,
+      statePath,
+    })
+    expect(plan.configRoot).toBe(join(home, '.praxis'))
+    expect(
+      plan.items.every((item) => item.path.startsWith(join(home, '.praxis'))),
+    ).toBe(true)
+    await executeClaudeProjectPurge(plan)
+    await expect(
+      readFile(join(cwd, 'sessions', 'keep', 'session.jsonl'), 'utf8'),
+    ).resolves.toBe('keep')
+  })
+
   it('rejects malformed state before deleting any project data', async () => {
     const { configRoot, statePath, project } = await fixture()
     const transcript = join(
@@ -385,6 +555,76 @@ describe('Claude project purge', () => {
     await expect(
       access(join(outside, `${SESSION_A}.jsonl`)),
     ).resolves.toBeUndefined()
+  })
+
+  it.each([
+    ['native', 'state.json'],
+    ['claude', '.claude.json'],
+  ] as const)(
+    'rejects an outside %s state symlink without mutating its target',
+    async (dataPlane: DataPlane, stateName: string) => {
+      const { root, configRoot, project } = await fixture()
+      const statePath = join(configRoot, stateName)
+      const outsideState = join(root, `${dataPlane}-outside-state.json`)
+      const outsideSource = JSON.stringify({ projects: { outside: true } })
+      const transcript = join(
+        configRoot,
+        dataPlane === 'native' ? 'sessions' : 'projects',
+        sanitizeClaudeProjectPath(project),
+        `${SESSION_A}.jsonl`,
+      )
+      await Promise.all([
+        writeFixture(outsideState, outsideSource),
+        writeFixture(transcript),
+        mkdir(dirname(statePath), { recursive: true }),
+      ])
+      await symlink(outsideState, statePath)
+
+      await expect(
+        planClaudeProjectPurge({
+          dataPlane,
+          cwd: project,
+          configRoot,
+          statePath,
+        }),
+      ).rejects.toThrow('Refusing to update path through symbolic link')
+      await expect(readFile(outsideState, 'utf8')).resolves.toBe(outsideSource)
+      await expect(access(transcript)).resolves.toBeUndefined()
+    },
+  )
+
+  it('accepts a lexical config path beneath a symlinked ancestor alias', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-project-purge-alias-')),
+    )
+    roots.push(root)
+    const actual = join(root, 'actual')
+    const alias = join(root, 'alias')
+    const project = join(root, 'project')
+    await Promise.all([mkdir(actual), mkdir(project)])
+    await symlink(actual, alias)
+    const configRoot = join(alias, 'config')
+    const statePath = join(configRoot, 'state.json')
+    await writeFixture(
+      statePath,
+      JSON.stringify({ projects: { [project]: { keep: false } } }),
+    )
+
+    const plan = await planClaudeProjectPurge({
+      dataPlane: 'native',
+      cwd: project,
+      all: true,
+      configRoot,
+      statePath,
+    })
+    expect(plan.statePath).toBe(resolve(statePath))
+    const result = await executeClaudeProjectPurge(plan)
+    expect(result.failures).toEqual([])
+    await expect(readFile(statePath, 'utf8').then(JSON.parse)).resolves.toEqual(
+      {
+        projects: {},
+      },
+    )
   })
 
   it('enforces --all path exclusivity and returns an empty plan for no state', async () => {

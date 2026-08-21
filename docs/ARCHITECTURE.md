@@ -114,10 +114,13 @@ redirect, bounds network/content/model output, converts supported documents to
 Markdown, serializes untrusted page data behind a JSON boundary, and asks the
 selected provider to process it.
 
-## Shared Claude data plane
+## Native and Claude-compatible data planes
 
-Praxis defaults to the same configuration root as Claude Code:
-`CLAUDE_CONFIG_DIR`, falling back to `~/.claude`. It shares:
+Praxis defaults to its independent local root, `PRAXIS_HOME` or `~/.praxis`.
+Native sessions, memory, tasks, scheduled prompts, resources, and private state
+remain there and never require a Claude Code directory. Explicit
+`--data-plane claude` compatibility mode instead uses `CLAUDE_CONFIG_DIR` or
+`~/.claude` and shares:
 
 - workspace session JSONL files and UUID/parent UUID chains;
 - `CLAUDE.md`, `.claude/CLAUDE.md`, and `.claude/rules` instructions;
@@ -127,7 +130,8 @@ Praxis defaults to the same configuration root as Claude Code:
 - project-local scheduled prompts in `.claude/scheduled_tasks.json`.
 
 Praxis-only indexes, provider payloads, and locks are non-authoritative
-sidecars under `<claude-config>/praxis/`. They must never be required to resume
+sidecars under `<claude-config>/praxis/` in compatibility mode and under
+`<praxis-root>/state/` in native mode. They must never be required to resume
 the human-visible conversation from Claude Code.
 
 Session reads use a recovery parser that returns the valid prefix plus exact

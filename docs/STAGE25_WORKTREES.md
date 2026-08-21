@@ -21,14 +21,15 @@ continues to resolve through the Git common directory.
 
 ## Observable contract
 
-- Worktrees live at `<repo>/.claude/worktrees/<name>`.
+- Native worktrees live at `<repo>/.praxis/worktrees/<name>`; explicit Claude
+  compatibility mode retains `<repo>/.claude/worktrees/<name>`.
 - Created branches use `worktree-<name>` with `/` normalized to `-`.
 - Names are at most 64 characters and contain slash-separated segments made of
   letters, digits, dots, underscores, and dashes.
 - `EnterWorktree` accepts either optional `name` or optional `path`, never both.
 - Missing `name` generates a collision-resistant local name.
 - `path` must be a registered worktree owned by the current repository and
-  located under its `.claude/worktrees` directory.
+  located under the active data plane's worktrees directory.
 - `ExitWorktree` requires `action: keep | remove`; `discard_changes` only
   applies to remove.
 - Remove refuses dirty or unmerged work unless `discard_changes: true`.

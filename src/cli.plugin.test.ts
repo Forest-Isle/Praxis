@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { run, type CliIO } from './cli.js'
+import type { PluginEvalRuntimeFactory } from './plugins/claude-plugin-eval-runner.js'
 
 const roots: string[] = []
 
@@ -26,6 +27,88 @@ function capture() {
 }
 
 describe('CLI plugin management', () => {
+  it('resolves plugin eval targets from the selected data plane only', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-eval-plane-'))
+    roots.push(root)
+    const nativeRoot = join(root, 'native')
+    const claudeRoot = join(root, 'claude')
+    const plugin = join(root, 'fixture-plugin')
+    const evalCase = join(plugin, 'evals', 'native')
+    await mkdir(join(plugin, '.claude-plugin'), { recursive: true })
+    await mkdir(evalCase, { recursive: true })
+    await mkdir(join(nativeRoot, 'plugins'), { recursive: true })
+    await writeFile(
+      join(plugin, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'fixture' }),
+    )
+    await writeFile(
+      join(evalCase, 'case.yaml'),
+      `schema_version: "1.0"\nname: native\nruns: 1\nexecution:\n  prompt: finish\ngraders:\n  - type: regex\n    name: answer\n    pattern: finished\n`,
+    )
+    await writeFile(
+      join(nativeRoot, 'plugins', 'installed.json'),
+      JSON.stringify({
+        version: 1,
+        plugins: [
+          { name: 'fixture', path: plugin, source: 'test', enabled: true },
+        ],
+      }),
+    )
+    vi.stubEnv('PRAXIS_HOME', nativeRoot)
+    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeRoot)
+    const output = capture()
+    const models: Array<string | undefined> = []
+    const dataPlanes: string[] = []
+    const dependencies = {
+      async createService() {
+        throw new Error('service must not be created')
+      },
+      pluginEval: {
+        claudeVersion: 'test',
+        runtimeFactory: {
+          create: async (
+            options: Parameters<PluginEvalRuntimeFactory['create']>[0],
+          ) => {
+            models.push(options.model)
+            dataPlanes.push(options.dataPlane)
+            return {
+              run: async () => ({ text: 'finished', turns: 1, costUsd: 0 }),
+            }
+          },
+        },
+      },
+    }
+
+    await expect(
+      run(
+        [
+          '--data-plane',
+          'native',
+          '--model',
+          'eval-model',
+          'plugin',
+          'eval',
+          'fixture',
+          '--ablation',
+          'none',
+          '--json',
+          '--output-dir',
+          join(root, 'results'),
+        ],
+        output.io,
+        dependencies,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(output.stdout[0] as string)).toMatchObject({
+      cases: [{ name: 'native', score: 1 }],
+    })
+    expect(models).toEqual(['eval-model'])
+    expect(dataPlanes).toEqual(['native'])
+    await expect(
+      readFile(join(claudeRoot, 'plugins', 'installed.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('validates marketplace manifests and applies strict warning handling', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-marketplace-validate-'))
     roots.push(root)
@@ -77,7 +160,7 @@ describe('CLI plugin management', () => {
     roots.push(root)
     const configRoot = join(root, 'config')
     const pluginPath = join(root, 'plugin')
-    vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
+    vi.stubEnv('PRAXIS_HOME', configRoot)
     const dependencies = {
       async createService() {
         throw new Error('service must not be created')
@@ -119,7 +202,11 @@ describe('CLI plugin management', () => {
 
     output = capture()
     await expect(
-      run(['--json', 'plugin', 'install', pluginPath], output.io, dependencies),
+      run(
+        ['--json', 'plugin', 'install', pluginPath, '--yes'],
+        output.io,
+        dependencies,
+      ),
     ).resolves.toBe(0)
     expect(JSON.parse(output.stdout[0] as string)).toMatchObject({
       type: 'plugin-installed',
@@ -205,7 +292,7 @@ describe('CLI plugin management', () => {
       }),
     )
     await writeFile(join(plugin, 'commands', 'hello.md'), 'hello')
-    vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
+    vi.stubEnv('PRAXIS_HOME', configRoot)
     vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
     const dependencies = {
       async createService() {
@@ -347,6 +434,18 @@ describe('CLI plugin management', () => {
     output = capture()
     await expect(
       run(
+        ['--json', 'plugin', 'update', 'fixture@fixture-marketplace', '--yes'],
+        output.io,
+        dependencies,
+      ),
+    ).resolves.toBe(0)
+    expect(JSON.parse(output.stdout[0] as string)).toMatchObject({
+      type: 'plugin-updated',
+    })
+
+    output = capture()
+    await expect(
+      run(
         ['--json', 'plugin', 'disable', 'fixture@fixture-marketplace'],
         output.io,
         dependencies,
@@ -365,7 +464,7 @@ describe('CLI plugin management', () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-native-init-'))
     roots.push(root)
     const configRoot = join(root, 'config')
-    vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
+    vi.stubEnv('PRAXIS_HOME', configRoot)
     const dependencies = {
       async createService() {
         throw new Error('service must not be created')

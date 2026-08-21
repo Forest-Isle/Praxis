@@ -59,6 +59,7 @@ async function configFixture(): Promise<{
     }),
   )
   vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
+  vi.stubEnv('PRAXIS_DATA_PLANE', 'claude')
   vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
   return { configRoot, server }
 }
@@ -76,11 +77,49 @@ async function temporaryConfigRoot(): Promise<string> {
   roots.push(root)
   const configRoot = join(root, 'config')
   vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
+  vi.stubEnv('PRAXIS_DATA_PLANE', 'claude')
   vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
   return configRoot
 }
 
 describe('Praxis MCP CLI commands', () => {
+  it('writes native MCP configuration without reading or changing Claude state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cli-native-mcp-'))
+    roots.push(root)
+    const praxisRoot = join(root, 'praxis')
+    const claudeRoot = join(root, 'claude')
+    await mkdir(praxisRoot, { recursive: true })
+    await mkdir(claudeRoot, { recursive: true })
+    await writeFile(join(claudeRoot, '.claude.json'), 'claude-marker\n')
+    vi.stubEnv('PRAXIS_HOME', praxisRoot)
+    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeRoot)
+    const capture = captureIO()
+
+    await expect(
+      run(
+        [
+          'mcp',
+          'add',
+          '--scope',
+          'user',
+          '--transport',
+          'http',
+          'native-fixture',
+          'https://example.test/mcp',
+        ],
+        capture.io,
+        baseDependencies(),
+      ),
+    ).resolves.toBe(0)
+
+    await expect(
+      readFile(join(praxisRoot, 'mcp.json'), 'utf8'),
+    ).resolves.toContain('native-fixture')
+    await expect(
+      readFile(join(claudeRoot, '.claude.json'), 'utf8'),
+    ).resolves.toBe('claude-marker\n')
+  })
+
   it('adds a stdio server with repeatable environment variables and subprocess arguments', async () => {
     const configRoot = await temporaryConfigRoot()
     const capture = captureIO()

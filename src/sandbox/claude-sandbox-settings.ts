@@ -6,6 +6,7 @@ import type { SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import { permissionRuleValueFromString } from '../permissions/permission-updates.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 
 export interface ClaudeSandboxSettings {
   enabled: boolean
@@ -138,6 +139,7 @@ export function loadClaudeSandboxSettings({
   cwd,
   originalCwd = cwd,
   configRoot,
+  dataPlane,
   homeDirectory,
   additionalDirectories = [],
   tempDirectory,
@@ -146,6 +148,7 @@ export function loadClaudeSandboxSettings({
   cwd: string
   originalCwd?: string
   configRoot: string
+  dataPlane: DataPlane
   homeDirectory: string
   additionalDirectories?: readonly string[]
   tempDirectory: string
@@ -163,14 +166,20 @@ export function loadClaudeSandboxSettings({
   const protectedDirectories = [
     ...new Set([resolve(originalCwd), resolve(cwd)]),
   ]
-  const denyWrite = [resolve(configRoot, 'settings.json')]
+  const projectConfigDirectory = dataPlane === 'native' ? '.praxis' : '.claude'
+  const denyWrite = [
+    resolve(configRoot, 'settings.json'),
+    resolve(configRoot, 'commands'),
+    resolve(configRoot, 'agents'),
+    resolve(configRoot, 'skills'),
+  ]
   for (const directory of protectedDirectories) {
     denyWrite.push(
-      resolve(directory, '.claude', 'settings.json'),
-      resolve(directory, '.claude', 'settings.local.json'),
-      resolve(directory, '.claude', 'commands'),
-      resolve(directory, '.claude', 'agents'),
-      resolve(directory, '.claude', 'skills'),
+      resolve(directory, projectConfigDirectory, 'settings.json'),
+      resolve(directory, projectConfigDirectory, 'settings.local.json'),
+      resolve(directory, projectConfigDirectory, 'commands'),
+      resolve(directory, projectConfigDirectory, 'agents'),
+      resolve(directory, projectConfigDirectory, 'skills'),
     )
   }
   const denyRead: string[] = []

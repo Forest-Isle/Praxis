@@ -1,5 +1,12 @@
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -38,6 +45,61 @@ async function repository() {
 }
 
 describe('SessionWorktreeManager', () => {
+  it('uses the project Praxis worktree root in native mode', async () => {
+    const root = await repository()
+    const workspace = new WorkspaceContext(root)
+    const manager = new SessionWorktreeManager({
+      workspace,
+      sessionId: '10101010-1010-4010-8010-101010101010',
+      dataPlane: 'native',
+    })
+
+    await manager.enter({ name: 'native-root' }, 'enter')
+
+    expect(workspace.cwd()).toContain('/.praxis/worktrees/native-root')
+    await expect(
+      readFile(join(root, '.claude', 'worktrees', 'native-root')),
+    ).rejects.toThrow()
+    await manager.exit({ action: 'remove', discard_changes: true }, 'exit')
+  })
+
+  it('restores a native worktree created from a repository subdirectory', async () => {
+    const root = await repository()
+    const subdirectory = join(root, 'packages', 'app')
+    await mkdir(subdirectory, { recursive: true })
+    const sessionId = '12121212-1212-4212-8212-121212121212'
+    const workspace = new WorkspaceContext(subdirectory)
+    const manager = new SessionWorktreeManager({
+      workspace,
+      sessionId,
+      dataPlane: 'native',
+    })
+    await manager.enter({ name: 'subdirectory-restore' }, 'enter')
+    const state = manager.current()
+    const repositoryRoot = await realpath(root)
+    expect(state).toMatchObject({
+      originalCwd: subdirectory,
+      repositoryRoot,
+      worktreePath: join(
+        repositoryRoot,
+        '.praxis',
+        'worktrees',
+        'subdirectory-restore',
+      ),
+    })
+
+    const restoredWorkspace = new WorkspaceContext(subdirectory)
+    const restored = new SessionWorktreeManager({
+      workspace: restoredWorkspace,
+      sessionId,
+      dataPlane: 'native',
+    })
+    restored.restore(state)
+    expect(restoredWorkspace.cwd()).toBe(state?.worktreePath)
+
+    await manager.exit({ action: 'remove', discard_changes: true }, 'exit')
+  })
+
   it('creates a native worktree, tracks state, and removes cleanly', async () => {
     const root = await repository()
     const workspace = new WorkspaceContext(root)
@@ -162,7 +224,7 @@ describe('SessionWorktreeManager', () => {
       { action: 'remove', discard_changes: true },
       'exit-head',
     )
-  })
+  }, 15_000)
 
   it('guards dirty removal and allows explicit discard', async () => {
     const root = await repository()

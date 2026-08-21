@@ -2,15 +2,14 @@
 
 ## Goal
 
-Claude Code and Praxis operate on one local data plane:
+Praxis has a native data plane by default; Claude Code compatibility is explicit:
 
 ```text
-Claude Code ─┐
-             ├── ~/.claude (or CLAUDE_CONFIG_DIR)
-Praxis ──────┘
+Praxis native ─ ~/.praxis (or PRAXIS_HOME)
+Praxis --data-plane claude ─ ~/.claude (or CLAUDE_CONFIG_DIR)
 ```
 
-Compatibility is bidirectional, not import-only:
+The following bidirectional guarantees apply only in `--data-plane claude`:
 
 1. Praxis can discover and resume a Claude Code session.
 2. Claude Code can discover and resume a Praxis session.

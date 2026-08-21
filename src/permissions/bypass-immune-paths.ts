@@ -1,9 +1,12 @@
 import { realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 
+import type { DataPlane } from '../persistence/data-plane.js'
+
 export interface ProtectedWriteOptions {
   homeDirectory: string
   configRoot: string
+  dataPlane: DataPlane
 }
 
 const SSH_CREDENTIAL_BASENAMES = new Set([
@@ -71,9 +74,16 @@ export function protectedWritePathReason(
   const sshDirectories = pathRepresentations(sshDirectory)
   const awsDirectories = pathRepresentations(awsDirectory)
   const configRoots = pathRepresentations(configRoot)
+  const privateDirectory =
+    options.dataPlane === 'native' ? '.praxis' : '.claude'
+  const protectedDirectories = new Set(['commands', 'agents', 'skills'])
 
   for (const representation of pathRepresentations(path)) {
     const basename = lowerBasename(representation)
+    const segments = representation
+      .split(/[\\/]+/u)
+      .filter(Boolean)
+      .map((segment) => segment.toLowerCase())
     if (sshDirectories.some((root) => isWithin(representation, root))) {
       return `${sshDirectory} is a protected SSH directory`
     }
@@ -89,11 +99,31 @@ export function protectedWritePathReason(
     if (basename === '.env' || basename.startsWith('.env.')) {
       return '.env and .env.* files are protected'
     }
+    const matchingConfigRoot = configRoots.find((root) =>
+      isWithin(representation, root),
+    )
+    if (matchingConfigRoot) {
+      const relativeSegments = relative(matchingConfigRoot, representation)
+        .split(/[\\/]+/u)
+        .filter(Boolean)
+        .map((segment) => segment.toLowerCase())
+      if (
+        basename === 'settings.json' ||
+        basename.endsWith('.jsonl') ||
+        protectedDirectories.has(relativeSegments[0] ?? '')
+      ) {
+        return `settings, transcripts, and extensions in the ${options.dataPlane} config root are protected`
+      }
+    }
+    const privateDirectoryIndex = segments.lastIndexOf(privateDirectory)
+    const privatePath = segments[privateDirectoryIndex + 1]
     if (
-      configRoots.some((root) => isWithin(representation, root)) &&
-      (basename === 'settings.json' || basename.endsWith('.jsonl'))
+      privateDirectoryIndex >= 0 &&
+      (privatePath === 'settings.json' ||
+        privatePath === 'settings.local.json' ||
+        protectedDirectories.has(privatePath ?? ''))
     ) {
-      return 'settings.json and .jsonl files in the Claude config root are protected'
+      return `${privateDirectory} settings and extensions are protected`
     }
   }
   return undefined

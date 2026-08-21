@@ -8,8 +8,8 @@ import { AgentRunCancelledError } from '../dist/core/runtime.js'
 import { ClaudeHookRunner } from '../dist/hooks/claude-hooks.js'
 import { detectClaudeVersion, runClaudeJson } from './lib/claude-probe.mjs'
 
-const recoveryMarker = 'PRAXIS_RECOVERED_TOOL_4816'
-const finalMarker = 'PRAXIS_RECOVERY_FINAL_7253'
+const recoveryMarker = 'amber glass'
+const finalMarker = 'cobalt paper'
 const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-recovery-compat-'))
 
 async function expectRejected(action, message) {
@@ -231,7 +231,7 @@ try {
       '',
       '--output-format',
       'json',
-      'Reply with both distinct tokens matching PRAXIS_RECOVER[A-Z0-9_]+ and PRAXIS_RECOVERY_[A-Z0-9_]+ from the prior recovered tool result and final response.',
+      'The prior recovered tool result and final assistant response each contain a harmless two-word phrase. Reply with both phrases verbatim, separated by a comma.',
     ],
     cwd,
     configRoot,

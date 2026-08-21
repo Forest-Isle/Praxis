@@ -227,7 +227,7 @@ try {
   )
   const version = (await run(claudeCli, ['--version'])).stdout.trim()
   assert(
-    version.startsWith('2.1.208 '),
+    version.startsWith('2.1.237 '),
     `Unsupported Claude version: ${version}`,
   )
 
@@ -571,7 +571,7 @@ try {
   )
 
   console.log(
-    'Claude 2.1.208 plugin maintenance compatibility passed: prune/autoremove native auto registry, safety, dependency retention, tag validation, annotation, force, and push',
+    'Claude 2.1.237 plugin maintenance compatibility passed: prune/autoremove native auto registry, safety, dependency retention, tag validation, annotation, force, and push',
   )
 } finally {
   await rm(root, { recursive: true, force: true })

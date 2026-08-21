@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 
 import { writeFileAtomically } from '../../platform/atomic-write.js'
+import { resolveDataPlaneRoot } from '../../persistence/data-plane.js'
 import {
   ExclusiveFileLease,
   type ExclusiveFileLeaseHandle,
@@ -21,7 +21,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function configRootPath(): string {
-  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  return resolveDataPlaneRoot()
 }
 
 async function readSettings(path: string): Promise<{

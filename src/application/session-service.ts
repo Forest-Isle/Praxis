@@ -41,6 +41,11 @@ import {
   resolveClaudeScheduledTaskFile,
 } from '../compatibility/claude/paths.js'
 import {
+  resolveDataPlanePaths,
+  resolveScheduledTaskFile,
+  type DataPlane,
+} from '../persistence/data-plane.js'
+import {
   downloadClaudeFileResources,
   type ClaudeFileResource,
   type ClaudeFileResourceConfig,
@@ -191,6 +196,8 @@ import type {
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
+  /** `claude` preserves the legacy shared layout; the CLI selects `native` by default. */
+  dataPlane?: DataPlane
   cwd: string
   claudeVersion: string
   provider?: ModelProvider
@@ -772,10 +779,23 @@ export class ClaudeSessionService {
     this.scheduledPrompts =
       options.tools && (options.scheduledToolNames?.length ?? 0) > 0
         ? new ScheduledPromptManager({
-            filePath: resolveClaudeScheduledTaskFile(options.cwd),
+            filePath:
+              options.dataPlane === 'native'
+                ? resolveScheduledTaskFile({
+                    dataPlane: 'native',
+                    cwd: options.cwd,
+                    root: options.configRoot,
+                  })
+                : resolveClaudeScheduledTaskFile(options.cwd),
             lockFile: join(
-              options.configRoot,
-              'praxis',
+              options.dataPlane === 'native'
+                ? resolveDataPlanePaths({
+                    dataPlane: 'native',
+                    root: options.configRoot,
+                    cwd: options.cwd,
+                    sessionId: '00000000-0000-4000-8000-000000000000',
+                  }).praxisRoot
+                : resolve(options.configRoot, 'praxis'),
               'locks',
               'scheduled-tasks.lock',
             ),
@@ -785,8 +805,11 @@ export class ClaudeSessionService {
           })
         : null
     this.workflowManager = options.enableWorkflows
-      ? new WorkflowManager(options.configRoot, options.cwd, () =>
-          this.activeCwd(),
+      ? new WorkflowManager(
+          options.configRoot,
+          options.cwd,
+          () => this.activeCwd(),
+          options.dataPlane,
         )
       : null
     this.backgroundTasks = new BackgroundTaskRuntime(this.workflowManager)
@@ -795,6 +818,7 @@ export class ClaudeSessionService {
         ? new SessionWorktreeManager({
             workspace: options.workspace,
             sessionId: '',
+            dataPlane: options.dataPlane ?? 'claude',
             ...(options.worktreeBaseRef
               ? { baseRef: options.worktreeBaseRef }
               : {}),
@@ -978,6 +1002,7 @@ export class ClaudeSessionService {
             manager: this.scheduledPrompts,
             sessionId,
             enabledTools: scheduledToolNames,
+            dataPlane: this.options.dataPlane ?? 'claude',
           })
         : null
     const wrappedBase = scheduledTools ?? taskTools ?? baseTools
@@ -986,6 +1011,7 @@ export class ClaudeSessionService {
       this.options.permissions
         ? new ClaudeSubagentExecutor({
             configRoot: this.options.configRoot,
+            dataPlane: this.options.dataPlane ?? 'claude',
             cwd: this.activeCwd(),
             cwdProvider: () => this.activeCwd(),
             claudeVersion: this.options.claudeVersion,
@@ -1077,6 +1103,7 @@ export class ClaudeSessionService {
             defaultModel: this.options.provider?.model ?? 'praxis/provider',
             tokenBudget: null,
             enabled: capabilities.has('Workflow'),
+            dataPlane: this.options.dataPlane ?? 'claude',
           })
         : agentTools
     if (this.worktreeManager) this.worktreeManager.bindSession(sessionId)
@@ -1086,6 +1113,7 @@ export class ClaudeSessionService {
             base: workflowTools,
             manager: this.worktreeManager,
             workspace: this.options.workspace,
+            dataPlane: this.options.dataPlane ?? 'claude',
             ...(this.options.worktreeToolNames
               ? { enabledTools: this.options.worktreeToolNames }
               : {}),
@@ -1689,16 +1717,11 @@ export class ClaudeSessionService {
       throw new Error(`Not a directory: ${requestedCwd}`)
     }
     if (sessionId && this.options.sessionPersistence !== false) {
-      const sourcePaths = resolveClaudePaths({
-        configDir: this.options.configRoot,
-        cwd: this.sessionCwds.get(sessionId) ?? previousCwd,
+      const sourcePaths = this.pathsForCwd(
         sessionId,
-      })
-      const targetPaths = resolveClaudePaths({
-        configDir: this.options.configRoot,
-        cwd,
-        sessionId,
-      })
+        this.sessionCwds.get(sessionId) ?? previousCwd,
+      )
+      const targetPaths = this.pathsForCwd(sessionId, cwd)
       if (sourcePaths.sessionFile !== targetPaths.sessionFile) {
         try {
           await lstat(targetPaths.sessionFile)
@@ -2812,6 +2835,7 @@ export class ClaudeSessionService {
               manager: this.scheduledPrompts,
               sessionId,
               enabledTools: scheduledToolNames,
+              dataPlane: this.options.dataPlane ?? 'claude',
             })
           : null
       const baseTools = scheduledTools ?? taskTools ?? this.options.tools
@@ -2824,6 +2848,7 @@ export class ClaudeSessionService {
         turnPermissions
           ? new ClaudeSubagentExecutor({
               configRoot: this.options.configRoot,
+              dataPlane: this.options.dataPlane ?? 'claude',
               cwd: this.activeCwd(),
               cwdProvider: () => this.activeCwd(),
               claudeVersion: this.options.claudeVersion,
@@ -2922,6 +2947,7 @@ export class ClaudeSessionService {
               defaultModel: provider.model ?? 'praxis/provider',
               tokenBudget: workflowTokenTarget(effectivePrompt),
               enabled: capabilities.has('Workflow'),
+              dataPlane: this.options.dataPlane ?? 'claude',
             })
           : agentTools
       const workspaceTools =
@@ -2934,6 +2960,7 @@ export class ClaudeSessionService {
               manager: this.worktreeManager,
               workspace: this.options.workspace,
               enabledTools: this.options.worktreeToolNames ?? [],
+              dataPlane: this.options.dataPlane ?? 'claude',
             })
           : turnTools
       const messageTools =
@@ -4576,11 +4603,11 @@ export class ClaudeSessionService {
   }
 
   private paths(sessionId: string) {
-    const exact = resolveClaudePaths({
-      configDir: this.options.configRoot,
-      cwd: this.sessionCwds.get(sessionId) ?? this.activeCwd(),
+    const exact = this.pathsForCwd(
       sessionId,
-    })
+      this.sessionCwds.get(sessionId) ?? this.activeCwd(),
+    )
+    if (this.options.dataPlane === 'native') return exact
     const discovered = this.discoveredProjectRoots.get(sessionId)
     if (discovered === undefined) return exact
     return {
@@ -4591,6 +4618,7 @@ export class ClaudeSessionService {
   }
 
   private async discoverProjectRoot(sessionId: string): Promise<void> {
+    if (this.options.dataPlane === 'native') return
     if (this.discoveredProjectRoots.has(sessionId)) return
     const discovered = await discoverClaudeProjectRoot({
       configRoot: this.options.configRoot,
@@ -4600,6 +4628,22 @@ export class ClaudeSessionService {
     if (discovered !== undefined) {
       this.discoveredProjectRoots.set(sessionId, discovered)
     }
+  }
+
+  private pathsForCwd(sessionId: string, cwd: string) {
+    if (this.options.dataPlane === 'native') {
+      return resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: this.options.configRoot,
+        cwd,
+        sessionId,
+      })
+    }
+    return resolveClaudePaths({
+      configDir: this.options.configRoot,
+      cwd,
+      sessionId,
+    })
   }
 
   private async appendCdCommand(sessionId: string, cwd: string): Promise<void> {
@@ -5158,6 +5202,7 @@ export class ClaudeSessionService {
       this.options.configRoot,
       this.activeCwd(),
       agent,
+      this.options.dataPlane ?? 'claude',
     )
     const system = memory ? `${agent.body}\n\n${memory}` : agent.body
     return system.trim() ? system : null
@@ -5205,6 +5250,7 @@ export class ClaudeSessionService {
         store: new SessionMemoryStore({
           configRoot: this.options.configRoot,
           sessionId,
+          sidecarRoot: this.paths(sessionId).praxisRoot,
         }),
         extractor: (input) => this.extractSessionMemory(sessionId, input),
       })

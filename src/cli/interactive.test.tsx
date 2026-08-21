@@ -1,5 +1,5 @@
 import { Console as NodeConsole } from 'node:console'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
@@ -56,6 +56,46 @@ async function waitFor<T>(read: () => T | undefined): Promise<T> {
 }
 
 describe('InteractiveApp', () => {
+  it('uses the explicitly selected native root when the environment selects Claude', async () => {
+    const container = await mkdtemp(join(tmpdir(), 'praxis-interactive-plane-'))
+    const configRoot = join(container, 'praxis')
+    const cwd = join(container, 'project')
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(join(cwd, '.praxis'), { recursive: true }),
+    ])
+    await writeFile(
+      join(cwd, '.praxis', 'settings.local.json'),
+      JSON.stringify({ permissions: { allow: ['Read(./native/**)'] } }),
+    )
+    vi.stubEnv('PRAXIS_DATA_PLANE', 'claude')
+
+    try {
+      const app = render(
+        <InteractiveApp
+          dataPlane="native"
+          configRoot={configRoot}
+          statePath={join(configRoot, 'state.json')}
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          display={{ version: 'test', cwd }}
+        />,
+      )
+
+      app.stdin.write('/permissions')
+      app.stdin.write('\r')
+      await waitFor(() =>
+        app.lastFrame()?.includes('Read(./native/**)') ? true : undefined,
+      )
+    } finally {
+      await rm(container, { recursive: true, force: true })
+    }
+  })
+
   it('keeps the welcome panel visible alongside startup diagnostics', () => {
     const app = render(
       <InteractiveApp
@@ -569,11 +609,9 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('/agents')
     expect(app.lastFrame()).toContain('The /agents wizard has been removed.')
-    expect(app.lastFrame()).toContain('.claude/agents/')
-    expect(app.lastFrame()).toContain('~/.claude/agents/')
-    expect(app.lastFrame()).toContain(
-      'https://code.claude.com/docs/en/sub-agents',
-    )
+    expect(app.lastFrame()).toContain('.praxis/agents/')
+    expect(app.lastFrame()).toContain('~/.praxis/agents/')
+    expect(app.lastFrame()).not.toContain('code.claude.com')
     expect(calls).toEqual([])
   })
 

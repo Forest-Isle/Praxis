@@ -27,10 +27,12 @@ import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
+import { resolveDataPlanePaths } from '../persistence/data-plane.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
 import {
   type AgentPermissionMode,
+  agentMemoryPrompt,
   ClaudeSubagentExecutor,
   StructuredOutputRegistry,
 } from './subagent-service.js'
@@ -311,6 +313,7 @@ describe('foreground Claude Agent execution', () => {
     const lineChanges: { linesAdded: number; linesRemoved: number }[] = []
     const executor = new ClaudeSubagentExecutor({
       configRoot,
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider: parentProvider,
@@ -386,6 +389,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -519,6 +523,7 @@ describe('foreground Claude Agent execution', () => {
     const rejection = new Error('line change accounting failed')
     const executor = new ClaudeSubagentExecutor({
       configRoot,
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider: parentProvider,
@@ -587,6 +592,7 @@ describe('foreground Claude Agent execution', () => {
     roots.push(root)
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
+      dataPlane: 'claude',
       cwd: join(root, 'project'),
       claudeVersion: '2.1.208',
       provider: {
@@ -626,6 +632,96 @@ describe('foreground Claude Agent execution', () => {
       }),
     ).rejects.toThrow('Workflow agents require session persistence')
   })
+
+  it.each([
+    { dataPlane: 'native' as const, projectDirectory: 'sessions' },
+    { dataPlane: 'claude' as const, projectDirectory: 'projects' },
+  ])(
+    'stores $dataPlane sidechains and locks in that data plane',
+    async ({ dataPlane, projectDirectory }) => {
+      const root = await mkdtemp(join(tmpdir(), `praxis-${dataPlane}-agent-`))
+      roots.push(root)
+      const configRoot = join(root, 'config')
+      const cwd = join(root, 'project')
+      await mkdir(cwd, { recursive: true })
+      const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+      const executor = new ClaudeSubagentExecutor({
+        configRoot,
+        dataPlane,
+        cwd,
+        claudeVersion: '2.1.208',
+        provider: {
+          capabilities: { streaming: true, usage: true, tools: true },
+          async *complete() {
+            yield { type: 'text-delta', delta: 'SIDECHAIN_DONE' }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 2, outputTokens: 1 },
+            }
+          },
+        },
+        baseTools: emptyTools,
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      })
+      const registry = executor.registry(
+        sessionId,
+        0,
+        () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      )
+      const result = await registry.execute(
+        await registry.prepare(
+          {
+            id: `call_${dataPlane}`,
+            name: 'Agent',
+            input: {
+              description: `${dataPlane} paths`,
+              prompt: 'Return the marker',
+              subagent_type: 'general-purpose',
+              run_in_background: false,
+            },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      const agentId = String(result.nativeToolUseResult?.agentId)
+      const paths =
+        dataPlane === 'native'
+          ? resolveDataPlanePaths({
+              dataPlane,
+              root: configRoot,
+              cwd,
+              sessionId,
+            })
+          : resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+      const transcript = join(
+        paths.projectRoot,
+        sessionId,
+        'subagents',
+        `agent-${agentId}.jsonl`,
+      )
+      await expect(readFile(transcript, 'utf8')).resolves.toContain(
+        'SIDECHAIN_DONE',
+      )
+      expect((await stat(join(paths.praxisRoot, 'locks'))).isDirectory()).toBe(
+        true,
+      )
+      const wrongProjectRoot = join(
+        configRoot,
+        projectDirectory === 'sessions' ? 'projects' : 'sessions',
+      )
+      await expect(stat(wrongProjectRoot)).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+      const wrongLockRoot = join(
+        configRoot,
+        dataPlane === 'native' ? 'praxis' : 'state',
+      )
+      await expect(stat(wrongLockRoot)).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    },
+  )
 
   it('persists native main result metadata, sidechain JSONL, and metadata', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-test-'))
@@ -873,6 +969,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -944,6 +1041,7 @@ describe('foreground Claude Agent execution', () => {
     const createExecutor = (parentMode: AgentPermissionMode = 'default') =>
       new ClaudeSubagentExecutor({
         configRoot: join(root, 'config'),
+        dataPlane: 'claude',
         cwd,
         claudeVersion: '2.1.208',
         provider: {
@@ -998,12 +1096,12 @@ describe('foreground Claude Agent execution', () => {
     ).resolves.toMatchObject({ input: { run_in_background: false } })
   })
 
-  it('loads custom agent memory and preloads declared skills', async () => {
+  it('loads native custom agent memory and preloads declared skills', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-agent-memory-test-'))
     roots.push(root)
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
-    const memoryDirectory = join(cwd, '.claude', 'agent-memory', 'rememberer')
+    const memoryDirectory = join(cwd, '.praxis', 'agent-memory', 'rememberer')
     await mkdir(memoryDirectory, { recursive: true })
     await writeFile(join(memoryDirectory, 'MEMORY.md'), 'AGENT_MEMORY_MARKER')
     const requests: ModelRequest[] = []
@@ -1069,6 +1167,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const service = new ClaudeSessionService({
       configRoot,
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -1108,6 +1207,75 @@ describe('foreground Claude Agent execution', () => {
     expect(JSON.stringify(childRequest?.messages)).not.toContain(
       '<command-name>missing</command-name>',
     )
+  })
+
+  it('retains project agent memory under .claude in explicit compatibility mode', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-memory-compat-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const memoryDirectory = join(cwd, '.claude', 'agent-memory', 'rememberer')
+    await mkdir(memoryDirectory, { recursive: true })
+    await writeFile(join(memoryDirectory, 'MEMORY.md'), 'COMPAT_MEMORY_MARKER')
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'rememberer.md'),
+          scope: 'user',
+          content:
+            '---\nname: rememberer\ndescription: Remember facts.\nmemory: project\n---\nRemember.',
+        },
+      ],
+    })
+
+    const prompt = await agentMemoryPrompt(
+      configRoot,
+      cwd,
+      extensions.agent('rememberer'),
+      'claude',
+    )
+
+    expect(prompt).toContain('COMPAT_MEMORY_MARKER')
+    expect(prompt).toContain(memoryDirectory)
+  })
+
+  it('stores local agent memory under the native project .praxis directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-memory-local-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const memoryDirectory = join(
+      cwd,
+      '.praxis',
+      'agent-memory-local',
+      'reviewer',
+    )
+    await mkdir(memoryDirectory, { recursive: true })
+    await writeFile(join(memoryDirectory, 'MEMORY.md'), 'LOCAL_MEMORY_MARKER')
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(configRoot, 'agents', 'reviewer.md'),
+          scope: 'user',
+          content:
+            '---\nname: reviewer\ndescription: Review facts.\nmemory: local\n---\nReview.',
+        },
+      ],
+    })
+
+    const prompt = await agentMemoryPrompt(
+      configRoot,
+      cwd,
+      extensions.agent('reviewer'),
+      'native',
+    )
+
+    expect(prompt).toContain('LOCAL_MEMORY_MARKER')
+    expect(prompt).toContain(memoryDirectory)
   })
 
   it('scopes frontmatter hooks to the custom agent lifecycle', async () => {
@@ -1498,6 +1666,7 @@ describe('foreground Claude Agent execution', () => {
     let bashNotificationCalls = 0
     const executor = new ClaudeSubagentExecutor({
       configRoot,
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -1559,6 +1728,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -1636,6 +1806,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const options = {
       configRoot,
+      dataPlane: 'claude' as const,
       cwd,
       claudeVersion: '2.1.208',
       baseTools: emptyTools,
@@ -1829,6 +2000,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const options = {
       configRoot,
+      dataPlane: 'claude' as const,
       cwd,
       claudeVersion: '2.1.208',
       baseTools: emptyTools,
@@ -1963,6 +2135,7 @@ describe('foreground Claude Agent execution', () => {
     )
     const executor = new ClaudeSubagentExecutor({
       configRoot,
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -2021,6 +2194,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider: provider('BASE', 'base-model'),
@@ -2170,6 +2344,7 @@ describe('foreground Claude Agent execution', () => {
     } as unknown as ClaudeHookRunner
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -2280,6 +2455,7 @@ describe('foreground Claude Agent execution', () => {
     const createExecutor = (parentMode: AgentPermissionMode = 'default') =>
       new ClaudeSubagentExecutor({
         configRoot,
+        dataPlane: 'claude',
         cwd,
         claudeVersion: '2.1.208',
         provider: provider(),
@@ -2374,6 +2550,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -2450,6 +2627,7 @@ describe('foreground Claude Agent execution', () => {
     let providerCalls = 0
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -2529,6 +2707,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -2579,6 +2758,7 @@ describe('foreground Claude Agent execution', () => {
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const executor = new ClaudeSubagentExecutor({
       configRoot,
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider: {

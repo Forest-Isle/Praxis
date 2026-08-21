@@ -27,6 +27,7 @@ function load(resources: readonly ClaudeJsonResource[]) {
     resources,
     cwd,
     configRoot,
+    dataPlane: 'claude',
     homeDirectory,
     tempDirectory,
   })
@@ -151,11 +152,37 @@ describe('loadClaudeSandboxSettings', () => {
     const settings = load([])
     expect(settings.runtimeConfig.filesystem.denyWrite).toEqual([
       `${configRoot}/settings.json`,
+      `${configRoot}/commands`,
+      `${configRoot}/agents`,
+      `${configRoot}/skills`,
       `${cwd}/.claude/settings.json`,
       `${cwd}/.claude/settings.local.json`,
       `${cwd}/.claude/commands`,
       `${cwd}/.claude/agents`,
       `${cwd}/.claude/skills`,
+    ])
+  })
+
+  it('protects native global and project Praxis customizations', () => {
+    const nativeRoot = '/home/test/.praxis'
+    const settings = loadClaudeSandboxSettings({
+      resources: [],
+      cwd,
+      configRoot: nativeRoot,
+      dataPlane: 'native',
+      homeDirectory,
+      tempDirectory,
+    })
+    expect(settings.runtimeConfig.filesystem.denyWrite).toEqual([
+      `${nativeRoot}/settings.json`,
+      `${nativeRoot}/commands`,
+      `${nativeRoot}/agents`,
+      `${nativeRoot}/skills`,
+      `${cwd}/.praxis/settings.json`,
+      `${cwd}/.praxis/settings.local.json`,
+      `${cwd}/.praxis/commands`,
+      `${cwd}/.praxis/agents`,
+      `${cwd}/.praxis/skills`,
     ])
   })
 
@@ -165,6 +192,7 @@ describe('loadClaudeSandboxSettings', () => {
       cwd: '/workspace/next',
       originalCwd: cwd,
       configRoot,
+      dataPlane: 'claude',
       homeDirectory,
       tempDirectory,
     })

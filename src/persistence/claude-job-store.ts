@@ -160,7 +160,10 @@ function parseDispatch(source: string, filePath: string): ClaudeJobDispatch {
 }
 
 export class ClaudeJobStore {
-  constructor(private readonly configRoot: string) {}
+  constructor(
+    private readonly configRoot: string,
+    private readonly lockRoot = join(configRoot, 'praxis'),
+  ) {}
 
   async create(
     state: ClaudeJobState,
@@ -370,7 +373,7 @@ export class ClaudeJobStore {
     operation: () => Promise<T>,
   ): Promise<T> {
     const lease = new ExclusiveFileLease(
-      join(this.configRoot, 'praxis', 'locks', `job-${id}.lock`),
+      join(this.lockRoot, 'locks', `job-${id}.lock`),
     )
     const deadline = Date.now() + LOCK_WAIT_MS
     while (true) {

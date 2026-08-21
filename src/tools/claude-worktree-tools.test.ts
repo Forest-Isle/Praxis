@@ -40,4 +40,25 @@ describe('ClaudeWorktreeToolRegistry', () => {
       ),
     ).resolves.toEqual({ id: 'base', name: 'Read', input: { file_path: 'x' } })
   })
+
+  it('describes the Praxis worktree root in native mode', () => {
+    const workspace = new WorkspaceContext('/tmp')
+    const manager = new SessionWorktreeManager({
+      workspace,
+      sessionId: '55555555-5555-4555-8555-555555555555',
+      dataPlane: 'native',
+    })
+    const registry = new ClaudeWorktreeToolRegistry({
+      base,
+      manager,
+      workspace,
+      dataPlane: 'native',
+    })
+    const enter = registry
+      .definitions()
+      .find(({ name }) => name === 'EnterWorktree')
+    expect(enter?.inputSchema.properties).toMatchObject({
+      path: { description: expect.stringContaining('.praxis/worktrees') },
+    })
+  })
 })

@@ -32,6 +32,7 @@ import {
   resolveClaudePaths,
   sanitizeClaudeProjectPath,
 } from '../compatibility/claude/paths.js'
+import { resolveDataPlanePaths } from '../persistence/data-plane.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
@@ -110,6 +111,37 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('stores a native session outside the Claude project layout', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const native = new ClaudeSessionService({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['native answer']),
+    })
+
+    const run = await native.run('start')
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    })
+    expect(await readFile(paths.sessionFile, 'utf8')).toContain('native answer')
+    await expect(
+      readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: run.sessionId,
+        }).sessionFile,
+        'utf8',
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await service.close()
+  })
+
   it('approves a recently denied action without invoking the provider', async () => {
     const { configRoot, cwd, service } = await createService()
     const run = await service.run('start')

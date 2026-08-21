@@ -18,6 +18,43 @@ afterEach(async () => {
 })
 
 describe('project purge CLI', () => {
+  it('preserves leading purge-all dry-run flags and leading help', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-purge-prefix-'))
+    roots.push(root)
+    const praxisRoot = join(root, 'praxis')
+    const session = join(
+      praxisRoot,
+      'sessions',
+      'project',
+      `${SESSION_ID}.jsonl`,
+    )
+    await mkdir(join(praxisRoot, 'sessions', 'project'), { recursive: true })
+    await writeFile(session, '{}\n')
+    vi.stubEnv('PRAXIS_HOME', praxisRoot)
+    let stdout = ''
+    await expect(
+      run(['--all', '--dry-run', '--json', 'project', 'purge'], {
+        stdout: (message) => {
+          stdout += message.toString()
+        },
+        stderr: () => undefined,
+      }),
+    ).resolves.toBe(0)
+    expect(JSON.parse(stdout)).toMatchObject({ result: { dryRun: true } })
+    await expect(readFile(session, 'utf8')).resolves.toBe('{}\n')
+
+    stdout = ''
+    await expect(
+      run(['--help', 'project', 'purge'], {
+        stdout: (message) => {
+          stdout += message.toString()
+        },
+        stderr: () => undefined,
+      }),
+    ).resolves.toBe(0)
+    expect(stdout).toContain('Usage: praxis project purge')
+  })
+
   it('supports dry-run JSON and --yes without constructing a model service', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-purge-cli-'))
     roots.push(root)
@@ -41,7 +78,17 @@ describe('project purge CLI', () => {
     let stdout = ''
     let stderr = ''
     const dryRunCode = await run(
-      ['project', 'purge', '--dry-run', '--json', project],
+      [
+        '--dry-run',
+        '--yes',
+        '--verbose',
+        'project',
+        '--data-plane',
+        'claude',
+        'purge',
+        '--json',
+        project,
+      ],
       {
         stdout: (message) => {
           stdout += message.toString()
@@ -56,14 +103,28 @@ describe('project purge CLI', () => {
       type: 'project-purge',
       result: { dryRun: true, failures: [] },
     })
+    await expect(
+      readFile(join(configRoot, 'tasks', SESSION_ID, 'task.json'), 'utf8'),
+    ).resolves.toBe('{}')
 
     stdout = ''
-    const code = await run(['project', 'purge', '--yes', '--json', project], {
-      stdout: (message) => {
-        stdout += message.toString()
+    const code = await run(
+      [
+        'project',
+        'purge',
+        '--data-plane',
+        'claude',
+        '--yes',
+        '--json',
+        project,
+      ],
+      {
+        stdout: (message) => {
+          stdout += message.toString()
+        },
+        stderr: () => undefined,
       },
-      stderr: () => undefined,
-    })
+    )
     expect(code).toBe(0)
     expect(JSON.parse(stdout).result.failures).toEqual([])
     await expect(
@@ -88,12 +149,15 @@ describe('project purge CLI', () => {
     await writeFile(join(projectRoot, `${SESSION_ID}.jsonl`), '{}\n')
     vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
     let stderr = ''
-    const code = await run(['project', 'purge', project], {
-      stdout: () => undefined,
-      stderr: (message) => {
-        stderr += message
+    const code = await run(
+      ['project', 'purge', '--data-plane', 'claude', project],
+      {
+        stdout: () => undefined,
+        stderr: (message) => {
+          stderr += message
+        },
       },
-    })
+    )
     expect(code).toBe(1)
     expect(stderr).toContain('requires --yes without stdin')
   })
@@ -114,14 +178,73 @@ describe('project purge CLI', () => {
     vi.stubEnv('HOME', home)
     vi.stubEnv('CLAUDE_CONFIG_DIR', '')
 
+    const code = await run(
+      ['project', 'purge', '--data-plane', 'claude', '--yes', project],
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+      },
+    )
+
+    expect(code).toBe(0)
+    await expect(readFile(statePath, 'utf8')).resolves.toContain(
+      '"projects": {}',
+    )
+  })
+
+  it('purges native sessions without reading or deleting Claude state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-purge-cli-'))
+    roots.push(root)
+    const praxisRoot = join(root, 'praxis')
+    const claudeRoot = join(root, 'claude')
+    const project = join(root, 'project')
+    const projectKey = sanitizeClaudeProjectPath(project)
+    const nativeSession = join(
+      praxisRoot,
+      'sessions',
+      projectKey,
+      `${SESSION_ID}.jsonl`,
+    )
+    const claudeSession = join(
+      claudeRoot,
+      'projects',
+      projectKey,
+      `${SESSION_ID}.jsonl`,
+    )
+    await mkdir(join(praxisRoot, 'tasks', SESSION_ID), { recursive: true })
+    await mkdir(join(praxisRoot, 'sessions', projectKey), { recursive: true })
+    await mkdir(join(claudeRoot, 'projects', projectKey), { recursive: true })
+    await mkdir(project, { recursive: true })
+    await writeFile(nativeSession, '{}\n')
+    await writeFile(claudeSession, 'claude-marker\n')
+    await writeFile(
+      join(praxisRoot, 'state.json'),
+      JSON.stringify({ projects: { [project]: { native: true } } }),
+    )
+    await writeFile(
+      join(claudeRoot, '.claude.json'),
+      JSON.stringify({ projects: { [project]: { claude: true } } }),
+    )
+    vi.stubEnv('PRAXIS_HOME', praxisRoot)
+    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeRoot)
+
     const code = await run(['project', 'purge', '--yes', project], {
       stdout: () => undefined,
       stderr: () => undefined,
     })
 
     expect(code).toBe(0)
-    await expect(readFile(statePath, 'utf8')).resolves.toContain(
-      '"projects": {}',
+    await expect(readFile(nativeSession, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(
+      readFile(join(praxisRoot, 'state.json'), 'utf8'),
+    ).resolves.toContain('"projects": {}')
+    await expect(readFile(claudeSession, 'utf8')).resolves.toBe(
+      'claude-marker\n',
     )
+    await expect(
+      readFile(join(claudeRoot, '.claude.json'), 'utf8'),
+    ).resolves.toContain('"claude":true')
   })
 })

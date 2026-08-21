@@ -9,6 +9,7 @@ import type {
   ScheduledPromptManager,
   ListedScheduledPrompt,
 } from '../application/scheduled-prompt-manager.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 
 const SCHEMA = 'https://json-schema.org/draft/2020-12/schema'
 
@@ -50,94 +51,112 @@ The runtime clamps to [60, 3600], so you don't need to clamp yourself.
 One short sentence on what you chose and why. Goes to telemetry and is shown back to the user. "watching CI run" beats "waiting." The user reads this to understand what you're doing without having to predict your cadence in advance — make it specific.
 `
 
-const DEFINITIONS: readonly ModelToolDefinition[] = [
-  {
-    name: 'CronCreate',
-    description: CRON_CREATE_DESCRIPTION,
-    inputSchema: {
-      $schema: SCHEMA,
-      type: 'object',
-      properties: {
-        cron: {
-          description:
-            'Standard 5-field cron expression in local time: M H DoM Mon DoW.',
-          type: 'string',
+function scheduledTaskLocation(dataPlane: DataPlane): string {
+  return dataPlane === 'native'
+    ? '~/.praxis/scheduled/<project>.json'
+    : '.claude/scheduled_tasks.json'
+}
+
+function definitions(dataPlane: DataPlane): readonly ModelToolDefinition[] {
+  const location = scheduledTaskLocation(dataPlane)
+  return [
+    {
+      name: 'CronCreate',
+      description: CRON_CREATE_DESCRIPTION.replace(
+        '.claude/scheduled_tasks.json',
+        location,
+      ),
+      inputSchema: {
+        $schema: SCHEMA,
+        type: 'object',
+        properties: {
+          cron: {
+            description:
+              'Standard 5-field cron expression in local time: M H DoM Mon DoW.',
+            type: 'string',
+          },
+          prompt: {
+            description: 'The prompt to enqueue at each fire time.',
+            type: 'string',
+          },
+          recurring: {
+            description:
+              'true (default) fires repeatedly; false fires once and auto-deletes.',
+            type: 'boolean',
+          },
+          durable: {
+            description: `true persists to ${location}; false is session-only.`,
+            type: 'boolean',
+          },
         },
-        prompt: {
-          description: 'The prompt to enqueue at each fire time.',
-          type: 'string',
-        },
-        recurring: {
-          description:
-            'true (default) fires repeatedly; false fires once and auto-deletes.',
-          type: 'boolean',
-        },
-        durable: {
-          description:
-            'true persists to .claude/scheduled_tasks.json; false is session-only.',
-          type: 'boolean',
-        },
+        required: ['cron', 'prompt'],
+        additionalProperties: false,
       },
-      required: ['cron', 'prompt'],
-      additionalProperties: false,
     },
-  },
-  {
-    name: 'CronDelete',
-    description: 'Cancel a cron job previously scheduled with CronCreate.',
-    inputSchema: {
-      $schema: SCHEMA,
-      type: 'object',
-      properties: {
-        id: { description: 'Job ID returned by CronCreate.', type: 'string' },
+    {
+      name: 'CronDelete',
+      description: 'Cancel a cron job previously scheduled with CronCreate.',
+      inputSchema: {
+        $schema: SCHEMA,
+        type: 'object',
+        properties: {
+          id: { description: 'Job ID returned by CronCreate.', type: 'string' },
+        },
+        required: ['id'],
+        additionalProperties: false,
       },
-      required: ['id'],
-      additionalProperties: false,
     },
-  },
-  {
-    name: 'CronList',
-    description:
-      'List all cron jobs scheduled via CronCreate, both durable and session-only.',
-    inputSchema: {
-      $schema: SCHEMA,
-      type: 'object',
-      properties: {},
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'ScheduleWakeup',
-    description: SCHEDULE_WAKEUP_DESCRIPTION,
-    inputSchema: {
-      $schema: SCHEMA,
-      type: 'object',
-      properties: {
-        delaySeconds: {
-          description:
-            'Seconds from now to wake up. Clamped to [60, 3600] by the runtime. Required unless `stop` is true.',
-          type: 'number',
-        },
-        reason: {
-          description:
-            'One short sentence explaining the chosen delay. Goes to telemetry and is shown to the user. Be specific. Required unless `stop` is true.',
-          type: 'string',
-        },
-        prompt: {
-          description:
-            'The /loop input to fire on wake-up. Pass the same /loop input verbatim each turn so the next firing re-enters the skill and continues the loop. For autonomous /loop (no user prompt), pass the literal sentinel `<<autonomous-loop-dynamic>>` instead (the dynamic-pacing variant, not the CronCreate-mode `<<autonomous-loop>>`). Required unless `stop` is true.',
-          type: 'string',
-        },
-        stop: {
-          description:
-            'Set to true to end the dynamic loop immediately instead of scheduling another wakeup. When true, all other fields are ignored and no further wakeups fire.',
-          type: 'boolean',
-        },
+    {
+      name: 'CronList',
+      description:
+        'List all cron jobs scheduled via CronCreate, both durable and session-only.',
+      inputSchema: {
+        $schema: SCHEMA,
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
       },
-      additionalProperties: false,
     },
-  },
-]
+    {
+      name: 'ScheduleWakeup',
+      description: SCHEDULE_WAKEUP_DESCRIPTION,
+      inputSchema: {
+        $schema: SCHEMA,
+        type: 'object',
+        properties: {
+          delaySeconds: {
+            description:
+              'Seconds from now to wake up. Clamped to [60, 3600] by the runtime. Required unless `stop` is true.',
+            type: 'number',
+          },
+          reason: {
+            description:
+              'One short sentence explaining the chosen delay. Goes to telemetry and is shown to the user. Be specific. Required unless `stop` is true.',
+            type: 'string',
+          },
+          prompt: {
+            description:
+              'The /loop input to fire on wake-up. Pass the same /loop input verbatim each turn so the next firing re-enters the skill and continues the loop. For autonomous /loop (no user prompt), pass the literal sentinel `<<autonomous-loop-dynamic>>` instead (the dynamic-pacing variant, not the CronCreate-mode `<<autonomous-loop>>`). Required unless `stop` is true.',
+            type: 'string',
+          },
+          stop: {
+            description:
+              'Set to true to end the dynamic loop immediately instead of scheduling another wakeup. When true, all other fields are ignored and no further wakeups fire.',
+            type: 'boolean',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+  ]
+}
+
+const DEFINITION_NAMES = new Set([
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'ScheduleWakeup',
+])
 
 export interface ClaudeScheduledToolRegistryOptions {
   base: ToolRegistry
@@ -145,6 +164,7 @@ export interface ClaudeScheduledToolRegistryOptions {
   sessionId: string
   enabledTools?: readonly string[]
   now?: () => number
+  dataPlane?: DataPlane
 }
 
 function nonEmptyString(input: Record<string, unknown>, name: string): string {
@@ -209,9 +229,10 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
   definitions(): readonly ModelToolDefinition[] {
     const base = this.options.base.definitions()
     const existing = new Set(base.map(({ name }) => name))
+    const scheduledDefinitions = definitions(this.options.dataPlane ?? 'claude')
     return [
       ...base,
-      ...DEFINITIONS.filter(
+      ...scheduledDefinitions.filter(
         ({ name }) => (this.enabled?.has(name) ?? true) && !existing.has(name),
       ),
     ]
@@ -221,7 +242,7 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
     call: ModelToolCall,
     context: ToolExecutionContext,
   ): Promise<ModelToolCall> {
-    if (!DEFINITIONS.some(({ name }) => name === call.name)) {
+    if (!DEFINITION_NAMES.has(call.name)) {
       return this.options.base.prepare(call, context)
     }
     if (!(this.enabled?.has(call.name) ?? true)) {
@@ -296,7 +317,9 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
         })
         const schedule = describeCron(task.cron)
         const persistence = task.durable
-          ? 'Persisted to .claude/scheduled_tasks.json.'
+          ? `Persisted to ${scheduledTaskLocation(
+              this.options.dataPlane ?? 'claude',
+            )}.`
           : 'Session-only (not written to disk, dies when Praxis exits).'
         const content = task.recurring
           ? `Scheduled recurring job ${task.id} (${schedule}). ${persistence} Auto-expires after 7 days. Use CronDelete to cancel sooner.`

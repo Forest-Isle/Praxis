@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -7,6 +6,12 @@ import {
   type ClaudeResourceScope,
 } from '../../compatibility/claude/shared-resources.js'
 import { writeFileAtomically } from '../../platform/atomic-write.js'
+import {
+  type DataPlane,
+  resolveDataPlane,
+  resolveDataPlaneRoot,
+} from '../../persistence/data-plane.js'
+import { loadNativeSharedResources } from '../../persistence/native-resources.js'
 import type { PermissionUpdate } from '../../core/runtime.js'
 import {
   permissionRuleValueFromString,
@@ -27,27 +32,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function configRootPath(): string {
-  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  return resolveDataPlaneRoot()
 }
 
 function settingsPath(
   configRoot: string,
   cwd: string,
   scope: ClaudeResourceScope,
+  dataPlane: DataPlane,
 ): string {
   if (scope === 'user') return join(configRoot, 'settings.json')
   return join(
     cwd,
-    '.claude',
+    dataPlane === 'native' ? '.praxis' : '.claude',
     scope === 'local' ? 'settings.local.json' : 'settings.json',
   )
 }
 
 export async function loadTuiPermissionRules(
   cwd: string,
-  configRoot = configRootPath(),
+  configRoot?: string,
+  dataPlane: DataPlane = configRoot === undefined
+    ? resolveDataPlane()
+    : 'claude',
 ): Promise<readonly TuiPermissionRule[]> {
-  const settings = await loadClaudeSettings({ configRoot, cwd })
+  const root = configRoot ?? configRootPath()
+  const settings =
+    dataPlane === 'native'
+      ? (await loadNativeSharedResources({ root, cwd })).settings
+      : await loadClaudeSettings({ configRoot: root, cwd })
   return settings.flatMap((resource) => {
     const value = resource.value
     if (!isRecord(value) || !isRecord(value.permissions)) return []
@@ -100,17 +113,24 @@ export async function addTuiPermissionRule({
   behavior,
   rule,
   scope,
-  configRoot = configRootPath(),
+  configRoot,
+  dataPlane = configRoot === undefined ? resolveDataPlane() : 'claude',
 }: {
   cwd: string
   behavior: TuiPermissionBehavior
   rule: string
   scope: ClaudeResourceScope
   configRoot?: string
+  dataPlane?: DataPlane
 }): Promise<void> {
   if (!/^([A-Za-z][\w-]*)(?:\(.*\))?$/u.test(rule))
     throw new Error(`Invalid permission rule: ${rule}`)
-  const path = settingsPath(configRoot, cwd, scope)
+  const path = settingsPath(
+    configRoot ?? configRootPath(),
+    cwd,
+    scope,
+    dataPlane,
+  )
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const { value: settings, source } = await readSettings(path)
     const permissions = isRecord(settings.permissions)
@@ -184,12 +204,15 @@ function destinationScope(
 export async function persistTuiPermissionUpdates({
   cwd,
   updates,
-  configRoot = configRootPath(),
+  configRoot,
+  dataPlane = configRoot === undefined ? resolveDataPlane() : 'claude',
 }: {
   cwd: string
   updates: readonly PermissionUpdate[]
   configRoot?: string
+  dataPlane?: DataPlane
 }): Promise<void> {
+  const root = configRoot ?? configRootPath()
   for (const update of updates) {
     const scope = destinationScope(update.destination)
     if (!scope) continue
@@ -200,12 +223,13 @@ export async function persistTuiPermissionUpdates({
           behavior: update.behavior,
           rule: permissionRuleValueToString(rule),
           scope,
-          configRoot,
+          configRoot: root,
+          dataPlane,
         })
       }
       continue
     }
-    const path = settingsPath(configRoot, cwd, scope)
+    const path = settingsPath(root, cwd, scope, dataPlane)
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const { value: settings, source } = await readSettings(path)
       const permissions = isRecord(settings.permissions)

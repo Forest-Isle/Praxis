@@ -41,6 +41,24 @@ describe('Claude /init command contract', () => {
     expect(prompt).toContain('Phase 8')
   })
 
+  it('uses only Praxis-native instruction paths in native mode', () => {
+    const legacy = claudeInitPrompt({} as NodeJS.ProcessEnv, 'native')
+    expect(claudeInitDescription({} as NodeJS.ProcessEnv, 'native')).toContain(
+      'Praxis project instructions',
+    )
+    expect(legacy).toContain('.praxis/PRAXIS.md')
+    expect(legacy).not.toContain('CLAUDE.md')
+
+    const enhanced = claudeInitPrompt(
+      { CLAUDE_CODE_NEW_INIT: '1' } as NodeJS.ProcessEnv,
+      'native',
+    )
+    expect(enhanced).toContain('~/.praxis/PRAXIS.md')
+    expect(enhanced).toContain('.praxis/skills/<name>/SKILL.md')
+    expect(enhanced).toContain('.praxis/settings.local.json')
+    expect(enhanced).toContain('Do not create or modify CLAUDE.md')
+  })
+
   it.each(['', '0', 'false', 'FALSE', 'no', 'off', 'unexpected'])(
     'treats %j as disabled',
     (value) => {

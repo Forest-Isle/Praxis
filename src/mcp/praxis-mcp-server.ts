@@ -335,7 +335,7 @@ function hostedAgentDefinition(
         },
         mode: {
           description:
-            'Permission mode for spawned teammate (e.g., "plan" to require plan approval).',
+            "Deprecated; ignored. Subagents inherit the parent session's permission mode; agent-definition frontmatter may override it.",
           type: 'string',
           enum: [
             'acceptEdits',
