@@ -575,8 +575,8 @@ describe('Claude-style TUI components', () => {
     expect(collapsed.lastFrame()).not.toContain('five')
     expect(collapsed.lastFrame()).toContain('Update(/tmp/fixture.txt)')
     expect(collapsed.lastFrame()).toContain('Added 2 lines, removed 1 line')
-    expect(collapsed.lastFrame()).toContain('1 -before')
-    expect(collapsed.lastFrame()).toContain('2 +second line')
+    expect(collapsed.lastFrame()).not.toContain('1 -before')
+    expect(collapsed.lastFrame()).not.toContain('2 +second line')
 
     const detailed = render(
       <Transcript
@@ -588,6 +588,8 @@ describe('Claude-style TUI components', () => {
     )
     expect(detailed.lastFrame()).toContain('five')
     expect(detailed.lastFrame()).not.toContain('… +2 lines')
+    expect(detailed.lastFrame()).toContain('1 -before')
+    expect(detailed.lastFrame()).toContain('2 +second line')
   })
 
   it('groups adjacent successful reads and expands every file', () => {

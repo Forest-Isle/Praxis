@@ -78,6 +78,27 @@ describe('streaming frame buffer', () => {
     ])
   })
 
+  it('joins many small chunks exactly once into a single frame', () => {
+    const { scheduler, frames, buffer } = createHarness()
+    const chunks = Array.from({ length: 500 }, (_, index) => `d${index}/`)
+    for (const chunk of chunks) {
+      buffer.appendText(chunk)
+    }
+    // A burst of many appends schedules at most one pending frame.
+    expect(frames).toHaveLength(0)
+    expect(scheduler.pendingCount).toBe(1)
+    scheduler.advance(33)
+    // All deltas are concatenated in append order in that single frame.
+    expect(frames).toEqual([{ text: chunks.join(''), thinking: '' }])
+    expect(buffer.text).toBe(chunks.join(''))
+    expect(buffer.hasPending).toBe(false)
+    // A follow-up burst builds from the committed string in one more frame.
+    buffer.appendText('tail')
+    scheduler.advance(33)
+    expect(frames.at(-1)?.text).toBe(chunks.join('') + 'tail')
+    expect(frames).toHaveLength(2)
+  })
+
   it('uses the bounded cadence by default and exposes effective text', () => {
     const scheduler = new ManualScheduler()
     const frames: StreamingFrame[] = []

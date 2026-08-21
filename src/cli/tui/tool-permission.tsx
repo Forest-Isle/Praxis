@@ -20,6 +20,7 @@ import {
   composerEditorSegments,
   type ComposerEditorState,
 } from './composer-editor.js'
+import { useTuiPalette } from './theme.js'
 
 export type TuiToolPermissionAction =
   | 'allow-once'
@@ -508,15 +509,18 @@ export function ToolPermissionDialog({
   ruleEditor?: ComposerEditorState | null
   screenReader: boolean
 }) {
+  const palette = useTuiPalette()
   return (
     <Box
       flexDirection="column"
       borderStyle={screenReader ? undefined : 'round'}
-      borderColor="yellow"
+      borderColor={palette.warning}
       paddingX={screenReader ? 0 : 1}
       marginTop={1}
     >
-      <Text bold>{model.title}</Text>
+      <Text bold color={palette.warning}>
+        {model.title}
+      </Text>
       {model.subtitle ? <Text dimColor>{model.subtitle}</Text> : null}
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         {model.detail.map((line, index) => {
@@ -524,7 +528,7 @@ export function ToolPermissionDialog({
           return line.prefix ? (
             <Text
               key={`${index}-${line.prefix}`}
-              color={line.prefix === '+' ? 'green' : 'red'}
+              color={line.prefix === '+' ? palette.success : palette.error}
             >
               {content}
             </Text>
@@ -546,7 +550,11 @@ export function ToolPermissionDialog({
           : null
         const segments = editor ? composerEditorSegments(editor) : null
         return (
-          <Text key={`${option.action}-${index}`} bold={selected}>
+          <Text
+            key={`${option.action}-${index}`}
+            bold={selected}
+            {...(selected ? { color: palette.brand } : {})}
+          >
             {selected ? (screenReader ? 'Selected: ' : '❯ ') : '  '}
             {index + 1}. {option.label}
             {segments ? (

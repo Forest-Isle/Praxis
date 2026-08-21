@@ -5,6 +5,7 @@ import { Box, Text, useStdout } from 'ink'
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
 import { composerEditorSegments } from './composer-editor.js'
+import { composerLayoutForWidth } from './composer-layout.js'
 import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
 import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
@@ -719,22 +720,24 @@ function ToolTranscriptEntry({
                 , removed {oldLines.length} line
                 {oldLines.length === 1 ? '' : 's'}
               </Text>
-              {oldLines.map((line, index) => (
-                <SyntaxCodeLine
-                  key={`old-${index}`}
-                  prefix={`   ${index + 1} -`}
-                  text={line}
-                  change="removed"
-                />
-              ))}
-              {newLines.map((line, index) => (
-                <SyntaxCodeLine
-                  key={`new-${index}`}
-                  prefix={`   ${index + 1} +`}
-                  text={line}
-                  change="added"
-                />
-              ))}
+              {detailed &&
+                oldLines.map((line, index) => (
+                  <SyntaxCodeLine
+                    key={`old-${index}`}
+                    prefix={`   ${index + 1} -`}
+                    text={line}
+                    change="removed"
+                  />
+                ))}
+              {detailed &&
+                newLines.map((line, index) => (
+                  <SyntaxCodeLine
+                    key={`new-${index}`}
+                    prefix={`   ${index + 1} +`}
+                    text={line}
+                    change="added"
+                  />
+                ))}
             </>
           ) : resultIsDiff ? (
             <ToolResultText text={visible.join('\n')} prefix="⎿ " />
@@ -2876,10 +2879,11 @@ export function Composer({
               : `Prompt: ${input}`}
       </Text>
     )
-  const line = '─'.repeat(Math.max(12, Math.min(100, width)))
+  const { lineWidth, footerWidth, showEditorHint } =
+    composerLayoutForWidth(width)
+  const line = '─'.repeat(lineWidth)
   const separatorColor =
     sessionColor === undefined ? undefined : palette.sessionColors[sessionColor]
-  const footerWidth = Math.min(100, width)
   const footerMode = `⏵⏵ ${permissionLabel(display.permissionMode)}`
   const footerCompactMode = `⏵⏵ ${compactPermissionLabel(display.permissionMode)}`
   const footerLeft = composerFooterLeft(
@@ -3003,7 +3007,7 @@ export function Composer({
                 <Text dimColor>{footerLeft}</Text>
                 <Text dimColor> · </Text>
                 <Text color={palette.accent}>● {display.effort}</Text>
-                {footerWidth >= 100 ? (
+                {showEditorHint ? (
                   <Text dimColor>
                     {' '}
                     · {editorMode === 'vim' ? 'vim' : '/effort'}

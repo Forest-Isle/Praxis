@@ -323,4 +323,24 @@ describe('tool permission projection', () => {
     )
     expect(app.lastFrame()).toContain('A project rule requires confirmation.')
   })
+
+  it('renders the normal dialog with its title and selected option', () => {
+    const model = projectTuiToolPermission(
+      call('Bash', { command: 'npm test' }),
+      '/workspace',
+      [],
+    )
+    const app = render(
+      <ToolPermissionDialog
+        model={model}
+        selection={0}
+        feedbackMode={false}
+        feedback=""
+        screenReader={false}
+      />,
+    )
+    expect(app.lastFrame()).toContain('Bash command')
+    expect(app.lastFrame()).toContain('❯ 1. Yes')
+    expect(app.lastFrame()).toContain('Esc to cancel · Tab to amend')
+  })
 })
