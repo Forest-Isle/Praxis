@@ -12,6 +12,16 @@ import { seedClaudeConfig } from './seed-claude-config.mjs'
 const roots = []
 const execFileAsync = promisify(execFile)
 const wrapper = fileURLToPath(new URL('../claude', import.meta.url))
+const AUTHENTICATION_ENV_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+]
 
 afterEach(async () => {
   await Promise.all(
@@ -34,9 +44,12 @@ describe('Claude compatibility auth seeding', () => {
       writeFile(join(home, '.claude', 'settings.json'), '{}'),
     ])
 
+    const isolatedEnv = { ...process.env }
+    for (const key of AUTHENTICATION_ENV_KEYS) delete isolatedEnv[key]
+
     await execFileAsync(wrapper, ['--version'], {
       env: {
-        ...process.env,
+        ...isolatedEnv,
         HOME: home,
         CLAUDE_CONFIG_DIR: config,
         PRAXIS_REAL_CLAUDE_BINARY: process.execPath,
@@ -55,7 +68,7 @@ describe('Claude compatibility auth seeding', () => {
 
     await execFileAsync(wrapper, ['--version'], {
       env: {
-        ...process.env,
+        ...isolatedEnv,
         HOME: home,
         CLAUDE_CONFIG_DIR: config,
         PRAXIS_COMPAT_SEED_CLAUDE_CONFIG: '1',
