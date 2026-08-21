@@ -1691,9 +1691,9 @@ describe('ClaudeSessionService', () => {
     expect(resumed.text).toBe('final answer')
 
     // One successful automatic compact produces exactly one compact-source
-    // SessionStart invocation alongside the preserved startup/resume ones.
+    // SessionStart invocation after the single session startup.
     expect(compactHookCalls).toBe(1)
-    expect(hookEvents).toEqual(['SessionStart', 'SessionStart', 'SessionStart'])
+    expect(hookEvents).toEqual(['SessionStart', 'SessionStart'])
 
     // The context assembler runs once for the startup turn, once for the
     // resume, and once more after the compact boundary refresh.
@@ -1745,7 +1745,6 @@ describe('ClaudeSessionService', () => {
       'utf8',
     )
     expect(transcript).toContain('COMPACT_HOOK_CONTEXT')
-    expect(transcript).toContain('RESUME_HOOK_CONTEXT')
     expect(transcript).toContain('STARTUP_HOOK_CONTEXT')
     expect(transcript).not.toContain('# Session Memory')
     expect(transcript).not.toContain('SYSTEM_CONTEXT')
@@ -1760,11 +1759,9 @@ describe('ClaudeSessionService', () => {
     expect(hookAttachments.map((entry) => entry.attachment.type)).toEqual([
       'hook_success',
       'hook_success',
-      'hook_success',
     ])
     expect(hookAttachments.map((entry) => entry.attachment.content)).toEqual([
       'STARTUP_HOOK_CONTEXT',
-      'RESUME_HOOK_CONTEXT',
       'COMPACT_HOOK_CONTEXT',
     ])
   })
@@ -5238,7 +5235,7 @@ describe('ClaudeSessionService', () => {
       cwd,
       sessionId,
     })
-    expect(hookTranscriptPaths).toEqual([paths.sessionFile, paths.sessionFile])
+    expect(hookTranscriptPaths).toEqual([paths.sessionFile])
     await expect(readFile(paths.sessionFile)).rejects.toMatchObject({
       code: 'ENOENT',
     })
@@ -9049,6 +9046,7 @@ describe('ClaudeSessionService', () => {
       if (previousSecret === undefined) delete process.env[secretVariable]
       else process.env[secretVariable] = previousSecret
     })
+    await service.close()
     expect(result.text).toBe('revised answer')
     expect(hookEvents).toEqual([
       'SessionStart',
@@ -9119,6 +9117,81 @@ describe('ClaudeSessionService', () => {
     ).toBe(entries.at(-1)?.leafUuid)
   })
 
+  it('runs session hooks once across multiple prompts and closes idempotently', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-hook-lifecycle-'))
+    roots.push(root)
+    const hookEvents: Array<{
+      event: string
+      source?: unknown
+      reason?: unknown
+    }> = []
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([
+        'first answer',
+        'second answer',
+        'third answer',
+        'fourth answer',
+      ]),
+      hooks: new ClaudeHookRunner({
+        cwd: join(root, 'project'),
+        settings: [
+          {
+            path: join(root, 'config', 'settings.json'),
+            scope: 'user',
+            value: {
+              hooks: Object.fromEntries(
+                ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'].map(
+                  (event) => [
+                    event,
+                    [{ hooks: [{ type: 'command', command: event }] }],
+                  ],
+                ),
+              ),
+            },
+          },
+        ],
+        executeCommand: async (_command, input) => {
+          hookEvents.push({
+            event: input.hook_event_name,
+            ...(input.source === undefined ? {} : { source: input.source }),
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
+          })
+          return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+        },
+      }),
+    })
+
+    const first = await service.run('first prompt')
+    await service.resume(first.sessionId, 'second prompt')
+    await service.transitionHookSession(first.sessionId, 'resume')
+    await service.transitionHookSession(first.sessionId, 'resume')
+    await service.resume(first.sessionId, 'third prompt')
+    await service.transitionHookSession(first.sessionId, 'clear')
+    const clearedSessionId = '33333333-3333-4333-8333-333333333333'
+    await service.run('fourth prompt', undefined, clearedSessionId)
+    await service.close()
+    await service.close()
+    expect(hookEvents).toEqual([
+      { event: 'SessionStart', source: 'startup' },
+      { event: 'UserPromptSubmit' },
+      { event: 'Stop' },
+      { event: 'UserPromptSubmit' },
+      { event: 'Stop' },
+      { event: 'SessionEnd', reason: 'resume' },
+      { event: 'SessionStart', source: 'resume' },
+      { event: 'UserPromptSubmit' },
+      { event: 'Stop' },
+      { event: 'SessionEnd', reason: 'clear' },
+      { event: 'SessionStart', source: 'clear' },
+      { event: 'UserPromptSubmit' },
+      { event: 'Stop' },
+      { event: 'SessionEnd', reason: 'other' },
+    ])
+  })
+
   it('reports SessionEnd failure without replacing a completed result', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-end-failure-'))
     roots.push(root)
@@ -9175,6 +9248,7 @@ describe('ClaudeSessionService', () => {
     await expect(service.run('finish')).resolves.toMatchObject({
       text: 'completed answer',
     })
+    await service.close()
     expect(runtimeEvents.slice(-2)).toEqual([
       {
         type: 'warning',
@@ -9185,6 +9259,103 @@ describe('ClaudeSessionService', () => {
         message: 'SessionEnd hook failed: session end fixture blocked',
       },
     ])
+  })
+
+  it('keeps SessionStart blocking output as context instead of failing startup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-start-block-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['completed answer']),
+      hooks: new ClaudeHookRunner({
+        cwd,
+        settings: [
+          {
+            path: join(configRoot, 'settings.json'),
+            scope: 'user',
+            value: {
+              hooks: {
+                SessionStart: [
+                  { hooks: [{ type: 'command', command: 'session-start' }] },
+                ],
+              },
+            },
+          },
+        ],
+        executeCommand: async () => ({
+          stdout: JSON.stringify({
+            continue: false,
+            stopReason: 'START_CONTEXT_ONLY',
+          }),
+          stderr: '',
+          exitCode: 0,
+          durationMs: 1,
+        }),
+      }),
+    })
+
+    const result = await service.run('finish')
+    expect(result.text).toBe('completed answer')
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: result.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('START_CONTEXT_ONLY')
+    await service.close()
+  })
+
+  it('bounds SessionEnd teardown when a hook executor stalls', async () => {
+    vi.useFakeTimers()
+    try {
+      const root = await mkdtemp(join(tmpdir(), 'praxis-session-end-stall-'))
+      roots.push(root)
+      const configRoot = join(root, 'config')
+      const cwd = join(root, 'project')
+      const runtimeEvents: RuntimeEvent[] = []
+      const service = new ClaudeSessionService({
+        configRoot,
+        cwd,
+        claudeVersion: '2.1.208',
+        provider: queuedProvider(['completed answer']),
+        hooks: new ClaudeHookRunner({
+          cwd,
+          settings: [
+            {
+              path: join(configRoot, 'settings.json'),
+              scope: 'user',
+              value: {
+                hooks: {
+                  SessionEnd: [
+                    { hooks: [{ type: 'command', command: 'stall' }] },
+                  ],
+                },
+              },
+            },
+          ],
+          executeCommand: () => new Promise(() => undefined),
+        }),
+        eventSink: (event) => runtimeEvents.push(event),
+      })
+
+      await service.run('finish')
+      const closing = service.close()
+      await vi.advanceTimersByTimeAsync(15_000)
+      await expect(closing).resolves.toBeUndefined()
+      expect(runtimeEvents.at(-1)).toEqual({
+        type: 'warning',
+        message: 'SessionEnd hook failed: timed out after 15000ms',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('recovers an interrupted tool call before resuming the model', async () => {
@@ -9257,7 +9428,8 @@ describe('ClaudeSessionService', () => {
     await expect(
       interrupted.run('run it', controller.signal),
     ).rejects.toBeInstanceOf(AgentRunCancelledError)
-    expect(sessionEndSignals).toEqual([undefined])
+    expect(sessionEndSignals).toHaveLength(1)
+    expect(sessionEndSignals[0]?.aborted).toBe(false)
     expect(runtimeEvents.at(-1)).toEqual({
       type: 'warning',
       message: 'SessionEnd hook failed: session end fixture failed',

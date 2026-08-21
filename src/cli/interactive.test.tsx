@@ -2381,6 +2381,65 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('? for shortcuts')
   })
 
+  it('ends the active hook session before selecting a resumed session', async () => {
+    const transitions: string[] = []
+    const sessions = [
+      {
+        sessionId: 'active-session',
+        lastPrompt: 'active prompt',
+        updatedAt: '2026-08-06T00:00:00.000Z',
+        status: 'ready' as const,
+        issue: null,
+      },
+      {
+        sessionId: 'resumed-session',
+        lastPrompt: 'resumed prompt',
+        updatedAt: '2026-08-05T00:00:00.000Z',
+        status: 'ready' as const,
+        issue: null,
+      },
+    ]
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return sessions
+              },
+              async transcript() {
+                return []
+              },
+              async transitionHookSession(sessionId, reason) {
+                transitions.push(`${sessionId}:${reason}`)
+              },
+            }
+          },
+        }}
+        initialSessions={sessions}
+        resume={{ sessionId: 'active-session' }}
+      />,
+    )
+
+    app.stdin.write('/resume')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    await flush()
+    expect(transitions).toEqual(['active-session:resume'])
+  })
+
   it('omits the new-session choice for a required filtered resume', async () => {
     const app = render(
       <InteractiveApp
@@ -6169,6 +6228,9 @@ describe('InteractiveApp', () => {
           async sessions() {
             return []
           },
+          async transitionHookSession(sessionId, reason) {
+            calls.push(`transition:${sessionId}:${reason}`)
+          },
         }
       },
     }
@@ -6189,7 +6251,11 @@ describe('InteractiveApp', () => {
     app.stdin.write('second')
     app.stdin.write('\r')
     await flush()
-    expect(calls).toEqual(['run:first', 'run:second'])
+    expect(calls).toEqual([
+      'run:first',
+      'transition:session-1:clear',
+      'run:second',
+    ])
   })
 
   it('renders measured cost with the active provider context budget', async () => {
