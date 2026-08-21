@@ -4,9 +4,12 @@ import {
   type ModelProvider,
   type ModelRequest,
   type ModelStreamEvent,
+  type ModelTerminalReason,
   type ModelThinkingConfig,
   type ModelToolCall,
+  type ProviderErrorKind,
 } from '../core/runtime.js'
+import { transportFailureKind } from './provider-errors.js'
 
 export interface OpenAICompatibleProviderOptions {
   baseUrl: string
@@ -49,6 +52,52 @@ interface PendingToolState {
   metadataBytes: number
   done: boolean
   terminal: boolean
+  terminalEmitted: boolean
+  terminalReason?: ModelTerminalReason
+}
+
+function openAiFinishReason(value: unknown): ModelTerminalReason {
+  if (value === 'stop' || value === 'content_filter') return 'end_turn'
+  if (value === 'tool_calls' || value === 'function_call') return 'tool_use'
+  if (value === 'length') return 'max_tokens'
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new ModelProviderError('Provider stream is missing finish reason', {
+      retryable: false,
+    })
+  }
+  throw new ModelProviderError(
+    `Provider returned unsupported finish reason ${value}`,
+    { retryable: false },
+  )
+}
+
+function openAiErrorKind(value: unknown, status?: number): ProviderErrorKind {
+  const error = isRecord(value) && isRecord(value.error) ? value.error : value
+  const type =
+    isRecord(error) && typeof error.type === 'string' ? error.type : ''
+  const code =
+    isRecord(error) && typeof error.code === 'string' ? error.code : ''
+  const message =
+    isRecord(error) && typeof error.message === 'string' ? error.message : ''
+  if (
+    ['context_length_exceeded', 'prompt_too_long'].includes(type) ||
+    ['context_length_exceeded', 'prompt_too_long'].includes(code) ||
+    /prompt\s+(?:is\s+)?too long|context.{0,80}(?:exceed|too long)|maximum context length/iu.test(
+      message,
+    )
+  ) {
+    return 'prompt_too_long'
+  }
+  if (status === 401 || status === 403) return 'authentication_failed'
+  if (status === 402) return 'billing_error'
+  if (status === 408) return 'timeout'
+  if (type === 'rate_limit_error' || status === 429) return 'rate_limit'
+  if (type === 'overloaded_error' || status === 529) return 'overloaded'
+  if (type === 'api_error' || type === 'server_error') return 'api_error'
+  if (status !== undefined && status >= 400 && status < 500)
+    return 'invalid_request'
+  if (status !== undefined && status >= 500) return 'server_error'
+  return 'unknown'
 }
 
 function completedToolCallEvents(
@@ -91,9 +140,18 @@ function parseSseEvent(
   maxToolMetadataBytes: number,
 ): ModelStreamEvent[] {
   if (data === '[DONE]') {
+    if (pendingTools.terminalReason === undefined) {
+      throw new ModelProviderError('Provider stream is missing finish reason', {
+        retryable: false,
+      })
+    }
     pendingTools.done = true
     pendingTools.terminal = true
-    return completedToolCallEvents(pendingTools)
+    pendingTools.terminalEmitted = true
+    return [
+      ...completedToolCallEvents(pendingTools),
+      { type: 'terminal', reason: pendingTools.terminalReason },
+    ]
   }
 
   let value: unknown
@@ -106,6 +164,19 @@ function parseSseEvent(
     })
   }
   if (!isRecord(value)) return []
+  if (isRecord(value.error)) {
+    const kind = openAiErrorKind(value)
+    const message =
+      typeof value.error.message === 'string'
+        ? value.error.message
+        : 'Provider stream returned an error'
+    throw new ModelProviderError(message, {
+      kind,
+      retryable: ['api_error', 'overloaded', 'rate_limit', 'timeout'].includes(
+        kind,
+      ),
+    })
+  }
 
   const events: ModelStreamEvent[] = []
   const choices = value.choices
@@ -171,7 +242,14 @@ function parseSseEvent(
       first.finish_reason !== null &&
       first.finish_reason !== undefined
     ) {
+      if (pendingTools.terminalReason !== undefined) {
+        throw new ModelProviderError(
+          'Provider returned multiple finish reasons',
+          { retryable: false },
+        )
+      }
       pendingTools.terminal = true
+      pendingTools.terminalReason = openAiFinishReason(first.finish_reason)
       if (pendingTools.calls.size > 0) {
         events.push(...completedToolCallEvents(pendingTools))
       }
@@ -298,6 +376,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       tools: true,
       images: true,
       thinking: { modes: ['disabled'], maxTokens: false },
+      terminalReasons: true,
       ...(options.contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens: options.contextWindowTokens }),
@@ -365,11 +444,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
     try {
       response = await this.fetchImplementation(this.endpoint, requestInit)
     } catch (error) {
-      if (request.signal?.aborted) throw error
-      throw new ModelProviderError('Provider transport failed', {
-        retryable: true,
-        cause: error,
-      })
+      const kind = transportFailureKind(error, request.signal)
+      throw new ModelProviderError(
+        kind === 'cancelled'
+          ? 'Provider request cancelled'
+          : kind === 'timeout'
+            ? 'Provider request timed out'
+            : 'Provider transport failed',
+        {
+          kind,
+          retryable: kind === 'timeout' || kind === 'transport_error',
+          cause: error,
+        },
+      )
     }
 
     if (!response.ok) {
@@ -418,12 +505,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
         payload = null
       }
       throw new ModelProviderError(readErrorMessage(payload, response.status), {
+        kind: openAiErrorKind(payload, response.status),
         retryable: isRetryableStatus(response.status),
         status: response.status,
       })
     }
     if (!response.body) {
       throw new ModelProviderError('Provider response has no body', {
+        kind: 'transport_error',
         retryable: true,
       })
     }
@@ -436,6 +525,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       metadataBytes: 0,
       done: false,
       terminal: false,
+      terminalEmitted: false,
     }
     let streamEnded = false
 
@@ -486,12 +576,24 @@ export class OpenAICompatibleProvider implements ModelProvider {
           { retryable: true },
         )
       }
-    } catch (error) {
-      if (error instanceof ModelProviderError || request.signal?.aborted) {
-        throw error
+      if (!pendingTools.terminalEmitted) {
+        if (pendingTools.terminalReason === undefined) {
+          throw new ModelProviderError(
+            'Provider stream is missing finish reason',
+            {
+              retryable: false,
+            },
+          )
+        }
+        pendingTools.terminalEmitted = true
+        yield { type: 'terminal', reason: pendingTools.terminalReason }
       }
+    } catch (error) {
+      if (error instanceof ModelProviderError) throw error
+      const kind = transportFailureKind(error, request.signal)
       throw new ModelProviderError('Provider stream failed', {
-        retryable: true,
+        kind,
+        retryable: kind === 'timeout' || kind === 'transport_error',
         cause: error,
       })
     } finally {

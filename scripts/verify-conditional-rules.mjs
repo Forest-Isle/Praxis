@@ -175,6 +175,7 @@ const server = createServer(async (request, response) => {
           delta: {
             content: 'PRAXIS_CONDITIONAL_PROVIDER_OK_9359',
           },
+          finish_reason: 'stop',
         },
       ],
     },

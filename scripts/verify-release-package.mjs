@@ -1045,7 +1045,12 @@ async function startProviderProbe(provider, memoryDirectory) {
         } else {
           sendOpenAIEvents(response, [
             {
-              choices: [{ delta: { content: 'installed tool loop response' } }],
+              choices: [
+                {
+                  delta: { content: 'installed tool loop response' },
+                  finish_reason: 'stop',
+                },
+              ],
             },
             {
               choices: [],
@@ -1087,7 +1092,12 @@ async function startProviderProbe(provider, memoryDirectory) {
         } else {
           sendOpenAIEvents(response, [
             {
-              choices: [{ delta: { content: 'installed resume response' } }],
+              choices: [
+                {
+                  delta: { content: 'installed resume response' },
+                  finish_reason: 'stop',
+                },
+              ],
             },
             {
               choices: [],
@@ -1196,7 +1206,9 @@ async function startProtocolProviderProbe(provider) {
         ])
       } else {
         sendOpenAIEvents(response, [
-          { choices: [{ delta: { content: text } }] },
+          {
+            choices: [{ delta: { content: text }, finish_reason: 'stop' }],
+          },
           {
             choices: [],
             usage: { prompt_tokens: 3, completion_tokens: 2 },
@@ -1398,7 +1410,12 @@ async function startSubagentProviderProbe(provider) {
         } else {
           sendOpenAIEvents(response, [
             {
-              choices: [{ delta: { content: 'RELEASE_SUBAGENT_MARKER' } }],
+              choices: [
+                {
+                  delta: { content: 'RELEASE_SUBAGENT_MARKER' },
+                  finish_reason: 'stop',
+                },
+              ],
             },
             {
               choices: [],
@@ -1446,7 +1463,12 @@ async function startSubagentProviderProbe(provider) {
         } else {
           sendOpenAIEvents(response, [
             {
-              choices: [{ delta: { content: 'installed subagent response' } }],
+              choices: [
+                {
+                  delta: { content: 'installed subagent response' },
+                  finish_reason: 'stop',
+                },
+              ],
             },
             {
               choices: [],

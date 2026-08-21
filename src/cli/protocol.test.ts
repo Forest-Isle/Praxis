@@ -1652,6 +1652,29 @@ describe('CLI protocol', () => {
     )
   })
 
+  it('uses the provider terminal reason in partial stream output', () => {
+    const records: Record<string, unknown>[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      true,
+    )
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({ type: 'text-delta', delta: 'partial' })
+    output.sink({ type: 'terminal', reason: 'max_tokens' })
+    output.sink({ type: 'state', state: 'completed' })
+
+    const messageDelta = records.find(
+      (record) =>
+        record.type === 'stream_event' &&
+        (record.event as { type?: string }).type === 'message_delta',
+    )
+    expect(messageDelta).toMatchObject({
+      event: { delta: { stop_reason: 'max_tokens' } },
+    })
+  })
+
   it('keeps thinking out of result text while preserving partial and final blocks', () => {
     const records: Record<string, unknown>[] = []
     const output = new StreamJsonOutput(

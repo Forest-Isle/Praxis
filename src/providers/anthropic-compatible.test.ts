@@ -3,7 +3,89 @@ import { describe, expect, it, vi } from 'vitest'
 import { ModelProviderError } from '../core/runtime.js'
 import { AnthropicCompatibleProvider } from './anthropic-compatible.js'
 
+const withoutTerminal = <T extends { type: string }>(events: readonly T[]) =>
+  events.filter((event) => event.type !== 'terminal')
+
 describe('AnthropicCompatibleProvider', () => {
+  it.each([
+    ['end_turn', 'end_turn'],
+    ['stop_sequence', 'end_turn'],
+    ['refusal', 'end_turn'],
+    ['tool_use', 'tool_use'],
+    ['max_tokens', 'max_tokens'],
+    ['model_context_window_exceeded', 'prompt_too_long'],
+  ] as const)(
+    'maps Anthropic stop reason %s to terminal reason %s',
+    async (stopReason, terminalReason) => {
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://api.anthropic.example/v1',
+        apiKey: 'secret',
+        model: 'fixture-model',
+        fetchImplementation: async () =>
+          new Response(
+            [
+              'data: {"type":"message_start","message":{}}\n\n',
+              `data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: stopReason }, usage: {} })}\n\n`,
+              'data: {"type":"message_stop"}\n\n',
+            ].join(''),
+          ),
+      })
+
+      const events = []
+      for await (const event of provider.complete({ messages: [] })) {
+        events.push(event)
+      }
+
+      expect(events).toEqual([{ type: 'terminal', reason: terminalReason }])
+      expect(provider.capabilities.terminalReasons).toBe(true)
+    },
+  )
+
+  it('fails closed on a missing or unknown Anthropic stop reason', async () => {
+    const consume = async (stopReason?: string) => {
+      const delta = stopReason === undefined ? {} : { stop_reason: stopReason }
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://api.anthropic.example/v1',
+        apiKey: 'secret',
+        model: 'fixture-model',
+        fetchImplementation: async () =>
+          new Response(
+            [
+              'data: {"type":"message_start","message":{}}\n\n',
+              `data: ${JSON.stringify({ type: 'message_delta', delta, usage: {} })}\n\n`,
+              'data: {"type":"message_stop"}\n\n',
+            ].join(''),
+          ),
+      })
+      for await (const event of provider.complete({ messages: [] })) void event
+    }
+
+    await expect(consume()).rejects.toThrow('missing stop reason')
+    await expect(consume('future_reason')).rejects.toThrow(
+      'unsupported stop reason future_reason',
+    )
+  })
+
+  it('rejects duplicate Anthropic terminal stop reasons', async () => {
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () =>
+        new Response(
+          [
+            'data: {"type":"message_start","message":{}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{}}\n\n',
+          ].join(''),
+        ),
+    })
+
+    await expect(
+      provider.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+    ).rejects.toThrow('multiple terminal stop reasons')
+  })
+
   it('exposes only an explicitly configured context window', () => {
     const provider = new AnthropicCompatibleProvider({
       baseUrl: 'https://api.anthropic.example/v1',
@@ -26,6 +108,7 @@ describe('AnthropicCompatibleProvider', () => {
       },
       contextWindowTokens: 200_000,
       maxOutputTokens: 8_192,
+      terminalReasons: true,
     })
     expect(
       () =>
@@ -92,7 +175,7 @@ describe('AnthropicCompatibleProvider', () => {
             'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
             'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"done"}}\n\n',
             'data: {"type":"content_block_stop","index":1}\n\n',
-            'data: {"type":"message_delta","usage":{"output_tokens":3}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}\n\n',
             'data: {"type":"message_stop"}\n\n',
           ].join(''),
         )
@@ -141,7 +224,7 @@ describe('AnthropicCompatibleProvider', () => {
         },
       ],
     })
-    expect(events).toEqual([
+    expect(withoutTerminal(events)).toEqual([
       { type: 'thinking-start', block: { type: 'thinking', thinking: '' } },
       { type: 'thinking-delta', delta: 'reason' },
       { type: 'thinking-signature-delta', delta: 'signed' },
@@ -164,7 +247,7 @@ describe('AnthropicCompatibleProvider', () => {
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
         return new Response(
-          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
         )
       },
     })
@@ -196,7 +279,7 @@ describe('AnthropicCompatibleProvider', () => {
             'data: {"type":"message_start","message":{}}\n\n',
             'data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque"}}\n\n',
             'data: {"type":"content_block_stop","index":0}\n\n',
-            'data: {"type":"message_delta","usage":{}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\n',
             'data: {"type":"message_stop"}\n\n',
           ].join(''),
         ),
@@ -205,7 +288,7 @@ describe('AnthropicCompatibleProvider', () => {
     for await (const event of provider.complete({ messages: [] })) {
       events.push(event)
     }
-    expect(events).toEqual([
+    expect(withoutTerminal(events)).toEqual([
       {
         type: 'thinking-start',
         block: { type: 'redacted_thinking', data: 'opaque' },
@@ -314,7 +397,7 @@ describe('AnthropicCompatibleProvider', () => {
     })) {
       events.push(event)
     }
-    expect(events).toEqual([
+    expect(withoutTerminal(events)).toEqual([
       { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } },
     ])
     expect(headers?.get('anthropic-beta')).toBe(
@@ -334,7 +417,7 @@ describe('AnthropicCompatibleProvider', () => {
         return new Response(
           [
             'data: {"type":"message_start","message":{}}\n\n',
-            'data: {"type":"message_delta","usage":{}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\n',
             'data: {"type":"message_stop"}\n\n',
           ].join(''),
         )
@@ -356,7 +439,7 @@ describe('AnthropicCompatibleProvider', () => {
       events.push(event)
     }
 
-    expect(events).toEqual([])
+    expect(withoutTerminal(events)).toEqual([])
     expect(body?.messages).toEqual([
       {
         role: 'user',
@@ -389,7 +472,7 @@ describe('AnthropicCompatibleProvider', () => {
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
         return new Response(
-          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
         )
       },
     })
@@ -446,7 +529,7 @@ describe('AnthropicCompatibleProvider', () => {
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
         return new Response(
-          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
         )
       },
     })
@@ -503,7 +586,7 @@ describe('AnthropicCompatibleProvider', () => {
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
         return new Response(
-          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
         )
       },
     })
@@ -560,7 +643,7 @@ describe('AnthropicCompatibleProvider', () => {
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
         return new Response(
-          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
         )
       },
     })
@@ -642,7 +725,7 @@ describe('AnthropicCompatibleProvider', () => {
           'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n',
           'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
           'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":2,"server_tool_use":{"web_search_requests":3}}}\n\n',
-          'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":3}}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}\n\n',
           'event: message_stop\ndata: {"type":"message_stop"}\n\n',
         ].join(''),
         { headers: { 'content-type': 'text/event-stream' } },
@@ -693,7 +776,7 @@ describe('AnthropicCompatibleProvider', () => {
       events.push(event)
     }
 
-    expect(events).toEqual([
+    expect(withoutTerminal(events)).toEqual([
       { type: 'text-delta', delta: 'hello' },
       {
         type: 'usage',
@@ -780,7 +863,7 @@ describe('AnthropicCompatibleProvider', () => {
           new Response(
             [
               'data: {"type":"message_start","message":{"usage":{}}}\n\n',
-              `data: ${JSON.stringify({ type: 'message_delta', usage })}\n\n`,
+              `data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage })}\n\n`,
               'data: {"type":"message_stop"}\n\n',
             ].join(''),
           ),
@@ -813,7 +896,7 @@ describe('AnthropicCompatibleProvider', () => {
             'data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"summary"}}\n\n',
             'data: {"type":"content_block_delta","index":2,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://example.com","title":"Example"}}}\n\n',
             'data: {"type":"content_block_stop","index":2}\n\n',
-            'data: {"type":"message_delta","usage":{"output_tokens":4}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n',
             'data: {"type":"message_stop"}\n\n',
           ].join(''),
         )
@@ -834,7 +917,7 @@ describe('AnthropicCompatibleProvider', () => {
       events.push(event)
     }
 
-    expect(events).toEqual([
+    expect(withoutTerminal(events)).toEqual([
       {
         type: 'text-delta',
         delta: 'Links: [{"title":"Example","url":"https://example.com"}]\n\n',
@@ -878,7 +961,7 @@ describe('AnthropicCompatibleProvider', () => {
             'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":"}}\n\n',
             'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\"pwd\\"}"}}\n\n',
             'data: {"type":"content_block_stop","index":1}\n\n',
-            'data: {"type":"message_delta","usage":{}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\n',
             'data: {"type":"message_stop"}\n\n',
           ].join(''),
         ),
@@ -888,7 +971,7 @@ describe('AnthropicCompatibleProvider', () => {
     for await (const event of provider.complete({ messages: [] })) {
       events.push(event)
     }
-    expect(events).toEqual([
+    expect(withoutTerminal(events)).toEqual([
       {
         type: 'tool-call',
         call: { id: 'call_bash', name: 'Bash', input: { command: 'pwd' } },
@@ -921,6 +1004,7 @@ describe('AnthropicCompatibleProvider', () => {
       httpProvider.complete({ messages: [] })[Symbol.asyncIterator]().next(),
     ).rejects.toMatchObject({
       name: 'ModelProviderError',
+      kind: 'rate_limit',
       message: 'slow down',
       retryable: true,
       status: 429,
@@ -929,10 +1013,77 @@ describe('AnthropicCompatibleProvider', () => {
       streamProvider.complete({ messages: [] })[Symbol.asyncIterator]().next(),
     ).rejects.toMatchObject({
       name: 'ModelProviderError',
+      kind: 'overloaded',
       message: 'busy',
       retryable: true,
     })
   })
+
+  it('classifies context overflow, timeout, and cancellation explicitly', async () => {
+    const context = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () =>
+        new Response(
+          '{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long for the context window"}}',
+          { status: 400 },
+        ),
+    })
+    await expect(
+      context.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+    ).rejects.toMatchObject({ kind: 'prompt_too_long', retryable: false })
+
+    const timeoutError = new Error('timed out')
+    timeoutError.name = 'TimeoutError'
+    const timeout = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () => Promise.reject(timeoutError),
+    })
+    await expect(
+      timeout.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+    ).rejects.toMatchObject({ kind: 'timeout', retryable: true })
+
+    const controller = new AbortController()
+    controller.abort(new Error('cancelled'))
+    const cancelled = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () => Promise.reject(controller.signal.reason),
+    })
+    const cancelledStream = cancelled.complete({
+      messages: [],
+      signal: controller.signal,
+    })
+    await expect(
+      cancelledStream[Symbol.asyncIterator]().next(),
+    ).rejects.toMatchObject({ kind: 'cancelled', retryable: false })
+  })
+
+  it.each([
+    [500, 'api_error', 'api_error', true],
+    [400, 'invalid_request_error', 'invalid_request', false],
+  ] as const)(
+    'classifies HTTP %s %s as %s',
+    async (status, type, kind, retryable) => {
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://api.anthropic.example/v1',
+        apiKey: 'secret',
+        model: 'fixture-model',
+        fetchImplementation: async () =>
+          new Response(JSON.stringify({ error: { type, message: type } }), {
+            status,
+          }),
+      })
+
+      await expect(
+        provider.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+      ).rejects.toMatchObject({ kind, retryable })
+    },
+  )
 
   it('rejects malformed and oversized streamed tool input', async () => {
     const malformed = new AnthropicCompatibleProvider({
@@ -1099,7 +1250,7 @@ describe('AnthropicCompatibleProvider', () => {
         new Response(
           [
             'data: {"type":"message_start","message":{}}\n\n',
-            'data: {"type":"message_delta","usage":{}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\n',
             'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"late"}}\n\n',
           ].join(''),
         ),
@@ -1158,7 +1309,7 @@ describe('AnthropicCompatibleProvider', () => {
               'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
               'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}\n\n',
               'data: {"type":"content_block_stop","index":0}\n\n',
-              'data: {"type":"message_delta","usage":{}}\n\n',
+              'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\n',
               'data: {"type":"message_stop"}\n\n',
             ].join(''),
           ),
@@ -1179,7 +1330,9 @@ describe('AnthropicCompatibleProvider', () => {
     for await (const event of provider.complete({ messages: [] })) {
       events.push(event)
     }
-    expect(events).toEqual([{ type: 'text-delta', delta: 'done' }])
+    expect(withoutTerminal(events)).toEqual([
+      { type: 'text-delta', delta: 'done' },
+    ])
     expect(cancelled).toBe(true)
   })
 })

@@ -5,6 +5,7 @@ import type {
   ModelDocumentMediaType,
   ModelImage,
   ModelImageMediaType,
+  ModelTerminalReason,
   ModelThinkingBlock,
   ModelToolCall,
   ModelUsage,
@@ -2144,6 +2145,7 @@ export class StreamJsonOutput {
   private turnThinking: ModelThinkingBlock[] = []
   private turnCalls: ModelToolCall[] = []
   private turnUsage = emptyUsage()
+  private turnTerminalReason: ModelTerminalReason | undefined
   private turnActive = false
   private assistantFlushed = true
   private contentStarted = false
@@ -2383,6 +2385,11 @@ export class StreamJsonOutput {
       this.turnUsage = event.usage
       return
     }
+    if (event.type === 'terminal') {
+      this.ensureTurn()
+      this.turnTerminalReason = event.reason
+      return
+    }
     if (event.type === 'permission-decision') {
       this.flushAssistant()
       return
@@ -2611,6 +2618,7 @@ export class StreamJsonOutput {
     this.turnThinking = []
     this.turnCalls = []
     this.turnUsage = emptyUsage()
+    this.turnTerminalReason = undefined
     this.turnActive = true
     this.assistantFlushed = false
     this.contentStarted = false
@@ -2724,7 +2732,11 @@ export class StreamJsonOutput {
       event: {
         type: 'message_delta',
         delta: {
-          stop_reason: this.turnCalls.length > 0 ? 'tool_use' : 'end_turn',
+          stop_reason:
+            this.turnTerminalReason === 'prompt_too_long'
+              ? 'model_context_window_exceeded'
+              : (this.turnTerminalReason ??
+                (this.turnCalls.length > 0 ? 'tool_use' : 'end_turn')),
           stop_sequence: null,
         },
         usage: { output_tokens: this.turnUsage.outputTokens },

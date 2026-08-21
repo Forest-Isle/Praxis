@@ -44,7 +44,7 @@ const server = createServer(async (request, response) => {
   if (!compacting && requestCount > 1) mainRequestMessages = messages
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end(
-    `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 20, completion_tokens: 4 } })}\n\ndata: [DONE]\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 20, completion_tokens: 4 } })}\n\ndata: [DONE]\n\n`,
   )
 })
 

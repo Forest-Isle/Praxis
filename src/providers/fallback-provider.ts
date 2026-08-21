@@ -53,7 +53,14 @@ export class FallbackModelProvider implements ModelProvider {
           // cannot duplicate text/tool events when retried.
           const events: ModelStreamEvent[] = []
           let attemptDurationMs: number | undefined
+          let terminalSeen = false
           for await (const event of provider.complete(request)) {
+            if (terminalSeen) {
+              throw new ModelProviderError(
+                `Provider emitted ${event.type} after its terminal event`,
+                { retryable: false },
+              )
+            }
             if (event.type === 'api-attempt-duration') {
               // Consume the underlying attempt timing rather than replaying it
               // so nested wrappers report a single retry-free duration.
@@ -75,7 +82,14 @@ export class FallbackModelProvider implements ModelProvider {
               attemptDurationMs = durationMs
               continue
             }
+            if (event.type === 'terminal') terminalSeen = true
             events.push(event)
+          }
+          if (provider.capabilities.terminalReasons === true && !terminalSeen) {
+            throw new ModelProviderError(
+              'Provider stream ended without a terminal reason',
+              { retryable: true },
+            )
           }
           yield {
             type: 'api-attempt-duration',

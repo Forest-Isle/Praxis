@@ -4,10 +4,13 @@ import {
   type ModelProvider,
   type ModelRequest,
   type ModelStreamEvent,
+  type ModelTerminalReason,
   type ModelThinkingBlock,
   type ModelThinkingConfig,
   type ModelToolCall,
+  type ProviderErrorKind,
 } from '../core/runtime.js'
+import { transportFailureKind } from './provider-errors.js'
 
 export interface AnthropicCompatibleProviderOptions {
   baseUrl: string
@@ -50,6 +53,7 @@ interface StreamState {
   usageSeen: boolean
   messageStarted: boolean
   messageDeltaSeen: boolean
+  terminalReason?: ModelTerminalReason
   terminal: boolean
 }
 
@@ -131,6 +135,59 @@ function readErrorMessage(value: unknown, status: number): string {
   return `Provider request failed with HTTP ${status}`
 }
 
+function isPromptTooLongError(type: string, message: string): boolean {
+  return (
+    ['prompt_too_long', 'context_length_exceeded'].includes(type) ||
+    /prompt\s+(?:is\s+)?too long|context.{0,80}(?:exceed|too long)|maximum context length/iu.test(
+      message,
+    )
+  )
+}
+
+function anthropicErrorKind(
+  value: unknown,
+  status?: number,
+): ProviderErrorKind {
+  const error = isRecord(value) && isRecord(value.error) ? value.error : value
+  const type =
+    isRecord(error) && typeof error.type === 'string' ? error.type : ''
+  const message =
+    isRecord(error) && typeof error.message === 'string' ? error.message : ''
+  if (isPromptTooLongError(type, message)) return 'prompt_too_long'
+  if (type === 'authentication_error' || status === 401 || status === 403)
+    return 'authentication_failed'
+  if (type === 'billing_error' || status === 402) return 'billing_error'
+  if (type === 'rate_limit_error' || status === 429) return 'rate_limit'
+  if (type === 'overloaded_error' || status === 529) return 'overloaded'
+  if (type === 'api_error') return 'api_error'
+  if (status === 408) return 'timeout'
+  if (type === 'invalid_request_error') return 'invalid_request'
+  if (status !== undefined && status >= 400 && status < 500)
+    return 'invalid_request'
+  if (status !== undefined && status >= 500) return 'server_error'
+  return 'unknown'
+}
+
+function anthropicStopReason(value: unknown): ModelTerminalReason {
+  if (value === 'end_turn' || value === 'stop_sequence' || value === 'refusal')
+    return 'end_turn'
+  if (value === 'tool_use') return 'tool_use'
+  if (value === 'max_tokens') return 'max_tokens'
+  if (value === 'model_context_window_exceeded') return 'prompt_too_long'
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new ModelProviderError(
+      'Provider message delta is missing stop reason',
+      {
+        retryable: false,
+      },
+    )
+  }
+  throw new ModelProviderError(
+    `Provider returned unsupported stop reason ${value}`,
+    { retryable: false },
+  )
+}
+
 function completedToolCall(
   state: StreamState,
   index: number,
@@ -187,12 +244,14 @@ function parseSseEvent(
       typeof error.message === 'string'
         ? error.message
         : 'Provider stream returned an error'
+    const kind = anthropicErrorKind(error)
     const retryable = [
       'api_error',
-      'overloaded_error',
-      'rate_limit_error',
-    ].includes(String(error.type))
-    throw new ModelProviderError(message, { retryable })
+      'overloaded',
+      'rate_limit',
+      'timeout',
+    ].includes(kind)
+    throw new ModelProviderError(message, { kind, retryable })
   }
 
   if (value.type === 'message_start') {
@@ -527,6 +586,23 @@ function parseSseEvent(
       )
     }
     state.messageDeltaSeen = true
+    if (value.delta !== undefined && !isRecord(value.delta)) {
+      throw new ModelProviderError(
+        'Provider returned an invalid message delta',
+        {
+          retryable: false,
+        },
+      )
+    }
+    if (isRecord(value.delta) && value.delta.stop_reason !== undefined) {
+      if (state.terminalReason !== undefined) {
+        throw new ModelProviderError(
+          'Provider returned multiple terminal stop reasons',
+          { retryable: false },
+        )
+      }
+      state.terminalReason = anthropicStopReason(value.delta.stop_reason)
+    }
     if (typeof value.usage.output_tokens === 'number') {
       state.outputTokens = value.usage.output_tokens
       state.usageSeen = true
@@ -552,6 +628,14 @@ function parseSseEvent(
         { retryable: false },
       )
     }
+    if (state.terminalReason === undefined) {
+      throw new ModelProviderError(
+        'Provider message delta is missing stop reason',
+        {
+          retryable: false,
+        },
+      )
+    }
     state.terminal = true
     const events: ModelStreamEvent[] = []
     if (state.usageSeen) {
@@ -573,6 +657,7 @@ function parseSseEvent(
       })
       state.usageSeen = false
     }
+    events.push({ type: 'terminal', reason: state.terminalReason })
     return events
   }
 
@@ -749,6 +834,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         ? {}
         : { contextWindowTokens: options.contextWindowTokens }),
       maxOutputTokens: this.maxOutputTokens,
+      terminalReasons: true,
     }
     this.thinking = validateThinking(options.thinking)
     this.anthropicVersion = options.anthropicVersion ?? '2023-06-01'
@@ -842,11 +928,19 @@ export class AnthropicCompatibleProvider implements ModelProvider {
     try {
       response = await this.fetchImplementation(this.endpoint, requestInit)
     } catch (error) {
-      if (request.signal?.aborted) throw error
-      throw new ModelProviderError('Provider transport failed', {
-        retryable: true,
-        cause: error,
-      })
+      const kind = transportFailureKind(error, request.signal)
+      throw new ModelProviderError(
+        kind === 'cancelled'
+          ? 'Provider request cancelled'
+          : kind === 'timeout'
+            ? 'Provider request timed out'
+            : 'Provider transport failed',
+        {
+          kind,
+          retryable: kind === 'timeout' || kind === 'transport_error',
+          cause: error,
+        },
+      )
     }
 
     if (!response.ok) {
@@ -895,12 +989,14 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         payload = null
       }
       throw new ModelProviderError(readErrorMessage(payload, response.status), {
+        kind: anthropicErrorKind(payload, response.status),
         retryable: isRetryableStatus(response.status),
         status: response.status,
       })
     }
     if (!response.body) {
       throw new ModelProviderError('Provider response has no body', {
+        kind: 'transport_error',
         retryable: true,
       })
     }
@@ -974,11 +1070,11 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         )
       }
     } catch (error) {
-      if (error instanceof ModelProviderError || request.signal?.aborted) {
-        throw error
-      }
+      if (error instanceof ModelProviderError) throw error
+      const kind = transportFailureKind(error, request.signal)
       throw new ModelProviderError('Provider stream failed', {
-        retryable: true,
+        kind,
+        retryable: kind === 'timeout' || kind === 'transport_error',
         cause: error,
       })
     } finally {

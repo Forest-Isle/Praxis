@@ -100,6 +100,9 @@ export interface ModelWebSearch {
   maxUses: number
 }
 
+export type ModelTerminalReason =
+  'end_turn' | 'tool_use' | 'max_tokens' | 'prompt_too_long'
+
 export type ModelStreamEvent =
   | { type: 'text-delta'; delta: string }
   | {
@@ -111,6 +114,7 @@ export type ModelStreamEvent =
   | { type: 'thinking-stop'; block: ModelThinkingBlock }
   | { type: 'tool-call'; call: ModelToolCall }
   | { type: 'usage'; usage: ModelUsage }
+  | { type: 'terminal'; reason: ModelTerminalReason }
   | {
       type: 'api-retry'
       attempt: number
@@ -147,6 +151,8 @@ export interface ModelProviderCapabilities {
   }
   contextWindowTokens?: number
   maxOutputTokens?: number
+  /** The provider emits exactly one terminal event as its final stream event. */
+  terminalReasons?: boolean
 }
 
 export interface ModelProvider {
@@ -172,6 +178,7 @@ export type RuntimeEvent =
       status: 'normal' | 'proactive'
     }
   | { type: 'usage'; usage: ModelUsage }
+  | { type: 'terminal'; reason: ModelTerminalReason }
   | { type: 'tool-call'; call: ModelToolCall }
   | {
       type: 'permission-decision'
@@ -574,11 +581,13 @@ export class ModelProviderError extends Error {
   readonly retryable: boolean
   readonly status?: number
   readonly retryDelayMs?: number
+  readonly kind?: ProviderErrorKind
 
   constructor(
     message: string,
     options: {
       retryable: boolean
+      kind?: ProviderErrorKind
       status?: number
       retryDelayMs?: number
       cause?: unknown
@@ -589,6 +598,7 @@ export class ModelProviderError extends Error {
       options.cause === undefined ? undefined : { cause: options.cause },
     )
     this.retryable = options.retryable
+    if (options.kind !== undefined) this.kind = options.kind
     if (options.status !== undefined) this.status = options.status
     if (options.retryDelayMs !== undefined)
       this.retryDelayMs = options.retryDelayMs
@@ -612,12 +622,19 @@ export type ProviderErrorKind =
   | 'rate_limit'
   | 'invalid_request'
   | 'server_error'
+  | 'timeout'
+  | 'overloaded'
+  | 'api_error'
+  | 'prompt_too_long'
+  | 'transport_error'
+  | 'cancelled'
   | 'unknown'
   | 'max_output_tokens'
 
 export function modelProviderErrorKind(
   error: ModelProviderError,
 ): ProviderErrorKind {
+  if (error.kind !== undefined) return error.kind
   if (error.status === 401 || error.status === 403)
     return 'authentication_failed'
   if (error.status === 402) return 'billing_error'
@@ -1034,6 +1051,7 @@ export class AgentRuntime {
         let turnUsage = emptyUsage()
         let streaming = false
         const toolCalls: ModelToolCall[] = []
+        let terminalReason: ModelTerminalReason | undefined
 
         const apiStartedAt = request.collectMetrics ? performance.now() : 0
         let turnApiDurationMs = 0
@@ -1042,6 +1060,12 @@ export class AgentRuntime {
         try {
           for await (const event of this.provider.complete(providerRequest)) {
             if (request.signal?.aborted) return this.cancel()
+            if (terminalReason !== undefined) {
+              throw new ModelProviderError(
+                `Provider emitted ${event.type} after terminal reason ${terminalReason}`,
+                { retryable: false },
+              )
+            }
             if (event.type === 'api-retry') {
               this.emit(event)
               continue
@@ -1123,6 +1147,9 @@ export class AgentRuntime {
               }
               toolCalls.push(event.call)
               this.emit(event)
+            } else if (event.type === 'terminal') {
+              terminalReason = event.reason
+              this.emit(event)
             } else {
               turnUsage = event.usage
               this.emit(event)
@@ -1142,6 +1169,32 @@ export class AgentRuntime {
               'durationApiMs',
             )
           }
+        }
+
+        if (
+          this.provider.capabilities.terminalReasons === true &&
+          terminalReason === undefined
+        ) {
+          throw new ModelProviderError(
+            'Provider stream ended without a terminal reason',
+            { retryable: true },
+          )
+        }
+        if (terminalReason === 'tool_use' && toolCalls.length === 0) {
+          throw new ModelProviderError(
+            'Provider reported tool_use without a completed tool call',
+            { retryable: false },
+          )
+        }
+        if (
+          terminalReason !== undefined &&
+          terminalReason !== 'tool_use' &&
+          toolCalls.length > 0
+        ) {
+          throw new ModelProviderError(
+            `Provider reported ${terminalReason} with completed tool calls`,
+            { retryable: false },
+          )
         }
         if (request.collectMetrics) {
           const turnApiDurationWithoutRetriesMsResolved =

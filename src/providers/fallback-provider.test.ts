@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  AgentRuntime,
   ModelProviderError,
   type ModelProvider,
   type ModelStreamEvent,
@@ -24,6 +25,120 @@ const text = (value: string): ModelStreamEvent => ({
 })
 
 describe('FallbackModelProvider', () => {
+  it('preserves one terminal event from the successful buffered attempt', async () => {
+    let attempts = 0
+    const routed = new FallbackModelProvider({
+      providers: [
+        provider('primary', async function* () {
+          attempts += 1
+          yield text(`attempt-${attempts}`)
+          if (attempts === 1) {
+            throw new ModelProviderError('disconnected', {
+              kind: 'transport_error',
+              retryable: true,
+            })
+          }
+          yield { type: 'terminal', reason: 'end_turn' }
+        }),
+      ],
+      retryDelayMs: 0,
+    })
+
+    const events = []
+    for await (const event of routed.complete({ messages: [] })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'api-retry',
+        error: 'transport_error',
+      }),
+      expect.objectContaining({ type: 'api-attempt-duration' }),
+      text('attempt-2'),
+      { type: 'terminal', reason: 'end_turn' },
+    ])
+  })
+
+  it('retries a terminal-capable provider that ends without a reason', async () => {
+    const complete = vi.fn(async function* () {
+      yield text('discarded')
+    })
+    const routed = new FallbackModelProvider({
+      providers: [
+        {
+          ...provider('strict', complete),
+          capabilities: {
+            streaming: true,
+            usage: true,
+            tools: true,
+            terminalReasons: true,
+          },
+        },
+      ],
+      retryDelayMs: 0,
+    })
+
+    const consume = async () => {
+      for await (const event of routed.complete({ messages: [] })) void event
+    }
+    await expect(consume()).rejects.toThrow('without a terminal reason')
+    expect(complete).toHaveBeenCalledTimes(3)
+  })
+
+  it('commits successful content and usage once after discarding a partial attempt', async () => {
+    let attempts = 0
+    const underlying: ModelProvider = {
+      model: 'strict',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        terminalReasons: true,
+      },
+      async *complete() {
+        attempts += 1
+        yield { type: 'text-delta', delta: `attempt-${attempts}` }
+        yield {
+          type: 'usage',
+          usage:
+            attempts === 1
+              ? { inputTokens: 100, outputTokens: 100 }
+              : { inputTokens: 2, outputTokens: 1 },
+        }
+        if (attempts === 1) {
+          throw new ModelProviderError('disconnected', {
+            kind: 'transport_error',
+            retryable: true,
+          })
+        }
+        yield { type: 'terminal', reason: 'end_turn' }
+      },
+    }
+    const routed = new FallbackModelProvider({
+      providers: [underlying],
+      retryDelayMs: 0,
+    })
+    const committed: unknown[] = []
+    const runtime = new AgentRuntime(routed)
+
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'answer' }],
+      observer: {
+        async assistantCompleted(message) {
+          committed.push(message)
+        },
+        async toolCompleted() {},
+      },
+    })
+
+    expect(result).toMatchObject({
+      text: 'attempt-2',
+      usage: { inputTokens: 2, outputTokens: 1 },
+    })
+    expect(committed).toEqual([{ role: 'assistant', content: 'attempt-2' }])
+  })
+
   it('retries each model three times before moving to next fallback', async () => {
     const primary = vi.fn(async function* () {
       throw new ModelProviderError('overloaded', {
