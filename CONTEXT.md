@@ -1,5 +1,31 @@
 # Praxis Context
 
+## Core runtime and memory vocabulary
+
+The alignment source of truth is the
+[core design map](https://github.com/Forest-Isle/Praxis/issues/336). Use the
+terms below consistently in issues, plans, tests, and architecture documents.
+
+- **Transcript**: the authoritative, append-only event history for one
+  session. It supports replay, resume, export, and interoperability; it is not
+  a summary or a memory store.
+- **Session memory**: derived, bounded context from the current session that
+  supports compaction and continuation. It is asynchronous and rebuildable,
+  never the authoritative conversation record.
+- **Project memory**: durable, cross-session knowledge organized by project
+  topic. It is distinct from both the transcript and Session memory.
+- **Session lifecycle**: the lifetime of one resumable session identity. It
+  may contain many turns and is distinct from the lifecycle of any one turn.
+- **Turn lifecycle**: the work initiated by one submitted user prompt within a
+  session, ending in completion, cancellation, or failure. Prompt submission,
+  model work, and tool work are turn-scoped rather than session-scoped.
+- **Terminal event**: the single provider-neutral final signal for a successful
+  model stream. It tells the agent loop why control returned without exposing
+  provider wire details.
+- **ContextEngine**: the domain service that measures and reduces the context
+  visible to a provider. It is distinct from transcript persistence and both
+  forms of memory.
+
 ## TUI vocabulary
 
 - **Normal reading mode**: the default conversation view. It prioritizes the
