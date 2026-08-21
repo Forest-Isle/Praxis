@@ -11,6 +11,10 @@ import {
 } from '../compatibility/claude/workflow.js'
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import {
+  resolveDataPlanePaths,
+  type DataPlane,
+} from '../persistence/data-plane.js'
+import {
   workflowReplayDescriptor,
   workflowReplayKey,
 } from '../compatibility/claude/workflow-replay.js'
@@ -387,11 +391,19 @@ export class WorkflowManager {
     }
     this.activeRuns.add(activeRunKey)
     const taskId = this.uniqueTaskId()
-    const claudePaths = resolveClaudePaths({
-      configDir: this.configRoot,
-      cwd: this.currentCwd(),
-      sessionId: options.sessionId,
-    })
+    const claudePaths =
+      this.dataPlane === 'native'
+        ? resolveDataPlanePaths({
+            dataPlane: 'native',
+            root: this.configRoot,
+            cwd: this.currentCwd(),
+            sessionId: options.sessionId,
+          })
+        : resolveClaudePaths({
+            configDir: this.configRoot,
+            cwd: this.currentCwd(),
+            sessionId: options.sessionId,
+          })
     const paths = resolveClaudeWorkflowPaths({
       projectRoot: claudePaths.projectRoot,
       sessionId: options.sessionId,
@@ -592,6 +604,7 @@ export class WorkflowManager {
     private readonly configRoot: string,
     private readonly cwd: string,
     private readonly cwdProvider?: () => string,
+    private readonly dataPlane: DataPlane = 'claude',
   ) {}
 
   private currentCwd(): string {

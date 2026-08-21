@@ -245,7 +245,7 @@ try {
   const askedPath = join(cwd, 'asked.txt')
   const deniedPath = join(cwd, 'denied.txt')
   const bashCommand = 'printf praxis-permission allowed-argument'
-  const wrappedBashCommand = 'timeout 1 sleep 0'
+  const wrappedBashCommand = 'nice -n 0 sleep 0'
   const deniedBashCommand = 'CUSTOM_ENV=value printf praxis-denied argument'
   const redirectedPath = join(probeRoot, 'outside.txt')
   const redirectedBashCommand = `printf praxis-redirect > ${redirectedPath}`

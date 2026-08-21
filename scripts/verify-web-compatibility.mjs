@@ -302,13 +302,22 @@ function toolResult(runRequests, id) {
     .find((block) => block.type === 'tool_result' && block.tool_use_id === id)
 }
 
+function stableToolResultContent(value) {
+  return typeof value === 'string'
+    ? value.replace(
+        /\n\n<system-reminder>\n<total_tokens>\d+ tokens left<\/total_tokens>\n<\/system-reminder>$/u,
+        '',
+      )
+    : value
+}
+
 function assertResults(runRequests, label) {
   const links =
     'Links: [{"title":"Example Result","url":"https://example.com/result"}]\n\nSEARCH_SUMMARY'
   for (const call of calls.slice(0, 2)) {
     const result = toolResult(runRequests, call.id)
     assert(
-      result?.content ===
+      stableToolResultContent(result?.content) ===
         `Web search results for query: "${call.input.query}"\n\n${links}\n\n\nREMINDER: You MUST include the sources above in your response to the user using markdown hyperlinks.` &&
         result.is_error !== true,
       `${label} ${call.id} result changed: ${JSON.stringify(result)}`,
@@ -316,7 +325,7 @@ function assertResults(runRequests, label) {
   }
   const both = toolResult(runRequests, 'search-both')
   assert(
-    both?.content ===
+    stableToolResultContent(both?.content) ===
       '<tool_use_error>Error: Cannot specify both allowed_domains and blocked_domains in the same request</tool_use_error>' &&
       both.is_error === true,
     `${label} conflicting filters changed: ${JSON.stringify(both)}`,
@@ -324,7 +333,8 @@ function assertResults(runRequests, label) {
   const publicFetch = toolResult(runRequests, 'fetch-public')
   const innerFetchCount = runRequests.filter(isInnerFetch).length
   const publicFetchSucceeded =
-    publicFetch?.content === 'FETCH_SUMMARY' && publicFetch.is_error !== true
+    stableToolResultContent(publicFetch?.content) === 'FETCH_SUMMARY' &&
+    publicFetch.is_error !== true
   assert(
     publicFetchSucceeded,
     `${label} public WebFetch result changed: ${JSON.stringify(publicFetch)}`,
@@ -335,7 +345,8 @@ function assertResults(runRequests, label) {
   )
   const privateFetch = toolResult(runRequests, 'fetch-private')
   assert(
-    privateFetch?.content === 'Invalid URL' && privateFetch.is_error === true,
+    stableToolResultContent(privateFetch?.content) === 'Invalid URL' &&
+      privateFetch.is_error === true,
     `${label} private WebFetch result changed: ${JSON.stringify(privateFetch)}`,
   )
 }
@@ -453,7 +464,7 @@ try {
   assert(
     JSON.stringify(webDefinitions(praxisRequests[0])) ===
       JSON.stringify(webDefinitions(claudeRequests[0])),
-    'Praxis web definitions differ from Claude',
+    `Praxis web definitions differ from Claude: ${JSON.stringify({ praxis: webDefinitions(praxisRequests[0]), claude: webDefinitions(claudeRequests[0]) })}`,
   )
   assert(
     JSON.stringify(normalizedInnerRequests(praxisRequests)) ===
@@ -617,7 +628,8 @@ try {
     ['Praxis', praxisPermissionResult],
   ]) {
     assert(
-      result?.content === 'Invalid URL' && result.is_error === true,
+      stableToolResultContent(result?.content) === 'Invalid URL' &&
+        result.is_error === true,
       `${label} WebFetch domain permission changed: ${JSON.stringify(result)}`,
     )
   }

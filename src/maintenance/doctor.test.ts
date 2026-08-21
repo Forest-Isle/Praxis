@@ -79,6 +79,52 @@ function deterministicDistTags(): {
 }
 
 describe('Praxis doctor', () => {
+  it('uses native resources without reading project Claude configuration', async () => {
+    const value = await fixture()
+    await mkdir(join(value.projectRoot, '.praxis'), { recursive: true })
+    await writeFile(
+      join(value.projectRoot, '.praxis', 'settings.json'),
+      JSON.stringify({ permissions: { allow: ['Read'] } }),
+    )
+    await writeFile(
+      join(value.projectRoot, '.claude', 'settings.local.json'),
+      '{ invalid claude settings',
+    )
+
+    const report = await runDoctor({
+      dataPlane: 'native',
+      version: '0.1.0',
+      executablePath: value.executablePath,
+      nodeExecutablePath: process.execPath,
+      nodeVersion: 'v24.1.0',
+      configRoot: value.configRoot,
+      claudeStatePath: join(value.configRoot, 'state.json'),
+      cwd: value.projectRoot,
+      environment: {
+        PRAXIS_PROVIDER: 'anthropic',
+        PRAXIS_API_KEY: 'fixture-key',
+        PRAXIS_MODEL: 'claude-sonnet-4-20250514',
+      },
+      detectClaudeVersion: async () => {
+        throw new Error('native doctor must not inspect Claude Code')
+      },
+      ...deterministicDistTags(),
+    })
+
+    expect(
+      report.checks.find((check) => check.id === 'settings'),
+    ).toMatchObject({ status: 'pass' })
+    expect(
+      report.checks.find((check) => check.id === 'resources'),
+    ).toMatchObject({ status: 'pass' })
+    expect(
+      report.checks.find((check) => check.id === 'claude-runtime'),
+    ).toMatchObject({
+      status: 'pass',
+      summary: 'Claude Code runtime is not required in native mode',
+    })
+  })
+
   it('diagnoses unknown model pricing without weakening fail-closed policy', async () => {
     const value = await fixture()
     const report = await runDoctor({
@@ -199,6 +245,7 @@ describe('Praxis doctor', () => {
   it('wires JSON output and failure exit status through the CLI', async () => {
     const value = await fixture()
     vi.stubEnv('CLAUDE_CONFIG_DIR', value.configRoot)
+    vi.stubEnv('PRAXIS_DATA_PLANE', 'claude')
     vi.stubEnv('PRAXIS_PROVIDER', 'openai')
     vi.stubEnv('PRAXIS_API_KEY', '')
     vi.stubEnv('PRAXIS_MODEL', 'fixture-model')

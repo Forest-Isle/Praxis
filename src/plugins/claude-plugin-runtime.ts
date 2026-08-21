@@ -21,6 +21,7 @@ import type {
   ClaudeResourceScope,
   ClaudeTextResource,
 } from '../compatibility/claude/shared-resources.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 import {
   claudePluginDataPath,
   materializeClaudePluginSource,
@@ -862,6 +863,7 @@ async function loadPlugin(
   environment: Readonly<Record<string, string | undefined>> = process.env,
   configId?: string,
   readOnlyHooks = false,
+  dataPlane?: DataPlane,
 ): Promise<{
   record: ClaudePluginRecord
   resources: Omit<ClaudePluginResources, 'plugins'>
@@ -882,6 +884,7 @@ async function loadPlugin(
             string,
             Record<string, unknown>
           >,
+          dataPlane,
         )
       : undefined
   const sensitiveValues = Object.entries(manifest.userConfig ?? {})
@@ -1171,6 +1174,8 @@ async function loadPlugin(
               pluginRoot: canonical,
               pluginData,
               source: spec,
+              ...(configRoot === undefined ? {} : { configRoot }),
+              ...(dataPlane === undefined ? {} : { dataPlane }),
               environment,
               resolveUserConfig: async (bundleManifest) =>
                 configRoot !== undefined && configId !== undefined
@@ -1183,6 +1188,7 @@ async function loadPlugin(
                         string,
                         Record<string, unknown>
                       >,
+                      dataPlane,
                     )
                   : {},
             })
@@ -1327,6 +1333,7 @@ export async function writePluginRegistry(
 
 export async function loadClaudePlugins(options: {
   configRoot: string
+  dataPlane?: DataPlane
   cwd: string
   pluginDirectories?: readonly string[]
   strictPluginDirectories?: boolean
@@ -1342,11 +1349,19 @@ export async function loadClaudePlugins(options: {
   const nativeRegistry =
     options.loadInstalled === false
       ? []
-      : await readClaudeInstalledPlugins(options.configRoot, options.cwd)
+      : await readClaudeInstalledPlugins(
+          options.configRoot,
+          options.cwd,
+          options.dataPlane,
+        )
   const skillsDirectoryRegistry =
     options.loadInstalled === false
       ? []
-      : await readClaudeSkillsDirectoryPlugins(options.configRoot, options.cwd)
+      : await readClaudeSkillsDirectoryPlugins(
+          options.configRoot,
+          options.cwd,
+          options.dataPlane,
+        )
   const temporarySources: Array<() => Promise<void>> = []
   const inlineSources = [
     ...(options.pluginDirectories ?? []),
@@ -1427,6 +1442,7 @@ export async function loadClaudePlugins(options: {
             options.environment ?? process.env,
             candidate.configId,
             options.readOnlyHooks,
+            options.dataPlane,
           )
         } catch (error) {
           if (

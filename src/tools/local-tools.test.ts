@@ -139,6 +139,7 @@ describe('LocalToolRegistry', () => {
               file: 'src/index.ts',
               line: 7,
               summary: 'Incorrect result',
+              short_summary: 'Incorrect zero result',
               failure_scenario: 'Input 0 returns 1',
               category: 'correctness',
               verdict: 'CONFIRMED',
@@ -150,7 +151,7 @@ describe('LocalToolRegistry', () => {
     )
     await expect(registry.execute(call, { cwd })).resolves.toEqual({
       content:
-        '{"count":1,"level":"high","findings":[{"file":"src/index.ts","line":7,"summary":"Incorrect result","failure_scenario":"Input 0 returns 1","category":"correctness","verdict":"CONFIRMED"}]}',
+        '{"count":1,"level":"high","findings":[{"file":"src/index.ts","line":7,"summary":"Incorrect result","short_summary":"Incorrect zero result","failure_scenario":"Input 0 returns 1","category":"correctness","verdict":"CONFIRMED"}]}',
       isError: false,
     })
     await expect(
@@ -1482,5 +1483,46 @@ describe('LocalToolRegistry', () => {
       isError: false,
     })
     await expect(readFile(target, 'utf8')).resolves.toBe('hello')
+  })
+
+  it('uses the explicit native data plane for bypass-immune customization paths', async () => {
+    const { root, cwd } = await workspace()
+    const home = join(root, 'home')
+    await Promise.all([
+      mkdir(join(cwd, '.praxis', 'commands'), { recursive: true }),
+      mkdir(join(cwd, '.claude', 'commands'), { recursive: true }),
+    ])
+    const registry = new LocalToolRegistry({
+      cwd,
+      homeDirectory: home,
+      configRoot: join(home, '.praxis'),
+      dataPlane: 'native',
+    })
+    const context = { cwd }
+    const protectedPath = join(cwd, '.praxis', 'commands', 'review.md')
+    const protectedWrite = await registry.prepare(
+      {
+        id: 'protected-native-command',
+        name: 'Write',
+        input: { file_path: protectedPath, content: 'changed' },
+      },
+      context,
+    )
+    await expect(registry.execute(protectedWrite, context)).rejects.toThrow(
+      'Refusing to write protected path',
+    )
+
+    const compatibilityPath = join(cwd, '.claude', 'commands', 'review.md')
+    const compatibilityWrite = await registry.prepare(
+      {
+        id: 'unselected-claude-command',
+        name: 'Write',
+        input: { file_path: compatibilityPath, content: 'allowed' },
+      },
+      context,
+    )
+    await expect(
+      registry.execute(compatibilityWrite, context),
+    ).resolves.toMatchObject({ isError: false })
   })
 })

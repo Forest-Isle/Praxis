@@ -18,6 +18,7 @@ import { unzipSync } from 'fflate'
 
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import { ClaudeMcpOAuthStore } from '../mcp/claude-mcp-oauth.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 import {
   loadClaudePluginMcpb,
   type ClaudePluginMcpbManifest,
@@ -221,11 +222,12 @@ function settingsPath(
   configRoot: string,
   cwd: string,
   scope: ClaudePluginScope,
+  dataPlane: DataPlane = 'claude',
 ): string {
   if (scope === 'user') return join(configRoot, 'settings.json')
   return join(
     cwd,
-    '.claude',
+    dataPlane === 'native' ? '.praxis' : '.claude',
     scope === 'local' ? 'settings.local.json' : 'settings.json',
   )
 }
@@ -363,6 +365,7 @@ function validateInstalledEntry(
 export async function readClaudeInstalledPlugins(
   configRoot: string,
   cwd: string,
+  dataPlane?: DataPlane,
 ): Promise<ClaudeInstalledPlugin[]> {
   const root = await readJson(installedPath(resolve(configRoot)))
   if (root.version !== undefined && root.version !== 2) {
@@ -374,7 +377,7 @@ export async function readClaudeInstalledPlugins(
   if (plugins === undefined) return []
   if (!isRecord(plugins))
     throw new Error('Installed plugin registry plugins must be an object')
-  const enabled = await readEffectiveEnabledPlugins(configRoot, cwd)
+  const enabled = await readEffectiveEnabledPlugins(configRoot, cwd, dataPlane)
   const result: ClaudeInstalledPlugin[] = []
   for (const [idValue, entries] of Object.entries(plugins)) {
     const id = pluginId(idValue)
@@ -392,6 +395,7 @@ export async function readClaudeInstalledPlugins(
 export async function readClaudeSkillsDirectoryPlugins(
   configRoot: string,
   cwd: string,
+  dataPlane?: DataPlane,
 ): Promise<ClaudeSkillsDirectoryPlugin[]> {
   const root = join(resolve(configRoot), 'skills')
   let entries
@@ -401,7 +405,7 @@ export async function readClaudeSkillsDirectoryPlugins(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error
   }
-  const enabled = await readEffectiveEnabledPlugins(configRoot, cwd)
+  const enabled = await readEffectiveEnabledPlugins(configRoot, cwd, dataPlane)
   const plugins = await Promise.all(
     entries
       .filter((entry) => entry.isDirectory())
@@ -431,10 +435,13 @@ export async function readClaudeSkillsDirectoryPlugins(
 async function readEffectiveEnabledPlugins(
   configRoot: string,
   cwd: string,
+  dataPlane?: DataPlane,
 ): Promise<Record<string, boolean>> {
   const result: Record<string, boolean> = {}
   for (const scope of ['user', 'project', 'local'] as const) {
-    const settings = await readJson(settingsPath(configRoot, cwd, scope))
+    const settings = await readJson(
+      settingsPath(configRoot, cwd, scope, dataPlane),
+    )
     if (!isRecord(settings.enabledPlugins)) continue
     for (const [id, enabled] of Object.entries(settings.enabledPlugins)) {
       if (typeof enabled === 'boolean') result[id] = enabled
@@ -479,10 +486,13 @@ export async function readClaudePluginOptions(
   cwd: string,
   id: string,
   definitions?: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+  dataPlane?: DataPlane,
 ): Promise<Record<string, ClaudePluginConfigValue>> {
   const result: Record<string, ClaudePluginConfigValue> = {}
   for (const scope of ['user', 'project', 'local'] as const) {
-    const settings = await readJson(settingsPath(configRoot, cwd, scope))
+    const settings = await readJson(
+      settingsPath(configRoot, cwd, scope, dataPlane),
+    )
     if (!isRecord(settings.pluginConfigs)) continue
     const plugin = settings.pluginConfigs[id]
     if (!isRecord(plugin) || !isRecord(plugin.options)) continue
@@ -514,10 +524,13 @@ export async function readClaudePluginMcpServerOptions(
   id: string,
   serverName: string,
   definitions?: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+  dataPlane?: DataPlane,
 ): Promise<Record<string, ClaudePluginConfigValue>> {
   const result: Record<string, ClaudePluginConfigValue> = {}
   for (const scope of ['user', 'project', 'local'] as const) {
-    const settings = await readJson(settingsPath(configRoot, cwd, scope))
+    const settings = await readJson(
+      settingsPath(configRoot, cwd, scope, dataPlane),
+    )
     if (!isRecord(settings.pluginConfigs)) continue
     const plugin = settings.pluginConfigs[id]
     if (!isRecord(plugin) || !isRecord(plugin.mcpServers)) continue
@@ -553,9 +566,10 @@ export async function deleteClaudePluginOptions(
   configRoot: string,
   cwd: string,
   id: string,
+  dataPlane?: DataPlane,
 ): Promise<void> {
   for (const scope of ['user', 'project', 'local'] as const) {
-    const path = settingsPath(configRoot, cwd, scope)
+    const path = settingsPath(configRoot, cwd, scope, dataPlane)
     if (!(await pathExists(path))) continue
     const root = await readJson(path)
     if (!isRecord(root.pluginConfigs) || root.pluginConfigs[id] === undefined)
@@ -613,8 +627,9 @@ export async function removeClaudeInstalledPlugin(
   scope: ClaudePluginScope,
   cwd: string,
   deleteData = true,
+  dataPlane?: DataPlane,
 ): Promise<ClaudeInstalledPlugin> {
-  const installed = await readClaudeInstalledPlugins(configRoot, cwd)
+  const installed = await readClaudeInstalledPlugins(configRoot, cwd, dataPlane)
   const target = installed.find(
     (item) => item.id === id && item.scope === scope,
   )
@@ -654,9 +669,16 @@ export async function removeClaudeInstalledPlugin(
     })
   }
   if (isLastInstallation) {
-    await deleteClaudePluginOptions(configRoot, cwd, id)
+    await deleteClaudePluginOptions(configRoot, cwd, id, dataPlane)
   }
-  await setClaudePluginEnabledNative(configRoot, cwd, id, scope, undefined)
+  await setClaudePluginEnabledNative(
+    configRoot,
+    cwd,
+    id,
+    scope,
+    undefined,
+    dataPlane,
+  )
   return target
 }
 
@@ -666,8 +688,9 @@ export async function setClaudePluginEnabledNative(
   id: string,
   scope: ClaudePluginScope,
   enabled: boolean | undefined,
+  dataPlane?: DataPlane,
 ): Promise<boolean | undefined> {
-  const path = settingsPath(configRoot, cwd, scope)
+  const path = settingsPath(configRoot, cwd, scope, dataPlane)
   if (enabled === undefined && !(await pathExists(path))) return enabled
   const root = await readJson(path)
   const values = isRecord(root.enabledPlugins) ? { ...root.enabledPlugins } : {}
@@ -1390,6 +1413,7 @@ async function mcpbConfigTargets(
   id: string,
   pluginRoot: string,
   manifest: Record<string, unknown>,
+  dataPlane?: DataPlane,
 ): Promise<{ targets: PluginConfigTarget[]; diagnostics: string[] }> {
   const specs = Array.isArray(manifest.mcpServers)
     ? manifest.mcpServers
@@ -1414,6 +1438,8 @@ async function mcpbConfigTargets(
         pluginRoot,
         pluginData: claudePluginDataPath(configRoot, id),
         source: spec,
+        configRoot,
+        ...(dataPlane === undefined ? {} : { dataPlane }),
         resolveUserConfig: async (bundleManifest) => {
           discovered = bundleManifest
           return mcpbDiscoveryValues(bundleManifest)
@@ -1440,6 +1466,7 @@ async function mcpbConfigTargets(
         id,
         discovered.name,
         definitions,
+        dataPlane,
       ),
       values: {},
     })
@@ -1458,6 +1485,7 @@ export async function saveClaudePluginConfig(
   id: string,
   pluginPath: string,
   assignments: readonly string[],
+  dataPlane?: DataPlane,
 ): Promise<{ warnings: readonly string[] }> {
   const pluginRoot = await realpath(pluginPath)
   const manifestPath = join(pluginRoot, PLUGIN_MANIFEST)
@@ -1480,6 +1508,7 @@ export async function saveClaudePluginConfig(
       cwd,
       id,
       pluginDefinitions,
+      dataPlane,
     ),
     values: {},
   }
@@ -1489,6 +1518,7 @@ export async function saveClaudePluginConfig(
     id,
     pluginRoot,
     manifest,
+    dataPlane,
   )
   const targets = [pluginTarget, ...discovered.targets]
   const warnings: string[] = []
@@ -1751,6 +1781,7 @@ export async function installClaudeMarketplacePlugin(
   cwd: string,
   id: string,
   scope: ClaudePluginScope = 'user',
+  dataPlane?: DataPlane,
 ): Promise<ClaudeInstalledPlugin> {
   const { marketplace, plugin } = await resolveClaudeMarketplacePlugin(
     configRoot,
@@ -1785,9 +1816,9 @@ export async function installClaudeMarketplacePlugin(
     })
     await replaceClaudePluginDirectory(temporary, target)
     const now = new Date().toISOString()
-    const existing = (await readClaudeInstalledPlugins(configRoot, cwd)).find(
-      (entry) => entry.id === id && entry.scope === scope,
-    )
+    const existing = (
+      await readClaudeInstalledPlugins(configRoot, cwd, dataPlane)
+    ).find((entry) => entry.id === id && entry.scope === scope)
     const installed: ClaudeInstalledPlugin = {
       id,
       scope,
@@ -1799,7 +1830,14 @@ export async function installClaudeMarketplacePlugin(
       enabled: true,
     }
     await writeClaudeInstalledPlugin(configRoot, installed)
-    await setClaudePluginEnabledNative(configRoot, cwd, id, scope, true)
+    await setClaudePluginEnabledNative(
+      configRoot,
+      cwd,
+      id,
+      scope,
+      true,
+      dataPlane,
+    )
     return installed
   } finally {
     await materialized.cleanup()
@@ -1809,10 +1847,11 @@ export async function installClaudeMarketplacePlugin(
 async function nativePluginTargets(
   configRoot: string,
   cwd: string,
+  dataPlane?: DataPlane,
 ): Promise<ClaudePluginTarget[]> {
   const [installed, skills] = await Promise.all([
-    readClaudeInstalledPlugins(configRoot, cwd),
-    readClaudeSkillsDirectoryPlugins(configRoot, cwd),
+    readClaudeInstalledPlugins(configRoot, cwd, dataPlane),
+    readClaudeSkillsDirectoryPlugins(configRoot, cwd, dataPlane),
   ])
   return [...installed, ...skills]
 }
@@ -1844,24 +1883,33 @@ export async function setNativePluginEnabled(
   id: string,
   enabled: boolean,
   requestedScope?: ClaudePluginScope,
+  dataPlane?: DataPlane,
 ): Promise<ClaudePluginTarget> {
   const target = selectNativePluginTarget(
-    await nativePluginTargets(configRoot, cwd),
+    await nativePluginTargets(configRoot, cwd, dataPlane),
     id,
     requestedScope,
   )
   if (!target) throw new Error(`Plugin not installed: ${id}`)
-  await setClaudePluginEnabledNative(configRoot, cwd, id, target.scope, enabled)
+  await setClaudePluginEnabledNative(
+    configRoot,
+    cwd,
+    id,
+    target.scope,
+    enabled,
+    dataPlane,
+  )
   return { ...target, enabled }
 }
 
 export async function disableAllNativePlugins(
   configRoot: string,
   cwd: string,
+  dataPlane?: DataPlane,
 ): Promise<ClaudePluginTarget[]> {
-  const enabled = (await nativePluginTargets(configRoot, cwd)).filter(
-    (plugin) => plugin.enabled,
-  )
+  const enabled = (
+    await nativePluginTargets(configRoot, cwd, dataPlane)
+  ).filter((plugin) => plugin.enabled)
   await Promise.all(
     enabled.map(async (plugin) =>
       setClaudePluginEnabledNative(
@@ -1870,6 +1918,7 @@ export async function disableAllNativePlugins(
         plugin.id,
         plugin.scope,
         false,
+        dataPlane,
       ),
     ),
   )
@@ -1881,9 +1930,10 @@ export async function updateNativePlugin(
   cwd: string,
   id: string,
   requestedScope?: ClaudePluginScope,
+  dataPlane?: DataPlane,
 ): Promise<ClaudeInstalledPlugin> {
   const target = selectNativePluginTarget(
-    await nativePluginTargets(configRoot, cwd),
+    await nativePluginTargets(configRoot, cwd, dataPlane),
     id,
     requestedScope,
   )
@@ -1898,9 +1948,17 @@ export async function updateNativePlugin(
     cwd,
     id,
     target.scope,
+    dataPlane,
   )
   if (!target.enabled)
-    await setClaudePluginEnabledNative(configRoot, cwd, id, target.scope, false)
+    await setClaudePluginEnabledNative(
+      configRoot,
+      cwd,
+      id,
+      target.scope,
+      false,
+      dataPlane,
+    )
   return { ...updated, enabled: target.enabled }
 }
 
@@ -1910,9 +1968,10 @@ export async function uninstallNativePlugin(
   id: string,
   requestedScope?: ClaudePluginScope,
   deleteData = true,
+  dataPlane?: DataPlane,
 ): Promise<ClaudeInstalledPlugin> {
   const target = selectNativePluginTarget(
-    await nativePluginTargets(configRoot, cwd),
+    await nativePluginTargets(configRoot, cwd, dataPlane),
     id,
     requestedScope,
   )
@@ -1928,14 +1987,16 @@ export async function uninstallNativePlugin(
     target.scope,
     cwd,
     deleteData,
+    dataPlane,
   )
 }
 
 export async function listNativePluginRecords(
   configRoot: string,
   cwd: string,
+  dataPlane?: DataPlane,
 ): Promise<ClaudePluginRecord[]> {
-  const installed = await nativePluginTargets(configRoot, cwd)
+  const installed = await nativePluginTargets(configRoot, cwd, dataPlane)
   return installed.map((entry) => ({
     name: entry.id,
     path: entry.installPath,

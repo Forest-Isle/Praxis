@@ -138,12 +138,43 @@ async function fixture(bytes = bundle()): Promise<{
   const source = join(pluginRoot, 'fixture.mcpb')
   const pluginData = join(root, 'data')
   vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, 'config'))
+  vi.stubEnv('PRAXIS_HOME', join(root, 'native-config'))
   await mkdir(pluginRoot, { recursive: true })
   await writeFile(source, bytes)
   return { root, pluginRoot, source, pluginData }
 }
 
 describe('Claude MCPB/DXT loader', () => {
+  it('keeps native recovery leases out of the Claude compatibility root', async () => {
+    const { root, pluginRoot, pluginData } = await fixture()
+    let releaseDownload = (): void => undefined
+    const downloadBlocked = new Promise<void>((resolveDownload) => {
+      releaseDownload = resolveDownload
+    })
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
+      await downloadBlocked
+      return new Response(bundle(), { status: 200 })
+    })
+    const loading = loadClaudePluginMcpb({
+      pluginRoot,
+      pluginData,
+      source: 'https://example.test/native-recovery.dxt',
+      fetch: fetcher,
+      userConfig: { TOKEN: 'secret' },
+    })
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
+
+    expect(
+      await readdir(join(root, 'native-config', 'state', 'locks', 'mcpb')),
+    ).toEqual([])
+    await expect(
+      access(join(root, 'config', 'praxis', 'locks', 'mcpb')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+
+    releaseDownload()
+    await expect(loading).resolves.toMatchObject({ name: 'fixture-mcp' })
+  })
+
   it('loads local bundles, expands root/data/env/config, and preserves executable mode', async () => {
     const { pluginRoot, pluginData } = await fixture()
     const loaded = await loadClaudePluginMcpb({

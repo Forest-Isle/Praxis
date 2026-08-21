@@ -126,6 +126,7 @@ export async function discoverClaudePluginEvals(options: {
   target: string
   cwd: string
   configRoot: string
+  evalDir?: string
   caseGlob?: string
   tags?: readonly string[]
   ablation?: 'none' | 'with-without'
@@ -143,7 +144,15 @@ export async function discoverClaudePluginEvals(options: {
       (await exists(join(resolved.root, 'prompt.md'))))
   )
     found.add(resolved.root)
-  else await walk(resolved.root, basename(resolved.root) === 'evals', 0, found)
+  else if (options.evalDir) {
+    const evalRoot = await resolveContainedPath(
+      resolved.root,
+      resolve(resolved.root, options.evalDir),
+      'Eval directory',
+    )
+    await walk(evalRoot, true, 0, found)
+  } else
+    await walk(resolved.root, basename(resolved.root) === 'evals', 0, found)
   const loaded = await Promise.all(
     [...found].sort().map(loadClaudePluginEvalCase),
   )

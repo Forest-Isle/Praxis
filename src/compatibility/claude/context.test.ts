@@ -114,13 +114,17 @@ MEMORY_CONTEXT`,
     })
 
     const assembled = await assembler.assemble()
-    expect(assembled.systemMessages).toHaveLength(1)
+    expect(assembled.systemMessages).toHaveLength(2)
     expect(assembled.systemMessages[0]?.content).toContain('PROJECT_CONTEXT')
+    expect(assembled.systemMessages[1]?.content).toContain('MEMORY_PATH_MARKER')
     expect(JSON.stringify(assembled.systemMessages)).not.toContain(
       'ENVIRONMENT_MARKER',
     )
     expect(assembled.firstUserMessageContext).toMatch(
-      /GIT_STATUS_MARKER[\s\S]*ENVIRONMENT_MARKER[\s\S]*MEMORY_PATH_MARKER/,
+      /GIT_STATUS_MARKER[\s\S]*ENVIRONMENT_MARKER/,
+    )
+    expect(assembled.firstUserMessageContext).not.toContain(
+      'MEMORY_PATH_MARKER',
     )
   })
 

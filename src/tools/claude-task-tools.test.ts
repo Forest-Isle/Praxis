@@ -287,6 +287,7 @@ describe('ClaudeTaskToolRegistry', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
+      dataPlane: 'claude',
       cwd,
       claudeVersion: '2.1.208',
       provider,

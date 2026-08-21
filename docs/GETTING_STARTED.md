@@ -100,9 +100,11 @@ title in print mode, or search text in the interactive picker.
 
 ## Share local state with Claude Code
 
-Praxis uses `~/.claude` by default, or `CLAUDE_CONFIG_DIR` when set. Compatible
-sessions, instructions, memory, skills, agents, hooks, settings, plugins, and
-MCP configuration remain on that shared data plane.
+Praxis uses its independent `~/.praxis` data plane by default, or `PRAXIS_HOME`
+when set. To intentionally share compatible sessions, instructions, memory,
+skills, agents, hooks, settings, plugins, and MCP configuration with Claude
+Code, launch Praxis with `--data-plane claude`; that compatibility mode uses
+`CLAUDE_CONFIG_DIR` or `~/.claude`.
 
 Before relying on bidirectional writes, check the installed Claude Code version:
 

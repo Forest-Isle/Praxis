@@ -3,6 +3,21 @@ import { describe, expect, it } from 'vitest'
 import { ClaudeExtensionCatalog } from './claude-extensions.js'
 
 describe('ClaudeExtensionCatalog', () => {
+  it('selects Praxis-native built-ins for the native data plane', () => {
+    const catalog = new ClaudeExtensionCatalog(
+      { agents: [], commands: [], skills: [] },
+      { dataPlane: 'native' },
+    )
+
+    expect(catalog.expandPrompt('/init').userMessages.at(-1)).toContain(
+      '.praxis/PRAXIS.md',
+    )
+    expect(catalog.agent('statusline-setup')?.body).toContain(
+      '~/.praxis/settings.json',
+    )
+    expect(catalog.agent('statusline-setup')?.body).not.toContain('~/.claude')
+  })
+
   it('expands commands and skills into native command messages', () => {
     const catalog = new ClaudeExtensionCatalog({
       agents: [],

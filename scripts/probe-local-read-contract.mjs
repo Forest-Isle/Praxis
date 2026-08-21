@@ -260,14 +260,32 @@ try {
     Array.isArray(result?.content)
       ? result.content.find((block) => block.type === 'text')?.text
       : result?.content
+  const normalizedTextContent = (result) =>
+    textContent(result)
+      ?.replace(
+        /\n\n<system-reminder>\n<total_tokens>\d+ tokens left<\/total_tokens>\n<\/system-reminder>$/u,
+        '',
+      )
+      .replaceAll('/private/var/', '/var/')
+  const claudePagedPdfUnavailable = normalizedTextContent(pagedPdf)?.startsWith(
+    'pdftoppm is not installed.',
+  )
   for (const [label, actual, expected] of [
     ['text', praxisText, text],
     ['whole PDF', praxisWholePdf, wholePdf],
     ['paged PDF', praxisPagedPdf, pagedPdf],
   ]) {
+    if (label === 'paged PDF' && claudePagedPdfUnavailable) {
+      assert(
+        normalizedTextContent(actual)?.startsWith(
+          'PDF pages extracted: 2 page(s)',
+        ),
+        `Praxis paged PDF extraction failed: ${JSON.stringify(textContent(actual))}`,
+      )
+      continue
+    }
     assert(
-      textContent(actual)?.replaceAll('/private/var/', '/var/') ===
-        textContent(expected)?.replaceAll('/private/var/', '/var/'),
+      normalizedTextContent(actual) === normalizedTextContent(expected),
       `Praxis ${label} text result differs: ${JSON.stringify({ actual: textContent(actual), expected: textContent(expected) })}`,
     )
   }
@@ -338,11 +356,17 @@ try {
       JSON.stringify(mediaSignature(claudeRequests[2])),
     `Praxis whole PDF media differs from Claude: ${JSON.stringify({ praxis: mediaSignature(praxisRequests[2]), claude: mediaSignature(claudeRequests[2]) })}`,
   )
-  assert(
-    JSON.stringify(mediaSignature(praxisRequests[3])) ===
-      JSON.stringify(mediaSignature(claudeRequests[3])),
-    `Praxis paged PDF media differs from Claude: ${JSON.stringify({ praxis: mediaSignature(praxisRequests[3]), claude: mediaSignature(claudeRequests[3]) })}`,
-  )
+  if (claudePagedPdfUnavailable)
+    assert(
+      mediaSignature(praxisRequests[3]).length > 0,
+      'Praxis paged PDF extraction omitted media',
+    )
+  else
+    assert(
+      JSON.stringify(mediaSignature(praxisRequests[3])) ===
+        JSON.stringify(mediaSignature(claudeRequests[3])),
+      `Praxis paged PDF media differs from Claude: ${JSON.stringify({ praxis: mediaSignature(praxisRequests[3]), claude: mediaSignature(claudeRequests[3]) })}`,
+    )
   console.log('Claude/Praxis local Read compatibility checks passed.')
 } finally {
   await new Promise((resolve) => server.close(resolve)).catch(() => undefined)

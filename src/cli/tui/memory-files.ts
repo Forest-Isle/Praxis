@@ -10,6 +10,12 @@ import {
   type ClaudeResourceScope,
   type ClaudeTextResource,
 } from '../../compatibility/claude/shared-resources.js'
+import { sanitizeClaudeProjectPath } from '../../compatibility/claude/paths.js'
+import type { DataPlane } from '../../persistence/data-plane.js'
+import {
+  loadNativeContextResources,
+  loadNativeSharedResources,
+} from '../../persistence/native-resources.js'
 
 export interface TuiMemoryFileEntry {
   kind: 'file' | 'folder'
@@ -30,6 +36,7 @@ export interface LoadTuiMemoryFilesOptions {
   configRoot: string
   cwd: string
   homeDirectory?: string
+  dataPlane?: DataPlane
 }
 
 function isWithin(root: string, path: string): boolean {
@@ -56,7 +63,7 @@ export function displayTuiMemoryPath(
 }
 
 function isMemoryInstruction(resource: ClaudeTextResource): boolean {
-  return /^CLAUDE(?:\.local)?\.md$/u.test(basename(resource.path))
+  return /^(?:CLAUDE(?:\.local)?|PRAXIS)\.md$/u.test(basename(resource.path))
 }
 
 function importedEntries(
@@ -106,17 +113,34 @@ export async function loadTuiMemoryFiles({
   configRoot,
   cwd,
   homeDirectory = homedir(),
+  dataPlane = 'claude',
 }: LoadTuiMemoryFilesOptions): Promise<TuiMemoryFiles> {
   const [canonicalCwd, canonicalHome] = await Promise.all([
     realpath(cwd),
     realpath(homeDirectory).catch(() => resolve(homeDirectory)),
   ])
-  const [context, settings, autoMemoryDirectory] = await Promise.all([
-    loadClaudeContextResources({ configRoot, cwd, homeDirectory }),
-    loadClaudeSettings({ configRoot, cwd }),
-    resolveClaudeProjectMemoryDirectory({ configRoot, cwd, homeDirectory }),
-  ])
-  const userPath = resolve(configRoot, 'CLAUDE.md')
+  const [context, settings, autoMemoryDirectory] =
+    dataPlane === 'native'
+      ? await Promise.all([
+          loadNativeContextResources({ root: configRoot, cwd }),
+          loadNativeSharedResources({ root: configRoot, cwd }).then(
+            (resources) => resources.settings,
+          ),
+          Promise.resolve(
+            resolve(configRoot, 'memory', sanitizeClaudeProjectPath(cwd)),
+          ),
+        ])
+      : await Promise.all([
+          loadClaudeContextResources({ configRoot, cwd, homeDirectory }),
+          loadClaudeSettings({ configRoot, cwd }),
+          resolveClaudeProjectMemoryDirectory({
+            configRoot,
+            cwd,
+            homeDirectory,
+          }),
+        ])
+  const instructionName = dataPlane === 'native' ? 'PRAXIS.md' : 'CLAUDE.md'
+  const userPath = resolve(configRoot, instructionName)
   const projectResources = context.instructions.filter(
     (resource) =>
       resource.importedFrom === undefined &&
@@ -128,14 +152,21 @@ export async function loadTuiMemoryFiles({
       resource.importedFrom === undefined &&
       resolve(resource.path) === userPath,
   )
-  const projectPath = resolve(canonicalCwd, 'CLAUDE.md')
+  const projectPath =
+    dataPlane === 'native'
+      ? resolve(canonicalCwd, '.praxis', 'PRAXIS.md')
+      : resolve(canonicalCwd, 'CLAUDE.md')
+  const userDisplayPath =
+    dataPlane === 'native'
+      ? displayTuiMemoryPath(userPath, canonicalCwd, canonicalHome)
+      : '~/.claude/CLAUDE.md'
   const entries: TuiMemoryFileEntry[] = [
     {
       kind: 'file',
       label: 'User memory',
       path: userPath,
-      displayPath: '~/.claude/CLAUDE.md',
-      annotation: 'Saved in ~/.claude/CLAUDE.md',
+      displayPath: userDisplayPath,
+      annotation: `Saved in ${userDisplayPath}`,
       scope: 'user',
     },
   ]
@@ -146,7 +177,7 @@ export async function loadTuiMemoryFiles({
         context.instructions,
         canonicalCwd,
         canonicalHome,
-        '~/.claude/CLAUDE.md',
+        userDisplayPath,
       ),
     )
   }
@@ -176,7 +207,14 @@ export async function loadTuiMemoryFiles({
       label: activeProject ? 'Project memory' : displayPath,
       path: resource.path,
       displayPath,
-      ...(activeProject ? { annotation: 'Saved in ./CLAUDE.md' } : {}),
+      ...(activeProject
+        ? {
+            annotation:
+              dataPlane === 'native'
+                ? 'Saved in ./.praxis/PRAXIS.md'
+                : 'Saved in ./CLAUDE.md',
+          }
+        : {}),
       scope: resource.scope,
     })
     entries.push(

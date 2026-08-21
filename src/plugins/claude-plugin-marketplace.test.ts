@@ -57,6 +57,7 @@ async function fixture(): Promise<{
   const cwd = join(root, 'workspace')
   const marketplace = join(root, 'marketplace')
   roots.push(root)
+  vi.stubEnv('PRAXIS_DATA_PLANE', 'claude')
   await mkdir(join(cwd, '.claude'), { recursive: true })
   await mkdir(join(marketplace, '.claude-plugin'), { recursive: true })
   await mkdir(join(marketplace, 'plugins', 'fixture', '.claude-plugin'), {
@@ -827,6 +828,51 @@ describe('Claude native plugin marketplace', () => {
     await updateClaudeMarketplace(value.configRoot, marketplace.name)
     await removeClaudeMarketplace(value.configRoot, value.cwd, marketplace.name)
     expect(await readClaudeKnownMarketplaces(value.configRoot)).toEqual([])
+  })
+
+  it('uses project .praxis settings and loads native installed plugins', async () => {
+    const value = await fixture()
+    const marketplace = await addClaudeMarketplace(
+      value.configRoot,
+      value.cwd,
+      value.marketplace,
+    )
+    const installed = await installClaudeMarketplacePlugin(
+      value.configRoot,
+      value.cwd,
+      'fixture@fixture-marketplace',
+      'project',
+      'native',
+    )
+
+    await expect(
+      readFile(join(value.cwd, '.praxis', 'settings.json'), 'utf8'),
+    ).resolves.toContain(installed.id)
+    await expect(
+      readFile(join(value.cwd, '.claude', 'settings.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(
+      (
+        await loadClaudePlugins({
+          configRoot: value.configRoot,
+          dataPlane: 'native',
+          cwd: value.cwd,
+        })
+      ).commands,
+    ).toHaveLength(1)
+
+    await setNativePluginEnabled(
+      value.configRoot,
+      value.cwd,
+      installed.id,
+      false,
+      'project',
+      'native',
+    )
+    expect(
+      await readClaudeInstalledPlugins(value.configRoot, value.cwd, 'native'),
+    ).toMatchObject([{ enabled: false }])
+    expect(marketplace.name).toBe('fixture-marketplace')
   })
 
   it('extracts zip plugin sources with traversal protection', async () => {

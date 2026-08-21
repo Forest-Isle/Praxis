@@ -18,6 +18,7 @@ export interface ClaudeNativeForkOptions {
 }
 
 const TRANSIENT_ENTRY_TYPES = new Set([
+  'atis-latch',
   'file-history-delta',
   'file-history-snapshot',
   'queue-operation',

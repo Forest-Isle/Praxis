@@ -9,6 +9,7 @@ import type {
   SessionWorktreeManager,
   WorkspaceContext,
 } from '../application/session-worktree.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 
 const ENTER_DEFINITION: ModelToolDefinition = {
   name: 'EnterWorktree',
@@ -58,6 +59,35 @@ const EXIT_DEFINITION: ModelToolDefinition = {
   },
 }
 
+function worktreeDefinitions(
+  dataPlane: DataPlane,
+): readonly ModelToolDefinition[] {
+  if (dataPlane === 'claude') return [ENTER_DEFINITION, EXIT_DEFINITION]
+  return [
+    {
+      ...ENTER_DEFINITION,
+      inputSchema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        type: 'object',
+        properties: {
+          name: {
+            description:
+              'Optional name for a new worktree. Each "/"-separated segment may contain only letters, digits, dots, underscores, and dashes; max 64 chars total. A random name is generated if not provided. Mutually exclusive with path.',
+            type: 'string',
+          },
+          path: {
+            description:
+              'Path to an existing worktree to switch into instead of creating a new one. Must be registered with the current repository and live under .praxis/worktrees. Mutually exclusive with name.',
+            type: 'string',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+    EXIT_DEFINITION,
+  ]
+}
+
 function objectInput(call: ModelToolCall): Record<string, unknown> {
   if (
     !call.input ||
@@ -90,6 +120,7 @@ export class ClaudeWorktreeToolRegistry implements ToolRegistry {
       manager: SessionWorktreeManager
       workspace: WorkspaceContext
       enabledTools?: readonly ('EnterWorktree' | 'ExitWorktree')[]
+      dataPlane?: DataPlane
     },
   ) {
     this.enabled = new Set(
@@ -100,9 +131,10 @@ export class ClaudeWorktreeToolRegistry implements ToolRegistry {
   definitions(): readonly ModelToolDefinition[] {
     const base = this.options.base.definitions()
     const existing = new Set(base.map(({ name }) => name))
+    const definitions = worktreeDefinitions(this.options.dataPlane ?? 'claude')
     return [
       ...base,
-      ...[ENTER_DEFINITION, EXIT_DEFINITION].filter(
+      ...definitions.filter(
         (definition) =>
           this.enabled.has(definition.name) && !existing.has(definition.name),
       ),

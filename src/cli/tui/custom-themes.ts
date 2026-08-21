@@ -1,10 +1,10 @@
 import { constants } from 'node:fs'
 import { mkdir, open, readdir, readFile, rm } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 
 import { writeFileAtomically } from '../../platform/atomic-write.js'
+import { resolveDataPlaneRoot } from '../../persistence/data-plane.js'
 import {
   ExclusiveFileLease,
   type ExclusiveFileLeaseHandle,
@@ -102,7 +102,7 @@ const ANSI256 = /^ansi256\((?:[0-9]|[1-9]\d|1\d\d|2[0-4]\d)\)$/u
 const ANSI = /^ansi:[A-Za-z][A-Za-z0-9]*$/u
 
 function configRootPath(): string {
-  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  return resolveDataPlaneRoot()
 }
 
 export function customThemeDirectory(configRoot = configRootPath()): string {

@@ -110,7 +110,13 @@ ${sections.join('\n\n')}`,
     ) {
       const dynamic = await this.options.loadDynamicContext(options.cwd)
       if (this.options.excludeDynamicSystemPromptSections) {
-        firstUserMessageContext = renderClaudeDynamicUserContext(dynamic)
+        if (dynamic.memory) {
+          messages.push({ role: 'system', content: dynamic.memory })
+        }
+        firstUserMessageContext = renderClaudeDynamicUserContext({
+          environment: dynamic.environment,
+          ...(dynamic.gitStatus ? { gitStatus: dynamic.gitStatus } : {}),
+        })
       } else {
         messages.push({
           role: 'system',

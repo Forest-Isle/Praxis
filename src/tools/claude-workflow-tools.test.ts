@@ -31,7 +31,7 @@ function base(): ToolRegistry {
   }
 }
 
-async function fixture() {
+async function fixture(dataPlane: 'native' | 'claude' = 'claude') {
   const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-tools-'))
   roots.push(root)
   const cwd = join(root, 'work')
@@ -54,6 +54,7 @@ async function fixture() {
     promptIdForCall: () => 'prompt-id',
     defaultModel: 'fixture-model',
     enabled: true,
+    dataPlane,
   })
   return { root, cwd, registry, runWorkflowAgent }
 }
@@ -126,5 +127,20 @@ describe('ClaudeWorkflowToolRegistry', () => {
     await writeFile(join(directory, 'saved.js'), script)
     const prepared = await registry.prepare(call({ name: 'saved' }), context)
     expect(prepared.input).toEqual({ name: 'saved' })
+  })
+
+  it('describes and resolves only the native project workflow directory', async () => {
+    const { cwd, registry } = await fixture('native')
+    expect(
+      registry.definitions().find(({ name }) => name === 'Workflow')
+        ?.description,
+    ).toContain('`.praxis/workflows`')
+    const directory = join(cwd, '.praxis', 'workflows')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'saved.js'), script)
+
+    await expect(
+      registry.prepare(call({ name: 'saved' }), context),
+    ).resolves.toMatchObject({ input: { name: 'saved' } })
   })
 })

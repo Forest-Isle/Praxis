@@ -1,18 +1,29 @@
 import { lstat, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path'
 
 import {
   isClaudeSessionId,
   sanitizeClaudeProjectPath,
 } from '../compatibility/claude/paths.js'
 import { resolveClaudeProjectIdentity } from '../compatibility/claude/shared-resources.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 
 const MAX_ATOMIC_UPDATE_RETRIES = 8
 
 export type ClaudeProjectPurgeItemKind =
   | 'project'
+  | 'memory'
+  | 'scheduled'
   | 'tasks'
   | 'debug'
   | 'file-history'
@@ -40,6 +51,7 @@ export interface ClaudeProjectPurgePlan {
   mode: 'project' | 'all'
   configRoot: string
   statePath: string
+  allowStateOutsideConfigRoot?: boolean
   targetPath?: string
   projectIdentity?: string
   projectRootPaths: string[]
@@ -48,6 +60,7 @@ export interface ClaudeProjectPurgePlan {
 }
 
 export interface PlanClaudeProjectPurgeOptions {
+  dataPlane?: DataPlane
   cwd: string
   path?: string
   all?: boolean
@@ -155,7 +168,11 @@ async function assertSafePurgePath(
   assertLexicallyContained(configRoot, canonical)
 }
 
-async function assertMutableRegularFile(path: string): Promise<void> {
+async function assertMutableRegularFile(
+  path: string,
+  boundary: string,
+): Promise<void> {
+  const canonicalBoundary = await canonicalPath(boundary)
   let current = resolve(path)
   while (true) {
     try {
@@ -165,6 +182,11 @@ async function assertMutableRegularFile(path: string): Promise<void> {
           `Refusing to update path through symbolic link: ${current}`,
         )
       }
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error
+    }
+    try {
+      if ((await realpath(current)) === canonicalBoundary) break
     } catch (error) {
       if (errorCode(error) !== 'ENOENT') throw error
     }
@@ -268,8 +290,12 @@ async function discoverSessionIds(projectRoot: string): Promise<string[]> {
 async function discoverProjectRoots(
   configRoot: string,
   targetPaths: readonly string[],
+  dataPlane: DataPlane,
 ): Promise<string[]> {
-  const projectsRoot = join(configRoot, 'projects')
+  const projectsRoot = join(
+    configRoot,
+    dataPlane === 'native' ? 'sessions' : 'projects',
+  )
   if (!(await pathExists(projectsRoot))) return []
   await assertSafePurgePath(configRoot, projectsRoot)
   let entries
@@ -282,12 +308,14 @@ async function discoverProjectRoots(
     throw error
   }
   const targetKeys = targetPaths.map(sanitizeClaudeProjectPath)
+  const worktreeSegment =
+    dataPlane === 'native' ? '--praxis-worktrees-' : '--claude-worktrees-'
   return entries
     .filter((entry) =>
       targetKeys.some(
         (targetKey) =>
           entry.name === targetKey ||
-          entry.name.startsWith(`${targetKey}--worktrees-`),
+          entry.name.startsWith(`${targetKey}${worktreeSegment}`),
       ),
     )
     .map((entry) => join(projectsRoot, entry.name))
@@ -329,12 +357,36 @@ export async function planClaudeProjectPurge(
     options.configRoot ??
     (process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'))
   const configRoot = await canonicalPath(configuredRoot)
+  const dataPlane = options.dataPlane ?? 'claude'
+  const homeDirectory = options.homeDirectory ?? homedir()
+  const legacyClaudeStatePath = resolve(homeDirectory, '.claude.json')
+  const legacyClaudeConfigRoot = await canonicalPath(
+    resolve(homeDirectory, '.claude'),
+  )
   const defaultStatePath =
-    options.configRoot !== undefined || Boolean(process.env.CLAUDE_CONFIG_DIR)
-      ? join(configRoot, '.claude.json')
-      : resolve(homedir(), '.claude.json')
-  const statePath = await canonicalPath(options.statePath ?? defaultStatePath)
-  await assertMutableRegularFile(statePath)
+    dataPlane === 'native'
+      ? join(configRoot, 'state.json')
+      : options.configRoot !== undefined ||
+          Boolean(process.env.CLAUDE_CONFIG_DIR)
+        ? join(configRoot, '.claude.json')
+        : legacyClaudeStatePath
+  const statePath = resolve(options.statePath ?? defaultStatePath)
+  const usesLegacyDefaultClaudeState =
+    dataPlane === 'claude' &&
+    !process.env.CLAUDE_CONFIG_DIR &&
+    configRoot === legacyClaudeConfigRoot &&
+    statePath === legacyClaudeStatePath
+  const canonicalStateParent = await canonicalPath(dirname(statePath))
+  if (!usesLegacyDefaultClaudeState) {
+    assertLexicallyContained(
+      configRoot,
+      join(canonicalStateParent, basename(statePath)),
+    )
+  }
+  await assertMutableRegularFile(
+    statePath,
+    usesLegacyDefaultClaudeState ? canonicalStateParent : configRoot,
+  )
   const state = parseState(await readOptionalFile(statePath), statePath)
   const projects = stateProjects(state)
   const items: ClaudeProjectPurgeItem[] = []
@@ -347,9 +399,26 @@ export async function planClaudeProjectPurge(
     }> = [
       {
         kind: 'project',
-        name: 'projects',
-        description: 'all project transcripts and memory',
+        name: dataPlane === 'native' ? 'sessions' : 'projects',
+        description:
+          dataPlane === 'native'
+            ? 'all project transcripts'
+            : 'all project transcripts and memory',
       },
+      ...(dataPlane === 'native'
+        ? [
+            {
+              kind: 'memory' as const,
+              name: 'memory',
+              description: 'all project memory',
+            },
+            {
+              kind: 'scheduled' as const,
+              name: 'scheduled',
+              description: 'all project scheduled prompts',
+            },
+          ]
+        : []),
       {
         kind: 'tasks',
         name: 'tasks',
@@ -394,6 +463,9 @@ export async function planClaudeProjectPurge(
       mode: 'all',
       configRoot,
       statePath,
+      ...(usesLegacyDefaultClaudeState
+        ? { allowStateOutsideConfigRoot: true }
+        : {}),
       projectRootPaths: [],
       sessionIds: [],
       items,
@@ -407,7 +479,11 @@ export async function planClaudeProjectPurge(
     cwd: targetPath,
     homeDirectory: options.homeDirectory ?? homedir(),
   })
-  const projectRootPaths = await discoverProjectRoots(configRoot, targetPaths)
+  const projectRootPaths = await discoverProjectRoots(
+    configRoot,
+    targetPaths,
+    dataPlane,
+  )
   const sessionIdSet = new Set<string>()
   for (const projectRoot of projectRootPaths) {
     await assertSafePurgePath(configRoot, projectRoot)
@@ -445,11 +521,43 @@ export async function planClaudeProjectPurge(
       ),
     )
   }
+  if (dataPlane === 'native') {
+    const projectKeys = new Set([
+      ...targetPaths.map(sanitizeClaudeProjectPath),
+      ...projectRootPaths.map((path) => basename(path)),
+    ])
+    for (const projectKey of projectKeys) {
+      await addExistingPath(
+        items,
+        configRoot,
+        removePathItem(
+          'memory',
+          join(configRoot, 'memory', projectKey),
+          `memory for project ${projectKey}`,
+        ),
+      )
+      await addExistingPath(
+        items,
+        configRoot,
+        removePathItem(
+          'scheduled',
+          join(configRoot, 'scheduled', `${projectKey}.json`),
+          `scheduled prompts for project ${projectKey}`,
+        ),
+      )
+    }
+  }
   for (const projectRoot of projectRootPaths) {
     await addExistingPath(
       items,
       configRoot,
-      removePathItem('project', projectRoot, 'project transcripts and memory'),
+      removePathItem(
+        'project',
+        projectRoot,
+        dataPlane === 'native'
+          ? 'project transcripts'
+          : 'project transcripts and memory',
+      ),
     )
   }
 
@@ -491,6 +599,9 @@ export async function planClaudeProjectPurge(
     mode: 'project',
     configRoot,
     statePath,
+    ...(usesLegacyDefaultClaudeState
+      ? { allowStateOutsideConfigRoot: true }
+      : {}),
     targetPath,
     projectIdentity,
     projectRootPaths,
@@ -502,8 +613,9 @@ export async function planClaudeProjectPurge(
 async function atomicallyUpdate(
   path: string,
   update: (source: string | null) => string | null,
+  boundary: string,
 ): Promise<void> {
-  await assertMutableRegularFile(path)
+  await assertMutableRegularFile(path, boundary)
   for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_RETRIES; attempt += 1) {
     const source = await readOptionalFile(path)
     const content = update(source)
@@ -530,29 +642,47 @@ async function executeItem(
     if (!projectPath) throw new Error('Missing project path for history purge')
     const projectPaths = item.projectIdentities ?? [projectPath]
     await assertSafePurgePath(plan.configRoot, item.path)
-    await atomicallyUpdate(item.path, (source) => {
-      if (source === null) return null
-      return filterProjectHistory(source, projectPaths).content
-    })
+    await atomicallyUpdate(
+      item.path,
+      (source) => {
+        if (source === null) return null
+        return filterProjectHistory(source, projectPaths).content
+      },
+      plan.configRoot,
+    )
     return
   }
-  await atomicallyUpdate(item.path, (source) => {
-    if (source === null) return null
-    const state = parseState(source, item.path)
-    const projects = { ...stateProjects(state) }
-    if (item.operation === 'remove-project-config') {
-      const projectIdentity = item.projectIdentity
-      if (!projectIdentity || !Object.hasOwn(projects, projectIdentity)) {
-        return null
+  const stateParent = await canonicalPath(dirname(item.path))
+  let stateBoundary: string
+  if (plan.allowStateOutsideConfigRoot) stateBoundary = stateParent
+  else {
+    assertLexicallyContained(
+      plan.configRoot,
+      join(stateParent, basename(item.path)),
+    )
+    stateBoundary = plan.configRoot
+  }
+  await atomicallyUpdate(
+    item.path,
+    (source) => {
+      if (source === null) return null
+      const state = parseState(source, item.path)
+      const projects = { ...stateProjects(state) }
+      if (item.operation === 'remove-project-config') {
+        const projectIdentity = item.projectIdentity
+        if (!projectIdentity || !Object.hasOwn(projects, projectIdentity)) {
+          return null
+        }
+        delete projects[projectIdentity]
+      } else {
+        if (Object.keys(projects).length === 0) return null
+        for (const key of Object.keys(projects)) delete projects[key]
       }
-      delete projects[projectIdentity]
-    } else {
-      if (Object.keys(projects).length === 0) return null
-      for (const key of Object.keys(projects)) delete projects[key]
-    }
-    state.projects = projects
-    return `${JSON.stringify(state, null, 2)}\n`
-  })
+      state.projects = projects
+      return `${JSON.stringify(state, null, 2)}\n`
+    },
+    stateBoundary,
+  )
 }
 
 export async function executeClaudeProjectPurge(

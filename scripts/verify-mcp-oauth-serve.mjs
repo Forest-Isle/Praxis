@@ -128,6 +128,8 @@ try {
   env = {
     ...process.env,
     CLAUDE_CONFIG_DIR: configRoot,
+    PRAXIS_DATA_PLANE: 'native',
+    PRAXIS_HOME: configRoot,
     PRAXIS_MCP_OAUTH_STORE: 'file',
     PRAXIS_PROVIDER: 'anthropic',
     PRAXIS_API_KEY: 'fixture-key',
@@ -394,7 +396,7 @@ return { marker: 'MCP_WORKFLOW_COMPLETE' }`
       assert(
         JSON.stringify(canonical(schema.get(name))) ===
           JSON.stringify(canonical(claudeSchemas.get(name))),
-        `Praxis schema diverges from Claude for ${name}`,
+        `Praxis schema diverges from Claude for ${name}: ${JSON.stringify({ praxis: canonical(schema.get(name)), claude: canonical(claudeSchemas.get(name)) })}`,
       )
     }
   }

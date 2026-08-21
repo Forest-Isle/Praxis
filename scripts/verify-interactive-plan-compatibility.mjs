@@ -14,7 +14,7 @@ import { clearTimeout, setTimeout } from 'node:timers'
 import { promisify } from 'node:util'
 
 import { detectClaudeVersion } from './lib/claude-probe.mjs'
-import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
+import { resolveDataPlanePaths } from '../dist/persistence/data-plane.js'
 
 const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-interactive-plan-compat-'))
@@ -209,9 +209,10 @@ async function runTty(
   interactions = [{ waitFor: marker, input: '/exit\r' }],
 ) {
   const driver = `
-import json, os, select, subprocess, sys, time
+import fcntl, json, os, select, struct, subprocess, sys, termios, time
 actions = json.loads(sys.argv[1])
 master, slave = os.openpty()
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 60, 120, 0, 0))
 process = subprocess.Popen(sys.argv[2:], stdin=slave, stdout=slave, stderr=slave)
 os.close(slave)
 output = b''
@@ -238,6 +239,14 @@ while process.poll() is None:
         value = actions[action_index]['input'].encode()
         action_index += 1
         action_start = match + len(needle)
+        if actions[action_index - 1].get('terminate'):
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            sys.exit(0)
         if not value:
             continue
         time.sleep(0.05)
@@ -319,6 +328,7 @@ try {
         ANTHROPIC_AUTH_TOKEN: 'fixture-key',
         ANTHROPIC_BASE_URL: baseUrl,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: '1',
         DISABLE_AUTOUPDATER: '1',
       },
     },
@@ -329,6 +339,7 @@ try {
       env: {
         ...process.env,
         CLAUDE_CONFIG_DIR: join(root, 'praxis-config'),
+        PRAXIS_DATA_PLANE: 'native',
         PRAXIS_PROVIDER: 'anthropic',
         PRAXIS_API_KEY: 'fixture-key',
         PRAXIS_MODEL: 'fixture-model',
@@ -353,10 +364,16 @@ try {
     const headlessEnv = {
       ...implementation.env,
       CLAUDE_CONFIG_DIR: headlessConfigRoot,
+      ...(implementation.label === 'praxis'
+        ? { PRAXIS_HOME: headlessConfigRoot }
+        : {}),
     }
     const interactiveEnv = {
       ...implementation.env,
       CLAUDE_CONFIG_DIR: interactiveConfigRoot,
+      ...(implementation.label === 'praxis'
+        ? { PRAXIS_HOME: interactiveConfigRoot }
+        : {}),
     }
     const headlessStart = requests.length
     await execFileAsync(
@@ -392,6 +409,9 @@ try {
       ],
       { env: interactiveEnv },
       `${implementation.label} interactive`,
+      implementation.label === 'claude'
+        ? [{ waitFor: 'PLAN_SURFACE_READY', input: '', terminate: true }]
+        : [{ waitFor: marker, input: '/exit\r' }],
     )
     const interactive = requestForMarker(
       requests.slice(interactiveStart),
@@ -445,11 +465,12 @@ try {
       env: {
         ...praxis.env,
         CLAUDE_CONFIG_DIR: askConfigRoot,
+        PRAXIS_HOME: askConfigRoot,
       },
     },
     'Praxis AskUserQuestion round trip',
     [
-      { waitFor: 'Which option?', input: '1\r' },
+      { waitFor: 'Enter one option number or custom text', input: '1\r' },
       { waitFor: askMarker, input: '/exit\r' },
     ],
   )
@@ -472,14 +493,12 @@ try {
       env: {
         ...praxis.env,
         CLAUDE_CONFIG_DIR: planConfigRoot,
+        PRAXIS_HOME: planConfigRoot,
       },
     },
     'Praxis plan-mode round trip',
     [
-      {
-        waitFor: '2. Yes, manually approve edits',
-        input: '\u001B[B',
-      },
+      { waitFor: '2. Yes, manually approve edits', input: '\u001B[B' },
       { waitFor: '❯ 2. Yes, manually approve edits', input: '\r' },
       { waitFor: planMarker, input: '' },
       { waitFor: 'Try "review this project"', input: '/exit\r' },
@@ -498,8 +517,9 @@ try {
     'Plan-mode Write did not persist expected plan content',
   )
   const transcript = await readFile(
-    resolveClaudePaths({
-      configDir: planConfigRoot,
+    resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: planConfigRoot,
       cwd,
       sessionId: planPath[1],
     }).sessionFile,

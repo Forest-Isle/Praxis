@@ -16,6 +16,10 @@ import {
   type ClaudeJobSourceCheckpoint,
   type ClaudeJobTempo,
 } from '../persistence/claude-job-store.js'
+import {
+  resolveDataPlanePaths,
+  type DataPlane,
+} from '../persistence/data-plane.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import {
   redactSensitiveText,
@@ -63,6 +67,7 @@ export interface TopLevelAgentRuntime {
 
 export interface TopLevelAgentManagerOptions {
   configRoot: string
+  dataPlane?: DataPlane
   cwd: string
   cliPath: string
   executablePath?: string
@@ -114,13 +119,20 @@ const WORKER_RUNTIME_ENVIRONMENT = [
 function workerEnvironment(
   source: NodeJS.ProcessEnv,
   configRoot: string,
+  dataPlane: DataPlane,
 ): Record<string, string> {
   const environment = sanitizeChildEnvironment({}, source)
   for (const name of WORKER_RUNTIME_ENVIRONMENT) {
     const value = source[name]
     if (value !== undefined) environment[name] = value
   }
-  environment.CLAUDE_CONFIG_DIR = configRoot
+  if (dataPlane === 'native') {
+    environment.PRAXIS_DATA_PLANE = 'native'
+    environment.PRAXIS_HOME = configRoot
+  } else {
+    environment.PRAXIS_DATA_PLANE = 'claude'
+    environment.CLAUDE_CONFIG_DIR = configRoot
+  }
   return environment
 }
 
@@ -131,6 +143,16 @@ function socketPath(configRoot: string, id: string): string {
     .digest('hex')
     .slice(0, 12)
   return join(tmpdir(), `praxis-agent-${owner}`, rootHash, `${id}.sock`)
+}
+
+export function topLevelAgentProcessRegistryRoot(
+  configRoot: string,
+  dataPlane: DataPlane = 'claude',
+): string {
+  return join(
+    configRoot,
+    ...(dataPlane === 'native' ? ['state', 'sessions'] : ['sessions']),
+  )
 }
 
 function writeWire(socket: Socket, message: WireMessage): void {
@@ -299,7 +321,13 @@ export class TopLevelAgentManager {
   private readonly store: ClaudeJobStore
 
   constructor(private readonly options: TopLevelAgentManagerOptions) {
-    this.store = new ClaudeJobStore(options.configRoot)
+    this.store = new ClaudeJobStore(
+      options.configRoot,
+      join(
+        options.configRoot,
+        options.dataPlane === 'native' ? 'state' : 'praxis',
+      ),
+    )
   }
 
   async launch(options: {
@@ -383,6 +411,7 @@ export class TopLevelAgentManager {
           env: workerEnvironment(
             this.options.environment ?? process.env,
             this.options.configRoot,
+            this.options.dataPlane ?? 'claude',
           ),
           detached: true,
           stdio: 'ignore',
@@ -508,9 +537,13 @@ export class TopLevelAgentManager {
     knownSessionIds: ReadonlySet<string>,
     all: boolean,
   ): Promise<TopLevelAgentSummary[]> {
+    const registryRoot = topLevelAgentProcessRegistryRoot(
+      this.options.configRoot,
+      this.options.dataPlane,
+    )
     let files: string[]
     try {
-      files = await readdir(join(this.options.configRoot, 'sessions'))
+      files = await readdir(registryRoot)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
       throw error
@@ -521,12 +554,7 @@ export class TopLevelAgentManager {
         .map(async (file) => {
           try {
             return nativeClaudeSession(
-              JSON.parse(
-                await readFile(
-                  join(this.options.configRoot, 'sessions', file),
-                  'utf8',
-                ),
-              ),
+              JSON.parse(await readFile(join(registryRoot, file), 'utf8')),
             )
           } catch {
             return undefined
@@ -559,14 +587,20 @@ export class TopLevelAgentManager {
       }
     }
     try {
-      return await readFile(
-        resolveClaudePaths({
-          configDir: this.options.configRoot,
-          cwd: agent.cwd,
-          sessionId: agent.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
+      const paths =
+        this.options.dataPlane === 'native'
+          ? resolveDataPlanePaths({
+              dataPlane: 'native',
+              root: this.options.configRoot,
+              cwd: agent.cwd,
+              sessionId: agent.sessionId,
+            })
+          : resolveClaudePaths({
+              configDir: this.options.configRoot,
+              cwd: agent.cwd,
+              sessionId: agent.sessionId,
+            })
+      return await readFile(paths.sessionFile, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return 'No local transcript is available for this Claude session.\n'
@@ -751,7 +785,13 @@ export class TopLevelAgentManager {
     try {
       const value = JSON.parse(
         await readFile(
-          join(this.options.configRoot, 'sessions', `${state.pid}.json`),
+          join(
+            topLevelAgentProcessRegistryRoot(
+              this.options.configRoot,
+              this.options.dataPlane,
+            ),
+            `${state.pid}.json`,
+          ),
           'utf8',
         ),
       ) as unknown
@@ -775,13 +815,20 @@ export class TopLevelAgentManager {
 
 export async function runTopLevelAgentWorker(options: {
   configRoot: string
+  dataPlane?: DataPlane
   id: string
   createRuntime(
     eventSink: RuntimeEventSink,
     dispatch: ClaudeJobDispatch,
   ): Promise<TopLevelAgentRuntime>
 }): Promise<void> {
-  const store = new ClaudeJobStore(options.configRoot)
+  const store = new ClaudeJobStore(
+    options.configRoot,
+    join(
+      options.configRoot,
+      options.dataPlane === 'native' ? 'state' : 'praxis',
+    ),
+  )
   const initial = await store.read(options.id)
   let dispatch = await store.readDispatch(options.id)
   const sensitiveValues = sensitiveEnvironmentValues(process.env)
@@ -795,8 +842,7 @@ export async function runTopLevelAgentWorker(options: {
   }
   const socketFile = initial.socketPath
   const processFile = join(
-    options.configRoot,
-    'sessions',
+    topLevelAgentProcessRegistryRoot(options.configRoot, options.dataPlane),
     `${process.pid}.json`,
   )
   const processStartedAt = Date.now()

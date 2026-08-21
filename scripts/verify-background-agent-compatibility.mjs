@@ -285,7 +285,7 @@ try {
   assert(
     JSON.stringify(normalizeSchema(praxisDefinitions)) ===
       JSON.stringify(normalizeSchema(claudeDefinitions)),
-    'Praxis background tool schemas differ from Claude',
+    `Praxis background tool schemas differ from Claude: ${JSON.stringify({ praxis: normalizeSchema(praxisDefinitions), claude: normalizeSchema(claudeDefinitions) })}`,
   )
 
   const projectDirectory = (await readdir(join(configRoot, 'projects')))[0]

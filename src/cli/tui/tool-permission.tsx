@@ -17,6 +17,10 @@ import {
 } from '../../permissions/permission-updates.js'
 import { redactSensitiveText } from '../../platform/sensitive-data.js'
 import {
+  type DataPlane,
+  resolveDataPlaneRoot,
+} from '../../persistence/data-plane.js'
+import {
   composerEditorSegments,
   type ComposerEditorState,
 } from './composer-editor.js'
@@ -74,21 +78,28 @@ function pathIsWithin(root: string, path: string): boolean {
   return child === '' || (!child.startsWith('..') && !isAbsolute(child))
 }
 
-function claudeFolderSessionOption(
+function settingsFolderSessionOption(
   path: string,
   cwd: string,
+  dataPlane: DataPlane,
 ): TuiToolPermissionOption | undefined {
-  const projectClaude = resolve(cwd, '.claude')
-  const globalClaude = resolve(homedir(), '.claude')
-  const pattern = pathIsWithin(globalClaude, path)
-    ? '~/.claude/**'
-    : pathIsWithin(projectClaude, path)
-      ? '/.claude/**'
+  const directory = dataPlane === 'native' ? '.praxis' : '.claude'
+  const projectSettings = resolve(cwd, directory)
+  const globalSettings =
+    dataPlane === 'native'
+      ? resolveDataPlaneRoot({ dataPlane })
+      : resolve(homedir(), '.claude')
+  const pattern = pathIsWithin(globalSettings, path)
+    ? dataPlane === 'native' && process.env.PRAXIS_HOME
+      ? `${globalSettings}/**`
+      : `~/${directory}/**`
+    : pathIsWithin(projectSettings, path)
+      ? `/${directory}/**`
       : undefined
   if (!pattern) return undefined
   return {
     action: 'allow-session-action',
-    label: 'Yes, and allow Claude to edit its own settings for this session',
+    label: `Yes, and allow ${dataPlane === 'native' ? 'Praxis' : 'Claude'} to edit its own settings for this session`,
     rule: `Edit(${pattern})`,
     updates: [
       {
@@ -131,13 +142,14 @@ function fileOptions(
   cwd: string,
   readOnly: boolean,
   suggestions: readonly PermissionUpdate[] = [],
+  dataPlane: DataPlane = 'claude',
 ): readonly TuiToolPermissionOption[] {
-  const claudeFolderOption = readOnly
+  const settingsFolderOption = readOnly
     ? undefined
-    : claudeFolderSessionOption(path, cwd)
+    : settingsFolderSessionOption(path, cwd, dataPlane)
   return [
     { action: 'allow-once', label: 'Yes' },
-    claudeFolderOption ?? {
+    settingsFolderOption ?? {
       action: readOnly ? 'allow-session-action' : 'allow-session-edits',
       label: fileSessionLabel(path, cwd, readOnly),
       ...(readOnly ? { rule: readSessionRule(path, cwd) } : {}),
@@ -152,6 +164,7 @@ function fileModel(
   cwd: string,
   sensitiveValues: readonly string[],
   decision?: PermissionDecision,
+  dataPlane: DataPlane = 'claude',
 ): TuiToolPermissionModel | undefined {
   const path = stringInput(call, 'file_path')
   if (!path) return undefined
@@ -186,6 +199,7 @@ function fileModel(
         cwd,
         false,
         decision?.behavior === 'ask' ? decision.suggestions : [],
+        dataPlane,
       ),
     }
   }
@@ -222,6 +236,7 @@ function fileModel(
         cwd,
         false,
         decision?.behavior === 'ask' ? decision.suggestions : [],
+        dataPlane,
       ),
     }
   }
@@ -402,6 +417,7 @@ export function projectTuiToolPermission(
   cwd: string,
   sensitiveValues: readonly string[],
   decision?: PermissionDecision,
+  dataPlane: DataPlane = 'claude',
 ): TuiToolPermissionModel {
   const explain = (model: TuiToolPermissionModel): TuiToolPermissionModel =>
     decision?.behavior === 'ask' && decision.reason
@@ -412,7 +428,7 @@ export function projectTuiToolPermission(
       : model
   const specialized =
     bashModel(call, sensitiveValues, decision) ??
-    fileModel(call, cwd, sensitiveValues, decision) ??
+    fileModel(call, cwd, sensitiveValues, decision, dataPlane) ??
     notebookModel(call, cwd, sensitiveValues, decision) ??
     filesystemModel(call, cwd, sensitiveValues, decision) ??
     webFetchModel(call, sensitiveValues)

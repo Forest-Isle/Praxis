@@ -37,6 +37,11 @@ import {
   ExclusiveFileLease,
   type ExclusiveFileLeaseHandle,
 } from '../platform/exclusive-file-lease.js'
+import {
+  resolveDataPlane,
+  resolveDataPlaneRoot,
+  type DataPlane,
+} from '../persistence/data-plane.js'
 
 const DEFAULT_ARCHIVE_BYTES = 512 * 1024 * 1024
 const DEFAULT_EXTRACTED_BYTES = 1024 * 1024 * 1024
@@ -116,6 +121,8 @@ export interface LoadClaudePluginMcpbOptions {
   pluginRoot: string
   pluginData: string
   source: string
+  configRoot?: string
+  dataPlane?: DataPlane
   environment?: Readonly<Record<string, string | undefined>>
   userConfig?: Readonly<Record<string, ClaudePluginMcpbUserValue>>
   resolveUserConfig?: (
@@ -1202,12 +1209,13 @@ export async function loadClaudePluginMcpb(
   const cacheSource = resolvedSource.remote
     ? `url:${hash(resolvedSource.source)}`
     : resolvedSource.source
+  const dataPlane = options.dataPlane ?? resolveDataPlane()
   const configRoot = resolve(
-    process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+    options.configRoot ?? resolveDataPlaneRoot({ dataPlane }),
   )
   const recoveryLockFile = join(
     configRoot,
-    'praxis',
+    dataPlane === 'native' ? 'state' : 'praxis',
     'locks',
     'mcpb',
     `${hash(cacheEntry)}.lock`,
