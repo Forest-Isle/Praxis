@@ -78,6 +78,24 @@ function parseEntries(source) {
     .map((line) => JSON.parse(line))
 }
 
+function runPraxisStreamInput(cli, args, input, options) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      process.execPath,
+      [cli, ...args],
+      options,
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(Object.assign(error, { stdout, stderr }))
+          return
+        }
+        resolve({ stdout, stderr })
+      },
+    )
+    child.stdin?.end(input)
+  })
+}
+
 try {
   const version = await detectClaudeVersion('Hook compatibility probe')
   await Promise.all([
@@ -105,6 +123,7 @@ if (event.hook_event_name === 'SessionEnd') console.log('${markers.sessionEnd}')
       JSON.stringify({
         hooks: Object.fromEntries(
           [
+            'SessionStart',
             'UserPromptSubmit',
             'PreToolUse',
             'PostToolUse',
@@ -154,6 +173,7 @@ if (event.hook_event_name === 'SessionEnd') console.log('${markers.sessionEnd}')
   if (
     JSON.stringify(eventNames) !==
     JSON.stringify([
+      'SessionStart',
       'UserPromptSubmit',
       'PreToolUse',
       'PostToolUse',
@@ -336,6 +356,63 @@ if (event.hook_event_name === 'SessionEnd') console.log('${markers.sessionEnd}')
         `Invalid Praxis hook response: ${JSON.stringify(response)}`,
       )
     }
+  }
+
+  const hookLogBeforeMulti = parseEntries(
+    await readFile(hookLog, 'utf8'),
+  ).length
+  await runPraxisStreamInput(
+    cli,
+    ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json'],
+    [
+      {
+        type: 'user',
+        message: { role: 'user', content: 'first lifecycle prompt' },
+      },
+      {
+        type: 'user',
+        message: { role: 'user', content: 'second lifecycle prompt' },
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n') + '\n',
+    {
+      cwd,
+      env: praxisEnvironment,
+      timeout: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  )
+  const multiPromptEvents = parseEntries(await readFile(hookLog, 'utf8')).slice(
+    hookLogBeforeMulti,
+  )
+  const countMultiPromptEvent = (name) =>
+    multiPromptEvents.filter((event) => event.hook_event_name === name).length
+  const multiPromptSessionIds = new Set(
+    multiPromptEvents.map((event) => event.session_id),
+  )
+  const [multiPromptSessionId] = multiPromptSessionIds
+  const multiPromptStart = multiPromptEvents.find(
+    (event) => event.hook_event_name === 'SessionStart',
+  )
+  const multiPromptEnd = multiPromptEvents.find(
+    (event) => event.hook_event_name === 'SessionEnd',
+  )
+  if (
+    multiPromptSessionIds.size !== 1 ||
+    typeof multiPromptSessionId !== 'string' ||
+    multiPromptSessionId.length === 0 ||
+    countMultiPromptEvent('SessionStart') !== 1 ||
+    countMultiPromptEvent('UserPromptSubmit') !== 2 ||
+    countMultiPromptEvent('SessionEnd') !== 1 ||
+    multiPromptStart?.source !== 'startup' ||
+    multiPromptEnd?.reason !== 'other'
+  ) {
+    throw new Error(
+      `Unexpected multi-prompt hook lifecycle: ${multiPromptEvents
+        .map((event) => event.hook_event_name)
+        .join(', ')}`,
+    )
   }
   await closeServer()
 

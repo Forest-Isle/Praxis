@@ -419,6 +419,10 @@ interface InteractiveSessionCommands {
   nextScheduledPrompt?(
     signal?: AbortSignal,
   ): Promise<{ id: string; prompt: string } | null>
+  transitionHookSession?(
+    sessionId: string,
+    reason: 'clear' | 'resume',
+  ): Promise<void>
   close?(): Promise<void>
 }
 
@@ -4739,9 +4743,16 @@ export function InteractiveApp({
     if (selectingSession) {
       if (key.escape || value === '\u001B') {
         if (pickerIncludesNewSessionRef.current && allowNewSession) {
-          setSessionId(null)
-          setPendingFork(false)
           setSelectingSession(false)
+          const previousSessionId = sessionIdRef.current
+          void (async () => {
+            if (previousSessionId) {
+              const commands = await service()
+              await commands.transitionHookSession?.(previousSessionId, 'clear')
+            }
+            openSession(null)
+            setPendingFork(false)
+          })().catch(warn)
         } else if (allowNewSession) {
           setSelectingSession(false)
         } else {
@@ -4766,9 +4777,20 @@ export function InteractiveApp({
           sessionSearchRef.current,
         )[selectedIndexRef.current]
         if (selected === undefined) return
-        openSession(selected?.sessionId ?? null)
-        if (!selected) setPendingFork(false)
         setSelectingSession(false)
+        const nextSessionId = selected?.sessionId ?? null
+        const previousSessionId = sessionIdRef.current
+        void (async () => {
+          if (previousSessionId && previousSessionId !== nextSessionId) {
+            const commands = await service()
+            await commands.transitionHookSession?.(
+              previousSessionId,
+              nextSessionId === null ? 'clear' : 'resume',
+            )
+          }
+          openSession(nextSessionId)
+          if (!selected) setPendingFork(false)
+        })().catch(warn)
       } else if (key.backspace || key.delete) {
         sessionSearchRef.current = sessionSearchRef.current.slice(0, -1)
         setSessionSearch(sessionSearchRef.current)
@@ -6728,27 +6750,39 @@ export function InteractiveApp({
       } else if (prompt === '/help' || prompt === '?') {
         updateMenu({ kind: 'help', tabIndex: 0, selectedIndex: 0 })
       } else if (prompt === '/new') {
-        statusLineSessionId.current = randomUUID()
-        setSessionId(null)
-        setSessionColor(undefined)
-        setPendingFork(false)
-        append({ kind: 'notice', text: 'Started a new session.' })
+        const previousSessionId = sessionIdRef.current
+        void (async () => {
+          if (previousSessionId) {
+            const commands = await service()
+            await commands.transitionHookSession?.(previousSessionId, 'clear')
+          }
+          statusLineSessionId.current = randomUUID()
+          openSession(null)
+          setPendingFork(false)
+          append({ kind: 'notice', text: 'Started a new session.' })
+        })().catch(warn)
       } else if (prompt === '/clear') {
-        statusLineSessionId.current = randomUUID()
-        setSessionId(null)
-        setSessionColor(undefined)
-        setPendingFork(false)
-        setHistory([])
-        setUsage(undefined)
-        setCostUsd(undefined)
-        streamingFrameRef.current?.resetText()
-        streamingFrameRef.current?.resetThinking()
-        streamingFrameRef.current?.flush()
-        setThinkingExpanded(false)
-        setStatus('ready')
-        inputHistoryRef.current = []
-        inputHistoryIndexRef.current = null
-        inputHistoryDraftRef.current = ''
+        const previousSessionId = sessionIdRef.current
+        void (async () => {
+          if (previousSessionId) {
+            const commands = await service()
+            await commands.transitionHookSession?.(previousSessionId, 'clear')
+          }
+          statusLineSessionId.current = randomUUID()
+          openSession(null)
+          setPendingFork(false)
+          setHistory([])
+          setUsage(undefined)
+          setCostUsd(undefined)
+          streamingFrameRef.current?.resetText()
+          streamingFrameRef.current?.resetThinking()
+          streamingFrameRef.current?.flush()
+          setThinkingExpanded(false)
+          setStatus('ready')
+          inputHistoryRef.current = []
+          inputHistoryIndexRef.current = null
+          inputHistoryDraftRef.current = ''
+        })().catch(warn)
       } else if (prompt === '/model') {
         updateMenu({ kind: 'model', selectedIndex: 0 })
       } else if (prompt === '/effort') {

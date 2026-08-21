@@ -120,6 +120,7 @@ import type {
 } from '../extensions/claude-extensions.js'
 import { ClaudeHookToolCoordinator } from '../hooks/claude-hook-tools.js'
 import type {
+  ClaudeHookInput,
   ClaudeHookOutcome,
   ClaudeHookRunner,
 } from '../hooks/claude-hooks.js'
@@ -736,6 +737,156 @@ function validSessionName(value: string): string | null {
     : null
 }
 
+type HookSessionInput = Pick<
+  ClaudeHookInput,
+  'session_id' | 'transcript_path' | 'cwd' | 'permission_mode'
+>
+type HookSessionStartSource = 'startup' | 'resume' | 'clear' | 'compact'
+export type HookSessionEndReason = 'clear' | 'resume' | 'other'
+
+interface HookLifecycleState {
+  input: HookSessionInput
+  started: boolean
+  starting: Promise<ClaudeHookOutcome | undefined> | undefined
+  ending: Promise<void> | undefined
+}
+
+const SESSION_END_HOOK_TIMEOUT_MS = 15_000
+
+class HookLifecycle {
+  private readonly sessions = new Map<string, HookLifecycleState>()
+  private pendingSource: Exclude<HookSessionStartSource, 'compact'> | undefined
+
+  constructor(
+    private readonly hooks: ClaudeHookRunner | undefined,
+    private readonly eventSink: RuntimeEventSink | undefined,
+  ) {}
+
+  async start(
+    sessionId: string,
+    input: HookSessionInput,
+    fallbackSource: 'startup' | 'resume',
+    signal?: AbortSignal,
+  ): Promise<ClaudeHookOutcome | undefined> {
+    let state = this.sessions.get(sessionId)
+    if (state?.started) return undefined
+    if (state?.starting) return state.starting
+    state = {
+      input,
+      started: false,
+      starting: undefined,
+      ending: undefined,
+    }
+    this.sessions.set(sessionId, state)
+    const source = this.pendingSource ?? fallbackSource
+    this.pendingSource = undefined
+    state.starting = this.hooks?.run(
+      { ...input, hook_event_name: 'SessionStart', source },
+      source,
+      signal,
+    )
+    try {
+      const outcome = await state.starting
+      state.started = true
+      return outcome
+    } catch (error) {
+      this.sessions.delete(sessionId)
+      throw error
+    } finally {
+      state.starting = undefined
+    }
+  }
+
+  async refresh(
+    sessionId: string,
+    input: HookSessionInput,
+    signal?: AbortSignal,
+  ): Promise<ClaudeHookOutcome | undefined> {
+    const state = this.sessions.get(sessionId)
+    if (state) state.input = input
+    return this.hooks?.run(
+      { ...input, hook_event_name: 'SessionStart', source: 'compact' },
+      'compact',
+      signal,
+    )
+  }
+
+  async transition(
+    sessionId: string,
+    reason: Exclude<HookSessionEndReason, 'other'>,
+  ): Promise<void> {
+    await this.end(sessionId, reason)
+    this.pendingSource = reason
+  }
+
+  async end(sessionId: string, reason: HookSessionEndReason): Promise<void> {
+    const state = this.sessions.get(sessionId)
+    if (!state) return
+    if (state.starting) await state.starting
+    if (!state.started) return
+    if (state.ending) return state.ending
+    state.ending = this.runEnd(state.input, reason).finally(() => {
+      this.sessions.delete(sessionId)
+    })
+    await state.ending
+  }
+
+  async close(): Promise<void> {
+    await Promise.all(
+      [...this.sessions.keys()].map((sessionId) =>
+        this.end(sessionId, 'other'),
+      ),
+    )
+  }
+
+  private async runEnd(
+    input: HookSessionInput,
+    reason: HookSessionEndReason,
+  ): Promise<void> {
+    if (!this.hooks) return
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          controller.abort()
+          reject(new Error(`timed out after ${SESSION_END_HOOK_TIMEOUT_MS}ms`))
+        }, SESSION_END_HOOK_TIMEOUT_MS)
+      })
+      const outcome = await Promise.race([
+        this.hooks.run(
+          { ...input, hook_event_name: 'SessionEnd', reason },
+          reason,
+          controller.signal,
+        ),
+        timeout,
+      ])
+      for (const execution of outcome.executions) {
+        if (execution.exitCode === 0) continue
+        const detail =
+          execution.stderr.trim() ||
+          execution.stdout.trim() ||
+          `exit code ${execution.exitCode}`
+        this.warn(detail)
+      }
+      if (outcome.blockedReason && outcome.executions.at(-1)?.exitCode === 0) {
+        this.warn(outcome.blockedReason)
+      }
+    } catch (error) {
+      this.warn(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+
+  private warn(detail: string): void {
+    this.eventSink?.({
+      type: 'warning',
+      message: `SessionEnd hook failed: ${detail}`,
+    })
+  }
+}
+
 export class ClaudeSessionService {
   private readonly schema
   private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
@@ -771,9 +922,11 @@ export class ClaudeSessionService {
     string,
     SessionMemoryController
   >()
+  private readonly hookLifecycle: HookLifecycle
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
+    this.hookLifecycle = new HookLifecycle(options.hooks, options.eventSink)
     this.runtimeCwd = options.workspace?.cwd() ?? options.cwd
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
     this.scheduledPrompts =
@@ -950,6 +1103,7 @@ export class ClaudeSessionService {
   }
 
   async close(): Promise<void> {
+    await this.hookLifecycle.close()
     this.scheduledPrompts?.close()
     await Promise.all(
       [...this.hostedSubagents].map((executor) => executor.close()),
@@ -964,6 +1118,13 @@ export class ClaudeSessionService {
     await this.closeCostSavePromise
     this.mcpClosePromise ??= this.options.mcp?.close?.() ?? Promise.resolve()
     await this.mcpClosePromise
+  }
+
+  async transitionHookSession(
+    sessionId: string,
+    reason: Exclude<HookSessionEndReason, 'other'>,
+  ): Promise<void> {
+    await this.hookLifecycle.transition(sessionId, reason)
   }
 
   createHostedToolRegistry(sessionId: string): ToolRegistry {
@@ -3267,21 +3428,16 @@ export class ClaudeSessionService {
           }
         },
       }
+      let turnCompleted = false
       try {
-        if (this.options.hooks) {
-          const outcome = await this.options.hooks.run(
-            {
-              ...hookSession,
-              hook_event_name: 'SessionStart',
-              source: requireExisting ? 'resume' : 'startup',
-            },
-            requireExisting ? 'resume' : 'startup',
-            signal,
-          )
+        const outcome = await this.hookLifecycle.start(
+          sessionId,
+          hookSession,
+          requireExisting ? 'resume' : 'startup',
+          signal,
+        )
+        if (outcome) {
           await recordHookOutcome(outcome, pendingRecoveryToolCallIds.size > 0)
-          if (outcome.blockedReason) {
-            throw new Error(`SessionStart hook error: ${outcome.blockedReason}`)
-          }
         }
         const approveRecovery = this.options.approveRecovery
         const recoveryRequest = {
@@ -3755,21 +3911,12 @@ export class ClaudeSessionService {
           // runtime-only context so the next request retains current
           // instructions, plan state, session memory, and hook context.
           if (this.options.hooks) {
-            const outcome = await this.options.hooks.run(
-              {
-                ...hookSession,
-                hook_event_name: 'SessionStart',
-                source: 'compact',
-              },
-              'compact',
+            const outcome = await this.hookLifecycle.refresh(
+              sessionId,
+              hookSession,
               signal,
             )
-            await recordHookOutcome(outcome)
-            if (outcome.blockedReason) {
-              throw new Error(
-                `SessionStart hook error: ${outcome.blockedReason}`,
-              )
-            }
+            if (outcome) await recordHookOutcome(outcome)
           }
           await refreshRuntimeContext()
           this.options.eventSink?.({
@@ -4307,6 +4454,7 @@ export class ClaudeSessionService {
             })
           }
         }
+        turnCompleted = true
         return {
           sessionId,
           text:
@@ -4324,43 +4472,8 @@ export class ClaudeSessionService {
             : {}),
         }
       } finally {
-        try {
-          const outcome = await this.options.hooks?.run(
-            {
-              ...hookSession,
-              hook_event_name: 'SessionEnd',
-              reason: 'other',
-            },
-            'other',
-          )
-          const failedExecutions =
-            outcome?.executions.filter(
-              (execution) => execution.exitCode !== 0,
-            ) ?? []
-          for (const execution of failedExecutions) {
-            const detail =
-              execution.stderr.trim() ||
-              execution.stdout.trim() ||
-              `exit code ${execution.exitCode}`
-            this.options.eventSink?.({
-              type: 'warning',
-              message: `SessionEnd hook failed: ${detail}`,
-            })
-          }
-          if (
-            outcome?.blockedReason &&
-            outcome.executions.at(-1)?.exitCode === 0
-          ) {
-            this.options.eventSink?.({
-              type: 'warning',
-              message: `SessionEnd hook failed: ${outcome.blockedReason}`,
-            })
-          }
-        } catch (error) {
-          this.options.eventSink?.({
-            type: 'warning',
-            message: `SessionEnd hook failed: ${error instanceof Error ? error.message : String(error)}`,
-          })
+        if (!turnCompleted) {
+          await this.hookLifecycle.end(sessionId, 'other')
         }
       }
     })

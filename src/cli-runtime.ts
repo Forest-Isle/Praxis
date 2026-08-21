@@ -2270,6 +2270,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
       sessionNameSuggestion: (sessionId, signal) =>
         service.sessionNameSuggestion(sessionId, signal),
       nextScheduledPrompt: (signal) => service.nextScheduledPrompt(signal),
+      transitionHookSession: (sessionId: string, reason: 'clear' | 'resume') =>
+        service.transitionHookSession(sessionId, reason),
       close: async () => {
         let failure: unknown
         try {
