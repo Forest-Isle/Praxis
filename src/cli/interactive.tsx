@@ -93,7 +93,14 @@ import {
   type TuiMemoryFiles,
 } from './tui/memory-files.js'
 import { loadClaudeReleaseNotes } from './tui/release-notes.js'
+import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
+import {
+  FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
+  projectTranscriptTail,
+  projectTranscriptWindow,
+  transcriptLineCount,
+} from './tui/transcript-viewport.js'
 import {
   loadGitDiff,
   visiblePatchLines,
@@ -1340,6 +1347,20 @@ export function InteractiveApp({
   const [status, setStatus] = useState('ready')
   const [activeText, setActiveText] = useState('')
   const [activeThinking, setActiveThinking] = useState('')
+  // One provider-neutral streaming frame buffer per mounted app. RuntimeEvent
+  // text/thinking deltas accumulate here and are coalesced into bounded frames
+  // instead of causing a React state update per delta. The React state is only
+  // ever written through the buffer's publish callback so the buffer's committed
+  // prefix and the displayed text stay in sync. Disposed on unmount.
+  const streamingFrameRef = useRef<StreamingFrameBuffer | null>(null)
+  if (streamingFrameRef.current === null) {
+    streamingFrameRef.current = new StreamingFrameBuffer({
+      publish: (frame) => {
+        setActiveText(frame.text)
+        setActiveThinking(frame.thinking)
+      },
+    })
+  }
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
   const [turnDuration, setTurnDuration] = useState<number | undefined>()
   const [usage, setUsage] = useState<ModelUsage | undefined>()
@@ -1348,6 +1369,7 @@ export function InteractiveApp({
     display.contextWindowTokens,
   )
   const [history, setHistory] = useState<TranscriptItem[]>([...initialHistory])
+  const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0)
   // Startup diagnostics are useful before the first prompt, but they are not
   // conversation history and must not suppress the new-session welcome panel.
   // Only real user/assistant transcript entries start a conversation; every
@@ -1366,6 +1388,25 @@ export function InteractiveApp({
   // conversation content appears.
   const resumed = resume !== undefined && resumedWithTranscript
   const freshSession = !resumed && !hasConversationHistory
+  // Fullscreen projects only the newest transcript tail that fits the fixed
+  // viewport, leaving the composer/status chrome intact and keeping the active
+  // stream visible. Classic and screen-reader modes always render the full
+  // history exactly as before.
+  const projectedHistory =
+    fixedViewport && !axScreenReader
+      ? transcriptScrollOffset > 0
+        ? projectTranscriptWindow(
+            history,
+            Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
+            width,
+            transcriptScrollOffset,
+          )
+        : projectTranscriptTail(
+            history,
+            Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
+            width,
+          )
+      : history
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -1709,6 +1750,7 @@ export function InteractiveApp({
   useEffect(
     () => () => {
       componentMountedRef.current = false
+      streamingFrameRef.current?.dispose()
       permissionRef.current?.resolve(false)
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
@@ -1726,8 +1768,14 @@ export function InteractiveApp({
     [],
   )
 
-  const append = (line: TranscriptItem) =>
+  const append = (line: TranscriptItem) => {
+    // Any unflushed streaming deltas must be published before the boundary
+    // transcript state so the active stream never renders below a tool,
+    // thinking, or completion entry that it textually precedes.
+    streamingFrameRef.current?.flush()
+    setTranscriptScrollOffset(0)
     setHistory((current) => [...current, line])
+  }
 
   useEffect(() => {
     if (initialThemeSettings !== undefined) {
@@ -2200,19 +2248,19 @@ export function InteractiveApp({
   const handleEvent = (event: RuntimeEvent) => {
     switch (event.type) {
       case 'text-delta':
-        setActiveText((current) => current + event.delta)
+        streamingFrameRef.current?.appendText(event.delta)
         break
       case 'thinking-start':
-        setActiveThinking(
-          event.block.type === 'thinking'
-            ? redactSensitiveText(event.block.thinking, sensitiveValues)
-            : '',
-        )
+        streamingFrameRef.current?.resetThinking()
+        if (event.block.type === 'thinking') {
+          streamingFrameRef.current?.appendThinking(
+            redactSensitiveText(event.block.thinking, sensitiveValues),
+          )
+        }
         break
       case 'thinking-delta':
-        setActiveThinking(
-          (current) =>
-            current + redactSensitiveText(event.delta, sensitiveValues),
+        streamingFrameRef.current?.appendThinking(
+          redactSensitiveText(event.delta, sensitiveValues),
         )
         break
       case 'thinking-signature-delta':
@@ -2220,14 +2268,18 @@ export function InteractiveApp({
         // intentionally not part of the user-visible reasoning summary.
         break
       case 'thinking-stop':
+        // append flushes pending thinking deltas before the retained boundary
+        // item, keeping streaming order correct; the effective thinking getter
+        // already includes any deltas not yet published.
         append({
           kind: 'thinking',
           text:
             event.block.type === 'thinking'
               ? redactSensitiveText(event.block.thinking, sensitiveValues)
-              : activeThinking,
+              : (streamingFrameRef.current?.thinking ?? ''),
         })
-        setActiveThinking('')
+        streamingFrameRef.current?.resetThinking()
+        streamingFrameRef.current?.flush()
         break
       case 'user-message':
         append({ kind: 'assistant', text: event.message })
@@ -3821,6 +3873,7 @@ export function InteractiveApp({
     shellCommand?: string,
     images: readonly ModelImage[] = [],
   ) => {
+    setTranscriptScrollOffset(0)
     const turnNumber = turnNumberRef.current + 1
     const turnStartedAt = Date.now()
     turnNumberRef.current = turnNumber
@@ -3843,8 +3896,9 @@ export function InteractiveApp({
         )?.progressMessage
       : undefined
     setStatus(commandProgressMessage ?? 'assembling-context')
-    setActiveText('')
-    setActiveThinking('')
+    streamingFrameRef.current?.resetText()
+    streamingFrameRef.current?.resetThinking()
+    streamingFrameRef.current?.flush()
     if (runtimeSettingsRef.current.tips && !commandProgressMessage) {
       setStatus(spinnerTip(runtimeSettingsRef.current) ?? 'assembling-context')
     }
@@ -3931,8 +3985,9 @@ export function InteractiveApp({
           // Diff snapshots are a local presentation aid and must not fail a turn.
         }
       }
-      setActiveText('')
-      setActiveThinking('')
+      streamingFrameRef.current?.resetText()
+      streamingFrameRef.current?.resetThinking()
+      streamingFrameRef.current?.flush()
       setStatus('ready')
       setTurnDuration(Date.now() - turnStartedAt)
       if (
@@ -4184,6 +4239,47 @@ export function InteractiveApp({
       return
     }
     const isKeybinding = (action: string) => keybindingAction === action
+
+    if (
+      fixedViewport &&
+      menuRef.current === null &&
+      !permission &&
+      !planApproval &&
+      !question &&
+      !elicitation &&
+      !selectingSession
+    ) {
+      const page = Math.max(
+        1,
+        (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
+      )
+      const scrollDelta = key.pageUp
+        ? page
+        : key.pageDown
+          ? -page
+          : controlKey('u') || controlKey('b')
+            ? page / 2
+            : controlKey('f') || controlKey('n')
+              ? -page / 2
+              : inputRef.current.length === 0 && key.upArrow
+                ? 1
+                : inputRef.current.length === 0 && key.downArrow
+                  ? -1
+                  : 0
+      if (scrollDelta !== 0) {
+        setTranscriptScrollOffset((current) =>
+          Math.min(
+            Math.max(
+              0,
+              transcriptLineCount(history, width) -
+                Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
+            ),
+            Math.max(0, current + Math.trunc(scrollDelta)),
+          ),
+        )
+        return
+      }
+    }
 
     if (
       runtimeSettingsRef.current.editor === 'vim' &&
@@ -6642,8 +6738,9 @@ export function InteractiveApp({
         setHistory([])
         setUsage(undefined)
         setCostUsd(undefined)
-        setActiveText('')
-        setActiveThinking('')
+        streamingFrameRef.current?.resetText()
+        streamingFrameRef.current?.resetThinking()
+        streamingFrameRef.current?.flush()
         setThinkingExpanded(false)
         setStatus('ready')
         inputHistoryRef.current = []
@@ -7170,14 +7267,25 @@ export function InteractiveApp({
             {!axScreenReader && !resumed && hasConversationHistory ? (
               <SessionIdentity display={runtimeDisplay} width={width} />
             ) : null}
-            <Transcript
-              items={history}
-              activeText={activeText}
-              activeThinking={activeThinking}
-              thinkingExpanded={thinkingExpanded}
-              detailedTranscript={thinkingExpanded || runtimeSettings.verbose}
-              screenReader={axScreenReader}
-            />
+            <Box
+              {...(fixedViewport
+                ? {
+                    flexShrink: 1,
+                    minHeight: 0,
+                    overflowY: 'hidden' as const,
+                  }
+                : {})}
+            >
+              <Transcript
+                items={projectedHistory}
+                activeText={activeText}
+                activeThinking={activeThinking}
+                activeStreamVisible={transcriptScrollOffset === 0}
+                thinkingExpanded={thinkingExpanded}
+                detailedTranscript={thinkingExpanded || runtimeSettings.verbose}
+                screenReader={axScreenReader}
+              />
+            </Box>
             {externalEditorRequest !== null ||
             keybindingsEditing ||
             memoryEditorRequest !== null ? (

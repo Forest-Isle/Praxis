@@ -52,9 +52,21 @@ The Ink interactive CLI is an event adapter under `src/cli`: it renders
 existing `approveTool` callback, and starts or resumes application sessions.
 Stateless presentation components under `src/cli/tui` provide the responsive
 welcome card, Markdown/diff transcript, tool and thinking hierarchy, bounded
-session picker, composer/status area, and decision dialogs. Fullscreen mode
-also bounds the Ink root to live terminal rows and keeps the composer/status
-area outside the shrinkable transcript region. TUI-only display
+session picker, composer/status area, and decision dialogs. A provider-neutral
+streaming frame buffer (`src/cli/tui/streaming-frame-buffer.ts`) sits at the
+presentation boundary: it coalesces high-frequency text/thinking deltas into
+bounded frames published at a fixed cadence, flushes explicitly at lifecycle
+boundaries, and disposes with the mounted app. Active streaming text renders
+through a bounded window of stable Markdown lines plus a plain pending tail so
+an incomplete fence or heading cannot corrupt the frame and the growing
+document is not reparsed every frame; completed turns still render the full
+Markdown transcript exactly. Fullscreen mode
+also bounds the Ink root to live terminal rows, projects the newest transcript
+tail through a deterministic suffix viewport
+(`src/cli/tui/transcript-viewport.ts`) so the newest user/assistant content
+and the active stream stay visible while active, and keeps the composer/status
+area outside the shrinkable transcript region. Classic mode retains full-history
+semantics. TUI-only display
 metadata never enters shared transcripts. React and Ink do not enter `core`,
 application services, providers, tools, or shared persistence. Headless text
 and NDJSON modes retain the same runtime ports without terminal prompts. See
