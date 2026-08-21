@@ -97,10 +97,9 @@ import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import {
   FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
-  projectTranscriptTail,
-  projectTranscriptWindow,
   transcriptLineCount,
 } from './tui/transcript-viewport.js'
+import { projectTuiView, resolveTuiRenderer } from './tui/tui-view-model.js'
 import {
   loadGitDiff,
   visiblePatchLines,
@@ -154,6 +153,10 @@ import {
   moveComposerCursor,
   moveComposerCursorByWord,
 } from './tui/composer-editor.js'
+import {
+  routeComposerKey,
+  type ComposerKeyTransition,
+} from './tui/composer-key-router.js'
 import {
   applyMentionReference,
   fileReferenceAtCursor,
@@ -1370,43 +1373,32 @@ export function InteractiveApp({
   )
   const [history, setHistory] = useState<TranscriptItem[]>([...initialHistory])
   const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0)
-  // Startup diagnostics are useful before the first prompt, but they are not
-  // conversation history and must not suppress the new-session welcome panel.
-  // Only real user/assistant transcript entries start a conversation; every
-  // other kind (thinking, context, tool, shell, notices, results, and so on)
-  // is operational bookkeeping that must not hide the fresh-session welcome.
-  const isRealConversation = (item: TranscriptItem) =>
-    item.kind === 'user' || item.kind === 'assistant'
-  // The original loaded transcript decides whether the session was resumed,
-  // separately from the live history that grows while the session runs.
-  const resumedWithTranscript = initialHistory.some(isRealConversation)
-  const hasConversationHistory = history.some(isRealConversation)
-  // A session is resumed only when it was opened through `resume` and the
-  // original transcript already contained real conversation content. Supplying
-  // a session ID alone with an empty transcript keeps the session fresh, so the
-  // full welcome panel renders and the compact identity stays hidden until real
-  // conversation content appears.
-  const resumed = resume !== undefined && resumedWithTranscript
-  const freshSession = !resumed && !hasConversationHistory
-  // Fullscreen projects only the newest transcript tail that fits the fixed
-  // viewport, leaving the composer/status chrome intact and keeping the active
-  // stream visible. Classic and screen-reader modes always render the full
-  // history exactly as before.
-  const projectedHistory =
-    fixedViewport && !axScreenReader
-      ? transcriptScrollOffset > 0
-        ? projectTranscriptWindow(
-            history,
-            Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
-            width,
-            transcriptScrollOffset,
-          )
-        : projectTranscriptTail(
-            history,
-            Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
-            width,
-          )
-      : history
+  // The pure TUI view model classifies the session identity (fresh/resumed/
+  // started) and projects the rendered transcript. Startup diagnostics are
+  // useful before the first prompt, but they are not conversation history and
+  // must not suppress the new-session welcome panel. Only real user/assistant
+  // transcript entries start a conversation; every other kind (thinking,
+  // context, tool, shell, notices, results, and so on) is operational
+  // bookkeeping that must not hide the fresh-session welcome. The original
+  // loaded transcript decides whether the session was resumed, separately from
+  // the live history that grows while the session runs. A session is resumed
+  // only when it was opened through `resume` and the original transcript
+  // already contained real conversation content. Fullscreen projects only the
+  // newest transcript tail that fits the fixed viewport, leaving the
+  // composer/status chrome intact and keeping the active stream visible.
+  // Classic and screen-reader modes always render the full history exactly as
+  // before.
+  const { projectedHistory, resumed, freshSession, hasConversationHistory } =
+    projectTuiView({
+      initialHistory,
+      history,
+      resume: resume !== undefined,
+      fixedViewport,
+      screenReader: axScreenReader,
+      rows,
+      width,
+      scrollOffset: transcriptScrollOffset,
+    })
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -7233,7 +7225,21 @@ export function InteractiveApp({
       clearComposerInput()
       return
     }
-    editComposer()
+    const transition: ComposerKeyTransition = routeComposerKey(editor(), {
+      value,
+      left: key.leftArrow,
+      right: key.rightArrow,
+      backspace: key.backspace,
+      delete: key.delete,
+      ctrl: key.ctrl,
+      meta: key.meta,
+      escape: key.escape || value === '\u001B',
+    })
+    if (transition.kind === 'cancel') {
+      clearComposerInput()
+    } else if (transition.kind === 'edit') {
+      updateComposerEditor(transition.editor)
+    }
   })
 
   return (
@@ -8060,6 +8066,24 @@ export function InteractiveApp({
   )
 }
 
+/**
+ * Whether the user explicitly saved a `tui` renderer value in configuration.
+ * A fresh install leaves the setting unset, so the interactive TTY session can
+ * default to the fullscreen renderer; once the user runs `/tui default` or
+ * `/tui fullscreen`, the saved value is honored. If configuration cannot be
+ * read, the loaded runtime setting is honored instead of guessing.
+ */
+async function tuiRendererExplicitlyConfigured(
+  target?: Parameters<typeof loadConfigSettings>[0],
+): Promise<boolean> {
+  try {
+    const snapshot = await loadConfigSettings(target)
+    return snapshot.settings.tui !== undefined
+  } catch {
+    return true
+  }
+}
+
 export async function runInteractive(options: {
   dataPlane?: DataPlane
   configRoot?: string
@@ -8104,7 +8128,21 @@ export async function runInteractive(options: {
   let currentRuntimeSettings =
     options.runtimeSettings ??
     (await loadRuntimeSettings(runtimeSettingsTarget))
-  let currentRenderer = currentRuntimeSettings.tui
+  // Fullscreen is the default interactive TTY renderer. Classic remains the
+  // fallback for screen-reader and non-interactive execution, and an explicit
+  // renderer saved in configuration is honored over the default.
+  const rendererExplicitlyConfigured = await tuiRendererExplicitlyConfigured(
+    runtimeSettingsTarget,
+  )
+  let currentRenderer = resolveTuiRenderer({
+    configured: currentRuntimeSettings.tui,
+    explicitlyConfigured: rendererExplicitlyConfigured,
+    interactiveTty: process.stdin.isTTY === true,
+    screenReader: options.axScreenReader ?? false,
+  })
+  if (currentRenderer !== currentRuntimeSettings.tui) {
+    currentRuntimeSettings = { ...currentRuntimeSettings, tui: currentRenderer }
+  }
   let rendererChange: {
     mode: PraxisRuntimeSettings['tui']
     sessionId: string | null

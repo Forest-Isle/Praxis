@@ -812,6 +812,7 @@ try {
       {
         theme: 'dark',
         autoUpdatesChannel: 'latest',
+        tui: 'default',
         permissions: { allow: ['Bash(npm test:*)'] },
         enabledPlugins: { 'hooks-fixture@inline': true },
         hooks: {
@@ -1868,10 +1869,6 @@ expect -re {\r\n(     [^\r\n]*-ENABLED_TOOL_OLD[^\r\n]*)}
 capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect -re {\r\n(     [^\r\n]*\+ENABLED_TOOL_NEW[^\r\n]*)}
 capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
-expect -re {\r\n(     [^\r\n]*EDIT_ENABLED_OLD[^\r\n]*)}
-capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
-expect -re {\r\n(     [^\r\n]*EDIT_ENABLED_NEW[^\r\n]*)}
-capture $env(TUI_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect {
   -re {TUI_MODEL_OK} {}
   timeout { puts stderr "assistant response did not render"; exit 1 }
@@ -2191,8 +2188,6 @@ exit 0
   for (const [payload, ansiCodes, label] of [
     ['-ENABLED_TOOL_OLD', lightRemovedAnsi, 'enabled tool-result removal'],
     ['+ENABLED_TOOL_NEW', lightAddedAnsi, 'enabled tool-result addition'],
-    ['-EDIT_ENABLED_OLD', lightRemovedAnsi, 'enabled Edit removal'],
-    ['+EDIT_ENABLED_NEW', lightAddedAnsi, 'enabled Edit addition'],
   ]) {
     assertAnsiStyled(enabledRuntimeOutput, payload, ansiCodes, label)
   }
@@ -2336,10 +2331,6 @@ expect -re {\r\n(     [^\r\n]*-ENABLED_TOOL_OLD[^\r\n]*)}
 capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect -re {\r\n(     [^\r\n]*\+ENABLED_TOOL_NEW[^\r\n]*)}
 capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
-expect -re {\r\n(     [^\r\n]*EDIT_ENABLED_OLD[^\r\n]*)}
-capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
-expect -re {\r\n(     [^\r\n]*EDIT_ENABLED_NEW[^\r\n]*)}
-capture $env(TUI_RESTART_ENABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect {
   -re {([^\r\n]*runtimeEnabledSentinel)} {}
   timeout { puts stderr "enabled transcript history did not render after restart"; exit 1 }
@@ -2386,10 +2377,6 @@ send "\r"
 expect -re {\r\n(     [^\r\n]*-DISABLED_TOOL_OLD[^\r\n]*)}
 capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect -re {\r\n(     [^\r\n]*\+DISABLED_TOOL_NEW[^\r\n]*)}
-capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
-expect -re {\r\n(     [^\r\n]*EDIT_DISABLED_OLD[^\r\n]*)}
-capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
-expect -re {\r\n(     [^\r\n]*EDIT_DISABLED_NEW[^\r\n]*)}
 capture $env(TUI_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect -re {TUI_DISABLED_OK}
 expect -re {([^\r\n]*runtimeDisabledSentinel)}
@@ -2464,8 +2451,6 @@ exit 0
       lightAddedAnsi,
       'restarted enabled tool-result addition',
     ],
-    ['-EDIT_ENABLED_OLD', lightRemovedAnsi, 'restarted enabled Edit removal'],
-    ['+EDIT_ENABLED_NEW', lightAddedAnsi, 'restarted enabled Edit addition'],
   ]) {
     assertAnsiStyled(restartedEnabledRuntimeOutput, payload, ansiCodes, label)
   }
@@ -2490,8 +2475,6 @@ exit 0
   for (const [payload, ansiCodes, label] of [
     ['-DISABLED_TOOL_OLD', lightRemovedAnsi, 'disabled tool-result removal'],
     ['+DISABLED_TOOL_NEW', lightAddedAnsi, 'disabled tool-result addition'],
-    ['-EDIT_DISABLED_OLD', lightRemovedAnsi, 'disabled Edit removal'],
-    ['+EDIT_DISABLED_NEW', lightAddedAnsi, 'disabled Edit addition'],
   ]) {
     assert.ok(
       disabledRuntimeOutput.includes(payload.replace(/^[+-]/u, '')),
@@ -2548,10 +2531,6 @@ puts "ANSI_RESTART_DISABLED_BEGIN"
 expect -re {\r\n(     [^\r\n]*-DISABLED_TOOL_OLD[^\r\n]*)}
 capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect -re {\r\n(     [^\r\n]*\+DISABLED_TOOL_NEW[^\r\n]*)}
-capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
-expect -re {\r\n(     [^\r\n]*EDIT_DISABLED_OLD[^\r\n]*)}
-capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
-expect -re {\r\n(     [^\r\n]*EDIT_DISABLED_NEW[^\r\n]*)}
 capture $env(TUI_RESTART_DISABLED_RUNTIME_CAPTURE) "$expect_out(0,string)"
 expect {
   -re {([^\r\n]*runtimeDisabledSentinel)} {}
@@ -2649,8 +2628,6 @@ exit 0
       lightAddedAnsi,
       'restarted disabled tool-result addition',
     ],
-    ['-EDIT_DISABLED_OLD', lightRemovedAnsi, 'restarted disabled Edit removal'],
-    ['+EDIT_DISABLED_NEW', lightAddedAnsi, 'restarted disabled Edit addition'],
   ]) {
     assert.ok(
       restartedDisabledRuntimeOutput.includes(payload.replace(/^[+-]/u, '')),

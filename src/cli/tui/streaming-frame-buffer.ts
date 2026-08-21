@@ -8,6 +8,10 @@
  * tail, and every published frame is the exact concatenation of every delta
  * received since the previous frame.
  *
+ * Pending deltas are buffered as chunks and concatenated exactly once per
+ * published frame, so appending a delta stores the delta alone (amortized
+ * O(1)) instead of re-concatenating the full accumulated string.
+ *
  * `flush()` publishes any pending deltas immediately and is used at lifecycle
  * boundaries (thinking-stop, tool-call/result, permission/dialog transitions,
  * turn completion/cancellation) so the transcript boundary state is always
@@ -53,14 +57,26 @@ export interface StreamingFrameBufferOptions {
   scheduler?: StreamingFrameScheduler
 }
 
+/**
+ * A stream's not-yet-published content. `base` is the committed prefix the
+ * pending deltas grow from, and is '' once a reset has discarded it so later
+ * appends rebuild from empty. `chunks` holds individual deltas appended since
+ * the last publication/reset and is joined exactly once when a frame is
+ * published.
+ */
+interface PendingStream {
+  base: string
+  chunks: string[]
+}
+
 export class StreamingFrameBuffer {
   private readonly publishFrame: (frame: StreamingFrame) => void
   private readonly frameIntervalMs: number
   private readonly scheduler: StreamingFrameScheduler
   private committedText = ''
   private committedThinking = ''
-  private pendingText: string | null = null
-  private pendingThinking: string | null = null
+  private pendingText: PendingStream | null = null
+  private pendingThinking: PendingStream | null = null
   private scheduled = false
   private scheduledHandle: unknown = undefined
   private disposed = false
@@ -73,12 +89,16 @@ export class StreamingFrameBuffer {
 
   /** Full effective text, including any deltas not yet published. */
   get text(): string {
-    return this.pendingText ?? this.committedText
+    return this.pendingText === null
+      ? this.committedText
+      : this.pendingText.base + this.pendingText.chunks.join('')
   }
 
   /** Full effective thinking, including any deltas not yet published. */
   get thinking(): string {
-    return this.pendingThinking ?? this.committedThinking
+    return this.pendingThinking === null
+      ? this.committedThinking
+      : this.pendingThinking.base + this.pendingThinking.chunks.join('')
   }
 
   get hasPending(): boolean {
@@ -92,41 +112,36 @@ export class StreamingFrameBuffer {
   /** Append an assistant text delta and schedule a frame publish. */
   appendText(delta: string): void {
     if (this.disposed) return
-    this.pendingText = (this.pendingText ?? this.committedText) + delta
+    if (this.pendingText === null) {
+      this.pendingText = { base: this.committedText, chunks: [] }
+    }
+    this.pendingText.chunks.push(delta)
     this.scheduleFrame()
   }
 
   /** Append a thinking delta and schedule a frame publish. */
   appendThinking(delta: string): void {
     if (this.disposed) return
-    this.pendingThinking =
-      (this.pendingThinking ?? this.committedThinking) + delta
+    if (this.pendingThinking === null) {
+      this.pendingThinking = { base: this.committedThinking, chunks: [] }
+    }
+    this.pendingThinking.chunks.push(delta)
     this.scheduleFrame()
   }
 
   /** Discard pending text and clear the active text on the next frame. */
   resetText(): void {
     if (this.disposed) return
-    if (
-      this.pendingText === '' ||
-      (this.pendingText === null && this.committedText === '')
-    ) {
-      return
-    }
-    this.pendingText = ''
+    if (this.isTextResetRedundant()) return
+    this.pendingText = { base: '', chunks: [] }
     this.scheduleFrame()
   }
 
   /** Discard pending thinking and clear the active thinking on the next frame. */
   resetThinking(): void {
     if (this.disposed) return
-    if (
-      this.pendingThinking === '' ||
-      (this.pendingThinking === null && this.committedThinking === '')
-    ) {
-      return
-    }
-    this.pendingThinking = ''
+    if (this.isThinkingResetRedundant()) return
+    this.pendingThinking = { base: '', chunks: [] }
     this.scheduleFrame()
   }
 
@@ -164,12 +179,31 @@ export class StreamingFrameBuffer {
     }
   }
 
+  private isTextResetRedundant(): boolean {
+    if (this.pendingText === null) return this.committedText === ''
+    return (
+      this.pendingText.base === '' && this.pendingText.chunks.join('') === ''
+    )
+  }
+
+  private isThinkingResetRedundant(): boolean {
+    if (this.pendingThinking === null) return this.committedThinking === ''
+    return (
+      this.pendingThinking.base === '' &&
+      this.pendingThinking.chunks.join('') === ''
+    )
+  }
+
   private publishPending(): void {
     if (this.disposed) return
     if (this.pendingText === null && this.pendingThinking === null) return
-    if (this.pendingText !== null) this.committedText = this.pendingText
+    if (this.pendingText !== null) {
+      this.committedText =
+        this.pendingText.base + this.pendingText.chunks.join('')
+    }
     if (this.pendingThinking !== null) {
-      this.committedThinking = this.pendingThinking
+      this.committedThinking =
+        this.pendingThinking.base + this.pendingThinking.chunks.join('')
     }
     this.pendingText = null
     this.pendingThinking = null

@@ -212,6 +212,90 @@ describe('InteractiveApp', () => {
     app.unmount()
   })
 
+  it('renders fresh and resumed sessions through the TUI projection with a complete shell', () => {
+    const fresh = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: '0.20.20', cwd: '/Users/test/dev-tools' }}
+      />,
+    )
+    const freshFrame = fresh.lastFrame() ?? ''
+    // A fresh session renders the full welcome shell with the composer.
+    expect(freshFrame).toContain('Welcome to Praxis')
+    expect(freshFrame).toContain('⏵⏵')
+    fresh.unmount()
+
+    const resumed = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'user', text: 'first prompt' },
+          { kind: 'assistant', text: 'first reply' },
+          { kind: 'user', text: 'resumed prompt' },
+        ]}
+        resume={{ sessionId: 'session-1' }}
+        display={{ version: '0.20.20', cwd: '/Users/test/dev-tools' }}
+      />,
+    )
+    const resumedFrame = resumed.lastFrame() ?? ''
+    // A resumed session keeps the loaded transcript order through the
+    // projection and never renders a fresh-session welcome identity, but still
+    // renders the composer shell.
+    expect(resumedFrame).not.toContain('Welcome to Praxis')
+    expect(resumedFrame).not.toContain('Praxis Code v')
+    expect(resumedFrame.indexOf('first prompt')).toBeLessThan(
+      resumedFrame.indexOf('first reply'),
+    )
+    expect(resumedFrame.indexOf('first reply')).toBeLessThan(
+      resumedFrame.indexOf('resumed prompt'),
+    )
+    expect(resumedFrame).toContain('⏵⏵')
+    resumed.unmount()
+  })
+
+  it('keeps screen-reader transcripts semantic and full under a fullscreen configuration', () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        axScreenReader
+        runtimeSettings={{
+          ...projectRuntimeSettings({ settings: {}, state: {} }),
+          tui: 'fullscreen',
+        }}
+        initialHistory={[
+          { kind: 'user', text: 'prompt one' },
+          { kind: 'assistant', text: 'answer one' },
+        ]}
+        display={{ version: '0.20.20', cwd: '/Users/test/dev-tools' }}
+      />,
+    )
+    const frame = app.lastFrame() ?? ''
+    // Screen-reader output stays semantic, full, and free of decorative
+    // welcome/identity chrome even when the configured renderer is fullscreen.
+    expect(frame).toContain('You: ')
+    expect(frame).toContain('Praxis:')
+    expect(frame).toContain('prompt one')
+    expect(frame).toContain('answer one')
+    expect(frame).not.toContain('Welcome to Praxis')
+    expect(frame).not.toContain('Praxis Code v')
+    app.unmount()
+  })
+
   it('configures sandbox mode, overrides, and config through /sandbox', async () => {
     let snapshot: TuiSandboxSnapshot = {
       settings: {
