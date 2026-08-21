@@ -90,4 +90,59 @@ describe('Claude active transcript selection', () => {
       selectClaudeTranscriptAtMessage(entries, 'abandoned-prompt'),
     ).toThrow('No message found with message.uuid of: abandoned-prompt')
   })
+
+  it('follows a compact boundary logical parent instead of an unrelated physical tail', () => {
+    const compactBoundary: ClaudeTranscriptEntry = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'compact-boundary',
+      parentUuid: null,
+      logicalParentUuid: 'first-answer',
+      sessionId: root.sessionId,
+      isSidechain: false,
+      content: 'Conversation compacted',
+      compactMetadata: {
+        trigger: 'auto',
+        preTokens: 2000,
+        postTokens: 1000,
+        durationMs: 10,
+        cumulativeDroppedTokens: 1000,
+        preservedSegment: {
+          headUuid: 'root',
+          anchorUuid: 'first-answer',
+          tailUuid: 'first-answer',
+        },
+        preservedMessages: {
+          anchorUuid: 'first-answer',
+          uuids: ['root', 'first-answer'],
+          allUuids: ['root', 'first-answer'],
+        },
+      },
+    }
+    const compactSummary: ClaudeTranscriptEntry = {
+      type: 'user',
+      uuid: 'compact-summary',
+      parentUuid: 'compact-boundary',
+      sessionId: root.sessionId,
+      isSidechain: false,
+      isCompactSummary: true,
+      isVisibleInTranscriptOnly: true,
+      promptId: 'compact-summary',
+      message: {
+        role: 'user',
+        content: 'Continued from a compacted conversation.',
+      },
+    }
+    const unrelatedTail = message('user', 'unrelated-tail', 'root')
+
+    expect(
+      selectClaudeActiveTranscript([
+        root,
+        firstAnswer,
+        compactBoundary,
+        compactSummary,
+        unrelatedTail,
+      ]),
+    ).toEqual([root, firstAnswer, compactBoundary, compactSummary])
+  })
 })

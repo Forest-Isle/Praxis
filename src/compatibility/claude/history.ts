@@ -27,7 +27,16 @@ function latestLeafUuid(
           entry.isSidechain !== true,
       )
     if (!hasNewDescendant) return summary.uuid
-    break
+    // After compaction the active leaf continues from the boundary's logical
+    // parent. Ignore unrelated physical entries that do not descend from the
+    // boundary and keep the compact summary as the leaf when none do.
+    const continuation = latestCompactBranchLeafUuid(
+      entries,
+      index + 1,
+      boundary ? entryUuid(boundary) : null,
+      summary.uuid,
+    )
+    return continuation === null ? summary.uuid : continuation
   }
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]
@@ -37,6 +46,46 @@ function latestLeafUuid(
     }
     const uuid = entryUuid(entry)
     if (uuid) return uuid
+  }
+  return null
+}
+
+function latestCompactBranchLeafUuid(
+  entries: readonly ClaudeTranscriptEntry[],
+  fromIndex: number,
+  boundaryUuid: string | null,
+  summaryUuid: string,
+): string | null {
+  const byUuid = new Map<string, ClaudeTranscriptEntry>()
+  for (const entry of entries) {
+    const uuid = entryUuid(entry)
+    if (uuid && entry.isSidechain !== true) byUuid.set(uuid, entry)
+  }
+  for (let index = entries.length - 1; index >= fromIndex; index -= 1) {
+    const entry = entries[index]
+    if (!entry || entry.isSidechain === true) continue
+    const candidate =
+      entry.type === 'last-prompt' && typeof entry.leafUuid === 'string'
+        ? entry.leafUuid
+        : entryUuid(entry)
+    if (candidate === null) continue
+    let uuid: string | null = candidate
+    const seen = new Set<string>()
+    while (uuid !== null) {
+      if (uuid === summaryUuid || uuid === boundaryUuid) return candidate
+      if (seen.has(uuid)) break
+      seen.add(uuid)
+      const node = byUuid.get(uuid)
+      if (!node) break
+      uuid =
+        node.type === 'system' &&
+        node.subtype === 'compact_boundary' &&
+        typeof node.logicalParentUuid === 'string'
+          ? node.logicalParentUuid
+          : typeof node.parentUuid === 'string'
+            ? node.parentUuid
+            : null
+    }
   }
   return null
 }
@@ -86,6 +135,9 @@ function selectAncestry(
     if (uuid) {
       return (
         active.has(uuid) ||
+        (entry.type === 'attachment' &&
+          typeof entry.parentUuid === 'string' &&
+          active.has(entry.parentUuid)) ||
         (entry.type === 'user' &&
           typeof entry.sourceToolAssistantUUID === 'string' &&
           active.has(entry.sourceToolAssistantUUID))
