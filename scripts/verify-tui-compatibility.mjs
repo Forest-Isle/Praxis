@@ -1112,7 +1112,7 @@ globalThis.fetch = async (...args) => {
 set timeout 15
 log_user 1
 log_file -noappend $env(TUI_CAPTURE_FILE)
-spawn -noecho env COLUMNS=100 LINES=32 CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
 expect -re {Try.*review this project}
@@ -1177,7 +1177,7 @@ exit 0
   const linuxLikeAutoProbe = String.raw`
 set timeout 15
 log_user 1
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
 expect -re {Try.*review this project}
@@ -1262,7 +1262,7 @@ exit 0
   const linuxLikeAnsi16Probe = String.raw`
 set timeout 15
 log_user 1
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
 expect -re {Try.*review this project}
@@ -1402,7 +1402,7 @@ expect_before timeout {
   puts stderr "TUI memory cancel timed out during $phase"
   exit 1
 }
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CANCEL_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --session-id $env(TUI_CANCEL_SESSION_ID) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CANCEL_CONFIG_ROOT) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --session-id $env(TUI_CANCEL_SESSION_ID) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
 write_shared_snapshot before $env(TUI_CANCEL_BEFORE)
@@ -1528,7 +1528,7 @@ expect_before timeout {
   puts stderr "Providerless hooks probe timed out during $phase"
   exit 1
 }
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_DATA_PLANE=claude $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {Praxis.*Code.*v${expectedVersionPattern}}
 expect -re {shortcuts}
@@ -1594,7 +1594,7 @@ expect_before timeout {
   puts stderr "TUI compatibility timed out during $phase"
   exit 1
 }
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color NODE_OPTIONS=--import=$env(TUI_DOCTOR_FETCH_SHIM) EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions --add-dir $env(TUI_SHARED_ROOT) --plugin-dir $env(TUI_PLUGIN_ROOT)
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color NODE_OPTIONS=--import=$env(TUI_DOCTOR_FETCH_SHIM) EDITOR=$env(TUI_EDITOR) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --dangerously-skip-permissions --add-dir $env(TUI_SHARED_ROOT) --plugin-dir $env(TUI_PLUGIN_ROOT)
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect {
   -re {Praxis.*Code.*v${expectedVersionPattern}} { puts stderr "DBG header matched elapsed=[expr {[clock milliseconds]-$t0}]ms" }
@@ -2091,7 +2091,7 @@ send "\003"
 expect eof
 
 set phase "suspend and resume"
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) zsh -f
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color PATH=$env(PATH) CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) zsh -f
 stty rows 32 columns 100 < $spawn_out(slave,name)
 expect -re {[%#] }
 send "export PS1=PRAXIS_SHELL\\>\\ \r"
@@ -2329,7 +2329,7 @@ proc assert_style {row label expected first second} {
   }
 }
 log_user 1
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --resume $env(TUI_SESSION_ID) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --resume $env(TUI_SESSION_ID) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 puts "ANSI_RESTART_ENABLED_BEGIN"
 expect -re {\r\n(     [^\r\n]*-ENABLED_TOOL_OLD[^\r\n]*)}
@@ -2542,7 +2542,7 @@ proc assert_style {row label expected first second} {
     exit 1
   }
 }
-spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --resume $env(TUI_SESSION_ID) --dangerously-skip-permissions
+spawn -noecho env COLUMNS=100 LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_CONFIG_ROOT) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --resume $env(TUI_SESSION_ID) --dangerously-skip-permissions
 stty rows 32 columns 100 < $spawn_out(slave,name)
 puts "ANSI_RESTART_DISABLED_BEGIN"
 expect -re {\r\n(     [^\r\n]*-DISABLED_TOOL_OLD[^\r\n]*)}

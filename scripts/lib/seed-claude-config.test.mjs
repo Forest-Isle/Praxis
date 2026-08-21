@@ -1,12 +1,17 @@
+import { execFile } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { seedClaudeConfig } from './seed-claude-config.mjs'
 
 const roots = []
+const execFileAsync = promisify(execFile)
+const wrapper = fileURLToPath(new URL('../claude', import.meta.url))
 
 afterEach(async () => {
   await Promise.all(
@@ -15,6 +20,53 @@ afterEach(async () => {
 })
 
 describe('Claude compatibility auth seeding', () => {
+  it('does not seed an ambient config root without an explicit compatibility opt-in', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-claude-wrapper-'))
+    roots.push(root)
+    const home = join(root, 'home')
+    const config = join(root, 'ambient-config')
+    await Promise.all([
+      mkdir(join(home, '.claude'), { recursive: true }),
+      mkdir(config, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(join(home, '.claude.json'), '{}'),
+      writeFile(join(home, '.claude', 'settings.json'), '{}'),
+    ])
+
+    await execFileAsync(wrapper, ['--version'], {
+      env: {
+        ...process.env,
+        HOME: home,
+        CLAUDE_CONFIG_DIR: config,
+        PRAXIS_REAL_CLAUDE_BINARY: process.execPath,
+      },
+    })
+
+    await expect(
+      readFile(join(config, '.praxis-compat-auth-seeded')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(config, '.claude.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(readFile(join(config, 'settings.json'))).rejects.toMatchObject(
+      { code: 'ENOENT' },
+    )
+
+    await execFileAsync(wrapper, ['--version'], {
+      env: {
+        ...process.env,
+        HOME: home,
+        CLAUDE_CONFIG_DIR: config,
+        PRAXIS_COMPAT_SEED_CLAUDE_CONFIG: '1',
+        PRAXIS_REAL_CLAUDE_BINARY: process.execPath,
+      },
+    })
+    await expect(
+      readFile(join(config, '.praxis-compat-auth-seeded'), 'utf8'),
+    ).resolves.toBe('')
+  })
+
   it('merges authentication defaults once without overwriting fixture state', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-claude-seed-'))
     roots.push(root)

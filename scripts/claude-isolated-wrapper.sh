@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-if [ -n "${CLAUDE_CONFIG_DIR:-}" ] &&
+if [ "${PRAXIS_COMPAT_SEED_CLAUDE_CONFIG:-}" = "1" ] &&
+  [ -n "${CLAUDE_CONFIG_DIR:-}" ] &&
   [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] &&
   [ -z "${ANTHROPIC_API_KEY:-}" ] &&
   [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ]; then

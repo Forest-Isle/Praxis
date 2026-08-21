@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { realpathSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 
 const projectRoot = process.cwd()
@@ -157,24 +158,35 @@ function isTransientFailure(error) {
   return transientModelPatterns.some((pattern) => diagnostics.includes(pattern))
 }
 
-const startedAt = Date.now()
-for (const [index, entrypoint] of runnableEntrypoints.entries()) {
-  try {
-    await run(entrypoint, index)
-  } catch (error) {
-    if (
-      !retryableTransientGates.has(entrypoint.file) ||
-      !isTransientFailure(error)
-    ) {
-      throw error
-    }
-    console.warn(`\nRetrying transient compatibility gate: ${entrypoint.file}`)
-    await run(entrypoint, index)
-  }
-}
-console.log(
-  `\nCompatibility matrix passed: ${runnableEntrypoints.length} isolated gates${skippedEntrypoints.length > 0 ? `; skipped ${skippedEntrypoints.length} environment-gated lanes` : ''} in ${(
-    (Date.now() - startedAt) /
-    1000
-  ).toFixed(1)}s.`,
+const fallbackConfigRoot = await mkdtemp(
+  join(tmpdir(), 'praxis-compat-matrix-'),
 )
+compatibilityEnvironment.PRAXIS_COMPAT_SEED_CLAUDE_CONFIG = '1'
+compatibilityEnvironment.CLAUDE_CONFIG_DIR = fallbackConfigRoot
+try {
+  const startedAt = Date.now()
+  for (const [index, entrypoint] of runnableEntrypoints.entries()) {
+    try {
+      await run(entrypoint, index)
+    } catch (error) {
+      if (
+        !retryableTransientGates.has(entrypoint.file) ||
+        !isTransientFailure(error)
+      ) {
+        throw error
+      }
+      console.warn(
+        `\nRetrying transient compatibility gate: ${entrypoint.file}`,
+      )
+      await run(entrypoint, index)
+    }
+  }
+  console.log(
+    `\nCompatibility matrix passed: ${runnableEntrypoints.length} isolated gates${skippedEntrypoints.length > 0 ? `; skipped ${skippedEntrypoints.length} environment-gated lanes` : ''} in ${(
+      (Date.now() - startedAt) /
+      1000
+    ).toFixed(1)}s.`,
+  )
+} finally {
+  await rm(fallbackConfigRoot, { recursive: true, force: true })
+}
