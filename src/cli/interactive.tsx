@@ -93,6 +93,7 @@ import {
   type TuiMemoryFiles,
 } from './tui/memory-files.js'
 import { loadClaudeReleaseNotes } from './tui/release-notes.js'
+import { fullscreenInkRenderOptions } from './tui/fullscreen-renderer.js'
 import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import {
@@ -3965,6 +3966,14 @@ export function InteractiveApp({
       }
       setUsage(result.usage)
       setCostUsd(result.costUsd)
+      // The active stream and its committed final item must never render in the
+      // same frame. Publish the cleared stream before appending the final
+      // assistant entry; there is no await between these operations, and the
+      // renderer's frame buffer prevents the identical text from being shown
+      // twice during the transition.
+      streamingFrameRef.current?.resetText()
+      streamingFrameRef.current?.resetThinking()
+      streamingFrameRef.current?.flush()
       append({ kind: 'assistant', text: result.text })
       if (turnMutatedFilesRef.current) {
         try {
@@ -8302,9 +8311,8 @@ export async function runInteractive(options: {
       />,
       {
         exitOnCtrlC: false,
-        incrementalRendering: !options.axScreenReader,
+        ...fullscreenInkRenderOptions(currentRenderer, options.axScreenReader),
         interactive: true,
-        alternateScreen: currentRenderer === 'fullscreen',
       },
     )
     await instance.waitUntilExit()

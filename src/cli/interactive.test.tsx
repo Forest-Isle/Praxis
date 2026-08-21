@@ -26,6 +26,7 @@ import {
 import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
 import { projectTuiHooks } from './tui/hook-settings.js'
 import type { TuiCustomTheme } from './tui/custom-themes.js'
+import type { TuiDiffSnapshot } from './tui/git-diff.js'
 import type { TuiThemeSettings } from './tui/theme.js'
 import { projectRuntimeSettings } from './tui/runtime-settings.js'
 import type { TuiSandboxSnapshot } from './tui/sandbox-settings.js'
@@ -1776,6 +1777,145 @@ describe('InteractiveApp', () => {
     expect(defaultBody.join('\n')).toContain(`reply ${turnCount}`)
   })
 
+  it('recomputes the bounded fullscreen frame when the terminal shrinks and never duplicates the composer', async () => {
+    const staleMarker = 'stale-sentinel-visible-at-40-rows'
+    const newestMarker = 'newest-tail-sentinel'
+    // Eight 3-line assistant items: 24 estimated rows total, rendered with a
+    // margin row per item. The stale marker lives in the third item, so it is
+    // inside the 28-row projection at 40 rows and outside the 12-row
+    // projection after shrinking to 24 rows.
+    const items = Array.from({ length: 8 }, (_, index) => ({
+      kind: 'assistant' as const,
+      text: `filler ${index} a\nfiller ${index} b\nfiller ${index} c`,
+    }))
+    const history = items.map((item, index) =>
+      index === 3
+        ? { ...item, text: `filler 3 a\nfiller 3 b\n${staleMarker}` }
+        : index === 7
+          ? { ...item, text: `filler 7 a\nfiller 7 b\n${newestMarker}` }
+          : item,
+    )
+    const renderApp = (tui: 'default' | 'fullscreen') =>
+      render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          initialHistory={history}
+          runtimeSettings={{
+            ...projectRuntimeSettings({ settings: {}, state: {} }),
+            tui,
+          }}
+        />,
+      )
+    const frameRows = (frame: string | undefined): string[] => {
+      const lines = (frame ?? '').split('\n')
+      return lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
+    }
+    const countOccurrences = (haystack: string, needle: string): number =>
+      haystack.split(needle).length - 1
+
+    // At 40 terminal rows the fullscreen projection budget is 28 rows, which
+    // covers the whole 24-row history, so the stale and newest sentinels are
+    // both visible and the composer appears exactly once.
+    const app = renderApp('fullscreen')
+    await flush()
+    Object.assign(app.stdout, { rows: 40 })
+    app.stdout.emit('resize')
+    const tallBody = await waitFor(() => {
+      const candidate = frameRows(app.lastFrame())
+      return candidate.length === 40 ? candidate : undefined
+    })
+    const tallFrame = tallBody.join('\n')
+    expect(tallFrame).toContain(staleMarker)
+    expect(tallFrame).toContain(newestMarker)
+    expect(countOccurrences(tallFrame, '⏵⏵')).toBe(1)
+
+    // Shrinking to 24 rows drops the budget to 12 rows (the newest four items):
+    // the stale sentinel must disappear from the next frame while the newest
+    // content and the single bottom-anchored composer stay visible.
+    Object.assign(app.stdout, { rows: 24 })
+    app.stdout.emit('resize')
+    const shortBody = await waitFor(() => {
+      const candidate = frameRows(app.lastFrame())
+      return candidate.length === 24 ? candidate : undefined
+    })
+    const shortFrame = shortBody.join('\n')
+    expect(shortFrame).not.toContain(staleMarker)
+    expect(shortFrame).toContain(newestMarker)
+    expect(countOccurrences(shortFrame, '⏵⏵')).toBe(1)
+
+    // Classic mode stays content-sized and never bounds the transcript.
+    const defaultApp = renderApp('default')
+    await flush()
+    Object.assign(defaultApp.stdout, { rows: 24 })
+    defaultApp.stdout.emit('resize')
+    const defaultBody = await waitFor(() => {
+      const candidate = frameRows(defaultApp.lastFrame())
+      return candidate.length > 0 ? candidate : undefined
+    })
+    expect(defaultBody.length).toBeGreaterThan(24)
+  })
+
+  it('keeps the fullscreen frame height-anchored when the composer grows to multiple lines', async () => {
+    const renderApp = (tui: 'default' | 'fullscreen') =>
+      render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          runtimeSettings={{
+            ...projectRuntimeSettings({ settings: {}, state: {} }),
+            tui,
+          }}
+        />,
+      )
+    const frameRows = (frame: string | undefined): string[] => {
+      const lines = (frame ?? '').split('\n')
+      return lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
+    }
+    const countOccurrences = (haystack: string, needle: string): number =>
+      haystack.split(needle).length - 1
+
+    const app = renderApp('fullscreen')
+    await flush()
+    Object.assign(app.stdout, { rows: 24 })
+    app.stdout.emit('resize')
+    const body = await waitFor(() => {
+      const candidate = frameRows(app.lastFrame())
+      return candidate.length === 24 ? candidate : undefined
+    })
+    expect(countOccurrences(body.join('\n'), '⏵⏵')).toBe(1)
+
+    // ctrl+j (chat:newline) grows the composer to a second line. The frame
+    // must stay exactly 24 rows tall with a single composer footer instead of
+    // duplicating the composer or leaving stale transcript rows.
+    app.stdin.write('first line')
+    await flush()
+    app.stdin.write('\n')
+    await flush()
+    app.stdin.write('second line')
+    await flush()
+    const multilineBody = await waitFor(() => {
+      const candidate = frameRows(app.lastFrame())
+      const frame = candidate.join('\n')
+      return candidate.length === 24 && frame.includes('second line')
+        ? candidate
+        : undefined
+    })
+    const frame = multilineBody.join('\n')
+    expect(multilineBody.length).toBe(24)
+    expect(frame).toContain('first line')
+    expect(frame).toContain('second line')
+    expect(countOccurrences(frame, '⏵⏵')).toBe(1)
+  })
+
   it('coalesces streamed deltas into bounded frames and preserves the exact final text', async () => {
     const chunks = Array.from({ length: 200 }, (_, index) => `chunk-${index}`)
     let release: (() => void) | undefined
@@ -1840,6 +1980,81 @@ describe('InteractiveApp', () => {
     await flush()
     expect(normalized(app.lastFrame())).toContain(chunks.join(''))
     expect(app.lastFrame()).not.toContain('✳')
+  })
+
+  it('never renders the active stream and its committed final item in the same frame', async () => {
+    const finalText = 'stream-commit-no-duplicate-final'
+    let releaseRun: (() => void) | undefined
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve
+    })
+    let releaseDiff: (() => void) | undefined
+    const diffGate = new Promise<TuiDiffSnapshot>((resolve) => {
+      releaseDiff = () => resolve({ files: [], additions: 0, deletions: 0 })
+    })
+    const factory: InteractiveServiceFactory = {
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            // An Edit tool-call marks the turn as file-mutating, which routes
+            // the finalization through an awaited diff snapshot load. That await
+            // is the boundary where an intermediate render could previously show
+            // both the streaming text and the identical committed item.
+            eventSink({
+              type: 'tool-call',
+              call: { id: 'edit-1', name: 'Edit', input: {} },
+            })
+            eventSink({ type: 'text-delta', delta: finalText })
+            await runGate
+            return {
+              sessionId: 'session-1',
+              text: finalText,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        diffLoader={() => diffGate}
+      />,
+    )
+    await flush()
+    app.stdin.write('make an edit')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+
+    // Wait for the streaming turn to be visible before finalizing it.
+    await waitFor(() => (app.lastFrame()?.includes('✳') ? true : undefined))
+
+    // Complete the turn while the diff snapshot loader is still pending. The
+    // committed assistant entry and the active stream must never render in the
+    // same frame, so no published frame may contain the final text twice.
+    releaseRun?.()
+    await waitFor(() => (app.lastFrame()?.includes('⏺') ? true : undefined))
+    const normalized = (frame: string | undefined) =>
+      (frame ?? '').replace(/\s+/gu, '')
+    const needle = normalized(finalText)
+    for (const frame of app.stdout.frames) {
+      expect(normalized(frame).split(needle).length - 1).toBeLessThanOrEqual(1)
+    }
+
+    releaseDiff?.()
+    await waitFor(() => (app.lastFrame()?.includes('✳') ? undefined : true))
+    expect(normalized(app.lastFrame())).toContain(needle)
   })
 
   it('toggles syntax highlighting in the theme picker and persists immediately', async () => {
