@@ -33,18 +33,21 @@ describe('protectedWritePathReason', () => {
       protectedWritePathReason(join(ssh, 'authorized_keys'), {
         homeDirectory: home,
         configRoot,
+        dataPlane: 'claude',
       }),
     ).toMatch(/protected/)
     expect(
       protectedWritePathReason(join(ssh, 'config'), {
         homeDirectory: home,
         configRoot,
+        dataPlane: 'claude',
       }),
     ).toMatch(/protected/)
     expect(
       protectedWritePathReason(join(aws, 'credentials'), {
         homeDirectory: home,
         configRoot,
+        dataPlane: 'claude',
       }),
     ).toMatch(/protected/)
   })
@@ -67,6 +70,7 @@ describe('protectedWritePathReason', () => {
         protectedWritePathReason(join(project, basename), {
           homeDirectory: home,
           configRoot,
+          dataPlane: 'claude',
         }),
       ).toMatch(/protected/)
     }
@@ -79,13 +83,54 @@ describe('protectedWritePathReason', () => {
       protectedWritePathReason(join(configRoot, 'settings.json'), {
         homeDirectory: home,
         configRoot,
+        dataPlane: 'claude',
       }),
     ).toMatch(/protected/)
     expect(
       protectedWritePathReason(join(configRoot, 'projects', 'logs.jsonl'), {
         homeDirectory: home,
         configRoot,
+        dataPlane: 'claude',
       }),
+    ).toMatch(/protected/)
+  })
+
+  it('protects only the selected data-plane customization paths', () => {
+    const { home } = tempHome()
+    const project = join(home, 'project')
+    const nativeRoot = join(home, '.praxis')
+    const claudeRoot = join(home, '.claude')
+    const nativeOptions = {
+      homeDirectory: home,
+      configRoot: nativeRoot,
+      dataPlane: 'native' as const,
+    }
+    for (const path of [
+      join(nativeRoot, 'commands', 'review.md'),
+      join(nativeRoot, 'agents', 'review.md'),
+      join(nativeRoot, 'skills', 'review', 'SKILL.md'),
+      join(project, '.praxis', 'settings.local.json'),
+      join(project, '.praxis', 'commands', 'review.md'),
+      join(project, '.praxis', 'agents', 'review.md'),
+      join(project, '.praxis', 'skills', 'review', 'SKILL.md'),
+    ]) {
+      expect(protectedWritePathReason(path, nativeOptions)).toMatch(/protected/)
+    }
+    expect(
+      protectedWritePathReason(
+        join(project, '.claude', 'commands', 'review.md'),
+        nativeOptions,
+      ),
+    ).toBeUndefined()
+    expect(
+      protectedWritePathReason(
+        join(project, '.claude', 'commands', 'review.md'),
+        {
+          homeDirectory: home,
+          configRoot: claudeRoot,
+          dataPlane: 'claude',
+        },
+      ),
     ).toMatch(/protected/)
   })
 
@@ -97,18 +142,21 @@ describe('protectedWritePathReason', () => {
       protectedWritePathReason(join(project, 'notes.txt'), {
         homeDirectory: home,
         configRoot,
+        dataPlane: 'claude',
       }),
     ).toBeUndefined()
     expect(
       protectedWritePathReason(join(project, 'settings.json'), {
         homeDirectory: home,
         configRoot,
+        dataPlane: 'claude',
       }),
     ).toBeUndefined()
     expect(
       protectedWritePathReason(join(project, '.environment'), {
         homeDirectory: home,
         configRoot,
+        dataPlane: 'claude',
       }),
     ).toBeUndefined()
   })

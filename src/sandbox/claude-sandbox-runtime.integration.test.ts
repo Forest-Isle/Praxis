@@ -37,7 +37,7 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
       network: { allowedDomains: [], deniedDomains: [] },
       filesystem: {
         allowWrite: [cwd],
-        denyWrite: [join(cwd, '.claude')],
+        denyWrite: [join(cwd, '.sandbox-denied')],
         denyRead: [outside],
         allowRead: [join(outside, 'public')],
       },
@@ -70,7 +70,7 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
     outside = join(root, 'outside')
     writeOutside = join(root, 'write-outside')
     await Promise.all([
-      mkdir(join(cwd, '.claude'), { recursive: true }),
+      mkdir(join(cwd, '.sandbox-denied'), { recursive: true }),
       mkdir(join(outside, 'public'), { recursive: true }),
       mkdir(writeOutside, { recursive: true }),
     ])
@@ -110,7 +110,7 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
 
   it('keeps denyWrite and denyRead stronger than nested allows', async () => {
     const deniedWrite = await bash(
-      `printf 'escape' > '${join(cwd, '.claude', 'settings.local.json')}'`,
+      `printf 'escape' > '${join(cwd, '.sandbox-denied', 'value.txt')}'`,
     )
     expect(deniedWrite.isError).toBe(true)
 

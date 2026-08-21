@@ -26,8 +26,12 @@ export type CliPermissionMode =
 export type CliMcpScope = 'local' | 'project' | 'user'
 export type CliMcpTransport = 'stdio' | 'sse' | 'http'
 export type CliThinkingMode = 'enabled' | 'adaptive' | 'disabled'
+export type CliDataPlane = 'native' | 'claude'
 
 export interface CliControls {
+  dataPlane?: CliDataPlane
+  /** Claude CLI surface compatibility; Praxis currently uses its provider context budget. */
+  autocompact?: 'auto' | number
   settings: string | undefined
   settingSources: readonly ('user' | 'project' | 'local')[] | undefined
   safeMode: boolean
@@ -46,6 +50,8 @@ export interface CliControls {
   debugFile?: string
   brief?: boolean
   axScreenReader?: boolean
+  /** Accepted for stream compatibility; Praxis does not duplicate child text into the parent stream. */
+  forwardSubagentText: boolean
   fileResources: readonly string[]
   agentDefinitions?: string
   mcpConfigs: readonly string[]
@@ -117,7 +123,10 @@ export interface CliInvocation extends CliControls {
   pluginPush: boolean
   pluginRemote?: string
   pluginSparsePaths: readonly string[]
+  importDryRun: boolean
+  importYes: string | true | undefined
   autoModeLabel?: string
+  autoModeResetYes: boolean
   mcpScope?: CliMcpScope
   mcpTransport?: CliMcpTransport
   mcpEnv: readonly string[]
@@ -448,6 +457,27 @@ function positiveDecimal(value: string, label: string): number {
   return parsed
 }
 
+function autoCompactTokens(value: string): 'auto' | number {
+  if (value.toLowerCase() === 'auto') return 'auto'
+  const match = /^(\d+(?:\.\d+)?)([km])?$/iu.exec(value)
+  const amount = Number(match?.[1])
+  const suffix = match?.[2]?.toLowerCase()
+  const tokens =
+    !Number.isFinite(amount) || amount <= 0
+      ? Number.NaN
+      : suffix === 'm'
+        ? amount * 1_000_000
+        : suffix === 'k' || amount <= 1_000
+          ? amount * 1_000
+          : amount
+  if (!Number.isInteger(tokens) || tokens < 100_000 || tokens > 1_000_000) {
+    throw new Error(
+      "--autocompact must be 'auto', or between 100k and 1M tokens",
+    )
+  }
+  return tokens
+}
+
 function optionValue(
   argv: readonly string[],
   index: number,
@@ -623,7 +653,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let pluginPush = false
   let pluginRemote: string | undefined
   const pluginSparsePaths: string[] = []
+  let importDryRun = false
+  let importYes: string | true | undefined
   let autoModeLabel: string | undefined
+  let autoModeResetYes = false
   let optionsEnded = false
   let settings: string | undefined
   let maxTurns: number | undefined
@@ -632,12 +665,15 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let debugFile: string | undefined
   let brief = false
   let axScreenReader = false
+  let forwardSubagentText = false
   const fileResources: string[] = []
   let agentDefinitions: string | undefined
   const mcpConfigs: string[] = []
   let strictMcpConfig = false
   let disableSlashCommands = false
   let settingSources: ('user' | 'project' | 'local')[] | undefined
+  let dataPlane: CliDataPlane | undefined
+  let autocompact: 'auto' | number | undefined
   let safeMode = false
   let bare = false
   let systemPrompt: string | undefined
@@ -724,6 +760,32 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       model = selectedModel.value
       index += selectedModel.consumed
       continue
+    }
+    const selectedAutocompact = optionValue(argv, index, '--autocompact')
+    if (selectedAutocompact) {
+      if (autocompact !== undefined)
+        throw new Error('--autocompact may only be specified once')
+      autocompact = autoCompactTokens(selectedAutocompact.value)
+      index += selectedAutocompact.consumed
+      continue
+    }
+    const selectedCloud = optionalValue(argv, index, '--cloud')
+    if (selectedCloud) {
+      throw new Error(
+        '--cloud is unavailable: Praxis is local-only and does not create or attach to cloud sessions',
+      )
+    }
+    const selectedEnvironment = optionValue(argv, index, '--environment')
+    if (selectedEnvironment) {
+      throw new Error(
+        '--environment is unavailable: Praxis is local-only and does not run cloud sessions',
+      )
+    }
+    const selectedTeleport = optionalValue(argv, index, '--teleport')
+    if (selectedTeleport) {
+      throw new Error(
+        '--teleport is unavailable: Praxis is local-only and cannot resume remote sessions',
+      )
     }
     const selectedEffort = optionValue(argv, index, '--effort')
     if (selectedEffort) {
@@ -901,6 +963,17 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       index += selectedSettings.consumed
       continue
     }
+    const selectedDataPlane = optionValue(argv, index, '--data-plane')
+    if (selectedDataPlane) {
+      if (dataPlane !== undefined)
+        throw new Error('--data-plane may only be specified once')
+      dataPlane = choice(selectedDataPlane.value, '--data-plane', [
+        'native',
+        'claude',
+      ]) as CliDataPlane
+      index += selectedDataPlane.consumed
+      continue
+    }
     const selectedPluginConfig = optionValue(argv, index, '--config')
     if (selectedPluginConfig) {
       pluginConfig.push(selectedPluginConfig.value)
@@ -1042,6 +1115,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     }
     if (value === '--ax-screen-reader') {
       axScreenReader = true
+      continue
+    }
+    if (value === '--forward-subagent-text') {
+      forwardSubagentText = true
       continue
     }
     const selectedFileResources = listOptionValue(argv, index, ['--file'])
@@ -1326,7 +1403,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       continue
     }
     if (value === '-y' || value === '--yes') {
-      pluginYes = true
+      if (args[0] === 'auto-mode' && args[1] === 'reset') {
+        autoModeResetYes = true
+      } else if (args[0] === 'import' && value === '--yes') importYes = true
+      else pluginYes = true
       continue
     }
     if (value === '--strict') {
@@ -1338,7 +1418,17 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       continue
     }
     if (value === '--dry-run') {
+      if (args[0] === 'import') {
+        importDryRun = true
+        continue
+      }
       pluginDryRun = true
+      continue
+    }
+    if (args[0] === 'import' && value.startsWith('--yes=')) {
+      const digest = value.slice('--yes='.length)
+      if (!digest) throw new Error('--yes digest must not be empty')
+      importYes = digest
       continue
     }
     if (value === '--push') {
@@ -1495,6 +1585,11 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   if (includeHookEvents && legacyJson) {
     throw new Error('--include-hook-events cannot be combined with --json')
   }
+  if (forwardSubagentText && (!print || outputFormat !== 'stream-json')) {
+    throw new Error(
+      '--forward-subagent-text requires --print and --output-format=stream-json',
+    )
+  }
   const managementCommand = [
     'fork',
     'sessions',
@@ -1508,6 +1603,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     'auto-mode',
     'plugin',
     'doctor',
+    'import',
   ].includes(args[0] ?? '')
   if (
     promptSuggestions &&
@@ -1625,6 +1721,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     throw new Error('Plugin options are only valid with plugin commands')
   }
   return {
+    ...(dataPlane === undefined ? {} : { dataPlane }),
+    ...(autocompact === undefined ? {} : { autocompact }),
     command: args[0],
     args,
     agent,
@@ -1660,7 +1758,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     pluginPush,
     ...(pluginRemote === undefined ? {} : { pluginRemote }),
     pluginSparsePaths,
+    importDryRun,
+    importYes,
     ...(autoModeLabel === undefined ? {} : { autoModeLabel }),
+    autoModeResetYes,
     settings,
     ...(agentDefinitions === undefined ? {} : { agentDefinitions }),
     mcpConfigs,
@@ -1683,6 +1784,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(debugFile === undefined ? {} : { debugFile }),
     ...(brief ? { brief: true } : {}),
     ...(axScreenReader ? { axScreenReader: true } : {}),
+    forwardSubagentText,
     fileResources,
     tools,
     allowedTools,

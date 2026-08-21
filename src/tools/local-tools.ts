@@ -47,6 +47,7 @@ import { openPdf } from './pdf.js'
 import { validateBashPathSafety } from '../permissions/bash-path-safety.js'
 import { protectedWritePathReason } from '../permissions/bypass-immune-paths.js'
 import { effectiveAdditionalDirectories } from '../permissions/permission-updates.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
@@ -62,6 +63,7 @@ export interface LocalToolRegistryOptions {
   sandbox?: BashSandboxRuntime
   homeDirectory?: string
   configRoot?: string
+  dataPlane?: DataPlane
 }
 
 export interface BashSandboxRuntime {
@@ -110,6 +112,12 @@ const REPORT_FINDINGS_DEFINITION: ModelToolDefinition = {
             summary: {
               description: 'One-sentence statement of the defect',
               type: 'string',
+            },
+            short_summary: {
+              description:
+                'Compressed label for compact UI (≤60 chars): the claim alone, no rationale or consequence clause',
+              type: 'string',
+              maxLength: 60,
             },
             failure_scenario: {
               description: 'Concrete inputs/state → wrong output/crash',
@@ -405,6 +413,7 @@ function reportFindingsInput(
       'file',
       'line',
       'summary',
+      'short_summary',
       'failure_scenario',
       'category',
       'verdict',
@@ -425,6 +434,15 @@ function reportFindingsInput(
       (!Number.isSafeInteger(finding.line) || typeof finding.line !== 'number')
     ) {
       throw new Error(`finding ${index}.line must be an integer`)
+    }
+    if (
+      finding.short_summary !== undefined &&
+      (typeof finding.short_summary !== 'string' ||
+        [...finding.short_summary].length > 60)
+    ) {
+      throw new Error(
+        `finding ${index}.short_summary must be at most 60 characters`,
+      )
     }
     if (
       finding.category !== undefined &&
@@ -451,6 +469,9 @@ function reportFindingsInput(
       file: finding.file,
       ...(finding.line === undefined ? {} : { line: finding.line }),
       summary: finding.summary,
+      ...(finding.short_summary === undefined
+        ? {}
+        : { short_summary: finding.short_summary }),
       failure_scenario: finding.failure_scenario,
       ...(finding.category === undefined ? {} : { category: finding.category }),
       ...(finding.verdict === undefined ? {} : { verdict: finding.verdict }),
@@ -610,6 +631,7 @@ export class LocalToolRegistry implements ToolRegistry {
       protectedWritePathReason(absolutePath, {
         homeDirectory: this.homeDirectory,
         configRoot: this.configRoot,
+        dataPlane: options.dataPlane ?? 'claude',
       })
     this.processRunner = new BoundedProcessRunner({
       cwd: this.cwd,

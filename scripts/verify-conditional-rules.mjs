@@ -298,6 +298,19 @@ function assertClaudeToolOutcome(entries, expectedTool, label) {
   }
 }
 
+function hasClaudeRuleAttachment(entries) {
+  return entries.some(
+    (entry) => entry.type === 'attachment' && entry.attachment?.type === 'file',
+  )
+}
+
+function hasNativeRuleAttachment(entries) {
+  return entries.some(
+    (entry) =>
+      entry.type === 'attachment' && entry.attachment?.type === 'nested_memory',
+  )
+}
+
 function assertNativeAttachment(
   entries,
   marker,
@@ -372,7 +385,7 @@ try {
     editPreread.session_id,
   )
   assertClaudeToolOutcome(editPrereadEntries, 'Read', 'Edit prerequisite Read')
-  if (editPrereadEntries.some((entry) => entry.type === 'attachment')) {
+  if (hasClaudeRuleAttachment(editPrereadEntries)) {
     throw new Error('Edit prerequisite Read activated an unrelated rule')
   }
   await write(
@@ -403,7 +416,7 @@ try {
   }
   const editedEntries = await readEntries(configRoot, editPreread.session_id)
   assertClaudeToolOutcome(editedEntries, 'Edit', 'Edit')
-  if (editedEntries.some((entry) => entry.type === 'attachment')) {
+  if (hasClaudeRuleAttachment(editedEntries)) {
     throw new Error('Successful Edit activated a path rule attachment')
   }
 
@@ -449,7 +462,7 @@ try {
     nonmatchingRead.session_id,
   )
   assertClaudeToolOutcome(nonmatchingReadEntries, 'Read', 'Nonmatching Read')
-  if (nonmatchingReadEntries.some((entry) => entry.type === 'attachment')) {
+  if (hasClaudeRuleAttachment(nonmatchingReadEntries)) {
     throw new Error('Nonmatching Read activated a path rule attachment')
   }
 
@@ -490,7 +503,7 @@ try {
     const response = await runClaudeCase(label, prompt, tool, cwd, configRoot)
     const entries = await readEntries(configRoot, response.session_id)
     assertClaudeToolOutcome(entries, tool, label)
-    const attached = entries.some((entry) => entry.type === 'attachment')
+    const attached = hasClaudeRuleAttachment(entries)
     if (attached) throw new Error(`${label} activated a path rule attachment`)
   }
 
@@ -590,6 +603,7 @@ try {
     ...process.env,
     CLAUDE_CONFIG_DIR: configRoot,
     PRAXIS_API_KEY: 'fixture-key',
+    PRAXIS_PROVIDER: 'openai',
     PRAXIS_MODEL: 'fixture-model',
     PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
   }
@@ -647,7 +661,7 @@ try {
   ]) {
     const result = await runPraxis(prompt)
     const entries = await readEntries(configRoot, result.sessionId)
-    if (entries.some((entry) => entry.type === 'attachment')) {
+    if (hasNativeRuleAttachment(entries)) {
       throw new Error(`${prompt} wrote a conditional rule attachment`)
     }
   }

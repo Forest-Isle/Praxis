@@ -126,11 +126,15 @@ function parseSessionMemoryState(source: string): SessionMemoryState {
 export interface SessionMemoryStoreOptions {
   configRoot: string
   sessionId: string
+  sidecarRoot?: string
 }
 
 /**
- * Durable sidecar for one session's extracted memory under
- * `<configRoot>/praxis/session-memory/<sessionId>/`. All writes are atomic
+ * Durable sidecar for one session's extracted memory. Claude compatibility
+ * defaults to `<configRoot>/praxis/session-memory/<sessionId>/`; callers may
+ * select another data plane with
+ * `<sidecarRoot>/session-memory/<sessionId>/` (for example, native
+ * `<configRoot>/state/session-memory/<sessionId>/`). All writes are atomic
  * (same-directory temp file, fsync, then rename) and version-checked. Never
  * touches shared Claude transcript entries.
  */
@@ -154,8 +158,7 @@ export class SessionMemoryStore {
       )
     }
     this.directory = resolve(
-      options.configRoot,
-      'praxis',
+      options.sidecarRoot ?? resolve(options.configRoot, 'praxis'),
       'session-memory',
       options.sessionId,
     )

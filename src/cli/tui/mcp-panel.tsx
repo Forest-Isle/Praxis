@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink'
 
+import type { DataPlane } from '../../persistence/data-plane.js'
 import { useTerminalWidth } from './claude-style.js'
 import {
   tuiMcpServerActions,
@@ -9,7 +10,7 @@ import {
   type TuiMcpServer,
 } from './mcp-panel-projector.js'
 
-const EMPTY_MESSAGE =
+const CLAUDE_EMPTY_MESSAGE =
   'No MCP servers configured. Run claude doctor if this is unexpected — it lists MCP config files that failed validation. Otherwise, run claude mcp --help or visit https://code.claude.com/docs/en/mcp to learn more.'
 
 const SCOPE_LABELS = {
@@ -50,10 +51,12 @@ function ListPanel({
   model,
   state,
   screenReader,
+  dataPlane,
 }: {
   model: TuiMcpPanelModel
   state: TuiMcpPanelState
   screenReader: boolean
+  dataPlane: DataPlane
 }) {
   return (
     <Box flexDirection="column">
@@ -101,8 +104,13 @@ function ListPanel({
           </Box>
         ))
       })}
-      <Text>※ Run claude --debug to see error logs</Text>
-      <Text>https://code.claude.com/docs/en/mcp for help</Text>
+      <Text>
+        ※ Run {dataPlane === 'native' ? 'praxis' : 'claude'} --debug to see
+        error logs
+      </Text>
+      {dataPlane === 'claude' ? (
+        <Text>https://code.claude.com/docs/en/mcp for help</Text>
+      ) : null}
       <Text dimColor>↑/↓ to navigate · Enter to confirm · Esc to cancel</Text>
     </Box>
   )
@@ -219,16 +227,25 @@ export function McpPanel({
   state,
   screenReader = false,
   width,
+  dataPlane = 'claude',
 }: {
   model: TuiMcpPanelModel
   state: TuiMcpPanelState
   screenReader?: boolean
   width?: number
+  dataPlane?: DataPlane
 }) {
   const terminalWidth = useTerminalWidth(width)
   const server = model.servers[state.serverIndex]
   let content
-  if (model.servers.length === 0) content = <Text>{EMPTY_MESSAGE}</Text>
+  if (model.servers.length === 0)
+    content = (
+      <Text>
+        {dataPlane === 'native'
+          ? 'No MCP servers configured. Run praxis doctor if this is unexpected — it lists MCP config files that failed validation.'
+          : CLAUDE_EMPTY_MESSAGE}
+      </Text>
+    )
   else if (!server) content = null
   else if (state.depth === 'detail') {
     content = (
@@ -242,7 +259,12 @@ export function McpPanel({
     content = <ToolPanel server={server} state={state} />
   } else {
     content = (
-      <ListPanel model={model} state={state} screenReader={screenReader} />
+      <ListPanel
+        model={model}
+        state={state}
+        screenReader={screenReader}
+        dataPlane={dataPlane}
+      />
     )
   }
   return (

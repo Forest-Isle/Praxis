@@ -161,16 +161,16 @@ not in this entry-point README.
 
 ## Claude Code interoperability
 
-Praxis and Claude Code use one local data plane by default:
+Praxis uses an independent local data plane by default:
 
 ```text
-Claude Code ─┐
-             ├── ~/.claude (or CLAUDE_CONFIG_DIR)
-Praxis ──────┘
+Praxis ─── ~/.praxis (or PRAXIS_HOME)
 ```
 
-Praxis can resume Claude Code sessions, and Claude Code can resume compatible
-sessions written by Praxis. Every semver-like Claude Code producer version is
+Use `praxis --data-plane claude` when you need the legacy shared Claude Code
+layout (`~/.claude` or `CLAUDE_CONFIG_DIR`). Praxis can resume Claude Code
+sessions in that mode, and Claude Code can resume compatible sessions written
+there. Every semver-like Claude Code producer version is
 structurally validated and is read/write compatible when its entry shape is
 supported; schema adapters are selected from transcript entry structure rather
 than an installed or fixed producer version, and malformed or unsupported

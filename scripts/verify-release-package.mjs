@@ -1601,6 +1601,8 @@ try {
   const costEnvironment = {
     ...process.env,
     CLAUDE_CONFIG_DIR: costConfigRoot,
+    PRAXIS_DATA_PLANE: 'native',
+    PRAXIS_HOME: costConfigRoot,
     PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
   }
   for (const name of [
@@ -1689,6 +1691,8 @@ try {
     env: {
       ...process.env,
       CLAUDE_CONFIG_DIR: configRoot,
+      PRAXIS_DATA_PLANE: 'native',
+      PRAXIS_HOME: configRoot,
       PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
     },
   })
@@ -1766,6 +1770,7 @@ try {
     const providerEnvironment = {
       ...process.env,
       CLAUDE_CONFIG_DIR: configRoot,
+      PRAXIS_DATA_PLANE: 'claude',
       PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
       PRAXIS_PROVIDER: provider,
       PRAXIS_API_KEY: 'release-probe-key',
@@ -1888,6 +1893,7 @@ try {
     const protocolEnvironment = {
       ...process.env,
       CLAUDE_CONFIG_DIR: configRoot,
+      PRAXIS_DATA_PLANE: 'claude',
       PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
       PRAXIS_PROVIDER: provider,
       PRAXIS_API_KEY: 'release-probe-key',
@@ -1966,6 +1972,7 @@ try {
     const subagentEnvironment = {
       ...process.env,
       CLAUDE_CONFIG_DIR: configRoot,
+      PRAXIS_DATA_PLANE: 'claude',
       PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
       PRAXIS_PROVIDER: provider,
       PRAXIS_API_KEY: 'release-probe-key',
@@ -2150,6 +2157,7 @@ try {
       const cliEnvironment = {
         ...process.env,
         CLAUDE_CONFIG_DIR: matrixConfigRoot,
+        PRAXIS_DATA_PLANE: 'claude',
         PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
       }
       for (const name of [

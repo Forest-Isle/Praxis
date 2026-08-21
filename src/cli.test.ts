@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +9,7 @@ import type { ModelProvider, ModelToolCall } from './core/runtime.js'
 import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
 import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
 import type { ClaudeSessionCostSnapshot } from './application/session-cost-tracker.js'
+import { resolveDataPlanePaths } from './persistence/data-plane.js'
 import {
   createBackgroundWorkerRuntime,
   parseContextEnvironment,
@@ -19,8 +20,11 @@ import {
 } from './cli.js'
 import { DEFAULT_CLI_CONTROLS } from './cli/controls.js'
 import type { CliControls } from './cli/protocol.js'
+import type { DataPlane } from './persistence/data-plane.js'
 import {
   createDefaultDependencies,
+  resolveInteractiveRuntimeSettingsLocation,
+  resolveUnknownCostSidecarPath,
   resolveRuntimeModel,
 } from './cli-runtime.js'
 import { projectRuntimeSettings } from './cli/tui/runtime-settings.js'
@@ -397,6 +401,196 @@ describe('Praxis CLI', () => {
       }),
     ).resolves.toBe(0)
     expect(disabled.stdout.join('')).toBe('answer:/release-notes\n')
+  })
+
+  it('uses the selected data plane for release notes and fallback runtime info', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cli-data-plane-info-'))
+    const praxisRoot = join(root, 'praxis')
+    const claudeRoot = join(root, 'claude')
+    const previousPraxisHome = process.env.PRAXIS_HOME
+    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
+    const previousDataPlane = process.env.PRAXIS_DATA_PLANE
+    const previousModel = process.env.PRAXIS_MODEL
+    await mkdir(praxisRoot, { recursive: true })
+    await mkdir(claudeRoot, { recursive: true })
+    await writeFile(
+      join(praxisRoot, 'settings.json'),
+      JSON.stringify({ model: 'native-settings-model' }),
+    )
+    await writeFile(
+      join(claudeRoot, 'settings.json'),
+      JSON.stringify({ model: 'claude-settings-model' }),
+    )
+    process.env.PRAXIS_HOME = praxisRoot
+    process.env.CLAUDE_CONFIG_DIR = claudeRoot
+    delete process.env.PRAXIS_DATA_PLANE
+    delete process.env.PRAXIS_MODEL
+    try {
+      const loadedRoots: string[] = []
+      const localDependencies: CliDependencies = {
+        async createService() {
+          throw new Error('release notes must not create a model service')
+        },
+        async loadReleaseNotes(configRoot) {
+          loadedRoots.push(configRoot)
+          return 'fixture notes'
+        },
+      }
+      const native = captureIO()
+      await expect(
+        run(
+          ['-p', '--output-format', 'json', '/release-notes'],
+          native.io,
+          localDependencies,
+        ),
+      ).resolves.toBe(0)
+      const claude = captureIO()
+      await expect(
+        run(
+          [
+            '-p',
+            '--data-plane',
+            'claude',
+            '--output-format',
+            'json',
+            '/release-notes',
+          ],
+          claude.io,
+          localDependencies,
+        ),
+      ).resolves.toBe(0)
+
+      expect(loadedRoots).toEqual([praxisRoot, claudeRoot])
+      expect(
+        Object.keys(JSON.parse(native.stdout.join('')).modelUsage),
+      ).toEqual(['native-settings-model'])
+      expect(
+        Object.keys(JSON.parse(claude.stdout.join('')).modelUsage),
+      ).toEqual(['claude-settings-model'])
+    } finally {
+      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousPraxisHome
+      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
+      if (previousDataPlane === undefined) delete process.env.PRAXIS_DATA_PLANE
+      else process.env.PRAXIS_DATA_PLANE = previousDataPlane
+      if (previousModel === undefined) delete process.env.PRAXIS_MODEL
+      else process.env.PRAXIS_MODEL = previousModel
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('loads auto-mode settings only from the selected data plane', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-mode-plane-'))
+    const praxisRoot = join(root, 'praxis')
+    const claudeRoot = join(root, 'claude')
+    const previousPraxisHome = process.env.PRAXIS_HOME
+    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
+    const previousDataPlane = process.env.PRAXIS_DATA_PLANE
+    await mkdir(praxisRoot, { recursive: true })
+    await mkdir(claudeRoot, { recursive: true })
+    const settings = (label: string) =>
+      JSON.stringify({
+        autoMode: {
+          allow: [label],
+          soft_deny: [],
+          hard_deny: [],
+          environment: [],
+        },
+      })
+    await writeFile(join(praxisRoot, 'settings.json'), settings('native-rule'))
+    await writeFile(join(claudeRoot, 'settings.json'), settings('claude-rule'))
+    process.env.PRAXIS_HOME = praxisRoot
+    process.env.CLAUDE_CONFIG_DIR = claudeRoot
+    delete process.env.PRAXIS_DATA_PLANE
+    try {
+      const unavailable: CliDependencies = {
+        async createService() {
+          throw new Error('service must not be created for auto-mode config')
+        },
+      }
+      const native = captureIO()
+      await expect(
+        run(['auto-mode', 'config'], native.io, unavailable),
+      ).resolves.toBe(0)
+      const claude = captureIO()
+      await expect(
+        run(
+          ['auto-mode', 'config', '--data-plane', 'claude'],
+          claude.io,
+          unavailable,
+        ),
+      ).resolves.toBe(0)
+
+      expect(JSON.parse(native.stdout.join('')).allow).toEqual(['native-rule'])
+      expect(JSON.parse(claude.stdout.join('')).allow).toEqual(['claude-rule'])
+    } finally {
+      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousPraxisHome
+      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
+      if (previousDataPlane === undefined) delete process.env.PRAXIS_DATA_PLANE
+      else process.env.PRAXIS_DATA_PLANE = previousDataPlane
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resets auto-mode settings only in the selected data plane', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-mode-reset-'))
+    const praxisRoot = join(root, 'praxis')
+    const claudeRoot = join(root, 'claude')
+    const previousPraxisHome = process.env.PRAXIS_HOME
+    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
+    await mkdir(praxisRoot, { recursive: true })
+    await mkdir(claudeRoot, { recursive: true })
+    const settings = JSON.stringify({
+      theme: 'dark',
+      autoMode: { allow: ['custom-rule'] },
+    })
+    await writeFile(join(praxisRoot, 'settings.json'), settings)
+    await writeFile(join(claudeRoot, 'settings.json'), settings)
+    process.env.PRAXIS_HOME = praxisRoot
+    process.env.CLAUDE_CONFIG_DIR = claudeRoot
+    try {
+      let serviceCreations = 0
+      const unavailable: CliDependencies = {
+        async createService() {
+          serviceCreations += 1
+          throw new Error('service must not be created for auto-mode reset')
+        },
+      }
+      const native = captureIO()
+      await expect(
+        run(['auto-mode', 'reset', '--yes'], native.io, unavailable),
+      ).resolves.toBe(0)
+      expect(
+        JSON.parse(await readFile(join(praxisRoot, 'settings.json'), 'utf8')),
+      ).toEqual({ theme: 'dark' })
+      expect(
+        JSON.parse(await readFile(join(claudeRoot, 'settings.json'), 'utf8')),
+      ).toHaveProperty('autoMode')
+
+      const claude = captureIO()
+      await expect(
+        run(
+          ['auto-mode', 'reset', '--data-plane', 'claude', '--yes'],
+          claude.io,
+          unavailable,
+        ),
+      ).resolves.toBe(0)
+      expect(
+        JSON.parse(await readFile(join(claudeRoot, 'settings.json'), 'utf8')),
+      ).toEqual({ theme: 'dark' })
+      expect(native.stdout.join('')).toContain('autoMode section removed')
+      expect(claude.stdout.join('')).toContain('autoMode section removed')
+      expect(serviceCreations).toBe(0)
+    } finally {
+      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousPraxisHome
+      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('runs /color provider-free in text mode with a local session', async () => {
@@ -1341,7 +1535,13 @@ describe('Praxis CLI', () => {
     })
 
     const updated = captureIO()
-    await expect(run(['update'], updated.io, cliDependencies)).resolves.toBe(0)
+    await expect(
+      run(
+        ['--debug', '--data-plane', 'native', 'update'],
+        updated.io,
+        cliDependencies,
+      ),
+    ).resolves.toBe(0)
     expect(updated.stdout.join('')).toContain('Praxis update completed')
     const upgraded = captureIO()
     await expect(
@@ -1352,6 +1552,67 @@ describe('Praxis CLI', () => {
       { operation: 'update' },
       { operation: 'update' },
     ])
+  })
+
+  it('loads self-update channel settings from the selected data plane', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-update-plane-'))
+    const praxisRoot = join(root, 'praxis')
+    const claudeRoot = join(root, 'claude')
+    const previousPraxisHome = process.env.PRAXIS_HOME
+    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
+    const previousDataPlane = process.env.PRAXIS_DATA_PLANE
+    await mkdir(praxisRoot, { recursive: true })
+    await mkdir(claudeRoot, { recursive: true })
+    await writeFile(
+      join(praxisRoot, 'settings.json'),
+      JSON.stringify({ autoUpdatesChannel: 'stable' }),
+    )
+    await writeFile(
+      join(claudeRoot, 'settings.json'),
+      JSON.stringify({ autoUpdatesChannel: 'latest' }),
+    )
+    process.env.PRAXIS_HOME = praxisRoot
+    process.env.CLAUDE_CONFIG_DIR = claudeRoot
+    delete process.env.PRAXIS_DATA_PLANE
+    try {
+      const requested: unknown[] = []
+      const cliDependencies = dependencies()
+      cliDependencies.selfUpdate = async (options) => {
+        requested.push(options)
+        return {
+          type: 'self-update',
+          operation: options.operation,
+          package: 'praxis-agent',
+          target: options.target ?? 'latest',
+          force: false,
+          command: ['npm'],
+          output: 'fixture complete',
+        }
+      }
+
+      await expect(
+        run(['update'], captureIO().io, cliDependencies),
+      ).resolves.toBe(0)
+      await expect(
+        run(
+          ['update', '--data-plane', 'claude'],
+          captureIO().io,
+          cliDependencies,
+        ),
+      ).resolves.toBe(0)
+      expect(requested).toEqual([
+        { operation: 'update', target: 'stable' },
+        { operation: 'update' },
+      ])
+    } finally {
+      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousPraxisHome
+      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
+      if (previousDataPlane === undefined) delete process.env.PRAXIS_DATA_PLANE
+      else process.env.PRAXIS_DATA_PLANE = previousDataPlane
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('validates self-update operands and exposes command help', async () => {
@@ -1440,6 +1701,13 @@ describe('Praxis CLI', () => {
     expect(capture.stdout.join('')).toContain('--max-thinking-tokens <tokens>')
     expect(capture.stdout.join('')).toContain('-d, --debug [filter]')
     expect(capture.stdout.join('')).toContain('--prompt-suggestions [value]')
+    expect(capture.stdout.join('')).toContain('--autocompact <auto|tokens>')
+    expect(capture.stdout.join('')).toContain(
+      '--cloud [description|session_id|url]',
+    )
+    expect(capture.stdout.join('')).toContain('--environment <environment_id>')
+    expect(capture.stdout.join('')).toContain('--forward-subagent-text')
+    expect(capture.stdout.join('')).toContain('--teleport [session]')
     expect(capture.stdout).toContain(`${PACKAGE_VERSION}\n`)
     expect(capture.stderr).toEqual([])
   })
@@ -1592,9 +1860,12 @@ describe('Praxis CLI', () => {
         'Usage: praxis auto-mode critique',
       ],
       [['auto-mode', 'help', 'critique'], 'Usage: praxis auto-mode critique'],
+      [['auto-mode', 'reset', '--help'], 'Usage: praxis auto-mode reset'],
+      [['auto-mode', 'help', 'reset'], 'Usage: praxis auto-mode reset'],
       [['project', '--help'], 'Usage: praxis project'],
       [['project', 'purge', '--help'], 'Usage: praxis project purge'],
       [['project', 'help', 'purge'], 'Usage: praxis project purge'],
+      [['import', '--help'], 'Usage: praxis import'],
     ]
 
     for (const [argv, usage] of routes) {
@@ -1613,7 +1884,9 @@ describe('Praxis CLI', () => {
       [['mcp', 'add-json', '--help'], '--client-secret'],
       [['auto-mode', 'defaults', '--help'], '--label <prefix>'],
       [['auto-mode', 'help', 'critique'], 'default: PRAXIS_MODEL'],
+      [['auto-mode', 'reset', '--help'], '-y, --yes'],
       [['project', 'purge', '--help'], '--json'],
+      [['import', '--help'], '--dry-run'],
     ]
     for (const [argv, detail] of detailedRoutes) {
       const capture = captureIO()
@@ -1624,10 +1897,72 @@ describe('Praxis CLI', () => {
     expect(constructions).toBe(0)
   })
 
+  it('rejects import without constructing providers or changing files', async () => {
+    const capture = captureIO()
+    let constructions = 0
+    const unavailable: CliDependencies = {
+      async createService() {
+        constructions += 1
+        throw new Error('import must not construct a service')
+      },
+    }
+
+    await expect(
+      run(['import', 'codex', '--dry-run'], capture.io, unavailable),
+    ).resolves.toBe(1)
+    expect(capture.stderr.join('')).toContain(
+      'Praxis import does not yet support Codex or Gemini configuration',
+    )
+    expect(constructions).toBe(0)
+  })
+
+  it('dispatches migrate as a known command from a TTY', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-migrate-cli-'))
+    const source = join(root, 'claude')
+    const destination = join(root, 'praxis')
+    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
+    const previousPraxisRoot = process.env.PRAXIS_HOME
+    await mkdir(join(source, 'projects', 'project'), { recursive: true })
+    await writeFile(join(source, 'projects', 'project', 'session.jsonl'), '{}')
+    process.env.CLAUDE_CONFIG_DIR = source
+    process.env.PRAXIS_HOME = destination
+    try {
+      const capture = captureIO()
+      capture.io.isTTY = true
+      let interactiveCalls = 0
+      const unavailable: CliDependencies = {
+        async createService() {
+          throw new Error('migrate must not construct a service')
+        },
+        async runInteractive() {
+          interactiveCalls += 1
+          return 0
+        },
+      }
+
+      await expect(
+        run(['migrate', 'from-claude'], capture.io, unavailable),
+      ).resolves.toBe(0)
+      await expect(
+        readFile(
+          join(destination, 'sessions', 'project', 'session.jsonl'),
+          'utf8',
+        ),
+      ).resolves.toBe('{}')
+      expect(interactiveCalls).toBe(0)
+    } finally {
+      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
+      if (previousPraxisRoot === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousPraxisRoot
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('routes plugins alias through existing plugin commands', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-plugins-alias-'))
     const configRoot = join(root, 'config')
-    const previousConfigRoot = process.env.CLAUDE_CONFIG_DIR
+    const previousConfigRoot = process.env.PRAXIS_HOME
     await mkdir(configRoot, { recursive: true })
     await writeFile(
       join(configRoot, 'settings.json'),
@@ -1640,7 +1975,7 @@ describe('Praxis CLI', () => {
         },
       }),
     )
-    process.env.CLAUDE_CONFIG_DIR = configRoot
+    process.env.PRAXIS_HOME = configRoot
     try {
       const capture = captureIO()
       const unavailable: CliDependencies = {
@@ -1654,8 +1989,8 @@ describe('Praxis CLI', () => {
       expect(JSON.parse(capture.stdout.join(''))).toEqual([])
       expect(capture.stderr).toEqual([])
     } finally {
-      if (previousConfigRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousConfigRoot
+      if (previousConfigRoot === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousConfigRoot
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -1768,7 +2103,14 @@ describe('Praxis CLI', () => {
 
       await expect(
         run(
-          ['auto-mode', 'critique', '--model', 'fixture-haiku'],
+          [
+            'auto-mode',
+            'critique',
+            '--model',
+            'fixture-haiku',
+            '--data-plane',
+            'claude',
+          ],
           capture.io,
           dependencies,
         ),
@@ -2143,6 +2485,57 @@ describe('Praxis CLI', () => {
     expect(calls).toContain('attach:abcd1234')
   })
 
+  it('selects top-level agent storage from the invocation over the environment', async () => {
+    const selected: DataPlane[] = []
+    const previousDataPlane = process.env.PRAXIS_DATA_PLANE
+    process.env.PRAXIS_DATA_PLANE = 'native'
+    const managed: CliDependencies = {
+      async createService() {
+        throw new Error('provider must not be created')
+      },
+      createTopLevelAgents(dataPlane) {
+        selected.push(dataPlane)
+        return {
+          async launch() {
+            return {
+              id: 'abcd1234',
+              sessionId: 'abcd1234-1111-4111-8111-111111111111',
+            }
+          },
+          async list() {
+            return []
+          },
+          async logs() {
+            return ''
+          },
+          async stop() {},
+          async attach() {},
+        }
+      },
+    }
+
+    try {
+      await expect(
+        run(
+          ['agents', '--json', '--data-plane', 'claude'],
+          captureIO().io,
+          managed,
+        ),
+      ).resolves.toBe(0)
+      await expect(
+        run(
+          ['--data-plane', 'claude', '--bg', 'finish task'],
+          captureIO().io,
+          managed,
+        ),
+      ).resolves.toBe(0)
+      expect(selected).toEqual(['claude', 'claude'])
+    } finally {
+      if (previousDataPlane === undefined) delete process.env.PRAXIS_DATA_PLANE
+      else process.env.PRAXIS_DATA_PLANE = previousDataPlane
+    }
+  })
+
   it('requires a TTY for the agents dashboard unless JSON was requested', async () => {
     const capture = captureIO()
 
@@ -2396,6 +2789,33 @@ describe('Praxis CLI', () => {
     }
   })
 
+  it('uses native interactive settings state by default and preserves Claude state in compat mode', () => {
+    expect(
+      resolveInteractiveRuntimeSettingsLocation('native', {
+        PRAXIS_HOME: '/tmp/praxis-home',
+        CLAUDE_CONFIG_DIR: '/tmp/claude-config',
+      }),
+    ).toEqual({
+      configRoot: '/tmp/praxis-home',
+      statePath: '/tmp/praxis-home/state.json',
+    })
+    expect(
+      resolveInteractiveRuntimeSettingsLocation('claude', {
+        PRAXIS_HOME: '/tmp/praxis-home',
+        CLAUDE_CONFIG_DIR: '/tmp/claude-config',
+      }),
+    ).toEqual({
+      configRoot: '/tmp/claude-config',
+      statePath: '/tmp/claude-config/.claude.json',
+    })
+    expect(resolveUnknownCostSidecarPath('native', '/tmp/praxis-home')).toBe(
+      '/tmp/praxis-home/state/unknown-cost-sidecar.json',
+    )
+    expect(resolveUnknownCostSidecarPath('claude', '/tmp/claude-config')).toBe(
+      '/tmp/claude-config/praxis/unknown-cost-sidecar.json',
+    )
+  })
+
   it('derives simple mode from CLAUDE_CODE_SIMPLE truthy values like --bare', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-simple-mode-'))
     const configRoot = join(root, '.claude')
@@ -2433,6 +2853,225 @@ describe('Praxis CLI', () => {
         )
       }
       expect(await toolNames({})).toContain('Write')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('projects native hooks normally while safe and bare modes keep only explicit settings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-hooks-'))
+    const configRoot = join(root, 'config')
+    await mkdir(configRoot, { recursive: true })
+    const hookSettings = (command: string) => ({
+      hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command }] }],
+      },
+    })
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify(hookSettings('native-hook')),
+    )
+    try {
+      const hookConfiguration = async (controls: CliControls) => {
+        const service = await createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: false,
+          hooksOnly: true,
+          cwd: root,
+          configRoot,
+          providerEnvironment: {},
+          controls,
+        })
+        return service.hookConfiguration?.()
+      }
+
+      await expect(
+        hookConfiguration({ ...DEFAULT_CLI_CONTROLS, dataPlane: 'native' }),
+      ).resolves.toMatchObject({ hookCount: 1 })
+      for (const mode of ['safeMode', 'bare'] as const) {
+        await expect(
+          hookConfiguration({
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            [mode]: true,
+          }),
+        ).resolves.toMatchObject({ hookCount: 0 })
+        const explicit = await hookConfiguration({
+          ...DEFAULT_CLI_CONTROLS,
+          dataPlane: 'native',
+          [mode]: true,
+          settings: JSON.stringify(hookSettings('explicit-hook')),
+        })
+        expect(explicit).toMatchObject({ hookCount: 1 })
+        expect(
+          explicit?.events.flatMap((event) =>
+            event.matchers.flatMap((matcher) =>
+              matcher.hooks.map((hook) => hook.label),
+            ),
+          ),
+        ).toEqual(['explicit-hook'])
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not load native shared resources in safe or bare mode', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-isolation-'))
+    const configRoot = join(root, 'config')
+    await mkdir(join(configRoot, 'commands'), { recursive: true })
+    await mkdir(join(configRoot, 'agents'), { recursive: true })
+    await mkdir(join(configRoot, 'skills', 'poison'), { recursive: true })
+    await writeFile(join(configRoot, 'settings.json'), '{not-json')
+    await writeFile(join(configRoot, 'mcp.json'), '{not-json')
+    await writeFile(join(configRoot, 'commands', 'poison.md'), 'POISON')
+    await writeFile(join(configRoot, 'agents', 'poison.md'), 'POISON')
+    await writeFile(join(configRoot, 'skills', 'poison', 'SKILL.md'), 'POISON')
+    try {
+      for (const mode of ['safeMode', 'bare'] as const) {
+        const service = await createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: false,
+          exposeToolRegistry: true,
+          cwd: root,
+          configRoot,
+          providerEnvironment: {},
+          controls: {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            [mode]: true,
+            agentDefinitions: JSON.stringify({
+              explicit: { description: 'Explicit agent', prompt: 'EXPLICIT' },
+            }),
+          },
+        })
+        try {
+          expect(
+            service.slashCommands?.().map(({ name }) => name),
+          ).not.toContain('poison')
+          expect(service.agentDefinitions?.()).toContainEqual({
+            name: 'explicit',
+            description: 'Explicit agent',
+          })
+          expect(
+            service.agentDefinitions?.().map(({ name }) => name),
+          ).not.toContain('poison')
+        } finally {
+          await service.close?.()
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('executes each Claude compatibility hook setting once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-compat-hooks-'))
+    const configRoot = join(root, 'config')
+    await mkdir(configRoot, { recursive: true })
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          Setup: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'printf blocked >&2; exit 2',
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    )
+    const hookEvents: Array<{ type: string }> = []
+    try {
+      const service = await createDefaultDependencies().createService({
+        eventSink: (event) => {
+          if (event.type === 'hook') hookEvents.push(event.event)
+        },
+        requireProvider: false,
+        exposeToolRegistry: true,
+        cwd: root,
+        configRoot,
+        providerEnvironment: {},
+        controls: { ...DEFAULT_CLI_CONTROLS, dataPlane: 'claude' },
+      })
+      try {
+        await expect(service.lifecycle?.('init')).rejects.toThrow(
+          'Setup hook error: blocked',
+        )
+        expect(
+          hookEvents.filter((event) => event.type === 'started'),
+        ).toHaveLength(1)
+      } finally {
+        await service.close?.()
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('sends native hooks the Praxis transcript path', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-hook-path-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const hookScript = join(root, 'echo-hook.mjs')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    await mkdir(configRoot, { recursive: true })
+    await mkdir(cwd, { recursive: true })
+    await writeFile(hookScript, 'process.stdin.pipe(process.stdout)\n')
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          Setup: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: `${JSON.stringify(process.execPath)} ${JSON.stringify(hookScript)}`,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    )
+    const hookOutputs: string[] = []
+    try {
+      const service = await createDefaultDependencies().createService({
+        eventSink: (event) => {
+          if (event.type === 'hook' && event.event.type === 'response') {
+            hookOutputs.push(event.event.stdout ?? '')
+          }
+        },
+        requireProvider: false,
+        exposeToolRegistry: true,
+        cwd,
+        configRoot,
+        providerEnvironment: {},
+        controls: { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native' },
+      })
+      try {
+        await service.lifecycle?.('init', { sessionId })
+      } finally {
+        await service.close?.()
+      }
+      expect(hookOutputs).toHaveLength(1)
+      const hookInput = JSON.parse(hookOutputs[0] as string) as {
+        transcript_path: string
+      }
+      expect(hookInput.transcript_path).toBe(
+        resolveDataPlanePaths({
+          dataPlane: 'native',
+          root: configRoot,
+          cwd,
+          sessionId,
+        }).sessionFile,
+      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -2924,8 +3563,10 @@ describe('Praxis CLI', () => {
     const configDir = await mkdtemp(join(tmpdir(), 'praxis-cli-sessions-'))
     const missingBinary = join(configDir, 'missing-claude')
     const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousPraxisHome = process.env.PRAXIS_HOME
     const previousBinary = process.env.PRAXIS_CLAUDE_BINARY
     process.env.CLAUDE_CONFIG_DIR = configDir
+    process.env.PRAXIS_HOME = configDir
     process.env.PRAXIS_CLAUDE_BINARY = missingBinary
     try {
       await expect(run(['sessions'], capture.io)).resolves.toBe(0)
@@ -2935,6 +3576,8 @@ describe('Praxis CLI', () => {
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousPraxisHome
       if (previousBinary === undefined) delete process.env.PRAXIS_CLAUDE_BINARY
       else process.env.PRAXIS_CLAUDE_BINARY = previousBinary
       await rm(configDir, { recursive: true, force: true })

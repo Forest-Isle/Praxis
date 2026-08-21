@@ -19,6 +19,7 @@ const root = await mkdtemp(join(tmpdir(), 'praxis-tmux-compat-'))
 const installRoot = join(root, 'install')
 const repository = join(root, 'repo')
 const bin = join(root, 'bin')
+const claudeConfigRoot = join(root, 'claude-config')
 const log = join(root, 'calls.jsonl')
 let praxisCli = ''
 
@@ -77,6 +78,7 @@ try {
     mkdir(installRoot, { recursive: true }),
     mkdir(repository, { recursive: true }),
     mkdir(bin, { recursive: true }),
+    mkdir(claudeConfigRoot, { recursive: true }),
   ])
   await writeFile(join(repository, 'fixture.txt'), 'fixture\n')
   await execFileAsync('git', ['init', '-q'], { cwd: repository })
@@ -229,7 +231,11 @@ if (command === 'osascript') process.stdout.write('w0t1p2:fixture\\n')
   )
 
   const claude = await execFileAsync('claude', ['--help'], {
-    env: { ...process.env, DISABLE_AUTOUPDATER: '1' },
+    env: {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: claudeConfigRoot,
+      DISABLE_AUTOUPDATER: '1',
+    },
     timeout: 30_000,
   })
   assert(

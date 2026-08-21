@@ -4,6 +4,7 @@ import { parse as parseYaml } from 'yaml'
 
 import type { ModelContentBlock, ModelImage } from '../core/runtime.js'
 import type { ClaudeMcpPromptDefinition } from '../mcp/claude-mcp-tools.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 import type {
   ClaudeSharedResources,
   ClaudeTextResource,
@@ -109,19 +110,19 @@ Input:
 $ARGUMENTS`,
 }
 
-function builtinInitCommand(): ClaudeExtensionDefinition {
+function builtinInitCommand(dataPlane: DataPlane): ClaudeExtensionDefinition {
   return {
     path: '/__praxis_builtin__/commands/init.md',
     scope: 'user',
     content: '',
     kind: 'command',
     name: 'init',
-    description: claudeInitDescription(),
+    description: claudeInitDescription(process.env, dataPlane),
     modelInvocable: false,
     permissionSafe: true,
     progressMessage: 'analyzing your codebase',
     builtin: true,
-    body: claudeInitPrompt(),
+    body: claudeInitPrompt(process.env, dataPlane),
   }
 }
 
@@ -136,6 +137,11 @@ const BUILTIN_STATUSLINE_COMMAND: ClaudeExtensionDefinition = {
   permissionSafe: true,
   builtin: true,
   body: `Create an Agent with subagent_type "statusline-setup" and the prompt "$ARGUMENTS"`,
+}
+
+const NATIVE_BUILTIN_STATUSLINE_COMMAND: ClaudeExtensionDefinition = {
+  ...BUILTIN_STATUSLINE_COMMAND,
+  description: "Set up Praxis's status line UI",
 }
 
 export const BUILTIN_STATUSLINE_AGENT_PATH =
@@ -171,6 +177,14 @@ Preserve every unrelated setting and update ~/.claude/settings.json with this sh
 }
 
 Resolve a symlinked settings file and edit its target. Complex implementations may live in a script under ~/.claude and be referenced by the setting. Git commands in that script must avoid optional locks. Report the exact configuration and script path, if any. End by telling the parent agent that future status-line changes must use the statusline-setup agent and that the user can request further changes.`,
+}
+
+const NATIVE_BUILTIN_STATUSLINE_AGENT: ClaudeAgentRuntimeDefinition = {
+  ...BUILTIN_STATUSLINE_AGENT,
+  description: "Configure the user's Praxis status line setting.",
+  body: BUILTIN_STATUSLINE_AGENT.body
+    .replaceAll('Claude Code', 'Praxis')
+    .replaceAll('~/.claude', '~/.praxis'),
 }
 
 const GENERAL_PURPOSE_AGENT: ClaudeAgentDefinition = {
@@ -491,15 +505,24 @@ export class ClaudeExtensionCatalog {
 
   constructor(
     resources: Pick<ClaudeSharedResources, 'agents' | 'commands' | 'skills'>,
-    options: { disableSlashCommands?: boolean } = {},
+    options: { disableSlashCommands?: boolean; dataPlane?: DataPlane } = {},
   ) {
+    const dataPlane = options.dataPlane ?? 'claude'
+    const statuslineCommand =
+      dataPlane === 'native'
+        ? NATIVE_BUILTIN_STATUSLINE_COMMAND
+        : BUILTIN_STATUSLINE_COMMAND
+    const statuslineAgent =
+      dataPlane === 'native'
+        ? NATIVE_BUILTIN_STATUSLINE_AGENT
+        : BUILTIN_STATUSLINE_AGENT
     this.disableSlashCommands = options.disableSlashCommands === true
     this.commands = options.disableSlashCommands
       ? new Map()
       : new Map([
           ['loop', BUILTIN_LOOP],
-          ['init', builtinInitCommand()],
-          ['statusline', BUILTIN_STATUSLINE_COMMAND],
+          ['init', builtinInitCommand(dataPlane)],
+          ['statusline', statuslineCommand],
         ])
     if (!options.disableSlashCommands) {
       for (const [name, command] of indexed('command', resources.commands)) {
@@ -510,7 +533,7 @@ export class ClaudeExtensionCatalog {
       ? new Map()
       : indexed('skill', resources.skills)
     this.agents = new Map([
-      ['statusline-setup', BUILTIN_STATUSLINE_AGENT],
+      ['statusline-setup', statuslineAgent],
       ...indexedAgents(resources.agents),
     ])
   }
@@ -538,7 +561,9 @@ export class ClaudeExtensionCatalog {
       return { userMessages: [prompt] }
     }
     const invocationArguments =
-      definition === BUILTIN_STATUSLINE_COMMAND && argumentsText.length === 0
+      definition.builtin === true &&
+      definition.name === 'statusline' &&
+      argumentsText.length === 0
         ? 'Configure my statusLine from my shell PS1 configuration'
         : argumentsText
     return {

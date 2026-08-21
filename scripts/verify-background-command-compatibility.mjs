@@ -95,6 +95,7 @@ function environment() {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${providerPort}`,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DISABLE_AUTOUPDATER: '1',
+    PRAXIS_DATA_PLANE: 'claude',
     PRAXIS_PROVIDER: 'anthropic',
     PRAXIS_API_KEY: 'fixture-key',
     PRAXIS_MODEL: 'fixture-model',

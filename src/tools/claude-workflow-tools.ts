@@ -14,33 +14,37 @@ import {
   type WorkflowSource,
 } from '../application/workflow-manager.js'
 import type { ClaudeSubagentExecutor } from '../application/subagent-service.js'
+import type { DataPlane } from '../persistence/data-plane.js'
 
 const MAX_SCRIPT_BYTES = 524_288
 
-const WORKFLOW_DEFINITION: ModelToolDefinition = {
-  name: 'Workflow',
-  description: `Run an explicitly requested, sandboxed JavaScript workflow in the background. Use only when the user asks for a workflow or named saved workflow; for ordinary delegation use Agent.
+function workflowDefinition(dataPlane: DataPlane): ModelToolDefinition {
+  const projectDirectory = dataPlane === 'native' ? '.praxis' : '.claude'
+  return {
+    name: 'Workflow',
+    description: `Run an explicitly requested, sandboxed JavaScript workflow in the background. Use only when the user asks for a workflow or named saved workflow; for ordinary delegation use Agent.
 
 Every script starts with a pure-literal \`export const meta = { name, description, phases? }\`. Its async body may use \`args\`, \`agent(prompt, options?)\`, \`parallel(thunks)\`, \`pipeline(items, ...stages)\`, \`workflow(nameOrScriptPath, args)\`, \`phase(title)\`, \`log(message)\`, and \`budget.{total,spent(),remaining()}\`. Agent options are \`label\`, \`phase\`, \`model\`, \`effort\`, \`agentType\`, \`schema\`, and \`isolation: 'worktree'\`. Pipeline stages receive \`(previousResult, originalItem, index)\`; failed parallel or pipeline items become null. Nested workflows are limited to one level.
 
-Provide one source: \`scriptPath\` takes precedence over \`script\`, which takes precedence over \`name\`. Saved names resolve from project then user \`.claude/workflows\`, followed by built-ins. The call returns a task ID immediately; use TaskOutput/TaskStop for lifecycle. Resume a terminal or interrupted run with its script path and \`resumeFromRunId\`; completed matching agents replay from journal. Workflows allow at most 1000 agents, 4096 collection items, and bounded concurrency. Scripts have no Node.js, filesystem, network, ambient time, or randomness.`,
-  inputSchema: {
-    $schema: 'https://json-schema.org/draft/2020-12/schema',
-    type: 'object',
-    properties: {
-      script: { type: 'string', maxLength: MAX_SCRIPT_BYTES },
-      name: { type: 'string' },
-      description: { type: 'string' },
-      title: { type: 'string' },
-      args: {},
-      scriptPath: { type: 'string' },
-      resumeFromRunId: {
-        type: 'string',
-        pattern: '^wf_[a-z0-9-]{6,}$',
+Provide one source: \`scriptPath\` takes precedence over \`script\`, which takes precedence over \`name\`. Saved names resolve from project \`${projectDirectory}/workflows\`, then user workflows, followed by built-ins. The call returns a task ID immediately; use TaskOutput/TaskStop for lifecycle. Resume a terminal or interrupted run with its script path and \`resumeFromRunId\`; completed matching agents replay from journal. Workflows allow at most 1000 agents, 4096 collection items, and bounded concurrency. Scripts have no Node.js, filesystem, network, ambient time, or randomness.`,
+    inputSchema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        script: { type: 'string', maxLength: MAX_SCRIPT_BYTES },
+        name: { type: 'string' },
+        description: { type: 'string' },
+        title: { type: 'string' },
+        args: {},
+        scriptPath: { type: 'string' },
+        resumeFromRunId: {
+          type: 'string',
+          pattern: '^wf_[a-z0-9-]{6,}$',
+        },
       },
+      additionalProperties: false,
     },
-    additionalProperties: false,
-  },
+  }
 }
 
 const DEEP_RESEARCH = `export const meta = {
@@ -97,6 +101,7 @@ export interface ClaudeWorkflowToolRegistryOptions {
   defaultModel: string
   tokenBudget?: number | null
   enabled: boolean
+  dataPlane?: DataPlane
 }
 
 function optionalString(
@@ -121,7 +126,7 @@ export class ClaudeWorkflowToolRegistry implements ToolRegistry {
     if (!this.options.enabled || base.some(({ name }) => name === 'Workflow')) {
       return base
     }
-    return [...base, WORKFLOW_DEFINITION]
+    return [...base, workflowDefinition(this.options.dataPlane ?? 'claude')]
   }
 
   async prepare(
@@ -280,10 +285,12 @@ export class ClaudeWorkflowToolRegistry implements ToolRegistry {
     }
     if (input.script) return this.source(input.script)
     const name = String(input.name)
+    const projectDirectory =
+      this.options.dataPlane === 'native' ? '.praxis' : '.claude'
     for (const path of [
       resolve(
         this.options.cwdProvider?.() ?? this.options.cwd,
-        '.claude',
+        projectDirectory,
         'workflows',
         `${name}.js`,
       ),

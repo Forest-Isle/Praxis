@@ -7,6 +7,10 @@ import { setTimeout } from 'node:timers/promises'
 
 import { writeFileAtomically } from '../../platform/atomic-write.js'
 import {
+  resolveDataPlane,
+  resolveDataPlaneRoot,
+} from '../../persistence/data-plane.js'
+import {
   ExclusiveFileLease,
   type ExclusiveFileLeaseHandle,
 } from '../../platform/exclusive-file-lease.js'
@@ -404,15 +408,15 @@ export function resolveConfigSettingsLocation(
   if (typeof target === 'object') return target
   if (typeof target === 'string')
     return { configRoot: target, statePath: join(target, '.claude.json') }
-  const configuredRoot = process.env.CLAUDE_CONFIG_DIR
-  return configuredRoot
-    ? {
-        configRoot: configuredRoot,
-        statePath: join(configuredRoot, '.claude.json'),
-      }
+  const dataPlane = resolveDataPlane()
+  const configRoot = resolveDataPlaneRoot({ dataPlane })
+  return dataPlane === 'native'
+    ? { configRoot, statePath: join(configRoot, 'state.json') }
     : {
-        configRoot: join(homedir(), '.claude'),
-        statePath: join(homedir(), '.claude.json'),
+        configRoot,
+        statePath: process.env.CLAUDE_CONFIG_DIR
+          ? join(configRoot, '.claude.json')
+          : join(homedir(), '.claude.json'),
       }
 }
 

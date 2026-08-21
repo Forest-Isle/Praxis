@@ -162,6 +162,21 @@ function messageEntry(transcript, content) {
   return entry
 }
 
+function assistantDescendant(transcript, ancestorUuid) {
+  const descendants = new Set([ancestorUuid])
+  for (const entry of transcript) {
+    if (
+      typeof entry.parentUuid !== 'string' ||
+      !descendants.has(entry.parentUuid)
+    ) {
+      continue
+    }
+    if (entry.type === 'assistant') return entry
+    if (typeof entry.uuid === 'string') descendants.add(entry.uuid)
+  }
+  return undefined
+}
+
 async function waitForRequest(requestMode, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -248,9 +263,7 @@ try {
   const sourceEntries = await entries(sourcePaths.sessionFile)
   const target = messageEntry(sourceEntries, 'SECOND_PROMPT')
   const abandoned = messageEntry(sourceEntries, 'ABANDONED_PROMPT')
-  const targetAnswer = sourceEntries.find(
-    (entry) => entry.type === 'assistant' && entry.parentUuid === target.uuid,
-  )
+  const targetAnswer = assistantDescendant(sourceEntries, target.uuid)
   assert(typeof targetAnswer?.uuid === 'string', 'Target assistant missing')
 
   async function cloneSession(sessionId) {

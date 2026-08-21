@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -9,8 +16,10 @@ import {
   ClaudeJobStore,
   type ClaudeJobState,
 } from '../persistence/claude-job-store.js'
+import { resolveDataPlanePaths } from '../persistence/data-plane.js'
 import {
   runTopLevelAgentWorker,
+  topLevelAgentProcessRegistryRoot,
   TopLevelAgentManager,
   type TopLevelAgentRuntime,
 } from './top-level-agent-manager.js'
@@ -21,6 +30,7 @@ const roots: string[] = []
 async function fixture(
   options: {
     deferInitialTurn?: boolean
+    dataPlane?: 'native' | 'claude'
     sourceSessionId?: string
     sourceCheckpoint?: { resumeSessionAt: string; entryCount: number }
   } = {},
@@ -57,7 +67,10 @@ async function fixture(
     socketPath: join(configRoot, 'control.sock'),
     controlToken: 'fixture-control-token',
   }
-  const store = new ClaudeJobStore(configRoot)
+  const store = new ClaudeJobStore(
+    configRoot,
+    join(configRoot, options.dataPlane === 'native' ? 'state' : 'praxis'),
+  )
   await store.create(state, {
     version: 1,
     argv: ['initial prompt'],
@@ -72,6 +85,7 @@ async function fixture(
   })
   const manager = new TopLevelAgentManager({
     configRoot,
+    ...(options.dataPlane ? { dataPlane: options.dataPlane } : {}),
     cwd,
     cliPath: '/unused',
     version: '0.1.0',
@@ -98,6 +112,63 @@ afterEach(async () => {
 })
 
 describe('TopLevelAgentManager', () => {
+  it('registers and cleans up native workers under state/sessions', async () => {
+    const fixtureState = await fixture({
+      dataPlane: 'native',
+      deferInitialTurn: true,
+    })
+    const registryRoot = topLevelAgentProcessRegistryRoot(
+      fixtureState.configRoot,
+      'native',
+    )
+    const processFile = join(registryRoot, `${process.pid}.json`)
+    const worker = runTopLevelAgentWorker({
+      configRoot: fixtureState.configRoot,
+      dataPlane: 'native',
+      id: fixtureState.id,
+      async createRuntime() {
+        return {
+          async run() {
+            throw new Error('idle worker must not run')
+          },
+          async resume() {
+            throw new Error('idle worker must not resume')
+          },
+        }
+      },
+    })
+    await waitFor(async () => {
+      try {
+        return (
+          (
+            JSON.parse(await readFile(processFile, 'utf8')) as {
+              status?: string
+            }
+          ).status === 'idle'
+        )
+      } catch {
+        return false
+      }
+    })
+
+    await expect(
+      access(join(fixtureState.configRoot, 'sessions', `${process.pid}.json`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(
+      fixtureState.manager.list({ cwd: fixtureState.cwd, all: false }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: fixtureState.id,
+        state: 'working',
+        status: 'idle',
+      }),
+    ])
+
+    await fixtureState.manager.stop(fixtureState.id)
+    await worker
+    await expect(access(processFile)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('lazily forks a foreground session when an idle handoff first attaches', async () => {
     const sourceSessionId = '99999999-9999-4999-8999-999999999999'
     const sourceCheckpoint = {
@@ -524,6 +595,88 @@ describe('TopLevelAgentManager', () => {
         sessionId: nativeSessionId,
       }),
     ).resolves.toBe('NATIVE_TRANSCRIPT\n')
+  })
+
+  it('reviews a native Praxis transcript from the sessions root', async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), 'praxis-native-review-'))
+    roots.push(configRoot)
+    const cwd = join(configRoot, 'work')
+    const sessionId = 'aaaaaaaa-1111-4111-8111-111111111111'
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    await mkdir(dirname(paths.sessionFile), { recursive: true })
+    await writeFile(paths.sessionFile, 'PRAXIS_NATIVE_TRANSCRIPT\n')
+    const manager = new TopLevelAgentManager({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      cliPath: '/tmp/praxis-cli.js',
+      version: '0.1.0',
+    })
+
+    await expect(manager.review({ cwd, sessionId })).resolves.toBe(
+      'PRAXIS_NATIVE_TRANSCRIPT\n',
+    )
+  })
+
+  it('lists native process records from state without treating transcripts as registry entries', async () => {
+    const fixtureState = await fixture({ dataPlane: 'native' })
+    await fixtureState.store.update(fixtureState.id, (state) => ({
+      ...state,
+      state: 'stopped',
+      tempo: 'idle',
+      firstTerminalAt: new Date().toISOString(),
+    }))
+    const processSessionId = 'aaaaaaaa-1111-4111-8111-111111111111'
+    const transcriptSessionId = 'bbbbbbbb-1111-4111-8111-111111111111'
+    const registryRoot = topLevelAgentProcessRegistryRoot(
+      fixtureState.configRoot,
+      'native',
+    )
+    await mkdir(registryRoot, { recursive: true })
+    await writeFile(
+      join(registryRoot, '12345.json'),
+      JSON.stringify({
+        pid: 12345,
+        sessionId: processSessionId,
+        cwd: fixtureState.cwd,
+        startedAt: 10,
+        kind: 'interactive',
+        name: 'native process',
+        status: 'idle',
+      }),
+    )
+    const transcriptPath = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: fixtureState.configRoot,
+      cwd: fixtureState.cwd,
+      sessionId: transcriptSessionId,
+    }).sessionFile
+    await mkdir(dirname(transcriptPath), { recursive: true })
+    await writeFile(
+      transcriptPath.replace(/\.jsonl$/u, '.json'),
+      JSON.stringify({
+        pid: 12346,
+        sessionId: transcriptSessionId,
+        cwd: fixtureState.cwd,
+        startedAt: 11,
+        kind: 'interactive',
+        name: 'transcript-shaped record',
+        status: 'idle',
+      }),
+    )
+
+    const listed = await fixtureState.manager.list({ all: true })
+    expect(
+      listed.some((session) => session.sessionId === processSessionId),
+    ).toBe(true)
+    expect(
+      listed.some((session) => session.sessionId === transcriptSessionId),
+    ).toBe(false)
   })
 
   it('lists native Claude bg/daemon registry records and rejects unknown or malformed ones', async () => {

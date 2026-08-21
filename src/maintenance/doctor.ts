@@ -23,6 +23,12 @@ import {
   readPluginRegistry,
   validateClaudePlugin,
 } from '../plugins/claude-plugin-runtime.js'
+import type { DataPlane } from '../persistence/data-plane.js'
+import {
+  loadNativeContextResources,
+  loadNativeSettings,
+  loadNativeSharedResources,
+} from '../persistence/native-resources.js'
 import {
   parseContextEnvironment,
   parseProviderEnvironment,
@@ -86,6 +92,7 @@ export type DoctorProgressReport = Omit<DoctorReport, 'updates'> & {
 export type DoctorProgressListener = (report: DoctorProgressReport) => void
 
 export interface DoctorOptions {
+  dataPlane?: DataPlane
   version: string
   executablePath: string
   nodeExecutablePath?: string
@@ -234,6 +241,7 @@ async function capture(
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const configRoot = resolve(options.configRoot)
   const cwd = resolve(options.cwd)
+  const dataPlane = options.dataPlane ?? 'claude'
   const sensitiveValues = sensitiveEnvironmentValues(options.environment)
   const diagnosticOptions: DoctorDiagnosticOptions = {
     version: options.version,
@@ -251,6 +259,26 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const local = await collectDoctorLocalDiagnostics(diagnosticOptions)
   const updatesPromise = resolveDoctorUpdates(diagnosticOptions, local.updates)
   let settings: readonly ClaudeJsonResource[] | undefined
+  let nativeResources:
+    Awaited<ReturnType<typeof loadNativeSharedResources>> | undefined
+  const sharedResources = async () => {
+    if (dataPlane === 'claude') {
+      return loadClaudeSharedResources({
+        configRoot,
+        cwd,
+        claudeStatePath: options.claudeStatePath,
+      })
+    }
+    nativeResources ??= await loadNativeSharedResources({
+      root: configRoot,
+      cwd,
+    })
+    return nativeResources
+  }
+  const settingsResources = async () =>
+    dataPlane === 'claude'
+      ? loadClaudeSettings({ configRoot, cwd })
+      : loadNativeSettings({ root: configRoot, cwd })
   const checks: DoctorCheck[] = []
 
   checks.push(
@@ -290,6 +318,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   )
   checks.push(
     await capture('claude-runtime', async () => {
+      if (dataPlane === 'native') {
+        return {
+          summary: 'Claude Code runtime is not required in native mode',
+          details: { dataPlane },
+        }
+      }
       const detect = options.detectClaudeVersion ?? detectInstalledClaudeVersion
       const version = await detect(options.executeVersion)
       const adapter = selectClaudeSchemaAdapter(version)
@@ -358,7 +392,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
         throw new Error(`Config root is not a directory: ${configRoot}`)
       }
       await access(configRoot, constants.R_OK | constants.W_OK)
-      for (const directory of ['projects', 'tasks', 'praxis']) {
+      for (const directory of [
+        dataPlane === 'native' ? 'sessions' : 'projects',
+        'tasks',
+        dataPlane === 'native' ? 'state' : 'praxis',
+      ]) {
         const path = resolve(configRoot, directory)
         try {
           await access(path, constants.R_OK | constants.W_OK)
@@ -374,7 +412,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   )
   checks.push(
     await capture('settings', async () => {
-      settings = await loadClaudeSettings({ configRoot, cwd })
+      settings = await settingsResources()
       for (const resource of settings) validateSettingsResource(resource)
       return {
         summary: `${settings.length} settings file(s) are valid`,
@@ -417,11 +455,14 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   )
   checks.push(
     await capture('mcp', async () => {
-      const resources = await loadClaudeMcpResources({
-        configRoot,
-        cwd,
-        claudeStatePath: options.claudeStatePath,
-      })
+      const resources =
+        dataPlane === 'claude'
+          ? await loadClaudeMcpResources({
+              configRoot,
+              cwd,
+              claudeStatePath: options.claudeStatePath,
+            })
+          : (await sharedResources()).mcp
       const report = validateClaudeMcpConfiguration(resources)
       for (const server of report.servers) {
         if (server.transport !== 'stdio' || !server.command) continue
@@ -450,12 +491,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   )
   checks.push(
     await capture('resources', async () => {
-      const resources = await loadClaudeSharedResources({
-        configRoot,
-        cwd,
-        claudeStatePath: options.claudeStatePath,
-      })
-      await loadClaudeContextResources({ configRoot, cwd })
+      const resources = await sharedResources()
+      if (dataPlane === 'native') {
+        await loadNativeContextResources({ root: configRoot, cwd })
+      } else {
+        await loadClaudeContextResources({ configRoot, cwd })
+      }
       validateClaudeExtensions([
         ...resources.commands,
         ...resources.skills,
@@ -475,7 +516,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   checks.push(
     await capture('permissions', async () => {
       if (!settings) {
-        settings = await loadClaudeSettings({ configRoot, cwd })
+        settings = await settingsResources()
         for (const resource of settings) validateSettingsResource(resource)
       }
       validateClaudePermissionSettings(settings)
@@ -499,7 +540,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   checks.push(
     await capture('hooks', async () => {
       if (!settings) {
-        settings = await loadClaudeSettings({ configRoot, cwd })
+        settings = await settingsResources()
         for (const resource of settings) validateSettingsResource(resource)
       }
       validateClaudeHooks(settings)

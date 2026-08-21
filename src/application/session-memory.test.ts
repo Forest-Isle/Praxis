@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -50,6 +50,28 @@ async function seedState(configRoot: string, state: unknown): Promise<void> {
 }
 
 describe('SessionMemoryStore', () => {
+  it('uses an explicit selected data-plane root instead of the Claude compatibility fallback', async () => {
+    const configRoot = await tempConfigRoot()
+    const sidecarRoot = join(configRoot, 'state')
+    const store = new SessionMemoryStore({
+      configRoot,
+      sessionId: SESSION_ID,
+      sidecarRoot,
+    })
+
+    await store.writeSummary('native memory')
+
+    await expect(
+      readFile(
+        join(sidecarRoot, 'session-memory', SESSION_ID, 'summary.md'),
+        'utf8',
+      ),
+    ).resolves.toBe('native memory')
+    await expect(
+      readFile(join(sessionDirectory(configRoot), 'summary.md'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('rejects path traversal and invalid session IDs', async () => {
     const configRoot = await tempConfigRoot()
     expect(

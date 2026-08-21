@@ -235,6 +235,7 @@ try {
         }
       : {}),
     CLAUDE_CONFIG_DIR: configRoot,
+    PRAXIS_DATA_PLANE: 'claude',
     PRAXIS_PROVIDER: 'anthropic',
     PRAXIS_API_KEY: 'fixture-key',
     PRAXIS_MODEL: 'claude-sonnet-4-5-20250929',

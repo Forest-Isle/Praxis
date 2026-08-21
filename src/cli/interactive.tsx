@@ -32,6 +32,11 @@ import type {
   RuntimeEventSink,
 } from '../core/runtime.js'
 import { permissionRuleValueToString } from '../permissions/permission-updates.js'
+import {
+  resolveDataPlane,
+  resolveDataPlaneRoot,
+  type DataPlane,
+} from '../persistence/data-plane.js'
 import { AgentRunCancelledError } from '../core/runtime.js'
 import type {
   CliElicitationRequest,
@@ -467,6 +472,9 @@ export interface InteractiveBackgroundResult {
 }
 
 interface InteractiveAppProps {
+  dataPlane?: DataPlane
+  configRoot?: string
+  statePath?: string
   factory: InteractiveServiceFactory
   initialSessions: readonly SessionSummary[]
   initialPrompt?: string
@@ -1018,6 +1026,9 @@ const HIDDEN_TUI_SLASH_COMMANDS = new Set([
 ])
 
 export function InteractiveApp({
+  dataPlane = resolveDataPlane(),
+  configRoot: suppliedConfigRoot,
+  statePath: suppliedStatePath,
   factory,
   initialSessions,
   initialPrompt,
@@ -1046,8 +1057,7 @@ export function InteractiveApp({
   keybindingsFile = ensureTuiKeybindingsFile,
   keybindingsLoader = loadTuiKeybindings,
   keybindingsEditor = openTuiEditorFile,
-  memoryFilesLoader = (configRoot, cwd) =>
-    loadTuiMemoryFiles({ configRoot, cwd }),
+  memoryFilesLoader,
   memoryEditor = openTuiEditorFile,
   memoryFolderOpener = openTuiMemoryFolder,
   suspendProcess = suspendTuiProcess,
@@ -1074,18 +1084,38 @@ export function InteractiveApp({
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const width = useTerminalWidth(terminalWidth)
   const rows = useTerminalRows()
+  const settingsDirectory = dataPlane === 'native' ? '.praxis' : '.claude'
   const keybindingsRoot = useMemo(
     () =>
       resolve(
-        keybindingsConfigRoot ??
-          process.env.CLAUDE_CONFIG_DIR ??
-          resolve(homedir(), '.claude'),
+        suppliedConfigRoot ??
+          keybindingsConfigRoot ??
+          resolveDataPlaneRoot({ dataPlane }),
       ),
-    [keybindingsConfigRoot],
+    [dataPlane, keybindingsConfigRoot, suppliedConfigRoot],
   )
   const configTarget = useMemo(
-    () => resolveConfigSettingsLocation(runtimeSettingsTarget),
-    [runtimeSettingsTarget],
+    () =>
+      runtimeSettingsTarget === undefined
+        ? {
+            configRoot: keybindingsRoot,
+            statePath:
+              suppliedStatePath ??
+              (dataPlane === 'native'
+                ? join(keybindingsRoot, 'state.json')
+                : process.env.CLAUDE_CONFIG_DIR
+                  ? join(keybindingsRoot, '.claude.json')
+                  : resolve(homedir(), '.claude.json')),
+          }
+        : resolveConfigSettingsLocation(runtimeSettingsTarget),
+    [dataPlane, keybindingsRoot, runtimeSettingsTarget, suppliedStatePath],
+  )
+  const loadMemoryFiles = useMemo(
+    () =>
+      memoryFilesLoader ??
+      ((configRoot: string, cwd: string) =>
+        loadTuiMemoryFiles({ configRoot, cwd, dataPlane })),
+    [dataPlane, memoryFilesLoader],
   )
   const sensitiveValues = useMemo(
     () => sensitiveEnvironmentValues(process.env),
@@ -1102,15 +1132,9 @@ export function InteractiveApp({
     () =>
       doctorLoader ??
       (async (onProgress?: DoctorProgressListener) => {
-        const configuredRoot = process.env.CLAUDE_CONFIG_DIR || undefined
-        const configRoot = resolve(
-          configuredRoot ?? resolve(homedir(), '.claude'),
-        )
-        const claudeStatePath = configuredRoot
-          ? join(configRoot, '.claude.json')
-          : resolve(homedir(), '.claude.json')
         const runtimeSettings = await loadRuntimeSettings(configTarget)
         return runDoctor({
+          dataPlane,
           version: display.version,
           executablePath: resolve(
             process.argv[1] ??
@@ -1118,8 +1142,8 @@ export function InteractiveApp({
           ),
           nodeExecutablePath: process.execPath,
           nodeVersion: process.version,
-          configRoot,
-          claudeStatePath,
+          configRoot: configTarget.configRoot,
+          claudeStatePath: configTarget.statePath,
           cwd: runtimeCwd,
           environment: process.env,
           autoUpdateChannel: runtimeSettings.autoUpdatesChannel,
@@ -1129,7 +1153,7 @@ export function InteractiveApp({
           ...(onProgress === undefined ? {} : { onProgress }),
         })
       }),
-    [doctorLoader, runtimeCwd, display.version, configTarget],
+    [doctorLoader, runtimeCwd, display.version, configTarget, dataPlane],
   )
   const loadFiles = useMemo(
     () =>
@@ -1143,15 +1167,22 @@ export function InteractiveApp({
   const permissionStore = useMemo(
     () =>
       permissionRuleStore ?? {
-        load: () => loadTuiPermissionRules(runtimeCwd),
+        load: () =>
+          loadTuiPermissionRules(runtimeCwd, keybindingsRoot, dataPlane),
         add: (input: {
           behavior: TuiPermissionBehavior
           rule: string
           scope: ClaudeResourceScope
-        }) => addTuiPermissionRule({ cwd: runtimeCwd, ...input }),
+        }) =>
+          addTuiPermissionRule({
+            cwd: runtimeCwd,
+            configRoot: keybindingsRoot,
+            dataPlane,
+            ...input,
+          }),
         remove: removeTuiPermissionRule,
       },
-    [permissionRuleStore, runtimeCwd],
+    [dataPlane, keybindingsRoot, permissionRuleStore, runtimeCwd],
   )
   const recentDeniedStore = useMemo(
     () => suppliedRecentlyDeniedStore ?? createRecentlyDeniedStore(),
@@ -1160,20 +1191,21 @@ export function InteractiveApp({
   const presentationThemeStore = useMemo(
     () =>
       themeStore ?? {
-        load: loadTuiThemeSettings,
-        save: saveTuiThemeSettings,
-        loadCustomThemes: () => loadTuiCustomThemes(),
+        load: () => loadTuiThemeSettings(keybindingsRoot),
+        save: (update: Partial<TuiThemeSettings>) =>
+          saveTuiThemeSettings(update, keybindingsRoot),
+        loadCustomThemes: () => loadTuiCustomThemes(keybindingsRoot),
         createCustomTheme: (input: { name: string; base: CustomThemeBase }) =>
-          createTuiCustomTheme(input),
+          createTuiCustomTheme({ ...input, configRoot: keybindingsRoot }),
         updateCustomTheme: (
           theme: TuiCustomTheme,
           token: CustomThemeToken,
           value: string | undefined,
-        ) => updateTuiCustomTheme(theme, token, value),
+        ) => updateTuiCustomTheme(theme, token, value, keybindingsRoot),
         deleteCustomTheme: (theme: TuiCustomTheme) =>
-          deleteTuiCustomTheme(theme),
+          deleteTuiCustomTheme(theme, keybindingsRoot),
       },
-    [themeStore],
+    [keybindingsRoot, themeStore],
   )
   const [customThemes, setCustomThemes] = useState<readonly TuiCustomTheme[]>(
     [],
@@ -1399,12 +1431,14 @@ export function InteractiveApp({
         cwd: runtimeCwd,
         homeDirectory: homedir(),
         additionalDirectories: runtimePreferences.additionalDirectories,
+        dataPlane,
       }),
     [
       keybindingsRoot,
       runtimeCwd,
       runtimePreferences.additionalDirectories,
       suppliedSandboxStore,
+      dataPlane,
     ],
   )
   const runtimePreferencesRef = useRef(runtimePreferences)
@@ -1424,9 +1458,10 @@ export function InteractiveApp({
             runtimeCwd,
             sensitiveValues,
             permission.decision,
+            dataPlane,
           )
         : null,
-    [permission, runtimeCwd, sensitiveValues],
+    [dataPlane, permission, runtimeCwd, sensitiveValues],
   )
   const [elicitation, setElicitation] = useState<PendingElicitation | null>(
     null,
@@ -1462,9 +1497,17 @@ export function InteractiveApp({
     () =>
       mergeTuiSlashCommands([
         ...(terminalSetupCommand === null ? [] : [terminalSetupCommand]),
-        ...availableSlashCommands,
+        ...availableSlashCommands.map((command) =>
+          dataPlane === 'native' && command.name === 'agents'
+            ? {
+                ...command,
+                description:
+                  '(removed) Ask Praxis to create/manage subagents, or edit .praxis/agents/',
+              }
+            : command,
+        ),
       ]),
-    [availableSlashCommands, terminalSetupCommand],
+    [availableSlashCommands, dataPlane, terminalSetupCommand],
   )
   const builtinSlashCommands = useMemo(
     () => allSlashCommands.filter((command) => command.source === 'builtin'),
@@ -1567,8 +1610,13 @@ export function InteractiveApp({
     process.env.HTTP_PROXY
   const statusSettingSources = (() => {
     const projectSettings =
-      existsSync(join(runtimeCwd, '.claude', 'settings.json')) ||
-      existsSync(join(runtimeCwd, 'settings.json'))
+      existsSync(
+        join(
+          runtimeCwd,
+          dataPlane === 'native' ? '.praxis' : '.claude',
+          'settings.json',
+        ),
+      ) || existsSync(join(runtimeCwd, 'settings.json'))
     return projectSettings ? 'User settings, Project settings' : 'User settings'
   })()
   const workspaceDirectories = [
@@ -2396,6 +2444,7 @@ export function InteractiveApp({
               runtimeCwdRef.current,
               sensitiveValues,
               decision,
+              dataPlane,
             )
           : null
       const editableRule = projected?.options.find(
@@ -3189,10 +3238,11 @@ export function InteractiveApp({
           })
           return
         }
-        const configRoot = process.env.CLAUDE_CONFIG_DIR
         const management = new ClaudeMcpManagement({
+          dataPlane,
           cwd: runtimeCwdRef.current,
-          ...(configRoot ? { configRoot } : {}),
+          configRoot: keybindingsRoot,
+          statePath: configTarget.statePath,
         })
         const controller = new McpPanelController({
           cwd: runtimeCwdRef.current,
@@ -6777,7 +6827,7 @@ export function InteractiveApp({
         const loading = (async () => {
           setBusy(true)
           try {
-            const files = await memoryFilesLoader(
+            const files = await loadMemoryFiles(
               keybindingsRoot,
               runtimeCwdRef.current,
             )
@@ -6815,7 +6865,7 @@ export function InteractiveApp({
         append({ kind: 'user', text: prompt })
         append({
           kind: 'local-result',
-          text: 'The /agents wizard has been removed.\n\nAsk Claude to create or update subagents for you (e.g. "create a code-reviewer subagent that ..."),\nor edit the files directly:\n  • .claude/agents/       (this project)\n  • ~/.claude/agents/     (all projects)\n\nDocs: https://code.claude.com/docs/en/sub-agents',
+          text: `The /agents wizard has been removed.\n\nAsk Praxis to create or update subagents for you (e.g. "create a code-reviewer subagent that ..."),\nor edit the files directly:\n  • ${settingsDirectory}/agents/       (this project)\n  • ~/${settingsDirectory}/agents/     (all projects)`,
         })
       } else if (colorCommand) {
         changeSessionColor(prompt, parseAgentColorInput(colorCommand[1] ?? ''))
@@ -7024,7 +7074,7 @@ export function InteractiveApp({
         ])
         const loading = (async () => {
           try {
-            const files = await memoryFilesLoader(
+            const files = await loadMemoryFiles(
               keybindingsRoot,
               runtimeCwdRef.current,
             )
@@ -7121,8 +7171,7 @@ export function InteractiveApp({
               label: command.name,
               description: command.description,
             })),
-          emptyText:
-            'No skills found\nCreate skills in .claude/skills/ or ~/.claude/skills/',
+          emptyText: `No skills found\nCreate skills in ${settingsDirectory}/skills/ or ~/${settingsDirectory}/skills/`,
           selectedIndex: 0,
         })
       } else if (prompt === '/tasks' || prompt === '/workflows') {
@@ -7215,6 +7264,7 @@ export function InteractiveApp({
                 display={runtimeDisplay}
                 width={width}
                 showTips={runtimeSettings.tips}
+                dataPlane={dataPlane}
               />
             ) : null}
             {sessionId ? (
@@ -7684,15 +7734,15 @@ export function InteractiveApp({
                   options={[
                     {
                       label: 'Project settings (local)',
-                      description: 'Saved in .claude/settings.local.json',
+                      description: `Saved in ${settingsDirectory}/settings.local.json`,
                     },
                     {
                       label: 'Project settings',
-                      description: 'Checked in at .claude/settings.json',
+                      description: `Checked in at ${settingsDirectory}/settings.json`,
                     },
                     {
                       label: 'User settings',
-                      description: 'Saved in at ~/.claude/settings.json',
+                      description: `Saved in ~/${settingsDirectory}/settings.json`,
                     },
                   ]}
                   selectedIndex={menu.selectedIndex}
@@ -7750,6 +7800,7 @@ export function InteractiveApp({
                   state={menu.state}
                   width={width}
                   screenReader={axScreenReader}
+                  dataPlane={dataPlane}
                 />
               ) : menu.kind === 'tasks' ? (
                 <TaskPanel
@@ -7767,6 +7818,7 @@ export function InteractiveApp({
                   loading={menu.loading}
                   width={width}
                   screenReader={axScreenReader}
+                  dataPlane={dataPlane}
                 />
               ) : menu.kind === 'hooks' ? (
                 <HookDashboard
@@ -7832,7 +7884,8 @@ export function InteractiveApp({
                 >
                   <Text>Name: {input || 'my-theme'}</Text>
                   <Text>
-                    based on {menu.base} · saved to ~/.claude/themes/theme.json
+                    based on {menu.base} · saved to ~/{settingsDirectory}
+                    /themes/theme.json
                   </Text>
                   <Text dimColor>Enter to create · Esc to cancel</Text>
                 </DialogFrame>
@@ -7963,6 +8016,7 @@ export function InteractiveApp({
                 <StatusLine
                   configRoot={keybindingsRoot}
                   cwd={runtimeCwd}
+                  dataPlane={dataPlane}
                   input={createClaudeStatusLineInput({
                     configRoot: keybindingsRoot,
                     cwd: runtimeCwd,
@@ -7977,6 +8031,7 @@ export function InteractiveApp({
                     permissionMode: runtimePreferences.permissionMode,
                     additionalDirectories:
                       runtimePreferences.additionalDirectories,
+                    dataPlane,
                     ...(usage === undefined ? {} : { usage }),
                     ...(costUsd === undefined ? {} : { costUsd }),
                     ...(runtimeDisplay.contextWindowTokens === undefined
@@ -8018,9 +8073,11 @@ export function InteractiveApp({
  * `/tui fullscreen`, the saved value is honored. If configuration cannot be
  * read, the loaded runtime setting is honored instead of guessing.
  */
-async function tuiRendererExplicitlyConfigured(): Promise<boolean> {
+async function tuiRendererExplicitlyConfigured(
+  target?: Parameters<typeof loadConfigSettings>[0],
+): Promise<boolean> {
   try {
-    const snapshot = await loadConfigSettings()
+    const snapshot = await loadConfigSettings(target)
     return snapshot.settings.tui !== undefined
   } catch {
     return true
@@ -8028,6 +8085,9 @@ async function tuiRendererExplicitlyConfigured(): Promise<boolean> {
 }
 
 export async function runInteractive(options: {
+  dataPlane?: DataPlane
+  configRoot?: string
+  statePath?: string
   factory: InteractiveServiceFactory
   initialPrompt?: string
   signal?: AbortSignal
@@ -8053,12 +8113,27 @@ export async function runInteractive(options: {
   let currentResume = options.resume
   let currentInitialPrompt = options.initialPrompt
   let initialAgentPromptResolved = false
+  const dataPlane = options.dataPlane ?? resolveDataPlane()
+  const configRoot = resolve(
+    options.configRoot ?? resolveDataPlaneRoot({ dataPlane }),
+  )
+  const statePath =
+    options.statePath ??
+    (dataPlane === 'native'
+      ? join(configRoot, 'state.json')
+      : process.env.CLAUDE_CONFIG_DIR
+        ? join(configRoot, '.claude.json')
+        : resolve(homedir(), '.claude.json'))
+  const runtimeSettingsTarget = { configRoot, statePath }
   let currentRuntimeSettings =
-    options.runtimeSettings ?? (await loadRuntimeSettings())
+    options.runtimeSettings ??
+    (await loadRuntimeSettings(runtimeSettingsTarget))
   // Fullscreen is the default interactive TTY renderer. Classic remains the
   // fallback for screen-reader and non-interactive execution, and an explicit
   // renderer saved in configuration is honored over the default.
-  const rendererExplicitlyConfigured = await tuiRendererExplicitlyConfigured()
+  const rendererExplicitlyConfigured = await tuiRendererExplicitlyConfigured(
+    runtimeSettingsTarget,
+  )
   let currentRenderer = resolveTuiRenderer({
     configured: currentRuntimeSettings.tui,
     explicitlyConfigured: rendererExplicitlyConfigured,
@@ -8077,7 +8152,7 @@ export async function runInteractive(options: {
   let initialThemeSettings = DEFAULT_TUI_THEME_SETTINGS
   let initialThemeLoadError: string | undefined
   try {
-    initialThemeSettings = await loadTuiThemeSettings()
+    initialThemeSettings = await loadTuiThemeSettings(configRoot)
   } catch (error) {
     initialThemeLoadError = `Unable to load theme settings: ${
       error instanceof Error ? error.message : String(error)
@@ -8169,6 +8244,9 @@ export async function runInteractive(options: {
     rendererChange = null
     const instance = render(
       <InteractiveApp
+        dataPlane={dataPlane}
+        configRoot={configRoot}
+        statePath={statePath}
         factory={options.factory}
         initialSessions={initialSessions}
         slashCommands={initialSlashCommands}
@@ -8176,6 +8254,7 @@ export async function runInteractive(options: {
         initialHistory={history}
         {...(initialSessionColor === undefined ? {} : { initialSessionColor })}
         runtimeSettings={currentRuntimeSettings}
+        runtimeSettingsTarget={runtimeSettingsTarget}
         {...(options.settingSources === undefined
           ? {}
           : { settingSources: options.settingSources })}

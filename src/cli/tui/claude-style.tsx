@@ -4,6 +4,7 @@ import { Box, Text, useStdout } from 'ink'
 
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
+import type { DataPlane } from '../../persistence/data-plane.js'
 import { composerEditorSegments } from './composer-editor.js'
 import { composerLayoutForWidth } from './composer-layout.js'
 import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
@@ -187,10 +188,12 @@ export function WelcomePanel({
   display,
   width,
   showTips,
+  dataPlane = 'claude',
 }: {
   display: TuiDisplayMetadata
   width: number
   showTips: boolean
+  dataPlane?: DataPlane
 }) {
   const palette = useTuiPalette()
   if (!showTips) return null
@@ -255,10 +258,16 @@ export function WelcomePanel({
           marginTop={wide ? 0 : 1}
         >
           <Text bold>Get started</Text>
-          <Text wrap="truncate-end">/init to create CLAUDE.md</Text>
+          <Text wrap="truncate-end">
+            /init to create {dataPlane === 'native' ? 'PRAXIS.md' : 'CLAUDE.md'}
+          </Text>
           <Text wrap="truncate-end">/config to open settings</Text>
           <Text dimColor> </Text>
-          <Text bold>Shared with Claude Code</Text>
+          <Text bold>
+            {dataPlane === 'native'
+              ? 'Stored by Praxis'
+              : 'Shared with Claude Code'}
+          </Text>
           <Text dimColor wrap="truncate-end">
             Sessions · memory · skills
           </Text>
@@ -1889,6 +1898,7 @@ export function MemoryDashboard({
   loading = false,
   width,
   screenReader,
+  dataPlane = 'claude',
 }: {
   autoMemoryEnabled: boolean
   entries: readonly TuiMemoryFileEntry[]
@@ -1897,6 +1907,7 @@ export function MemoryDashboard({
   loading?: boolean
   width: number
   screenReader: boolean
+  dataPlane?: DataPlane
 }) {
   const palette = useTuiPalette()
   const panelWidth = Math.min(100, width)
@@ -1930,7 +1941,12 @@ export function MemoryDashboard({
         </>
       )}
       <Text> </Text>
-      <Text dimColor> Learn more: https://code.claude.com/docs/en/memory</Text>
+      {dataPlane === 'claude' ? (
+        <Text dimColor>
+          {' '}
+          Learn more: https://code.claude.com/docs/en/memory
+        </Text>
+      ) : null}
       <Text> </Text>
       <Text dimColor italic>
         Enter to confirm · Esc to cancel

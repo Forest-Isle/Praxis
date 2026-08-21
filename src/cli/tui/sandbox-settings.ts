@@ -5,6 +5,8 @@ import type { SandboxDependencyCheck } from '@anthropic-ai/sandbox-runtime'
 
 import { loadClaudeSettings } from '../../compatibility/claude/shared-resources.js'
 import { writeFileAtomically } from '../../platform/atomic-write.js'
+import type { DataPlane } from '../../persistence/data-plane.js'
+import { loadNativeSharedResources } from '../../persistence/native-resources.js'
 import { claudeSandboxRuntime } from '../../sandbox/claude-sandbox-runtime.js'
 import {
   claudeSandboxTempDirectory,
@@ -117,21 +119,31 @@ export function createTuiSandboxStore({
   homeDirectory,
   additionalDirectories = [],
   environment = process.env,
+  dataPlane = 'claude',
 }: {
   configRoot: string
   cwd: string
   homeDirectory: string
   additionalDirectories?: readonly string[]
   environment?: NodeJS.ProcessEnv
+  dataPlane?: DataPlane
 }): TuiSandboxStore {
-  const localSettingsPath = join(cwd, '.claude', 'settings.local.json')
+  const localSettingsPath = join(
+    cwd,
+    dataPlane === 'native' ? '.praxis' : '.claude',
+    'settings.local.json',
+  )
 
   const load = async (): Promise<TuiSandboxSnapshot> => {
-    const resources = await loadClaudeSettings({ configRoot, cwd })
+    const resources =
+      dataPlane === 'native'
+        ? (await loadNativeSharedResources({ root: configRoot, cwd })).settings
+        : await loadClaudeSettings({ configRoot, cwd })
     const settings = loadClaudeSandboxSettings({
       resources,
       cwd,
       configRoot,
+      dataPlane,
       homeDirectory,
       additionalDirectories,
       tempDirectory: claudeSandboxTempDirectory(environment),

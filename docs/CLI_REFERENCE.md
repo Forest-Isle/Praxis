@@ -92,7 +92,9 @@ they are documentation notation, not literal arguments.
 | `PRAXIS_CONTEXT_WINDOW_TOKENS`  | No                 | Positive explicit provider context window.                                  |
 | `PRAXIS_CONTEXT_RESERVE_TOKENS` | No                 | Positive reserve; requires an explicit context window.                      |
 | `PRAXIS_PRICING_JSON`           | No                 | JSON model-pricing overrides used for measured cost and budget enforcement. |
-| `CLAUDE_CONFIG_DIR`             | No                 | Shared Claude/Praxis config root; defaults to `~/.claude`.                  |
+| `PRAXIS_HOME`                   | No                 | Native Praxis root; defaults to `~/.praxis`.                                |
+| `PRAXIS_DATA_PLANE`             | No                 | `native` (default) or explicit `claude` compatibility mode.                 |
+| `CLAUDE_CONFIG_DIR`             | Claude mode only   | Claude compatibility root; defaults to `~/.claude`.                         |
 
 The default base URLs are `https://api.openai.com/v1` for `openai` and
 `https://api.anthropic.com/v1` for `anthropic`.

@@ -39,6 +39,84 @@ async function collectInput(chunks: readonly (string | Uint8Array)[]) {
 }
 
 describe('CLI protocol', () => {
+  it('accepts an explicit data plane', () => {
+    expect(
+      parseCliInvocation(['--data-plane', 'claude', 'hello']),
+    ).toMatchObject({ dataPlane: 'claude', args: ['hello'] })
+    expect(() =>
+      parseCliInvocation(['--data-plane', 'invalid', 'hello']),
+    ).toThrow('--data-plane')
+  })
+
+  it('normalizes Claude 2.1.237 autocompact window values', () => {
+    expect(
+      parseCliInvocation(['--autocompact', 'auto', 'hello']),
+    ).toMatchObject({ autocompact: 'auto', args: ['hello'] })
+    expect(parseCliInvocation(['--autocompact=200', 'hello'])).toMatchObject({
+      autocompact: 200_000,
+    })
+    expect(parseCliInvocation(['--autocompact', '500.5k'])).toMatchObject({
+      autocompact: 500_500,
+    })
+    expect(parseCliInvocation(['--autocompact', '1M'])).toMatchObject({
+      autocompact: 1_000_000,
+    })
+    for (const value of ['99k', '1001k', 'tokens']) {
+      expect(() => parseCliInvocation(['--autocompact', value])).toThrow(
+        '--autocompact',
+      )
+    }
+  })
+
+  it('rejects Claude cloud session controls with explicit local-only errors', () => {
+    expect(() => parseCliInvocation(['--cloud'])).toThrow(
+      '--cloud is unavailable: Praxis is local-only',
+    )
+    expect(() => parseCliInvocation(['--cloud=session-id'])).toThrow(
+      '--cloud is unavailable: Praxis is local-only',
+    )
+    expect(() =>
+      parseCliInvocation(['--environment', 'ccpool_fixture']),
+    ).toThrow('--environment is unavailable: Praxis is local-only')
+    expect(() => parseCliInvocation(['--teleport', 'session-id'])).toThrow(
+      '--teleport is unavailable: Praxis is local-only',
+    )
+  })
+
+  it('parses Claude import command controls without treating them as plugin options', () => {
+    expect(
+      parseCliInvocation(['import', 'codex', '--dry-run', '--yes']),
+    ).toMatchObject({
+      command: 'import',
+      args: ['import', 'codex'],
+      importDryRun: true,
+      importYes: true,
+      pluginDryRun: false,
+      pluginYes: false,
+    })
+    expect(
+      parseCliInvocation(['import', '--yes=preview-digest', 'gemini']),
+    ).toMatchObject({ importYes: 'preview-digest' })
+    expect(() => parseCliInvocation(['import', '--yes='])).toThrow(
+      '--yes digest must not be empty',
+    )
+  })
+
+  it('accepts forward-subagent-text only for print stream-json mode', () => {
+    expect(
+      parseCliInvocation([
+        '--print',
+        '--verbose',
+        '--output-format=stream-json',
+        '--forward-subagent-text',
+        'hello',
+      ]),
+    ).toMatchObject({ forwardSubagentText: true, args: ['hello'] })
+    expect(() => parseCliInvocation(['--forward-subagent-text'])).toThrow(
+      '--forward-subagent-text requires --print and --output-format=stream-json',
+    )
+  })
+
   it('parses setup lifecycle controls without exposing them as prompt arguments', () => {
     expect(
       parseCliInvocation([
@@ -734,6 +812,18 @@ describe('CLI protocol', () => {
     ).toMatchObject({
       args: ['auto-mode', 'defaults'],
       autoModeLabel: 'read',
+    })
+  })
+
+  it('keeps auto-mode reset confirmation separate from plugin confirmation', () => {
+    expect(parseCliInvocation(['auto-mode', 'reset', '--yes'])).toMatchObject({
+      args: ['auto-mode', 'reset'],
+      autoModeResetYes: true,
+      pluginYes: false,
+    })
+    expect(parseCliInvocation(['plugin', 'prune', '--yes'])).toMatchObject({
+      autoModeResetYes: false,
+      pluginYes: true,
     })
   })
 

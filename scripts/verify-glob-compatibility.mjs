@@ -129,7 +129,12 @@ function toolResult(request, id) {
 
 function toolResultText(request, id) {
   const result = toolResult(request, id)
-  if (typeof result?.content === 'string') return result.content
+  if (typeof result?.content === 'string') {
+    return result.content.replace(
+      /\n\n<system-reminder>\n<total_tokens>\d+ tokens left<\/total_tokens>\n<\/system-reminder>$/u,
+      '',
+    )
+  }
   if (!Array.isArray(result?.content)) return undefined
   return result.content
     .filter((block) => block.type === 'text' && typeof block.text === 'string')

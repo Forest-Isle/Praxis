@@ -256,6 +256,7 @@ describe('createClaudeNativeFork', () => {
         sessionId: sourceSessionId,
       },
       { type: 'file-history-delta', messageId: 'ignored' },
+      { type: 'atis-latch', atis: '', sessionId: sourceSessionId },
       user,
       assistant,
       system,
@@ -297,6 +298,13 @@ describe('createClaudeNativeFork', () => {
     expect(() =>
       createClaudeNativeFork({
         source: [user, { ...user, sessionId: 'another' }],
+        sourceSessionId: String(user.sessionId),
+        sessionId,
+      }),
+    ).toThrow('wrong sessionId')
+    expect(() =>
+      createClaudeNativeFork({
+        source: [user, { type: 'atis-latch', atis: '', sessionId: 'another' }],
         sourceSessionId: String(user.sessionId),
         sessionId,
       }),
