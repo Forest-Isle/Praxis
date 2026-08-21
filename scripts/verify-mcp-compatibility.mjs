@@ -77,7 +77,7 @@ const server = createServer(async (request, response) => {
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   if (expectedMarkers.every((marker) => providerMessages.includes(marker))) {
     response.end(
-      `data: ${JSON.stringify({ choices: [{ delta: { content: markers.done } }] })}\n\ndata: [DONE]\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: markers.done }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
     )
     return
   }

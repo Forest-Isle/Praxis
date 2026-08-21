@@ -117,7 +117,9 @@ const server = createServer(async (request, response) => {
     )
     return
   }
-  sse(response, [{ choices: [{ delta: { content: expected } }] }])
+  sse(response, [
+    { choices: [{ delta: { content: expected }, finish_reason: 'stop' }] },
+  ])
 })
 
 function listen() {

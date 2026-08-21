@@ -97,6 +97,21 @@ Provider adapters retain native streaming and caching features behind explicit
 capabilities. They do not leak provider payloads into core events or shared
 Claude transcripts.
 
+Providers that advertise terminal-reason support emit exactly one final
+`terminal` event for each successful stream. The provider-neutral reasons are
+`end_turn`, `tool_use`, `max_tokens`, and `prompt_too_long`. No content, usage,
+or timing event may follow the terminal event. The runtime rejects a missing,
+duplicate, unknown, or tool-call-inconsistent terminal reason before invoking
+turn policy. Providers without the capability retain the legacy inferred
+boundary until their adapter adopts the typed protocol.
+
+Provider failures use a typed, payload-free classification for authentication,
+billing, rate limits, invalid requests, server/API failures, overload, timeout,
+context overflow, transport failure, and cancellation. Native status codes,
+error objects, and stream stop fields remain inside adapters. Retry/fallback
+buffers an attempt until its terminal event so a discarded partial attempt
+cannot replay content or usage.
+
 ## Turn persistence
 
 Praxis translates provider-completed events into Claude-native entries:

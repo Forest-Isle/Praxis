@@ -21,6 +21,18 @@ function providerFrom(complete: ModelProvider['complete']): ModelProvider {
   }
 }
 
+function terminalProvider(complete: ModelProvider['complete']): ModelProvider {
+  return {
+    capabilities: {
+      streaming: true,
+      usage: true,
+      tools: true,
+      terminalReasons: true,
+    },
+    complete,
+  }
+}
+
 const image = {
   type: 'image' as const,
   mediaType: 'image/png' as const,
@@ -28,6 +40,55 @@ const image = {
 }
 
 describe('AgentRuntime', () => {
+  it('emits the typed provider terminal reason to runtime observers', async () => {
+    const events: RuntimeEvent[] = []
+    const runtime = new AgentRuntime(
+      terminalProvider(async function* () {
+        yield { type: 'text-delta', delta: 'partial' }
+        yield { type: 'terminal', reason: 'max_tokens' }
+      }),
+      (event) => events.push(event),
+    )
+
+    await expect(
+      runtime.run({ messages: [{ role: 'user', content: 'continue' }] }),
+    ).resolves.toMatchObject({ text: 'partial' })
+    expect(events).toContainEqual({ type: 'terminal', reason: 'max_tokens' })
+  })
+
+  it('fails deterministically when a terminal-capable provider omits its reason', async () => {
+    const runtime = new AgentRuntime(
+      terminalProvider(async function* () {
+        yield { type: 'text-delta', delta: 'partial' }
+      }),
+    )
+
+    await expect(
+      runtime.run({ messages: [{ role: 'user', content: 'missing' }] }),
+    ).rejects.toThrow('without a terminal reason')
+  })
+
+  it('rejects events after terminal and terminal/tool-call mismatches', async () => {
+    const afterTerminal = new AgentRuntime(
+      terminalProvider(async function* () {
+        yield { type: 'terminal', reason: 'end_turn' }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      }),
+    )
+    await expect(
+      afterTerminal.run({ messages: [{ role: 'user', content: 'late' }] }),
+    ).rejects.toThrow('usage after terminal reason end_turn')
+
+    const missingTool = new AgentRuntime(
+      terminalProvider(async function* () {
+        yield { type: 'terminal', reason: 'tool_use' }
+      }),
+    )
+    await expect(
+      missingTool.run({ messages: [{ role: 'user', content: 'tool' }] }),
+    ).rejects.toThrow('tool_use without a completed tool call')
+  })
+
   it('collects provider API duration only when metrics are requested', async () => {
     const provider = providerFrom(async function* () {
       yield { type: 'text-delta', delta: 'measured' }

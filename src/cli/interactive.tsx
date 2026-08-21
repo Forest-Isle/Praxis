@@ -2385,6 +2385,8 @@ export function InteractiveApp({
           text: `API retry ${event.attempt}/${event.maxRetries} · ${event.error}`,
         })
         break
+      case 'terminal':
+        break
       case 'elicitation-complete':
         append({
           kind: 'notice',

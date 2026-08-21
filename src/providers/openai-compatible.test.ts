@@ -3,7 +3,84 @@ import { describe, expect, it, vi } from 'vitest'
 import { ModelProviderError } from '../core/runtime.js'
 import { OpenAICompatibleProvider } from './openai-compatible.js'
 
+const withoutTerminal = <T extends { type: string }>(events: readonly T[]) =>
+  events.filter((event) => event.type !== 'terminal')
+
 describe('OpenAICompatibleProvider', () => {
+  it.each([
+    ['stop', 'end_turn'],
+    ['content_filter', 'end_turn'],
+    ['tool_calls', 'tool_use'],
+    ['length', 'max_tokens'],
+  ] as const)(
+    'maps OpenAI finish reason %s to terminal reason %s',
+    async (finishReason, terminalReason) => {
+      const provider = new OpenAICompatibleProvider({
+        baseUrl: 'https://provider.example/v1',
+        apiKey: 'secret',
+        model: 'fixture-model',
+        fetchImplementation: async () =>
+          new Response(
+            [
+              `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`,
+              'data: [DONE]\n\n',
+            ].join(''),
+          ),
+      })
+
+      const events = []
+      for await (const event of provider.complete({ messages: [] })) {
+        events.push(event)
+      }
+
+      expect(events).toEqual([{ type: 'terminal', reason: terminalReason }])
+      expect(provider.capabilities.terminalReasons).toBe(true)
+    },
+  )
+
+  it('fails closed on a missing or unknown OpenAI finish reason', async () => {
+    const consume = async (finishReason?: string) => {
+      const chunks =
+        finishReason === undefined
+          ? ['data: [DONE]\n\n']
+          : [
+              `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`,
+              'data: [DONE]\n\n',
+            ]
+      const provider = new OpenAICompatibleProvider({
+        baseUrl: 'https://provider.example/v1',
+        apiKey: 'secret',
+        model: 'fixture-model',
+        fetchImplementation: async () => new Response(chunks.join('')),
+      })
+      for await (const event of provider.complete({ messages: [] })) void event
+    }
+
+    await expect(consume()).rejects.toThrow('missing finish reason')
+    await expect(consume('future_reason')).rejects.toThrow(
+      'unsupported finish reason future_reason',
+    )
+  })
+
+  it('rejects duplicate OpenAI finish reasons', async () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () =>
+        new Response(
+          [
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+            'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+          ].join(''),
+        ),
+    })
+
+    await expect(
+      provider.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+    ).rejects.toThrow('multiple finish reasons')
+  })
+
   it('exposes an explicitly configured context window', () => {
     const provider = new OpenAICompatibleProvider({
       baseUrl: 'https://provider.example/v1',
@@ -37,7 +114,9 @@ describe('OpenAICompatibleProvider', () => {
       thinking: { mode: 'disabled' },
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
-        return new Response('data: [DONE]\n\n')
+        return new Response(
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+        )
       },
     })
     for await (const event of provider.complete({
@@ -80,6 +159,7 @@ describe('OpenAICompatibleProvider', () => {
         [
           'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n',
           'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
           'data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2}}\n\n',
           'data: [DONE]\n\n',
         ].join(''),
@@ -101,7 +181,7 @@ describe('OpenAICompatibleProvider', () => {
       events.push(event)
     }
 
-    expect(events).toEqual([
+    expect(withoutTerminal(events)).toEqual([
       { type: 'text-delta', delta: 'hel' },
       { type: 'text-delta', delta: 'lo' },
       { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } },
@@ -124,7 +204,9 @@ describe('OpenAICompatibleProvider', () => {
       model: 'fixture-model',
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
-        return new Response('data: [DONE]\n\n')
+        return new Response(
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+        )
       },
     })
 
@@ -149,7 +231,7 @@ describe('OpenAICompatibleProvider', () => {
       events.push(event)
     }
 
-    expect(events).toEqual([])
+    expect(withoutTerminal(events)).toEqual([])
     expect(body?.messages).toEqual([
       {
         role: 'tool',
@@ -210,7 +292,9 @@ describe('OpenAICompatibleProvider', () => {
       model: 'fixture-model',
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
-        return new Response('data: [DONE]\n\n')
+        return new Response(
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+        )
       },
     })
     for await (const event of provider.complete({
@@ -255,7 +339,94 @@ describe('OpenAICompatibleProvider', () => {
     }
 
     expect(failure).toBeInstanceOf(ModelProviderError)
-    expect(failure).toMatchObject({ retryable: true, status: 429 })
+    expect(failure).toMatchObject({
+      kind: 'rate_limit',
+      retryable: true,
+      status: 429,
+    })
+  })
+
+  it('classifies context overflow errors explicitly', async () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () =>
+        new Response(
+          '{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}',
+          { status: 400 },
+        ),
+    })
+
+    await expect(
+      provider.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+    ).rejects.toMatchObject({ kind: 'prompt_too_long', retryable: false })
+  })
+
+  it.each([
+    [529, 'overloaded_error', 'overloaded', true],
+    [500, 'api_error', 'api_error', true],
+    [400, 'invalid_request_error', 'invalid_request', false],
+  ] as const)(
+    'classifies HTTP %s %s as %s',
+    async (status, type, kind, retryable) => {
+      const provider = new OpenAICompatibleProvider({
+        baseUrl: 'https://provider.example/v1',
+        apiKey: 'secret',
+        model: 'fixture-model',
+        fetchImplementation: async () =>
+          new Response(JSON.stringify({ error: { type, message: type } }), {
+            status,
+          }),
+      })
+
+      await expect(
+        provider.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+      ).rejects.toMatchObject({ kind, retryable })
+    },
+  )
+
+  it('classifies stream errors, timeout, and cancellation explicitly', async () => {
+    const streamError = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () =>
+        new Response(
+          'data: {"error":{"type":"overloaded_error","message":"busy"}}\n\n',
+        ),
+    })
+    await expect(
+      streamError.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+    ).rejects.toMatchObject({ kind: 'overloaded', retryable: true })
+
+    const timeoutError = new Error('timed out')
+    timeoutError.name = 'TimeoutError'
+    const timeout = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () => Promise.reject(timeoutError),
+    })
+    await expect(
+      timeout.complete({ messages: [] })[Symbol.asyncIterator]().next(),
+    ).rejects.toMatchObject({ kind: 'timeout', retryable: true })
+
+    const controller = new AbortController()
+    controller.abort(new Error('cancelled'))
+    const cancelled = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () => Promise.reject(controller.signal.reason),
+    })
+    const cancelledStream = cancelled.complete({
+      messages: [],
+      signal: controller.signal,
+    })
+    await expect(
+      cancelledStream[Symbol.asyncIterator]().next(),
+    ).rejects.toMatchObject({ kind: 'cancelled', retryable: false })
   })
 
   it('parses CRLF-framed SSE split across transport chunks', async () => {
@@ -266,7 +437,11 @@ describe('OpenAICompatibleProvider', () => {
           encoder.encode('data: {"choices":[{"delta":{"content":"ok"}}]}\r'),
         )
         controller.enqueue(encoder.encode('\n\r'))
-        controller.enqueue(encoder.encode('\ndata: [DONE]\r\n\r\n'))
+        controller.enqueue(
+          encoder.encode(
+            '\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\r\n\r\ndata: [DONE]\r\n\r\n',
+          ),
+        )
         controller.close()
       },
     })
@@ -281,7 +456,9 @@ describe('OpenAICompatibleProvider', () => {
     for await (const event of provider.complete({ messages: [] })) {
       events.push(event)
     }
-    expect(events).toEqual([{ type: 'text-delta', delta: 'ok' }])
+    expect(withoutTerminal(events)).toEqual([
+      { type: 'text-delta', delta: 'ok' },
+    ])
   })
 
   it('serializes tools and assembles fragmented tool call arguments', async () => {
@@ -335,7 +512,7 @@ describe('OpenAICompatibleProvider', () => {
       events.push(event)
     }
 
-    expect(events).toEqual([
+    expect(withoutTerminal(events)).toEqual([
       {
         type: 'tool-call',
         call: {
@@ -482,6 +659,7 @@ describe('OpenAICompatibleProvider', () => {
           new TextEncoder().encode(
             [
               'data: {"choices":[{"delta":{"content":"done"}}]}\n\n',
+              'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
               'data: [DONE]\n\n',
             ].join(''),
           ),
@@ -502,7 +680,9 @@ describe('OpenAICompatibleProvider', () => {
     for await (const event of provider.complete({ messages: [] })) {
       events.push(event)
     }
-    expect(events).toEqual([{ type: 'text-delta', delta: 'done' }])
+    expect(withoutTerminal(events)).toEqual([
+      { type: 'text-delta', delta: 'done' },
+    ])
     expect(cancelled).toBe(true)
   })
 
@@ -532,6 +712,7 @@ describe('OpenAICompatibleProvider', () => {
       const stream = provider.complete({ messages: [] })
       const next = stream[Symbol.asyncIterator]().next()
       await expect(next).rejects.toMatchObject({
+        kind: 'transport_error',
         name: 'ModelProviderError',
         retryable: true,
       })

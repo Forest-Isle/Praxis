@@ -37,7 +37,7 @@ const server = createServer(async (request, response) => {
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   if (serialized.includes(markers.updated)) {
     response.end(
-      `data: ${JSON.stringify({ choices: [{ delta: { content: markers.praxisDone } }] })}\n\ndata: [DONE]\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: markers.praxisDone }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
     )
     return
   }
