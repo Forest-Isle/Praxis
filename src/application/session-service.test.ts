@@ -111,6 +111,71 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it.each([
+    {
+      dataPlane: 'native' as const,
+      selectedRoot: 'state',
+      unselectedRoot: 'praxis',
+    },
+    {
+      dataPlane: 'claude' as const,
+      selectedRoot: 'praxis',
+      unselectedRoot: 'state',
+    },
+  ])(
+    'stores $dataPlane session memory only in the selected data plane',
+    async ({ dataPlane, selectedRoot, unselectedRoot }) => {
+      const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-plane-'))
+      roots.push(root)
+      const configRoot = join(root, 'config')
+      const cwd = join(root, 'project')
+      let calls = 0
+      const provider: ModelProvider = {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          if (calls++ === 0) {
+            yield { type: 'text-delta', delta: 'foreground answer' }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 12_000, outputTokens: 50 },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'durable memory' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 20 },
+          }
+        },
+      }
+      const service = new ClaudeSessionService({
+        configRoot,
+        dataPlane,
+        cwd,
+        claudeVersion: '2.1.208',
+        provider,
+      })
+
+      const run = await service.run('remember this')
+      const memoryPath = (planeRoot: string) =>
+        join(
+          configRoot,
+          planeRoot,
+          'session-memory',
+          run.sessionId,
+          'summary.md',
+        )
+
+      await expect(readFile(memoryPath(selectedRoot), 'utf8')).resolves.toBe(
+        'durable memory',
+      )
+      await expect(
+        readFile(memoryPath(unselectedRoot), 'utf8'),
+      ).rejects.toMatchObject({ code: 'ENOENT' })
+      await service.close()
+    },
+  )
+
   it('stores a native session outside the Claude project layout', async () => {
     const { configRoot, cwd, service } = await createService()
     const native = new ClaudeSessionService({

@@ -130,8 +130,11 @@ export interface SessionMemoryStoreOptions {
 }
 
 /**
- * Durable sidecar for one session's extracted memory under
- * `<configRoot>/praxis/session-memory/<sessionId>/`. All writes are atomic
+ * Durable sidecar for one session's extracted memory. Claude compatibility
+ * defaults to `<configRoot>/praxis/session-memory/<sessionId>/`; callers may
+ * select another data plane with
+ * `<sidecarRoot>/session-memory/<sessionId>/` (for example, native
+ * `<configRoot>/state/session-memory/<sessionId>/`). All writes are atomic
  * (same-directory temp file, fsync, then rename) and version-checked. Never
  * touches shared Claude transcript entries.
  */
