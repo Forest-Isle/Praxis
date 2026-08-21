@@ -15,6 +15,7 @@ const environment = {
   ...process.env,
   CLAUDE_CONFIG_DIR: join(probeRoot, 'config'),
   DISABLE_AUTOUPDATER: '1',
+  PRAXIS_DATA_PLANE: 'claude',
 }
 const excludedOptions = new Map([
   [
