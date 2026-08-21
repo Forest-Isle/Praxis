@@ -60,3 +60,19 @@ to documentation and repository tooling:
    required review is satisfied, enable repository-standard squash automerge
    with `gh pr merge --auto --squash`; do not manually merge or create release
    tags. Report the PR URL, commit, checks, and any remaining caveat.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues; external PRs are not a triage request
+surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the standard five-role triage vocabulary. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository. See `docs/agents/domain.md`.
