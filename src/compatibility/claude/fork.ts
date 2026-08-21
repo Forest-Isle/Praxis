@@ -219,9 +219,14 @@ export function createClaudeNativeFork({
         (metadata as Record<string, unknown>).direction === 'up_to')
     )
   })
+  const hasCompactHistory = source.some(
+    (entry) =>
+      entry.isCompactSummary === true ||
+      (entry.type === 'system' && entry.subtype === 'compact_boundary'),
+  )
   const activeSource =
     resumeSessionAt === undefined
-      ? hasSelectiveSummary
+      ? hasCompactHistory || hasSelectiveSummary
         ? selectClaudeActiveTranscript(source)
         : source
       : selectClaudeTranscriptAtMessage(source, resumeSessionAt)

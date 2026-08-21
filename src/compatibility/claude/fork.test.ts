@@ -598,6 +598,67 @@ describe('createClaudeNativeFork', () => {
     ])
   })
 
+  it('forks the active compact branch and excludes an unrelated physical tail', async () => {
+    const [user, assistant] = await fixture('basic-session.jsonl')
+    const [boundary, summary] = await fixture('compact-session.jsonl')
+    if (!user || !assistant || !boundary || !summary) {
+      throw new Error('fixture missing')
+    }
+    const sourceSessionId = String(user.sessionId)
+    const sessionId = '99999999-9999-4999-8999-999999999999'
+    const compactBoundary = {
+      ...boundary,
+      uuid: '55555555-5555-4555-8555-555555555555',
+      logicalParentUuid: assistant.uuid,
+      compactMetadata: {
+        ...(boundary.compactMetadata as Record<string, unknown>),
+        preservedSegment: {
+          ...((boundary.compactMetadata as Record<string, unknown>)
+            .preservedSegment as Record<string, unknown>),
+          headUuid: assistant.uuid,
+          tailUuid: assistant.uuid,
+        },
+        preservedMessages: {
+          ...((boundary.compactMetadata as Record<string, unknown>)
+            .preservedMessages as Record<string, unknown>),
+          uuids: [assistant.uuid],
+          allUuids: [assistant.uuid],
+        },
+      },
+      sessionId: sourceSessionId,
+    }
+    const compactSummary = {
+      ...summary,
+      uuid: '66666666-6666-4666-8666-666666666666',
+      parentUuid: compactBoundary.uuid,
+      sessionId: sourceSessionId,
+    }
+    const unrelatedTail = {
+      ...user,
+      uuid: '77777777-7777-4777-8777-777777777777',
+      parentUuid: user.uuid,
+      sessionId: sourceSessionId,
+      message: { role: 'user', content: 'unrelated physical tail' },
+    }
+
+    const fork = createClaudeNativeFork({
+      source: [user, assistant, compactBoundary, compactSummary, unrelatedTail],
+      sourceSessionId,
+      sessionId,
+    })
+
+    expect(fork).toEqual([
+      { ...user, sessionId },
+      { ...assistant, sessionId },
+      { ...compactBoundary, sessionId },
+      { ...compactSummary, sessionId },
+    ])
+    expect(fork).not.toContainEqual({ ...unrelatedTail, sessionId })
+    expect(new Set(fork.map((entry) => entry.sessionId))).toEqual(
+      new Set([sessionId]),
+    )
+  })
+
   it('fails closed for broken native history links', async () => {
     const [user, assistant, lastPrompt] = await fixture('basic-session.jsonl')
     const tool = await fixture('tool-session.jsonl')
