@@ -32,7 +32,10 @@ const excludedCommands = new Map([
   ['', new Set(['auth', 'gateway', 'setup-token', 'ultrareview'])],
   ['mcp', new Set(['add-from-claude-desktop'])],
 ])
-const optionSignatureExtensions = new Map([['', new Set(['--tmux'])]])
+const optionSignatureExtensions = new Map([
+  ['', new Set(['--tmux'])],
+  ['plugin eval', new Set(['--json'])],
+])
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -289,9 +292,11 @@ try {
       const expected = claudeOptionSurface.get(extension)
       const received = praxisOptionSurface.get(extension)
       assert(
-        expected?.kind === 'none' &&
-          received?.kind === 'optional' &&
-          !received.variadic,
+        (expected?.kind === received?.kind &&
+          expected?.variadic === received?.variadic) ||
+          (expected?.kind === 'none' &&
+            received?.kind === 'optional' &&
+            !received.variadic),
         `${key || 'root'} stale option signature extension: ${extension}`,
       )
     }
