@@ -11,6 +11,9 @@ export interface ContextBudgetOptions {
   /** Declares whether the configured window came from a provider capability so
    *  reports can distinguish provider-derived decisions from estimates. */
   windowSource?: 'capability' | 'estimate'
+  /** Receives at most one bounded diagnostic when provider accounting is
+   * malformed and the deterministic estimate fallback is used. */
+  onAccountingDiagnostic?: (message: string) => void
 }
 
 export interface ContextBudgetEvaluateOptions {
@@ -27,6 +30,11 @@ export type ContextBudgetSource = 'provider' | 'capability' | 'estimate'
 
 export interface ContextBudgetReport {
   estimatedTokens: number
+  /** Total context occupancy used for overflow accounting: the actual provider
+   *  input/cache tokens at the observation watermark plus deterministic
+   *  estimated tokens added after that watermark. Without a usable watermark
+   *  this equals `estimatedTokens`. */
+  occupancyTokens: number
   contextWindowTokens: number
   reserveTokens: number
   availableTokens: number
@@ -123,11 +131,43 @@ export function estimateModelRequestTokens(
   return messageTokens + toolTokens
 }
 
+/** Normalized provider input occupancy counting input and cache-read/creation
+ *  fields without output tokens. Returns `undefined` for malformed, negative,
+ *  or non-safe usage so accounting fails open. */
+function normalizedInputAndCacheTokens(usage: ModelUsage): number | undefined {
+  if (
+    !Number.isSafeInteger(usage.inputTokens) ||
+    usage.inputTokens < 0 ||
+    (usage.cacheReadInputTokens !== undefined &&
+      (!Number.isSafeInteger(usage.cacheReadInputTokens) ||
+        usage.cacheReadInputTokens < 0)) ||
+    (usage.cacheCreationInputTokens !== undefined &&
+      (!Number.isSafeInteger(usage.cacheCreationInputTokens) ||
+        usage.cacheCreationInputTokens < 0))
+  ) {
+    return undefined
+  }
+  const candidate =
+    (usage.inputTokens ?? 0) +
+    (usage.cacheReadInputTokens ?? 0) +
+    (usage.cacheCreationInputTokens ?? 0)
+  return Number.isSafeInteger(candidate) ? candidate : undefined
+}
+
 export class ContextBudget {
   readonly contextWindowTokens: number
   readonly reserveTokens: number
   readonly windowSource: 'capability' | 'estimate'
   private observedUsage: ModelUsage | undefined
+  /** Actual provider input/cache tokens at the most recent usable observation;
+   *  the watermark that anchors later occupancy. */
+  private watermarkActualInputTokens: number | undefined
+  /** Deterministic estimate of the request snapshot captured at observation
+   *  time; only growth beyond this baseline is added to the watermark. */
+  private watermarkBaselineEstimate: number | undefined
+  private accountingDiagnosticEmitted = false
+  private readonly onAccountingDiagnostic:
+    ((message: string) => void) | undefined
 
   constructor(options: ContextBudgetOptions) {
     requirePositiveInteger(options.contextWindowTokens, 'Context window tokens')
@@ -143,10 +183,29 @@ export class ContextBudget {
     this.contextWindowTokens = options.contextWindowTokens
     this.reserveTokens = reserveTokens
     this.windowSource = options.windowSource ?? 'estimate'
+    this.onAccountingDiagnostic = options.onAccountingDiagnostic
   }
 
-  observeUsage(usage: ModelUsage): void {
+  /** Record a completed provider request: `usage` carries the actual token
+   *  counts and `messages`/`tools` are the exact snapshot used for that
+   *  request. The snapshot's deterministic estimate becomes the watermark
+   *  baseline so later evaluations add only post-watermark growth. Malformed
+   *  usage is ignored (fail-open) and never throws; a valid `contextWindow`
+   *  still updates the effective window through `observedUsage`. */
+  observeUsage(
+    usage: ModelUsage,
+    messages: readonly ModelMessage[] = [],
+    tools: readonly ModelToolDefinition[] = [],
+  ): void {
     this.observedUsage = usage
+    const actualInputTokens = normalizedInputAndCacheTokens(usage)
+    if (actualInputTokens === undefined) {
+      this.emitAccountingDiagnostic()
+      return
+    }
+    if (messages.length === 0 && tools.length === 0) return
+    this.watermarkActualInputTokens = actualInputTokens
+    this.watermarkBaselineEstimate = estimateModelRequestTokens(messages, tools)
   }
 
   effectiveContextWindow(usage?: ModelUsage): number {
@@ -159,6 +218,7 @@ export class ContextBudget {
     options: ContextBudgetEvaluateOptions = {},
   ): ContextBudgetReport {
     const estimatedTokens = estimateModelRequestTokens(messages, tools)
+    const occupancyTokens = this.anchoredOccupancyTokens(estimatedTokens)
     const providerWindow = this.providerContextWindow(options.lastUsage)
     const contextWindowTokens = providerWindow ?? this.contextWindowTokens
     const outputTokens =
@@ -173,17 +233,48 @@ export class ContextBudget {
     )
     const overflowTokens = Math.max(
       0,
-      estimatedTokens + outputTokens - availableTokens,
+      occupancyTokens + outputTokens - availableTokens,
     )
     const shouldCompact = options.promptTooLong === true || overflowTokens > 0
     return {
       estimatedTokens,
+      occupancyTokens,
       contextWindowTokens,
       reserveTokens: this.reserveTokens,
       availableTokens,
       overflowTokens,
       shouldCompact,
       source: providerWindow === undefined ? this.windowSource : 'provider',
+    }
+  }
+
+  /** Occupancy anchored at the actual input/cache watermark, adding only the
+   *  deterministic estimated growth past the observation baseline. Without a
+   *  usable watermark this is the plain estimate fallback. */
+  private anchoredOccupancyTokens(estimatedTokens: number): number {
+    if (
+      this.watermarkActualInputTokens === undefined ||
+      this.watermarkBaselineEstimate === undefined
+    ) {
+      return estimatedTokens
+    }
+    const growthAfterWatermark = Math.max(
+      0,
+      estimatedTokens - this.watermarkBaselineEstimate,
+    )
+    return this.watermarkActualInputTokens + growthAfterWatermark
+  }
+
+  private emitAccountingDiagnostic(): void {
+    if (this.accountingDiagnosticEmitted) return
+    this.accountingDiagnosticEmitted = true
+    try {
+      this.onAccountingDiagnostic?.(
+        'Provider input usage was malformed; using deterministic context estimates.',
+      )
+    } catch {
+      // Diagnostics are strictly best-effort. A broken sink must never turn
+      // fail-open accounting into a healthy-turn failure.
     }
   }
 
