@@ -202,6 +202,134 @@ describe('ContextBudget', () => {
     )
     expect(malformedOutput.shouldCompact).toBe(false)
   })
+
+  it('anchors occupancy at actual usage and adds only post-watermark growth', () => {
+    const budget = new ContextBudget({
+      contextWindowTokens: 1000,
+      reserveTokens: 100,
+    })
+    const history = [{ role: 'user' as const, content: 'x'.repeat(400) }]
+    const nextTurn = [
+      ...history,
+      { role: 'user' as const, content: 'a'.repeat(80) },
+    ]
+    const baselineEstimate = estimateModelRequestTokens(history)
+
+    // The completed request reported far fewer input/cache tokens than the
+    // deterministic estimator, so occupancy must anchor at the actual count
+    // and never double-count the pre-watermark history.
+    budget.observeUsage(
+      {
+        inputTokens: 40,
+        cacheReadInputTokens: 30,
+        cacheCreationInputTokens: 10,
+        outputTokens: 999,
+        contextWindow: 1000,
+      },
+      history,
+    )
+
+    const unchanged = budget.evaluate(history)
+    expect(unchanged.occupancyTokens).toBe(80) // 40 + 30 + 10; output excluded
+    expect(unchanged.estimatedTokens).toBe(baselineEstimate)
+    expect(unchanged.shouldCompact).toBe(false)
+
+    const grown = budget.evaluate(nextTurn)
+    expect(grown.occupancyTokens).toBe(
+      80 + (estimateModelRequestTokens(nextTurn) - baselineEstimate),
+    )
+
+    // Observing the same usage again never grows the anchor.
+    budget.observeUsage(
+      {
+        inputTokens: 40,
+        cacheReadInputTokens: 30,
+        cacheCreationInputTokens: 10,
+        outputTokens: 999,
+        contextWindow: 1000,
+      },
+      history,
+    )
+    expect(budget.evaluate(history).occupancyTokens).toBe(80)
+  })
+
+  it('fails open on malformed or non-safe observed usage', () => {
+    const budget = new ContextBudget({
+      contextWindowTokens: 1000,
+      reserveTokens: 100,
+    })
+    const history = [{ role: 'user' as const, content: 'x'.repeat(400) }]
+    const fallback = estimateModelRequestTokens(history)
+
+    budget.observeUsage(
+      { inputTokens: -5, outputTokens: 0, contextWindow: 1000 },
+      history,
+    )
+    expect(budget.evaluate(history).occupancyTokens).toBe(fallback)
+
+    budget.observeUsage(
+      {
+        inputTokens: 1.5,
+        cacheReadInputTokens: 10,
+        outputTokens: 0,
+      },
+      history,
+    )
+    expect(budget.evaluate(history).occupancyTokens).toBe(fallback)
+
+    budget.observeUsage(
+      { inputTokens: 100, cacheReadInputTokens: -5, outputTokens: 0 },
+      history,
+    )
+    expect(budget.evaluate(history).occupancyTokens).toBe(fallback)
+
+    // Non-safe input is ignored, but a valid window still updates
+    // independently.
+    budget.observeUsage(
+      {
+        inputTokens: Number.MAX_SAFE_INTEGER + 1,
+        outputTokens: 0,
+        contextWindow: 2000,
+      },
+      history,
+    )
+    expect(budget.effectiveContextWindow()).toBe(2000)
+    const report = budget.evaluate(history)
+    expect(report.contextWindowTokens).toBe(2000)
+    expect(report.occupancyTokens).toBe(fallback)
+  })
+
+  it('emits one bounded diagnostic when usage accounting falls back', () => {
+    const diagnostics: string[] = []
+    const budget = new ContextBudget({
+      contextWindowTokens: 1000,
+      onAccountingDiagnostic: (message) => diagnostics.push(message),
+    })
+    const messages = [{ role: 'user' as const, content: 'hello' }]
+
+    budget.observeUsage({ inputTokens: -1, outputTokens: 0 }, messages)
+    budget.observeUsage({ inputTokens: 1.5, outputTokens: 0 }, messages)
+
+    expect(diagnostics).toEqual([
+      'Provider input usage was malformed; using deterministic context estimates.',
+    ])
+    expect(diagnostics[0]?.length).toBeLessThanOrEqual(256)
+  })
+
+  it('does not fail a turn when the accounting diagnostic sink throws', () => {
+    const budget = new ContextBudget({
+      contextWindowTokens: 1000,
+      onAccountingDiagnostic: () => {
+        throw new Error('diagnostic sink unavailable')
+      },
+    })
+
+    expect(() =>
+      budget.observeUsage({ inputTokens: -1, outputTokens: 0 }, [
+        { role: 'user', content: 'hello' },
+      ]),
+    ).not.toThrow()
+  })
 })
 
 describe('ContextRecoveryPlanner', () => {

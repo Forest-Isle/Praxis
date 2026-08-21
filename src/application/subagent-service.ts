@@ -33,6 +33,7 @@ import {
 import { ContextBudget } from '../core/context-budget.js'
 import {
   AgentRuntime,
+  type ModelMessage,
   type ModelProvider,
   type ModelThinkingBlock,
   type ModelToolCall,
@@ -2016,6 +2017,11 @@ export class ClaudeSubagentExecutor {
         ? new ContextBudget({
             contextWindowTokens:
               options.provider.capabilities.contextWindowTokens,
+            onAccountingDiagnostic: (message) =>
+              this.options.eventSink?.({
+                type: 'warning',
+                message: `Context usage accounting: ${message}`,
+              }),
             ...(this.options.contextReserveTokens === undefined
               ? {}
               : { reserveTokens: this.options.contextReserveTokens }),
@@ -2024,6 +2030,7 @@ export class ClaudeSubagentExecutor {
       const definitions = options.provider.capabilities.tools
         ? runtimeTools.definitions()
         : []
+      let observedMessages: readonly ModelMessage[] | undefined
       const assembleMessages = async () => {
         const assembledContext = await this.options.contextAssembler?.assemble({
           cwd,
@@ -2037,6 +2044,7 @@ export class ClaudeSubagentExecutor {
           ),
           ...preloadedSkills,
         ]
+        observedMessages = messages
         if (contextBudget) {
           contextBudget.assertFits(
             contextBudget.evaluate(messages, definitions),
@@ -2119,6 +2127,11 @@ export class ClaudeSubagentExecutor {
           : {}),
         ...(options.signal ? { signal: options.signal } : {}),
       })
+      contextBudget?.observeUsage(
+        result.usage,
+        observedMessages ?? [],
+        definitions,
+      )
       this.options.eventSink?.({
         type: 'task-progress',
         taskId: options.agentId,

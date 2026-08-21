@@ -1504,7 +1504,7 @@ export class ClaudeSessionService {
           this.recordAuxiliaryMetrics(activeSessionId, recorded),
       },
     )
-    budget?.observeUsage(metrics.usage)
+    budget?.observeUsage(metrics.usage, messages)
     if (metrics.toolCalls.length > 0) {
       throw new Error('Side questions cannot call tools; press f to fork')
     }
@@ -4306,7 +4306,11 @@ export class ClaudeSessionService {
             : undefined) ??
           Object.values(result.modelUsage ?? {})[0] ??
           result.usage
-        budget?.observeUsage(observedUsage)
+        budget?.observeUsage(
+          observedUsage,
+          runtimeRequest.messages,
+          definitions,
+        )
 
         if (structuredCapture && structuredCapture.calls !== 1) {
           throw new Error(
@@ -5339,6 +5343,11 @@ export class ClaudeSessionService {
     return new ContextBudget({
       contextWindowTokens,
       windowSource: 'capability',
+      onAccountingDiagnostic: (message) =>
+        this.options.eventSink?.({
+          type: 'warning',
+          message: `Context usage accounting: ${message}`,
+        }),
       ...(this.options.contextReserveTokens === undefined
         ? {}
         : { reserveTokens: this.options.contextReserveTokens }),
