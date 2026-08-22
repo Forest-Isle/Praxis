@@ -3,8 +3,13 @@ import { isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path'
 import type {
   AssembledContext,
   ContextAssembler,
-  SystemContextMessage,
+  ContextAssemblyOptions,
+  ContextInvalidationOptions,
 } from '../../core/context.js'
+import {
+  PromptComposer,
+  type PromptSection,
+} from '../../core/prompt-composer.js'
 import {
   renderClaudeDynamicSystemContext,
   renderClaudeDynamicUserContext,
@@ -41,9 +46,28 @@ function limitMemoryIndex(resource: ClaudeTextResource): ClaudeTextResource {
 export interface ClaudeContextAssemblerOptions {
   loadResources(cwd?: string): Promise<ClaudeContextResources>
   loadDynamicContext?(cwd?: string): Promise<ClaudeDynamicContextSections>
+  loadMcpInstructions?(): Promise<readonly ClaudeMcpInstruction[]>
+  loadSessionGuidance?(): Promise<string | undefined>
   excludeDynamicSystemPromptSections?: boolean
   systemPrompt?: string
   appendSystemPrompt?: string
+  bare?: boolean
+  now?(): Date
+}
+
+export interface ClaudeMcpInstruction {
+  server: string
+  instructions: string
+}
+
+interface ContextSnapshot {
+  lifecycleId: string
+  cwd?: string
+  resources?: Promise<ClaudeContextResources>
+  dynamic?: Promise<ClaudeDynamicContextSections>
+  mcpInstructions?: Promise<readonly ClaudeMcpInstruction[]>
+  sessionGuidance?: Promise<string | undefined>
+  currentDate?: string
 }
 
 export type ClaudeConditionalRuleResolverOptions = ClaudeContextAssemblerOptions
@@ -78,10 +102,26 @@ export class ClaudeConditionalRuleResolver {
 }
 
 export class ClaudeContextAssembler implements ContextAssembler {
+  private readonly composer = new PromptComposer()
+  private readonly snapshots = new Map<string, ContextSnapshot>()
+
   constructor(private readonly options: ClaudeContextAssemblerOptions) {}
 
-  async assemble(options: { cwd?: string } = {}): Promise<AssembledContext> {
-    const resources = await this.options.loadResources(options.cwd)
+  async assemble(
+    options: ContextAssemblyOptions = {},
+  ): Promise<AssembledContext> {
+    const snapshot = this.snapshot(options)
+    const mode =
+      options.mode ??
+      (this.options.systemPrompt !== undefined
+        ? 'custom'
+        : this.options.bare
+          ? 'bare'
+          : 'default')
+    const resources =
+      mode === 'bare'
+        ? { instructions: [], conditionalRules: [], memoryIndex: null }
+        : await this.loadResources(snapshot, options.cwd)
     const sections = [
       renderResources('Instructions', resources.instructions),
       renderResources(
@@ -89,13 +129,12 @@ export class ClaudeContextAssembler implements ContextAssembler {
         resources.memoryIndex ? [limitMemoryIndex(resources.memoryIndex)] : [],
       ),
     ].filter((section): section is string => section !== null)
-    const messages: SystemContextMessage[] = []
-    if (this.options.systemPrompt !== undefined) {
-      messages.push({ role: 'system', content: this.options.systemPrompt })
-    }
+    const sessionSections: PromptSection[] = []
     if (sections.length > 0) {
-      messages.push({
-        role: 'system',
+      sessionSections.push({
+        id: 'shared-resources',
+        placement: 'system',
+        stability: 'session',
         content: `# Shared Claude context
 
 Instructions are ordered from broadest to most specific. Auto-memory is background context and does not override instructions.
@@ -103,36 +142,211 @@ Instructions are ordered from broadest to most specific. Auto-memory is backgrou
 ${sections.join('\n\n')}`,
       })
     }
-    let firstUserMessageContext: string | undefined
-    if (
-      this.options.systemPrompt === undefined &&
-      this.options.loadDynamicContext !== undefined
-    ) {
-      const dynamic = await this.options.loadDynamicContext(options.cwd)
+    const tailSections: PromptSection[] = []
+    if (mode !== 'bare') {
+      sessionSections.push({
+        id: 'current-date',
+        placement: 'system',
+        stability: 'session',
+        content: `# Current date\n${this.currentDate(snapshot)}`,
+      })
+    }
+    if (mode !== 'bare') {
+      const guidance = await this.loadSessionGuidance(snapshot)
+      if (guidance?.trim()) {
+        sessionSections.push({
+          id: 'session-guidance',
+          placement: 'system',
+          stability: 'session',
+          content: guidance,
+        })
+      }
+      const mcpInstructions = await this.loadMcpInstructions(snapshot)
+      tailSections.push(
+        ...mcpInstructions
+          .filter(({ instructions }) => instructions.trim().length > 0)
+          .sort((left, right) => left.server.localeCompare(right.server))
+          .map(({ server, instructions }) => ({
+            id: `mcp-instructions:${server}`,
+            placement: 'system' as const,
+            stability: 'volatile' as const,
+            content: `# MCP server instructions: ${server}\n${instructions.trimEnd()}`,
+          })),
+      )
+    }
+    if (mode !== 'bare' && this.options.loadDynamicContext !== undefined) {
+      const dynamic = await this.loadDynamicContext(snapshot, options.cwd)
       if (this.options.excludeDynamicSystemPromptSections) {
         if (dynamic.memory) {
-          messages.push({ role: 'system', content: dynamic.memory })
+          sessionSections.push({
+            id: 'memory-mechanics',
+            placement: 'system',
+            stability: 'session',
+            content: dynamic.memory,
+          })
         }
-        firstUserMessageContext = renderClaudeDynamicUserContext({
-          environment: dynamic.environment,
-          ...(dynamic.gitStatus ? { gitStatus: dynamic.gitStatus } : {}),
+        tailSections.push({
+          id: 'relocated-runtime-context',
+          placement: 'first-user',
+          stability: 'session',
+          content: renderClaudeDynamicUserContext({
+            environment: dynamic.environment,
+            ...(dynamic.gitStatus ? { gitStatus: dynamic.gitStatus } : {}),
+          }),
         })
       } else {
-        messages.push({
-          role: 'system',
+        sessionSections.push({
+          id: 'runtime-context',
+          placement: 'system',
+          stability: 'session',
           content: renderClaudeDynamicSystemContext(dynamic),
         })
       }
     }
-    if (this.options.appendSystemPrompt !== undefined) {
-      messages.push({
-        role: 'system',
-        content: this.options.appendSystemPrompt,
+    for (const section of options.additionalSections ?? []) {
+      const target =
+        section.stability === 'volatile' || section.placement === 'first-user'
+          ? tailSections
+          : sessionSections
+      target.push(section)
+    }
+    const composition = this.composer.compose({
+      mode,
+      ...(options.baseSystemPrompt !== undefined
+        ? { baseSystemPrompt: options.baseSystemPrompt }
+        : this.options.systemPrompt !== undefined
+          ? { baseSystemPrompt: this.options.systemPrompt }
+          : {}),
+      ...(this.options.appendSystemPrompt !== undefined
+        ? { appendSystemPrompt: this.options.appendSystemPrompt }
+        : {}),
+      sessionSections,
+      tailSections,
+    })
+    return {
+      systemMessages: composition.systemMessages,
+      promptSections: composition.sections,
+      stableSystemSectionCount: composition.stableSystemSectionCount,
+      ...(composition.firstUserMessageContext
+        ? { firstUserMessageContext: composition.firstUserMessageContext }
+        : {}),
+    }
+  }
+
+  invalidate(options: ContextInvalidationOptions): void {
+    for (const [key, snapshot] of this.snapshots) {
+      if (
+        options.lifecycleId !== undefined &&
+        snapshot.lifecycleId !== options.lifecycleId
+      )
+        continue
+      if (
+        options.reason === 'resource-reload' ||
+        options.reason === 'compact'
+      ) {
+        delete snapshot.resources
+        continue
+      }
+      if (options.reason === 'tool-pool') {
+        delete snapshot.mcpInstructions
+        delete snapshot.sessionGuidance
+        continue
+      }
+      this.snapshots.delete(key)
+    }
+  }
+
+  private snapshot(
+    options: ContextAssemblyOptions,
+  ): ContextSnapshot | undefined {
+    if (!options.lifecycleId) return undefined
+    const key = JSON.stringify([options.lifecycleId, options.cwd ?? null])
+    let snapshot = this.snapshots.get(key)
+    if (!snapshot) {
+      snapshot = {
+        lifecycleId: options.lifecycleId,
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+      }
+      this.snapshots.set(key, snapshot)
+    }
+    return snapshot
+  }
+
+  private loadResources(
+    snapshot: ContextSnapshot | undefined,
+    cwd: string | undefined,
+  ): Promise<ClaudeContextResources> {
+    if (!snapshot) return this.options.loadResources(cwd)
+    if (!snapshot.resources) {
+      const pending = this.options.loadResources(cwd)
+      snapshot.resources = pending
+      void pending.catch(() => {
+        if (snapshot.resources === pending) delete snapshot.resources
       })
     }
-    return {
-      systemMessages: messages,
-      ...(firstUserMessageContext ? { firstUserMessageContext } : {}),
+    return snapshot.resources
+  }
+
+  private loadDynamicContext(
+    snapshot: ContextSnapshot | undefined,
+    cwd: string | undefined,
+  ): Promise<ClaudeDynamicContextSections> {
+    const load = this.options.loadDynamicContext
+    if (!load) throw new Error('Dynamic context loader is unavailable')
+    if (!snapshot) return load(cwd)
+    if (!snapshot.dynamic) {
+      const pending = load(cwd)
+      snapshot.dynamic = pending
+      void pending.catch(() => {
+        if (snapshot.dynamic === pending) delete snapshot.dynamic
+      })
     }
+    return snapshot.dynamic
+  }
+
+  private loadMcpInstructions(
+    snapshot: ContextSnapshot | undefined,
+  ): Promise<readonly ClaudeMcpInstruction[]> {
+    const load = this.options.loadMcpInstructions
+    if (!load) return Promise.resolve([])
+    if (!snapshot) return load()
+    if (!snapshot.mcpInstructions) {
+      const pending = load()
+      snapshot.mcpInstructions = pending
+      void pending.catch(() => {
+        if (snapshot.mcpInstructions === pending)
+          delete snapshot.mcpInstructions
+      })
+    }
+    return snapshot.mcpInstructions
+  }
+
+  private loadSessionGuidance(
+    snapshot: ContextSnapshot | undefined,
+  ): Promise<string | undefined> {
+    const load = this.options.loadSessionGuidance
+    if (!load) return Promise.resolve(undefined)
+    if (!snapshot) return load()
+    if (!snapshot.sessionGuidance) {
+      const pending = load()
+      snapshot.sessionGuidance = pending
+      void pending.catch(() => {
+        if (snapshot.sessionGuidance === pending)
+          delete snapshot.sessionGuidance
+      })
+    }
+    return snapshot.sessionGuidance
+  }
+
+  private currentDate(snapshot: ContextSnapshot | undefined): string {
+    if (snapshot?.currentDate) return snapshot.currentDate
+    const now = (this.options.now ?? (() => new Date()))()
+    const date = [
+      String(now.getFullYear()).padStart(4, '0'),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+    ].join('-')
+    if (snapshot) snapshot.currentDate = date
+    return date
   }
 }

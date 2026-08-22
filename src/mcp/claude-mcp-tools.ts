@@ -143,6 +143,7 @@ export interface ClaudeMcpRuntime {
   authenticate(name: string): Promise<void>
   reload(): Promise<void>
   tools(name: string): Promise<readonly ClaudeMcpToolInspection[]>
+  instructions?(): readonly ClaudeMcpServerInstruction[]
   connectAgent?(options: {
     specs: readonly unknown[]
     base: ToolRegistry
@@ -151,6 +152,11 @@ export interface ClaudeMcpRuntime {
   }): Promise<{ tools: ToolRegistry; close(): Promise<void> } | null>
   /** Release MCP transports and child processes owned by this runtime. */
   close?(): Promise<void>
+}
+
+export interface ClaudeMcpServerInstruction {
+  server: string
+  instructions: string
 }
 
 export interface ClaudeMcpConfigurationStatus {
@@ -175,6 +181,9 @@ export interface ClaudeMcpToolRegistryOptions {
   signal?: AbortSignal
   eventSink?: RuntimeEventSink
   onPromptsChanged?: (prompts: readonly ClaudeMcpPromptDefinition[]) => void
+  onInstructionsChanged?: (
+    instructions: readonly ClaudeMcpServerInstruction[],
+  ) => void
   authenticateServer?: (name: string) => Promise<void>
   reloadResources?: () => Promise<readonly ClaudeJsonResource[]>
   onElicitation?: (request: {
@@ -1056,6 +1065,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     string,
     readonly ('tools' | 'resources' | 'prompts')[]
   >()
+  private readonly serverInstructions = new Map<string, string>()
   private readonly reconnectingServers = new Map<string, Promise<void>>()
   private readonly promptOperations = new Set<Promise<unknown>>()
   private promptResultDirectoryPromise: Promise<string> | undefined
@@ -1118,6 +1128,12 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     }))
   }
 
+  instructions(): readonly ClaudeMcpServerInstruction[] {
+    return [...this.serverInstructions]
+      .map(([server, instructions]) => ({ server, instructions }))
+      .sort((left, right) => left.server.localeCompare(right.server))
+  }
+
   async inspect(): Promise<readonly ClaudeMcpServerStatus[]> {
     return this.runtimeStatuses()
   }
@@ -1149,6 +1165,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     this.statuses.clear()
     this.reconnectableServers.clear()
     this.serverCapabilities.clear()
+    this.serverInstructions.clear()
     const ambientSensitiveValues = sensitiveEnvironmentValues(process.env)
     const warn = (message: string) =>
       this.options.onWarning?.(
@@ -1400,6 +1417,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     await Promise.allSettled([...this.clients].map((client) => client.close()))
     this.clients.clear()
     this.serverClients.clear()
+    this.serverInstructions.clear()
     const directory = await this.promptResultDirectoryPromise?.catch(
       () => undefined,
     )
@@ -1521,7 +1539,9 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
       this.clients.delete(client)
       if (this.closed || this.serverClients.get(serverName) !== client) return
       this.serverCapabilities.delete(serverName)
+      this.serverInstructions.delete(serverName)
       this.statuses.set(serverName, { name: serverName, status: 'failed' })
+      this.publishInstructions()
     }
     client.setRequestHandler(ElicitRequestSchema, async (request) => {
       if (!this.options.onElicitation) return { action: 'decline' }
@@ -1623,6 +1643,15 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
         ...(capabilities?.resources ? (['resources'] as const) : []),
         ...(capabilities?.prompts ? (['prompts'] as const) : []),
       ])
+      const serverInstruction = client.getInstructions()?.trim()
+      if (serverInstruction) {
+        this.serverInstructions.set(
+          serverName,
+          redactSensitiveText(serverInstruction, sensitiveValues),
+        )
+      } else {
+        this.serverInstructions.delete(serverName)
+      }
       for (const [name, tool] of connectedTools)
         this.connectedTools.set(name, tool)
       if (capabilities?.resources) {
@@ -1656,6 +1685,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
         status: 'connected',
         statusDetail: 'connected',
       })
+      this.publishInstructions()
     } catch (error) {
       await client.close().catch(() => undefined)
       this.clients.delete(client)
@@ -1941,6 +1971,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     this.resourceServers.delete(serverName)
     this.promptServers.delete(serverName)
     this.serverCapabilities.delete(serverName)
+    this.serverInstructions.delete(serverName)
     await this.connectServer(
       serverName,
       reconnectable.config,
@@ -1955,6 +1986,10 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
 
   private publishPrompts(): void {
     if (!this.closed) this.options.onPromptsChanged?.(this.prompts())
+  }
+
+  private publishInstructions(): void {
+    if (!this.closed) this.options.onInstructionsChanged?.(this.instructions())
   }
 
   private assertOpenGeneration(expectedGeneration: number): void {

@@ -182,19 +182,27 @@ allowing symlink escape. CLI deny rules still win in bypass mode. The
 classifier-backed `auto` permission mode fails closed until Praxis implements
 the classifier contract.
 
-With the default system prompt, Praxis assembles machine-specific cwd,
-platform/shell/OS, canonical memory path, and bounded Git branch/status/recent
-commit context at the start of every session turn. By default those sections remain
-system context. `--exclude-dynamic-system-prompt-sections` moves them into a
+With the default system prompt, Praxis composes a stable product-policy prefix,
+scoped instructions and memory index, a current-date snapshot, enabled
+tool/skill guidance, machine-specific cwd/platform/shell/OS, canonical memory
+path, bounded Git branch/status/recent commits, and deterministic per-server
+MCP instructions. Sections retain identity, placement, and stability metadata;
+provider-specific cache fields are not part of prompt composition. By default
+runtime sections remain system context. The provider-neutral request retains
+the leading stable-system-message count for capability-aware adapters.
+`--exclude-dynamic-system-prompt-sections` moves cwd/environment/Git into a
 `<system-reminder>` prefix on the first provider-visible user message, including
-the first historical user message after resume. The prefix is rebuilt on each
-turn, participates in main-session context budgeting and compaction, reaches
-prompt-suggestion requests, and is never written to shared JSONL. Subagents
-assemble it from their actual runtime cwd on every model round and include it
-in their provider budget; an oversized subagent request fails before transport
-instead of performing an implicit sidechain compaction. A custom
-`--system-prompt` disables default dynamic sections, so the relocation flag is
-ignored; `--append-system-prompt` remains active in either placement mode.
+the first historical user message after resume. One live session or subagent
+reuses byte-identical snapshot sections across ordinary turns/model rounds.
+Compact/resource reload, MCP tool-pool change, cwd/worktree transition, and a
+new restore/fork lifecycle refresh only their dependent inputs. The context
+participates in budgeting and compaction, reaches prompt suggestions, and is
+never written to shared JSONL. An oversized subagent request fails before
+transport instead of performing an implicit sidechain compaction. A custom
+`--system-prompt` replaces only the default product-policy base; scoped shared,
+date, capability, runtime, and MCP sections retain their normal lifetimes and
+the relocation flag still applies. `--append-system-prompt` remains an explicit
+section. Bare mode loads no automatic prompt sections.
 
 `--no-session-persistence` uses an in-memory transcript. A new ephemeral
 session never creates its would-be JSONL path. Resuming an existing disk

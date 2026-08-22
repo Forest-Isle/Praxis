@@ -59,7 +59,7 @@ process.stdin.on('data', chunk => {
     if (request.id === undefined) continue
     let result
     if (request.method === 'initialize') {
-      result = { protocolVersion: request.params.protocolVersion, capabilities: { prompts: { listChanged: true } }, serverInfo: { name: 'prompt-fixture', version: '1' } }
+      result = { protocolVersion: request.params.protocolVersion, capabilities: { prompts: { listChanged: true } }, serverInfo: { name: 'prompt-fixture', version: '1' }, instructions: 'Use prompt fixture resources carefully.' }
     } else if (request.method === 'prompts/list') {
       result = { prompts: refreshed
         ? [{ name: 'after-refresh', description: 'new prompt' }]
@@ -115,6 +115,12 @@ process.stdin.on('data', chunk => {
     })
 
     const [prompt] = registry.prompts()
+    expect(registry.instructions()).toEqual([
+      {
+        server: 'plugin:demo:prompt/server',
+        instructions: 'Use prompt fixture resources carefully.',
+      },
+    ])
     expect(prompt).toMatchObject({
       name: 'mcp__plugin_demo_prompt_server__my.prompt',
       userFacingName: 'plugin:demo:prompt/server:my.prompt (MCP)',

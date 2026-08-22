@@ -7,6 +7,26 @@ const withoutTerminal = <T extends { type: string }>(events: readonly T[]) =>
   events.filter((event) => event.type !== 'terminal')
 
 describe('AnthropicCompatibleProvider', () => {
+  it('consumes and validates the provider-neutral stable system prefix hint', async () => {
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: vi.fn(),
+    })
+
+    const events = provider.complete({
+      messages: [
+        { role: 'system', content: 'stable' },
+        { role: 'user', content: 'prompt' },
+      ],
+      stableSystemMessageCount: 2,
+    })
+    await expect(events[Symbol.asyncIterator]().next()).rejects.toThrow(
+      'valid system-message prefix',
+    )
+  })
+
   it.each([
     ['end_turn', 'end_turn'],
     ['stop_sequence', 'end_turn'],

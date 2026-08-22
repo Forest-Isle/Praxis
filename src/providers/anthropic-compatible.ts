@@ -789,6 +789,28 @@ function serializeMessages(messages: readonly ModelMessage[]): {
   return { system: system.join('\n\n'), messages: serialized }
 }
 
+function validateStableSystemPrefix(request: ModelRequest): void {
+  const count = request.stableSystemMessageCount
+  if (count === undefined) return
+  const systemMessageCount = request.messages.filter(
+    (message) => message.role === 'system',
+  ).length
+  if (!Number.isSafeInteger(count) || count < 0 || count > systemMessageCount) {
+    throw new Error(
+      'Stable system message count must identify a valid system-message prefix',
+    )
+  }
+  if (
+    request.messages
+      .slice(0, count)
+      .some((message) => message.role !== 'system')
+  ) {
+    throw new Error(
+      'Stable system message count must identify a valid system-message prefix',
+    )
+  }
+}
+
 export class AnthropicCompatibleProvider implements ModelProvider {
   readonly capabilities: ModelProvider['capabilities']
   readonly model: string
@@ -846,6 +868,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
   }
 
   async *complete(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    validateStableSystemPrefix(request)
     if (request.webSearch && !this.capabilities.webSearch) {
       throw new Error('Provider does not support web search')
     }

@@ -340,10 +340,12 @@ process.stdin.on('data', chunk => {
   const { systemMessages } = await new ClaudeContextAssembler({
     loadResources: async () => contextResources,
   }).assemble()
-  const [systemContext] = systemMessages
-  if (systemContext?.role !== 'system') {
+  if (systemMessages.length === 0) {
     throw new Error('Praxis did not assemble shared system context')
   }
+  const systemContext = systemMessages
+    .map(({ content }) => content)
+    .join('\n\n')
   for (const label of [
     'global',
     'project',
@@ -355,33 +357,25 @@ process.stdin.on('data', chunk => {
     'memory',
     'memoryBoundary',
   ]) {
-    assertContains(
-      systemContext.content,
-      markers[label],
-      `Praxis assembled ${label}`,
-    )
+    assertContains(systemContext, markers[label], `Praxis assembled ${label}`)
   }
   assertNotContains(
-    systemContext.content,
+    systemContext,
     markers.memoryDetail,
     'Praxis deferred memory detail',
   )
   assertNotContains(
-    systemContext.content,
+    systemContext,
     markers.conditionalRule,
     'Praxis deferred conditional rule',
   )
   assertNotContains(
-    systemContext.content,
+    systemContext,
     markers.memoryBeyondIndex,
     'Praxis memory index line limit',
   )
   for (const label of ['skill', 'command', 'agent']) {
-    assertNotContains(
-      systemContext.content,
-      markers[label],
-      `Praxis deferred ${label}`,
-    )
+    assertNotContains(systemContext, markers[label], `Praxis deferred ${label}`)
   }
   if (resources.settings.length !== 2 || resources.mcp.length !== 2) {
     throw new Error('Praxis did not discover shared settings/hooks and MCP')

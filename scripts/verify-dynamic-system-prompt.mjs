@@ -430,13 +430,11 @@ try {
     'PRAXIS_CUSTOM_SYSTEM',
     'Praxis custom',
   )
-  for (const marker of ['# gitStatus', '# Memory']) {
-    assertNotContains(
-      payloadText(praxisCustom.request),
-      marker,
-      'Praxis custom',
-    )
-  }
+  assertRelocated(
+    praxisCustom.request,
+    'PRAXIS_DYNAMIC_CUSTOM',
+    'Praxis custom',
+  )
   const praxisAppended = await runPraxis(
     [
       '--exclude-dynamic-system-prompt-sections',
@@ -556,7 +554,7 @@ try {
   )
 
   console.log(
-    `Claude ${version} dynamic system prompt compatibility passed: default placement, first-user relocation, resume/fork refresh, stream-json multi-turn, no-persistence, custom-prompt ignore, append preservation, and transcript isolation.`,
+    `Claude ${version} dynamic system prompt compatibility passed: default placement, first-user relocation, resume/fork refresh, stream-json multi-turn, no-persistence, Praxis custom-base replacement, append preservation, and transcript isolation.`,
   )
 } finally {
   if (server.listening) await closeServer().catch(() => undefined)
