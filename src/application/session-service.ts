@@ -43,6 +43,7 @@ import {
   resolveClaudePaths,
   resolveClaudeScheduledTaskFile,
 } from '../compatibility/claude/paths.js'
+import { isClaudeAgentId } from '../compatibility/claude/sidechain.js'
 import {
   resolveDataPlanePaths,
   resolveScheduledTaskFile,
@@ -119,6 +120,10 @@ import {
   BackgroundTaskRuntime,
   type BackgroundTaskSnapshot,
 } from './background-task-runtime.js'
+import {
+  backgroundAgentNotificationMarkers,
+  type BackgroundAgentNotificationIdentity,
+} from './background-agent-manager.js'
 import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
 import type { CompactionResult, Compactor } from '../core/compaction.js'
@@ -159,6 +164,7 @@ import {
 } from '../persistence/claude-session-index.js'
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
 import type { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
+import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import { ModelCompactor } from './model-compactor.js'
 import {
   agentMemoryPrompt,
@@ -320,6 +326,18 @@ function agentPermissionMode(
 function agentToolName(rule: string): string {
   const opening = rule.indexOf('(')
   return (opening < 0 ? rule : rule.slice(0, opening)).trim()
+}
+
+function transcriptContainsBackgroundAgentNotification(
+  entries: readonly ClaudeTranscriptEntry[],
+  notification: BackgroundAgentNotificationIdentity,
+): boolean {
+  const markers = backgroundAgentNotificationMarkers(notification)
+  return entries.some((entry) => {
+    if (entry.type !== 'user') return false
+    const source = JSON.stringify(entry.message)
+    return markers.every((marker) => source.includes(marker))
+  })
 }
 
 function mainAgentToolNames(
@@ -1208,14 +1226,27 @@ export class ClaudeSessionService {
     PermissionUpdate[]
   >()
   private readonly hostedSubagents = new Set<ClaudeSubagentExecutor>()
+  private readonly subagentExecutors = new Set<ClaudeSubagentExecutor>()
   private readonly hostedSubagentsByRegistry = new WeakMap<
     ToolRegistry,
     ClaudeSubagentExecutor
   >()
-  private readonly backgroundNotificationWrites = new Map<
-    string,
+  private readonly subagentExecutorSessions = new WeakMap<
+    ClaudeSubagentExecutor,
+    string
+  >()
+  private readonly hostedSubagentNotificationPumps = new WeakMap<
+    ClaudeSubagentExecutor,
     Promise<void>
   >()
+  private readonly hostedSubagentPumpPromises = new Set<Promise<void>>()
+  private readonly hostedSubagentNotificationReservations =
+    new WeakSet<ClaudeSubagentExecutor>()
+  private readonly backgroundNotificationWrites = new Map<
+    string,
+    Promise<boolean>
+  >()
+  private closing = false
   private readonly downloadedFileResourceSessions = new Set<string>()
   private readonly detachedHookRuns = new Map<Promise<void>, AbortController>()
   private activeProvider: ModelProvider | undefined
@@ -1419,6 +1450,108 @@ export class ClaudeSessionService {
     return this.backgroundTasks.stop(sessionId, taskId)
   }
 
+  backgroundForegroundTask(sessionId: string) {
+    return this.backgroundTasks.backgroundForeground(sessionId)
+  }
+
+  private sendOwnedBackgroundAgent(
+    sessionId: string,
+    agentId: string,
+    message: string,
+    summary: string | undefined,
+    toolUseId: string,
+  ): string | null {
+    const sent = this.backgroundTasks.sendAgentWithOwner(
+      sessionId,
+      agentId,
+      message,
+      summary,
+      toolUseId,
+    )
+    if (!sent) return null
+    const hosted = [...this.hostedSubagents].find(
+      (executor) => executor === sent.owner,
+    )
+    if (hosted) this.startHostedSubagentNotificationPump(sessionId, hosted)
+    return sent.content
+  }
+
+  private sessionSubagentExecutors(
+    sessionId: string,
+    includeHosted = false,
+  ): ClaudeSubagentExecutor[] {
+    return [...this.subagentExecutors].filter(
+      (executor) =>
+        this.subagentExecutorSessions.get(executor) === sessionId &&
+        (includeHosted ||
+          (!this.hostedSubagentNotificationPumps.has(executor) &&
+            !this.hostedSubagentNotificationReservations.has(executor))),
+    )
+  }
+
+  private async collectSubagentNotifications(
+    sessionId: string,
+    waitForExecutor?: ClaudeSubagentExecutor,
+  ): Promise<{
+    messages: string[]
+    usage: ModelUsage
+    modelUsage?: Readonly<Record<string, ModelUsage>>
+    durationApiMs?: number
+    durationApiWithoutRetriesMs?: number
+  } | null> {
+    const executors = this.sessionSubagentExecutors(sessionId)
+    if (executors.length === 0) return null
+    const poll = () =>
+      Promise.all(
+        executors.map((executor) => executor.notifications(false, false)),
+      )
+    let batches = await poll()
+    if (batches.every(({ messages }) => messages.length === 0)) {
+      if (
+        waitForExecutor &&
+        executors.includes(waitForExecutor) &&
+        waitForExecutor.notificationClaimAgentIds().length > 0
+      ) {
+        await waitForExecutor.notifications(true, false)
+        batches = await poll()
+      }
+    }
+    const durationSeen = batches.some(
+      ({ durationApiMs, durationApiWithoutRetriesMs }) =>
+        durationApiMs !== undefined ||
+        durationApiWithoutRetriesMs !== undefined,
+    )
+    const modelUsage = mergeSessionRawModelUsage(
+      ...batches.map((batch) => batch.modelUsage),
+    )
+    return {
+      messages: batches.flatMap(({ messages }) => messages),
+      usage: batches.reduce((total, { usage }) => mergeUsage(total, usage), {
+        inputTokens: 0,
+        outputTokens: 0,
+      }),
+      ...(modelUsage ? { modelUsage } : {}),
+      ...(durationSeen
+        ? {
+            durationApiMs: batches.reduce(
+              (total, batch) =>
+                addApiDuration(batch.durationApiMs, total, 'durationApiMs'),
+              0,
+            ),
+            durationApiWithoutRetriesMs: batches.reduce(
+              (total, batch) =>
+                addApiDuration(
+                  batch.durationApiWithoutRetriesMs ?? batch.durationApiMs,
+                  total,
+                  'durationApiWithoutRetriesMs',
+                ),
+              0,
+            ),
+          }
+        : {}),
+    }
+  }
+
   private async applyPermissionUpdates(
     sessionId: string,
     updates: readonly PermissionUpdate[],
@@ -1438,6 +1571,7 @@ export class ClaudeSessionService {
   }
 
   async close(): Promise<void> {
+    this.closing = true
     await this.fileChangeWatcher?.close(5_000)
     await this.hookLifecycle.close()
     await this.drainDetachedHookRuns(5_000)
@@ -1445,11 +1579,13 @@ export class ClaudeSessionService {
     this.scheduledPrompts?.close()
     await this.options.projectMemoryExtraction?.close(5_000)
     await Promise.all(
-      [...this.hostedSubagents].map((executor) => executor.close()),
+      [...this.subagentExecutors].map((executor) => executor.close()),
     )
+    await Promise.allSettled([...this.hostedSubagentPumpPromises])
     await Promise.resolve()
     await Promise.all([...this.backgroundNotificationWrites.values()])
     this.hostedSubagents.clear()
+    this.subagentExecutors.clear()
     this.backgroundTasks.clear()
     await Promise.all(
       [...this.sessionMemoryControllers.values()].map((controller) =>
@@ -1796,10 +1932,34 @@ export class ClaudeSessionService {
                     taskTools.notifications(waitForRunning),
                 }
               : {}),
+            stopOwnedBackgroundAgent: (ownerSessionId, agentId) =>
+              this.backgroundTasks.stopAgent(ownerSessionId, agentId),
+            outputOwnedBackgroundAgent: (ownerSessionId, agentId, options) =>
+              this.backgroundTasks.outputAgent(
+                ownerSessionId,
+                agentId,
+                options,
+              ),
+            sendOwnedBackgroundAgent: (
+              ownerSessionId,
+              agentId,
+              message,
+              summary,
+              toolUseId,
+            ) =>
+              this.sendOwnedBackgroundAgent(
+                ownerSessionId,
+                agentId,
+                message,
+                summary,
+                toolUseId,
+              ),
           })
         : null
-    if (subagentExecutor) this.hostedSubagents.add(subagentExecutor)
     if (subagentExecutor) {
+      this.hostedSubagents.add(subagentExecutor)
+      this.subagentExecutors.add(subagentExecutor)
+      this.subagentExecutorSessions.set(subagentExecutor, sessionId)
       this.backgroundTasks.registerAgents(sessionId, subagentExecutor)
     }
     const agentTools = subagentExecutor
@@ -2103,6 +2263,8 @@ export class ClaudeSessionService {
         .join('-')
         .slice(0, 64) || 'side-question'
     const registry = this.createHostedToolRegistry(sessionId)
+    const executor = this.hostedSubagentsByRegistry.get(registry)
+    if (executor) this.hostedSubagentNotificationReservations.add(executor)
     const call: ModelToolCall = {
       id: randomUUID(),
       name: 'Agent',
@@ -2118,36 +2280,90 @@ export class ClaudeSessionService {
       cwd: this.activeCwd(),
       ...(signal ? { signal } : {}),
     }
-    const prepared = await registry.prepare(call, context)
-    const result = await registry.execute(prepared, context)
-    const agentId = result.nativeToolUseResult?.agentId
-    if (result.isError || typeof agentId !== 'string') {
-      throw new Error(result.content || 'Could not fork side question')
+    try {
+      const prepared = await registry.prepare(call, context)
+      const result = await registry.execute(prepared, context)
+      const agentId = result.nativeToolUseResult?.agentId
+      if (result.isError || typeof agentId !== 'string') {
+        throw new Error(result.content || 'Could not fork side question')
+      }
+      await this.appendSystemLocalCommand(
+        sessionId,
+        'btw',
+        prompt,
+        `⑂ forked ${name} (${agentId.slice(-4)})`,
+      )
+      if (executor) {
+        this.startHostedSubagentNotificationPump(sessionId, executor)
+      }
+      return { agentId, name }
+    } catch (error) {
+      if (executor) {
+        this.hostedSubagentNotificationReservations.delete(executor)
+      }
+      throw error
     }
-    await this.appendSystemLocalCommand(
-      sessionId,
-      'btw',
-      prompt,
-      `⑂ forked ${name} (${agentId.slice(-4)})`,
-    )
-    const executor = this.hostedSubagentsByRegistry.get(registry)
-    if (executor) {
-      void executor
-        .notifications(true)
-        .then(({ messages }) =>
-          this.enqueueBackgroundNotifications(sessionId, messages),
+  }
+
+  private startHostedSubagentNotificationPump(
+    sessionId: string,
+    executor: ClaudeSubagentExecutor,
+  ): void {
+    this.hostedSubagentNotificationReservations.delete(executor)
+    if (this.hostedSubagentNotificationPumps.has(executor)) return
+    const pump = (async () => {
+      while (!this.closing) {
+        const reconciled = await this.turnStore(sessionId).withLease(
+          async (lease) => {
+            const snapshot = await lease.load()
+            await executor.reconcileDetachedNotifications((notification) =>
+              transcriptContainsBackgroundAgentNotification(
+                snapshot.entries,
+                notification,
+              ),
+            )
+          },
         )
-        .catch((error: unknown) =>
-          this.options.eventSink?.({
-            type: 'warning',
-            message:
-              error instanceof Error
-                ? error.message
-                : `Could not persist background notification: ${String(error)}`,
-          }),
-        )
-    }
-    return { agentId, name }
+        if (reconciled.status !== 'completed') {
+          await new Promise<void>((resolve) => setTimeout(resolve, 25))
+          continue
+        }
+        const { messages } = await executor.notifications(true, false)
+        if (messages.length === 0) return
+        await executor.prepareNotificationsDetached(messages)
+        if (
+          !(await this.enqueueBackgroundNotifications(
+            sessionId,
+            messages,
+            async (message) => {
+              await executor.confirmNotificationsDetached([message])
+              await executor.acknowledgeNotifications([message])
+            },
+          ))
+        ) {
+          return
+        }
+        if (executor.notificationClaimAgentIds().length === 0) return
+      }
+    })()
+      .catch((error: unknown) =>
+        this.options.eventSink?.({
+          type: 'warning',
+          message:
+            error instanceof Error
+              ? error.message
+              : `Could not persist background notification: ${String(error)}`,
+        }),
+      )
+      .finally(() => {
+        if (this.hostedSubagentNotificationPumps.get(executor) === pump) {
+          this.hostedSubagentNotificationPumps.delete(executor)
+        }
+        this.hostedSubagentPumpPromises.delete(pump)
+      })
+    this.hostedSubagentNotificationPumps.set(executor, pump)
+    this.hostedSubagentPumpPromises.add(pump)
+    void pump
   }
 
   async promptSuggestion(
@@ -3591,7 +3807,9 @@ export class ClaudeSessionService {
 
   async costSnapshot(sessionId: string): Promise<ClaudeSessionCostSnapshot> {
     const existing = this.sessionCostTrackers.get(sessionId)
-    if (existing) return existing.snapshot()
+    if (existing) {
+      return this.withDetachedSubagentUsage(sessionId, existing.snapshot())
+    }
     const store = this.options.costStateStore
     const loaded = store ? await store.load(sessionId) : null
     const tracker = new ClaudeSessionCostTracker({
@@ -3599,6 +3817,92 @@ export class ClaudeSessionService {
       ...(loaded ? { restored: loaded } : {}),
     })
     this.sessionCostTrackers.set(sessionId, tracker)
+    return this.withDetachedSubagentUsage(sessionId, tracker.snapshot())
+  }
+
+  private async withDetachedSubagentUsage(
+    sessionId: string,
+    base: ClaudeSessionCostSnapshot,
+  ): Promise<ClaudeSessionCostSnapshot> {
+    const tracker = new ClaudeSessionCostTracker({
+      sessionId,
+      restored: base,
+    })
+    const directory = join(
+      this.paths(sessionId).praxisRoot,
+      'subagent-lifecycle',
+      sessionId,
+    )
+    let entries: string[]
+    try {
+      entries = await readdir(directory)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return base
+      throw error
+    }
+    for (const file of entries) {
+      const agentId = file.endsWith('.json') ? file.slice(0, -5) : ''
+      if (!isClaudeAgentId(agentId)) continue
+      try {
+        const lifecycle = await new SubagentLifecycleStore(
+          this.paths(sessionId).praxisRoot,
+          sessionId,
+          agentId,
+        ).read()
+        for (const notification of lifecycle?.notifications ?? []) {
+          if (
+            notification.accounting?.kind !== 'detached' ||
+            !notification.accounting.delivered ||
+            notification.result === null
+          ) {
+            continue
+          }
+          const rows = Object.entries(
+            notification.result.modelUsage ?? {
+              [notification.accounting.model]: notification.result.usage,
+            },
+          )
+          if (rows.length === 0) {
+            tracker.recordDurations({
+              ...(notification.result.durationApiMs === undefined
+                ? {}
+                : { apiDurationMs: notification.result.durationApiMs }),
+              ...(notification.result.durationApiWithoutRetriesMs === undefined
+                ? {}
+                : {
+                    durationApiWithoutRetriesMs:
+                      notification.result.durationApiWithoutRetriesMs,
+                  }),
+            })
+            continue
+          }
+          for (const [index, [model, usage]] of rows.entries()) {
+            const pricing = this.options.pricing?.resolve(model)
+            const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
+            tracker.recordTurn({
+              model,
+              usage,
+              ...(costUsd === undefined ? {} : { costUsd }),
+              ...(usage.webSearchRequests === undefined
+                ? {}
+                : { webSearchRequests: usage.webSearchRequests }),
+              ...(index === 0
+                ? {
+                    apiDurationMs: notification.result.durationApiMs,
+                    apiDurationWithoutRetriesMs:
+                      notification.result.durationApiWithoutRetriesMs,
+                  }
+                : {}),
+            })
+          }
+        }
+      } catch (error) {
+        this.options.eventSink?.({
+          type: 'warning',
+          message: `Could not account detached subagent ${agentId}: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      }
+    }
     return tracker.snapshot()
   }
 
@@ -4028,8 +4332,40 @@ export class ClaudeSessionService {
                       taskTools.notifications(waitForRunning),
                   }
                 : {}),
+              notificationDelivered: (notification) =>
+                transcriptContainsBackgroundAgentNotification(
+                  snapshot.entries,
+                  notification,
+                ),
+              stopOwnedBackgroundAgent: (ownerSessionId, agentId) =>
+                this.backgroundTasks.stopAgent(ownerSessionId, agentId),
+              outputOwnedBackgroundAgent: (ownerSessionId, agentId, options) =>
+                this.backgroundTasks.outputAgent(
+                  ownerSessionId,
+                  agentId,
+                  options,
+                ),
+              sendOwnedBackgroundAgent: (
+                ownerSessionId,
+                agentId,
+                message,
+                summary,
+                toolUseId,
+              ) =>
+                this.sendOwnedBackgroundAgent(
+                  ownerSessionId,
+                  agentId,
+                  message,
+                  summary,
+                  toolUseId,
+                ),
             })
           : null
+      if (subagentExecutor) {
+        this.subagentExecutors.add(subagentExecutor)
+        this.subagentExecutorSessions.set(subagentExecutor, sessionId)
+        this.backgroundTasks.registerAgents(sessionId, subagentExecutor)
+      }
       const agentTools = subagentExecutor
         ? subagentExecutor.registry(
             sessionId,
@@ -4444,6 +4780,11 @@ export class ClaudeSessionService {
               tail: followUpTail,
             }
             currentTurnUserMessages?.push(content)
+            await Promise.all(
+              this.sessionSubagentExecutors(sessionId, true).map((executor) =>
+                executor.acknowledgeNotifications([content]),
+              ),
+            )
           }
         },
       }
@@ -5351,7 +5692,36 @@ export class ClaudeSessionService {
                       messages.push(`Stop hook error: ${outcome.blockedReason}`)
                     }
                   }
-                  const background = await subagentExecutor?.notifications(true)
+                  const claimedAgentIds = new Set(
+                    this.sessionSubagentExecutors(sessionId, true).flatMap(
+                      (executor) => executor.notificationClaimAgentIds(),
+                    ),
+                  )
+                  await Promise.all(
+                    this.sessionSubagentExecutors(sessionId, true).map(
+                      (executor) => {
+                        const delivered = (
+                          notification: BackgroundAgentNotificationIdentity,
+                        ) =>
+                          transcriptContainsBackgroundAgentNotification(
+                            snapshot.entries,
+                            notification,
+                          )
+                        return this.hostedSubagents.has(executor)
+                          ? executor.reconcileDetachedNotifications(delivered)
+                          : executor.reconcileDeliveredNotifications(delivered)
+                      },
+                    ),
+                  )
+                  await subagentExecutor?.hydratePersistedTasks(
+                    sessionId,
+                    this.activeCwd(),
+                    claimedAgentIds,
+                  )
+                  const background = await this.collectSubagentNotifications(
+                    sessionId,
+                    subagentExecutor ?? undefined,
+                  )
                   if (background) messages.push(...background.messages)
                   const workflow =
                     await this.workflowManager?.notifications(true)
@@ -6402,8 +6772,8 @@ export class ClaudeSessionService {
   private async appendBackgroundNotification(
     sessionId: string,
     content: string,
-  ): Promise<void> {
-    while (true) {
+  ): Promise<boolean> {
+    while (!this.closing) {
       const result = await this.turnStore(sessionId).withLease(
         async (lease) => {
           const snapshot = await lease.load()
@@ -6452,21 +6822,30 @@ export class ClaudeSessionService {
           }
         },
       )
-      if (result.status === 'completed') return
+      if (result.status === 'completed') return true
       await new Promise<void>((resolve) => setTimeout(resolve, 25))
     }
+    return false
   }
 
   private enqueueBackgroundNotifications(
     sessionId: string,
     messages: readonly string[],
-  ): Promise<void> {
+    onAppended?: (message: string) => Promise<void>,
+  ): Promise<boolean> {
     const previous = this.backgroundNotificationWrites.get(sessionId)
-    const queued = (previous ?? Promise.resolve()).then(async () => {
-      for (const message of messages) {
-        await this.appendBackgroundNotification(sessionId, message)
-      }
-    })
+    const queued = (previous ?? Promise.resolve(true)).then(
+      async (previousCompleted) => {
+        if (!previousCompleted || this.closing) return false
+        for (const message of messages) {
+          if (!(await this.appendBackgroundNotification(sessionId, message))) {
+            return false
+          }
+          await onAppended?.(message)
+        }
+        return true
+      },
+    )
     this.backgroundNotificationWrites.set(sessionId, queued)
     const cleanup = () => {
       if (this.backgroundNotificationWrites.get(sessionId) === queued)

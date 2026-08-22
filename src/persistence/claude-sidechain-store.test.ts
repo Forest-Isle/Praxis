@@ -63,6 +63,22 @@ describe('ClaudeSidechainStore', () => {
     expect(() =>
       resolveClaudeSidechainPaths('/tmp/project', SESSION_ID, '../escape'),
     ).toThrow('Invalid Claude agent ID')
+    expect(() =>
+      resolveClaudeSidechainPaths(
+        '/tmp/project',
+        SESSION_ID,
+        `a${'x'.repeat(64)}-0123456789abcdef`,
+      ),
+    ).toThrow('Invalid Claude agent ID')
+    expect(
+      resolveClaudeSidechainPaths(
+        '/tmp/project',
+        SESSION_ID,
+        'areviewer-0123456789abcdef',
+      ).transcriptFile,
+    ).toBe(
+      '/tmp/project/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/subagents/agent-areviewer-0123456789abcdef.jsonl',
+    )
   })
 
   it('rejects roots whose identity does not match the physical paths', async () => {
@@ -138,6 +154,26 @@ describe('ClaudeSidechainStore', () => {
       '2.1.209',
       '2.1.209',
     ])
+  })
+
+  it('reads parent/worktree fields without discarding compatible unknown metadata', async () => {
+    const { paths, root, store } = await createStore()
+    const metadata = {
+      agentType: 'general-purpose',
+      description: 'Nested review',
+      toolUseId: 'call_nested',
+      spawnDepth: 2,
+      parentAgentId: 'aparent-1111111111111111',
+      worktreePath: '/tmp/retained-agent-worktree',
+      futureClaudeField: { retained: true },
+    }
+
+    await store.create(root, metadata)
+
+    await expect(store.metadata()).resolves.toEqual(metadata)
+    expect(JSON.parse(await readFile(paths.metadataFile, 'utf8'))).toEqual(
+      metadata,
+    )
   })
 
   it('preserves existing metadata when creation collides', async () => {

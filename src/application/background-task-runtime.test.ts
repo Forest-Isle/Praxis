@@ -29,7 +29,7 @@ const agent = {
     durationMs: 20,
   },
   error: null,
-  name: null,
+  name: 'reviewer',
   description: 'Review',
   startedAt: 80,
   durationMs: 20,
@@ -58,7 +58,11 @@ describe('BackgroundTaskRuntime', () => {
     }
     const agents: BackgroundAgentTaskSource = {
       backgroundSnapshots: vi.fn(() => [agent]),
-      stopBackgroundTask: vi.fn(() => ''),
+      outputBackgroundTask: vi.fn(async () => 'output'),
+      stopBackgroundTask: vi.fn(async () => ''),
+      sendBackgroundMessage: vi.fn(() => 'sent'),
+      hasForegroundTask: vi.fn(() => false),
+      backgroundForegroundTask: vi.fn(() => agent),
     }
     const workflows: WorkflowTaskSource = {
       list: vi.fn(() => [workflow]),
@@ -104,7 +108,9 @@ describe('BackgroundTaskRuntime', () => {
       content: '',
       nativeToolUseResult: {},
     }))
-    const agentStop = vi.fn(() => '')
+    const agentStop = vi.fn(async () => '')
+    const agentOutput = vi.fn(async () => 'agent output')
+    const agentSend = vi.fn(() => 'agent sent')
     const workflowStop = vi.fn(async () => undefined)
     const runtime = new BackgroundTaskRuntime({
       list: () => [workflow],
@@ -118,16 +124,133 @@ describe('BackgroundTaskRuntime', () => {
     })
     runtime.registerAgents('session-a', {
       backgroundSnapshots: () => [{ ...agent, status: 'running' }],
+      outputBackgroundTask: agentOutput,
       stopBackgroundTask: agentStop,
+      sendBackgroundMessage: agentSend,
+      hasForegroundTask: () => false,
+      backgroundForegroundTask: () => ({ ...agent, status: 'running' }),
     })
 
     await runtime.stop('session-a', shell.taskId)
+    await expect(
+      runtime.outputAgent('session-a', agent.agentId, {
+        block: false,
+        timeout: 0,
+      }),
+    ).resolves.toBe('agent output')
+    expect(
+      runtime.sendAgent(
+        'session-a',
+        agent.agentId,
+        'continue',
+        'summary',
+        'call_send',
+      ),
+    ).toBe('agent sent')
     await runtime.stop('session-a', agent.agentId)
     await runtime.stop('session-a', workflow.task_id)
 
     expect(bashStop).toHaveBeenCalledWith(shell.taskId)
     expect(agentStop).toHaveBeenCalledWith(agent.agentId)
+    expect(agentOutput).toHaveBeenCalledWith(agent.agentId, {
+      block: false,
+      timeout: 0,
+    })
+    expect(agentSend).toHaveBeenCalledWith(
+      agent.agentId,
+      'continue',
+      'summary',
+      'call_send',
+    )
     expect(workflowStop).toHaveBeenCalledWith(workflow.task_id)
+  })
+
+  it('routes a named Agent to its owner across registered turn sources', () => {
+    const firstSend = vi.fn(() => 'first sent')
+    const secondSend = vi.fn(() => 'second sent')
+    const runtime = new BackgroundTaskRuntime(null)
+    runtime.registerAgents('session-a', {
+      backgroundSnapshots: () => [{ ...agent, name: 'first' }],
+      outputBackgroundTask: async () => '',
+      stopBackgroundTask: async () => '',
+      sendBackgroundMessage: firstSend,
+      hasForegroundTask: () => false,
+      backgroundForegroundTask: () => agent,
+    })
+    runtime.registerAgents('session-a', {
+      backgroundSnapshots: () => [agent],
+      outputBackgroundTask: async () => '',
+      stopBackgroundTask: async () => '',
+      sendBackgroundMessage: secondSend,
+      hasForegroundTask: () => false,
+      backgroundForegroundTask: () => agent,
+    })
+
+    expect(
+      runtime.sendAgent(
+        'session-a',
+        'reviewer',
+        'continue',
+        undefined,
+        'call_send',
+      ),
+    ).toBe('second sent')
+    expect(firstSend).not.toHaveBeenCalled()
+    expect(secondSend).toHaveBeenCalledWith(
+      'reviewer',
+      'continue',
+      undefined,
+      'call_send',
+    )
+  })
+
+  it('rejects an ambiguous Agent name across turn owners', () => {
+    const runtime = new BackgroundTaskRuntime(null)
+    for (const agentId of ['a1111111111111111', 'a2222222222222222']) {
+      runtime.registerAgents('session-a', {
+        backgroundSnapshots: () => [{ ...agent, agentId, name: 'reviewer' }],
+        outputBackgroundTask: async () => '',
+        stopBackgroundTask: async () => '',
+        sendBackgroundMessage: () => '',
+        hasForegroundTask: () => false,
+        backgroundForegroundTask: () => agent,
+      })
+    }
+
+    expect(() =>
+      runtime.sendAgent(
+        'session-a',
+        'reviewer',
+        'continue',
+        undefined,
+        'call_send',
+      ),
+    ).toThrow("Multiple live background agents are named 'reviewer'")
+  })
+
+  it('routes foreground handoff to the current session owner', () => {
+    const runtime = new BackgroundTaskRuntime(null)
+    const backgroundForegroundTask = vi.fn(() => ({
+      ...agent,
+      status: 'running' as const,
+    }))
+    runtime.registerAgents('session-a', {
+      backgroundSnapshots: () => [],
+      outputBackgroundTask: async () => '',
+      stopBackgroundTask: async () => '',
+      sendBackgroundMessage: () => '',
+      hasForegroundTask: () => true,
+      backgroundForegroundTask,
+    })
+
+    expect(runtime.backgroundForeground('session-a')).toMatchObject({
+      agentId: agent.agentId,
+      status: 'running',
+    })
+    expect(backgroundForegroundTask).toHaveBeenCalledOnce()
+    expect(() => runtime.backgroundForeground('session-b')).toThrow(
+      'No foreground agent is running',
+    )
   })
 
   it('rejects unknown task IDs without crossing session boundaries', async () => {

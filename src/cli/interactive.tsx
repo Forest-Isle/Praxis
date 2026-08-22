@@ -408,6 +408,7 @@ interface InteractiveSessionCommands {
   workflows?(): readonly Record<string, unknown>[]
   taskSnapshots?(sessionId: string): Promise<BackgroundTaskSnapshot>
   stopTask?(sessionId: string, taskId: string): Promise<void>
+  backgroundForegroundTask?(sessionId: string): void | Promise<void>
   mcpInspect?(): Promise<readonly ClaudeMcpServerStatus[]>
   mcpReconnect?(name: string): Promise<void>
   mcpAuthenticate?(name: string): Promise<void>
@@ -4268,7 +4269,9 @@ export function InteractiveApp({
           ? ['Confirmation']
           : selectingSession
             ? ['Select']
-            : ['Chat']
+            : busy
+              ? ['Task', 'Chat']
+              : ['Chat']
     const inputChord = tuiKeyChord(value, key)
     const pendingSequence = keySequenceRef.current
     let keybindingAction: string | undefined
@@ -6660,6 +6663,27 @@ export function InteractiveApp({
       return
     }
     if (busy) {
+      if (isKeybinding('task:background')) {
+        const backgrounding = (async () => {
+          try {
+            const activeSessionId = sessionIdRef.current
+            if (!activeSessionId) throw new Error('No active session')
+            const commands = await service()
+            if (!commands.backgroundForegroundTask) {
+              throw new Error('Foreground Agent backgrounding is unavailable.')
+            }
+            await commands.backgroundForegroundTask(activeSessionId)
+            append({
+              kind: 'notice',
+              text: 'Agent moved to background · continuing this turn',
+            })
+          } catch (error) {
+            warn(error)
+          }
+        })()
+        void backgrounding
+        return
+      }
       if (isKeybinding('chat:cancel')) turnControllerRef.current?.abort()
       return
     }

@@ -538,6 +538,109 @@ export function projectClaudeModelMessages(
   return messages
 }
 
+function sidechainToolResultReplacements(
+  entries: readonly ClaudeTranscriptEntry[],
+): Map<string, string> {
+  const replacements = new Map<string, string>()
+  for (const entry of entries) {
+    if (
+      entry.type !== 'content-replacement' ||
+      !Array.isArray(entry.replacements)
+    ) {
+      continue
+    }
+    for (const replacement of entry.replacements) {
+      if (
+        isRecord(replacement) &&
+        replacement.kind === 'tool-result' &&
+        typeof replacement.toolUseId === 'string' &&
+        typeof replacement.replacement === 'string'
+      ) {
+        replacements.set(replacement.toolUseId, replacement.replacement)
+      }
+    }
+  }
+  return replacements
+}
+
+/** Builds restart/SendMessage context without mutating the retained sidechain.
+ * Only complete tool call/result pairs survive. Ambiguous duplicate IDs fail
+ * locally because silently choosing one could resume the wrong operation. */
+export function projectClaudeSidechainContinuationMessages(
+  entries: readonly ClaudeTranscriptEntry[],
+): ModelMessage[] {
+  const messages = projectClaudeModelMessages(entries)
+  const callCounts = new Map<string, number>()
+  const resultCounts = new Map<string, number>()
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      for (const call of message.toolCalls ?? []) {
+        callCounts.set(call.id, (callCounts.get(call.id) ?? 0) + 1)
+      }
+    } else if (message.role === 'tool') {
+      resultCounts.set(
+        message.toolCallId,
+        (resultCounts.get(message.toolCallId) ?? 0) + 1,
+      )
+    }
+  }
+  for (const [toolUseId, count] of callCounts) {
+    if (count > 1) {
+      throw new Error(
+        `Claude sidechain continuation has duplicate tool ID ${toolUseId}`,
+      )
+    }
+  }
+  for (const [toolUseId, count] of resultCounts) {
+    if (count > 1) {
+      throw new Error(
+        `Claude sidechain continuation has duplicate tool result ${toolUseId}`,
+      )
+    }
+  }
+  const pairedToolIds = new Set(
+    [...callCounts.keys()].filter(
+      (toolUseId) => resultCounts.get(toolUseId) === 1,
+    ),
+  )
+  const replacements = sidechainToolResultReplacements(entries)
+  return messages.flatMap((message): ModelMessage[] => {
+    if (message.role === 'assistant') {
+      const toolCalls = (message.toolCalls ?? []).filter((call) =>
+        pairedToolIds.has(call.id),
+      )
+      if (message.content.trim().length === 0 && toolCalls.length === 0) {
+        return []
+      }
+      return [
+        {
+          role: 'assistant',
+          content: message.content,
+          ...(message.thinkingBlocks
+            ? { thinkingBlocks: message.thinkingBlocks }
+            : {}),
+          ...(toolCalls.length === 0 ? {} : { toolCalls }),
+        },
+      ]
+    }
+    if (message.role === 'tool') {
+      if (!pairedToolIds.has(message.toolCallId)) return []
+      const replacement = replacements.get(message.toolCallId)
+      return [
+        replacement === undefined
+          ? message
+          : {
+              role: 'tool',
+              toolCallId: message.toolCallId,
+              content: replacement,
+              isError: message.isError,
+            },
+      ]
+    }
+    return [message]
+  })
+}
+
 export function getClaudeLastPrompt(
   entries: readonly ClaudeTranscriptEntry[],
 ): string | null {

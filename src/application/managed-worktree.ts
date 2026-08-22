@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { lstat, mkdir } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { lstat, mkdir, realpath } from 'node:fs/promises'
+import { isAbsolute, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -138,6 +138,74 @@ export async function createManagedWorktree(options: {
         return result
       } finally {
         cleanupInFlight = undefined
+      }
+    },
+  }
+}
+
+/** Reattaches only to a real, registered Git worktree. Persisted metadata is
+ * untrusted input, so an arbitrary directory can never become an execution
+ * cwd merely because it exists. Restored worktrees are retained for audit. */
+export async function restoreManagedWorktree(options: {
+  cwd: string
+  path: string
+  label: 'Agent' | 'Workflow'
+}): Promise<ManagedWorktree> {
+  if (!isAbsolute(options.path) || options.path.includes('\0')) {
+    throw new Error(
+      `Invalid retained ${options.label.toLowerCase()} worktree path`,
+    )
+  }
+  const path = resolve(options.path)
+  let entry
+  try {
+    entry = await lstat(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `Retained ${options.label.toLowerCase()} worktree is missing: ${path}`,
+      )
+    }
+    throw error
+  }
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    throw new Error(
+      `Retained ${options.label.toLowerCase()} worktree must be a real directory: ${path}`,
+    )
+  }
+  let root: string
+  let registered: Set<string>
+  let canonicalPath: string
+  try {
+    ;[root, canonicalPath] = await Promise.all([
+      git(options.cwd, ['rev-parse', '--show-toplevel']),
+      realpath(path),
+    ])
+    registered = await registeredWorktrees(root)
+  } catch (error) {
+    throw new Error(
+      `Could not inspect retained ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
+    )
+  }
+  if (!registered.has(path) && !registered.has(canonicalPath)) {
+    throw new Error(
+      `Retained ${options.label.toLowerCase()} worktree is not registered: ${path}`,
+    )
+  }
+  const worktreeRoot = await realpath(
+    resolve(await git(path, ['rev-parse', '--show-toplevel'])),
+  )
+  if (worktreeRoot !== canonicalPath) {
+    throw new Error(
+      `Retained ${options.label.toLowerCase()} worktree path is not its root: ${path}`,
+    )
+  }
+  return {
+    cwd: path,
+    async cleanup() {
+      return {
+        retained: true,
+        reason: `${options.label} worktree was restored and retained at ${path}`,
       }
     },
   }

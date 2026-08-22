@@ -4,7 +4,21 @@ import type { ModelUsage } from '../../core/runtime.js'
 import { isClaudeSessionId } from './paths.js'
 import type { ClaudeTranscriptEntry } from './schema.js'
 
-const AGENT_ID_PATTERN = /^a[0-9a-f]{16}$/u
+/** Claude uses a stable 16-hex suffix and may prefix it with a bounded label.
+ * Keeping the accepted alphabet filename-safe makes path construction a pure
+ * validation boundary rather than a sanitizing rewrite. */
+const CLAUDE_AGENT_ID_PATTERN =
+  /^a(?:[A-Za-z0-9][A-Za-z0-9_-]{0,62}-)?[0-9a-f]{16}$/u
+
+export function isClaudeAgentId(agentId: string): boolean {
+  return CLAUDE_AGENT_ID_PATTERN.test(agentId)
+}
+
+export function assertClaudeAgentId(agentId: string): void {
+  if (!isClaudeAgentId(agentId)) {
+    throw new Error(`Invalid Claude agent ID: ${agentId}`)
+  }
+}
 
 export interface ClaudeSidechainPaths {
   sessionId: string
@@ -20,6 +34,7 @@ export interface ClaudeSidechainPathOptions {
 }
 
 export interface ClaudeSidechainMetadata {
+  readonly [key: string]: unknown
   agentType: string
   description: string
   toolUseId: string
@@ -27,6 +42,8 @@ export interface ClaudeSidechainMetadata {
   name?: string
   permissionMode?: ClaudeSidechainPermissionMode
   isolation?: 'worktree'
+  parentAgentId?: string
+  worktreePath?: string
 }
 
 export type ClaudeSidechainPermissionMode =
@@ -41,9 +58,7 @@ export function resolveClaudeSidechainPaths(
   if (!isClaudeSessionId(sessionId)) {
     throw new Error(`Invalid Claude session ID: ${sessionId}`)
   }
-  if (!AGENT_ID_PATTERN.test(agentId)) {
-    throw new Error(`Invalid Claude agent ID: ${agentId}`)
-  }
+  assertClaudeAgentId(agentId)
   const subdirectory = options.subdirectory
   if (
     subdirectory !== undefined &&

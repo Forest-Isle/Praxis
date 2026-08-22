@@ -123,7 +123,7 @@ function isChild(body) {
 }
 
 function agentId(body) {
-  return /agentId: (a[0-9a-f]{16})/u.exec(
+  return /agentId: (a(?:[A-Za-z0-9][A-Za-z0-9_-]{0,62}-)?[0-9a-f]{16})/u.exec(
     JSON.stringify(body.messages ?? []),
   )?.[1]
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   BackgroundAgentRunError,
@@ -44,6 +44,7 @@ describe('BackgroundAgentManager', () => {
           }),
       ),
     )
+    expect(manager.notificationClaimAgentIds()).toEqual(['a0123456789abcdef'])
 
     await expect(
       manager.output('a0123456789abcdef', { block: false, timeout: 30_000 }),
@@ -71,9 +72,57 @@ describe('BackgroundAgentManager', () => {
       messages: [expect.stringContaining('<result>RESULT</result>')],
       usage: { inputTokens: 2, outputTokens: 1 },
     })
+    expect(manager.notificationClaimAgentIds()).toEqual([])
     await expect(
       manager.notifications({ waitForRunning: false }),
     ).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+  })
+
+  it('reconciles a transcript-delivered notification before redelivery', async () => {
+    const acknowledgeNotification = vi.fn(async () => undefined)
+    const manager = new BackgroundAgentManager()
+    manager.launch({
+      ...spec(async () => completed('DELIVERED_RESULT')),
+      acknowledgeNotification,
+    })
+    await manager.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    await expect(
+      manager.notifications({ waitForRunning: false, consume: false }),
+    ).resolves.toMatchObject({ messages: [expect.any(String)] })
+
+    await manager.acknowledgeDelivered(
+      ({ agentId, toolUseId, status }) =>
+        agentId === 'a0123456789abcdef' &&
+        toolUseId === 'call_agent' &&
+        status === 'completed',
+    )
+
+    expect(acknowledgeNotification).toHaveBeenCalledOnce()
+    await expect(
+      manager.notifications({ waitForRunning: false, consume: false }),
+    ).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+  })
+
+  it('wakes a notification waiter when a noncooperative manager closes', async () => {
+    const manager = new BackgroundAgentManager()
+    manager.launch(spec(() => new Promise(() => undefined)))
+    const waiting = manager.notifications({
+      waitForRunning: true,
+      consume: false,
+    })
+
+    await manager.close(0)
+
+    await expect(waiting).resolves.toEqual({
       messages: [],
       usage: { inputTokens: 0, outputTokens: 0 },
     })
@@ -200,6 +249,39 @@ describe('BackgroundAgentManager', () => {
     expect(manager.snapshots()[0]?.durationMs).toBe(stoppedDuration)
     expect(() => manager.stop('a0123456789abcdef')).toThrow(
       'is not running (status: stopped)',
+    )
+  })
+
+  it('boundedly drains close, clears live registrations, and emits no shutdown notification', async () => {
+    let aborted = false
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(
+        (_message, signal) =>
+          new Promise(() => {
+            signal.addEventListener(
+              'abort',
+              () => {
+                aborted = true
+              },
+              { once: true },
+            )
+          }),
+      ),
+    )
+
+    await expect(manager.close(10)).resolves.toBeUndefined()
+
+    expect(aborted).toBe(true)
+    expect(manager.snapshots()).toEqual([])
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    expect(() => manager.launch(spec(async () => completed('late')))).toThrow(
+      'manager is closed',
     )
   })
 
@@ -816,5 +898,58 @@ describe('BackgroundAgentManager', () => {
     expect(message).not.toContain('subagent_tokens')
     expect(message).not.toContain('worktree-path')
     expect(message).not.toContain('worktree-warning')
+  })
+
+  it('explicitly bulk-kills every live task and emits each killed notification once', async () => {
+    const manager = new BackgroundAgentManager()
+    const run = (_message: string, signal: AbortSignal) =>
+      new Promise<BackgroundAgentRunResult>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted')), {
+          once: true,
+        })
+      })
+    manager.launch(spec(run))
+    manager.launch({
+      ...spec(run),
+      agentId: 'a1123456789abcdef',
+      toolUseId: 'call_agent_two',
+      outputFile: '/tmp/agent-two.output',
+    })
+    manager.registerCompleted(
+      {
+        ...spec(async () => completed('already done')),
+        agentId: 'a2123456789abcdef',
+      },
+      completed('already done'),
+    )
+
+    expect(manager.stopAll()).toEqual([
+      'a0123456789abcdef',
+      'a1123456789abcdef',
+    ])
+    expect(manager.stopAll()).toEqual([])
+    await Promise.all(
+      ['a0123456789abcdef', 'a1123456789abcdef'].map((agentId) =>
+        manager.output(agentId, { block: true, timeout: 30_000 }),
+      ),
+    )
+
+    const first = await manager.notifications({ waitForRunning: false })
+    expect(first.messages).toHaveLength(2)
+    expect(first.messages).toEqual([
+      expect.stringContaining('<tool-use-id>call_agent</tool-use-id>'),
+      expect.stringContaining('<tool-use-id>call_agent_two</tool-use-id>'),
+    ])
+    expect(
+      first.messages.every((message) =>
+        message.includes('<status>killed</status>'),
+      ),
+    ).toBe(true)
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
   })
 })

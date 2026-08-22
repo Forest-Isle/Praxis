@@ -1982,6 +1982,65 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).not.toContain('✳')
   })
 
+  it('moves the active foreground Agent to background with the Task keybinding', async () => {
+    let finishResume!: (result: {
+      sessionId: string
+      text: string
+      usage: { inputTokens: number; outputTokens: number }
+    }) => void
+    const activeTurn = new Promise<{
+      sessionId: string
+      text: string
+      usage: { inputTokens: number; outputTokens: number }
+    }>((resolve) => {
+      finishResume = resolve
+    })
+    const backgroundForegroundTask = vi.fn()
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                return activeTurn
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              backgroundForegroundTask,
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'active-session' }}
+      />,
+    )
+
+    app.stdin.write('delegate now')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u0002')
+
+    await expect.poll(() => backgroundForegroundTask.mock.calls.length).toBe(1)
+    expect(backgroundForegroundTask).toHaveBeenCalledWith('active-session')
+    await expect
+      .poll(() => app.lastFrame() ?? '')
+      .toContain('Agent moved to background · continuing this turn')
+
+    finishResume({
+      sessionId: 'active-session',
+      text: 'parent continued',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    await flush()
+  })
+
   it('removes live text and completed thinking from a discarded model attempt', async () => {
     let discard: (() => void) | undefined
     const discardGate = new Promise<void>((resolve) => {

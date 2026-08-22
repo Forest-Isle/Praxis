@@ -5,7 +5,8 @@ import type { BackgroundBashSnapshot } from '../../application/background-bash-m
 import type { WorkflowTaskSnapshot } from '../../application/workflow-manager.js'
 
 export type TuiTaskKind = 'shell' | 'agent' | 'workflow'
-export type TuiTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
+export type TuiTaskStatus =
+  'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
 
 export interface TuiTaskEntry {
   id: string
@@ -56,7 +57,8 @@ function taskStatus(record: Readonly<Record<string, unknown>>): TuiTaskStatus {
     status === 'running' ||
     status === 'completed' ||
     status === 'failed' ||
-    status === 'stopped'
+    status === 'stopped' ||
+    status === 'interrupted'
   ) {
     return status
   }

@@ -124,6 +124,34 @@ Rules:
     and never creates transcript fields. The provider-neutral model request
     carries the leading stable-system-message count; adapters validate or
     render that hint according to their declared capabilities.
+21. A foreground subagent may transfer its existing operation and abort
+    controller to the background registry. The transfer does not replay model
+    or tool work and detaches parent cancellation only after adoption. Live
+    background Agents support individual and explicit bulk kill with one
+    terminal notification each; service close silently aborts and boundedly
+    drains them. The session task runtime retains actual executor ownership
+    across turns and routes later output, messaging, and stop operations by
+    exact ID or unique name; ambiguous names fail without dispatch. Terminal
+    notifications from prior-turn owners drain at later stop boundaries without
+    waiting for still-running prior work.
+    Retained sidechains hydrate without provider work. Completed, failed,
+    killed, and interrupted state is distinguished by a private lifecycle
+    sidecar. Terminal result, already-settled partial usage, and stable
+    notification identity are persisted before settlement; fresh executors
+    discover pending terminal notifications at stop boundaries, append them
+    one at a time before acknowledgement, and both fresh and live executors
+    reconcile append-before-ack retries without duplicate delivery. Hosted
+    side-question delivery reserves ownership before asynchronous launch,
+    restarts for later messaging continuations, and uses a pre-append intent
+    plus post-append confirmation so its private detached accounting contributes
+    usage once to durable session totals. Close wakes notification waiters and cancels notification
+    lease retries without
+    consuming their pending sidecars. Corrupt or ambiguous automatic recovery
+    warns per sidechain; only `SendMessage` starts one filtered continuation.
+    Shared Claude JSONL and metadata remain append-only and contain no
+    Praxis-only operational fields. Retained worktrees restore only after Git
+    registration validation, otherwise recovery warns and uses the unchanged
+    parent cwd.
 
 ## Core ports
 

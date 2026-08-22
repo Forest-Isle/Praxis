@@ -1,7 +1,10 @@
-import type { ModelUsage, ModelUsageByModel } from '../core/runtime.js'
+import { randomUUID } from 'node:crypto'
 
-const AGENT_ID_PATTERN = /^a[0-9a-f]{16}$/u
+import type { ModelUsage, ModelUsageByModel } from '../core/runtime.js'
+import { isClaudeAgentId } from '../compatibility/claude/sidechain.js'
+
 const MAX_TIMEOUT_MS = 600_000
+const DEFAULT_CLOSE_DRAIN_MS = 5_000
 
 export interface BackgroundAgentRunResult {
   text: string
@@ -14,6 +17,7 @@ export interface BackgroundAgentRunResult {
   isolationPath?: string
   isolationRetained?: boolean
   isolationWarning?: string
+  notificationId?: string
 }
 
 export class BackgroundAgentRunError extends Error {
@@ -27,6 +31,13 @@ export class BackgroundAgentRunError extends Error {
   }
 }
 
+export class BackgroundAgentShutdownError extends Error {
+  constructor() {
+    super('Background agent manager closed')
+    this.name = 'BackgroundAgentShutdownError'
+  }
+}
+
 export interface BackgroundAgentTaskSpec {
   agentId: string
   name?: string
@@ -36,14 +47,23 @@ export interface BackgroundAgentTaskSpec {
   toolUseId: string
   outputFile: string
   resolvedModel: string
+  markBackground?(): void
+  acknowledgeNotification?(notificationId: string): Promise<void>
+  prepareNotificationDetached?(
+    notificationId: string,
+    model: string,
+  ): Promise<void>
+  confirmNotificationDetached?(notificationId: string): Promise<void>
   run(
     message: string,
     signal: AbortSignal,
     continuation: boolean,
+    toolUseId: string,
   ): Promise<BackgroundAgentRunResult>
 }
 
-type BackgroundAgentStatus = 'running' | 'completed' | 'failed' | 'stopped'
+type BackgroundAgentStatus =
+  'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
 
 interface BackgroundAgentTask {
   spec: BackgroundAgentTaskSpec
@@ -57,13 +77,21 @@ interface BackgroundAgentTask {
   queuedMessages: { message: string; toolUseId: string }[]
   startedAt: number
   durationMs: number | null
+  suppressNotifications: boolean
 }
 
 interface BackgroundAgentNotification {
+  id: string
   status: Exclude<BackgroundAgentStatus, 'running'>
   result: BackgroundAgentRunResult | null
   error: string | null
   toolUseId: string
+}
+
+export interface BackgroundAgentNotificationIdentity {
+  agentId: string
+  toolUseId: string
+  status: 'completed' | 'failed' | 'killed'
 }
 
 export interface BackgroundAgentSnapshot {
@@ -79,7 +107,7 @@ export interface BackgroundAgentSnapshot {
 }
 
 function assertAgentId(agentId: string): void {
-  if (!AGENT_ID_PATTERN.test(agentId)) {
+  if (!isClaudeAgentId(agentId)) {
     throw new Error(`Invalid background agent ID: ${agentId}`)
   }
 }
@@ -91,6 +119,16 @@ function escapeXml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;')
+}
+
+export function backgroundAgentNotificationMarkers(
+  notification: BackgroundAgentNotificationIdentity,
+): readonly string[] {
+  return [
+    `<task-id>${notification.agentId}</task-id>`,
+    `<tool-use-id>${escapeXml(notification.toolUseId)}</tool-use-id>`,
+    `<status>${notification.status}</status>`,
+  ]
 }
 
 function waitBounded(
@@ -280,37 +318,57 @@ function mergeToolModelUsage(
 export class BackgroundAgentManager {
   private readonly tasks = new Map<string, BackgroundAgentTask>()
   private readonly names = new Map<string, string>()
+  private readonly closedSignal: Promise<void>
+  private resolveClosed!: () => void
   private closed = false
 
+  constructor() {
+    this.closedSignal = new Promise<void>((resolve) => {
+      this.resolveClosed = resolve
+    })
+  }
+
   launch(spec: BackgroundAgentTaskSpec): BackgroundAgentSnapshot {
-    if (this.closed) throw new Error('Background agent manager is closed')
-    assertAgentId(spec.agentId)
-    if (
-      spec.name !== undefined &&
-      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(spec.name)
-    ) {
-      throw new Error(`Invalid background agent name: ${spec.name}`)
-    }
-    if (this.tasks.has(spec.agentId)) {
-      throw new Error(`Background agent ${spec.agentId} already exists`)
-    }
-    this.assertNameAvailable(spec.name, spec.agentId)
-    if (spec.name !== undefined) this.names.set(spec.name, spec.agentId)
-    const task: BackgroundAgentTask = {
+    const { task } = this.registerTask(
       spec,
-      status: 'running',
-      controller: null,
-      promise: null,
-      result: null,
-      error: null,
-      notifications: [],
-      generation: 0,
-      queuedMessages: [],
-      startedAt: Date.now(),
-      durationMs: null,
-    }
-    this.tasks.set(spec.agentId, task)
+      {
+        status: 'running',
+        controller: null,
+        result: null,
+        error: null,
+        generation: 0,
+        startedAt: Date.now(),
+        durationMs: null,
+      },
+      'throw',
+    )
+    spec.markBackground?.()
     this.start(task, spec.prompt, false, spec.toolUseId)
+    return this.snapshot(task)
+  }
+
+  adopt(options: {
+    spec: BackgroundAgentTaskSpec
+    controller: AbortController
+    operation: Promise<BackgroundAgentRunResult>
+    startedAt: number
+  }): BackgroundAgentSnapshot {
+    const { spec } = options
+    const { task } = this.registerTask(
+      spec,
+      {
+        status: 'running',
+        controller: options.controller,
+        result: null,
+        error: null,
+        generation: 1,
+        startedAt: options.startedAt,
+        durationMs: null,
+      },
+      'throw',
+    )
+    spec.markBackground?.()
+    this.track(task, options.operation, 1, spec.toolUseId)
     return this.snapshot(task)
   }
 
@@ -318,37 +376,90 @@ export class BackgroundAgentManager {
     spec: BackgroundAgentTaskSpec,
     result: BackgroundAgentRunResult,
   ): BackgroundAgentSnapshot {
-    if (this.closed) throw new Error('Background agent manager is closed')
-    assertAgentId(spec.agentId)
-    if (
-      spec.name !== undefined &&
-      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(spec.name)
-    ) {
-      throw new Error(`Invalid background agent name: ${spec.name}`)
-    }
-    const existing = this.tasks.get(spec.agentId)
-    if (existing) return this.snapshot(existing)
-    this.assertNameAvailable(spec.name, spec.agentId)
-    if (spec.name !== undefined) this.names.set(spec.name, spec.agentId)
-    const task: BackgroundAgentTask = {
+    const { task } = this.registerTask(
       spec,
-      status: 'completed',
-      controller: null,
-      promise: null,
-      result,
-      error: null,
-      notifications: [],
-      generation: 0,
-      queuedMessages: [],
-      startedAt: Date.now() - result.durationMs,
-      durationMs: result.durationMs,
-    }
-    this.tasks.set(spec.agentId, task)
+      {
+        status: 'completed',
+        controller: null,
+        result,
+        error: null,
+        generation: 0,
+        startedAt: Date.now() - result.durationMs,
+        durationMs: result.durationMs,
+      },
+      'return-existing',
+    )
     return this.snapshot(task)
+  }
+
+  registerInterrupted(
+    spec: BackgroundAgentTaskSpec,
+    error = 'Persisted agent was interrupted before completion',
+  ): BackgroundAgentSnapshot {
+    const { task } = this.registerTask(
+      spec,
+      {
+        status: 'interrupted',
+        controller: null,
+        result: null,
+        error,
+        generation: 0,
+        startedAt: Date.now(),
+        durationMs: 0,
+      },
+      'return-existing',
+    )
+    return this.snapshot(task)
+  }
+
+  registerTerminal(
+    spec: BackgroundAgentTaskSpec,
+    status: 'failed' | 'stopped',
+    error: string,
+  ): BackgroundAgentSnapshot {
+    const { task } = this.registerTask(
+      spec,
+      {
+        status,
+        controller: null,
+        result: null,
+        error,
+        generation: 0,
+        startedAt: Date.now(),
+        durationMs: 0,
+      },
+      'return-existing',
+    )
+    return this.snapshot(task)
+  }
+
+  registerPersistedNotification(
+    agentId: string,
+    notification: {
+      id: string
+      status: 'completed' | 'failed' | 'stopped'
+      result: BackgroundAgentRunResult | null
+      error: string | null
+      toolUseId: string
+    },
+  ): void {
+    const task = this.tasks.get(agentId)
+    if (!task) throw new Error(`No task found with ID: ${agentId}`)
+    if (task.notifications.some(({ id }) => id === notification.id)) return
+    task.notifications.push(notification)
   }
 
   has(agentId: string): boolean {
     return this.tasks.has(this.resolveOptional(agentId) ?? agentId)
+  }
+
+  notificationClaimAgentIds(): string[] {
+    return [...this.tasks.entries()]
+      .filter(
+        ([, task]) =>
+          task.status === 'running' || task.notifications.length > 0,
+      )
+      .map(([agentId]) => agentId)
   }
 
   snapshotById(agentId: string): BackgroundAgentSnapshot | null {
@@ -400,30 +511,61 @@ export class BackgroundAgentManager {
     agentId = this.resolveRequired(agentId)
     const task = this.tasks.get(agentId)
     if (!task) throw new Error(`No task found with ID: ${agentId}`)
-    if (task.status !== 'running' || !task.controller) {
-      throw new Error(`Task ${agentId} is not running (status: ${task.status})`)
-    }
-    task.status = 'stopped'
-    task.error = 'Stopped by TaskStop'
-    task.durationMs ??= Date.now() - task.startedAt
-    task.queuedMessages.length = 0
-    task.controller.abort()
+    this.stopTask(task, 'Stopped by TaskStop')
     return `Task ${agentId} stopped successfully`
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return
-    this.closed = true
-    const running: Promise<void>[] = []
+  async stopAndWait(
+    agentId: string,
+    timeout = DEFAULT_CLOSE_DRAIN_MS,
+  ): Promise<string> {
+    const message = this.stop(agentId)
+    const task = this.tasks.get(agentId)
+    if (task?.promise) await waitBounded(task.promise, timeout)
+    return message
+  }
+
+  stopAll(): readonly string[] {
+    const stopped: string[] = []
     for (const task of this.tasks.values()) {
       if (task.status !== 'running' || !task.controller) continue
-      task.status = 'stopped'
-      task.error = 'Stopped because the background agent manager closed'
-      task.queuedMessages.length = 0
-      task.controller.abort()
+      this.stopTask(task, 'Stopped by explicit bulk kill')
+      stopped.push(task.spec.agentId)
+    }
+    return stopped
+  }
+
+  async close(drainMilliseconds = DEFAULT_CLOSE_DRAIN_MS): Promise<void> {
+    if (this.closed) return
+    if (
+      !Number.isFinite(drainMilliseconds) ||
+      drainMilliseconds < 0 ||
+      drainMilliseconds > MAX_TIMEOUT_MS
+    ) {
+      throw new Error(
+        `close drain must be between 0 and ${MAX_TIMEOUT_MS} milliseconds`,
+      )
+    }
+    this.closed = true
+    this.resolveClosed()
+    const running: Promise<void>[] = []
+    for (const task of this.tasks.values()) {
+      if (task.status === 'running' && task.controller) {
+        task.status = 'stopped'
+        task.error = 'Stopped because the background agent manager closed'
+        task.suppressNotifications = true
+        task.notifications.length = 0
+        task.queuedMessages.length = 0
+        task.controller.abort(new BackgroundAgentShutdownError())
+      }
       if (task.promise) running.push(task.promise)
     }
-    await Promise.allSettled(running)
+    await waitBounded(
+      Promise.allSettled(running).then(() => undefined),
+      drainMilliseconds,
+    )
+    this.tasks.clear()
+    this.names.clear()
   }
 
   send(
@@ -461,6 +603,7 @@ export class BackgroundAgentManager {
   async notifications(options: {
     waitForRunning: boolean
     excludeAgentId?: string
+    consume?: boolean
   }): Promise<{
     messages: string[]
     usage: ModelUsage
@@ -480,7 +623,9 @@ export class BackgroundAgentManager {
         .filter((task) => task.status === 'running')
         .map((task) => task.promise)
         .filter((promise): promise is Promise<void> => promise !== null)
-      if (running.length > 0) await Promise.race(running)
+      if (running.length > 0) {
+        await Promise.race([Promise.race(running), this.closedSignal])
+      }
     }
     const notifications: string[] = []
     let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
@@ -520,14 +665,121 @@ export class BackgroundAgentManager {
       modelUsageByModel.size === 0
         ? undefined
         : Object.fromEntries(modelUsageByModel)
+    if (options.consume !== false) {
+      for (const task of consumedTasks) {
+        if (!task.spec.acknowledgeNotification) continue
+        for (const notification of task.notifications) {
+          await task.spec.acknowledgeNotification(notification.id)
+        }
+      }
+    }
     const result = {
       messages: notifications,
       usage,
       ...(modelUsage === undefined ? {} : { modelUsage }),
       ...(durationSeen ? { durationApiMs, durationApiWithoutRetriesMs } : {}),
     }
-    for (const task of consumedTasks) task.notifications.splice(0)
+    if (options.consume !== false) {
+      for (const task of consumedTasks) task.notifications.splice(0)
+    }
     return result
+  }
+
+  async acknowledge(messages: readonly string[]): Promise<void> {
+    await this.forEachMatchingNotification(
+      messages,
+      async (task, notification) => {
+        await task.spec.acknowledgeNotification?.(notification.id)
+        task.notifications.splice(task.notifications.indexOf(notification), 1)
+      },
+    )
+  }
+
+  async prepareNotificationsDetached(
+    messages: readonly string[],
+  ): Promise<void> {
+    await this.forEachMatchingNotification(
+      messages,
+      async (task, notification) => {
+        await task.spec.prepareNotificationDetached?.(
+          notification.id,
+          task.spec.resolvedModel,
+        )
+      },
+    )
+  }
+
+  async confirmNotificationsDetached(
+    messages: readonly string[],
+  ): Promise<void> {
+    await this.forEachMatchingNotification(
+      messages,
+      async (task, notification) => {
+        await task.spec.confirmNotificationDetached?.(notification.id)
+      },
+    )
+  }
+
+  private async forEachMatchingNotification(
+    messages: readonly string[],
+    operation: (
+      task: BackgroundAgentTask,
+      notification: BackgroundAgentNotification,
+    ) => Promise<void>,
+  ): Promise<void> {
+    const remaining = [...messages]
+    for (const task of this.tasks.values()) {
+      for (const notification of [...task.notifications]) {
+        const message = this.formatNotification(task, notification)
+        const index = remaining.indexOf(message)
+        if (index < 0) continue
+        await operation(task, notification)
+        remaining.splice(index, 1)
+      }
+    }
+  }
+
+  async acknowledgeDelivered(
+    delivered: (notification: BackgroundAgentNotificationIdentity) => boolean,
+  ): Promise<void> {
+    for (const [agentId, task] of this.tasks) {
+      for (const notification of [...task.notifications]) {
+        if (notification.status === 'interrupted') continue
+        const status =
+          notification.status === 'stopped' ? 'killed' : notification.status
+        if (
+          !delivered({ agentId, toolUseId: notification.toolUseId, status })
+        ) {
+          continue
+        }
+        await task.spec.acknowledgeNotification?.(notification.id)
+        task.notifications.splice(task.notifications.indexOf(notification), 1)
+      }
+    }
+  }
+
+  async acknowledgeDeliveredAsDetached(
+    delivered: (notification: BackgroundAgentNotificationIdentity) => boolean,
+  ): Promise<void> {
+    for (const [agentId, task] of this.tasks) {
+      for (const notification of [...task.notifications]) {
+        if (notification.status === 'interrupted') continue
+        const status =
+          notification.status === 'stopped' ? 'killed' : notification.status
+        if (
+          !delivered({ agentId, toolUseId: notification.toolUseId, status })
+        ) {
+          continue
+        }
+        await task.spec.prepareNotificationDetached?.(
+          notification.id,
+          task.spec.resolvedModel,
+        )
+        await task.spec.confirmNotificationDetached?.(notification.id)
+        await task.spec.acknowledgeNotification?.(notification.id)
+        task.notifications.splice(task.notifications.indexOf(notification), 1)
+      }
+    }
   }
 
   private start(
@@ -545,8 +797,21 @@ export class BackgroundAgentManager {
     task.controller = controller
     task.result = null
     task.error = null
-    task.promise = task.spec
-      .run(message, controller.signal, continuation)
+    this.track(
+      task,
+      task.spec.run(message, controller.signal, continuation, toolUseId),
+      generation,
+      toolUseId,
+    )
+  }
+
+  private track(
+    task: BackgroundAgentTask,
+    operation: Promise<BackgroundAgentRunResult>,
+    generation: number,
+    toolUseId: string,
+  ): void {
+    task.promise = operation
       .then((result) => {
         if (task.generation !== generation) return
         if (task.status === 'stopped') {
@@ -558,6 +823,7 @@ export class BackgroundAgentManager {
         task.durationMs = result.durationMs
         task.error = null
         task.notifications.push({
+          id: result.notificationId ?? randomUUID(),
           status: 'completed',
           result,
           error: null,
@@ -581,8 +847,9 @@ export class BackgroundAgentManager {
           failedResult?.durationMs ?? Date.now() - task.startedAt
         task.error = error instanceof Error ? error.message : String(error)
         task.notifications.push({
+          id: failedResult?.notificationId ?? randomUUID(),
           status: 'failed',
-          result: null,
+          result: failedResult ?? null,
           error: task.error,
           toolUseId,
         })
@@ -598,9 +865,65 @@ export class BackgroundAgentManager {
       })
   }
 
+  private registerTask(
+    spec: BackgroundAgentTaskSpec,
+    state: Pick<
+      BackgroundAgentTask,
+      | 'status'
+      | 'controller'
+      | 'result'
+      | 'error'
+      | 'generation'
+      | 'startedAt'
+      | 'durationMs'
+    >,
+    duplicate: 'throw' | 'return-existing',
+  ): { task: BackgroundAgentTask; created: boolean } {
+    if (this.closed) throw new Error('Background agent manager is closed')
+    assertAgentId(spec.agentId)
+    if (
+      spec.name !== undefined &&
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(spec.name)
+    ) {
+      throw new Error(`Invalid background agent name: ${spec.name}`)
+    }
+    const existing = this.tasks.get(spec.agentId)
+    if (existing) {
+      if (duplicate === 'throw') {
+        throw new Error(`Background agent ${spec.agentId} already exists`)
+      }
+      return { task: existing, created: false }
+    }
+    this.assertNameAvailable(spec.name, spec.agentId)
+    if (spec.name !== undefined) this.names.set(spec.name, spec.agentId)
+    const task: BackgroundAgentTask = {
+      spec,
+      ...state,
+      promise: null,
+      notifications: [],
+      queuedMessages: [],
+      suppressNotifications: false,
+    }
+    this.tasks.set(spec.agentId, task)
+    return { task, created: true }
+  }
+
   private resolveOptional(identifier: string): string | undefined {
-    if (AGENT_ID_PATTERN.test(identifier)) return identifier
+    if (isClaudeAgentId(identifier)) return identifier
     return this.names.get(identifier)
+  }
+
+  private stopTask(task: BackgroundAgentTask, reason: string): void {
+    if (task.status !== 'running' || !task.controller) {
+      throw new Error(
+        `Task ${task.spec.agentId} is not running (status: ${task.status})`,
+      )
+    }
+    task.status = 'stopped'
+    task.error = reason
+    task.durationMs ??= Date.now() - task.startedAt
+    task.queuedMessages.length = 0
+    task.controller.abort()
   }
 
   private assertNameAvailable(name: string | undefined, agentId: string): void {
@@ -623,18 +946,21 @@ export class BackgroundAgentManager {
     }
     task.result = stoppedResult
     task.durationMs ??= stoppedResult.durationMs || Date.now() - task.startedAt
-    task.notifications.push({
-      status: 'stopped',
-      result: stoppedResult,
-      error: task.error,
-      toolUseId: task.spec.toolUseId,
-    })
+    if (!task.suppressNotifications) {
+      task.notifications.push({
+        id: stoppedResult.notificationId ?? randomUUID(),
+        status: 'stopped',
+        result: stoppedResult,
+        error: task.error,
+        toolUseId: task.spec.toolUseId,
+      })
+    }
   }
 
   private resolveRequired(identifier: string): string {
     const resolved = this.resolveOptional(identifier)
     if (
-      !AGENT_ID_PATTERN.test(identifier) &&
+      !isClaudeAgentId(identifier) &&
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(identifier)
     ) {
       assertAgentId(identifier)

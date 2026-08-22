@@ -7,6 +7,7 @@ import {
   getClaudeLastPrompt,
   projectClaudeDisplayTranscript,
   projectClaudeModelMessages,
+  projectClaudeSidechainContinuationMessages,
   projectClaudeTextMessages,
 } from './projection.js'
 import { createClaudeCompactEntries } from './compaction.js'
@@ -764,5 +765,110 @@ describe('Claude transcript projection', () => {
       { role: 'user', content: 'COMPACT_SUMMARY' },
       { role: 'assistant', content: 'AFTER_COMPACT' },
     ])
+  })
+
+  it('builds deterministic sidechain continuation context from complete tool pairs and replacements', () => {
+    const entries = [
+      { type: 'user', message: { role: 'user', content: 'ROOT_PROMPT' } },
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'paired thought', signature: 'sig' },
+            {
+              type: 'tool_use',
+              id: 'call_complete',
+              name: 'Read',
+              input: { file_path: '/tmp/a' },
+            },
+            {
+              type: 'tool_use',
+              id: 'call_dangling',
+              name: 'Read',
+              input: { file_path: '/tmp/b' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_complete',
+              content: 'ORIGINAL_RESULT',
+            },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'orphan thought', signature: 'sig' },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: '   ' }],
+        },
+      },
+      {
+        type: 'content-replacement',
+        replacements: [
+          {
+            kind: 'tool-result',
+            toolUseId: 'call_complete',
+            replacement: 'RECONSTRUCTED_RESULT',
+          },
+        ],
+      },
+    ]
+
+    expect(projectClaudeSidechainContinuationMessages(entries)).toEqual([
+      { role: 'user', content: 'ROOT_PROMPT' },
+      {
+        role: 'assistant',
+        content: '',
+        thinkingBlocks: [
+          { type: 'thinking', thinking: 'paired thought', signature: 'sig' },
+        ],
+        toolCalls: [
+          {
+            id: 'call_complete',
+            name: 'Read',
+            input: { file_path: '/tmp/a' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_complete',
+        content: 'RECONSTRUCTED_RESULT',
+        isError: false,
+      },
+    ])
+  })
+
+  it('fails sidechain continuation locally for duplicate tool IDs', () => {
+    const duplicate = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'duplicate', name: 'Read', input: {} },
+        ],
+      },
+    }
+    expect(() =>
+      projectClaudeSidechainContinuationMessages([duplicate, duplicate]),
+    ).toThrow('duplicate tool ID duplicate')
   })
 })
