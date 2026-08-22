@@ -170,6 +170,14 @@ describe('CLI protocol', () => {
         2,
       ),
     ).toMatchObject({ subtype: 'error_max_structured_output_retries' })
+    expect(
+      createErrorResult(
+        'Maximum model turns of 3 exceeded',
+        sessionId,
+        Date.now(),
+        3,
+      ),
+    ).toMatchObject({ subtype: 'error_max_turns', num_turns: 3 })
   })
 
   it('normalizes Claude-style print, resume, format, agent, and session options', () => {

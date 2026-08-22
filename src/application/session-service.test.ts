@@ -141,6 +141,170 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('runs the main session beyond the former implicit model turn limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-unbounded-turns-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let requests = 0
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async () => ({ content: 'READ', isError: false }),
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          requests += 1
+          if (requests <= 17) {
+            yield {
+              type: 'tool-call',
+              call: { id: `read_${requests}`, name: 'Read', input: {} },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'MAIN_DONE' }
+        },
+      },
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(service.run('Keep reading until done')).resolves.toMatchObject(
+      { text: 'MAIN_DONE' },
+    )
+    expect(requests).toBe(18)
+  })
+
+  it('does not restore an implicit model turn limit on resume', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-resume-turns-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let initial = true
+    let resumeRequests = 0
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async () => ({ content: 'READ', isError: false }),
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          if (initial) {
+            initial = false
+            yield { type: 'text-delta', delta: 'INITIAL_DONE' }
+            return
+          }
+          resumeRequests += 1
+          if (resumeRequests <= 17) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: `resume_read_${resumeRequests}`,
+                name: 'Read',
+                input: {},
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'RESUME_DONE' }
+        },
+      },
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const created = await service.run('Create the session')
+    await expect(
+      service.resume(created.sessionId, 'Keep reading until done'),
+    ).resolves.toMatchObject({ text: 'RESUME_DONE' })
+    expect(resumeRequests).toBe(18)
+  })
+
+  it('stops a main session at an explicit model turn limit without rewriting completed entries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-bounded-turns-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let requests = 0
+    let completedPrefix: Buffer | undefined
+    let toolExecutions = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      maxModelTurns: 2,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          requests += 1
+          yield {
+            type: 'tool-call',
+            call: { id: `read_${requests}`, name: 'Read', input: {} },
+          }
+        },
+      },
+      tools: {
+        definitions: () => [
+          {
+            name: 'Read',
+            description: 'Read',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async () => {
+          toolExecutions += 1
+          if (toolExecutions === 1) {
+            const [active] = await service.sessions()
+            if (!active) throw new Error('Expected an active bounded session')
+            completedPrefix = await service.export(active.sessionId)
+          }
+          return { content: 'READ', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(service.run('Stop after two')).rejects.toThrow(
+      'Maximum model turns of 2 exceeded',
+    )
+    expect(requests).toBe(2)
+
+    const [session] = await service.sessions()
+    expect(session).toBeDefined()
+    if (!session) throw new Error('Expected the bounded session to persist')
+    const exported = await service.export(session.sessionId)
+    if (!completedPrefix) throw new Error('Expected a completed JSONL prefix')
+    expect(exported.subarray(0, completedPrefix.length)).toEqual(
+      completedPrefix,
+    )
+    const transcript = exported.toString()
+    expect([...transcript.matchAll(/"type":"assistant"/g)]).toHaveLength(2)
+    expect([...transcript.matchAll(/"type":"tool_result"/g)]).toHaveLength(2)
+  })
+
   it('keeps consecutive assistant records from one provider response together at the suffix boundary', () => {
     const responseId = 'msg_split_response'
     const entries = [

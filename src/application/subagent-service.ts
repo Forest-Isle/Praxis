@@ -1859,7 +1859,9 @@ export class ClaudeSubagentExecutor {
     const runtime = new AgentRuntime(options.provider, emit, {
       tools: runtimeTools,
       permissions: runtimePermissions,
-      maxModelTurns: customAgent?.maxTurns ?? 16,
+      ...(customAgent?.maxTurns === undefined
+        ? {}
+        : { maxModelTurns: customAgent.maxTurns }),
       maxModelOutputBytes:
         this.options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
       maxToolCallsPerTurn: 32,
