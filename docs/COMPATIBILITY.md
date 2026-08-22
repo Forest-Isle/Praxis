@@ -615,7 +615,23 @@ in both Claude→Praxis and Praxis→Claude directions.
 Claude-compatible stream lifecycle records, PreToolUse input/permission
 changes, native success/error/context attachments, exit-code-2 blocking,
 non-persisted SessionEnd output, Praxis built-CLI execution, and Claude resume
-of the Praxis-written hook transcript.
+of the Praxis-written hook transcript. Focused runtime tests additionally pin
+the verified single-user notification/failure, permission-denial, subagent,
+compaction, task, instruction, cwd, and watched-file seams plus bounded async
+shutdown. CwdChanged/FileChanged command hooks share Claude's dynamic
+`watchPaths` contract and report add/change/unlink events from bounded local
+watchers. Environment command hooks share per-session `CLAUDE_ENV_FILE`
+literal exports with subsequent Bash tools in the same session. Shell commands
+and expansions in environment files are not executed; private files live under
+Praxis state sidecars rather than the shared transcript/config surface. Successful
+`systemMessage` output remains a non-error notice. Prompt, HTTP, and agent hook
+executors remain read-preserved but non-executable until independently verified.
+WorktreeCreate/WorktreeRemove
+also remain read-preserved because Claude delegates worktree path ownership to
+those hooks, while Praxis currently owns only its native Git worktree lifecycle.
+ConfigChange remains read-preserved until Praxis has the external settings
+watcher and pre-apply lifecycle that produces that event; internal permission
+writes must not impersonate an external change.
 `npm run test:mcp-compat` proves Claude and Praxis share user/project-local
 precedence, then exercises Praxis stdio and Streamable HTTP discovery, tool
 calls, permission flow, and stdio subprocess cleanup through the built CLI.

@@ -194,6 +194,10 @@ export interface ClaudeTaskToolRegistryOptions {
   enabledTools?: readonly string[]
   maxOutputBytes?: number
   eventSink?: RuntimeEventSink
+  taskHooks?: {
+    created(task: Readonly<ClaudeTask>, signal?: AbortSignal): Promise<void>
+    completed(task: Readonly<ClaudeTask>, signal?: AbortSignal): Promise<void>
+  }
 }
 
 function stringField(
@@ -420,6 +424,12 @@ export class ClaudeTaskToolRegistry implements ToolRegistry {
     switch (call.name) {
       case 'TaskCreate': {
         const task = await this.store.create(this.createInput(call.input))
+        try {
+          await this.options.taskHooks?.created(task, context.signal)
+        } catch (error) {
+          await this.store.update(task.id, { status: 'deleted' })
+          throw error
+        }
         return {
           content: `Task #${task.id} created successfully: ${task.subject}`,
           isError: false,
@@ -460,7 +470,14 @@ export class ClaudeTaskToolRegistry implements ToolRegistry {
       }
       case 'TaskUpdate': {
         const id = stringField(call.input, 'taskId')
-        const result = await this.store.update(id, this.updateInput(call.input))
+        const update = this.updateInput(call.input)
+        if (update.status === 'completed') {
+          const task = await this.store.get(id)
+          if (task && task.status !== 'completed') {
+            await this.options.taskHooks?.completed(task, context.signal)
+          }
+        }
+        const result = await this.store.update(id, update)
         const missing = {
           success: false,
           taskId: id,

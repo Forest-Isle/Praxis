@@ -33,11 +33,30 @@ Rules:
 7. Compaction appends Claude-native summary metadata only after a compatibility
    adapter proves the active Claude version accepts it.
 8. Shared command hooks run at their lifecycle seam with bounded output,
-   timeout, and cancellation; PreToolUse changes precede permission checks and
-   Stop blocking creates an explicit persisted continuation turn. SessionEnd
-   runs during successful or cancelled teardown without persisting output,
-   matching Claude 2.1.208. Its teardown failure emits a warning without
-   replacing the completed result or primary runtime error.
+   timeout, and cancellation. The local single-user surface covers setup,
+   session/turn, tool/permission, notification/failure, subagent, compaction,
+   task, instruction, and cwd lifecycle events where Praxis owns the
+   corresponding lifecycle. CwdChanged/FileChanged command hooks maintain a
+   bounded local watcher. CwdChanged replaces the dynamic `watchPaths` set;
+   FileChanged replaces it when a hook returns a non-empty set. Setup,
+   SessionStart, CwdChanged, and FileChanged command hooks receive a per-session
+   `CLAUDE_ENV_FILE`; subsequent Bash tools in that same session receive literal
+   `export NAME=value` entries as environment variables. Praxis ignores shell
+   commands and expansions in these files, and stores them under the private
+   native `state/session-env` or Claude-mode `praxis/session-env` sidecar.
+   Successful environment-hook `systemMessage` output is a notice, while
+   execution failures remain warnings. PreToolUse changes precede permission checks;
+   PermissionDenied observes only final auto-mode classifier denials and its
+   verified `retry` output adds a Claude-compatible model follow-up;
+   TaskCompleted blockers run before mutation;
+   TaskCreated blockers remove the just-created task while retaining its
+   monotonic ID; and Stop blocking creates an explicit persisted continuation
+   turn. Async command hooks never add transcript context and are drained or
+   cancelled within a bounded shutdown window. SessionEnd runs during successful or cancelled
+   teardown without persisting output, matching Claude 2.1.208. Its teardown
+   failure emits a warning without replacing the completed result or primary
+   runtime error. Unknown and deferred hook executors remain readable in shared
+   settings but are never executed.
 9. Shared MCP tools use the same permission, hook, cancellation, observation,
    and transcript path as local tools. Client transports close at turn end;
    an unavailable server warns and does not hide healthy servers.

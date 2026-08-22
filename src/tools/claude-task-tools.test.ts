@@ -187,6 +187,72 @@ describe('ClaudeTaskToolRegistry', () => {
     ).resolves.toBe('2')
   })
 
+  it('runs blocking task lifecycle hooks at create and completion boundaries', async () => {
+    const fixture = await createRegistry()
+    const paths = resolveClaudePaths({
+      configDir: fixture.configRoot,
+      cwd: fixture.cwd,
+      sessionId: fixture.sessionId,
+    })
+    const events: string[] = []
+    let blockCompletion = true
+    const registry = new ClaudeTaskToolRegistry({
+      base: new LocalToolRegistry({ cwd: fixture.cwd }),
+      cwd: fixture.cwd,
+      praxisRoot: paths.praxisRoot,
+      sessionId: fixture.sessionId,
+      taskRoot: paths.taskRoot,
+      taskHooks: {
+        async created(task) {
+          events.push(`created:${task.id}:${task.subject}`)
+          if (task.subject === 'Blocked task') throw new Error('blocked create')
+        },
+        async completed(task) {
+          events.push(`completed:${task.id}:${task.subject}`)
+          if (blockCompletion) throw new Error('blocked completion')
+        },
+      },
+    })
+
+    await expect(
+      execute(registry, fixture.cwd, 'TaskCreate', {
+        subject: 'Blocked task',
+        description: 'Must roll back',
+      }),
+    ).rejects.toThrow('blocked create')
+    expect((await execute(registry, fixture.cwd, 'TaskList', {})).content).toBe(
+      'No tasks found',
+    )
+    const created = await execute(registry, fixture.cwd, 'TaskCreate', {
+      subject: 'Allowed task',
+      description: 'Complete later',
+    })
+    expect(created.nativeToolUseResult).toMatchObject({
+      task: { id: '2', subject: 'Allowed task' },
+    })
+    await expect(
+      execute(registry, fixture.cwd, 'TaskUpdate', {
+        taskId: '2',
+        status: 'completed',
+      }),
+    ).rejects.toThrow('blocked completion')
+    expect(
+      (await execute(registry, fixture.cwd, 'TaskGet', { taskId: '2' }))
+        .nativeToolUseResult,
+    ).toMatchObject({ task: { status: 'pending' } })
+    blockCompletion = false
+    await execute(registry, fixture.cwd, 'TaskUpdate', {
+      taskId: '2',
+      status: 'completed',
+    })
+    expect(events).toEqual([
+      'created:1:Blocked task',
+      'created:2:Allowed task',
+      'completed:2:Allowed task',
+      'completed:2:Allowed task',
+    ])
+  })
+
   it('runs Bash in background and routes output and stop by b-prefixed ID', async () => {
     const { registry, cwd } = await createRegistry()
     const launched = await execute(registry, cwd, 'Bash', {

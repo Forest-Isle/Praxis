@@ -28,6 +28,7 @@ function fixture(
   executeCommand: ReturnType<typeof vi.fn<ClaudeHookCommandExecutor>>,
   tools: ToolRegistry,
   permissions: PermissionResolver = { resolve: () => ({ behavior: 'ask' }) },
+  warn?: (message: string) => void,
 ) {
   const outcomes = vi.fn(async () => undefined)
   const hooks = new ClaudeHookRunner({
@@ -44,6 +45,12 @@ function fixture(
               {
                 matcher: 'Bash',
                 hooks: [{ type: 'command', command: 'permission' }],
+              },
+            ],
+            PermissionDenied: [
+              {
+                matcher: 'Bash',
+                hooks: [{ type: 'command', command: 'denied' }],
               },
             ],
             PostToolUse: [
@@ -73,6 +80,7 @@ function fixture(
       hooks,
       session,
       recordOutcome: outcomes,
+      ...(warn ? { warn } : {}),
     }),
   }
 }
@@ -189,6 +197,133 @@ describe('ClaudeHookToolCoordinator', () => {
     ])
     expect(executeCommand.mock.calls[1]?.[3]).toBe(controller.signal)
     expect(outcomes).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs PermissionDenied only after an auto-classifier denial and returns retry context', async () => {
+    const tools: ToolRegistry = {
+      definitions: () => [],
+      prepare: vi.fn(async (value) => value),
+      execute: vi.fn(async () => ({ content: 'result', isError: false })),
+    }
+    const executeCommand = vi
+      .fn<ClaudeHookCommandExecutor>()
+      .mockResolvedValueOnce({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PermissionDenied',
+            retry: true,
+          },
+        }),
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      })
+    const { coordinator, outcomes } = fixture(executeCommand, tools, {
+      resolve: () => ({
+        behavior: 'deny',
+        reason: 'classifier denied',
+        source: 'auto-classifier',
+      }),
+    })
+    const prepared = await coordinator.prepare(call, { cwd: '/workspace' })
+
+    await expect(coordinator.resolve(prepared)).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'classifier denied',
+      source: 'auto-classifier',
+      followUpUserMessages: [
+        'The PermissionDenied hook indicated this command is now approved. You may retry it if you would like.',
+      ],
+    })
+    expect(executeCommand.mock.calls.map((item) => item[0])).toEqual([
+      'pre',
+      'denied',
+    ])
+    expect(executeCommand.mock.calls[1]?.[1]).toMatchObject({
+      hook_event_name: 'PermissionDenied',
+      tool_name: 'Bash',
+      tool_use_id: 'call_1',
+      reason: 'classifier denied',
+    })
+    expect(outcomes).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not run PermissionDenied for an ordinary rule denial', async () => {
+    const tools: ToolRegistry = {
+      definitions: () => [],
+      prepare: vi.fn(async (value) => value),
+      execute: vi.fn(async () => ({ content: 'result', isError: false })),
+    }
+    const executeCommand = vi
+      .fn<ClaudeHookCommandExecutor>()
+      .mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      })
+    const { coordinator, outcomes } = fixture(executeCommand, tools, {
+      resolve: () => ({
+        behavior: 'deny',
+        reason: 'rule denied',
+        source: 'rule',
+      }),
+    })
+    const prepared = await coordinator.prepare(call, { cwd: '/workspace' })
+
+    await expect(coordinator.resolve(prepared)).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'rule denied',
+      source: 'rule',
+    })
+    expect(executeCommand.mock.calls.map((item) => item[0])).toEqual(['pre'])
+    expect(outcomes).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves the final deny decision when its audit hook fails', async () => {
+    const tools: ToolRegistry = {
+      definitions: () => [],
+      prepare: vi.fn(async (value) => value),
+      execute: vi.fn(async () => ({ content: 'result', isError: false })),
+    }
+    const warnings: string[] = []
+    const executeCommand = vi
+      .fn<ClaudeHookCommandExecutor>()
+      .mockResolvedValueOnce({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      })
+      .mockRejectedValueOnce(new Error('audit unavailable'))
+    const { coordinator } = fixture(
+      executeCommand,
+      tools,
+      {
+        resolve: () => ({
+          behavior: 'deny',
+          reason: 'classifier denied',
+          source: 'auto-classifier',
+        }),
+      },
+      (message) => warnings.push(message),
+    )
+    const prepared = await coordinator.prepare(call, { cwd: '/workspace' })
+
+    await expect(coordinator.resolve(prepared)).resolves.toEqual({
+      behavior: 'deny',
+      reason: 'classifier denied',
+      source: 'auto-classifier',
+    })
+    expect(warnings).toEqual([
+      'PermissionDenied:Bash hook failed: audit unavailable',
+    ])
   })
 
   it('runs failure hooks and returns their context', async () => {

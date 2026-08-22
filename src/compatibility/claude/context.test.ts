@@ -398,6 +398,55 @@ MEMORY_CONTEXT`,
     expect(mcpVersion).toBe(2)
   })
 
+  it('reports instruction loads once per cached session resource lifecycle', async () => {
+    const loads: Array<{
+      paths: string[]
+      lifecycleId?: string
+      reason: string
+    }> = []
+    const assembler = new ClaudeContextAssembler({
+      loadResources: async () => ({
+        instructions: [
+          {
+            path: '/workspace/CLAUDE.md',
+            scope: 'project',
+            content: 'PROJECT_CONTEXT',
+          },
+        ],
+        conditionalRules: [],
+        memoryIndex: null,
+      }),
+      onInstructionsLoaded: async (resources, context) => {
+        loads.push({
+          paths: resources.map(({ path }) => path),
+          ...(context.lifecycleId === undefined
+            ? {}
+            : { lifecycleId: context.lifecycleId }),
+          reason: context.reason,
+        })
+      },
+    })
+    const options = { cwd: '/workspace', lifecycleId: 'session-1' }
+
+    await assembler.assemble(options)
+    await assembler.assemble(options)
+    assembler.invalidate({ lifecycleId: 'session-1', reason: 'compact' })
+    await assembler.assemble(options)
+
+    expect(loads).toEqual([
+      {
+        paths: ['/workspace/CLAUDE.md'],
+        lifecycleId: 'session-1',
+        reason: 'session_start',
+      },
+      {
+        paths: ['/workspace/CLAUDE.md'],
+        lifecycleId: 'session-1',
+        reason: 'compact',
+      },
+    ])
+  })
+
   it('orders MCP instructions deterministically and records provenance', async () => {
     const assembler = new ClaudeContextAssembler({
       loadResources: async () => ({

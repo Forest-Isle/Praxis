@@ -8,9 +8,11 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import {
   ClaudeHookRunner,
+  type ClaudeHookCommandExecutor,
   type ClaudeHookInput,
   type ClaudeHookStreamEvent,
 } from './claude-hooks.js'
+import { ClaudeSessionEnvironment } from './claude-session-environment.js'
 
 const input: ClaudeHookInput = {
   session_id: 'session',
@@ -264,6 +266,244 @@ describe('ClaudeHookRunner', () => {
       exitCode: 0,
       output: '{"hookSpecificOutput":{"additionalContext":"ok"}}',
     })
+  })
+
+  it('runs configured async command hooks without blocking and drains them explicitly', async () => {
+    const events: ClaudeHookStreamEvent[] = []
+    let release!: () => void
+    const completion = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              Notification: [
+                {
+                  matcher: 'turn_complete',
+                  hooks: [
+                    { type: 'command', command: 'async-hook', async: true },
+                  ],
+                },
+              ],
+            },
+          },
+          'user',
+        ),
+      ],
+      cwd: '/workspace',
+      onEvent: (event) => events.push(event),
+      executeCommand: async () => {
+        await completion
+        return {
+          stdout: 'ASYNC_OUTPUT',
+          stderr: '',
+          exitCode: 0,
+          durationMs: 1,
+        }
+      },
+    })
+
+    await expect(
+      runner.run(
+        {
+          ...input,
+          hook_event_name: 'Notification',
+          message: 'Turn complete',
+          notification_type: 'turn_complete',
+        },
+        'turn_complete',
+      ),
+    ).resolves.toEqual({ executions: [], additionalContext: [] })
+    expect(events.map(({ type }) => type)).toEqual(['started'])
+    const drained = runner.drainAsync(1_000)
+    release()
+    await drained
+    expect(events.map(({ type }) => type)).toEqual(['started', 'response'])
+    expect(events.at(-1)).toMatchObject({
+      type: 'response',
+      outcome: 'success',
+      output: 'ASYNC_OUTPUT',
+    })
+  })
+
+  it('derives event-specific matcher values and never executes unknown events', async () => {
+    const executeCommand = vi.fn().mockResolvedValue({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      durationMs: 1,
+    })
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              Notification: [
+                {
+                  matcher: 'permission_prompt',
+                  hooks: [{ type: 'command', command: 'notification-hook' }],
+                },
+              ],
+              FutureEvent: [
+                { hooks: [{ type: 'command', command: 'future-hook' }] },
+              ],
+            },
+          },
+          'project',
+        ),
+      ],
+      cwd: '/workspace',
+      executeCommand,
+    })
+
+    await runner.run({
+      ...input,
+      hook_event_name: 'Notification',
+      message: 'Approval required',
+      notification_type: 'permission_prompt',
+    })
+    await runner.run({
+      ...input,
+      hook_event_name: 'FutureEvent',
+    } as unknown as ClaudeHookInput)
+
+    expect(executeCommand).toHaveBeenCalledTimes(1)
+    expect(executeCommand).toHaveBeenCalledWith(
+      'notification-hook',
+      expect.objectContaining({ notification_type: 'permission_prompt' }),
+      600_000,
+      undefined,
+      expect.any(Function),
+      undefined,
+    )
+  })
+
+  it('cancels async hooks when the bounded drain expires', async () => {
+    const events: ClaudeHookStreamEvent[] = []
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              Notification: [
+                {
+                  hooks: [
+                    { type: 'command', command: 'stuck-hook', async: true },
+                  ],
+                },
+              ],
+            },
+          },
+          'user',
+        ),
+      ],
+      cwd: '/workspace',
+      onEvent: (event) => events.push(event),
+      executeCommand: (_command, _input, _timeout, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('cancelled', 'AbortError')),
+            { once: true },
+          )
+        }),
+    })
+
+    await runner.run({
+      ...input,
+      hook_event_name: 'Notification',
+      message: 'Turn complete',
+      notification_type: 'turn_complete',
+    })
+    await runner.drainAsync(1)
+    expect(events.at(-1)).toMatchObject({
+      type: 'response',
+      outcome: 'cancelled',
+    })
+  })
+
+  it('drains async hooks launched by a runner with scoped settings', async () => {
+    let aborted = false
+    const runner = new ClaudeHookRunner({
+      settings: [],
+      cwd: '/workspace',
+      executeCommand: (_command, _input, _timeout, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener(
+            'abort',
+            () => {
+              aborted = true
+              reject(new DOMException('cancelled', 'AbortError'))
+            },
+            { once: true },
+          )
+        }),
+    })
+    const scoped = runner.withAdditionalSettings([
+      settings(
+        {
+          hooks: {
+            Notification: [
+              {
+                hooks: [
+                  { type: 'command', command: 'scoped-async', async: true },
+                ],
+              },
+            ],
+          },
+        },
+        'project',
+      ),
+    ])
+
+    await scoped.run({
+      ...input,
+      hook_event_name: 'Notification',
+      message: 'done',
+      notification_type: 'turn_complete',
+    })
+    await runner.drainAsync(1)
+
+    expect(aborted).toBe(true)
+  })
+
+  it('abandons an async executor that does not cooperate with cancellation', async () => {
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              Notification: [
+                {
+                  hooks: [
+                    {
+                      type: 'command',
+                      command: 'non-cooperative',
+                      async: true,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          'project',
+        ),
+      ],
+      cwd: '/workspace',
+      executeCommand: () => new Promise(() => undefined),
+    })
+
+    await runner.run({
+      ...input,
+      hook_event_name: 'Notification',
+      message: 'done',
+      notification_type: 'turn_complete',
+    })
+
+    await expect(runner.drainAsync(1)).resolves.toBeUndefined()
+    await expect(runner.drainAsync(1)).resolves.toBeUndefined()
   })
 
   it('emits cancelled terminal events when hook execution aborts', async () => {
@@ -642,6 +882,113 @@ describe('ClaudeHookRunner', () => {
     } finally {
       if (previous === undefined) delete process.env[variable]
       else process.env[variable] = previous
+    }
+  })
+
+  it('derives FileChanged watches and consumes environment hook outputs', async () => {
+    const executeCommand = vi.fn<ClaudeHookCommandExecutor>(async () => ({
+      stdout: JSON.stringify({
+        systemMessage: 'environment refreshed',
+        hookSpecificOutput: {
+          hookEventName: 'FileChanged',
+          watchPaths: ['/workspace/generated.env'],
+        },
+      }),
+      stderr: '',
+      exitCode: 0,
+      durationMs: 1,
+    }))
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              FileChanged: [
+                {
+                  matcher: '.env|/tmp/shared.env',
+                  hooks: [{ type: 'command', command: 'refresh-env' }],
+                },
+                {
+                  matcher: 'package.json',
+                  hooks: [{ type: 'command', command: 'refresh-package' }],
+                },
+              ],
+            },
+          },
+          'user',
+        ),
+      ],
+      cwd: '/workspace',
+      executeCommand,
+    })
+
+    expect(runner.fileChangedWatchPaths()).toEqual([
+      '/workspace/.env',
+      '/tmp/shared.env',
+      '/workspace/package.json',
+    ])
+    await expect(
+      runner.run({
+        ...input,
+        hook_event_name: 'FileChanged',
+        file_path: '/workspace/.env',
+        event: 'change',
+      }),
+    ).resolves.toMatchObject({
+      watchPaths: ['/workspace/generated.env'],
+      systemMessages: ['environment refreshed'],
+    })
+    expect(executeCommand).toHaveBeenCalledOnce()
+    expect(executeCommand.mock.calls[0]?.[0]).toBe('refresh-env')
+  })
+
+  it('provides CLAUDE_ENV_FILE and invalidates session exports after environment hooks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-hook-env-runner-'))
+    const sessionEnvironment = new ClaudeSessionEnvironment({
+      stateRoot: root,
+    })
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              SessionStart: [
+                { hooks: [{ type: 'command', command: 'capture-env' }] },
+              ],
+            },
+          },
+          'user',
+        ),
+      ],
+      cwd: '/workspace',
+      sessionEnvironment,
+      executeCommand: async (
+        _command,
+        _input,
+        _timeout,
+        _signal,
+        _progress,
+        environment,
+      ) => {
+        const path = environment?.CLAUDE_ENV_FILE
+        if (!path) throw new Error('Missing CLAUDE_ENV_FILE')
+        await writeFile(path, 'export HOOK_TOKEN=ready\n')
+        return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+      },
+    })
+
+    try {
+      await runner.run({
+        ...input,
+        session_id: 'env-session',
+        hook_event_name: 'SessionStart',
+        source: 'startup',
+      })
+      await expect(
+        sessionEnvironment.environment('env-session'),
+      ).resolves.toEqual({ HOOK_TOKEN: 'ready' })
+    } finally {
+      await rm(root, { recursive: true })
     }
   })
 

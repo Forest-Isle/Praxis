@@ -1827,6 +1827,12 @@ export class ClaudeSubagentExecutor {
           hooks: scopedHooks,
           session: hookSession,
           recordOutcome: recordHookOutcome,
+          ...(this.options.eventSink
+            ? {
+                warn: (message: string) =>
+                  this.options.eventSink?.({ type: 'warning', message }),
+              }
+            : {}),
         })
       : agentTools
     const runtimePermissions = scopedHooks
@@ -2082,6 +2088,7 @@ export class ClaudeSubagentExecutor {
         typeof customAgent?.effort === 'string' ? customAgent.effort : undefined
       const effectiveEffort = options.effort ?? configuredEffort
       const result = await runtime.run({
+        sessionId: String(options.root.sessionId),
         messages: await assembleMessages(),
         collectMetrics: true,
         reloadMessages: assembleMessages,

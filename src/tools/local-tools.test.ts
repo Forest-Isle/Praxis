@@ -246,6 +246,40 @@ describe('LocalToolRegistry', () => {
     })
   })
 
+  it('loads hook-captured session exports into subsequent Bash commands', async () => {
+    const { cwd } = await workspace()
+    const requestedSessions: string[] = []
+    const registry = new LocalToolRegistry({
+      cwd,
+      sessionEnvironment: async (sessionId) => {
+        requestedSessions.push(sessionId)
+        return sessionId === 'session-a'
+          ? { HOOK_TOKEN: 'ready' }
+          : { OTHER_TOKEN: 'isolated' }
+      },
+    })
+    const call = await registry.prepare(
+      {
+        id: 'session-env-bash',
+        name: 'Bash',
+        input: { command: 'printf \'%s\' "$HOOK_TOKEN"' },
+      },
+      { cwd },
+    )
+
+    await expect(
+      registry.execute(call, { cwd, sessionId: 'session-a' }),
+    ).resolves.toMatchObject({
+      content: 'ready',
+      isError: false,
+    })
+    expect(requestedSessions).toEqual(['session-a'])
+
+    await expect(
+      registry.execute(call, { cwd, sessionId: 'session-b' }),
+    ).resolves.toMatchObject({ content: '', isError: false })
+  })
+
   it('executes Bash through the sandbox lifecycle and preserves overrides', async () => {
     const { cwd } = await workspace()
     const sandbox = {

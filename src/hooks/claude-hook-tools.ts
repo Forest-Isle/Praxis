@@ -7,6 +7,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { permissionDecisionSource } from '../core/runtime.js'
 import type { ClaudeHookOutcome, ClaudeHookRunner } from './claude-hooks.js'
 
 export interface ClaudeHookSessionInput {
@@ -25,6 +26,7 @@ export interface ClaudeHookToolCoordinatorOptions {
     outcome: ClaudeHookOutcome,
     deferUntilApproval?: boolean,
   ): Promise<void>
+  warn?(message: string): void
   deferPreToolUseOutcome?(call: ModelToolCall): boolean
 }
 
@@ -110,9 +112,17 @@ export class ClaudeHookToolCoordinator
     context?: PermissionResolutionContext,
   ): Promise<PermissionDecision> {
     const prepared = this.prepared.get(call.id)
-    if (prepared?.permissionDecision) return prepared.permissionDecision
+    if (prepared?.permissionDecision) {
+      return this.withPermissionDeniedHook(
+        call,
+        prepared.permissionDecision,
+        prepared.signal,
+      )
+    }
     const decision = await this.options.permissions.resolve(call, context)
-    if (decision.behavior !== 'ask') return decision
+    if (decision.behavior !== 'ask') {
+      return this.withPermissionDeniedHook(call, decision, prepared?.signal)
+    }
 
     const outcome = await this.options.hooks.run(
       {
@@ -128,15 +138,69 @@ export class ClaudeHookToolCoordinator
     )
     await this.options.recordOutcome(outcome)
     if (outcome.blockedReason || outcome.permissionDecision === 'deny') {
-      return {
-        behavior: 'deny',
-        reason:
-          outcome.blockedReason ??
-          outcome.permissionDecisionReason ??
-          `PermissionRequest:${call.name} hook denied tool`,
-      }
+      return this.withPermissionDeniedHook(
+        call,
+        {
+          behavior: 'deny',
+          reason:
+            outcome.blockedReason ??
+            outcome.permissionDecisionReason ??
+            `PermissionRequest:${call.name} hook denied tool`,
+        },
+        prepared?.signal,
+      )
     }
     if (outcome.permissionDecision === 'allow') return { behavior: 'allow' }
+    return decision
+  }
+
+  private async withPermissionDeniedHook(
+    call: ModelToolCall,
+    decision: PermissionDecision,
+    signal?: AbortSignal,
+  ): Promise<PermissionDecision> {
+    const decisionSource = permissionDecisionSource(decision)
+    if (decision.behavior !== 'deny' || decisionSource !== 'auto-classifier') {
+      return decision
+    }
+    const prepared = this.prepared.get(call.id)
+    try {
+      const outcome = await this.options.hooks.run(
+        {
+          ...this.options.session,
+          hook_event_name: 'PermissionDenied',
+          tool_name: call.name,
+          tool_input: prepared?.hookInput ?? call.input,
+          tool_use_id: call.id,
+          reason: decision.reason,
+        },
+        call.name,
+        signal,
+      )
+      await this.options.recordOutcome(outcome)
+      if (outcome.retry) {
+        return {
+          ...decision,
+          followUpUserMessages: [
+            ...(decision.followUpUserMessages ?? []),
+            'The PermissionDenied hook indicated this command is now approved. You may retry it if you would like.',
+          ],
+          source: decisionSource,
+        }
+      }
+    } catch (error) {
+      if (
+        signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) {
+        throw error
+      }
+      this.options.warn?.(
+        `PermissionDenied:${call.name} hook failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+    }
     return decision
   }
 

@@ -126,6 +126,7 @@ import {
 } from './extensions/claude-extension-tools.js'
 import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
 import { ClaudeHookRunner } from './hooks/claude-hooks.js'
+import { ClaudeSessionEnvironment } from './hooks/claude-session-environment.js'
 import {
   ClaudeMcpToolRegistry,
   type ClaudeMcpServerStatus,
@@ -1059,6 +1060,12 @@ interface SessionCommands {
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
   changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
+  notify?(
+    sessionId: string | undefined,
+    message: string,
+    notificationType: string,
+    title?: string,
+  ): void
   recordCdUsage?(sessionId: string): Promise<void>
   approveRecentlyDenied?(sessionId: string, display: string): Promise<void>
   retryRecentlyDenied?(
@@ -1826,6 +1833,15 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const permissions = permissionResolverForMode(
     cli.dangerouslySkipPermissions ? 'bypassPermissions' : cli.permissionMode,
   )
+  const hookSessionEnvironment = new ClaudeSessionEnvironment({
+    stateRoot: resolveDataPlanePaths({
+      dataPlane,
+      root: configRoot,
+      cwd,
+      sessionId: '00000000-0000-4000-8000-000000000000',
+    }).stateRoot,
+    warn: (message) => runtimeEventSink({ type: 'warning', message }),
+  })
   const localTools = new LocalToolRegistry({
     cwd,
     cwdProvider: () => workspace.cwd(),
@@ -1838,6 +1854,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
       sandboxEnvironment.HOME ?? sandboxEnvironment.USERPROFILE ?? homedir(),
     configRoot,
     dataPlane,
+    sessionEnvironment: (sessionId) =>
+      hookSessionEnvironment.environment(sessionId),
     ...(environment ? { environment } : {}),
   })
   const runtimeMcpResources = async (
@@ -2075,6 +2093,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
             settings,
             cwd,
             onEvent: (event) => runtimeEventSink({ type: 'hook', event }),
+            sessionEnvironment: hookSessionEnvironment,
           })
     const interactiveTools =
       selectedInteractiveTools.length > 0 && askUser && approvePlan
@@ -2094,6 +2113,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : undefined
     contextAssembler = new ClaudeContextAssembler({
       loadResources: loadContextResources,
+      onInstructionsLoaded: async (instructions, context) => {
+        if (!context.lifecycleId) return
+        await service.instructionsLoaded(
+          context.lifecycleId,
+          instructions,
+          context.reason,
+        )
+      },
       loadDynamicContext: (runtimeCwd = workspace.cwd()) =>
         loadClaudeDynamicContext({
           cwd: runtimeCwd,
@@ -2303,6 +2330,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
         service.rewindFiles(sessionId, userMessageId),
       rewindPoints: (sessionId) => service.rewindPoints(sessionId),
       changeCwd: (sessionId, cwd) => service.changeCwd(sessionId, cwd),
+      notify: (sessionId, message, notificationType, title) =>
+        service.notifyDetached(sessionId, message, notificationType, title),
       recordCdUsage: (sessionId) => service.recordCdUsage(sessionId),
       approveRecentlyDenied: (sessionId, display) =>
         service.approveRecentlyDenied(sessionId, display),

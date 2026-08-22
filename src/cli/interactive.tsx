@@ -359,6 +359,12 @@ interface InteractiveSessionCommands {
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
   changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
+  notify?(
+    sessionId: string | undefined,
+    message: string,
+    notificationType: string,
+    title?: string,
+  ): void
   recordCdUsage?(sessionId: string): Promise<void>
   approveRecentlyDenied?(sessionId: string, display: string): Promise<void>
   retryRecentlyDenied?(
@@ -567,6 +573,7 @@ interface InteractiveAppProps {
   runtimeSettings?: PraxisRuntimeSettings
   runtimeSettingsTarget?: ConfigSettingsTarget
   notificationWriter?: TuiNotificationWriter
+  notificationDelayMs?: number
   elicitationUrlOpener?: (url: string) => void | Promise<void>
   releaseNotesLoader?: (configRoot: string) => Promise<string>
   settingSources?: readonly ClaudeResourceScope[]
@@ -1082,6 +1089,7 @@ export function InteractiveApp({
   runtimeSettings: suppliedRuntimeSettings,
   runtimeSettingsTarget,
   notificationWriter,
+  notificationDelayMs = 6_000,
   elicitationUrlOpener = openTuiUrl,
   releaseNotesLoader = (configRoot) => loadClaudeReleaseNotes({ configRoot }),
   settingSources,
@@ -2416,6 +2424,12 @@ export function InteractiveApp({
           kind: 'notice',
           text: `MCP elicitation completed · ${event.mcpServerName}`,
         })
+        serviceRef.current?.notify?.(
+          sessionIdRef.current ?? undefined,
+          `MCP elicitation completed · ${event.mcpServerName}`,
+          'elicitation_complete',
+          'Praxis',
+        )
         if (
           elicitationUrlWaitingRef.current?.request.serverName ===
             event.mcpServerName &&
@@ -2478,6 +2492,15 @@ export function InteractiveApp({
         (option) => option.editableRule,
       )?.editableRule
       let settled = false
+      const notificationTimer = setTimeout(() => {
+        if (settled) return
+        serviceRef.current?.notify?.(
+          sessionIdRef.current ?? undefined,
+          `Approval required for ${call.name}`,
+          'permission_prompt',
+          'Praxis',
+        )
+      }, notificationDelayMs)
       const pending: PendingPermission = {
         kind,
         call,
@@ -2485,6 +2508,7 @@ export function InteractiveApp({
         resolve: (approved) => {
           if (settled) return
           settled = true
+          clearTimeout(notificationTimer)
           if (permissionRef.current === pending) permissionRef.current = null
           setPermission((current) => (current === pending ? null : current))
           resolveApproval(approved)
@@ -2508,11 +2532,23 @@ export function InteractiveApp({
   const requestElicitation = (request: CliElicitationRequest) =>
     new Promise<CliElicitationResult>((resolveResult) => {
       let settled = false
+      const notificationTimer = setTimeout(() => {
+        if (settled) return
+        serviceRef.current?.notify?.(
+          sessionIdRef.current ?? undefined,
+          'Praxis needs your input',
+          request.mode === 'url'
+            ? 'elicitation_url_dialog'
+            : 'elicitation_dialog',
+          'Praxis',
+        )
+      }, notificationDelayMs)
       const pending: PendingElicitation = {
         request,
         resolve: (result, options) => {
           if (settled) return
           settled = true
+          clearTimeout(notificationTimer)
           if (elicitationRef.current === pending) elicitationRef.current = null
           if (!options?.keepUrlDialog) {
             setElicitation((current) => (current === pending ? null : current))
