@@ -54,13 +54,16 @@ function resultRecord(stdout) {
 }
 
 function systemContent(request) {
-  const message = request?.messages?.[0]
-  if (message?.role !== 'system' || typeof message.content !== 'string') {
+  const messages = request?.messages?.filter(
+    (message) =>
+      message?.role === 'system' && typeof message.content === 'string',
+  )
+  if (!messages?.length) {
     throw new Error(
       `Provider received no system context: ${JSON.stringify(request)}`,
     )
   }
-  return message.content
+  return messages.map((message) => message.content).join('\n\n')
 }
 
 function assertContains(content, marker, label) {

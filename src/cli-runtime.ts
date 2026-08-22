@@ -1324,12 +1324,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
     },
     cwd,
   )
-  const effectiveAppendSystemPrompt = [
-    runtimeSettingsPrompt,
-    cli.appendSystemPrompt,
-  ]
-    .filter((value): value is string => value !== undefined)
-    .join('\n')
   const debug =
     cli.debug !== undefined || cli.debugFile !== undefined
       ? createCliDebugSink(eventSink, {
@@ -1756,6 +1750,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     })
     return filterDisabledMcpResources(candidates, await management.disabled())
   }
+  let contextAssembler: ClaudeContextAssembler | undefined
   const mcpTools = await ClaudeMcpToolRegistry.connect({
     base: simpleMode
       ? localTools
@@ -1800,6 +1795,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
     configRoot,
     onWarning: (message) => runtimeEventSink({ type: 'warning', message }),
     onPromptsChanged: (prompts) => extensions.setMcpPrompts(prompts),
+    onInstructionsChanged: () =>
+      contextAssembler?.invalidate({ reason: 'tool-pool' }),
     authenticateServer: async (name) => {
       const record = await new ClaudeMcpManagement({
         dataPlane,
@@ -1991,6 +1988,58 @@ const createDefaultService: CliDependencies['createService'] = async ({
             },
           })
         : undefined
+    contextAssembler = new ClaudeContextAssembler({
+      loadResources: loadContextResources,
+      loadDynamicContext: (runtimeCwd = workspace.cwd()) =>
+        loadClaudeDynamicContext({
+          cwd: runtimeCwd,
+          ...(memoryDirectory ? { memoryDirectory } : {}),
+        }),
+      loadMcpInstructions: async () => mcpTools.instructions(),
+      loadSessionGuidance: async () => {
+        const toolNames = [
+          ...new Set([
+            ...filteredTools.definitions().map((definition) => definition.name),
+            ...selectedTaskRuntimeTools,
+            ...selectedScheduledTools,
+            ...selectedWorkflowTools,
+            ...selectedWorktreeTools,
+            ...selectedInteractiveTools,
+            ...(enableSubagents ? selectedAgentTools : []),
+          ]),
+        ].sort()
+        const skillNames = extensions
+          .modelInvocableSkills()
+          .map((skill) => skill.name)
+          .sort()
+        if (
+          toolNames.length === 0 &&
+          skillNames.length === 0 &&
+          runtimeSettingsPrompt === undefined
+        )
+          return undefined
+        return [
+          '# Session capabilities',
+          ...(toolNames.length > 0
+            ? [`Enabled tools: ${toolNames.join(', ')}`]
+            : []),
+          ...(skillNames.length > 0
+            ? [`Model-invocable skills: ${skillNames.join(', ')}`]
+            : []),
+          'Use a capability only when it directly helps complete the request, and follow its declared input contract.',
+          ...(runtimeSettingsPrompt ? ['', runtimeSettingsPrompt] : []),
+        ].join('\n')
+      },
+      excludeDynamicSystemPromptSections:
+        cli.excludeDynamicSystemPromptSections,
+      ...(cli.systemPrompt === undefined
+        ? {}
+        : { systemPrompt: cli.systemPrompt }),
+      ...(cli.appendSystemPrompt
+        ? { appendSystemPrompt: cli.appendSystemPrompt }
+        : {}),
+      ...(simpleMode ? { bare: true } : {}),
+    })
     const service = new ClaudeSessionService({
       ...options,
       provider: hostedToolProvider,
@@ -2028,22 +2077,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(interactiveTools ? { interactiveTools } : {}),
       ...(hooks ? { hooks } : {}),
       ...(selectedMainAgent ? { agent: selectedMainAgent } : {}),
-      contextAssembler: new ClaudeContextAssembler({
-        loadResources: loadContextResources,
-        loadDynamicContext: (runtimeCwd = workspace.cwd()) =>
-          loadClaudeDynamicContext({
-            cwd: runtimeCwd,
-            ...(memoryDirectory ? { memoryDirectory } : {}),
-          }),
-        excludeDynamicSystemPromptSections:
-          cli.excludeDynamicSystemPromptSections,
-        ...(cli.systemPrompt === undefined
-          ? {}
-          : { systemPrompt: cli.systemPrompt }),
-        ...(effectiveAppendSystemPrompt
-          ? { appendSystemPrompt: effectiveAppendSystemPrompt }
-          : {}),
-      }),
+      contextAssembler,
       conditionalRuleResolver: new ClaudeConditionalRuleResolver({
         loadResources: loadContextResources,
       }),

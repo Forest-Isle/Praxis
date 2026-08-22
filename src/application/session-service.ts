@@ -81,6 +81,7 @@ import {
 } from '../compatibility/claude/translation.js'
 import {
   AgentRunCancelledError,
+  type AgentRunRequest,
   type AgentRunResult,
   AgentRuntime,
   type ModelContentBlock,
@@ -1334,6 +1335,17 @@ export class ClaudeSessionService {
     reason: Exclude<HookSessionEndReason, 'other'>,
   ): Promise<void> {
     await this.hookLifecycle.transition(sessionId, reason)
+    this.options.contextAssembler?.invalidate?.({
+      lifecycleId: sessionId,
+      reason: reason === 'resume' ? 'restore' : 'clear',
+    })
+  }
+
+  reloadContextResources(sessionId: string): void {
+    this.options.contextAssembler?.invalidate?.({
+      lifecycleId: sessionId,
+      reason: 'resource-reload',
+    })
   }
 
   createHostedToolRegistry(sessionId: string): ToolRegistry {
@@ -1684,6 +1696,7 @@ export class ClaudeSessionService {
     }
     const assembledContext = await this.options.contextAssembler?.assemble({
       cwd: this.activeCwd(),
+      lifecycleId: activeSessionId,
     })
     const messages = [
       ...(assembledContext?.systemMessages ?? []),
@@ -1822,16 +1835,21 @@ export class ClaudeSessionService {
     const agent = this.resolveAgent(agentName)
     const provider = this.providerForAgent(agent)
     this.activeProvider = provider
+    const agentSystem = await this.mainAgentSystemPrompt(agent)
     const assembledContext = await this.options.contextAssembler?.assemble({
       cwd: this.activeCwd(),
+      lifecycleId: sessionId,
+      ...(agentSystem ? { mode: 'agent', baseSystemPrompt: agentSystem } : {}),
     })
-    const agentSystem = await this.mainAgentSystemPrompt(agent)
-    const assembledSystemMessages = this.assembledSystemMessages(
-      agent,
-      assembledContext?.systemMessages ?? [],
-    )
+    const hasPromptManifest = assembledContext?.promptSections !== undefined
+    const assembledSystemMessages = hasPromptManifest
+      ? (assembledContext?.systemMessages ?? [])
+      : this.assembledSystemMessages(
+          agent,
+          assembledContext?.systemMessages ?? [],
+        )
     const contextMessages = [
-      ...(agentSystem
+      ...(!hasPromptManifest && agentSystem
         ? [{ role: 'system' as const, content: agentSystem }]
         : []),
       ...assembledSystemMessages,
@@ -2189,11 +2207,21 @@ export class ClaudeSessionService {
       this.sessionCwds.set(sessionId, cwd)
       this.runtimeCwd = cwd
       this.options.workspace?.setCwd(cwd)
+      this.options.contextAssembler?.invalidate?.({
+        lifecycleId: sessionId,
+        reason: 'cwd',
+      })
       return cwd
     }
     this.runtimeCwd = cwd
     this.options.workspace?.setCwd(cwd)
     if (sessionId) this.sessionCwds.set(sessionId, cwd)
+    if (sessionId) {
+      this.options.contextAssembler?.invalidate?.({
+        lifecycleId: sessionId,
+        reason: 'cwd',
+      })
+    }
     return cwd
   }
 
@@ -2697,6 +2725,10 @@ export class ClaudeSessionService {
     if (result.status === 'conflict') {
       throw new Error('Generated Claude fork session already exists')
     }
+    this.options.contextAssembler?.invalidate?.({
+      lifecycleId: sessionId,
+      reason: 'fork',
+    })
     return { sessionId, parentSessionId }
   }
 
@@ -2715,7 +2747,13 @@ export class ClaudeSessionService {
     )
     const target = this.store(sessionId)
     const created = await target.create(expected)
-    if (created.status === 'created') return { sessionId, parentSessionId }
+    if (created.status === 'created') {
+      this.options.contextAssembler?.invalidate?.({
+        lifecycleId: sessionId,
+        reason: 'fork',
+      })
+      return { sessionId, parentSessionId }
+    }
     const existing = await target.withLease((lease) => lease.load())
     if (existing.status === 'conflict') {
       throw new Error(`Claude transcript fork conflict: ${existing.reason}`)
@@ -2730,6 +2768,10 @@ export class ClaudeSessionService {
     ) {
       throw new Error('Claude handoff target is not the expected native fork')
     }
+    this.options.contextAssembler?.invalidate?.({
+      lifecycleId: sessionId,
+      reason: 'fork',
+    })
     return { sessionId, parentSessionId }
   }
 
@@ -3550,6 +3592,10 @@ export class ClaudeSessionService {
           currentTurnToolCalls += 1
           const transition = this.worktreeManager?.consumeTransition(call.id)
           if (transition) {
+            this.options.contextAssembler?.invalidate?.({
+              lifecycleId: sessionId,
+              reason: 'worktree',
+            })
             const stateEntry: ClaudeTranscriptEntry = {
               type: 'worktree-state',
               worktreeSession: transition.state,
@@ -3751,32 +3797,88 @@ export class ClaudeSessionService {
         let planModeMessage: string | null | undefined
         let sessionMemoryMessage: string | null = null
         let contextMessages: ModelMessage[] = []
+        let stableSystemMessageCount: number | undefined
         const refreshRuntimeContext = async () => {
-          assembledContext = await this.options.contextAssembler?.assemble({
-            cwd: this.activeCwd(),
-          })
           agentSystem = await this.mainAgentSystemPrompt(agent)
-          const assembledSystemMessages = this.assembledSystemMessages(
-            agent,
-            assembledContext?.systemMessages ?? [],
-          )
           planModeMessage =
             this.options.interactiveTools?.contextMessage(sessionId)
           sessionMemoryMessage = sessionMemory
             ? this.sessionMemoryMessage(await sessionMemory.summary())
             : null
-          contextMessages = [
+          const additionalSections = [
+            ...(planModeMessage
+              ? [
+                  {
+                    id: 'plan-mode',
+                    placement: 'system' as const,
+                    stability: 'volatile' as const,
+                    content: planModeMessage,
+                  },
+                ]
+              : []),
+            ...(sessionMemoryMessage
+              ? [
+                  {
+                    id: 'session-memory',
+                    placement: 'system' as const,
+                    stability: 'volatile' as const,
+                    content: sessionMemoryMessage,
+                  },
+                ]
+              : []),
+            ...(this.options.brief
+              ? [
+                  {
+                    id: 'brief-output',
+                    placement: 'system' as const,
+                    stability: 'volatile' as const,
+                    content: CLAUDE_USER_MESSAGE_PROMPT,
+                  },
+                ]
+              : []),
+            ...(this.options.structuredOutputSchema
+              ? [
+                  {
+                    id: 'structured-output',
+                    placement: 'system' as const,
+                    stability: 'volatile' as const,
+                    content:
+                      'You MUST call StructuredOutput exactly once at the end with a value matching the requested JSON Schema.',
+                  },
+                ]
+              : []),
+          ]
+          assembledContext = await this.options.contextAssembler?.assemble({
+            cwd: this.activeCwd(),
+            lifecycleId: sessionId,
             ...(agentSystem
+              ? { mode: 'agent', baseSystemPrompt: agentSystem }
+              : {}),
+            additionalSections,
+          })
+          const hasPromptManifest =
+            assembledContext?.promptSections !== undefined
+          stableSystemMessageCount = hasPromptManifest
+            ? assembledContext?.stableSystemSectionCount
+            : undefined
+          const assembledSystemMessages = hasPromptManifest
+            ? (assembledContext?.systemMessages ?? [])
+            : this.assembledSystemMessages(
+                agent,
+                assembledContext?.systemMessages ?? [],
+              )
+          contextMessages = [
+            ...(!hasPromptManifest && agentSystem
               ? [{ role: 'system' as const, content: agentSystem }]
               : []),
             ...assembledSystemMessages,
-            ...(planModeMessage
+            ...(!hasPromptManifest && planModeMessage
               ? [{ role: 'system' as const, content: planModeMessage }]
               : []),
-            ...(sessionMemoryMessage
+            ...(!hasPromptManifest && sessionMemoryMessage
               ? [{ role: 'system' as const, content: sessionMemoryMessage }]
               : []),
-            ...(this.options.brief
+            ...(!hasPromptManifest && this.options.brief
               ? [
                   {
                     role: 'system' as const,
@@ -3784,7 +3886,7 @@ export class ClaudeSessionService {
                   },
                 ]
               : []),
-            ...(this.options.structuredOutputSchema
+            ...(!hasPromptManifest && this.options.structuredOutputSchema
               ? [
                   {
                     role: 'system' as const,
@@ -4172,6 +4274,10 @@ export class ClaudeSessionService {
             )
             if (outcome) await recordHookOutcome(outcome)
           }
+          this.options.contextAssembler?.invalidate?.({
+            lifecycleId: sessionId,
+            reason: 'compact',
+          })
           await refreshRuntimeContext()
           this.options.eventSink?.({
             type: 'compact-boundary',
@@ -4378,11 +4484,14 @@ export class ClaudeSessionService {
         }
 
         let stopHookActive = false
-        const runtimeRequest = {
+        const runtimeRequest: AgentRunRequest = {
           messages: [
             ...contextMessages,
             ...injectTurnContext(projectClaudeModelMessages(snapshot.entries)),
           ],
+          ...(stableSystemMessageCount === undefined
+            ? {}
+            : { stableSystemMessageCount }),
           cwd: this.activeCwd(),
           toolResultDirectory,
           observer,
@@ -4396,6 +4505,11 @@ export class ClaudeSessionService {
             : {}),
           reloadMessages: async () => {
             await compactIfNeeded([], currentTurnUserMessages ?? [])
+            if (stableSystemMessageCount === undefined) {
+              delete runtimeRequest.stableSystemMessageCount
+            } else {
+              runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
+            }
             return [
               ...contextMessages,
               ...injectTurnContext(
@@ -4540,6 +4654,11 @@ export class ClaudeSessionService {
             ...contextMessages,
             ...injectTurnContext(projectClaudeModelMessages(snapshot.entries)),
           ]
+          if (stableSystemMessageCount === undefined) {
+            delete runtimeRequest.stableSystemMessageCount
+          } else {
+            runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
+          }
           try {
             result = await attemptMainTurn()
           } catch {

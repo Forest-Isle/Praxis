@@ -93,6 +93,18 @@ Rules:
     conservative read-only analysis, and MCP concurrency requires an explicit
     read-only annotation. Cancellation produces one terminal result per emitted
     call while only tools that opt in receive the parent abort.
+20. Provider-visible prompt context is composed from ordered sections with
+    stable identities, placements, and lifetimes. Product policy is the static
+    prefix; shared resources, date, runtime snapshot, and capability guidance
+    are lifecycle-scoped; changing MCP instructions and turn-owned plan/memory
+    state stay after the stable prefix. Custom system context replaces the
+    product base, append context layers after the stable session sections, and
+    bare mode loads no automatic context. Ordinary turns do not refresh session
+    snapshots; compact, resource/tool reload, and cwd/worktree transitions
+    invalidate only their dependent inputs. Prompt context remains ephemeral
+    and never creates transcript fields. The provider-neutral model request
+    carries the leading stable-system-message count; adapters validate or
+    render that hint according to their declared capabilities.
 
 ## Core ports
 
@@ -102,7 +114,9 @@ The runtime depends on behavior, not SDK or filesystem implementations:
 - `ToolRegistry`: schema discovery, synchronous fail-closed scheduling policy,
   and invocation;
 - `PermissionResolver`: deterministic local allow/ask/deny decision;
-- `ContextAssembler`: instructions, memory, skills, history, token budget;
+- `PromptComposer`: ordered section manifest, stability, and message placement;
+- `ContextAssembler`: lifecycle snapshots and focused invalidation of prompt
+  inputs;
 - `Transcript`: load snapshot and optimistic append;
 - `RuntimeEventSink`: TUI, JSON output, diagnostics;
 - `Compactor`: summary proposal and fidelity checks.

@@ -50,6 +50,27 @@ const image = {
 }
 
 describe('AgentRuntime', () => {
+  it('passes the stable system prefix boundary to the provider', async () => {
+    let captured: ModelRequest | undefined
+    const runtime = new AgentRuntime(
+      providerFrom(async function* (request) {
+        captured = request
+        yield { type: 'text-delta', delta: 'done' }
+      }),
+    )
+
+    await runtime.run({
+      messages: [
+        { role: 'system', content: 'stable' },
+        { role: 'system', content: 'volatile' },
+        { role: 'user', content: 'prompt' },
+      ],
+      stableSystemMessageCount: 1,
+    })
+
+    expect(captured?.stableSystemMessageCount).toBe(1)
+  })
+
   it('emits the typed provider terminal reason to runtime observers', async () => {
     const events: RuntimeEvent[] = []
     const runtime = new AgentRuntime(

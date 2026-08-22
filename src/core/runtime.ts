@@ -133,6 +133,8 @@ export type ModelStreamEvent =
 
 export interface ModelRequest {
   messages: readonly ModelMessage[]
+  /** Number of leading system messages that form the stable prompt prefix. */
+  stableSystemMessageCount?: number
   tools?: readonly ModelToolDefinition[]
   webSearch?: ModelWebSearch
   signal?: AbortSignal
@@ -525,6 +527,8 @@ export interface AgentRuntimeOptions {
 
 export interface AgentRunRequest {
   messages: readonly ModelMessage[]
+  /** Number of leading system messages that form the stable prompt prefix. */
+  stableSystemMessageCount?: number
   cwd?: string
   toolResultDirectory?: string
   observer?: AgentRunObserver
@@ -1060,6 +1064,11 @@ export class AgentRuntime {
             this.provider.capabilities.images === true,
             this.provider.capabilities.documents === true,
           ),
+          ...(request.stableSystemMessageCount === undefined
+            ? {}
+            : {
+                stableSystemMessageCount: request.stableSystemMessageCount,
+              }),
         }
         if (definitions.length > 0) providerRequest.tools = definitions
         if (request.signal) providerRequest.signal = request.signal

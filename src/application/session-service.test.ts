@@ -2987,6 +2987,7 @@ describe('ClaudeSessionService', () => {
       },
     }
     let contextVersion = 0
+    const contextInvalidations: string[] = []
     let compactHookCalls = 0
     const hookEvents: string[] = []
     const hooks = new ClaudeHookRunner({
@@ -3059,6 +3060,9 @@ describe('ClaudeSessionService', () => {
             firstUserMessageContext: `DYNAMIC_CONTEXT_${contextVersion}`,
           }
         },
+        invalidate({ reason }) {
+          contextInvalidations.push(reason)
+        },
       },
       compactor: {
         async compact() {
@@ -3099,6 +3103,7 @@ describe('ClaudeSessionService', () => {
     // The context assembler runs once for the startup turn, once for the
     // resume, and once more after the compact boundary refresh.
     expect(contextVersion).toBe(3)
+    expect(contextInvalidations).toEqual(['compact'])
     const postCompactRequest = requests[1]
     expect(
       postCompactRequest?.messages.find(
@@ -3908,6 +3913,7 @@ describe('ClaudeSessionService', () => {
     await mkdir(relocatedCwd)
     const canonicalRelocatedCwd = await realpath(relocatedCwd)
     const serviceWorkspace = new WorkspaceContext(originalCwd)
+    const contextInvalidations: string[] = []
     const service = new ClaudeSessionService({
       configRoot,
       cwd: originalCwd,
@@ -3919,6 +3925,14 @@ describe('ClaudeSessionService', () => {
         cwdProvider: () => serviceWorkspace.cwd(),
       }),
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextAssembler: {
+        async assemble() {
+          return { systemMessages: [] }
+        },
+        invalidate({ reason }) {
+          contextInvalidations.push(reason)
+        },
+      },
     })
     const run = await service.run('start here')
     const original = resolveClaudePaths({
@@ -3935,6 +3949,7 @@ describe('ClaudeSessionService', () => {
     await expect(service.changeCwd(run.sessionId, relocatedCwd)).resolves.toBe(
       canonicalRelocatedCwd,
     )
+    expect(contextInvalidations).toEqual(['cwd'])
     await expect(readFile(original)).rejects.toMatchObject({ code: 'ENOENT' })
     const moved = await readFile(relocated, 'utf8')
     expect(moved).toContain(
@@ -8941,6 +8956,30 @@ describe('ClaudeSessionService', () => {
     )
   })
 
+  it('invalidates the target prompt lifecycle when creating a fork', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-fork-context-'))
+    roots.push(root)
+    const invalidations: Array<{ lifecycleId?: string; reason: string }> = []
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['answer']),
+      contextAssembler: {
+        assemble: async () => ({ systemMessages: [] }),
+        invalidate: (options) => invalidations.push(options),
+      },
+    })
+    const source = await service.run('source')
+    const targetSessionId = '12121212-1212-4121-8121-121212121212'
+
+    await service.fork(source.sessionId, targetSessionId)
+
+    expect(invalidations).toEqual([
+      { lifecycleId: targetSessionId, reason: 'fork' },
+    ])
+  })
+
   it('lists corrupt sessions without hiding healthy sessions', async () => {
     const { configRoot, cwd, service } = await createService()
     const healthy = await service.run('healthy')
@@ -9063,7 +9102,7 @@ describe('ClaudeSessionService', () => {
     expect(transcript).not.toContain('DYNAMIC_CONTEXT')
   })
 
-  it('reloads imported shared instructions in the next provider request', async () => {
+  it('keeps imported instructions stable until an explicit resource reload', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-import-reload-'))
     roots.push(root)
     const configRoot = join(root, 'config')
@@ -9078,6 +9117,9 @@ describe('ClaudeSessionService', () => {
       writeFile(importedPath, 'IMPORTED_CONTEXT_BEFORE'),
     ])
     const requests: ModelRequest[] = []
+    const contextAssembler = new ClaudeContextAssembler({
+      loadResources: () => loadClaudeContextResources({ configRoot, cwd }),
+    })
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
@@ -9089,14 +9131,14 @@ describe('ClaudeSessionService', () => {
           yield { type: 'text-delta', delta: `answer-${requests.length}` }
         },
       },
-      contextAssembler: new ClaudeContextAssembler({
-        loadResources: () => loadClaudeContextResources({ configRoot, cwd }),
-      }),
+      contextAssembler,
     })
 
     const first = await service.run('first prompt')
     await writeFile(importedPath, 'IMPORTED_CONTEXT_AFTER')
     await service.resume(first.sessionId, 'second prompt')
+    service.reloadContextResources(first.sessionId)
+    await service.resume(first.sessionId, 'third prompt')
 
     expect(JSON.stringify(requests[0]?.messages)).toContain(
       'IMPORTED_CONTEXT_BEFORE',
@@ -9105,9 +9147,24 @@ describe('ClaudeSessionService', () => {
       'IMPORTED_CONTEXT_AFTER',
     )
     expect(JSON.stringify(requests[1]?.messages)).toContain(
-      'IMPORTED_CONTEXT_AFTER',
+      'IMPORTED_CONTEXT_BEFORE',
     )
     expect(JSON.stringify(requests[1]?.messages)).not.toContain(
+      'IMPORTED_CONTEXT_AFTER',
+    )
+    expect(
+      requests[1]?.messages.filter((message) => message.role === 'system'),
+    ).toEqual(
+      requests[0]?.messages.filter((message) => message.role === 'system'),
+    )
+    expect(requests[1]?.stableSystemMessageCount).toBe(
+      requests[0]?.stableSystemMessageCount,
+    )
+    expect(requests[0]?.stableSystemMessageCount).toBeGreaterThan(0)
+    expect(JSON.stringify(requests[2]?.messages)).toContain(
+      'IMPORTED_CONTEXT_AFTER',
+    )
+    expect(JSON.stringify(requests[2]?.messages)).not.toContain(
       'IMPORTED_CONTEXT_BEFORE',
     )
   })
@@ -10526,6 +10583,7 @@ describe('ClaudeSessionService', () => {
       source?: unknown
       reason?: unknown
     }> = []
+    const contextInvalidations: string[] = []
     const service = new ClaudeSessionService({
       configRoot: join(root, 'config'),
       cwd: join(root, 'project'),
@@ -10536,6 +10594,10 @@ describe('ClaudeSessionService', () => {
         'third answer',
         'fourth answer',
       ]),
+      contextAssembler: {
+        assemble: async () => ({ systemMessages: [] }),
+        invalidate: ({ reason }) => contextInvalidations.push(reason),
+      },
       hooks: new ClaudeHookRunner({
         cwd: join(root, 'project'),
         settings: [
@@ -10591,6 +10653,7 @@ describe('ClaudeSessionService', () => {
       { event: 'Stop' },
       { event: 'SessionEnd', reason: 'other' },
     ])
+    expect(contextInvalidations).toEqual(['restore', 'restore', 'clear'])
   })
 
   it('reports SessionEnd failure without replacing a completed result', async () => {

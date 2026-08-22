@@ -221,17 +221,30 @@ JSONL file, is an identity collision. A claimed ID remains claimed if later
 startup fails; retry must resume a valid transcript or choose a new ID, never
 silently reuse the path.
 
-`ContextAssembler` converts selected shared resources into provider-neutral
-system messages for each run or resume invocation. The same system message
-remains present across that invocation's tool loop. System context is ephemeral
-input: it is not appended to the shared Claude transcript. Path-conditional
+`PromptComposer` owns one ordered, provider-neutral manifest for product,
+custom/agent, shared-resource, runtime, MCP, plan, Session-memory, and output
+sections. Each section has a stable identity, placement (`system` or the first
+user message), and lifetime (`static`, `session`, or `volatile`). The manifest
+projects to ordinary model messages; provider cache fields are not part of this
+module. The model request carries the number of leading stable system messages
+so capability-aware adapters can consume the boundary without teaching the
+composer any provider wire format.
+
+`ContextAssembler` loads the composer inputs into a lifecycle-scoped snapshot.
+Ordinary turns and subagent model rounds reuse byte-identical session sections.
+Compact and explicit resource reload refresh shared resources; tool-pool
+changes refresh capability guidance and the volatile per-server MCP suffix;
+worktree/cwd transitions discard the affected lifecycle snapshot. A new,
+restored, forked, or cleared lifecycle gets its own snapshot. System context is
+ephemeral input: it is not appended to the shared transcript. Path-conditional
 rules stay out of base context; a successful matching `Read` appends the native
 Claude `nested_memory` attachment and reloads projected messages before the next
 model turn. That attachment is authoritative resume context for both tools.
-Skills, commands, agents, hooks, and MCP remain separate extension inputs
-instead of being injected wholesale into the base prompt. Commands and skills
-expand on slash invocation; model-invocable skills are exposed through a
-provider-neutral `Skill` tool whose result is followed by scoped user context.
+Commands and skills expand on slash invocation; enabled tool and
+model-invocable-skill names appear only as bounded session guidance, while a
+skill body remains behind the provider-neutral `Skill` tool. MCP server
+instructions are deterministic, provenance-labelled volatile sections rather
+than cross-server concatenated prose.
 Selected agent definitions add invocation system context and persist native
 `agent-setting` metadata for resume. Linked memory details remain explicit
 reads. CLI startup resolves and creates only the canonical project memory root;

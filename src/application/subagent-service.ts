@@ -2052,10 +2052,18 @@ export class ClaudeSubagentExecutor {
       const assembleMessages = async () => {
         const assembledContext = await this.options.contextAssembler?.assemble({
           cwd,
+          lifecycleId: options.agentId,
+          mode: 'subagent',
+          baseSystemPrompt: system,
         })
+        const composedSubagentPolicy = assembledContext?.promptSections?.some(
+          (section) => section.id === 'subagent-policy',
+        )
         const messages = [
           ...(assembledContext?.systemMessages ?? []),
-          { role: 'system' as const, content: system },
+          ...(composedSubagentPolicy
+            ? []
+            : [{ role: 'system' as const, content: system }]),
           ...injectFirstUserMessageContext(
             projectClaudeModelMessages(snapshot.entries),
             assembledContext?.firstUserMessageContext,
