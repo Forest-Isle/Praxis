@@ -50,6 +50,7 @@ import {
   type ToolExecutionResult,
   type ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import {
   BUILTIN_STATUSLINE_AGENT_PATH,
   type ClaudeAgentRuntimeDefinition,
@@ -93,6 +94,7 @@ const SIDECHAIN_DISCOVERY_MAX_DEPTH = 4
 
 const structuredOnlyTools: ToolRegistry = {
   definitions: () => [],
+  schedulingPolicy: () => ({ concurrency: 'exclusive' }),
   prepare: async (call) => call,
   execute: async () => ({ content: '', isError: false }),
 }
@@ -192,6 +194,13 @@ export class StructuredOutputRegistry implements ToolRegistry {
     ]
   }
 
+  schedulingPolicy(call: ModelToolCall) {
+    if (call.name === 'StructuredOutput') {
+      return { concurrency: 'exclusive' as const }
+    }
+    return resolveToolSchedulingPolicy(this.base, call)
+  }
+
   prepare(
     call: ModelToolCall,
     context: ToolExecutionContext,
@@ -245,6 +254,13 @@ class RestrictedToolRegistry implements ToolRegistry {
     return this.base
       .definitions()
       .filter((definition) => this.allowed.has(definition.name))
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (!this.allowed.has(call.name)) {
+      return { concurrency: 'exclusive' as const }
+    }
+    return resolveToolSchedulingPolicy(this.base, call)
   }
 
   prepare(
@@ -2228,6 +2244,15 @@ class ClaudeSubagentToolRegistry implements ToolRegistry {
       ),
       ...ordinary.slice(insertionIndex),
     ]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (
+      ['Agent', 'SendMessage', 'TaskOutput', 'TaskStop'].includes(call.name)
+    ) {
+      return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    return resolveToolSchedulingPolicy(this.base, call)
   }
 
   async prepare(

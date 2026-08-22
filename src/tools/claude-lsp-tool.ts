@@ -16,6 +16,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import type { ClaudePluginLspServer } from '../plugins/claude-plugin-runtime.js'
 import {
   redactSensitiveText,
@@ -920,6 +921,13 @@ class ClaudeLspToolRegistry implements ToolRegistry {
 
   definitions(): readonly ModelToolDefinition[] {
     return [...this.base.definitions(), LSP_DEFINITION]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (call.name === 'LSP') {
+      return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    return resolveToolSchedulingPolicy(this.base, call)
   }
 
   prepare(

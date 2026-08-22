@@ -35,6 +35,52 @@ afterEach(async () => {
 })
 
 describe('LocalToolRegistry', () => {
+  it('opts in only verified reads and parser-proven read-only Bash calls', async () => {
+    const { cwd } = await workspace()
+    const registry = new LocalToolRegistry({ cwd })
+    expect(
+      registry.schedulingPolicy({
+        id: 'read',
+        name: 'Read',
+        input: { file_path: '/tmp/read' },
+      }),
+    ).toMatchObject({ concurrency: 'concurrent' })
+    expect(
+      registry.schedulingPolicy({
+        id: 'bash-read',
+        name: 'Bash',
+        input: { command: 'pwd && ls -la' },
+      }),
+    ).toMatchObject({ concurrency: 'concurrent', abortGroupOnError: true })
+    for (const command of [
+      'touch file',
+      'ls > files.txt',
+      'ls $HOME',
+      'ls $(pwd)',
+      'ls *.ts',
+      'ls &',
+      "ls '",
+    ]) {
+      expect(
+        registry.schedulingPolicy({
+          id: command,
+          name: 'Bash',
+          input: { command },
+        }),
+        command,
+      ).toMatchObject({ concurrency: 'exclusive', abortGroupOnError: true })
+    }
+    expect(
+      registry.schedulingPolicy({ id: 'write', name: 'Write', input: {} }),
+    ).toMatchObject({ concurrency: 'exclusive' })
+    expect(
+      registry.schedulingPolicy({ id: 'bad-read', name: 'Read', input: {} }),
+    ).toEqual({ concurrency: 'exclusive', cancelOnInterrupt: true })
+    expect(
+      registry.schedulingPolicy({ id: 'unknown', name: 'Unknown', input: {} }),
+    ).toEqual({ concurrency: 'exclusive' })
+  })
+
   it('matches Claude Read schema and preserves native PDF media results', async () => {
     const { cwd } = await workspace()
     const document = await PDFDocument.create()

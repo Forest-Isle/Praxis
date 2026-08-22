@@ -5,6 +5,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import type {
   SessionWorktreeManager,
   WorkspaceContext,
@@ -139,6 +140,13 @@ export class ClaudeWorktreeToolRegistry implements ToolRegistry {
           this.enabled.has(definition.name) && !existing.has(definition.name),
       ),
     ]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (['EnterWorktree', 'ExitWorktree'].includes(call.name)) {
+      return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    return resolveToolSchedulingPolicy(this.options.base, call)
   }
 
   async prepare(

@@ -5,6 +5,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import type {
   ScheduledPromptManager,
   ListedScheduledPrompt,
@@ -236,6 +237,13 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
         ({ name }) => (this.enabled?.has(name) ?? true) && !existing.has(name),
       ),
     ]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (DEFINITION_NAMES.has(call.name)) {
+      return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    return resolveToolSchedulingPolicy(this.options.base, call)
   }
 
   async prepare(

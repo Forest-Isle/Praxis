@@ -8,6 +8,7 @@ import type {
   ToolRegistry,
   RuntimeEventSink,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import {
   BackgroundBashManager,
   type BackgroundBashSnapshot,
@@ -325,6 +326,19 @@ export class ClaudeTaskToolRegistry implements ToolRegistry {
         ({ name }) => this.isEnabled(name) && !existing.has(name),
       ),
     ]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (
+      call.name !== 'Bash' &&
+      !TASK_DEFINITIONS.some(({ name }) => name === call.name)
+    ) {
+      return resolveToolSchedulingPolicy(this.options.base, call)
+    }
+    if (call.name === 'Bash' && call.input.run_in_background !== true) {
+      return resolveToolSchedulingPolicy(this.options.base, call)
+    }
+    return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
   }
 
   async prepare(

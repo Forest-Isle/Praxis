@@ -16,6 +16,20 @@ describe('Claude SendUserMessage tool', () => {
       name: 'SendUserMessage',
       inputSchema: { required: ['message', 'status'] },
     })
+    expect(
+      registry.schedulingPolicy({
+        id: 'message-policy',
+        name: 'SendUserMessage',
+        input: {},
+      }),
+    ).toMatchObject({ concurrency: 'exclusive' })
+    expect(
+      registry.schedulingPolicy({
+        id: 'read',
+        name: 'Read',
+        input: { file_path: `${process.cwd()}/package.json` },
+      }),
+    ).toMatchObject({ concurrency: 'concurrent' })
 
     const result = await registry.execute(
       {

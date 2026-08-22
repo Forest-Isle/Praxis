@@ -115,6 +115,7 @@ process.stdin.on('data', chunk => {
 
 const base: ToolRegistry = {
   definitions: () => [],
+  schedulingPolicy: () => ({ concurrency: 'concurrent' }),
   prepare: async (call) => call,
   execute: async () => ({ content: 'base', isError: false }),
 }
@@ -363,6 +364,9 @@ describe('Claude LSP tool', () => {
     const registry = manager.registry(base)
 
     expect(registry.definitions().map(({ name }) => name)).toEqual(['LSP'])
+    expect(
+      registry.schedulingPolicy?.(call('policy', 'hover', file)),
+    ).toMatchObject({ concurrency: 'exclusive' })
     expect(registry.definitions()[0]?.inputSchema).toMatchObject({
       required: ['operation', 'filePath', 'line', 'character'],
       additionalProperties: false,

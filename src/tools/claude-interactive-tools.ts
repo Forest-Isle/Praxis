@@ -12,6 +12,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
 
 export interface ClaudeQuestionOption {
@@ -322,6 +323,13 @@ class ClaudeInteractiveToolRegistry implements ToolRegistry {
         this.manager.enabledNames.has(name),
       ),
     ]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (this.manager.enabledNames.has(call.name)) {
+      return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    return resolveToolSchedulingPolicy(this.base, call)
   }
 
   async prepare(

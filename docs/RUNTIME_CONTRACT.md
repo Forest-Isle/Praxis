@@ -84,13 +84,23 @@ Rules:
     positive-integer limit; it counts provider model calls only and fails once
     at the exact boundary without replacing the independent tool-call, retry,
     cancellation, context, or cost bounds.
+19. Completed streamed tool calls are scheduled through a synchronous,
+    input-aware registry policy. Verified read/search calls may overlap and
+    publish progress/results in completion order. Missing, invalid, or throwing
+    policies are exclusive, and an exclusive call is a FIFO barrier. Stateful
+    transcript/hook decorators may additionally defer execution until the
+    assistant tool-use entry is durable. Bash reuses the permission layer's
+    conservative read-only analysis, and MCP concurrency requires an explicit
+    read-only annotation. Cancellation produces one terminal result per emitted
+    call while only tools that opt in receive the parent abort.
 
 ## Core ports
 
 The runtime depends on behavior, not SDK or filesystem implementations:
 
 - `ModelProvider`: capabilities, streaming completion, cancellation, usage;
-- `ToolRegistry`: schema discovery and invocation;
+- `ToolRegistry`: schema discovery, synchronous fail-closed scheduling policy,
+  and invocation;
 - `PermissionResolver`: deterministic local allow/ask/deny decision;
 - `ContextAssembler`: instructions, memory, skills, history, token budget;
 - `Transcript`: load snapshot and optimistic append;

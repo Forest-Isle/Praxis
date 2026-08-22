@@ -88,6 +88,20 @@ describe('ClaudeTaskToolRegistry', () => {
     expect(
       definitions.find(({ name }) => name === 'TaskCreate')?.inputSchema,
     ).toMatchObject({ required: ['subject', 'description'] })
+    expect(
+      registry.schedulingPolicy({
+        id: 'task',
+        name: 'TaskCreate',
+        input: {},
+      }),
+    ).toMatchObject({ concurrency: 'exclusive' })
+    expect(
+      registry.schedulingPolicy({
+        id: 'bash-read',
+        name: 'Bash',
+        input: { command: 'pwd' },
+      }),
+    ).toMatchObject({ concurrency: 'concurrent' })
   })
 
   it('creates, updates, lists, gets, and deletes durable tasks', async () => {

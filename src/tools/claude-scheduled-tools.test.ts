@@ -107,6 +107,16 @@ describe('ClaudeScheduledToolRegistry', () => {
           'Set to true to end the dynamic loop immediately instead of scheduling another wakeup. When true, all other fields are ignored and no further wakeups fire.',
       },
     })
+    expect(
+      registry.schedulingPolicy({ id: 'cron', name: 'CronCreate', input: {} }),
+    ).toMatchObject({ concurrency: 'exclusive' })
+    expect(
+      registry.schedulingPolicy({
+        id: 'read',
+        name: 'Read',
+        input: { file_path: '/tmp/read' },
+      }),
+    ).toMatchObject({ concurrency: 'concurrent' })
   })
 
   it('creates, lists, and deletes a Claude-shaped durable job', async () => {

@@ -8,6 +8,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import {
   parseWorkflowScript,
   type WorkflowManager,
@@ -127,6 +128,13 @@ export class ClaudeWorkflowToolRegistry implements ToolRegistry {
       return base
     }
     return [...base, workflowDefinition(this.options.dataPlane ?? 'claude')]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (['Workflow', 'TaskOutput', 'TaskStop'].includes(call.name)) {
+      return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    return resolveToolSchedulingPolicy(this.options.base, call)
   }
 
   async prepare(

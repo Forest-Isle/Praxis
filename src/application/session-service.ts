@@ -98,6 +98,7 @@ import {
   type RuntimeEventSink,
   type ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import {
   BackgroundTaskRuntime,
   type BackgroundTaskSnapshot,
@@ -388,6 +389,7 @@ export interface RewindPoint {
 
 const emptyToolRegistry: ToolRegistry = {
   definitions: () => [],
+  schedulingPolicy: () => ({ concurrency: 'exclusive' }),
   prepare: async (call) => call,
   execute: async () => ({ content: '', isError: false }),
 }
@@ -1551,6 +1553,8 @@ export class ClaudeSessionService {
           )
         })
       },
+      schedulingPolicy: (call) =>
+        resolveToolSchedulingPolicy(capabilityRegistry, call),
       prepare: (call, context) => capabilityRegistry.prepare(call, context),
       execute: (call, context) => capabilityRegistry.execute(call, context),
     }
@@ -3373,6 +3377,10 @@ export class ClaudeSessionService {
         fileHistory && interactiveMessageTools
           ? {
               definitions: () => interactiveMessageTools.definitions(),
+              schedulingPolicy: (call) => ({
+                ...resolveToolSchedulingPolicy(interactiveMessageTools, call),
+                startAfterAssistant: true,
+              }),
               prepare: (call, context) =>
                 interactiveMessageTools.prepare(call, context),
               execute: async (call, context) => {

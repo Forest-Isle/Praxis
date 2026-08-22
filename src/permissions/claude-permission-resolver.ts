@@ -38,7 +38,7 @@ import {
   filePermissionSuggestions,
   permissionRuleValueFromString,
   permissionRuleValueToString,
-  shellCommandIsReadOnly,
+  shellInputIsReadOnly,
   shellPermissionSuggestions,
   shellSubcommands,
   skillPermissionSuggestions,
@@ -732,11 +732,11 @@ export class ClaudePermissionResolver implements PermissionResolver {
       command &&
       (permissionMode !== 'auto' || !this.shouldClassify(call)) &&
       subcommands.length > 0 &&
-      subcommands.every(
-        (subcommand) =>
-          shellCommandIsReadOnly(subcommand) ||
-          matchingRule('allow', subcommandCall(subcommand)) !== undefined,
-      )
+      (shellInputIsReadOnly(command) ||
+        subcommands.every(
+          (subcommand) =>
+            matchingRule('allow', subcommandCall(subcommand)) !== undefined,
+        ))
     ) {
       return annotatePermissionDecision({ behavior: 'allow' }, 'rule')
     }

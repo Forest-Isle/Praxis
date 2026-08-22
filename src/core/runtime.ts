@@ -1,3 +1,6 @@
+import { ToolExecutionScheduler } from './tool-execution-scheduler.js'
+import { resolveToolSchedulingPolicy } from './tool-scheduling-policy.js'
+
 export type RuntimeState =
   | 'idle'
   | 'assembling-context'
@@ -317,8 +320,16 @@ export interface ToolExecutionContext {
   permissionApproved?: boolean
 }
 
+export interface ToolSchedulingPolicy {
+  concurrency: 'concurrent' | 'exclusive'
+  cancelOnInterrupt?: boolean
+  abortGroupOnError?: boolean
+  startAfterAssistant?: boolean
+}
+
 export interface ToolRegistry {
   definitions(): readonly ModelToolDefinition[]
+  schedulingPolicy?(call: ModelToolCall): ToolSchedulingPolicy
   prepare(
     call: ModelToolCall,
     context: ToolExecutionContext,
@@ -966,6 +977,7 @@ export class AgentRuntime {
     try {
       let modelTurns = 0
       while (true) {
+        if (request.signal?.aborted) return this.cancel()
         if (maxModelTurns !== undefined && modelTurns >= maxModelTurns) {
           throw new Error(`Maximum model turns of ${maxModelTurns} exceeded`)
         }
@@ -1062,6 +1074,31 @@ export class AgentRuntime {
         let streaming = false
         const toolCalls: ModelToolCall[] = []
         let terminalReason: ModelTerminalReason | undefined
+        const toolScheduler = new ToolExecutionScheduler<ToolExecutionResult>({
+          ...(request.signal ? { parentSignal: request.signal } : {}),
+          execute: (call, signal) =>
+            this.executeScheduledToolCall(call, request, messages, signal),
+          isError: (result) => result.isError,
+          cancelledResult: (call, reason) => ({
+            content: `${call.name} cancelled: ${
+              reason instanceof Error ? reason.message : String(reason)
+            }`,
+            isError: true,
+          }),
+          failedResult: (call, reason) => ({
+            content: `${call.name} failed: ${
+              reason instanceof Error ? reason.message : String(reason)
+            }`,
+            isError: true,
+          }),
+          resultCompleted: (call, result) =>
+            this.presentToolResult(call, result),
+        })
+        const failScheduledTurn = async (error: unknown): Promise<never> => {
+          toolScheduler.abort(error)
+          await toolScheduler.settle().catch(() => undefined)
+          throw error
+        }
 
         const apiStartedAt = request.collectMetrics ? performance.now() : 0
         let turnApiDurationMs = 0
@@ -1157,6 +1194,10 @@ export class AgentRuntime {
               }
               toolCalls.push(event.call)
               this.emit(event)
+              toolScheduler.schedule(
+                event.call,
+                resolveToolSchedulingPolicy(this.options.tools, event.call),
+              )
             } else if (event.type === 'terminal') {
               terminalReason = event.reason
               this.emit(event)
@@ -1165,6 +1206,18 @@ export class AgentRuntime {
               this.emit(event)
             }
           }
+        } catch (error) {
+          if (
+            !request.signal?.aborted &&
+            !(error instanceof AgentRunCancelledError)
+          ) {
+            toolScheduler.abort(error)
+          } else {
+            toolScheduler.releaseExclusiveTools()
+          }
+          await toolScheduler.settle().catch(() => undefined)
+          if (request.signal?.aborted) return this.cancel()
+          throw error
         } finally {
           if (request.collectMetrics) {
             turnApiDurationMs = Math.max(0, performance.now() - apiStartedAt)
@@ -1185,15 +1238,19 @@ export class AgentRuntime {
           this.provider.capabilities.terminalReasons === true &&
           terminalReason === undefined
         ) {
-          throw new ModelProviderError(
-            'Provider stream ended without a terminal reason',
-            { retryable: true },
+          return failScheduledTurn(
+            new ModelProviderError(
+              'Provider stream ended without a terminal reason',
+              { retryable: true },
+            ),
           )
         }
         if (terminalReason === 'tool_use' && toolCalls.length === 0) {
-          throw new ModelProviderError(
-            'Provider reported tool_use without a completed tool call',
-            { retryable: false },
+          return failScheduledTurn(
+            new ModelProviderError(
+              'Provider reported tool_use without a completed tool call',
+              { retryable: false },
+            ),
           )
         }
         if (
@@ -1201,9 +1258,11 @@ export class AgentRuntime {
           terminalReason !== 'tool_use' &&
           toolCalls.length > 0
         ) {
-          throw new ModelProviderError(
-            `Provider reported ${terminalReason} with completed tool calls`,
-            { retryable: false },
+          return failScheduledTurn(
+            new ModelProviderError(
+              `Provider reported ${terminalReason} with completed tool calls`,
+              { retryable: false },
+            ),
           )
         }
         if (request.collectMetrics) {
@@ -1254,8 +1313,13 @@ export class AgentRuntime {
                 ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
                 toolCalls,
               }
-        await request.observer?.assistantCompleted(assistantMessage)
+        try {
+          await request.observer?.assistantCompleted(assistantMessage)
+        } catch (error) {
+          return failScheduledTurn(error)
+        }
         messages.push(assistantMessage)
+        toolScheduler.releaseExclusiveTools()
 
         if (toolCalls.length === 0) {
           const stopResult = (await request.onStop?.(text)) ?? []
@@ -1357,14 +1421,15 @@ export class AgentRuntime {
           }
         }
 
+        const scheduledToolResults = await toolScheduler.settle()
         const followUpUserMessages: string[] = []
         const completedTools: {
           name: string
           input: Record<string, unknown>
           output: string
         }[] = []
-        for (const call of toolCalls) {
-          const result = await this.completeToolCall(call, request, messages)
+        for (const { call, result } of scheduledToolResults) {
+          await this.persistToolCall(call, result, request)
           completedTools.push({
             name: call.name,
             input: call.input,
@@ -1423,6 +1488,10 @@ export class AgentRuntime {
             isError: result.isError,
           })
           followUpUserMessages.push(...(result.followUpUserMessages ?? []))
+        }
+        const toolFailure = toolScheduler.failure
+        if (toolFailure) {
+          throw toolFailure.error
         }
         if (this.options.generateToolUseSummary) {
           const summarySignal = request.signal ?? new AbortController().signal
@@ -1528,23 +1597,56 @@ export class AgentRuntime {
     messages: readonly ModelMessage[] = request.messages ?? [],
     emitPresentation = true,
   ): Promise<ToolExecutionResult> {
+    const signal = request.signal ?? new AbortController().signal
+    let result: ToolExecutionResult
+    try {
+      result = await this.executeScheduledToolCall(
+        call,
+        request,
+        messages,
+        signal,
+        emitPresentation,
+      )
+    } catch (error) {
+      if (request.signal?.aborted) return this.cancel()
+      throw error
+    }
+    if (emitPresentation) this.presentToolResult(call, result)
+    await this.persistToolCall(call, result, request)
+    return result
+  }
+
+  private async executeScheduledToolCall(
+    call: ModelToolCall,
+    request: AgentToolRecoveryRequest,
+    messages: readonly ModelMessage[],
+    signal: AbortSignal,
+    emitPresentation = true,
+  ): Promise<ToolExecutionResult> {
     const startedAt = performance.now()
-    const emitProgress = () =>
+    const emitProgress = (elapsedTimeSeconds?: number) =>
       this.emit({
         type: 'tool-progress',
         toolUseId: call.id,
         toolName: call.name,
-        elapsedTimeSeconds: Math.max(
-          0,
-          Math.round(((performance.now() - startedAt) / 1000) * 1000) / 1000,
-        ),
+        elapsedTimeSeconds:
+          elapsedTimeSeconds ??
+          Math.max(
+            0,
+            Math.round(((performance.now() - startedAt) / 1000) * 1000) / 1000,
+          ),
       })
     const progressTimer = emitPresentation
       ? setInterval(emitProgress, 1000)
       : undefined
     progressTimer?.unref()
     try {
-      const executed = await this.executeTool(call, request, messages)
+      if (emitPresentation) emitProgress(0)
+      const executed = await this.executeTool(
+        call,
+        { ...request, signal },
+        messages,
+      )
       const unsupportedImages =
         executed.images?.length && this.provider.capabilities.images !== true
       const unsupportedDocuments =
@@ -1566,21 +1668,34 @@ export class AgentRuntime {
                 : {}),
             }
           : executed
-      this.emit({ type: 'state', state: 'persisting-results' })
-      await request.observer?.toolCompleted(call, result)
       if (emitPresentation) {
         emitProgress()
-        this.emit({
-          type: 'tool-result',
-          callId: call.id,
-          content: result.content,
-          isError: result.isError,
-        })
       }
       return result
     } finally {
       if (progressTimer) clearInterval(progressTimer)
     }
+  }
+
+  private presentToolResult(
+    call: ModelToolCall,
+    result: ToolExecutionResult,
+  ): void {
+    this.emit({
+      type: 'tool-result',
+      callId: call.id,
+      content: result.content,
+      isError: result.isError,
+    })
+  }
+
+  private async persistToolCall(
+    call: ModelToolCall,
+    result: ToolExecutionResult,
+    request: AgentToolRecoveryRequest,
+  ): Promise<void> {
+    this.emit({ type: 'state', state: 'persisting-results' })
+    await request.observer?.toolCompleted(call, result)
   }
 
   private async executeTool(
@@ -1689,7 +1804,9 @@ export class AgentRuntime {
             : 'Permission approval was not provided')
       return { content: reason, isError: true }
     }
-    if (request.signal?.aborted) return this.cancel()
+    if (request.signal?.aborted) {
+      throw request.signal.reason ?? new AgentRunCancelledError()
+    }
 
     this.emit({ type: 'state', state: 'executing-tools' })
     context.permissionPhase = 'execute'
@@ -1708,7 +1825,9 @@ export class AgentRuntime {
         ],
       }
     } catch (error) {
-      if (request.signal?.aborted) return this.cancel()
+      if (request.signal?.aborted) {
+        throw request.signal.reason ?? new AgentRunCancelledError()
+      }
       const durationToolMs = Math.max(0, performance.now() - toolStartedAt)
       return {
         content: error instanceof Error ? error.message : String(error),
@@ -1722,11 +1841,15 @@ export class AgentRuntime {
     call: ModelToolCall,
     request: AgentToolRecoveryRequest,
   ): Promise<void> {
-    if (request.signal?.aborted) return this.cancel()
+    if (request.signal?.aborted) {
+      throw request.signal.reason ?? new AgentRunCancelledError()
+    }
     if (request.approveRecovery && !(await request.approveRecovery(call))) {
       throw new Error(`Tool call ${call.id} recovery was declined`)
     }
-    if (request.signal?.aborted) return this.cancel()
+    if (request.signal?.aborted) {
+      throw request.signal.reason ?? new AgentRunCancelledError()
+    }
   }
 
   private cancel(): never {

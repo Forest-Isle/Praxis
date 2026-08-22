@@ -33,6 +33,16 @@ function terminalProvider(complete: ModelProvider['complete']): ModelProvider {
   }
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 const image = {
   type: 'image' as const,
   mediaType: 'image/png' as const,
@@ -935,6 +945,554 @@ describe('AgentRuntime', () => {
     })
   })
 
+  it('starts completed concurrent tool calls before the provider stream ends and exposes results in completion order', async () => {
+    const startedA = deferred()
+    const startedB = deferred()
+    const releaseA = deferred()
+    const releaseB = deferred()
+    const finishProvider = deferred()
+    const observedB = deferred()
+    const events: RuntimeEvent[] = []
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ > 0) {
+        yield { type: 'text-delta', delta: 'done' }
+        return
+      }
+      yield {
+        type: 'tool-call',
+        call: { id: 'safe_a', name: 'SafeA', input: {} },
+      }
+      await startedA.promise
+      yield {
+        type: 'tool-call',
+        call: { id: 'safe_b', name: 'SafeB', input: {} },
+      }
+      await startedB.promise
+      await finishProvider.promise
+    })
+    const runtime = new AgentRuntime(
+      provider,
+      (event) => {
+        events.push(event)
+        if (event.type === 'tool-result' && event.callId === 'safe_b') {
+          observedB.resolve()
+        }
+      },
+      {
+        tools: {
+          definitions: () => [],
+          schedulingPolicy: () => ({ concurrency: 'concurrent' }),
+          prepare: async (call) => call,
+          execute: async (call) => {
+            if (call.id === 'safe_a') {
+              startedA.resolve()
+              await releaseA.promise
+            } else {
+              startedB.resolve()
+              await releaseB.promise
+            }
+            return { content: call.id, isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+
+    const running = runtime.run({
+      messages: [{ role: 'user', content: 'parallel' }],
+    })
+    await startedA.promise
+    await startedB.promise
+    releaseB.resolve()
+    await observedB.promise
+    expect(
+      events.some(
+        (event) => event.type === 'tool-result' && event.callId === 'safe_a',
+      ),
+    ).toBe(false)
+    finishProvider.resolve()
+    releaseA.resolve()
+    await expect(running).resolves.toMatchObject({ text: 'done' })
+    expect(
+      events
+        .filter((event) => event.type === 'tool-result')
+        .map((event) => event.callId),
+    ).toEqual(['safe_b', 'safe_a'])
+  })
+
+  it('treats exclusive tools as FIFO barriers between concurrent groups', async () => {
+    const releases = new Map(
+      ['safe_a', 'safe_b', 'unsafe_c', 'safe_d'].map((id) => [id, deferred()]),
+    )
+    const started: string[] = []
+    const startedSignals = new Map(
+      ['safe_a', 'safe_b', 'unsafe_c', 'safe_d'].map((id) => [id, deferred()]),
+    )
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ > 0) {
+        yield { type: 'text-delta', delta: 'done' }
+        return
+      }
+      for (const [id, name] of [
+        ['safe_a', 'Safe'],
+        ['safe_b', 'Safe'],
+        ['unsafe_c', 'Unsafe'],
+        ['safe_d', 'Safe'],
+      ] as const) {
+        yield { type: 'tool-call', call: { id, name, input: {} } }
+      }
+    })
+    const resultOrder: string[] = []
+    const runtime = new AgentRuntime(
+      provider,
+      (event) => {
+        if (event.type === 'tool-result') resultOrder.push(event.callId)
+      },
+      {
+        tools: {
+          definitions: () => [],
+          schedulingPolicy: (call) => ({
+            concurrency: call.name === 'Safe' ? 'concurrent' : 'exclusive',
+          }),
+          prepare: async (call) => call,
+          execute: async (call) => {
+            started.push(call.id)
+            startedSignals.get(call.id)?.resolve()
+            await releases.get(call.id)?.promise
+            return { content: call.id, isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+
+    const running = runtime.run({
+      messages: [{ role: 'user', content: 'barriers' }],
+    })
+    await Promise.all([
+      startedSignals.get('safe_a')?.promise,
+      startedSignals.get('safe_b')?.promise,
+    ])
+    expect(started).toEqual(['safe_a', 'safe_b'])
+    releases.get('safe_b')?.resolve()
+    releases.get('safe_a')?.resolve()
+    await startedSignals.get('unsafe_c')?.promise
+    expect(started).toEqual(['safe_a', 'safe_b', 'unsafe_c'])
+    releases.get('unsafe_c')?.resolve()
+    await startedSignals.get('safe_d')?.promise
+    expect(started).toEqual(['safe_a', 'safe_b', 'unsafe_c', 'safe_d'])
+    releases.get('safe_d')?.resolve()
+
+    await expect(running).resolves.toMatchObject({ text: 'done' })
+    expect(resultOrder).toEqual(['safe_b', 'safe_a', 'unsafe_c', 'safe_d'])
+  })
+
+  it('executes missing and throwing classifiers exclusively', async () => {
+    for (const classifier of ['missing', 'throwing'] as const) {
+      const firstStarted = deferred()
+      const secondStarted = deferred()
+      const releaseFirst = deferred()
+      let secondHasStarted = false
+      let turn = 0
+      const provider = providerFrom(async function* () {
+        if (turn++ > 0) {
+          yield { type: 'text-delta', delta: 'done' }
+          return
+        }
+        yield {
+          type: 'tool-call',
+          call: { id: 'first', name: 'Unknown', input: {} },
+        }
+        await firstStarted.promise
+        yield {
+          type: 'tool-call',
+          call: { id: 'second', name: 'Unknown', input: {} },
+        }
+      })
+      const baseTools: ToolRegistry = {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async (call) => {
+          if (call.id === 'first') {
+            firstStarted.resolve()
+            await releaseFirst.promise
+          } else {
+            secondHasStarted = true
+            secondStarted.resolve()
+          }
+          return { content: call.id, isError: false }
+        },
+      }
+      const runtime = new AgentRuntime(provider, undefined, {
+        tools:
+          classifier === 'throwing'
+            ? {
+                ...baseTools,
+                schedulingPolicy: () => {
+                  throw new Error('classifier failed')
+                },
+              }
+            : baseTools,
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      })
+      const running = runtime.run({
+        messages: [{ role: 'user', content: classifier }],
+      })
+      await firstStarted.promise
+      expect(secondHasStarted).toBe(false)
+      releaseFirst.resolve()
+      await secondStarted.promise
+      await expect(running).resolves.toMatchObject({ text: 'done' })
+    }
+  })
+
+  it('keeps safe siblings running after an independent read failure', async () => {
+    const releases = new Map([
+      ['read_a', deferred<ToolExecutionResult>()],
+      ['read_b', deferred<ToolExecutionResult>()],
+    ])
+    const startedSignals = new Map([
+      ['read_a', deferred()],
+      ['read_b', deferred()],
+    ])
+    const readAResult = deferred()
+    const started = new Set<string>()
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ > 0) {
+        yield { type: 'text-delta', delta: 'done' }
+        return
+      }
+      yield {
+        type: 'tool-call',
+        call: { id: 'read_a', name: 'Read', input: {} },
+      }
+      yield {
+        type: 'tool-call',
+        call: { id: 'read_b', name: 'Read', input: {} },
+      }
+    })
+    const results: string[] = []
+    const runtime = new AgentRuntime(
+      provider,
+      (event) => {
+        if (event.type === 'tool-result') {
+          results.push(event.callId)
+          if (event.callId === 'read_a') readAResult.resolve()
+        }
+      },
+      {
+        tools: {
+          definitions: () => [],
+          schedulingPolicy: () => ({ concurrency: 'concurrent' }),
+          prepare: async (call) => call,
+          execute: async (call) => {
+            started.add(call.id)
+            startedSignals.get(call.id)?.resolve()
+            const release = releases.get(call.id)
+            if (!release) throw new Error(`missing release for ${call.id}`)
+            return release.promise
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+    const running = runtime.run({
+      messages: [{ role: 'user', content: 'read' }],
+    })
+    await Promise.all(
+      [...startedSignals.values()].map((signal) => signal.promise),
+    )
+    releases.get('read_a')?.resolve({ content: 'failed', isError: true })
+    await readAResult.promise
+    expect(results).toEqual(['read_a'])
+    expect(started.has('read_b')).toBe(true)
+    releases.get('read_b')?.resolve({ content: 'ok', isError: false })
+    await expect(running).resolves.toMatchObject({ text: 'done' })
+    expect(results).toEqual(['read_a', 'read_b'])
+  })
+
+  it('aborts streamed siblings after a Bash error and emits one result per call', async () => {
+    const bashRelease = deferred()
+    const startedSignals = new Map(
+      ['read_a', 'bash_b', 'read_c'].map((id) => [id, deferred()]),
+    )
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ > 0) {
+        yield { type: 'text-delta', delta: 'done' }
+        return
+      }
+      for (const [id, name] of [
+        ['read_a', 'Read'],
+        ['bash_b', 'Bash'],
+        ['read_c', 'Read'],
+      ] as const) {
+        yield { type: 'tool-call', call: { id, name, input: {} } }
+      }
+    })
+    const results: RuntimeEvent[] = []
+    const runtime = new AgentRuntime(
+      provider,
+      (event) => {
+        if (event.type === 'tool-result') results.push(event)
+      },
+      {
+        tools: {
+          definitions: () => [],
+          schedulingPolicy: (call) => ({
+            concurrency: 'concurrent',
+            cancelOnInterrupt: true,
+            ...(call.name === 'Bash' ? { abortGroupOnError: true } : {}),
+          }),
+          prepare: async (call) => call,
+          execute: async (call, context) => {
+            startedSignals.get(call.id)?.resolve()
+            if (call.name === 'Bash') {
+              await bashRelease.promise
+              return { content: 'bash failed', isError: true }
+            }
+            if (!context.signal) throw new Error('missing execution signal')
+            const signal = context.signal
+            return new Promise<ToolExecutionResult>((_resolve, reject) =>
+              signal.addEventListener('abort', () => reject(signal.reason), {
+                once: true,
+              }),
+            )
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+    const running = runtime.run({
+      messages: [{ role: 'user', content: 'group' }],
+    })
+    await Promise.all(
+      [...startedSignals.values()].map((signal) => signal.promise),
+    )
+    bashRelease.resolve()
+    await expect(running).resolves.toMatchObject({ text: 'done' })
+    expect(results).toHaveLength(3)
+    expect(
+      results
+        .map((event) => event.type === 'tool-result' && event.callId)
+        .sort(),
+    ).toEqual(['bash_b', 'read_a', 'read_c'])
+    expect(
+      results.every((event) => event.type === 'tool-result' && event.isError),
+    ).toBe(true)
+  })
+
+  it('emits progress early but persists the assistant before its completed tool result', async () => {
+    const started = deferred()
+    const peerStarted = deferred()
+    const release = deferred()
+    const releasePeer = deferred()
+    const finishProvider = deferred()
+    const events: RuntimeEvent[] = []
+    const toolResult = deferred()
+    const persisted: string[] = []
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ > 0) {
+        yield { type: 'text-delta', delta: 'done' }
+        return
+      }
+      yield { type: 'tool-call', call: { id: 'read', name: 'Read', input: {} } }
+      yield {
+        type: 'tool-call',
+        call: { id: 'peer', name: 'Read', input: {} },
+      }
+      await finishProvider.promise
+    })
+    const runtime = new AgentRuntime(
+      provider,
+      (event) => {
+        events.push(event)
+        if (event.type === 'tool-result') toolResult.resolve()
+      },
+      {
+        tools: {
+          definitions: () => [],
+          schedulingPolicy: () => ({ concurrency: 'concurrent' }),
+          prepare: async (call) => call,
+          execute: async (call) => {
+            if (call.id === 'read') {
+              started.resolve()
+              await release.promise
+            } else {
+              peerStarted.resolve()
+              await releasePeer.promise
+            }
+            return { content: call.id, isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+    const running = runtime.run({
+      messages: [{ role: 'user', content: 'read' }],
+      observer: {
+        assistantCompleted: async () => {
+          persisted.push('assistant')
+        },
+        toolCompleted: async () => {
+          persisted.push('tool')
+        },
+      },
+    })
+    await started.promise
+    await peerStarted.promise
+    expect(events.some((event) => event.type === 'tool-progress')).toBe(true)
+    release.resolve()
+    await toolResult.promise
+    expect(
+      events
+        .filter((event) => event.type === 'tool-result')
+        .map((event) => event.callId),
+    ).toEqual(['read'])
+    expect(persisted).toEqual([])
+    releasePeer.resolve()
+    finishProvider.resolve()
+    await expect(running).resolves.toMatchObject({ text: 'done' })
+    expect(persisted).toEqual(['assistant', 'tool', 'tool', 'assistant'])
+  })
+
+  it('cancels only opted-in tools on request interruption and waits for unknown tools', async () => {
+    const safeStarted = deferred()
+    const unknownStarted = deferred()
+    const releaseUnknown = deferred()
+    const finishProvider = deferred()
+    const controller = new AbortController()
+    const safeResult = deferred()
+    const resultIds: string[] = []
+    const provider = providerFrom(async function* () {
+      yield { type: 'tool-call', call: { id: 'safe', name: 'Read', input: {} } }
+      yield {
+        type: 'tool-call',
+        call: { id: 'unknown', name: 'Unknown', input: {} },
+      }
+      await finishProvider.promise
+    })
+    const runtime = new AgentRuntime(
+      provider,
+      (event) => {
+        if (event.type === 'tool-result') {
+          resultIds.push(event.callId)
+          if (event.callId === 'safe') safeResult.resolve()
+        }
+      },
+      {
+        tools: {
+          definitions: () => [],
+          schedulingPolicy: (call) =>
+            call.name === 'Read'
+              ? { concurrency: 'concurrent', cancelOnInterrupt: true }
+              : { concurrency: 'exclusive' },
+          prepare: async (call) => call,
+          execute: async (call, context) => {
+            if (call.name === 'Read') {
+              safeStarted.resolve()
+              if (!context.signal) throw new Error('missing signal')
+              const signal = context.signal
+              return new Promise<ToolExecutionResult>((_resolve, reject) =>
+                signal.addEventListener('abort', () => reject(signal.reason), {
+                  once: true,
+                }),
+              )
+            }
+            unknownStarted.resolve()
+            expect(context.signal?.aborted).toBe(false)
+            await releaseUnknown.promise
+            return { content: 'unknown complete', isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+    const running = runtime.run({
+      messages: [{ role: 'user', content: 'interrupt' }],
+      signal: controller.signal,
+    })
+    await safeStarted.promise
+    controller.abort()
+    await safeResult.promise
+    expect(resultIds).toEqual(['safe'])
+    finishProvider.resolve()
+    await unknownStarted.promise
+    expect(resultIds).toEqual(['safe'])
+    releaseUnknown.resolve()
+    await expect(running).rejects.toBeInstanceOf(AgentRunCancelledError)
+    expect(resultIds).toEqual(['safe', 'unknown'])
+  })
+
+  it('drains unknown tools when an abort-aware provider exits its stream', async () => {
+    const safeStarted = deferred()
+    const unknownStarted = deferred()
+    const releaseUnknown = deferred()
+    const controller = new AbortController()
+    const resultIds: string[] = []
+    const provider = providerFrom(async function* (request) {
+      yield { type: 'tool-call', call: { id: 'safe', name: 'Read', input: {} } }
+      yield {
+        type: 'tool-call',
+        call: { id: 'unknown', name: 'Unknown', input: {} },
+      }
+      await new Promise<void>((resolve) =>
+        request.signal?.addEventListener('abort', () => resolve(), {
+          once: true,
+        }),
+      )
+      throw new DOMException('aborted provider', 'AbortError')
+    })
+    const runtime = new AgentRuntime(
+      provider,
+      (event) => {
+        if (event.type === 'tool-result') resultIds.push(event.callId)
+      },
+      {
+        tools: {
+          definitions: () => [],
+          schedulingPolicy: (call) =>
+            call.name === 'Read'
+              ? { concurrency: 'concurrent', cancelOnInterrupt: true }
+              : { concurrency: 'exclusive' },
+          prepare: async (call) => call,
+          execute: async (call, context) => {
+            if (call.name === 'Read') {
+              safeStarted.resolve()
+              if (!context.signal) throw new Error('missing signal')
+              const signal = context.signal
+              return new Promise<ToolExecutionResult>((_resolve, reject) =>
+                signal.addEventListener('abort', () => reject(signal.reason), {
+                  once: true,
+                }),
+              )
+            }
+            unknownStarted.resolve()
+            expect(context.signal?.aborted).toBe(false)
+            await releaseUnknown.promise
+            return { content: 'unknown complete', isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+    const running = runtime.run({
+      messages: [{ role: 'user', content: 'interrupt provider' }],
+      signal: controller.signal,
+    })
+    await safeStarted.promise
+    controller.abort()
+    await unknownStarted.promise
+    expect(resultIds).toEqual(['safe'])
+    releaseUnknown.resolve()
+    await expect(running).rejects.toBeInstanceOf(AgentRunCancelledError)
+    expect(resultIds).toEqual(['safe', 'unknown'])
+  })
+
   it('executes permission-approved updated input and preserves the tool call id', async () => {
     let turn = 0
     const provider = providerFrom(async function* () {
@@ -1085,6 +1643,8 @@ describe('AgentRuntime', () => {
 
   it('aborts the run when a permission prompt denial requests interruption', async () => {
     let modelTurns = 0
+    const results: RuntimeEvent[] = []
+    const persisted: string[] = []
     const provider = providerFrom(async function* () {
       modelTurns += 1
       yield {
@@ -1092,14 +1652,20 @@ describe('AgentRuntime', () => {
         call: { id: 'call_interrupted', name: 'Bash', input: {} },
       }
     })
-    const runtime = new AgentRuntime(provider, undefined, {
-      tools: {
-        definitions: () => [],
-        prepare: async (call) => call,
-        execute: async () => ({ content: 'unexpected', isError: false }),
+    const runtime = new AgentRuntime(
+      provider,
+      (event) => {
+        if (event.type === 'tool-result') results.push(event)
       },
-      permissions: { resolve: () => ({ behavior: 'ask' }) },
-    })
+      {
+        tools: {
+          definitions: () => [],
+          prepare: async (call) => call,
+          execute: async () => ({ content: 'unexpected', isError: false }),
+        },
+        permissions: { resolve: () => ({ behavior: 'ask' }) },
+      },
+    )
 
     await expect(
       runtime.run({
@@ -1109,9 +1675,23 @@ describe('AgentRuntime', () => {
           message: 'DENIED_BY_MCP',
           interrupt: true,
         }),
+        observer: {
+          assistantCompleted: async () => undefined,
+          toolCompleted: async (call) => {
+            persisted.push(call.id)
+          },
+        },
       }),
     ).rejects.toThrow('DENIED_BY_MCP')
     expect(modelTurns).toBe(1)
+    expect(results).toEqual([
+      expect.objectContaining({
+        type: 'tool-result',
+        callId: 'call_interrupted',
+        isError: true,
+      }),
+    ])
+    expect(persisted).toEqual(['call_interrupted'])
   })
 
   it('emits a provider-backed tool-use summary for completed tool batches', async () => {

@@ -8,6 +8,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import type { ClaudeExtensionCatalog } from './claude-extensions.js'
 
 function skillInput(call: ModelToolCall): { skill: string; args: string } {
@@ -48,6 +49,11 @@ export class ClaudeExtensionToolRegistry implements ToolRegistry {
         },
       },
     ]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (call.name === 'Skill') return { concurrency: 'exclusive' as const }
+    return resolveToolSchedulingPolicy(this.base, call)
   }
 
   async prepare(

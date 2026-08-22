@@ -28,6 +28,7 @@ function baseRegistry(): ToolRegistry {
     ],
     prepare: vi.fn(async (call) => call),
     execute: vi.fn(async () => ({ content: 'read', isError: false })),
+    schedulingPolicy: () => ({ concurrency: 'concurrent' }),
   }
 }
 
@@ -43,6 +44,12 @@ describe('ClaudeExtensionToolRegistry', () => {
     expect(registry.definitions().map((definition) => definition.name)).toEqual(
       ['Read', 'Skill'],
     )
+    expect(registry.schedulingPolicy(call)).toEqual({
+      concurrency: 'exclusive',
+    })
+    expect(
+      registry.schedulingPolicy({ id: 'read', name: 'Read', input: {} }),
+    ).toEqual({ concurrency: 'concurrent' })
     await expect(
       registry.prepare(call, { cwd: '/workspace' }),
     ).resolves.toEqual(call)

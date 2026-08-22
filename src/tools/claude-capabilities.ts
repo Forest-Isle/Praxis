@@ -5,6 +5,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 
 /**
  * Capability-driven Claude tool exposure.
@@ -238,6 +239,11 @@ export class ClaudeCapabilityToolRegistry implements ToolRegistry {
       this.base.definitions(),
       this.capabilities,
     )
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    this.assertEnabled(call.name)
+    return resolveToolSchedulingPolicy(this.base, call)
   }
 
   async prepare(

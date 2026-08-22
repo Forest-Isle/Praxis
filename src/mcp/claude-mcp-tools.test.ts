@@ -786,7 +786,7 @@ process.stdin.on('data', chunk => {
     const result = request.method === 'initialize'
       ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'stdio-fixture', version: '1' } }
       : request.method === 'tools/list'
-        ? { tools: [{ name: 'marker', description: 'stdio marker', inputSchema: { type: 'object' } }] }
+        ? { tools: [{ name: 'marker', description: 'stdio marker', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }] }
         : { content: [{ type: 'text', text: process.env.MARKER + ':' + process.cwd() }] }
     process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
   }
@@ -883,6 +883,34 @@ process.stdin.on('data', chunk => {
         'mcp__stdio__marker',
         'mcp__http__marker',
       ])
+      expect(
+        registry.schedulingPolicy({
+          id: 'stdio-policy',
+          name: 'mcp__stdio__marker',
+          input: {},
+        }),
+      ).toMatchObject({ concurrency: 'concurrent' })
+      expect(
+        registry.schedulingPolicy({
+          id: 'http-policy',
+          name: 'mcp__http__marker',
+          input: {},
+        }),
+      ).toMatchObject({ concurrency: 'exclusive' })
+      expect(
+        registry.schedulingPolicy({
+          id: 'resource-policy',
+          name: 'ListMcpResourcesTool',
+          input: {},
+        }),
+      ).toMatchObject({ concurrency: 'concurrent' })
+      expect(
+        registry.schedulingPolicy({
+          id: 'bad-resource-policy',
+          name: 'ReadMcpResourceTool',
+          input: {},
+        }),
+      ).toMatchObject({ concurrency: 'exclusive' })
       await expect(registry.inspect()).resolves.toEqual([
         expect.objectContaining({
           name: 'stdio',
