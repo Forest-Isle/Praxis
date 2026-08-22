@@ -1221,6 +1221,17 @@ export function resolveRuntimeModel(
   )
 }
 
+/** Builds the default CLI's isolated Session-memory adapter seam. Each
+ * invocation reconstructs the selected main-model provider stack instead of
+ * sharing foreground adapter-local cache and retry state. */
+export function createSessionMemoryProviderFactory(
+  providerForMainModel: ((model: string) => ModelProvider) | undefined,
+  model: string | undefined,
+): (() => ModelProvider) | undefined {
+  if (!providerForMainModel || !model) return undefined
+  return () => providerForMainModel(model)
+}
+
 export function resolveInteractiveRuntimeSettingsLocation(
   dataPlane: DataPlane,
   environment: NodeJS.ProcessEnv = process.env,
@@ -1392,6 +1403,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
     projectIdentity: await resolveClaudeProjectIdentity({ cwd }),
     sidecarPath: resolveUnknownCostSidecarPath(dataPlane, configRoot),
   })
+  const sessionMemoryProviderFactory = createSessionMemoryProviderFactory(
+    providerForMainModel,
+    model,
+  )
 
   const options = {
     configRoot,
@@ -1421,6 +1436,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       runtimeEnvironment.PRAXIS_PRICING_JSON,
     ),
     collectMetrics: true,
+    ...(sessionMemoryProviderFactory ? { sessionMemoryProviderFactory } : {}),
     ...(sessionKind === undefined ? {} : { sessionKind }),
     workspace,
     ...(cli.worktreeRequested

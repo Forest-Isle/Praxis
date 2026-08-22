@@ -23,6 +23,7 @@ import type { CliControls } from './cli/protocol.js'
 import type { DataPlane } from './persistence/data-plane.js'
 import {
   createDefaultDependencies,
+  createSessionMemoryProviderFactory,
   resolveInteractiveRuntimeSettingsLocation,
   resolveUnknownCostSidecarPath,
   resolveRuntimeModel,
@@ -2787,6 +2788,33 @@ describe('Praxis CLI', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  it('builds distinct default providers for Session memory isolation', () => {
+    const selectedModels: string[] = []
+    const selectProvider = (model: string): ModelProvider => {
+      selectedModels.push(model)
+      return {
+        model,
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'unused' }
+        },
+      }
+    }
+    const factory = createSessionMemoryProviderFactory(
+      selectProvider,
+      'fixture-model',
+    )
+
+    expect(factory).toBeDefined()
+    const first = factory?.()
+    const second = factory?.()
+    expect(first).not.toBe(second)
+    expect(selectedModels).toEqual(['fixture-model', 'fixture-model'])
+    expect(
+      createSessionMemoryProviderFactory(undefined, 'fixture-model'),
+    ).toBeUndefined()
   })
 
   it('uses native interactive settings state by default and preserves Claude state in compat mode', () => {

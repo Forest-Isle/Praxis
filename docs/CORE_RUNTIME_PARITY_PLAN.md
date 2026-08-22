@@ -64,11 +64,22 @@ heuristic estimates remain available for providers that emit no usage.
 
 ### Session Memory
 
-`SessionMemoryStore` persists `summary.md` and a small JSON progress record under
-`<configRoot>/praxis/session-memory/<sessionId>/`. `SessionMemoryController`
-tracks token/tool thresholds, serializes extraction, exposes bounded waiting,
-and updates atomically through an injected extractor. It is safe to resume after
-crash and never writes shared transcript entry types.
+`SessionMemoryStore` persists a readable `summary.md` mirror, immutable summary
+artifacts, and a small JSON progress record under the selected private data
+plane. The progress record atomically points to the authoritative artifact, so
+a failed write or crash cannot pair a new summary with an old watermark. Native
+runs use `<praxis-root>/state/session-memory/<sessionId>/`; explicit Claude
+compatibility uses `<claude-config>/praxis/session-memory/<sessionId>/`.
+`SessionMemoryController` snapshots model messages before asynchronous work,
+tracks current ContextEngine occupancy plus tool thresholds, serializes
+extraction, and gives compact a soft 15-second wait that immediately ignores
+work older than 60 seconds. Extraction runs only for the main thread through a
+dedicated provider adapter and never contributes to foreground usage or cost;
+service close cancels owned work. It is safe to resume after a crash and never
+writes shared transcript entry types. Selective compact retains an API-valid
+recent suffix without crossing the latest compact boundary, keeps tool and
+same-response thinking siblings together, and falls back to full compact when
+the complete projection exceeds 40K estimated tokens.
 
 ## Later Sequential Phases
 
@@ -93,9 +104,9 @@ this branch:
 - **Context accounting and recovery** — staged preflight, micro-compact,
   auto-compact, and reactive-retry decisions with provider-reported usage
   authoritative and heuristic estimates as the preflight fallback.
-- **Session Memory** — `summary.md` and progress metadata persist under
-  `<configRoot>/praxis/session-memory/<sessionId>/`; private session-memory
-  progress stays under `<configRoot>/praxis/` and the shared JSONL remains
+- **Session Memory** — a readable `summary.md` mirror plus atomically selected
+  immutable summary artifacts and progress metadata persist only in the chosen
+  native or Claude-compatibility private root; the shared JSONL remains
   Claude-compatible append-only data without Praxis-only entry types or fields.
 - **Transcript read/write** — schema adapters are selected from entry structure
   rather than an installed/producer-version allowlist; every semver-like
