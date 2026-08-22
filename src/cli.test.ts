@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +17,7 @@ import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
 import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
 import type { ClaudeSessionCostSnapshot } from './application/session-cost-tracker.js'
 import { ClaudeSessionService } from './application/session-service.js'
+import { resolveProjectMemoryDirectory } from './platform/project-memory-paths.js'
 import { resolveDataPlanePaths } from './persistence/data-plane.js'
 import {
   createBackgroundWorkerRuntime,
@@ -3064,6 +3072,60 @@ describe('Praxis CLI', () => {
       }
     } finally {
       await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('removes Project-memory reads, creation, and tool access through each data-plane disable switch', async () => {
+    for (const dataPlane of ['native', 'claude'] as const) {
+      const root = await mkdtemp(
+        join(tmpdir(), `praxis-${dataPlane}-memory-off-`),
+      )
+      const configRoot = join(root, 'config')
+      const cwd = join(root, 'project')
+      await mkdir(cwd, { recursive: true })
+      const memoryDirectory = await resolveProjectMemoryDirectory({
+        dataPlane,
+        configRoot,
+        cwd,
+      })
+      try {
+        const service = await createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: false,
+          exposeToolRegistry: true,
+          cwd,
+          configRoot,
+          providerEnvironment:
+            dataPlane === 'native'
+              ? { PRAXIS_DISABLE_AUTO_MEMORY: '1' }
+              : { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
+          controls: { ...DEFAULT_CLI_CONTROLS, dataPlane },
+        })
+        try {
+          await expect(access(memoryDirectory)).rejects.toMatchObject({
+            code: 'ENOENT',
+          })
+          const registry = service.toolRegistry
+          if (!registry) throw new Error('tool registry unavailable')
+          await expect(
+            registry.prepare(
+              {
+                id: 'write-disabled-memory',
+                name: 'Write',
+                input: {
+                  file_path: join(memoryDirectory, 'MEMORY.md'),
+                  content: 'must not write',
+                },
+              },
+              { cwd },
+            ),
+          ).rejects.toThrow()
+        } finally {
+          await service.close?.()
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
     }
   })
 

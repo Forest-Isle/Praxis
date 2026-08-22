@@ -96,7 +96,11 @@ they are documentation notation, not literal arguments.
 | `PRAXIS_PRICING_JSON`               | No                 | JSON model-pricing overrides used for measured cost and budget enforcement. |
 | `PRAXIS_HOME`                       | No                 | Native Praxis root; defaults to `~/.praxis`.                                |
 | `PRAXIS_DATA_PLANE`                 | No                 | `native` (default) or explicit `claude` compatibility mode.                 |
+| `PRAXIS_DISABLE_AUTO_MEMORY`        | No                 | `1` or `true`; disables every native Project-memory capability.             |
+| `PRAXIS_PROJECT_MEMORY_EXTRACTION`  | No                 | `1` or `true`; enables isolated background Project-memory extraction.       |
+| `PRAXIS_PROJECT_MEMORY_RECALL`      | No                 | `1` or `true`; enables non-blocking selective Project-memory recall.        |
 | `CLAUDE_CONFIG_DIR`                 | Claude mode only   | Claude compatibility root; defaults to `~/.claude`.                         |
+| `CLAUDE_CODE_DISABLE_AUTO_MEMORY`   | Claude mode only   | `1` or `true`; disables every Claude-compatible Project-memory capability.  |
 
 The default base URLs are `https://api.openai.com/v1` for `openai` and
 `https://api.anthropic.com/v1` for `anthropic`.
@@ -128,6 +132,12 @@ controls include:
 - `--add-dir` for additional canonical filesystem roots;
 - `--allowed-tools`, `--disallowed-tools`, and `--permission-mode` for local
   permission behavior.
+
+Project memory is enabled by default. Set `autoMemoryEnabled` to `false` to
+disable its index, guidance, tool root, extraction, and recall together. The
+opt-in `projectMemory.backgroundExtraction` and
+`projectMemory.selectiveRecall` booleans enable their respective gated local
+capabilities.
 
 Claude-compatible `sandbox` settings enable OS-level isolation for Bash:
 

@@ -420,6 +420,14 @@ export async function planClaudeProjectPurge(
           ]
         : []),
       {
+        kind: 'memory',
+        name:
+          dataPlane === 'native'
+            ? join('state', 'project-memory')
+            : join('praxis', 'project-memory'),
+        description: 'all private Project-memory operational state',
+      },
+      {
         kind: 'tasks',
         name: 'tasks',
         description: 'all session task lists',
@@ -477,7 +485,6 @@ export async function planClaudeProjectPurge(
   const targetPaths = [...new Set([requestedPath, targetPath])]
   const projectIdentity = await resolveClaudeProjectIdentity({
     cwd: targetPath,
-    homeDirectory: options.homeDirectory ?? homedir(),
   })
   const projectRootPaths = await discoverProjectRoots(
     configRoot,
@@ -521,11 +528,12 @@ export async function planClaudeProjectPurge(
       ),
     )
   }
+  const projectKeys = new Set([
+    ...targetPaths.map(sanitizeClaudeProjectPath),
+    ...projectRootPaths.map((path) => basename(path)),
+    sanitizeClaudeProjectPath(projectIdentity),
+  ])
   if (dataPlane === 'native') {
-    const projectKeys = new Set([
-      ...targetPaths.map(sanitizeClaudeProjectPath),
-      ...projectRootPaths.map((path) => basename(path)),
-    ])
     for (const projectKey of projectKeys) {
       await addExistingPath(
         items,
@@ -540,9 +548,30 @@ export async function planClaudeProjectPurge(
         items,
         configRoot,
         removePathItem(
+          'memory',
+          join(configRoot, 'state', 'project-memory', projectKey),
+          `private Project-memory state for project ${projectKey}`,
+        ),
+      )
+      await addExistingPath(
+        items,
+        configRoot,
+        removePathItem(
           'scheduled',
           join(configRoot, 'scheduled', `${projectKey}.json`),
           `scheduled prompts for project ${projectKey}`,
+        ),
+      )
+    }
+  } else {
+    for (const projectKey of projectKeys) {
+      await addExistingPath(
+        items,
+        configRoot,
+        removePathItem(
+          'memory',
+          join(configRoot, 'praxis', 'project-memory', projectKey),
+          `private Project-memory state for project ${projectKey}`,
         ),
       )
     }

@@ -296,11 +296,13 @@ export class ClaudeMcpManagement {
         ? await loadNativeSharedResources({
             root: this.configRoot,
             cwd: this.cwd,
+            includeProjectMemory: false,
           })
         : await loadClaudeSharedResources({
             configRoot: this.configRoot,
             cwd: this.cwd,
             settingSources: ['user', 'project', 'local'],
+            includeProjectMemory: false,
           })
     const records = new Map<string, McpServerRecord>()
     for (const resource of resources.mcp) {

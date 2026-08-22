@@ -196,7 +196,8 @@ export async function loadClaudeDynamicContext(
     ? [
         '# Memory',
         `Persistent project memory is stored at \`${options.memoryDirectory}\`.`,
-        'Use MEMORY.md as its concise index. Keep detailed durable facts in linked Markdown files, update existing entries instead of duplicating them, and do not store transient conversation state.',
+        'Use MEMORY.md as a concise index of one-line links. Keep detailed durable facts in linked Markdown topic files with name, description, and a type of user, feedback, project, or reference. Update existing entries instead of duplicating them.',
+        'Do not store codebase architecture, implementation patterns, git history, fix recipes, transient task or conversation state, or duplicates of repository instructions.',
       ].join('\n')
     : undefined
   return {

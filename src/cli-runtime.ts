@@ -21,6 +21,17 @@ import {
   type SideQuestionForkResult,
   type SideQuestionResult,
 } from './application/session-service.js'
+import {
+  ProjectMemoryAgentExtractor,
+  ProjectMemoryExtractionController,
+  ProjectMemoryModelSelector,
+  ProjectMemoryRecallController,
+} from './application/project-memory.js'
+import { resolveProjectMemoryPolicy } from './core/project-memory.js'
+import {
+  resolveProjectMemoryDirectory,
+  resolveProjectMemoryStatePath,
+} from './platform/project-memory-paths.js'
 import type { ClaudeSessionCostSnapshot } from './application/session-cost-tracker.js'
 import { ClaudeCostStateStore } from './persistence/claude-cost-state-store.js'
 import {
@@ -60,7 +71,6 @@ import {
   loadClaudeSettings,
   loadClaudeSharedResources,
   resolveClaudeProjectIdentity,
-  resolveClaudeProjectMemoryDirectory,
   type ClaudeJsonResource,
 } from './compatibility/claude/shared-resources.js'
 import {
@@ -1579,23 +1589,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const automaticSettingSources =
     cli.safeMode || simpleMode ? [] : cli.settingSources
   const nativeSharedResourcesEnabled = !cli.safeMode && !simpleMode
-  const loadedResources =
+  const baseSettings =
     dataPlane === 'native'
       ? nativeSharedResourcesEnabled
-        ? await loadNativeSharedResources({ root: configRoot, cwd })
-        : {
-            instructions: [],
-            memory: [],
-            skills: [],
-            commands: [],
-            agents: [],
-            settings: [],
-            mcp: [],
-          }
-      : await loadClaudeSharedResources({
+        ? await loadNativeSettings({ root: configRoot, cwd })
+        : []
+      : await loadClaudeSettings({
           configRoot,
           cwd,
-          claudeStatePath,
           ...(automaticSettingSources === undefined
             ? {}
             : { settingSources: automaticSettingSources }),
@@ -1611,6 +1612,47 @@ const createDefaultService: CliDependencies['createService'] = async ({
     loadInstalled: !cli.safeMode && !simpleMode,
     environment: runtimeEnvironment,
   })
+  const projectMemoryPolicy =
+    cli.safeMode || simpleMode
+      ? { enabled: false, extraction: false, recall: false }
+      : resolveProjectMemoryPolicy({
+          dataPlane,
+          settings: [
+            ...baseSettings,
+            ...pluginResources.settings,
+            ...(cli.additionalSettings ? [cli.additionalSettings] : []),
+          ],
+          environment: runtimeEnvironment,
+        })
+  const includeProjectMemory =
+    projectMemoryPolicy.enabled && !projectMemoryPolicy.recall
+  const loadedResources =
+    dataPlane === 'native'
+      ? nativeSharedResourcesEnabled
+        ? await loadNativeSharedResources({
+            root: configRoot,
+            cwd,
+            environment: runtimeEnvironment,
+            includeProjectMemory,
+          })
+        : {
+            instructions: [],
+            memory: [],
+            skills: [],
+            commands: [],
+            agents: [],
+            settings: [],
+            mcp: [],
+          }
+      : await loadClaudeSharedResources({
+          configRoot,
+          cwd,
+          claudeStatePath,
+          includeProjectMemory,
+          ...(automaticSettingSources === undefined
+            ? {}
+            : { settingSources: automaticSettingSources }),
+        })
   const settings = [
     ...loadedResources.settings,
     ...pluginResources.settings,
@@ -1655,22 +1697,57 @@ const createDefaultService: CliDependencies['createService'] = async ({
     disableSlashCommands: cli.disableSlashCommands,
     dataPlane,
   })
-  const memoryDirectory =
-    cli.safeMode || simpleMode
-      ? undefined
-      : dataPlane === 'native'
-        ? resolveDataPlanePaths({
-            dataPlane,
-            root: configRoot,
-            cwd,
-            sessionId: randomUUID(),
-          }).memoryRoot
-        : await resolveClaudeProjectMemoryDirectory({ configRoot, cwd })
+  const memoryDirectory = !projectMemoryPolicy.enabled
+    ? undefined
+    : await resolveProjectMemoryDirectory({
+        dataPlane,
+        configRoot,
+        cwd,
+      })
   if (memoryDirectory) await mkdir(memoryDirectory, { recursive: true })
+  const projectMemoryProviderFactory =
+    providerForMainModel && model
+      ? () => providerForMainModel(model)
+      : undefined
+  const projectMemoryRecall =
+    projectMemoryPolicy.recall &&
+    memoryDirectory &&
+    projectMemoryProviderFactory
+      ? new ProjectMemoryRecallController({
+          directory: memoryDirectory,
+          selector: new ProjectMemoryModelSelector({
+            directory: memoryDirectory,
+            providerFactory: projectMemoryProviderFactory,
+          }),
+        })
+      : undefined
+  const projectMemoryExtraction =
+    projectMemoryPolicy.extraction &&
+    memoryDirectory &&
+    projectMemoryProviderFactory
+      ? new ProjectMemoryExtractionController({
+          directory: memoryDirectory,
+          cursorPath: resolveProjectMemoryStatePath({
+            dataPlane,
+            configRoot,
+            memoryDirectory,
+          }),
+          extractor: new ProjectMemoryAgentExtractor({
+            providerFactory: projectMemoryProviderFactory,
+          }),
+          onWarning: (message) =>
+            runtimeEventSink({ type: 'warning', message }),
+        })
+      : undefined
   const loadContextResources = (runtimeCwd = workspace.cwd()) =>
     dataPlane === 'native'
       ? nativeSharedResourcesEnabled
-        ? loadNativeContextResources({ root: configRoot, cwd: runtimeCwd })
+        ? loadNativeContextResources({
+            root: configRoot,
+            cwd: runtimeCwd,
+            environment: runtimeEnvironment,
+            includeProjectMemory,
+          })
         : Promise.resolve({
             instructions: [],
             conditionalRules: [],
@@ -1679,6 +1756,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       : loadClaudeContextResources({
           configRoot,
           cwd: runtimeCwd,
+          includeProjectMemory,
           ...(automaticSettingSources === undefined
             ? {}
             : { settingSources: automaticSettingSources }),
@@ -1790,6 +1868,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
             ? await loadNativeSharedResources({
                 root: configRoot,
                 cwd: workspace.cwd(),
+                environment: runtimeEnvironment,
+                includeProjectMemory,
               })
             : {
                 instructions: [],
@@ -1804,6 +1884,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
               configRoot,
               cwd: workspace.cwd(),
               claudeStatePath,
+              includeProjectMemory,
               ...(automaticSettingSources === undefined
                 ? {}
                 : { settingSources: automaticSettingSources }),
@@ -2100,6 +2181,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(interactiveTools ? { interactiveTools } : {}),
       ...(hooks ? { hooks } : {}),
       ...(selectedMainAgent ? { agent: selectedMainAgent } : {}),
+      ...(memoryDirectory ? { projectMemoryDirectory: memoryDirectory } : {}),
+      ...(projectMemoryRecall ? { projectMemoryRecall } : {}),
+      ...(projectMemoryExtraction ? { projectMemoryExtraction } : {}),
       contextAssembler,
       conditionalRuleResolver: new ClaudeConditionalRuleResolver({
         loadResources: loadContextResources,

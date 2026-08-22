@@ -36,6 +36,8 @@ describe('Claude dynamic context', () => {
     expect(sections.environment).toContain('Is a git repository: true')
     expect(sections.environment).toContain('Shell: zsh')
     expect(sections.memory).toContain('/config/projects/workspace/memory')
+    expect(sections.memory).toContain('user, feedback, project, or reference')
+    expect(sections.memory).toContain('Do not store codebase architecture')
     expect(sections.gitStatus).toContain('Current branch: feature')
     expect(sections.gitStatus).toContain('Main branch: main')
     expect(sections.gitStatus).toContain(' M tracked.ts\n?? new.ts')

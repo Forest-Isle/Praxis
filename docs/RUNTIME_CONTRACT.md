@@ -195,6 +195,45 @@ or deleting any tracked path. It never rewrites the append-only conversation;
 forks omit file-history records because their backups remain source-session
 state.
 
+## Project-memory contract
+
+Project memory is durable cross-session context, separate from the append-only
+Transcript and asynchronous Session memory. Native runs store it under the
+Praxis root; explicit Claude compatibility mode alone uses the Claude project
+memory layout. Both key the directory by the canonical main git repository, so
+linked worktrees share one `MEMORY.md` index and its Markdown topic files.
+
+The index is injected as background context only and is bounded to its first
+200 lines and 25 KiB. Topic frontmatter supports `name`, `description`, and the
+closed `user | feedback | project | reference` taxonomy. Untyped, legacy, and
+unknown-type topics remain readable. Project memory must not become an
+instruction-priority channel or duplicate repository instructions, transient
+task state, codebase architecture, implementation patterns, git history, or
+fix recipes.
+
+`autoMemoryEnabled: false` is the shared settings switch. Native runs also
+recognize `PRAXIS_DISABLE_AUTO_MEMORY`; Claude compatibility mode recognizes
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY`. Disabling it suppresses index reads and
+injection, maintenance guidance, memory-root tool access, background
+extraction, and selective recall.
+
+The compatible default is bounded index injection plus direct main-agent
+maintenance. Background extraction and selective recall are explicit local
+capabilities through `projectMemory.backgroundExtraction` and
+`projectMemory.selectiveRecall`, or the native environment switches
+`PRAXIS_PROJECT_MEMORY_EXTRACTION` and `PRAXIS_PROJECT_MEMORY_RECALL`.
+Extraction runs after a successful final main-agent stop, never blocks response
+delivery, advances its private cursor only after success, coalesces overlapping
+turns, and is drained with a bounded close. Its isolated agent has no
+transcript, subagent, remote, or non-memory tools.
+
+Selective recall starts at most once per user turn and never delays the main
+loop. A settled selector may attach zero to five previously unsurfaced topics
+only after a tool boundary. Candidate metadata is limited to the 200 newest
+topics; attachments are capped at 200 lines/4 KiB per file, 20 KiB per turn,
+and 60 KiB per session. Selector, parse, filesystem, and cancellation failures
+fail empty. A compact boundary permits relevant topics to surface again.
+
 ## Error contract
 
 - Unsupported Claude schema: read-only inspect/export, no shared writes.

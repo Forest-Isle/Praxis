@@ -6,15 +6,15 @@ import { basename, isAbsolute, relative, resolve } from 'node:path'
 import {
   loadClaudeContextResources,
   loadClaudeSettings,
-  resolveClaudeProjectMemoryDirectory,
   type ClaudeResourceScope,
   type ClaudeTextResource,
 } from '../../compatibility/claude/shared-resources.js'
-import { sanitizeClaudeProjectPath } from '../../compatibility/claude/paths.js'
+import { resolveProjectMemoryPolicy } from '../../core/project-memory.js'
+import { resolveProjectMemoryDirectory } from '../../platform/project-memory-paths.js'
 import type { DataPlane } from '../../persistence/data-plane.js'
 import {
   loadNativeContextResources,
-  loadNativeSharedResources,
+  loadNativeSettings,
 } from '../../persistence/native-resources.js'
 
 export interface TuiMemoryFileEntry {
@@ -37,6 +37,7 @@ export interface LoadTuiMemoryFilesOptions {
   cwd: string
   homeDirectory?: string
   dataPlane?: DataPlane
+  environment?: Readonly<Record<string, string | undefined>>
 }
 
 function isWithin(root: string, path: string): boolean {
@@ -93,52 +94,46 @@ function importedEntries(
     }))
 }
 
-function autoMemorySetting(settings: readonly { value: unknown }[]): boolean {
-  let enabled = true
-  for (const resource of settings) {
-    if (
-      typeof resource.value === 'object' &&
-      resource.value !== null &&
-      !Array.isArray(resource.value)
-    ) {
-      const value = (resource.value as Record<string, unknown>)
-        .autoMemoryEnabled
-      if (typeof value === 'boolean') enabled = value
-    }
-  }
-  return enabled
-}
-
 export async function loadTuiMemoryFiles({
   configRoot,
   cwd,
   homeDirectory = homedir(),
   dataPlane = 'claude',
+  environment = process.env,
 }: LoadTuiMemoryFilesOptions): Promise<TuiMemoryFiles> {
   const [canonicalCwd, canonicalHome] = await Promise.all([
     realpath(cwd),
     realpath(homeDirectory).catch(() => resolve(homeDirectory)),
   ])
-  const [context, settings, autoMemoryDirectory] =
+  const settings =
     dataPlane === 'native'
-      ? await Promise.all([
-          loadNativeContextResources({ root: configRoot, cwd }),
-          loadNativeSharedResources({ root: configRoot, cwd }).then(
-            (resources) => resources.settings,
-          ),
-          Promise.resolve(
-            resolve(configRoot, 'memory', sanitizeClaudeProjectPath(cwd)),
-          ),
-        ])
-      : await Promise.all([
-          loadClaudeContextResources({ configRoot, cwd, homeDirectory }),
-          loadClaudeSettings({ configRoot, cwd }),
-          resolveClaudeProjectMemoryDirectory({
-            configRoot,
-            cwd,
-            homeDirectory,
-          }),
-        ])
+      ? await loadNativeSettings({ root: configRoot, cwd })
+      : await loadClaudeSettings({ configRoot, cwd })
+  const memoryPolicy = resolveProjectMemoryPolicy({
+    dataPlane,
+    settings,
+    environment,
+  })
+  const [context, autoMemoryDirectory] = await Promise.all([
+    dataPlane === 'native'
+      ? loadNativeContextResources({
+          root: configRoot,
+          cwd,
+          environment,
+          includeProjectMemory: memoryPolicy.enabled,
+        })
+      : loadClaudeContextResources({
+          configRoot,
+          cwd,
+          homeDirectory,
+          includeProjectMemory: memoryPolicy.enabled,
+        }),
+    resolveProjectMemoryDirectory({
+      dataPlane,
+      configRoot,
+      cwd,
+    }),
+  ])
   const instructionName = dataPlane === 'native' ? 'PRAXIS.md' : 'CLAUDE.md'
   const userPath = resolve(configRoot, instructionName)
   const projectResources = context.instructions.filter(
@@ -228,7 +223,7 @@ export async function loadTuiMemoryFiles({
     )
   }
 
-  const autoMemoryEnabled = autoMemorySetting(settings)
+  const autoMemoryEnabled = memoryPolicy.enabled
   if (autoMemoryEnabled) {
     entries.push({
       kind: 'folder',

@@ -113,6 +113,53 @@ describe('TUI memory files', () => {
     ])
   })
 
+  it('uses the canonical native worktree root and its native disable environment', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-tui-memory-')),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const mainRepository = join(root, 'main')
+    const worktree = join(root, 'worktree')
+    const gitDirectory = join(
+      mainRepository,
+      '.git',
+      'worktrees',
+      'native-memory',
+    )
+    await Promise.all([
+      mkdir(join(mainRepository, '.git'), { recursive: true }),
+      mkdir(worktree, { recursive: true }),
+      mkdir(gitDirectory, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(join(worktree, '.git'), `gitdir: ${gitDirectory}\n`),
+      writeFile(join(gitDirectory, 'commondir'), '../..\n'),
+    ])
+
+    const enabled = await loadTuiMemoryFiles({
+      configRoot,
+      cwd: worktree,
+      dataPlane: 'native',
+      environment: {},
+    })
+    const disabled = await loadTuiMemoryFiles({
+      configRoot,
+      cwd: worktree,
+      dataPlane: 'native',
+      environment: { PRAXIS_DISABLE_AUTO_MEMORY: '1' },
+    })
+
+    expect(enabled.entries.at(-1)).toMatchObject({
+      kind: 'folder',
+      path: join(configRoot, 'memory', mainRepository.replaceAll('/', '-')),
+    })
+    expect(disabled.autoMemoryEnabled).toBe(false)
+    expect(disabled.entries.some((entry) => entry.kind === 'folder')).toBe(
+      false,
+    )
+  })
+
   it('creates the canonical folder and propagates launcher failures', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-tui-memory-'))
     roots.push(root)
