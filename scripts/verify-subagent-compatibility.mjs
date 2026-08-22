@@ -4,7 +4,9 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
+  writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,9 +20,15 @@ import {
 } from './lib/claude-probe.mjs'
 
 const probeRoot = await mkdtemp(join(tmpdir(), 'praxis-subagent-compat-'))
+const expectedClaudeVersion = '2.1.237'
 
 try {
   const version = await detectClaudeVersion('Subagent compatibility probe')
+  if (version !== expectedClaudeVersion) {
+    throw new Error(
+      `Subagent compatibility requires Claude ${expectedClaudeVersion}; received ${version}`,
+    )
+  }
   const configRoot = join(probeRoot, 'config')
   const workDirectory = join(probeRoot, 'work')
   await mkdir(workDirectory, { recursive: true })
@@ -108,26 +116,58 @@ try {
     cwd,
     sessionId: result.sessionId,
   })
-  const mainSource = await readFile(paths.sessionFile, 'utf8')
+  let mainSource = await readFile(paths.sessionFile, 'utf8')
   const subagentDirectory = join(
     paths.projectRoot,
     result.sessionId,
     'subagents',
   )
   const files = await readdir(subagentDirectory)
-  const transcriptName = files.find((name) => name.endsWith('.jsonl'))
-  const metadataName = files.find((name) => name.endsWith('.meta.json'))
+  let transcriptName = files.find((name) => name.endsWith('.jsonl'))
+  let metadataName = files.find((name) => name.endsWith('.meta.json'))
   if (!transcriptName || !metadataName) {
     throw new Error('Praxis did not create native sidechain files')
   }
-  const sidechainSource = await readFile(
+  let sidechainSource = await readFile(
     join(subagentDirectory, transcriptName),
     'utf8',
   )
-  const metadataSource = await readFile(
+  let metadataSource = await readFile(
     join(subagentDirectory, metadataName),
     'utf8',
   )
+  const originalAgentId = transcriptName.slice(
+    'agent-'.length,
+    -'.jsonl'.length,
+  )
+  const labeledAgentId = 'areviewer-0123456789abcdef'
+  const parentAgentId = 'aparent-1123456789abcdef'
+  const labeledTranscriptName = `agent-${labeledAgentId}.jsonl`
+  const labeledMetadataName = `agent-${labeledAgentId}.meta.json`
+  mainSource = mainSource.replaceAll(originalAgentId, labeledAgentId)
+  sidechainSource = sidechainSource.replaceAll(originalAgentId, labeledAgentId)
+  metadataSource = `${JSON.stringify({
+    ...JSON.parse(metadataSource),
+    parentAgentId,
+    worktreePath: cwd,
+  })}\n`
+  await Promise.all([
+    writeFile(paths.sessionFile, mainSource),
+    writeFile(join(subagentDirectory, transcriptName), sidechainSource),
+    writeFile(join(subagentDirectory, metadataName), metadataSource),
+  ])
+  await Promise.all([
+    rename(
+      join(subagentDirectory, transcriptName),
+      join(subagentDirectory, labeledTranscriptName),
+    ),
+    rename(
+      join(subagentDirectory, metadataName),
+      join(subagentDirectory, labeledMetadataName),
+    ),
+  ])
+  transcriptName = labeledTranscriptName
+  metadataName = labeledMetadataName
   assertContains(mainSource, '"status":"completed"', 'Praxis main Agent result')
   assertContains(
     sidechainSource,
@@ -138,6 +178,21 @@ try {
     metadataSource,
     '"toolUseId":"praxis_s11_agent"',
     'Praxis native sidechain metadata',
+  )
+  assertContains(
+    sidechainSource,
+    `"agentId":"${labeledAgentId}"`,
+    'Claude-compatible labeled Agent ID',
+  )
+  assertContains(
+    metadataSource,
+    `"parentAgentId":"${parentAgentId}"`,
+    'Claude-compatible parent Agent metadata',
+  )
+  assertContains(
+    metadataSource,
+    `"worktreePath":"${cwd.replaceAll('\\', '\\\\')}"`,
+    'Claude-compatible retained worktree metadata',
   )
 
   const { stdout } = await execFileAsync(

@@ -8,6 +8,7 @@ import type {
   ClaudeSidechainMetadata,
   ClaudeSidechainPaths,
 } from '../compatibility/claude/sidechain.js'
+import { isClaudeAgentId } from '../compatibility/claude/sidechain.js'
 import {
   ClaudeTranscriptStore,
   type ClaudeTranscriptLease,
@@ -106,7 +107,8 @@ export class ClaudeSidechainStore {
       typeof record.agentType !== 'string' ||
       typeof record.description !== 'string' ||
       typeof record.toolUseId !== 'string' ||
-      typeof record.spawnDepth !== 'number' ||
+      !Number.isSafeInteger(record.spawnDepth) ||
+      Number(record.spawnDepth) < 1 ||
       (record.name !== undefined && typeof record.name !== 'string') ||
       (record.permissionMode !== undefined &&
         (typeof record.permissionMode !== 'string' ||
@@ -118,15 +120,23 @@ export class ClaudeSidechainStore {
             'dontAsk',
             'plan',
           ].includes(record.permissionMode))) ||
-      (record.isolation !== undefined && record.isolation !== 'worktree')
+      (record.isolation !== undefined && record.isolation !== 'worktree') ||
+      (record.parentAgentId !== undefined &&
+        (typeof record.parentAgentId !== 'string' ||
+          !isClaudeAgentId(record.parentAgentId))) ||
+      (record.worktreePath !== undefined &&
+        (typeof record.worktreePath !== 'string' ||
+          record.worktreePath.length === 0 ||
+          record.worktreePath.includes('\0')))
     ) {
       throw new Error('Claude sidechain metadata is invalid')
     }
     return {
+      ...record,
       agentType: record.agentType,
       description: record.description,
       toolUseId: record.toolUseId,
-      spawnDepth: record.spawnDepth,
+      spawnDepth: Number(record.spawnDepth),
       ...(record.name === undefined ? {} : { name: record.name }),
       ...(record.permissionMode === undefined
         ? {}
@@ -142,6 +152,12 @@ export class ClaudeSidechainStore {
       ...(record.isolation === undefined
         ? {}
         : { isolation: record.isolation }),
+      ...(record.parentAgentId === undefined
+        ? {}
+        : { parentAgentId: record.parentAgentId }),
+      ...(record.worktreePath === undefined
+        ? {}
+        : { worktreePath: record.worktreePath }),
     }
   }
 }

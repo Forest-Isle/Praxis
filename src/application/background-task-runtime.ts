@@ -18,7 +18,19 @@ export interface BackgroundBashTaskSource {
 
 export interface BackgroundAgentTaskSource {
   backgroundSnapshots(): readonly BackgroundAgentSnapshot[]
-  stopBackgroundTask(taskId: string): string
+  outputBackgroundTask(
+    taskId: string,
+    options: { block: boolean; timeout: number },
+  ): Promise<string>
+  stopBackgroundTask(taskId: string): Promise<string>
+  sendBackgroundMessage(
+    agentId: string,
+    message: string,
+    summary: string | undefined,
+    toolUseId: string,
+  ): string
+  hasForegroundTask(): boolean
+  backgroundForegroundTask(): BackgroundAgentSnapshot
 }
 
 export interface WorkflowTaskSource {
@@ -95,15 +107,7 @@ export class BackgroundTaskRuntime {
       await source.stopBackgroundTask(taskId)
       return
     }
-    for (const source of this.agentSources.get(sessionId) ?? []) {
-      if (
-        !source.backgroundSnapshots().some(({ agentId }) => agentId === taskId)
-      ) {
-        continue
-      }
-      source.stopBackgroundTask(taskId)
-      return
-    }
+    if ((await this.stopAgent(sessionId, taskId)) !== null) return
     if (this.workflows?.hasForSession(sessionId, taskId)) {
       await this.workflows.stopAndWait(taskId)
       return
@@ -111,8 +115,91 @@ export class BackgroundTaskRuntime {
     throw new Error(`No task found with ID: ${taskId}`)
   }
 
+  async outputAgent(
+    sessionId: string,
+    agentId: string,
+    options: { block: boolean; timeout: number },
+  ): Promise<string | null> {
+    const source = this.agentSource(sessionId, agentId)
+    return source ? source.outputBackgroundTask(agentId, options) : null
+  }
+
+  async stopAgent(sessionId: string, agentId: string): Promise<string | null> {
+    const source = this.agentSource(sessionId, agentId)
+    return source ? source.stopBackgroundTask(agentId) : null
+  }
+
+  sendAgent(
+    sessionId: string,
+    agentId: string,
+    message: string,
+    summary: string | undefined,
+    toolUseId: string,
+  ): string | null {
+    return (
+      this.sendAgentWithOwner(sessionId, agentId, message, summary, toolUseId)
+        ?.content ?? null
+    )
+  }
+
+  sendAgentWithOwner(
+    sessionId: string,
+    agentId: string,
+    message: string,
+    summary: string | undefined,
+    toolUseId: string,
+  ): { content: string; owner: BackgroundAgentTaskSource } | null {
+    const source = this.agentSource(sessionId, agentId)
+    return source
+      ? {
+          content: source.sendBackgroundMessage(
+            agentId,
+            message,
+            summary,
+            toolUseId,
+          ),
+          owner: source,
+        }
+      : null
+  }
+
+  backgroundForeground(sessionId: string): BackgroundAgentSnapshot {
+    const sources = [...(this.agentSources.get(sessionId) ?? [])].reverse()
+    const source = sources.find((candidate) => candidate.hasForegroundTask())
+    if (!source) throw new Error('No foreground agent is running')
+    return source.backgroundForegroundTask()
+  }
+
   clear(): void {
     this.bashSources.clear()
     this.agentSources.clear()
+  }
+
+  private agentSource(
+    sessionId: string,
+    identifier: string,
+  ): BackgroundAgentTaskSource | null {
+    const sources = [...(this.agentSources.get(sessionId) ?? [])]
+    const idMatches = sources.filter((source) =>
+      source
+        .backgroundSnapshots()
+        .some(({ agentId }) => agentId === identifier),
+    )
+    if (idMatches.length > 1) {
+      throw new Error(
+        `Multiple background agent owners claim ID: ${identifier}`,
+      )
+    }
+    if (idMatches[0]) return idMatches[0]
+
+    const nameMatches = sources.filter((source) =>
+      source.backgroundSnapshots().some(({ name }) => name === identifier),
+    )
+    if (nameMatches.length > 1) {
+      throw new Error(
+        `Multiple live background agents are named '${identifier}'`,
+      )
+    }
+    return nameMatches[0] ?? null
   }
 }

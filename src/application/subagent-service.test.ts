@@ -28,6 +28,7 @@ import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { resolveDataPlanePaths } from '../persistence/data-plane.js'
+import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
 import {
@@ -853,6 +854,7 @@ describe('foreground Claude Agent execution', () => {
       description: 'Return marker',
       toolUseId: 'call_agent',
       spawnDepth: 1,
+      permissionMode: 'default',
     })
   })
 
@@ -1162,6 +1164,69 @@ describe('foreground Claude Agent execution', () => {
     await expect(
       prepare(createExecutor(), 'general-purpose'),
     ).resolves.toMatchObject({ input: { run_in_background: false } })
+    await expect(
+      prepare(createExecutor('plan'), 'general-purpose'),
+    ).resolves.toMatchObject({ input: { mode: 'plan' } })
+    await expect(
+      prepare(createExecutor('dontAsk'), 'general-purpose'),
+    ).resolves.toMatchObject({ input: { mode: 'dontAsk' } })
+
+    for (const mode of ['plan', 'dontAsk'] as const) {
+      const executor = createExecutor(mode)
+      const registry = executor.registry(
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        0,
+        () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      )
+      const call = await registry.prepare(
+        {
+          id: `call_inherit_${mode}`,
+          name: 'Agent',
+          input: {
+            description: `Inherit ${mode}`,
+            prompt: `Use ${mode}`,
+            subagent_type: 'general-purpose',
+            run_in_background: false,
+          },
+        },
+        { cwd },
+      )
+      await registry.execute(call, { cwd })
+    }
+    const paths = resolveClaudePaths({
+      configDir: join(root, 'config'),
+      cwd,
+      sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    })
+    const metadata = await Promise.all(
+      (
+        await readdir(
+          join(
+            paths.projectRoot,
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'subagents',
+          ),
+        )
+      )
+        .filter((file) => file.endsWith('.meta.json'))
+        .map(async (file) =>
+          JSON.parse(
+            await readFile(
+              join(
+                paths.projectRoot,
+                'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                'subagents',
+                file,
+              ),
+              'utf8',
+            ),
+          ),
+        ),
+    )
+    expect(metadata.map((entry) => entry.permissionMode).sort()).toEqual([
+      'dontAsk',
+      'plan',
+    ])
   })
 
   it('loads native custom agent memory and preloads declared skills', async () => {
@@ -1720,9 +1785,272 @@ describe('foreground Claude Agent execution', () => {
     expect(source).toContain('"status":"async_launched"')
     expect(source).toContain('<status>completed</status>')
     expect(source).toContain('BACKGROUND_CHILD_DONE')
-    expect(
-      await readdir(join(paths.projectRoot, result.sessionId, 'subagents')),
-    ).toHaveLength(2)
+    const sidechainFiles = await readdir(
+      join(paths.projectRoot, result.sessionId, 'subagents'),
+    )
+    expect(sidechainFiles).toHaveLength(2)
+    const agentId = sidechainFiles
+      .find((file) => file.endsWith('.jsonl'))
+      ?.slice('agent-'.length, -'.jsonl'.length)
+    expect(agentId).toBeDefined()
+    await expect(
+      new SubagentLifecycleStore(
+        paths.praxisRoot,
+        result.sessionId,
+        String(agentId),
+      ).read(),
+    ).resolves.toMatchObject({ status: 'completed' })
+  })
+
+  it('persists a failed background lifecycle before exposing terminal output', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-failed-agent-state-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let turn = 0
+    const provider: ModelProvider = {
+      model: 'fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_before_failure', name: 'Probe', input: {} },
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 7, outputTokens: 3 },
+          }
+          return
+        }
+        throw new Error('FAILED_AGENT_FIXTURE')
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        { name: 'Probe', description: 'Probe.', inputSchema: {} },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return { content: 'PROBE_COMPLETED', isError: false }
+      },
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.237',
+      provider,
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_failed_agent',
+          name: 'Agent',
+          input: {
+            description: 'Failed fixture',
+            prompt: 'FAIL_NOW',
+            run_in_background: true,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    const agentId = executor.backgroundSnapshots()[0]?.agentId
+    expect(agentId).toBeDefined()
+    const output = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_failed_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(output.content).toContain('<status>failed</status>')
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const lifecycleStore = new SubagentLifecycleStore(
+      paths.praxisRoot,
+      sessionId,
+      String(agentId),
+    )
+    await expect(lifecycleStore.read()).resolves.toMatchObject({
+      status: 'failed',
+      detail: 'FAILED_AGENT_FIXTURE',
+      result: {
+        usage: { inputTokens: 7, outputTokens: 3 },
+        modelUsage: {
+          'fixture-model': { inputTokens: 7, outputTokens: 3 },
+        },
+        toolUseCount: 1,
+      },
+      notifications: [
+        {
+          status: 'failed',
+          consumed: false,
+          result: { usage: { inputTokens: 7, outputTokens: 3 } },
+        },
+      ],
+    })
+    const reopened = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.237',
+      provider,
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    await reopened.hydratePersistedTasks(sessionId, cwd)
+    await expect(reopened.notifications(false)).resolves.toMatchObject({
+      messages: [expect.stringContaining('<status>failed</status>')],
+      usage: { inputTokens: 7, outputTokens: 3 },
+      modelUsage: {
+        'fixture-model': { inputTokens: 7, outputTokens: 3 },
+      },
+    })
+    expect(turn).toBe(2)
+  })
+
+  it('hands a running foreground agent to background without repeating committed tool work', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-handoff-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let toolExecutions = 0
+    let childTurn = 0
+    let secondTurnStarted!: () => void
+    const secondTurn = new Promise<void>((resolve) => {
+      secondTurnStarted = resolve
+    })
+    let releaseSecondTurn!: () => void
+    const release = new Promise<void>((resolve) => {
+      releaseSecondTurn = resolve
+    })
+    const provider: ModelProvider = {
+      model: 'fixture-model',
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        if (childTurn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call_once', name: 'Probe', input: {} },
+          }
+        } else {
+          secondTurnStarted()
+          await release
+          yield { type: 'text-delta', delta: 'HANDOFF_DONE' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 3, outputTokens: 2 },
+          }
+        }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        { name: 'Probe', description: 'Probe once.', inputSchema: {} },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        toolExecutions += 1
+        return { content: 'PROBE_DONE', isError: false }
+      },
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.237',
+      provider,
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const parentController = new AbortController()
+    const prepared = await registry.prepare(
+      {
+        id: 'call_foreground_handoff',
+        name: 'Agent',
+        input: {
+          description: 'Handoff fixture',
+          prompt: 'Use Probe then finish',
+          run_in_background: false,
+        },
+      },
+      { cwd, signal: parentController.signal },
+    )
+    const execution = registry.execute(prepared, {
+      cwd,
+      signal: parentController.signal,
+    })
+    await secondTurn
+
+    const adopted = executor.backgroundForegroundTask()
+    const launched = await execution
+    expect(launched.nativeToolUseResult).toMatchObject({
+      isAsync: true,
+      status: 'async_launched',
+      agentId: adopted.agentId,
+    })
+    expect(toolExecutions).toBe(1)
+    parentController.abort()
+    releaseSecondTurn()
+
+    const output = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_handoff_output',
+          name: 'TaskOutput',
+          input: {
+            task_id: adopted.agentId,
+            block: true,
+            timeout: 30_000,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(output.content).toContain('HANDOFF_DONE')
+    expect(toolExecutions).toBe(1)
+    const firstNotification = await executor.notifications(false)
+    expect(firstNotification.messages).toEqual([
+      expect.stringContaining('<status>completed</status>'),
+    ])
+    expect(firstNotification.usage).toEqual({
+      inputTokens: 3,
+      outputTokens: 2,
+    })
+    await expect(executor.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+
+    const sidechainPath = String(launched.nativeToolUseResult?.outputFile)
+    const sidechain = await readFile(sidechainPath, 'utf8')
+    expect(sidechain.match(/"id":"call_once"/gu) ?? []).toHaveLength(1)
+    expect(sidechain.match(/"tool_use_id":"call_once"/gu) ?? []).toHaveLength(1)
   })
 
   it('delivers a background Bash notification once inside a nested run', async () => {
@@ -1856,6 +2184,181 @@ describe('foreground Claude Agent execution', () => {
     expect(JSON.stringify(messages)).toContain('AGENT_TWO')
   })
 
+  it('aborts and drains multiple live agents on close without terminal notifications or transcript deletion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-close-drain-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let startedCount = 0
+    let bothStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      bothStarted = resolve
+    })
+    const events: RuntimeEvent[] = []
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.237',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          startedCount += 1
+          if (startedCount === 2) bothStarted()
+          await new Promise<void>((_resolve, reject) => {
+            request.signal?.addEventListener(
+              'abort',
+              () => reject(request.signal?.reason ?? new Error('aborted')),
+              { once: true },
+            )
+          })
+          yield { type: 'text-delta', delta: 'UNREACHABLE_AFTER_ABORT' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      eventSink: (event) => events.push(event),
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    for (const index of [1, 2]) {
+      await registry.execute(
+        await registry.prepare(
+          {
+            id: `call_close_${index}`,
+            name: 'Agent',
+            input: {
+              description: `Close fixture ${index}`,
+              prompt: `WAIT_${index}`,
+              run_in_background: true,
+            },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+    }
+    await started
+
+    await executor.close()
+
+    expect(executor.backgroundSnapshots()).toEqual([])
+    expect(
+      events.filter((event) => event.type === 'task-notification'),
+    ).toEqual([])
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const retained = await readdir(
+      join(paths.projectRoot, sessionId, 'subagents'),
+    )
+    expect(retained.filter((file) => file.endsWith('.jsonl'))).toHaveLength(2)
+    expect(retained.filter((file) => file.endsWith('.meta.json'))).toHaveLength(
+      2,
+    )
+  })
+
+  it('explicitly bulk-kills live agents with retained state and one notification each', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-bulk-kill-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let startedCount = 0
+    let bothStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      bothStarted = resolve
+    })
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.237',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          startedCount += 1
+          if (startedCount === 2) bothStarted()
+          await new Promise<void>((_resolve, reject) => {
+            request.signal?.addEventListener(
+              'abort',
+              () => reject(request.signal?.reason ?? new Error('aborted')),
+              { once: true },
+            )
+          })
+          yield { type: 'text-delta', delta: 'UNREACHABLE_AFTER_ABORT' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    for (const index of [1, 2]) {
+      await registry.execute(
+        await registry.prepare(
+          {
+            id: `call_bulk_${index}`,
+            name: 'Agent',
+            input: {
+              description: `Bulk fixture ${index}`,
+              prompt: `WAIT_${index}`,
+              run_in_background: true,
+            },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+    }
+    await started
+    const agentIds = executor
+      .backgroundSnapshots()
+      .map((snapshot) => snapshot.agentId)
+
+    expect([...executor.stopAllBackgroundTasks()].sort()).toEqual(
+      [...agentIds].sort(),
+    )
+    expect(executor.stopAllBackgroundTasks()).toEqual([])
+    await Promise.all(
+      agentIds.map(async (agentId, index) =>
+        registry.execute(
+          await registry.prepare(
+            {
+              id: `call_bulk_output_${index}`,
+              name: 'TaskOutput',
+              input: { task_id: agentId, block: true, timeout: 30_000 },
+            },
+            { cwd },
+          ),
+          { cwd },
+        ),
+      ),
+    )
+    const first = await executor.notifications(false)
+    expect(first.messages).toHaveLength(2)
+    expect(
+      first.messages.every((message) =>
+        message.includes('<status>killed</status>'),
+      ),
+    ).toBe(true)
+    await expect(executor.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    for (const agentId of agentIds) {
+      await expect(
+        new SubagentLifecycleStore(paths.praxisRoot, sessionId, agentId).read(),
+      ).resolves.toMatchObject({ status: 'killed' })
+    }
+  })
+
   it('polls and resumes a completed background sidechain from a new executor', async () => {
     const { configRoot, cwd } = await gitRepository(
       'praxis-background-resume-test-',
@@ -1927,9 +2430,11 @@ describe('foreground Claude Agent execution', () => {
     )
     await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
 
+    const recoveryEvents: RuntimeEvent[] = []
     const resumed = new ClaudeSubagentExecutor({
       ...options,
       provider: provider('SECOND_RESULT'),
+      eventSink: (event) => recoveryEvents.push(event),
     })
     const resumedRegistry = resumed.registry(sessionId, 0, () => promptId)
     const sent = await resumedRegistry.execute(
@@ -1961,8 +2466,128 @@ describe('foreground Claude Agent execution', () => {
     )
     expect(secondOutput.content).toContain('SECOND_RESULT')
     await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
+    const recoveredNotifications = await resumed.notifications(false)
+    expect(recoveredNotifications.messages).toHaveLength(2)
+    expect(recoveredNotifications.messages).toEqual([
+      expect.stringContaining('<tool-use-id>call_launch</tool-use-id>'),
+      expect.stringContaining('<tool-use-id>call_message</tool-use-id>'),
+    ])
+    expect(recoveredNotifications.usage).toEqual({
+      inputTokens: 4,
+      outputTokens: 2,
+    })
+
+    const reopened = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('UNUSED_RESULT'),
+    })
+    const reopenedRegistry = reopened.registry(sessionId, 0, () => promptId)
+    await reopenedRegistry.execute(
+      await reopenedRegistry.prepare(
+        {
+          id: 'call_reopened_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: false, timeout: 0 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    await expect(reopened.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
 
     const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const lifecycleStore = new SubagentLifecycleStore(
+      paths.praxisRoot,
+      sessionId,
+      agentId,
+      join(paths.projectRoot, sessionId, 'subagents', `agent-${agentId}.jsonl`),
+    )
+    const deliveredId = '99999999-9999-4999-8999-999999999999'
+    await lifecycleStore.write('completed', undefined, {
+      result: {
+        text: 'SECOND_RESULT',
+        usage: { inputTokens: 2, outputTokens: 1 },
+        toolUseCount: 0,
+        durationMs: 1,
+      },
+      notification: {
+        id: deliveredId,
+        status: 'completed',
+        toolUseId: 'call_already_appended',
+        error: null,
+      },
+    })
+    await lifecycleStore.prepareNotificationDetached(
+      deliveredId,
+      'fixture-model',
+    )
+    const reconciled = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('UNUSED_RECONCILED_RESULT'),
+      notificationDelivered: ({ toolUseId }) =>
+        toolUseId === 'call_already_appended',
+    })
+    await reconciled.hydratePersistedTasks(sessionId, cwd)
+    await expect(reconciled.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    const reconciledLifecycle = await lifecycleStore.read()
+    expect(
+      reconciledLifecycle?.notifications?.find(
+        (notification) => notification.id === deliveredId,
+      ),
+    ).toMatchObject({
+      id: deliveredId,
+      consumed: true,
+      accounting: {
+        kind: 'detached',
+        model: 'fixture-model',
+        delivered: true,
+      },
+    })
+
+    const pendingId = '88888888-8888-4888-8888-888888888888'
+    await lifecycleStore.write('completed', undefined, {
+      result: {
+        text: 'SECOND_RESULT',
+        usage: { inputTokens: 2, outputTokens: 1 },
+        toolUseCount: 0,
+        durationMs: 1,
+      },
+      notification: {
+        id: pendingId,
+        status: 'completed',
+        toolUseId: 'call_pending_after_restart',
+        error: null,
+      },
+    })
+    const automaticallyRecovered = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('UNUSED_AUTOMATIC_RESULT'),
+    })
+    await automaticallyRecovered.hydratePersistedTasks(sessionId, cwd)
+    await expect(automaticallyRecovered.notifications(false)).resolves.toEqual({
+      messages: [
+        expect.stringContaining(
+          '<tool-use-id>call_pending_after_restart</tool-use-id>',
+        ),
+      ],
+      usage: { inputTokens: 2, outputTokens: 1 },
+    })
+    const afterAutomaticDelivery = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('UNUSED_AFTER_AUTOMATIC_RESULT'),
+    })
+    await afterAutomaticDelivery.hydratePersistedTasks(sessionId, cwd)
+    await expect(afterAutomaticDelivery.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+
     const source = await readFile(
       join(paths.projectRoot, sessionId, 'subagents', `agent-${agentId}.jsonl`),
       'utf8',
@@ -1973,7 +2598,11 @@ describe('foreground Claude Agent execution', () => {
       entries(source)
         .map((entry) => entry.cwd)
         .filter((value) => typeof value === 'string'),
-    ).toEqual(expect.arrayContaining([worktreePath, worktreePath]))
+    ).toEqual(expect.arrayContaining([worktreePath, cwd]))
+    expect(recoveryEvents).toContainEqual({
+      type: 'warning',
+      message: expect.stringContaining('falling back to parent cwd'),
+    })
     expect(
       JSON.parse(
         await readFile(
@@ -1986,7 +2615,554 @@ describe('foreground Claude Agent execution', () => {
           'utf8',
         ),
       ),
-    ).toMatchObject({ name: 'reviewer', isolation: 'worktree' })
+    ).toMatchObject({
+      name: 'reviewer',
+      isolation: 'worktree',
+      worktreePath,
+    })
+  })
+
+  it('snapshots explicit spawn cwd and restores it for a fresh-process continuation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-cwd-snapshot-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const configuredCwd = join(root, 'configured')
+    const spawnCwd = join(root, 'spawn-snapshot')
+    const changedCwd = join(root, 'changed-parent')
+    await Promise.all(
+      [configuredCwd, spawnCwd, changedCwd].map((directory) =>
+        mkdir(directory, { recursive: true }),
+      ),
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    let liveCwd = configuredCwd
+    const observedCwds: string[] = []
+    const provider = (text: string): ModelProvider => ({
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        yield { type: 'text-delta', delta: text }
+        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+      },
+    })
+    const options = {
+      configRoot,
+      dataPlane: 'claude' as const,
+      cwd: configuredCwd,
+      cwdProvider: () => liveCwd,
+      claudeVersion: '2.1.237',
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' as const }) },
+      contextAssembler: {
+        async assemble(context?: { cwd?: string }) {
+          observedCwds.push(context?.cwd ?? '')
+          return { systemMessages: [] }
+        },
+      },
+    }
+    const first = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('FIRST_CWD_RESULT'),
+    })
+    const firstRegistry = first.registry(sessionId, 0, () => promptId)
+    const launched = await firstRegistry.execute(
+      await firstRegistry.prepare(
+        {
+          id: 'call_cwd_launch',
+          name: 'Agent',
+          input: {
+            description: 'Cwd snapshot',
+            prompt: 'Observe cwd',
+            name: 'cwd-reviewer',
+            run_in_background: true,
+          },
+        },
+        { cwd: spawnCwd },
+      ),
+      { cwd: spawnCwd },
+    )
+    liveCwd = changedCwd
+    const agentId = String(launched.nativeToolUseResult?.agentId)
+    await firstRegistry.execute(
+      await firstRegistry.prepare(
+        {
+          id: 'call_cwd_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd: spawnCwd },
+      ),
+      { cwd: spawnCwd },
+    )
+    expect(observedCwds).toEqual([spawnCwd])
+    const paths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd: spawnCwd,
+      sessionId,
+    })
+    const sidechainPath = join(
+      paths.projectRoot,
+      sessionId,
+      'subagents',
+      `agent-${agentId}.jsonl`,
+    )
+    expect(entries(await readFile(sidechainPath, 'utf8'))[0]?.cwd).toBe(
+      spawnCwd,
+    )
+
+    const resumed = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('SECOND_CWD_RESULT'),
+    })
+    const resumedRegistry = resumed.registry(sessionId, 0, () => promptId)
+    await resumedRegistry.execute(
+      await resumedRegistry.prepare(
+        {
+          id: 'call_cwd_message',
+          name: 'SendMessage',
+          input: {
+            to: 'cwd-reviewer',
+            summary: 'continue in snapshot',
+            message: 'Continue from persisted cwd',
+          },
+        },
+        { cwd: spawnCwd },
+      ),
+      { cwd: spawnCwd },
+    )
+    await resumedRegistry.execute(
+      await resumedRegistry.prepare(
+        {
+          id: 'call_cwd_done',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd: spawnCwd },
+      ),
+      { cwd: spawnCwd },
+    )
+    expect(observedCwds).toEqual([spawnCwd, spawnCwd])
+    expect(liveCwd).toBe(changedCwd)
+  })
+
+  it('hydrates an incomplete sidechain without replay and resumes it through one filtered continuation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-interrupted-agent-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'areviewer-0123456789abcdef'
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const directory = join(paths.projectRoot, sessionId, 'subagents')
+    await mkdir(directory, { recursive: true })
+    const common = {
+      isSidechain: true,
+      agentId,
+      promptId,
+      timestamp: '2026-08-23T00:00:00.000Z',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd,
+      sessionId,
+      version: '2.1.237',
+      gitBranch: null,
+    }
+    const rootUuid = '11111111-1111-4111-8111-111111111111'
+    const toolAssistantUuid = '22222222-2222-4222-8222-222222222222'
+    const toolResultUuid = '33333333-3333-4333-8333-333333333333'
+    const interruptedUuid = '44444444-4444-4444-8444-444444444444'
+    await writeFile(
+      join(directory, `agent-${agentId}.jsonl`),
+      [
+        {
+          ...common,
+          type: 'user',
+          parentUuid: null,
+          uuid: rootUuid,
+          message: { role: 'user', content: 'INTERRUPTED_ROOT' },
+        },
+        {
+          ...common,
+          type: 'assistant',
+          parentUuid: rootUuid,
+          uuid: toolAssistantUuid,
+          attributionAgent: 'general-purpose',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'call_complete',
+                name: 'Read',
+                input: { file_path: '/tmp/a' },
+              },
+              {
+                type: 'tool_use',
+                id: 'call_dangling',
+                name: 'Read',
+                input: { file_path: '/tmp/b' },
+              },
+            ],
+          },
+        },
+        {
+          ...common,
+          type: 'user',
+          parentUuid: toolAssistantUuid,
+          uuid: toolResultUuid,
+          sourceToolAssistantUUID: toolAssistantUuid,
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'call_complete',
+                content: 'ORIGINAL_RESULT',
+              },
+            ],
+          },
+        },
+        {
+          ...common,
+          type: 'assistant',
+          parentUuid: toolResultUuid,
+          uuid: interruptedUuid,
+          attributionAgent: 'general-purpose',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'thinking',
+                thinking: 'ORPHAN_THINKING',
+                signature: 'sig',
+              },
+              { type: 'text', text: '   ' },
+            ],
+          },
+        },
+        {
+          type: 'content-replacement',
+          sessionId,
+          replacements: [
+            {
+              kind: 'tool-result',
+              toolUseId: 'call_complete',
+              replacement: 'RECONSTRUCTED_RESULT',
+            },
+          ],
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n') + '\n',
+    )
+    await writeFile(
+      join(directory, `agent-${agentId}.meta.json`),
+      `${JSON.stringify({
+        agentType: 'general-purpose',
+        description: 'Interrupted fixture',
+        toolUseId: 'call_origin',
+        spawnDepth: 1,
+        name: 'interrupted-reviewer',
+        compatibleUnknown: 'preserved',
+      })}\n`,
+    )
+    const requests: ModelRequest[] = []
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.237',
+      provider: {
+        model: 'fixture-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: 'RESUMED_RESULT' }
+          yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(sessionId, 0, () => promptId)
+
+    const interrupted = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_interrupted_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: false, timeout: 0 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(interrupted.content).toContain('<status>interrupted</status>')
+    expect(requests).toHaveLength(0)
+
+    const sent = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_interrupted_message',
+          name: 'SendMessage',
+          input: {
+            to: 'interrupted-reviewer',
+            summary: 'resume interrupted fixture',
+            message: 'CONTINUE_ONCE',
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(sent.content).toContain('"success":true')
+    const output = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_interrupted_done',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(output.content).toContain('RESUMED_RESULT')
+    expect(requests).toHaveLength(1)
+    const resumedContext = JSON.stringify(requests[0]?.messages)
+    expect(resumedContext).toContain('RECONSTRUCTED_RESULT')
+    expect(resumedContext).toContain('CONTINUE_ONCE')
+    expect(resumedContext).not.toContain('ORIGINAL_RESULT')
+    expect(resumedContext).not.toContain('call_dangling')
+    expect(resumedContext).not.toContain('ORPHAN_THINKING')
+    expect(resumedContext.match(/CONTINUE_ONCE/gu) ?? []).toHaveLength(1)
+  })
+
+  it.each([
+    ['failed', 'failed'],
+    ['killed', 'stopped'],
+  ] as const)(
+    'hydrates and explicitly resumes a persisted %s sidechain from a fresh executor',
+    async (persistedStatus, outputStatus) => {
+      const root = await mkdtemp(join(tmpdir(), 'praxis-terminal-agent-'))
+      roots.push(root)
+      const configRoot = join(root, 'config')
+      const cwd = join(root, 'project')
+      const sessionId =
+        persistedStatus === 'failed'
+          ? 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
+          : 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
+      const agentId =
+        persistedStatus === 'failed'
+          ? 'afailed-0123456789abcdef'
+          : 'akilled-0123456789abcdef'
+      const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+      const paths = resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId,
+      })
+      const directory = join(paths.projectRoot, sessionId, 'subagents')
+      await mkdir(directory, { recursive: true })
+      await writeFile(
+        join(directory, `agent-${agentId}.jsonl`),
+        `${JSON.stringify({
+          parentUuid: null,
+          isSidechain: true,
+          agentId,
+          promptId,
+          type: 'user',
+          message: { role: 'user', content: 'TERMINAL_ROOT' },
+          uuid: '11111111-1111-4111-8111-111111111111',
+          timestamp: '2026-08-23T00:00:00.000Z',
+          userType: 'external',
+          entrypoint: 'cli',
+          cwd,
+          sessionId,
+          version: '2.1.237',
+          gitBranch: null,
+        })}\n`,
+      )
+      await writeFile(
+        join(directory, `agent-${agentId}.meta.json`),
+        `${JSON.stringify({
+          agentType: 'general-purpose',
+          description: `${persistedStatus} fixture`,
+          toolUseId: `call_${persistedStatus}_origin`,
+          spawnDepth: 1,
+          name: `${persistedStatus}-reviewer`,
+        })}\n`,
+      )
+      await new SubagentLifecycleStore(
+        paths.praxisRoot,
+        sessionId,
+        agentId,
+      ).write(persistedStatus, `${persistedStatus} before restart`)
+      let requests = 0
+      const executor = new ClaudeSubagentExecutor({
+        configRoot,
+        dataPlane: 'claude',
+        cwd,
+        claudeVersion: '2.1.237',
+        provider: {
+          model: 'fixture-model',
+          capabilities: { streaming: true, usage: true, tools: true },
+          async *complete() {
+            requests += 1
+            yield { type: 'text-delta', delta: 'TERMINAL_RESUMED' }
+            yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+          },
+        },
+        baseTools: emptyTools,
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      })
+      const registry = executor.registry(sessionId, 0, () => promptId)
+
+      const before = await registry.execute(
+        await registry.prepare(
+          {
+            id: `call_${persistedStatus}_output`,
+            name: 'TaskOutput',
+            input: { task_id: agentId, block: false, timeout: 0 },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      expect(before.content).toContain(`<status>${outputStatus}</status>`)
+      expect(requests).toBe(0)
+
+      await registry.execute(
+        await registry.prepare(
+          {
+            id: `call_${persistedStatus}_message`,
+            name: 'SendMessage',
+            input: {
+              to: `${persistedStatus}-reviewer`,
+              summary: `resume ${persistedStatus}`,
+              message: 'EXPLICIT_TERMINAL_CONTINUATION',
+            },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      const after = await registry.execute(
+        await registry.prepare(
+          {
+            id: `call_${persistedStatus}_done`,
+            name: 'TaskOutput',
+            input: { task_id: agentId, block: true, timeout: 30_000 },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      expect(after.content).toContain('TERMINAL_RESUMED')
+      expect(requests).toBe(1)
+      await expect(
+        new SubagentLifecycleStore(paths.praxisRoot, sessionId, agentId).read(),
+      ).resolves.toMatchObject({ status: 'completed' })
+    },
+  )
+
+  it('contains corrupt persisted lifecycle recovery without mutating the parent or sidechain transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-corrupt-agent-state-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'
+    const agentId = 'acorrupt-0123456789abcdef'
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const directory = join(paths.projectRoot, sessionId, 'subagents')
+    await mkdir(directory, { recursive: true })
+    const sidechainPath = join(directory, `agent-${agentId}.jsonl`)
+    const sidechainSource = `${JSON.stringify({
+      parentUuid: null,
+      isSidechain: true,
+      agentId,
+      promptId,
+      type: 'user',
+      message: { role: 'user', content: 'CORRUPT_STATE_ROOT' },
+      uuid: '11111111-1111-4111-8111-111111111111',
+      timestamp: '2026-08-23T00:00:00.000Z',
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd,
+      sessionId,
+      version: '2.1.237',
+      gitBranch: null,
+    })}\n`
+    await writeFile(sidechainPath, sidechainSource)
+    await writeFile(
+      join(directory, `agent-${agentId}.meta.json`),
+      JSON.stringify({
+        agentType: 'general-purpose',
+        description: 'Corrupt lifecycle fixture',
+        toolUseId: 'call_corrupt_origin',
+        spawnDepth: 1,
+      }),
+    )
+    const parentSource = '{"type":"parent-sentinel"}\n'
+    await mkdir(paths.projectRoot, { recursive: true })
+    await writeFile(paths.sessionFile, parentSource)
+    const lifecyclePath = join(
+      paths.praxisRoot,
+      'subagent-lifecycle',
+      sessionId,
+      `${agentId}.json`,
+    )
+    await mkdir(join(paths.praxisRoot, 'subagent-lifecycle', sessionId), {
+      recursive: true,
+    })
+    await writeFile(lifecyclePath, '{bad')
+    const recoveryEvents: RuntimeEvent[] = []
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.237',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          await Promise.reject(new Error('provider must not run'))
+          yield { type: 'text-delta', delta: 'UNREACHABLE_PROVIDER_RESULT' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      eventSink: (event) => recoveryEvents.push(event),
+    })
+    const registry = executor.registry(sessionId, 0, () => promptId)
+
+    await expect(
+      registry.execute(
+        await registry.prepare(
+          {
+            id: 'call_corrupt_output',
+            name: 'TaskOutput',
+            input: { task_id: agentId, block: false, timeout: 0 },
+          },
+          { cwd },
+        ),
+        { cwd },
+      ),
+    ).rejects.toThrow('Corrupt subagent lifecycle state')
+    await expect(
+      executor.hydratePersistedTasks(sessionId, cwd),
+    ).resolves.toBeUndefined()
+    expect(recoveryEvents).toContainEqual({
+      type: 'warning',
+      message: expect.stringContaining(
+        `Background agent ${agentId} could not be recovered automatically`,
+      ),
+    })
+    await expect(readFile(paths.sessionFile, 'utf8')).resolves.toBe(
+      parentSource,
+    )
+    await expect(readFile(sidechainPath, 'utf8')).resolves.toBe(sidechainSource)
   })
 
   it('finds and resumes nested workflow sidechains by agent ID and name', async () => {
@@ -2133,16 +3309,92 @@ describe('foreground Claude Agent execution', () => {
     )
     expect(source).toContain('The coordinator sent a message')
     expect(source).toContain('NESTED_RESUME_DONE')
-    await expect(
-      readFile(
-        join(
-          paths.projectRoot,
-          sessionId,
-          'subagents',
-          `agent-${agentId}.jsonl`,
-        ),
+    const rootSidechainDirectory = join(
+      paths.projectRoot,
+      sessionId,
+      'subagents',
+    )
+    const nestedMetadata = await readFile(
+      join(nestedDirectory, `agent-${agentId}.meta.json`),
+      'utf8',
+    )
+    await Promise.all([
+      writeFile(join(rootSidechainDirectory, `agent-${agentId}.jsonl`), source),
+      writeFile(
+        join(rootSidechainDirectory, `agent-${agentId}.meta.json`),
+        nestedMetadata,
       ),
-    ).rejects.toMatchObject({ code: 'ENOENT' })
+    ])
+    const ambiguousById = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('AMBIGUOUS_ID_MUST_NOT_RUN'),
+    })
+    const ambiguousIdRegistry = ambiguousById.registry(
+      sessionId,
+      0,
+      () => promptId,
+    )
+    await expect(
+      ambiguousIdRegistry.execute(
+        await ambiguousIdRegistry.prepare(
+          {
+            id: 'call_ambiguous_id',
+            name: 'TaskOutput',
+            input: { task_id: agentId, block: false, timeout: 0 },
+          },
+          { cwd },
+        ),
+        { cwd },
+      ),
+    ).rejects.toThrow(`Ambiguous persisted background agent ${agentId}`)
+
+    const ambiguousByName = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('AMBIGUOUS_NAME_MUST_NOT_RUN'),
+    })
+    const ambiguousNameRegistry = ambiguousByName.registry(
+      sessionId,
+      0,
+      () => promptId,
+    )
+    await expect(
+      ambiguousNameRegistry.execute(
+        await ambiguousNameRegistry.prepare(
+          {
+            id: 'call_ambiguous_name',
+            name: 'SendMessage',
+            input: { to: name, message: 'MUST_NOT_APPEND' },
+          },
+          { cwd },
+        ),
+        { cwd },
+      ),
+    ).rejects.toThrow(`Ambiguous persisted background agent ${name}`)
+    const automaticWarnings: RuntimeEvent[] = []
+    const automatic = new ClaudeSubagentExecutor({
+      ...options,
+      provider: provider('AMBIGUOUS_AUTOMATIC_MUST_NOT_RUN'),
+      eventSink: (event) => automaticWarnings.push(event),
+    })
+    await expect(
+      automatic.hydratePersistedTasks(sessionId, cwd),
+    ).resolves.toBeUndefined()
+    expect(automaticWarnings).toContainEqual({
+      type: 'warning',
+      message: expect.stringContaining(
+        `Ambiguous persisted background agent ${agentId}`,
+      ),
+    })
+    await expect(automatic.notifications(false)).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+    await expect(
+      readFile(join(nestedDirectory, `agent-${agentId}.jsonl`), 'utf8'),
+    ).resolves.toBe(source)
+    await expect(
+      readFile(join(rootSidechainDirectory, `agent-${agentId}.jsonl`), 'utf8'),
+    ).resolves.toBe(source)
   })
 
   it('recovers a metadata-free nested sidechain transcript by exact agent ID', async () => {
@@ -2782,8 +4034,9 @@ describe('foreground Claude Agent execution', () => {
       baseTools: tools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
     })
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const registry = executor.registry(
-      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      sessionId,
       0,
       () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     )
@@ -2816,6 +4069,61 @@ describe('foreground Claude Agent execution', () => {
     await expect(
       readFile(join(cwd, 'agent-change.txt'), 'utf8'),
     ).rejects.toMatchObject({ code: 'ENOENT' })
+
+    const resumedCwds: string[] = []
+    const resumed = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'RETAINED_RESUME_DONE' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextAssembler: {
+        async assemble(options) {
+          resumedCwds.push(options?.cwd ?? '')
+          return { systemMessages: [] }
+        },
+      },
+    })
+    const resumedRegistry = resumed.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const agentId = String(result.nativeToolUseResult?.agentId)
+    await resumedRegistry.execute(
+      await resumedRegistry.prepare(
+        {
+          id: 'call_retained_resume',
+          name: 'SendMessage',
+          input: { to: agentId, message: 'Continue in retained worktree' },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    const resumedOutput = await resumedRegistry.execute(
+      await resumedRegistry.prepare(
+        {
+          id: 'call_retained_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(resumedOutput.content).toContain('RETAINED_RESUME_DONE')
+    expect(resumedCwds).toEqual([worktreePath])
+    expect(await readFile(join(worktreePath, 'agent-change.txt'), 'utf8')).toBe(
+      'changed\n',
+    )
   })
 
   it('enforces the session Agent call budget before creating another sidechain', async () => {

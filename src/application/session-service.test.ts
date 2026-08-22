@@ -34,6 +34,7 @@ import {
   sanitizeClaudeProjectPath,
 } from '../compatibility/claude/paths.js'
 import { resolveDataPlanePaths } from '../persistence/data-plane.js'
+import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import {
@@ -147,6 +148,7 @@ function trackedTotals(snapshot: {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true })),
   )
@@ -5515,15 +5517,74 @@ describe('ClaudeSessionService', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     await mkdir(cwd, { recursive: true })
-    let calls = 0
+    let targetName = ''
+    let persistedCost: ClaudeSessionCostState | null = null
+    const costStateStore = {
+      load: vi.fn(async (id: string) =>
+        persistedCost?.sessionId === id ? persistedCost : null,
+      ),
+      save: vi.fn(async (state: ClaudeSessionCostState) => {
+        persistedCost = structuredClone(state)
+      }),
+    }
     const events: RuntimeEvent[] = []
     const provider: ModelProvider = {
+      model: 'btw-model',
       capabilities: { streaming: true, usage: true, tools: true },
-      async *complete() {
-        calls += 1
+      async *complete(request) {
+        const source = JSON.stringify(request.messages)
+        const isChild = request.messages.some(
+          (message) =>
+            message.role === 'system' &&
+            message.content.includes('You are a general-purpose subagent'),
+        )
+        if (isChild) {
+          const continuation = source.includes('CONTINUE_BTW_AGENT')
+          yield {
+            type: 'text-delta',
+            delta: continuation ? 'THIRD_AGAIN' : 'THIRD',
+          }
+          yield {
+            type: 'usage',
+            usage: continuation
+              ? { inputTokens: 7, outputTokens: 2 }
+              : { inputTokens: 3, outputTokens: 1 },
+          }
+          return
+        }
+        if (source.includes('RESUME_BTW_AGENT')) {
+          if (
+            source.includes('<tool-use-id>call_resume_btw_agent</tool-use-id>')
+          ) {
+            yield {
+              type: 'text-delta',
+              delta: 'BTW_CONTINUATION_NOTIFICATION_OBSERVED',
+            }
+          } else if (source.includes('resumedAgentId')) {
+            yield { type: 'text-delta', delta: 'BTW_MESSAGE_SENT' }
+          } else {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'call_resume_btw_agent',
+                name: 'SendMessage',
+                input: {
+                  to: targetName,
+                  message: 'CONTINUE_BTW_AGENT',
+                },
+              },
+            }
+            return
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 2, outputTokens: 1 },
+          }
+          return
+        }
         yield {
           type: 'text-delta',
-          delta: calls === 1 ? 'main answer' : 'THIRD',
+          delta: 'main answer',
         }
         yield {
           type: 'usage',
@@ -5539,11 +5600,31 @@ describe('ClaudeSessionService', () => {
       tools: new LocalToolRegistry({ cwd }),
       permissions: { resolve: () => ({ behavior: 'allow' }) },
       enableSubagents: true,
-      subagentToolNames: ['Agent', 'TaskOutput'],
+      subagentToolNames: ['Agent', 'TaskOutput', 'SendMessage'],
       sessionPersistence: true,
       eventSink: (event) => events.push(event),
+      costStateStore,
     })
     const run = await service.run('start here')
+
+    const confirmNotificationDetached =
+      SubagentLifecycleStore.prototype.confirmNotificationDetached
+    let failFirstConfirmation = true
+    vi.spyOn(
+      SubagentLifecycleStore.prototype,
+      'confirmNotificationDetached',
+    ).mockImplementation(function (
+      this: SubagentLifecycleStore,
+      notificationId,
+    ) {
+      if (failFirstConfirmation) {
+        failFirstConfirmation = false
+        return Promise.reject(
+          new Error('injected detached accounting confirmation failure'),
+        )
+      }
+      return confirmNotificationDetached.call(this, notificationId)
+    })
 
     const result = await service.forkSideQuestion(
       run.sessionId,
@@ -5551,6 +5632,7 @@ describe('ClaudeSessionService', () => {
     )
 
     expect(result.name).toBe('reply-with-third')
+    targetName = result.name
     expect(result.agentId).toMatch(/^a[0-9a-f]+$/u)
     const paths = resolveClaudePaths({
       configDir: configRoot,
@@ -5574,14 +5656,129 @@ describe('ClaudeSessionService', () => {
       ]),
     )
     await new Promise((resolve) => setTimeout(resolve, 25))
-    expect(events.filter((event) => event.type === 'warning')).toEqual([])
+    await expect
+      .poll(() => events.filter((event) => event.type === 'warning'))
+      .toEqual([
+        expect.objectContaining({
+          message: 'injected detached accounting confirmation failure',
+        }),
+      ])
     await expect
       .poll(() => readFile(paths.sessionFile, 'utf8'))
       .toContain('"type":"queue-operation","operation":"enqueue"')
     await expect
       .poll(() => readFile(paths.sessionFile, 'utf8'))
       .toContain(`<task-id>${result.agentId}</task-id>`)
+    await expect
+      .poll(async () => {
+        const lifecycle = await new SubagentLifecycleStore(
+          paths.praxisRoot,
+          run.sessionId,
+          result.agentId,
+        ).read()
+        return lifecycle?.notifications?.[0]
+      })
+      .toMatchObject({
+        consumed: false,
+        accounting: {
+          kind: 'detached',
+          model: 'btw-model',
+          delivered: false,
+        },
+      })
+    await expect(service.costSnapshot(run.sessionId)).resolves.toMatchObject({
+      modelUsage: {
+        'btw-model': { inputTokens: 3, outputTokens: 1 },
+      },
+    })
+
+    const resumed = await service.resume(run.sessionId, 'RESUME_BTW_AGENT')
+    expect(resumed).toMatchObject({
+      text: 'BTW_MESSAGE_SENT',
+      usage: { inputTokens: 2, outputTokens: 1 },
+    })
+    await expect
+      .poll(() => readFile(paths.sessionFile, 'utf8'))
+      .toSatisfy(
+        (contents) =>
+          contents.split(`<task-id>${result.agentId}</task-id>`).length === 3,
+      )
+    const lifecycleStore = new SubagentLifecycleStore(
+      paths.praxisRoot,
+      run.sessionId,
+      result.agentId,
+    )
+    await expect
+      .poll(async () => {
+        const state = await lifecycleStore.read()
+        return {
+          status: state?.status,
+          usage: state?.result?.usage,
+          notificationCount: state?.notifications?.length,
+          consumed: state?.notifications?.every(
+            (notification) => notification.consumed,
+          ),
+          accountingDelivered: state?.notifications?.every(
+            (notification) => notification.accounting?.delivered === true,
+          ),
+        }
+      })
+      .toEqual({
+        status: 'completed',
+        usage: { inputTokens: 7, outputTokens: 2 },
+        notificationCount: 2,
+        consumed: true,
+        accountingDelivered: true,
+      })
+    const lifecycle = await lifecycleStore.read()
+    expect(lifecycle).toMatchObject({
+      result: { usage: { inputTokens: 7, outputTokens: 2 } },
+    })
+    expect(lifecycle?.notifications).toHaveLength(2)
+    expect(
+      lifecycle?.notifications?.every((notification) => notification.consumed),
+    ).toBe(true)
+    const accounted = await service.costSnapshot(run.sessionId)
+    expect(accounted.modelUsage['btw-model']).toMatchObject({
+      inputTokens: 15,
+      outputTokens: 5,
+    })
+    await expect(service.costSnapshot(run.sessionId)).resolves.toMatchObject({
+      modelUsage: accounted.modelUsage,
+      apiDurationMs: accounted.apiDurationMs,
+      apiDurationWithoutRetriesMs: accounted.apiDurationWithoutRetriesMs,
+    })
+    const completedTranscript = await readFile(paths.sessionFile, 'utf8')
+    const continuationNotifications = completedTranscript
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; message?: unknown })
+      .filter(
+        (entry) =>
+          entry.type === 'user' &&
+          JSON.stringify(entry.message).includes(
+            '<tool-use-id>call_resume_btw_agent</tool-use-id>',
+          ),
+      )
+    expect(continuationNotifications).toHaveLength(1)
     await service.close()
+
+    const reopened = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      sessionPersistence: true,
+      costStateStore,
+    })
+    const reopenedCost = await reopened.costSnapshot(run.sessionId)
+    expect(reopenedCost.modelUsage['btw-model']).toMatchObject({
+      inputTokens: 15,
+      outputTokens: 5,
+    })
+    await reopened.close()
   })
 
   it('retries the /btw Agent handoff while a foreground turn owns the lease', async () => {
@@ -5645,6 +5842,141 @@ describe('ClaudeSessionService', () => {
       .poll(() => readFile(sessionFile, 'utf8'))
       .toContain(`<task-id>${forked.agentId}</task-id>`)
     expect(warnings).toEqual([])
+    await service.close()
+  })
+
+  it('boundedly closes a background notification write blocked on the session lease', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-notification-close-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.237',
+      provider: queuedProvider(['SESSION_READY']),
+      sessionPersistence: true,
+    })
+    const { sessionId } = await service.run('start')
+    let releaseLease!: () => void
+    const leaseGate = new Promise<void>((resolve) => {
+      releaseLease = resolve
+    })
+    let leaseAcquired!: () => void
+    const acquired = new Promise<void>((resolve) => {
+      leaseAcquired = resolve
+    })
+    const internal = service as unknown as {
+      turnStore(id: string): {
+        withLease<T>(operation: () => Promise<T>): Promise<unknown>
+      }
+      enqueueBackgroundNotifications(
+        id: string,
+        messages: readonly string[],
+      ): Promise<boolean>
+    }
+    const held = internal.turnStore(sessionId).withLease(async () => {
+      leaseAcquired()
+      await leaseGate
+    })
+    await acquired
+    const queued = internal.enqueueBackgroundNotifications(sessionId, [
+      '<task-notification>BLOCKED_WRITE</task-notification>',
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    const queuedResult = queued.then((result) => {
+      releaseLease()
+      return result
+    })
+    const closed = service.close()
+    await expect(
+      Promise.race([
+        closed.then(() => true),
+        new Promise<boolean>((resolve) =>
+          setTimeout(() => resolve(false), 1_000),
+        ),
+      ]),
+    ).resolves.toBe(true)
+    await expect(queuedResult).resolves.toBe(false)
+    await held
+  })
+
+  it('acknowledges each background notification immediately after its append', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-notification-batch-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.237',
+      provider: queuedProvider(['SESSION_READY']),
+      sessionPersistence: true,
+    })
+    const { sessionId } = await service.run('start')
+    const internal = service as unknown as {
+      appendBackgroundNotification(
+        id: string,
+        message: string,
+      ): Promise<boolean>
+      enqueueBackgroundNotifications(
+        id: string,
+        messages: readonly string[],
+        onAppended?: (message: string) => Promise<void>,
+      ): Promise<boolean>
+    }
+    const append = internal.appendBackgroundNotification.bind(service)
+    const first = '<task-notification>FIRST_BATCH_ITEM</task-notification>'
+    const second = '<task-notification>SECOND_BATCH_ITEM</task-notification>'
+    let rejectSecond = true
+    internal.appendBackgroundNotification = async (id, message) => {
+      if (message === second && rejectSecond) {
+        rejectSecond = false
+        throw new Error('injected second append failure')
+      }
+      return append(id, message)
+    }
+    const acknowledged: string[] = []
+    await expect(
+      internal.enqueueBackgroundNotifications(
+        sessionId,
+        [first, second],
+        async (message) => {
+          acknowledged.push(message)
+        },
+      ),
+    ).rejects.toThrow('injected second append failure')
+    expect(acknowledged).toEqual([first])
+
+    internal.appendBackgroundNotification = append
+    await Promise.resolve()
+    await expect(
+      internal.enqueueBackgroundNotifications(
+        sessionId,
+        [second],
+        async (message) => {
+          acknowledged.push(message)
+        },
+      ),
+    ).resolves.toBe(true)
+    expect(acknowledged).toEqual([first, second])
+
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    const delivered = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map(
+        (line) =>
+          JSON.parse(line) as { type: string; message?: { content?: unknown } },
+      )
+      .filter((entry) => entry.type === 'user')
+      .map((entry) => entry.message?.content)
+    expect(delivered.filter((content) => content === first)).toHaveLength(1)
+    expect(delivered.filter((content) => content === second)).toHaveLength(1)
     await service.close()
   })
 
@@ -6697,6 +7029,341 @@ describe('ClaudeSessionService', () => {
     await started
     await service.close()
     expect(aborted).toBe(true)
+  })
+
+  it('routes a later-turn TaskStop to the surviving background Agent owner', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cross-turn-agent-stop-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '23232323-2323-4323-8323-232323232323'
+    await mkdir(cwd, { recursive: true })
+    await writeFile(join(cwd, 'fixture.txt'), 'fixture')
+    let childStarted!: () => void
+    const childRunning = new Promise<void>((resolve) => {
+      childStarted = resolve
+    })
+    let stoppedAgentId = ''
+    let childTurns = 0
+    let outputTurns = 0
+    let messageTurns = 0
+    let stopTurns = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        const source = JSON.stringify(request.messages)
+        const isChild = request.messages.some(
+          (message) =>
+            message.role === 'system' &&
+            message.content.includes('You are a general-purpose subagent'),
+        )
+        if (isChild) {
+          if (childTurns++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'call_child_before_stop',
+                name: 'Read',
+                input: { file_path: join(cwd, 'fixture.txt') },
+              },
+            }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 5, outputTokens: 2 },
+            }
+            return
+          }
+          childStarted()
+          await new Promise<void>((resolve) => {
+            if (request.signal?.aborted) resolve()
+            else
+              request.signal?.addEventListener('abort', () => resolve(), {
+                once: true,
+              })
+          })
+          throw new AgentRunCancelledError()
+        }
+        if (
+          source.includes('CHECK_SURVIVING_AGENT') &&
+          !source.includes('MESSAGE_SURVIVING_AGENT') &&
+          !source.includes('STOP_SURVIVING_AGENT')
+        ) {
+          if (outputTurns++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'call_output_surviving_agent',
+                name: 'TaskOutput',
+                input: {
+                  task_id: stoppedAgentId,
+                  block: false,
+                  timeout: 0,
+                },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'OUTPUT_ROUTED_TO_OWNER' }
+          return
+        }
+        if (
+          source.includes('MESSAGE_SURVIVING_AGENT') &&
+          !source.includes('STOP_SURVIVING_AGENT')
+        ) {
+          if (messageTurns++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'call_message_surviving_agent',
+                name: 'SendMessage',
+                input: {
+                  to: 'survivor',
+                  summary: 'queued before stop',
+                  message: 'QUEUED_OWNER_MESSAGE',
+                },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'MESSAGE_ROUTED_TO_OWNER' }
+          return
+        }
+        if (source.includes('STOP_SURVIVING_AGENT')) {
+          if (stopTurns++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'call_stop_surviving_agent',
+                name: 'TaskStop',
+                input: { task_id: stoppedAgentId },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'STOP_ROUTED_TO_OWNER' }
+          return
+        }
+        if (!source.includes('Async agent launched successfully')) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_launch_surviving_agent',
+              name: 'Agent',
+              input: {
+                description: 'Survive parent cancellation',
+                prompt: 'LONG_RUNNING_CHILD',
+                run_in_background: true,
+                name: 'survivor',
+              },
+            },
+          }
+          return
+        }
+        await new Promise<void>((resolve) => {
+          if (request.signal?.aborted) resolve()
+          else
+            request.signal?.addEventListener('abort', () => resolve(), {
+              once: true,
+            })
+        })
+        throw new AgentRunCancelledError()
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.237',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+      taskToolNames: ['TaskOutput', 'TaskStop'],
+      subagentToolNames: ['Agent', 'TaskOutput', 'TaskStop', 'SendMessage'],
+      sessionPersistence: true,
+    })
+    const parent = new AbortController()
+    const firstTurn = service.run(
+      'LAUNCH_SURVIVING_AGENT',
+      parent.signal,
+      sessionId,
+    )
+    await childRunning
+    const running = await service.taskSnapshots(sessionId)
+    stoppedAgentId = String(running.agents[0]?.agentId)
+    expect(running.agents).toMatchObject([
+      { agentId: stoppedAgentId, status: 'running' },
+    ])
+    parent.abort()
+    await expect(firstTurn).rejects.toBeInstanceOf(AgentRunCancelledError)
+
+    await expect(
+      service.resume(sessionId, 'CHECK_SURVIVING_AGENT'),
+    ).resolves.toMatchObject({ text: 'OUTPUT_ROUTED_TO_OWNER' })
+    await expect(
+      service.resume(sessionId, 'MESSAGE_SURVIVING_AGENT'),
+    ).resolves.toMatchObject({ text: 'MESSAGE_ROUTED_TO_OWNER' })
+    await expect(
+      service.resume(sessionId, 'STOP_SURVIVING_AGENT'),
+    ).resolves.toMatchObject({ text: 'STOP_ROUTED_TO_OWNER' })
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const transcript = await readFile(paths.sessionFile, 'utf8')
+    expect(transcript).toContain('stopped successfully')
+    expect(
+      transcript.split(`<task-id>${stoppedAgentId}</task-id>`),
+    ).toHaveLength(2)
+    expect(transcript).toContain('<status>killed</status>')
+    await vi.waitFor(async () => {
+      await expect(
+        new SubagentLifecycleStore(
+          paths.praxisRoot,
+          sessionId,
+          stoppedAgentId,
+        ).read(),
+      ).resolves.toMatchObject({ status: 'killed' })
+    })
+    const lifecycle = await new SubagentLifecycleStore(
+      paths.praxisRoot,
+      sessionId,
+      stoppedAgentId,
+    ).read()
+    expect(lifecycle).toMatchObject({
+      result: {
+        usage: { inputTokens: 5, outputTokens: 2 },
+        toolUseCount: 1,
+      },
+    })
+    expect(lifecycle?.notifications).toHaveLength(1)
+    expect(lifecycle?.notifications?.[0]?.consumed).toBe(true)
+    expect((await service.taskSnapshots(sessionId)).agents).toContainEqual(
+      expect.objectContaining({
+        agentId: stoppedAgentId,
+        status: 'stopped',
+      }),
+    )
+    await service.close()
+  })
+
+  it('delivers a prior-turn completion notification exactly once after parent cancellation', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-cross-turn-agent-completion-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '24242424-2424-4424-8424-242424242424'
+    await mkdir(cwd, { recursive: true })
+    let markChildStarted!: () => void
+    const childStarted = new Promise<void>((resolve) => {
+      markChildStarted = resolve
+    })
+    let releaseChild!: () => void
+    const childGate = new Promise<void>((resolve) => {
+      releaseChild = resolve
+    })
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        const source = JSON.stringify(request.messages)
+        const isChild = request.messages.some(
+          (message) =>
+            message.role === 'system' &&
+            message.content.includes('You are a general-purpose subagent'),
+        )
+        if (isChild) {
+          markChildStarted()
+          await childGate
+          yield { type: 'text-delta', delta: 'CHILD_COMPLETED' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 7, outputTokens: 3 },
+          }
+          return
+        }
+        if (source.includes('RESUME_AFTER_CHILD_COMPLETION')) {
+          yield {
+            type: 'text-delta',
+            delta: source.includes('<task-notification>')
+              ? 'COMPLETION_NOTIFICATION_OBSERVED'
+              : 'RESUMED_PARENT',
+          }
+          return
+        }
+        if (!source.includes('Async agent launched successfully')) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_launch_completing_agent',
+              name: 'Agent',
+              input: {
+                description: 'Complete after parent cancellation',
+                prompt: 'WAIT_THEN_COMPLETE',
+                run_in_background: true,
+                name: 'finisher',
+              },
+            },
+          }
+          return
+        }
+        await new Promise<void>((resolve) => {
+          if (request.signal?.aborted) resolve()
+          else
+            request.signal?.addEventListener('abort', () => resolve(), {
+              once: true,
+            })
+        })
+        throw new AgentRunCancelledError()
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.237',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+      subagentToolNames: ['Agent', 'TaskOutput', 'TaskStop', 'SendMessage'],
+      sessionPersistence: true,
+    })
+    const parent = new AbortController()
+    const firstTurn = service.run(
+      'LAUNCH_COMPLETING_AGENT',
+      parent.signal,
+      sessionId,
+    )
+    await childStarted
+    const running = await service.taskSnapshots(sessionId)
+    const agentId = String(running.agents[0]?.agentId)
+    parent.abort()
+    await expect(firstTurn).rejects.toBeInstanceOf(AgentRunCancelledError)
+
+    releaseChild()
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const lifecycleStore = new SubagentLifecycleStore(
+      paths.praxisRoot,
+      sessionId,
+      agentId,
+    )
+    await vi.waitFor(async () => {
+      await expect(lifecycleStore.read()).resolves.toMatchObject({
+        status: 'completed',
+        result: {
+          text: 'CHILD_COMPLETED',
+          usage: { inputTokens: 7, outputTokens: 3 },
+        },
+      })
+    })
+    await expect(
+      service.resume(sessionId, 'RESUME_AFTER_CHILD_COMPLETION'),
+    ).resolves.toMatchObject({ text: 'COMPLETION_NOTIFICATION_OBSERVED' })
+
+    const transcript = await readFile(paths.sessionFile, 'utf8')
+    expect(transcript.split(`<task-id>${agentId}</task-id>`)).toHaveLength(2)
+    expect(transcript).toContain('<status>completed</status>')
+    const lifecycle = await lifecycleStore.read()
+    expect(lifecycle?.notifications).toHaveLength(1)
+    expect(lifecycle?.notifications?.[0]?.consumed).toBe(true)
+    await service.close()
   })
 
   it('exposes live Agent snapshots and routes stop through the owning runtime', async () => {

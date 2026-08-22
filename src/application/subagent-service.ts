@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { lstat, mkdir, readFile, readdir } from 'node:fs/promises'
-import { join, relative } from 'node:path'
+import { isAbsolute, join, relative } from 'node:path'
 
 import { Ajv2020 } from 'ajv/dist/2020.js'
 
@@ -11,13 +11,17 @@ import {
   createClaudeAsyncAgentToolUseResult,
   createClaudeAgentToolUseResult,
   createClaudeSidechainRoot,
+  isClaudeAgentId,
   resolveClaudeSidechainPaths,
   toClaudeSidechainEntry,
   type ClaudeSidechainMetadata,
   type ClaudeSidechainPermissionMode,
   type ClaudeSidechainPaths,
 } from '../compatibility/claude/sidechain.js'
-import { projectClaudeModelMessages } from '../compatibility/claude/projection.js'
+import {
+  projectClaudeModelMessages,
+  projectClaudeSidechainContinuationMessages,
+} from '../compatibility/claude/projection.js'
 import {
   type ClaudeTranscriptEntry,
   selectClaudeSchemaAdapter,
@@ -64,6 +68,7 @@ import type {
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { ClaudeSidechainStore } from '../persistence/claude-sidechain-store.js'
 import { InMemorySidechainStore } from '../persistence/in-memory-sidechain-store.js'
+import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import {
   resolveDataPlanePaths,
   type DataPlane,
@@ -75,6 +80,9 @@ import type {
 import {
   BackgroundAgentManager,
   BackgroundAgentRunError,
+  BackgroundAgentShutdownError,
+  backgroundAgentNotificationMarkers,
+  type BackgroundAgentNotificationIdentity,
   type BackgroundAgentSnapshot,
   type BackgroundAgentRunResult,
   type BackgroundAgentTaskSpec,
@@ -82,6 +90,7 @@ import {
 import { isBackgroundBashTaskId } from './background-task-id.js'
 import {
   createManagedWorktree,
+  restoreManagedWorktree,
   type ManagedWorktree,
 } from './managed-worktree.js'
 import { createWorkflowWorktree } from './workflow-worktree.js'
@@ -91,6 +100,101 @@ const DEFAULT_MAX_CALLS = 16
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 
 const SIDECHAIN_DISCOVERY_MAX_DEPTH = 4
+
+function mergeSubagentUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
+  for (const usage of [left, right]) {
+    for (const field of [
+      'inputTokens',
+      'outputTokens',
+      'cacheReadInputTokens',
+      'cacheCreationInputTokens',
+      'webSearchRequests',
+    ] as const) {
+      const value = usage[field]
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+        throw new Error(`Subagent usage has an invalid ${field}`)
+      }
+    }
+    for (const field of ['contextWindow', 'maxOutputTokens'] as const) {
+      const value = usage[field]
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+        throw new Error(`Subagent usage has an invalid ${field}`)
+      }
+    }
+  }
+  const counters = {
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    cacheReadInputTokens:
+      (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0),
+    cacheCreationInputTokens:
+      (left.cacheCreationInputTokens ?? 0) +
+      (right.cacheCreationInputTokens ?? 0),
+    webSearchRequests:
+      (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0),
+  }
+  if (Object.values(counters).some((value) => !Number.isSafeInteger(value))) {
+    throw new Error('Subagent usage total overflow')
+  }
+  const metadata = (field: 'contextWindow' | 'maxOutputTokens') => {
+    const leftValue = left[field]
+    const rightValue = right[field]
+    if (
+      leftValue !== undefined &&
+      rightValue !== undefined &&
+      leftValue !== rightValue
+    ) {
+      throw new Error(`Subagent usage has conflicting ${field}`)
+    }
+    return leftValue ?? rightValue
+  }
+  const contextWindow = metadata('contextWindow')
+  const maxOutputTokens = metadata('maxOutputTokens')
+  return {
+    inputTokens: counters.inputTokens,
+    outputTokens: counters.outputTokens,
+    ...(counters.cacheReadInputTokens === 0
+      ? {}
+      : { cacheReadInputTokens: counters.cacheReadInputTokens }),
+    ...(counters.cacheCreationInputTokens === 0
+      ? {}
+      : { cacheCreationInputTokens: counters.cacheCreationInputTokens }),
+    ...(counters.webSearchRequests === 0
+      ? {}
+      : { webSearchRequests: counters.webSearchRequests }),
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+  }
+}
+
+function mergeSubagentModelUsage(
+  target: Map<string, ModelUsage>,
+  source: ModelUsageByModel,
+): void {
+  for (const [model, usage] of Object.entries(source)) {
+    if (model.trim().length === 0) {
+      throw new Error('Subagent model usage has a blank model name')
+    }
+    target.set(
+      model,
+      mergeSubagentUsage(
+        target.get(model) ?? { inputTokens: 0, outputTokens: 0 },
+        usage,
+      ),
+    )
+  }
+}
+
+class SubagentExecutionFailure extends Error {
+  override readonly name = 'SubagentExecutionFailure'
+
+  constructor(
+    cause: unknown,
+    readonly result: BackgroundAgentRunResult,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+  }
+}
 
 const structuredOnlyTools: ToolRegistry = {
   definitions: () => [],
@@ -146,6 +250,27 @@ interface DiscoveredSidechainCandidate {
   paths: ClaudeSidechainPaths
   metadataModifiedAt?: number
   name?: string
+}
+
+interface ForegroundAgentTask {
+  spec: BackgroundAgentTaskSpec
+  controller: AbortController
+  operation: Promise<BackgroundAgentRunResult>
+  startedAt: number
+  detachParentSignal(): void
+  resolveHandoff(): void
+  backgrounded: boolean
+}
+
+function sidechainAgentIdFromFile(
+  fileName: string,
+  suffix: '.jsonl' | '.meta.json',
+): string | undefined {
+  if (!fileName.startsWith('agent-') || !fileName.endsWith(suffix)) {
+    return undefined
+  }
+  const agentId = fileName.slice('agent-'.length, -suffix.length)
+  return isClaudeAgentId(agentId) ? agentId : undefined
 }
 
 async function readSidechainMetadataName(
@@ -507,6 +632,27 @@ export interface ClaudeSubagentExecutorOptions {
   providerForModel?: (model: string) => ModelProvider
   toolNames?: readonly string[]
   backgroundTaskNotifications?: (waitForRunning: boolean) => Promise<string[]>
+  notificationDelivered?: (notification: {
+    agentId: string
+    toolUseId: string
+    status: 'completed' | 'failed' | 'killed'
+  }) => boolean
+  stopOwnedBackgroundAgent?: (
+    sessionId: string,
+    agentId: string,
+  ) => Promise<string | null>
+  outputOwnedBackgroundAgent?: (
+    sessionId: string,
+    agentId: string,
+    options: { block: boolean; timeout: number },
+  ) => Promise<string | null>
+  sendOwnedBackgroundAgent?: (
+    sessionId: string,
+    agentId: string,
+    message: string,
+    summary: string | undefined,
+    toolUseId: string,
+  ) => string | null
   persistence?: 'disk' | 'memory'
   onLineChanges?: (changes: {
     readonly linesAdded: number
@@ -608,6 +754,7 @@ export class ClaudeSubagentExecutor {
     string,
     InMemorySidechainStore
   >()
+  private readonly foreground = new Map<string, ForegroundAgentTask>()
 
   isEnabled(name: string): boolean {
     return this.options.toolNames?.includes(name) ?? true
@@ -618,7 +765,11 @@ export class ClaudeSubagentExecutor {
   }
 
   async close(): Promise<void> {
+    for (const agentId of [...this.foreground.keys()]) {
+      this.backgroundForegroundTask(agentId)
+    }
     await this.background.close()
+    this.foreground.clear()
     this.ephemeralSidechains.clear()
   }
 
@@ -626,8 +777,64 @@ export class ClaudeSubagentExecutor {
     return this.background.snapshots()
   }
 
-  stopBackgroundTask(taskId: string): string {
-    return this.background.stop(taskId)
+  hasForegroundTask(): boolean {
+    return this.foreground.size > 0
+  }
+
+  backgroundForegroundTask(identifier?: string): BackgroundAgentSnapshot {
+    const candidates = [...this.foreground.entries()]
+    const selected =
+      identifier === undefined
+        ? candidates.at(-1)
+        : candidates.find(
+            ([agentId, task]) =>
+              agentId === identifier || task.spec.name === identifier,
+          )
+    if (!selected) {
+      throw new Error(
+        identifier === undefined
+          ? 'No foreground agent is running'
+          : `No foreground agent found with ID or name: ${identifier}`,
+      )
+    }
+    const [, task] = selected
+    if (task.backgrounded) {
+      throw new Error(`Agent ${task.spec.agentId} is already backgrounded`)
+    }
+    const snapshot = this.background.adopt({
+      spec: task.spec,
+      controller: task.controller,
+      operation: task.operation,
+      startedAt: task.startedAt,
+    })
+    task.backgrounded = true
+    task.detachParentSignal()
+    task.resolveHandoff()
+    return snapshot
+  }
+
+  stopBackgroundTask(taskId: string): Promise<string> {
+    return this.background.stopAndWait(taskId)
+  }
+
+  outputBackgroundTask(
+    taskId: string,
+    options: { block: boolean; timeout: number },
+  ): Promise<string> {
+    return this.background.output(taskId, options)
+  }
+
+  sendBackgroundMessage(
+    agentId: string,
+    message: string,
+    summary: string | undefined,
+    toolUseId: string,
+  ): string {
+    return this.background.send(agentId, message, summary, toolUseId)
+  }
+
+  stopAllBackgroundTasks(): readonly string[] {
+    return this.background.stopAll()
   }
 
   private cwd(): string {
@@ -648,7 +855,8 @@ export class ClaudeSubagentExecutor {
         ? definition.model
         : undefined
     const model = environmentModel || input.model || configuredModel
-    const parentPermissionMode = this.options.parentPermissionMode?.()
+    const parentPermissionMode =
+      this.options.parentPermissionMode?.() ?? 'default'
     const definitionCanOverridePermissionMode = ![
       'acceptEdits',
       'auto',
@@ -657,7 +865,7 @@ export class ClaudeSubagentExecutor {
     const permissionMode =
       input.permissionMode ??
       (definitionCanOverridePermissionMode
-        ? definition?.permissionMode
+        ? (definition?.permissionMode ?? parentPermissionMode)
         : parentPermissionMode)
     const isolation = input.isolation ?? definition?.isolation
     return {
@@ -673,6 +881,7 @@ export class ClaudeSubagentExecutor {
     sessionId: string,
     depth: number,
     promptIdForCall: (callId: string) => string | null,
+    parentAgentId?: string,
   ): ToolRegistry {
     return new ClaudeSubagentToolRegistry(
       this.options.baseTools,
@@ -680,6 +889,7 @@ export class ClaudeSubagentExecutor {
       sessionId,
       depth,
       promptIdForCall,
+      parentAgentId,
     )
   }
 
@@ -833,7 +1043,11 @@ export class ClaudeSubagentExecutor {
     if (input.model && !this.options.providerForModel) {
       throw new Error('Agent model overrides are unavailable for this provider')
     }
-    if (input.permissionMode && !this.options.permissionResolverForMode) {
+    if (
+      input.permissionMode &&
+      input.permissionMode !== 'default' &&
+      !this.options.permissionResolverForMode
+    ) {
       throw new Error('Agent permission mode overrides are unavailable')
     }
     return {
@@ -858,6 +1072,7 @@ export class ClaudeSubagentExecutor {
     depth: number,
     promptId: string,
     context: ToolExecutionContext,
+    parentAgentId?: string,
   ): Promise<ToolExecutionResult> {
     this.calls += 1
     const maxCalls = this.options.maxCalls ?? DEFAULT_MAX_CALLS
@@ -867,11 +1082,17 @@ export class ClaudeSubagentExecutor {
     const input = this.resolveAgentInput(parseAgentInput(call))
     const spawnDepth = depth + 1
     const agentId = `a${randomBytes(8).toString('hex')}`
-    const paths = this.sessionPaths(sessionId)
+    const parentCwd = context.cwd
+    const paths = this.sessionPaths(sessionId, parentCwd)
     const initialIsolation = input.isolation
-      ? await this.createAgentWorktree(paths.praxisRoot, sessionId, agentId)
+      ? await this.createAgentWorktree(
+          paths.praxisRoot,
+          sessionId,
+          agentId,
+          parentCwd,
+        )
       : undefined
-    const agentCwd = initialIsolation?.cwd ?? this.cwd()
+    const agentCwd = initialIsolation?.cwd ?? parentCwd
     const sidechainPaths = resolveClaudeSidechainPaths(
       paths.projectRoot,
       sessionId,
@@ -905,6 +1126,8 @@ export class ClaudeSubagentExecutor {
           ? { permissionMode: input.permissionMode }
           : {}),
         ...(input.isolation ? { isolation: input.isolation } : {}),
+        ...(parentAgentId ? { parentAgentId } : {}),
+        ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
       })
     } catch (error) {
       await initialIsolation?.cleanup()
@@ -913,11 +1136,27 @@ export class ClaudeSubagentExecutor {
     const provider = input.model
       ? (this.options.providerForModel?.(input.model) ?? this.options.provider)
       : this.options.provider
-    const run = this.createBackgroundAgentRun({
+    const lifecycleStore =
+      this.options.persistence === 'memory'
+        ? undefined
+        : new SubagentLifecycleStore(
+            paths.praxisRoot,
+            sessionId,
+            agentId,
+            sidechainPaths.transcriptFile,
+          )
+    const backgroundRun = this.createBackgroundAgentRun({
       input,
+      parentCwd,
+      ...(lifecycleStore ? { lifecycle: lifecycleStore } : {}),
       ...(initialIsolation ? { initialIsolation } : {}),
       createIsolation: () =>
-        this.createAgentWorktree(paths.praxisRoot, sessionId, agentId),
+        this.createAgentWorktree(
+          paths.praxisRoot,
+          sessionId,
+          agentId,
+          parentCwd,
+        ),
       execute: (cwd, message, signal, continuation) =>
         sidechain.withLease(async (lease) =>
           this.runSidechain({
@@ -941,48 +1180,92 @@ export class ClaudeSubagentExecutor {
           }),
         ),
     })
-    if (input.runInBackground) {
-      const resolvedModel = provider.model ?? 'praxis/provider'
-      this.background.launch({
+    const resolvedModel = provider.model ?? 'praxis/provider'
+    const spec: BackgroundAgentTaskSpec = {
+      agentId,
+      ...(input.name ? { name: input.name } : {}),
+      agentType: input.subagentType,
+      description: input.description,
+      prompt: input.prompt,
+      toolUseId: call.id,
+      outputFile: sidechainPaths.transcriptFile,
+      resolvedModel,
+      run: backgroundRun.run,
+      markBackground: backgroundRun.markBackground,
+      ...(lifecycleStore
+        ? {
+            acknowledgeNotification: (notificationId: string) =>
+              lifecycleStore.acknowledgeNotification(notificationId),
+            prepareNotificationDetached: (
+              notificationId: string,
+              model: string,
+            ) =>
+              lifecycleStore.prepareNotificationDetached(notificationId, model),
+            confirmNotificationDetached: (notificationId: string) =>
+              lifecycleStore.confirmNotificationDetached(notificationId),
+          }
+        : {}),
+    }
+    const asyncResult = (): ToolExecutionResult => ({
+      content: this.asyncLaunchResult({
         agentId,
-        ...(input.name ? { name: input.name } : {}),
-        agentType: input.subagentType,
         description: input.description,
-        prompt: input.prompt,
-        toolUseId: call.id,
         outputFile: sidechainPaths.transcriptFile,
-        resolvedModel,
-        run,
-      })
-      return {
-        content: this.asyncLaunchResult({
+        ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
+      }),
+      isError: false,
+      nativeToolUseResult: {
+        ...createClaudeAsyncAgentToolUseResult({
+          prompt: input.prompt,
           agentId,
           description: input.description,
+          resolvedModel,
           outputFile: sidechainPaths.transcriptFile,
-          ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
         }),
-        isError: false,
-        nativeToolUseResult: {
-          ...createClaudeAsyncAgentToolUseResult({
-            prompt: input.prompt,
-            agentId,
-            description: input.description,
-            resolvedModel,
-            outputFile: sidechainPaths.transcriptFile,
-          }),
-          ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
-        },
-      }
+        ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
+      },
+    })
+    if (input.runInBackground) {
+      this.background.launch(spec)
+      return asyncResult()
     }
 
     const controller = new AbortController()
-    const abort = () => controller.abort()
+    const abort = () => controller.abort(context.signal?.reason)
     context.signal?.addEventListener('abort', abort, { once: true })
+    if (context.signal?.aborted) abort()
+    const operation = backgroundRun.run(
+      input.prompt,
+      controller.signal,
+      false,
+      call.id,
+    )
+    let resolveHandoff!: () => void
+    const handoff = new Promise<void>((resolve) => {
+      resolveHandoff = resolve
+    })
+    const foreground: ForegroundAgentTask = {
+      spec,
+      controller,
+      operation,
+      startedAt: Date.now(),
+      detachParentSignal: () =>
+        context.signal?.removeEventListener('abort', abort),
+      resolveHandoff,
+      backgrounded: false,
+    }
+    this.foreground.set(agentId, foreground)
     let result: BackgroundAgentRunResult
     try {
-      result = await run(input.prompt, controller.signal, false)
+      const outcome = await Promise.race([
+        operation.then((value) => ({ kind: 'completed' as const, value })),
+        handoff.then(() => ({ kind: 'backgrounded' as const })),
+      ])
+      if (outcome.kind === 'backgrounded') return asyncResult()
+      result = outcome.value
     } finally {
-      context.signal?.removeEventListener('abort', abort)
+      foreground.detachParentSignal()
+      this.foreground.delete(agentId)
     }
     const maxOutputBytes =
       this.options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
@@ -1020,7 +1303,7 @@ export class ClaudeSubagentExecutor {
           agentId,
           agentType: input.subagentType,
           text: result.text,
-          resolvedModel: provider.model ?? 'praxis/provider',
+          resolvedModel,
           durationMs: result.durationMs,
           usage: result.usage,
           toolUseCount: result.toolUseCount,
@@ -1060,17 +1343,17 @@ export class ClaudeSubagentExecutor {
     return store
   }
 
-  private sessionPaths(sessionId: string) {
+  private sessionPaths(sessionId: string, cwd = this.cwd()) {
     return this.options.dataPlane === 'native'
       ? resolveDataPlanePaths({
           dataPlane: 'native',
           root: this.options.configRoot,
-          cwd: this.cwd(),
+          cwd,
           sessionId,
         })
       : resolveClaudePaths({
           configDir: this.options.configRoot,
-          cwd: this.cwd(),
+          cwd,
           sessionId,
         })
   }
@@ -1079,9 +1362,10 @@ export class ClaudeSubagentExecutor {
     praxisRoot: string,
     sessionId: string,
     agentId: string,
+    cwd = this.cwd(),
   ): Promise<ManagedWorktree> {
     return createManagedWorktree({
-      cwd: this.cwd(),
+      cwd,
       parentDirectory: join(praxisRoot, 'agent-worktrees'),
       directoryName: `${sessionId}-${agentId}`,
       label: 'Agent',
@@ -1090,6 +1374,8 @@ export class ClaudeSubagentExecutor {
 
   private createBackgroundAgentRun(options: {
     input: AgentInput
+    parentCwd: string
+    lifecycle?: SubagentLifecycleStore
     initialIsolation?: ManagedWorktree
     createIsolation: () => Promise<ManagedWorktree>
     execute: (
@@ -1103,17 +1389,64 @@ export class ClaudeSubagentExecutor {
       modelUsage?: ModelUsageByModel
       toolUseCount: number
     }>
-  }): BackgroundAgentTaskSpec['run'] {
+  }): {
+    run: BackgroundAgentTaskSpec['run']
+    markBackground(): void
+  } {
     let availableIsolation = options.initialIsolation
     let retainedIsolation: ManagedWorktree | undefined
-    return async (message, signal, continuation) => {
-      const isolation = options.input.isolation
-        ? (retainedIsolation ??
-          availableIsolation ??
-          (await options.createIsolation()))
-        : undefined
-      availableIsolation = undefined
+    let notificationExpected = options.input.runInBackground
+    const run: BackgroundAgentTaskSpec['run'] = async (
+      message,
+      signal,
+      continuation,
+      currentToolUseId,
+    ) => {
+      await options.lifecycle?.write('running')
       const startedAt = Date.now()
+      let isolation: ManagedWorktree | undefined
+      try {
+        isolation = options.input.isolation
+          ? (retainedIsolation ??
+            availableIsolation ??
+            (await options.createIsolation()))
+          : undefined
+      } catch (error) {
+        const failureMessage =
+          error instanceof Error ? error.message : String(error)
+        const failureResult: BackgroundAgentRunResult = {
+          text: failureMessage,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          toolUseCount: 0,
+          durationMs: Date.now() - startedAt,
+        }
+        const status = signal.aborted ? 'killed' : 'failed'
+        const notificationId =
+          notificationExpected &&
+          !(signal.reason instanceof BackgroundAgentShutdownError)
+            ? randomUUID()
+            : undefined
+        await options.lifecycle?.write(status, failureMessage, {
+          result: failureResult,
+          ...(notificationId
+            ? {
+                notification: {
+                  id: notificationId,
+                  status,
+                  toolUseId: currentToolUseId,
+                  error: failureMessage,
+                },
+              }
+            : {}),
+        })
+        if (!notificationExpected) throw error
+        throw new BackgroundAgentRunError(
+          failureMessage,
+          { ...failureResult, ...(notificationId ? { notificationId } : {}) },
+          error,
+        )
+      }
+      availableIsolation = undefined
       let result:
         | {
             text: string
@@ -1128,7 +1461,7 @@ export class ClaudeSubagentExecutor {
       let cleanup: { retained: boolean; reason?: string } | undefined
       try {
         result = await options.execute(
-          isolation?.cwd ?? this.cwd(),
+          isolation?.cwd ?? options.parentCwd,
           message,
           signal,
           continuation,
@@ -1136,44 +1469,143 @@ export class ClaudeSubagentExecutor {
       } catch (error) {
         failure = error
       } finally {
-        cleanup = await isolation?.cleanup()
+        try {
+          cleanup = await isolation?.cleanup()
+        } catch (error) {
+          failure ??= error
+        }
         retainedIsolation = cleanup?.retained ? isolation : undefined
       }
       if (failure !== undefined) {
-        if (isolation && cleanup) {
-          const message =
-            failure instanceof Error ? failure.message : String(failure)
-          const result: BackgroundAgentRunResult = {
-            text: message,
-            usage: { inputTokens: 0, outputTokens: 0 },
-            toolUseCount: 0,
-            durationMs: Date.now() - startedAt,
-            isolationPath: isolation.cwd,
-            isolationRetained: cleanup.retained,
-            ...(cleanup.reason ? { isolationWarning: cleanup.reason } : {}),
-          }
-          throw new BackgroundAgentRunError(
-            cleanup.reason ? `${message}\n${cleanup.reason}` : message,
-            result,
-            failure,
-          )
+        const underlyingFailure =
+          failure instanceof SubagentExecutionFailure ? failure.cause : failure
+        const failureMessage =
+          underlyingFailure instanceof Error
+            ? underlyingFailure.message
+            : String(underlyingFailure)
+        const detail = cleanup?.reason
+          ? `${failureMessage}\n${cleanup.reason}`
+          : failureMessage
+        const partialResult =
+          failure instanceof SubagentExecutionFailure
+            ? failure.result
+            : undefined
+        const failureResult: BackgroundAgentRunResult = {
+          ...partialResult,
+          text: failureMessage,
+          usage: partialResult?.usage ?? {
+            inputTokens: 0,
+            outputTokens: 0,
+          },
+          toolUseCount: partialResult?.toolUseCount ?? 0,
+          durationMs: Date.now() - startedAt,
+          ...(isolation ? { isolationPath: isolation.cwd } : {}),
+          ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
+          ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
         }
-        if (cleanup?.reason) {
-          throw new Error(
-            `${failure instanceof Error ? failure.message : String(failure)}\n${cleanup.reason}`,
-            { cause: failure },
-          )
+        const status = signal.aborted ? 'killed' : 'failed'
+        const notificationId =
+          notificationExpected &&
+          !(signal.reason instanceof BackgroundAgentShutdownError)
+            ? randomUUID()
+            : undefined
+        await options.lifecycle?.write(status, detail, {
+          result: failureResult,
+          ...(notificationId
+            ? {
+                notification: {
+                  id: notificationId,
+                  status,
+                  toolUseId: currentToolUseId,
+                  error: detail,
+                },
+              }
+            : {}),
+        })
+        if (!notificationExpected && !isolation && !cleanup?.reason) {
+          throw underlyingFailure
         }
-        throw failure
+        throw new BackgroundAgentRunError(
+          detail,
+          { ...failureResult, ...(notificationId ? { notificationId } : {}) },
+          underlyingFailure,
+        )
       }
-      if (!result) throw new Error('Agent completed without a result')
-      return {
+      if (!result) {
+        const error = new Error('Agent completed without a result')
+        const failureResult: BackgroundAgentRunResult = {
+          text: error.message,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          toolUseCount: 0,
+          durationMs: Date.now() - startedAt,
+          ...(isolation ? { isolationPath: isolation.cwd } : {}),
+          ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
+          ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
+        }
+        const notificationId =
+          notificationExpected &&
+          !(signal.reason instanceof BackgroundAgentShutdownError)
+            ? randomUUID()
+            : undefined
+        await options.lifecycle?.write('failed', error.message, {
+          result: failureResult,
+          ...(notificationId
+            ? {
+                notification: {
+                  id: notificationId,
+                  status: 'failed',
+                  toolUseId: currentToolUseId,
+                  error: error.message,
+                },
+              }
+            : {}),
+        })
+        if (!notificationExpected) throw error
+        throw new BackgroundAgentRunError(
+          error.message,
+          { ...failureResult, ...(notificationId ? { notificationId } : {}) },
+          error,
+        )
+      }
+      const finalResult: BackgroundAgentRunResult = {
         ...result,
         durationMs: Date.now() - startedAt,
         ...(isolation ? { isolationPath: isolation.cwd } : {}),
         ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
         ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
       }
+      const status = signal.aborted ? 'killed' : 'completed'
+      const detail = signal.aborted
+        ? 'Agent was aborted before terminal cleanup'
+        : undefined
+      const notificationId =
+        notificationExpected &&
+        !(signal.reason instanceof BackgroundAgentShutdownError)
+          ? randomUUID()
+          : undefined
+      await options.lifecycle?.write(status, detail, {
+        result: finalResult,
+        ...(notificationId
+          ? {
+              notification: {
+                id: notificationId,
+                status,
+                toolUseId: currentToolUseId,
+                error: status === 'killed' ? (detail ?? null) : null,
+              },
+            }
+          : {}),
+      })
+      return {
+        ...finalResult,
+        ...(notificationId ? { notificationId } : {}),
+      }
+    }
+    return {
+      run,
+      markBackground: () => {
+        notificationExpected = true
+      },
     }
   }
 
@@ -1357,10 +1789,22 @@ export class ClaudeSubagentExecutor {
   async executeManagement(
     call: ModelToolCall,
     sessionId: string,
+    context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
     if (call.name === 'TaskOutput') {
       const taskId = String(call.input.task_id)
-      await this.hydrateCompletedTask(sessionId, taskId)
+      const owned = await this.options.outputOwnedBackgroundAgent?.(
+        sessionId,
+        taskId,
+        {
+          block: Boolean(call.input.block),
+          timeout: Number(call.input.timeout),
+        },
+      )
+      if (owned !== undefined && owned !== null) {
+        return { content: owned, isError: false }
+      }
+      await this.hydratePersistedTask(sessionId, taskId, context.cwd)
       return {
         content: await this.background.output(taskId, {
           block: Boolean(call.input.block),
@@ -1371,38 +1815,134 @@ export class ClaudeSubagentExecutor {
     }
     if (call.name === 'TaskStop') {
       const taskId = String(call.input.task_id)
-      await this.hydrateCompletedTask(sessionId, taskId)
-      return { content: this.background.stop(taskId), isError: false }
+      const owned = await this.options.stopOwnedBackgroundAgent?.(
+        sessionId,
+        taskId,
+      )
+      if (owned !== undefined && owned !== null) {
+        return { content: owned, isError: false }
+      }
+      await this.hydratePersistedTask(sessionId, taskId, context.cwd)
+      return {
+        content: await this.background.stopAndWait(taskId),
+        isError: false,
+      }
     }
     const agentId = String(call.input.to)
-    await this.hydrateCompletedTask(sessionId, agentId)
+    const summary =
+      typeof call.input.summary === 'string' ? call.input.summary : undefined
+    const owned = this.options.sendOwnedBackgroundAgent?.(
+      sessionId,
+      agentId,
+      String(call.input.message),
+      summary,
+      call.id,
+    )
+    if (owned !== undefined && owned !== null) {
+      return { content: owned, isError: false }
+    }
+    await this.hydratePersistedTask(sessionId, agentId, context.cwd)
     return {
       content: this.background.send(
         agentId,
         String(call.input.message),
-        typeof call.input.summary === 'string' ? call.input.summary : undefined,
+        summary,
         call.id,
       ),
       isError: false,
     }
   }
 
-  notifications(waitForRunning: boolean): Promise<{
+  notifications(
+    waitForRunning: boolean,
+    consume = true,
+  ): Promise<{
     messages: string[]
     usage: ModelUsage
     modelUsage?: ModelUsageByModel
     durationApiMs?: number
     durationApiWithoutRetriesMs?: number
   }> {
-    return this.background.notifications({ waitForRunning })
+    return this.background.notifications({ waitForRunning, consume })
   }
 
-  private async hydrateCompletedTask(
+  acknowledgeNotifications(messages: readonly string[]): Promise<void> {
+    return this.background.acknowledge(messages)
+  }
+
+  prepareNotificationsDetached(messages: readonly string[]): Promise<void> {
+    return this.background.prepareNotificationsDetached(messages)
+  }
+
+  confirmNotificationsDetached(messages: readonly string[]): Promise<void> {
+    return this.background.confirmNotificationsDetached(messages)
+  }
+
+  reconcileDeliveredNotifications(
+    delivered: (
+      notification: BackgroundAgentNotificationIdentity,
+    ) => boolean = this.options.notificationDelivered ?? (() => false),
+  ): Promise<void> {
+    return this.background.acknowledgeDelivered(delivered)
+  }
+
+  reconcileDetachedNotifications(
+    delivered: (notification: BackgroundAgentNotificationIdentity) => boolean,
+  ): Promise<void> {
+    return this.background.acknowledgeDeliveredAsDetached(delivered)
+  }
+
+  notificationClaimAgentIds(): string[] {
+    return this.background.notificationClaimAgentIds()
+  }
+
+  async hydratePersistedTasks(
+    sessionId: string,
+    parentCwd: string,
+    excludedAgentIds: ReadonlySet<string> = new Set(),
+  ): Promise<void> {
+    if (this.options.persistence === 'memory') return
+    const paths = this.sessionPaths(sessionId, parentCwd)
+    const candidates = await this.discoverSidechainCandidates(
+      paths.projectRoot,
+      sessionId,
+    )
+    for (const agentId of new Set(
+      candidates.map((candidate) => candidate.agentId),
+    )) {
+      if (excludedAgentIds.has(agentId) || this.background.has(agentId)) {
+        continue
+      }
+      try {
+        const lifecycle = await new SubagentLifecycleStore(
+          paths.praxisRoot,
+          sessionId,
+          agentId,
+        ).read()
+        if (
+          !lifecycle?.notifications?.some(
+            (notification) => !notification.consumed,
+          )
+        ) {
+          continue
+        }
+        await this.hydratePersistedTask(sessionId, agentId, parentCwd)
+      } catch (error) {
+        this.options.eventSink?.({
+          type: 'warning',
+          message: `Background agent ${agentId} could not be recovered automatically: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      }
+    }
+  }
+
+  private async hydratePersistedTask(
     sessionId: string,
     identifier: string,
+    parentCwd: string,
   ): Promise<void> {
     if (this.background.has(identifier)) return
-    const paths = this.sessionPaths(sessionId)
+    const paths = this.sessionPaths(sessionId, parentCwd)
     const sidechainPaths = await this.resolvePersistedSidechain(
       paths.projectRoot,
       sessionId,
@@ -1440,12 +1980,23 @@ export class ClaudeSubagentExecutor {
         : ''
     const projected = projectClaudeModelMessages(snapshot.entries)
     const lastAssistant = projected.at(-1)
-    if (
-      !lastAssistant ||
-      lastAssistant.role !== 'assistant' ||
-      (lastAssistant.toolCalls?.length ?? 0) > 0
-    ) {
-      throw new Error(`Background agent ${agentId} is not completed`)
+    const completed =
+      lastAssistant?.role === 'assistant' &&
+      lastAssistant.content.trim().length > 0 &&
+      (lastAssistant.toolCalls?.length ?? 0) === 0
+    const lifecycleStore = new SubagentLifecycleStore(
+      paths.praxisRoot,
+      sessionId,
+      agentId,
+      sidechainPaths.transcriptFile,
+    )
+    const lifecycle = await lifecycleStore.read()
+    const lifecycleIsCurrent =
+      lifecycle !== null && (await lifecycleStore.matchesTranscript(lifecycle))
+    if (lifecycleIsCurrent && lifecycle.status === 'completed' && !completed) {
+      throw new Error(
+        `Background agent ${agentId} has completed lifecycle state but an incomplete sidechain`,
+      )
     }
     const agentType = metadata?.agentType ?? 'general-purpose'
     const description = metadata?.description ?? 'Recovered Claude sidechain'
@@ -1453,7 +2004,57 @@ export class ClaudeSubagentExecutor {
     const spawnDepth = metadata?.spawnDepth ?? 1
     const name = metadata?.name
     const permissionMode = metadata?.permissionMode
-    const isolation = metadata?.isolation
+    let isolation = metadata?.isolation
+    let restoredIsolation: ManagedWorktree | undefined
+    let restoredCwd = parentCwd
+    if (isolation === 'worktree') {
+      if (metadata?.worktreePath === undefined) {
+        this.options.eventSink?.({
+          type: 'warning',
+          message: `Background agent ${agentId} has no retained worktree path; falling back to parent cwd ${parentCwd}`,
+        })
+        isolation = undefined
+      } else {
+        try {
+          restoredIsolation = await restoreManagedWorktree({
+            cwd: parentCwd,
+            path: metadata.worktreePath,
+            label: 'Agent',
+          })
+        } catch (error) {
+          this.options.eventSink?.({
+            type: 'warning',
+            message: `Background agent ${agentId} could not restore its retained worktree; falling back to parent cwd ${parentCwd}: ${error instanceof Error ? error.message : String(error)}`,
+          })
+          isolation = undefined
+        }
+      }
+    } else {
+      const persistedCwd = root.cwd
+      if (
+        typeof persistedCwd === 'string' &&
+        persistedCwd.length > 0 &&
+        !persistedCwd.includes('\0') &&
+        isAbsolute(persistedCwd)
+      ) {
+        try {
+          if (!(await lstat(persistedCwd)).isDirectory()) {
+            throw new Error('persisted cwd is not a directory')
+          }
+          restoredCwd = persistedCwd
+        } catch (error) {
+          this.options.eventSink?.({
+            type: 'warning',
+            message: `Background agent ${agentId} could not restore its persisted cwd; falling back to parent cwd ${parentCwd}: ${error instanceof Error ? error.message : String(error)}`,
+          })
+        }
+      } else {
+        this.options.eventSink?.({
+          type: 'warning',
+          message: `Background agent ${agentId} has an invalid persisted cwd; falling back to parent cwd ${parentCwd}`,
+        })
+      }
+    }
     const input: AgentInput = {
       description,
       prompt,
@@ -1464,10 +2065,18 @@ export class ClaudeSubagentExecutor {
       runInBackground: true,
     }
     const provider = this.options.provider
-    const run = this.createBackgroundAgentRun({
+    const backgroundRun = this.createBackgroundAgentRun({
       input,
+      parentCwd: restoredCwd,
+      lifecycle: lifecycleStore,
+      ...(restoredIsolation ? { initialIsolation: restoredIsolation } : {}),
       createIsolation: () =>
-        this.createAgentWorktree(paths.praxisRoot, sessionId, agentId),
+        this.createAgentWorktree(
+          paths.praxisRoot,
+          sessionId,
+          agentId,
+          parentCwd,
+        ),
       execute: (cwd, message, signal, continuation) =>
         sidechain.withLease(async (lease) =>
           this.runSidechain({
@@ -1491,25 +2100,78 @@ export class ClaudeSubagentExecutor {
           }),
         ),
     })
-    this.background.registerCompleted(
-      {
-        agentId,
-        ...(name ? { name } : {}),
-        agentType,
-        description,
-        prompt,
-        toolUseId,
-        outputFile: sidechainPaths.transcriptFile,
-        resolvedModel: provider.model ?? 'praxis/provider',
-        run,
-      },
-      {
-        text: lastAssistant.content,
-        usage: { inputTokens: 0, outputTokens: 0 },
-        toolUseCount: 0,
-        durationMs: 0,
-      },
-    )
+    const spec = {
+      agentId,
+      ...(name ? { name } : {}),
+      agentType,
+      description,
+      prompt,
+      toolUseId,
+      outputFile: sidechainPaths.transcriptFile,
+      resolvedModel: provider.model ?? 'praxis/provider',
+      run: backgroundRun.run,
+      markBackground: backgroundRun.markBackground,
+      acknowledgeNotification: (notificationId: string) =>
+        lifecycleStore.acknowledgeNotification(notificationId),
+      prepareNotificationDetached: (notificationId: string, model: string) =>
+        lifecycleStore.prepareNotificationDetached(notificationId, model),
+      confirmNotificationDetached: (notificationId: string) =>
+        lifecycleStore.confirmNotificationDetached(notificationId),
+    }
+    if (lifecycleIsCurrent && lifecycle.status === 'failed') {
+      this.background.registerTerminal(
+        spec,
+        'failed',
+        lifecycle.detail ?? 'Persisted agent failed',
+      )
+    } else if (lifecycleIsCurrent && lifecycle.status === 'killed') {
+      this.background.registerTerminal(
+        spec,
+        'stopped',
+        lifecycle.detail ?? 'Persisted agent was killed',
+      )
+    } else if (completed) {
+      this.background.registerCompleted(
+        spec,
+        lifecycleIsCurrent && lifecycle.result
+          ? lifecycle.result
+          : {
+              text: lastAssistant.content,
+              usage: { inputTokens: 0, outputTokens: 0 },
+              toolUseCount: 0,
+              durationMs: 0,
+            },
+      )
+    } else {
+      this.background.registerInterrupted(spec)
+    }
+    for (const notification of lifecycle?.notifications ?? []) {
+      if (notification.consumed) continue
+      if (
+        this.options.notificationDelivered?.({
+          agentId,
+          toolUseId: notification.toolUseId,
+          status: notification.status,
+        })
+      ) {
+        if (
+          notification.accounting?.kind === 'detached' &&
+          !notification.accounting.delivered
+        ) {
+          await lifecycleStore.confirmNotificationDetached(notification.id)
+        }
+        await lifecycleStore.acknowledgeNotification(notification.id)
+        continue
+      }
+      this.background.registerPersistedNotification(agentId, {
+        id: notification.id,
+        status:
+          notification.status === 'killed' ? 'stopped' : notification.status,
+        result: notification.result,
+        error: notification.error,
+        toolUseId: notification.toolUseId,
+      })
+    }
   }
 
   private async resolvePersistedSidechain(
@@ -1517,7 +2179,7 @@ export class ClaudeSubagentExecutor {
     sessionId: string,
     identifier: string,
   ): Promise<ClaudeSidechainPaths | null> {
-    const isAgentId = /^a[0-9a-f]{16}$/u.test(identifier)
+    const isAgentId = isClaudeAgentId(identifier)
     const isName = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(identifier)
     if (!isAgentId && !isName) return null
     const candidates = await this.discoverSidechainCandidates(
@@ -1529,6 +2191,11 @@ export class ClaudeSubagentExecutor {
         ? candidate.agentId === identifier
         : candidate.name === identifier,
     )
+    if (matches.length > 1) {
+      throw new Error(
+        `Ambiguous persisted background agent ${identifier}: ${matches.length} sidechains match`,
+      )
+    }
     matches.sort(
       (left, right) =>
         (right.metadataModifiedAt ?? -Infinity) -
@@ -1576,12 +2243,12 @@ export class ClaudeSubagentExecutor {
             return
           }
           if (!entry.isFile()) return
-          const metadataMatch = /^agent-(a[0-9a-f]{16})\.meta\.json$/u.exec(
+          const metadataAgentId = sidechainAgentIdFromFile(
             entry.name,
+            '.meta.json',
           )
-          if (metadataMatch) {
-            const agentId = metadataMatch[1]
-            if (agentId === undefined) return
+          if (metadataAgentId !== undefined) {
+            const agentId = metadataAgentId
             const transcriptEntry = byName.get(`agent-${agentId}.jsonl`)
             if (
               !transcriptEntry ||
@@ -1613,12 +2280,12 @@ export class ClaudeSubagentExecutor {
             })
             return
           }
-          const transcriptMatch = /^agent-(a[0-9a-f]{16})\.jsonl$/u.exec(
+          const transcriptAgentId = sidechainAgentIdFromFile(
             entry.name,
+            '.jsonl',
           )
-          if (!transcriptMatch) return
-          const agentId = transcriptMatch[1]
-          if (agentId === undefined) return
+          if (transcriptAgentId === undefined) return
+          const agentId = transcriptAgentId
           // A metadata companion (even an invalid one) is owned by the
           // metadata branch; only a bare transcript without metadata is a
           // legacy candidate.
@@ -1684,14 +2351,19 @@ export class ClaudeSubagentExecutor {
     toolUseCount: number
   }> {
     const cwd = options.cwd ?? this.cwd()
-    const permissions = options.input.permissionMode
-      ? this.options.permissionResolverForMode?.(options.input.permissionMode)
-      : this.options.permissions
+    const permissions =
+      options.input.permissionMode && options.input.permissionMode !== 'default'
+        ? this.options.permissionResolverForMode?.(options.input.permissionMode)
+        : this.options.permissions
     if (!permissions) {
       throw new Error('Agent permission mode overrides are unavailable')
     }
     let snapshot: TranscriptSnapshot = await options.lease.load()
     if (options.continuationMessage !== undefined) {
+      // Validate ambiguous tool linkage before the append-only sidechain is
+      // mutated. The projection is rebuilt after appending the one explicit
+      // continuation prompt so that prompt is visible to the provider.
+      projectClaudeSidechainContinuationMessages(snapshot.entries)
       const [entry] = translateProviderEvents(
         [
           {
@@ -1730,6 +2402,12 @@ export class ClaudeSubagentExecutor {
     }
     let toolUseCount = 0
     let taskTokenTotal = 0
+    let recordedUsage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+    let pendingProviderUsage: ModelUsage | undefined
+    const recordedModelUsage = new Map<string, ModelUsage>()
+    let recordedDurationApiMs = 0
+    let recordedDurationApiWithoutRetriesMs = 0
+    let recordedApiDurationSeen = false
     let lastToolName: string | undefined
     const taskStartedAt = Date.now()
     const append = async (entry: ClaudeTranscriptEntry) => {
@@ -1773,10 +2451,60 @@ export class ClaudeSubagentExecutor {
       scopedHookSettings.length > 0
         ? this.options.hooks?.withAdditionalSettings(scopedHookSettings)
         : this.options.hooks
+    const commitProviderUsage = () => {
+      if (!pendingProviderUsage) return
+      recordedUsage = mergeSubagentUsage(recordedUsage, pendingProviderUsage)
+      const model = options.provider.model?.trim()
+      if (model) {
+        mergeSubagentModelUsage(recordedModelUsage, {
+          [model]: {
+            ...pendingProviderUsage,
+            ...(options.provider.capabilities.contextWindowTokens === undefined
+              ? {}
+              : {
+                  contextWindow:
+                    options.provider.capabilities.contextWindowTokens,
+                }),
+            ...(options.provider.capabilities.maxOutputTokens === undefined
+              ? {}
+              : {
+                  maxOutputTokens:
+                    options.provider.capabilities.maxOutputTokens,
+                }),
+          },
+        })
+      }
+      pendingProviderUsage = undefined
+    }
+    const recordApiDuration = (options: {
+      durationApiMs?: number
+      durationApiWithoutRetriesMs?: number
+    }) => {
+      if (
+        options.durationApiMs === undefined &&
+        options.durationApiWithoutRetriesMs === undefined
+      ) {
+        return
+      }
+      const total = options.durationApiMs ?? 0
+      const withoutRetries = options.durationApiWithoutRetriesMs ?? total
+      if (
+        !Number.isFinite(total) ||
+        total < 0 ||
+        !Number.isFinite(withoutRetries) ||
+        withoutRetries < 0
+      ) {
+        throw new Error('Subagent API duration must be finite and nonnegative')
+      }
+      recordedDurationApiMs += total
+      recordedDurationApiWithoutRetriesMs += withoutRetries
+      recordedApiDurationSeen = true
+    }
     const nestedTools = this.registry(
       String(options.root.sessionId),
       options.spawnDepth,
       () => options.promptId,
+      options.agentId,
     )
     const agentMcp = customAgent?.mcpServers?.length
       ? await this.options.mcp?.connectAgent?.({
@@ -1840,6 +2568,7 @@ export class ClaudeSubagentExecutor {
       : permissions
     const emit = (event: RuntimeEvent) => {
       if (event.type === 'usage') {
+        pendingProviderUsage = event.usage
         taskTokenTotal += event.usage.inputTokens + event.usage.outputTokens
         this.options.eventSink?.({
           type: 'task-progress',
@@ -1895,6 +2624,7 @@ export class ClaudeSubagentExecutor {
         thinkingBlocks?: readonly ModelThinkingBlock[]
         toolCalls?: readonly ModelToolCall[]
       }) => {
+        commitProviderUsage()
         const [entry] = translateProviderEvents(
           [
             {
@@ -1923,6 +2653,13 @@ export class ClaudeSubagentExecutor {
         call: ModelToolCall,
         result: ToolExecutionResult,
       ) => {
+        if (result.usage) {
+          recordedUsage = mergeSubagentUsage(recordedUsage, result.usage)
+        }
+        if (result.isError === false && result.modelUsage) {
+          mergeSubagentModelUsage(recordedModelUsage, result.modelUsage)
+        }
+        recordApiDuration(result)
         if (result.isError === false) {
           const linesAdded = result.linesAdded ?? 0
           const linesRemoved = result.linesRemoved ?? 0
@@ -1984,6 +2721,7 @@ export class ClaudeSubagentExecutor {
               options.input.subagentType,
             ),
           )
+          await this.background.acknowledge([text])
         }
       },
     }
@@ -2071,7 +2809,9 @@ export class ClaudeSubagentExecutor {
             ? []
             : [{ role: 'system' as const, content: system }]),
           ...injectFirstUserMessageContext(
-            projectClaudeModelMessages(snapshot.entries),
+            options.continuationMessage === undefined
+              ? projectClaudeModelMessages(snapshot.entries)
+              : projectClaudeSidechainContinuationMessages(snapshot.entries),
             assembledContext?.firstUserMessageContext,
           ),
           ...preloadedSkills,
@@ -2129,10 +2869,35 @@ export class ClaudeSubagentExecutor {
                     )
                   }
                 }
+                await this.hydratePersistedTasks(
+                  String(options.root.sessionId),
+                  options.cwd ?? this.cwd(),
+                )
+                await this.reconcileDeliveredNotifications((notification) => {
+                  const markers =
+                    backgroundAgentNotificationMarkers(notification)
+                  return snapshot.entries.some((entry) => {
+                    if (entry.type !== 'user') return false
+                    const source = JSON.stringify(entry.message)
+                    return markers.every((marker) => source.includes(marker))
+                  })
+                })
                 const background = await this.background.notifications({
                   waitForRunning: false,
                   excludeAgentId: options.agentId,
+                  consume: false,
                 })
+                recordedUsage = mergeSubagentUsage(
+                  recordedUsage,
+                  background.usage,
+                )
+                if (background.modelUsage) {
+                  mergeSubagentModelUsage(
+                    recordedModelUsage,
+                    background.modelUsage,
+                  )
+                }
+                recordApiDuration(background)
                 messages.push(...background.messages)
                 messages.push(
                   ...((await this.options.backgroundTaskNotifications?.(
@@ -2196,20 +2961,39 @@ export class ClaudeSubagentExecutor {
         toolUseCount,
       }
     } catch (error) {
-      this.options.eventSink?.({
-        type: 'task-notification',
-        taskId: options.agentId,
-        ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
-        status: options.signal?.aborted ? 'stopped' : 'failed',
-        outputFile: options.transcriptPath,
-        summary: error instanceof Error ? error.message : String(error),
-        usage: {
-          totalTokens: 0,
-          toolUses: toolUseCount,
-          durationMs: Date.now() - taskStartedAt,
-        },
+      commitProviderUsage()
+      const partialModelUsage =
+        recordedModelUsage.size === 0
+          ? undefined
+          : Object.fromEntries(recordedModelUsage)
+      if (!(options.signal?.reason instanceof BackgroundAgentShutdownError)) {
+        this.options.eventSink?.({
+          type: 'task-notification',
+          taskId: options.agentId,
+          ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
+          status: options.signal?.aborted ? 'stopped' : 'failed',
+          outputFile: options.transcriptPath,
+          summary: error instanceof Error ? error.message : String(error),
+          usage: {
+            totalTokens: recordedUsage.inputTokens + recordedUsage.outputTokens,
+            toolUses: toolUseCount,
+            durationMs: Date.now() - taskStartedAt,
+          },
+        })
+      }
+      throw new SubagentExecutionFailure(error, {
+        text: error instanceof Error ? error.message : String(error),
+        usage: recordedUsage,
+        ...(partialModelUsage ? { modelUsage: partialModelUsage } : {}),
+        ...(recordedApiDurationSeen
+          ? {
+              durationApiMs: recordedDurationApiMs,
+              durationApiWithoutRetriesMs: recordedDurationApiWithoutRetriesMs,
+            }
+          : {}),
+        toolUseCount,
+        durationMs: Date.now() - taskStartedAt,
       })
-      throw error
     } finally {
       await agentMcp?.close().catch((error: unknown) => {
         this.options.eventSink?.({
@@ -2228,6 +3012,7 @@ class ClaudeSubagentToolRegistry implements ToolRegistry {
     private readonly sessionId: string,
     private readonly depth: number,
     private readonly promptIdForCall: (callId: string) => string | null,
+    private readonly parentAgentId?: string,
   ) {}
 
   definitions(): readonly ModelToolDefinition[] {
@@ -2293,14 +3078,14 @@ class ClaudeSubagentToolRegistry implements ToolRegistry {
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
     if (call.name === 'SendMessage') {
-      return this.executor.executeManagement(call, this.sessionId)
+      return this.executor.executeManagement(call, this.sessionId, context)
     }
     if (call.name === 'TaskOutput' || call.name === 'TaskStop') {
       const taskId = call.input.task_id ?? call.input.shell_id
       if (typeof taskId === 'string' && isBackgroundBashTaskId(taskId)) {
         return this.base.execute(call, context)
       }
-      return this.executor.executeManagement(call, this.sessionId)
+      return this.executor.executeManagement(call, this.sessionId, context)
     }
     if (call.name !== 'Agent') return this.base.execute(call, context)
     const promptId = this.promptIdForCall(call.id)
@@ -2312,6 +3097,7 @@ class ClaudeSubagentToolRegistry implements ToolRegistry {
       this.depth,
       promptId,
       context,
+      this.parentAgentId,
     )
   }
 }
