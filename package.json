@@ -63,6 +63,7 @@
     "test:mcp-resource-compat": "npm run build && node scripts/verify-mcp-resource-compatibility.mjs",
     "test:notebook-compat": "npm run build && node scripts/verify-notebook-compatibility.mjs",
     "test:context-compat": "npm run build && node scripts/verify-context-runtime.mjs",
+    "test:core-design-drift": "npm run build && node scripts/verify-core-design-drift.mjs",
     "test:cross-version-session-compat": "npm run build && node scripts/verify-cross-version-session-compatibility.mjs",
     "test:cross-version-resume-at-compat": "npm run build && node scripts/verify-cross-version-resume-at-compatibility.mjs",
     "test:cross-version-fork-compat": "npm run build && node scripts/verify-cross-version-fork-compatibility.mjs",
