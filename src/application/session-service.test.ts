@@ -47,6 +47,7 @@ import {
 } from '../tools/claude-interactive-tools.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { CLAUDE_CODE_DISABLE_CRON } from '../tools/claude-capabilities.js'
+import { CLAUDE_INTERRUPTED_TURN_CONTINUATION } from '../compatibility/claude/interruption.js'
 import type { ClaudeSessionCostState } from '../persistence/claude-cost-state-store.js'
 import {
   ClaudeSessionService,
@@ -9675,6 +9676,57 @@ describe('ClaudeSessionService', () => {
     )
   })
 
+  it('lists 500 sessions through bounded reads and isolates malformed tails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-scale-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionIds = Array.from(
+      { length: 500 },
+      (_, index) =>
+        `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    )
+    const projectRoot = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: sessionIds[0] as string,
+    }).projectRoot
+    await mkdir(projectRoot, { recursive: true })
+    for (const [index, sessionId] of sessionIds.entries()) {
+      const entry = JSON.stringify({
+        type: 'user',
+        uuid: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+        parentUuid: null,
+        sessionId,
+        message: { role: 'user', content: `session ${index}` },
+      })
+      const suffix =
+        index === 498 ? '{"type":"tag"' : index === 499 ? '{}\n' : ''
+      await writeFile(
+        join(projectRoot, `${sessionId}.jsonl`),
+        `${entry}\n${suffix}`,
+      )
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+    })
+
+    const sessions = await service.sessions()
+
+    expect(sessions).toHaveLength(500)
+    expect(
+      sessions.find((session) => session.sessionId === sessionIds[498]),
+    ).toMatchObject({ status: 'ready', issue: null })
+    expect(
+      sessions.find((session) => session.sessionId === sessionIds[499]),
+    ).toMatchObject({
+      status: 'corrupt',
+      issue: expect.objectContaining({ lineNumber: 2 }),
+    })
+  })
+
   it('assembles fresh system context for run and resume without persisting it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-context-'))
     roots.push(root)
@@ -12160,4 +12212,562 @@ describe('ClaudeSessionService', () => {
       await service.close()
     }
   })
+
+  it('resumes an explicit regular JSONL path from its newest non-sidechain leaf and appends in place', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-path-resume-'))
+    roots.push(root)
+    const configRoot = join(root, 'native')
+    const cwd = join(root, 'project')
+    const externalRoot = join(root, 'external-project')
+    const sessionId = '12121212-1212-4212-8212-121212121212'
+    const sessionFile = join(externalRoot, `${sessionId}.jsonl`)
+    await mkdir(externalRoot, { recursive: true })
+    const entries = [
+      {
+        type: 'user',
+        uuid: '11111111-1111-4111-8111-111111111111',
+        parentUuid: null,
+        sessionId,
+        message: { role: 'user', content: 'root prompt' },
+      },
+      {
+        type: 'assistant',
+        uuid: '22222222-2222-4222-8222-222222222222',
+        parentUuid: '11111111-1111-4111-8111-111111111111',
+        sessionId,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'abandoned answer' }],
+        },
+      },
+      {
+        type: 'last-prompt',
+        lastPrompt: 'root prompt',
+        leafUuid: '22222222-2222-4222-8222-222222222222',
+        sessionId,
+      },
+      {
+        type: 'user',
+        uuid: '33333333-3333-4333-8333-333333333333',
+        parentUuid: '11111111-1111-4111-8111-111111111111',
+        sessionId,
+        message: { role: 'user', content: 'newest branch prompt' },
+      },
+      {
+        type: 'assistant',
+        uuid: '44444444-4444-4444-8444-444444444444',
+        parentUuid: '33333333-3333-4333-8333-333333333333',
+        sessionId,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'newest branch answer' }],
+        },
+      },
+    ]
+    await writeFile(
+      sessionFile,
+      `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+    )
+    const requests: ModelRequest[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: 'continued externally' }
+        },
+      },
+    })
+
+    await expect(
+      service.registerResumePath(sessionFile),
+    ).resolves.toMatchObject({
+      sessionId,
+    })
+    await expect(service.resume(sessionId, 'continue')).resolves.toMatchObject({
+      text: 'continued externally',
+    })
+    const request = JSON.stringify(requests[0]?.messages)
+    expect(request).toContain('newest branch prompt')
+    expect(request).toContain('newest branch answer')
+    expect(request).not.toContain('abandoned answer')
+    expect(await readFile(sessionFile, 'utf8')).toContain(
+      'continued externally',
+    )
+    const nativeFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    await expect(readFile(nativeFile, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+
+    const linkPath = join(
+      externalRoot,
+      '13131313-1313-4313-8313-131313131313.jsonl',
+    )
+    await symlink(sessionFile, linkPath)
+    await expect(service.registerResumePath(linkPath)).rejects.toThrow(
+      'regular JSONL file',
+    )
+  })
+
+  it('refreshes externally mutable title and tag before the graceful-close snapshot', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const run = await service.run('metadata prompt')
+    await service.rename(run.sessionId, 'process title')
+    await service.tag(run.sessionId, 'process-tag')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    await appendFile(
+      sessionFile,
+      `${JSON.stringify({
+        type: 'custom-title',
+        customTitle: 'external title',
+        sessionId: run.sessionId,
+      })}\n${JSON.stringify({
+        type: 'tag',
+        tag: 'external-tag',
+        sessionId: run.sessionId,
+      })}\n`,
+    )
+
+    await service.close()
+
+    const persisted = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(
+      persisted.filter((entry) => entry.type === 'custom-title').at(-1),
+    ).toMatchObject({ customTitle: 'external title' })
+    expect(
+      persisted.filter((entry) => entry.type === 'tag').at(-1),
+    ).toMatchObject({ tag: 'external-tag' })
+    const reader = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+    })
+    await expect(reader.sessions()).resolves.toEqual([
+      expect.objectContaining({
+        sessionId: run.sessionId,
+        name: 'external title',
+        tag: 'external-tag',
+        lastPrompt: 'metadata prompt',
+      }),
+    ])
+  })
+
+  it('retains a full metadata baseline when title and tag move outside bounded windows', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-metadata-middle-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['A'.repeat(70 * 1024), 'B'.repeat(140 * 1024)]),
+    })
+    const run = await service.run('create a large prefix')
+    await service.rename(run.sessionId, 'middle title')
+    await service.tag(run.sessionId, 'middle-tag')
+    await service.resume(run.sessionId, 'push metadata out of the tail')
+
+    const beforeClose = await service.sessions()
+    expect(beforeClose).toHaveLength(1)
+    expect(beforeClose[0]).not.toHaveProperty('name')
+    expect(beforeClose[0]).not.toHaveProperty('tag')
+
+    await service.close()
+
+    const reader = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+    })
+    await expect(reader.sessions()).resolves.toEqual([
+      expect.objectContaining({
+        sessionId: run.sessionId,
+        name: 'middle title',
+        tag: 'middle-tag',
+      }),
+    ])
+  })
+
+  it('advances the close snapshot through a local command after an oversized assistant line', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-large-leaf-close-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['A'.repeat(140 * 1024)]),
+    })
+    const run = await service.run('create an oversized answer')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const persisted = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const assistant = persisted.find((entry) => entry.type === 'assistant')
+    expect(assistant?.uuid).toEqual(expect.any(String))
+    await appendFile(
+      sessionFile,
+      `${JSON.stringify({
+        type: 'system',
+        subtype: 'local_command',
+        uuid: '23232323-2323-4323-8323-232323232323',
+        parentUuid: assistant?.uuid,
+        content: '<command-name>/cd</command-name>',
+        sessionId: run.sessionId,
+      })}\n${JSON.stringify({
+        type: 'system',
+        subtype: 'local_command',
+        uuid: '24242424-2424-4424-8424-242424242424',
+        parentUuid: '23232323-2323-4323-8323-232323232323',
+        content: '<local-command-stdout>moved</local-command-stdout>',
+        sessionId: run.sessionId,
+      })}\n`,
+    )
+
+    await service.close()
+
+    const lastPrompt = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.type === 'last-prompt')
+      .at(-1)
+    expect(lastPrompt).toEqual({
+      type: 'last-prompt',
+      leafUuid: '24242424-2424-4424-8424-242424242424',
+      sessionId: run.sessionId,
+    })
+  })
+
+  it('does not advance the close snapshot through a local command on an abandoned branch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-abandoned-leaf-close-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['A'.repeat(140 * 1024)]),
+    })
+    const run = await service.run('create an oversized committed answer')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const persisted = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const assistant = persisted.find((entry) => entry.type === 'assistant')
+    expect(assistant?.uuid).toEqual(expect.any(String))
+    const failedUserUuid = '25252525-2525-4525-8525-252525252525'
+    const failedAssistantUuid = '26262626-2626-4626-8626-262626262626'
+    const commandUuid = '27272727-2727-4727-8727-272727272727'
+    const stdoutUuid = '28282828-2828-4828-8828-282828282828'
+    await appendFile(
+      sessionFile,
+      [
+        {
+          type: 'user',
+          uuid: failedUserUuid,
+          parentUuid: assistant?.uuid,
+          sessionId: run.sessionId,
+          message: { role: 'user', content: 'abandoned retry' },
+        },
+        {
+          type: 'assistant',
+          uuid: failedAssistantUuid,
+          parentUuid: failedUserUuid,
+          sessionId: run.sessionId,
+          message: { role: 'assistant', content: [] },
+        },
+        {
+          type: 'system',
+          subtype: 'local_command',
+          uuid: commandUuid,
+          parentUuid: failedAssistantUuid,
+          content: '<command-name>/cd</command-name>',
+          sessionId: run.sessionId,
+        },
+        {
+          type: 'system',
+          subtype: 'local_command',
+          uuid: stdoutUuid,
+          parentUuid: commandUuid,
+          content: '<local-command-stdout>moved</local-command-stdout>',
+          sessionId: run.sessionId,
+        },
+      ]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join(''),
+    )
+
+    await service.close()
+
+    const lastPrompt = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.type === 'last-prompt')
+      .at(-1)
+    expect(lastPrompt).toEqual({
+      type: 'last-prompt',
+      lastPrompt: 'create an oversized committed answer',
+      leafUuid: assistant?.uuid,
+      sessionId: run.sessionId,
+    })
+  })
+
+  it('does not promote an abandoned assistant during graceful-close metadata reappend', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const run = await service.run('committed prompt')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const committed = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const committedAssistant = committed.find(
+      (entry) => entry.type === 'assistant',
+    )
+    await appendFile(
+      sessionFile,
+      `${JSON.stringify({
+        type: 'user',
+        uuid: '21212121-2121-4121-8121-212121212121',
+        parentUuid: committedAssistant?.uuid,
+        sessionId: run.sessionId,
+        message: { role: 'user', content: 'abandoned retry' },
+      })}\n${JSON.stringify({
+        type: 'assistant',
+        uuid: '22222222-2222-4222-8222-222222222222',
+        parentUuid: '21212121-2121-4121-8121-212121212121',
+        sessionId: run.sessionId,
+        message: { role: 'assistant', content: [] },
+      })}\n`,
+    )
+
+    await service.close()
+
+    const lastPrompt = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.type === 'last-prompt')
+      .at(-1)
+    expect(lastPrompt).toMatchObject({
+      lastPrompt: 'committed prompt',
+      leafUuid: committedAssistant?.uuid,
+    })
+  })
+
+  it('replays an interrupted prompt exactly once only with explicit opt-in', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-prompt-replay-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '14141414-1414-4414-8414-141414141414'
+    const interrupted = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          if (process.pid < 0) {
+            yield { type: 'text-delta' as const, delta: '' }
+          }
+          throw new Error('connection lost')
+        },
+      },
+    })
+    await expect(
+      interrupted.run('replay this prompt', undefined, sessionId),
+    ).rejects.toThrow('connection lost')
+    await expect(interrupted.interruption(sessionId)).resolves.toMatchObject({
+      kind: 'interrupted-prompt',
+      prompt: 'replay this prompt',
+    })
+
+    const requests: ModelRequest[] = []
+    const optedIn = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      resumeInterruptedTurn: true,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          requests.push(request)
+          yield {
+            type: 'text-delta',
+            delta: requests.length === 1 ? 'replayed' : 'next answer',
+          }
+        },
+      },
+    })
+    await optedIn.resume(sessionId, 'sentinel must not be sent')
+    const first = JSON.stringify(requests[0]?.messages)
+    expect(first.match(/replay this prompt/gu)).toHaveLength(1)
+    expect(first).not.toContain('sentinel must not be sent')
+
+    await optedIn.resume(sessionId, 'next explicit prompt')
+    const second = JSON.stringify(requests[1]?.messages)
+    expect(second).toContain('next explicit prompt')
+    expect(second.match(/replay this prompt/gu)).toHaveLength(1)
+    await expect(optedIn.interruption(sessionId)).resolves.toEqual({
+      kind: 'complete',
+    })
+  })
+
+  it.each(['tool-result', 'context-attachment'] as const)(
+    'retains an interrupted %s and enqueues one clean continuation',
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), `praxis-${kind}-replay-`))
+      roots.push(root)
+      const configRoot = join(root, 'config')
+      const cwd = join(root, 'project')
+      const sessionId =
+        kind === 'tool-result'
+          ? '23232323-2323-4323-8323-232323232323'
+          : '24242424-2424-4424-8424-242424242424'
+      const paths = resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId,
+      })
+      await mkdir(paths.projectRoot, { recursive: true })
+      const prompt = {
+        type: 'user',
+        uuid: '25252525-2525-4525-8525-252525252525',
+        parentUuid: null,
+        sessionId,
+        message: { role: 'user', content: 'perform one operation' },
+      }
+      const tail =
+        kind === 'tool-result'
+          ? [
+              {
+                type: 'assistant',
+                uuid: '26262626-2626-4626-8626-262626262626',
+                parentUuid: prompt.uuid,
+                sessionId,
+                message: {
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'tool_use',
+                      id: 'call_completed',
+                      name: 'Read',
+                      input: { file_path: 'README.md' },
+                    },
+                  ],
+                },
+              },
+              {
+                type: 'user',
+                uuid: '27272727-2727-4727-8727-272727272727',
+                parentUuid: '26262626-2626-4626-8626-262626262626',
+                sourceToolAssistantUUID: '26262626-2626-4626-8626-262626262626',
+                sessionId,
+                message: {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'tool_result',
+                      tool_use_id: 'call_completed',
+                      content: 'COMPLETED_TOOL_OUTPUT',
+                      is_error: false,
+                    },
+                  ],
+                },
+              },
+            ]
+          : [
+              {
+                type: 'attachment',
+                uuid: '28282828-2828-4828-8828-282828282828',
+                parentUuid: prompt.uuid,
+                sessionId,
+                attachment: {
+                  type: 'hook_additional_context',
+                  content: ['RECOVERED_CONTEXT'],
+                },
+              },
+            ]
+      await writeFile(
+        paths.sessionFile,
+        `${[prompt, ...tail].map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+      )
+      const requests: ModelRequest[] = []
+      const service = new ClaudeSessionService({
+        configRoot,
+        cwd,
+        claudeVersion: '2.1.208',
+        resumeInterruptedTurn: true,
+        provider: {
+          capabilities: { streaming: true, usage: true, tools: false },
+          async *complete(request) {
+            requests.push(request)
+            yield { type: 'text-delta', delta: 'continued safely' }
+          },
+        },
+      })
+
+      await service.resume(sessionId, 'discarded restart sentinel')
+
+      const request = JSON.stringify(requests[0]?.messages)
+      expect(request.match(/perform one operation/gu)).toHaveLength(1)
+      expect(
+        request.split(CLAUDE_INTERRUPTED_TURN_CONTINUATION).length - 1,
+      ).toBe(1)
+      expect(request).not.toContain('discarded restart sentinel')
+      expect(request).toContain(
+        kind === 'tool-result' ? 'COMPLETED_TOOL_OUTPUT' : 'RECOVERED_CONTEXT',
+      )
+      const persisted = (await readFile(paths.sessionFile, 'utf8'))
+        .trimEnd()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+      expect(
+        persisted.filter(
+          (entry) =>
+            entry.type === 'user' &&
+            (entry.message as { content?: unknown } | undefined)?.content ===
+              CLAUDE_INTERRUPTED_TURN_CONTINUATION,
+        ),
+      ).toHaveLength(1)
+      expect(persisted).toContainEqual(
+        expect.objectContaining({ uuid: tail.at(-1)?.uuid }),
+      )
+    },
+  )
 })

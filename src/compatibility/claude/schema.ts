@@ -34,13 +34,16 @@ const APPENDABLE_ENTRY_TYPES = new Set([
   'assistant',
   'attachment',
   'custom-title',
+  'ai-title',
   'file-history-delta',
   'file-history-snapshot',
   'last-prompt',
+  'mode',
   'permission-mode',
   'pr-link',
   'queue-operation',
   'relocated',
+  'tag',
   'system',
   'user',
   'worktree-state',
@@ -863,6 +866,27 @@ function validateAppendableEntry(entry: ClaudeTranscriptEntry): void {
       !isNonEmptyString(entry.sessionId)
     ) {
       throw new Error('Claude custom-title entry has invalid metadata')
+    }
+    return
+  }
+  if (entry.type === 'ai-title') {
+    if (
+      !isNonEmptyString(entry.aiTitle) ||
+      !isNonEmptyString(entry.sessionId)
+    ) {
+      throw new Error('Claude ai-title entry has invalid metadata')
+    }
+    return
+  }
+  if (entry.type === 'tag') {
+    if (!isNonEmptyString(entry.tag) || !isNonEmptyString(entry.sessionId)) {
+      throw new Error('Claude tag entry has invalid metadata')
+    }
+    return
+  }
+  if (entry.type === 'mode') {
+    if (!isNonEmptyString(entry.mode) || !isNonEmptyString(entry.sessionId)) {
+      throw new Error('Claude mode entry has invalid metadata')
     }
     return
   }

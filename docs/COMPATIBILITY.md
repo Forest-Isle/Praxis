@@ -301,8 +301,13 @@ Support policy:
 - offer read-only recovery/export when write compatibility is unknown.
 
 `praxis sessions`, `praxis inspect`, and `praxis export` never require a model
-provider. Listing parses each transcript independently, so one corrupt tail is
-reported with its line and byte offset without hiding healthy sessions.
+provider. Listing reads bounded 64 KiB head and 128 KiB tail windows with at
+most 32 concurrent readers. A truncated final line is treated as an in-progress
+append, while a malformed committed line is reported with its line and byte
+offset when the line is in the head window, or its exact byte offset when the
+tail window cannot know the physical line number, without hiding healthy
+sessions. Listing never builds every session's
+full graph; inspect and resume retain full validation.
 Inspection reports schema write mode and physical tail metadata. Export returns
 the original JSONL bytes, including any corrupt suffix, without parse/stringify
 normalization. Plain export writes the bytes directly; JSON export uses base64
@@ -318,9 +323,16 @@ required by Claude resume for the selected adapter version. The append profile
 also includes the validated `compact_boundary` system record and its paired
 `isCompactSummary` user entry; both append atomically under one tail check.
 Native session naming adds paired `custom-title` and `agent-name` metadata
-before the first user entry or while renaming a resumed session. `agent-setting` and
-`last-prompt` do not advance the logical UUID chain; `last-prompt` must name its
-current leaf. Message content blocks and attachment envelopes are validated
+before the first user entry or while renaming a resumed session. The metadata
+reducer applies last-wins independently to tag, agent name/color/setting,
+permission/mode, worktree state, and PR link, while `custom-title` always
+outranks `ai-title`. `tag`, `ai-title`, and `mode` generated writes are admitted
+by the Claude 2.1.237 black-box metadata gate. Compaction and graceful close
+re-append the current durable snapshot; close refreshes external title/tag
+changes from the bounded windows and never promotes an uncommitted assistant.
+`agent-setting` and `last-prompt` do not advance the logical UUID chain;
+`last-prompt` is written only after a committed turn and names its final active
+assistant or completed local-command output. Message content blocks and attachment envelopes are validated
 before append, and every `tool_result` must match the historical `tool_use` plus
 `sourceToolAssistantUUID`. Foreground and background Agent sidechain entries become writable
 only through the bounded runtime in `docs/SUBAGENT_CONTRACT.md` and its
@@ -354,6 +366,24 @@ normal workspace boundaries. Resumable Bash status metadata stays under
 `<config>/praxis/`, uses atomic replacement, and is ignored when malformed. It
 is never authoritative conversation state. Dynamic completion-notification
 fields are XML escaped before transcript insertion.
+
+`--continue` chooses the first deterministic local listing candidate after
+excluding live top-level background/daemon sessions when the optional liveness
+registry is readable. Registry failure restores the unfiltered deterministic
+order. `--resume <path.jsonl>` is an explicit compatibility input: Praxis
+requires a regular newline-terminated JSONL file whose filename and entries
+identify one session, validates the full graph, chooses its newest
+non-sidechain leaf, and appends back to the same file/project root. This explicit
+path does not make native discovery depend on or search `.claude`.
+
+Normal resume does not replay interrupted input. Only the truthy
+`CLAUDE_CODE_RESUME_INTERRUPTED_TURN` control enables automatic recovery. A
+plain interrupted prompt is removed in memory and replayed exactly once;
+non-terminal tool results and context attachments remain in history and receive
+one Praxis-authored clean-room continuation. Compact summaries, metadata,
+terminal tool results, and synthetic/retry-exhausted assistant errors do not
+create phantom continuations. Interrupted tool execution remains governed by
+its separate explicit approval path.
 
 Top-level background sessions use Claude's observed `jobs/<8-hex-id>` and
 `sessions/<pid>.json` layout, including `template: "bg"`, active/blocked/idle
@@ -489,6 +519,11 @@ settings sources without copying or synchronization.
 `npm run test:resume-selector-compat` proves installed UUID/title selector
 resolution, canonical UUID routing, missing/ambiguous failures, and Claude
 resuming a Praxis-named session.
+`npm run test:session-metadata-compat` pins Claude Code `2.1.237`, has Praxis
+write `custom-title`, `tag`, `ai-title`, `mode`, and a durable tail snapshot,
+then requires the real Claude CLI to resume and append without dropping those
+records. It uses an isolated local provider fixture, so the schema proof does
+not depend on subscription balance.
 `npm run test:cross-version-session-compat` is an explicit maintainer gate for
 mixed-version shared-session resume. It builds Praxis and requires
 `PRAXIS_CLAUDE_BINARY` (Claude Code `2.1.208`) and

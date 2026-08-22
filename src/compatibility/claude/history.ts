@@ -1,8 +1,50 @@
 import type { ClaudeTranscriptEntry } from './schema.js'
 import { getClaudePreservedMessageUuids } from './compaction.js'
+import { isClaudeDurableMetadataType } from './session-metadata.js'
 
 function entryUuid(entry: ClaudeTranscriptEntry): string | null {
   return typeof entry.uuid === 'string' ? entry.uuid : null
+}
+
+const ADDITIONAL_NON_STRUCTURAL_ENTRY_TYPES = new Set([
+  'queue-operation',
+  'relocated',
+])
+
+function isNonStructuralEntryType(type: string): boolean {
+  return (
+    isClaudeDurableMetadataType(type) ||
+    ADDITIONAL_NON_STRUCTURAL_ENTRY_TYPES.has(type)
+  )
+}
+
+export function isClaudeDurableLastPromptSnapshot(
+  entries: readonly ClaudeTranscriptEntry[],
+  index: number,
+): boolean {
+  const entry = entries[index]
+  if (entry?.type !== 'last-prompt') return false
+  for (let prior = index - 1; prior >= 0; prior -= 1) {
+    const candidate = entries[prior]
+    if (
+      candidate?.type !== 'last-prompt' ||
+      candidate.sessionId !== entry.sessionId ||
+      candidate.leafUuid !== entry.leafUuid ||
+      candidate.lastPrompt !== entry.lastPrompt
+    ) {
+      continue
+    }
+    const structuralEntries = entries
+      .slice(prior + 1, index)
+      .filter(
+        (between) =>
+          between.isSidechain !== true &&
+          typeof between.uuid === 'string' &&
+          !isNonStructuralEntryType(between.type),
+      )
+    return structuralEntries.length > 0
+  }
+  return false
 }
 
 function latestLeafUuid(
@@ -42,6 +84,7 @@ function latestLeafUuid(
     const entry = entries[index]
     if (!entry || entry.isSidechain === true) continue
     if (entry.type === 'last-prompt' && typeof entry.leafUuid === 'string') {
+      if (isClaudeDurableLastPromptSnapshot(entries, index)) continue
       return entry.leafUuid
     }
     const uuid = entryUuid(entry)
@@ -193,6 +236,36 @@ export function selectClaudeActiveTranscript(
     return [...entries]
   }
   return expandPreservedMessages(entries, selectAncestry(entries, leafUuid))
+}
+
+/** Validates and selects ancestry from the newest structural non-sidechain
+ * entry. Explicit path resume uses this instead of potentially stale
+ * last-prompt metadata. */
+export function selectClaudeTranscriptFromNewestLeaf(
+  entries: readonly ClaudeTranscriptEntry[],
+): { entries: ClaudeTranscriptEntry[]; leafUuid: string } {
+  let leafUuid: string | undefined
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]
+    if (
+      entry?.isSidechain !== true &&
+      !isNonStructuralEntryType(entry?.type ?? '') &&
+      typeof entry?.uuid === 'string'
+    ) {
+      leafUuid = entry.uuid
+      break
+    }
+  }
+  if (leafUuid === undefined) {
+    throw new Error('Claude transcript has no resumable non-sidechain leaf')
+  }
+  return {
+    entries: expandPreservedMessages(
+      entries,
+      selectAncestry(entries, leafUuid),
+    ),
+    leafUuid,
+  }
 }
 
 export function selectClaudeTranscriptAtMessage(

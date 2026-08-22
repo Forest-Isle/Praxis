@@ -192,6 +192,32 @@ state, and indexes remain disposable sidecars. A crash may leave a completed
 tool call without its result; resume must surface that state and recover or ask,
 never invent a result.
 
+`last-prompt` is committed only after a successful turn. Its `leafUuid` points
+to the final active assistant or completed local-command output, so metadata-only
+writes cannot promote an abandoned physical branch. Compaction and graceful
+close append one current durable metadata record per supported type. Close
+refreshes externally mutable title and tag records through bounded head/tail
+windows before appending; a user `custom-title` always outranks `ai-title`.
+Operational indexes and cost remain private sidecars and never become shared
+transcript entry types.
+
+Resume classifies the active model-visible tail independently from transcript
+discovery. Ordinary resume never replays it automatically. The explicit
+`CLAUDE_CODE_RESUME_INTERRUPTED_TURN` recovery control removes a plain orphan
+prompt before replaying it once. A completed tool result or context attachment
+is retained and receives one clean-room continuation prompt instead of
+re-running the original request. Unresolved tool execution remains separately
+opt-in and permission-checked.
+
+Session discovery reads 64 KiB from the head and 128 KiB from the tail with a
+32-worker file pool. It ignores an uncommitted partial final line and isolates
+malformed candidates; full JSONL and graph validation occurs only for
+inspect/resume. Implicit continue preserves deterministic list order, excluding
+live top-level background sessions when liveness is available and falling back
+to the same order when it is not. An explicitly supplied regular `.jsonl` path
+is validated in full, selects the newest non-sidechain leaf, and pins subsequent
+appends to that exact file. Native discovery never searches the Claude root.
+
 Fork creates a new transcript exclusively and copies the supported native
 main-chain history losslessly, replacing only `sessionId`. It retains original
 UUIDs, parent links, message/tool payloads, compact boundaries and summaries,
