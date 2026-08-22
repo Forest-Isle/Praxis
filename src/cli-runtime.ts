@@ -4,7 +4,7 @@ import { realpathSync } from 'node:fs'
 import { access, copyFile, mkdir, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 
@@ -1107,6 +1107,7 @@ interface SessionCommands {
     options?: { sessionStart?: boolean; sessionId?: string },
   ): Promise<void>
   sessions(): Promise<SessionSummary[]>
+  registerResumePath?(path: string): Promise<SessionSummary>
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
   transcript?(sessionId: string): Promise<ClaudeDisplayTranscriptItem[]>
@@ -1449,6 +1450,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
     claudeVersion,
     eventSink: runtimeEventSink,
     sessionPersistence: cli.sessionPersistence,
+    resumeInterruptedTurn: /^(?:1|true|yes|on)$/iu.test(
+      (runtimeEnvironment.CLAUDE_CODE_RESUME_INTERRUPTED_TURN ?? '').trim(),
+    ),
     costStateStore,
     simpleMode,
     explicitModel:
@@ -2422,6 +2426,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       },
       sessions: () => service.sessions(),
+      registerResumePath: (path) => service.registerResumePath(path),
       costSnapshot: (sessionId) => service.costSnapshot(sessionId),
       slashCommands: () =>
         extensions.slashCommandDefinitions().map((definition) => ({
@@ -2769,24 +2774,49 @@ export function createDefaultDependencies(
         process.env,
         interactiveRuntimeSettings,
       )
+      const resumePath =
+        typeof resume?.sessionSelector === 'string' &&
+        isResumePathSelector(resume.sessionSelector)
+          ? resume.sessionSelector
+          : undefined
+      let continueSessionFilter:
+        ((session: SessionSummary) => boolean) | undefined
+      if (
+        interactiveControls.continueSession &&
+        resume?.fromPr === undefined &&
+        resume?.sessionSelector === undefined
+      ) {
+        continueSessionFilter = await createContinueSessionFilter(
+          liveTopLevelSessions(dependencies, interactiveDataPlane),
+        )
+      }
+      const createInteractiveService = async (
+        options: Parameters<InteractiveServiceFactory['createService']>[0],
+      ) => {
+        const commands = await createDefaultService({
+          ...options,
+          ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+          sandboxOriginalCwd: process.cwd(),
+          ...(agent === undefined ? {} : { agent }),
+          controls: {
+            ...interactiveControls,
+            addDirectories:
+              options.additionalDirectories ??
+              interactiveControls.addDirectories,
+          },
+          interactive: true,
+        })
+        if (resumePath !== undefined) {
+          await commands.registerResumePath?.(resumePath)
+        }
+        return commands
+      }
       return runInteractive({
         dataPlane: interactiveDataPlane,
         configRoot: interactiveConfigRoot,
         statePath: interactiveStatePath,
         factory: {
-          createService: ({ additionalDirectories, cwd, ...options }) =>
-            createDefaultService({
-              ...options,
-              ...(cwd === undefined ? {} : { cwd }),
-              sandboxOriginalCwd: process.cwd(),
-              ...(agent === undefined ? {} : { agent }),
-              controls: {
-                ...interactiveControls,
-                addDirectories:
-                  additionalDirectories ?? interactiveControls.addDirectories,
-              },
-              interactive: true,
-            }),
+          createService: createInteractiveService,
           scheduledPrompts: Boolean(
             process.env.PRAXIS_API_KEY && effectiveModel,
           ),
@@ -2837,17 +2867,24 @@ export function createDefaultDependencies(
               ),
               requireSession: true,
             }
-          : resume?.sessionSelector === undefined
-            ? {}
-            : {
+          : resume?.sessionSelector !== undefined
+            ? {
                 sessionFilter: createResumeSessionFilter(
-                  resume.sessionSelector,
+                  resumePathSessionId(resume.sessionSelector) ??
+                    resume.sessionSelector,
                 ),
                 requireSession: true,
                 missingSessionMessage: isClaudeSessionId(resume.sessionSelector)
                   ? `No conversation found with session ID: ${resume.sessionSelector}`
                   : `No conversation found matching: ${resume.sessionSelector}`,
-              }),
+              }
+            : continueSessionFilter === undefined
+              ? {}
+              : {
+                  sessionFilter: continueSessionFilter,
+                  requireSession: true,
+                  missingSessionMessage: 'No conversation found to continue',
+                }),
         ...(resume?.requireSession ? { requireSession: true } : {}),
       })
     },
@@ -2909,7 +2946,7 @@ function writeJson(io: CliIO, value: unknown): void {
 
 function formatSessionIssue(issue: SessionSummary['issue']): string {
   return issue
-    ? `line ${issue.lineNumber}, byte ${issue.byteOffset}: ${issue.message}`
+    ? `${issue.lineNumber === null ? '' : `line ${issue.lineNumber}, `}byte ${issue.byteOffset}: ${issue.message}`
     : ''
 }
 
@@ -2932,14 +2969,56 @@ function selectPrLinkedSession(
   return matches[0] as SessionSummary
 }
 
-function selectImplicitResumeSession(
+async function selectImplicitResumeSession(
   sessions: readonly SessionSummary[],
   fromPr: string | true | undefined,
-): SessionSummary {
+  liveSessions?: () => Promise<readonly TopLevelAgentSummary[]>,
+): Promise<SessionSummary> {
   if (fromPr !== undefined) return selectPrLinkedSession(sessions, fromPr)
-  const latest = sessions[0]
+  const filter = await createContinueSessionFilter(liveSessions)
+  const eligible = filter === undefined ? sessions : sessions.filter(filter)
+  const latest = eligible[0]
   if (!latest) throw new Error('No conversation found to continue')
   return latest
+}
+
+async function createContinueSessionFilter(
+  liveSessions?: () => Promise<readonly TopLevelAgentSummary[]>,
+): Promise<((session: SessionSummary) => boolean) | undefined> {
+  if (liveSessions === undefined) return undefined
+  try {
+    const liveBackgroundIds = new Set(
+      (await liveSessions())
+        .filter((agent) =>
+          ['background', 'bg', 'daemon', 'daemon-worker'].includes(agent.kind),
+        )
+        .filter(
+          (agent) => agent.state === 'working' || agent.status !== undefined,
+        )
+        .map((agent) => agent.sessionId),
+    )
+    return (session) => !liveBackgroundIds.has(session.sessionId)
+  } catch {
+    // Deterministic local ordering remains the fallback when the optional
+    // liveness registry is unavailable or unreadable.
+    return undefined
+  }
+}
+
+function liveTopLevelSessions(
+  dependencies: CliDependencies,
+  dataPlane: DataPlane,
+): (() => Promise<readonly TopLevelAgentSummary[]>) | undefined {
+  let manager: TopLevelAgentCommands | undefined
+  try {
+    manager = dependencies.createTopLevelAgents?.(dataPlane)
+    manager ??= dependencies.topLevelAgents
+  } catch {
+    return undefined
+  }
+  return manager === undefined
+    ? undefined
+    : () => manager.list({ cwd: process.cwd(), all: false })
 }
 
 function missingResumeSelectorMessage(invocation: CliInvocation): string {
@@ -2982,6 +3061,30 @@ function selectResumeSession(
   throw new Error(
     `${missingResumeSelectorMessage(invocation)}. Provided value "${selector}" is not a UUID and does not match any session title.`,
   )
+}
+
+function isResumePathSelector(selector: string): boolean {
+  return extname(selector).toLowerCase() === '.jsonl'
+}
+
+function resumePathSessionId(selector: string): string | undefined {
+  if (!isResumePathSelector(selector)) return undefined
+  const sessionId = basename(selector, extname(selector))
+  return isClaudeSessionId(sessionId) ? sessionId : undefined
+}
+
+async function resolveExplicitResumeSession(
+  service: SessionCommands,
+  selector: string,
+  invocation: CliInvocation,
+): Promise<SessionSummary> {
+  if (isResumePathSelector(selector)) {
+    if (!service.registerResumePath) {
+      throw new Error('Explicit Claude transcript path resume is unavailable')
+    }
+    return service.registerResumePath(selector)
+  }
+  return selectResumeSession(await service.sessions(), selector, invocation)
 }
 
 function createResumeSessionFilter(
@@ -5508,8 +5611,13 @@ async function execute(
         ...(typeof invocation.resumeSelector === 'string'
           ? {
               sessionSelector: invocation.resumeSelector,
-              ...(isClaudeSessionId(invocation.resumeSelector)
-                ? { sessionId: invocation.resumeSelector }
+              ...(isClaudeSessionId(invocation.resumeSelector) ||
+              resumePathSessionId(invocation.resumeSelector) !== undefined
+                ? {
+                    sessionId:
+                      resumePathSessionId(invocation.resumeSelector) ??
+                      invocation.resumeSelector,
+                  }
                 : {}),
             }
           : {}),
@@ -5780,17 +5888,25 @@ async function execute(
         controls: invocation,
       })
       try {
-        const sessions = await sessionService.sessions()
         if (explicitResumeSelector !== undefined) {
-          resumeSessionId = selectResumeSession(
-            sessions,
-            explicitResumeSelector,
-            invocation,
+          resumeSessionId = (
+            await resolveExplicitResumeSession(
+              sessionService,
+              explicitResumeSelector,
+              invocation,
+            )
           ).sessionId
         } else {
-          resumeSessionId = selectImplicitResumeSession(
-            sessions,
-            invocation.fromPr,
+          const sessions = await sessionService.sessions()
+          resumeSessionId = (
+            await selectImplicitResumeSession(
+              sessions,
+              invocation.fromPr,
+              liveTopLevelSessions(
+                dependencies,
+                invocation.dataPlane ?? resolveDataPlane(),
+              ),
+            )
           ).sessionId
         }
         if (invocation.forkSession) {
@@ -6210,12 +6326,23 @@ async function execute(
       invocation.continueSession ||
       invocation.fromPr !== undefined
     ) {
-      const sessions = await service.sessions()
-      existingSessionId =
-        explicitResumeSelector === undefined
-          ? selectImplicitResumeSession(sessions, invocation.fromPr).sessionId
-          : selectResumeSession(sessions, explicitResumeSelector, invocation)
-              .sessionId
+      if (explicitResumeSelector === undefined) {
+        existingSessionId = (
+          await selectImplicitResumeSession(
+            await service.sessions(),
+            invocation.fromPr,
+            liveTopLevelSessions(dependencies, dataPlane),
+          )
+        ).sessionId
+      } else {
+        existingSessionId = (
+          await resolveExplicitResumeSession(
+            service,
+            explicitResumeSelector,
+            invocation,
+          )
+        ).sessionId
+      }
     }
     if (existingSessionId && invocation.forkSession) {
       existingSessionId = (

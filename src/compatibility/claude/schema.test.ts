@@ -206,6 +206,22 @@ describe('ClaudeSchemaAdapter', () => {
         leafUuid: 'leaf',
       }),
     ).toThrow('invalid metadata')
+    for (const metadata of [
+      { type: 'ai-title', aiTitle: 'Generated title', sessionId: 'session' },
+      { type: 'tag', tag: 'release', sessionId: 'session' },
+      { type: 'mode', mode: 'normal', sessionId: 'session' },
+    ]) {
+      expect(adapter.serializeForAppend(metadata)).toBe(
+        JSON.stringify(metadata),
+      )
+    }
+    expect(() =>
+      adapter.serializeForAppend({
+        type: 'tag',
+        tag: '',
+        sessionId: 'session',
+      }),
+    ).toThrow('invalid metadata')
     expect(() =>
       adapter.serializeForAppend({
         type: 'last-prompt',

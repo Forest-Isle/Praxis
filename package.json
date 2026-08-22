@@ -80,6 +80,7 @@
     "test:pr-link-compat": "npm run build && node scripts/verify-pr-link-compatibility.mjs",
     "test:resume-at-compat": "npm run build && node scripts/verify-resume-session-at-compatibility.mjs",
     "test:resume-selector-compat": "npm run build && node scripts/verify-resume-selector-compatibility.mjs",
+    "test:session-metadata-compat": "npm run build && node scripts/verify-session-metadata-compatibility.mjs",
     "test:thinking-compat": "npm run build && node scripts/verify-thinking-controls.mjs",
     "test:memory-import-compat": "npm run build && node scripts/verify-memory-import-compatibility.mjs",
     "test:tui-compat": "npm run build && node scripts/verify-tui-compatibility.mjs",

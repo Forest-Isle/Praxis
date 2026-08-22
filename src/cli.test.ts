@@ -3354,6 +3354,118 @@ describe('Praxis CLI', () => {
     )
   })
 
+  it('resolves an explicit JSONL resume path without searching native sessions', async () => {
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const path = `/tmp/${sessionId}.jsonl`
+    const calls: string[] = []
+    const base = dependencies()
+    const pathResume: CliDependencies = {
+      async createService(options) {
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async sessions() {
+            throw new Error('native session search must not run')
+          },
+          async registerResumePath(candidate) {
+            calls.push(`path:${candidate}`)
+            return {
+              sessionId,
+              lastPrompt: 'external',
+              updatedAt: '2026-08-22T00:00:00.000Z',
+              status: 'ready' as const,
+              issue: null,
+            }
+          },
+          async resume(id, prompt, signal) {
+            calls.push(`resume:${id}:${prompt}`)
+            return service.resume(id, prompt, signal)
+          },
+        }
+      },
+    }
+
+    await expect(
+      run(
+        ['-p', `--resume=${path}`, '--', 'continue'],
+        captureIO().io,
+        pathResume,
+      ),
+    ).resolves.toBe(0)
+    expect(calls).toEqual([`path:${path}`, `resume:${sessionId}:continue`])
+  })
+
+  it('continues the newest non-live session and falls back deterministically when liveness fails', async () => {
+    const newest = '11111111-1111-4111-8111-111111111111'
+    const older = '22222222-2222-4222-8222-222222222222'
+    const selected: string[] = []
+    let livenessFails = false
+    const base = dependencies()
+    const managed: CliDependencies = {
+      async createService(options) {
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async sessions() {
+            return [
+              {
+                sessionId: newest,
+                lastPrompt: 'newest',
+                updatedAt: '2026-08-22T02:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+              {
+                sessionId: older,
+                lastPrompt: 'older',
+                updatedAt: '2026-08-22T01:00:00.000Z',
+                status: 'ready' as const,
+                issue: null,
+              },
+            ]
+          },
+          async resume(sessionId, prompt, signal) {
+            selected.push(sessionId)
+            return service.resume(sessionId, prompt, signal)
+          },
+        }
+      },
+      topLevelAgents: {
+        async launch() {
+          throw new Error('unused')
+        },
+        async list() {
+          if (livenessFails) throw new Error('registry unavailable')
+          return [
+            {
+              id: 'live',
+              cwd: process.cwd(),
+              kind: 'background' as const,
+              startedAt: Date.now(),
+              sessionId: newest,
+              name: 'live worker',
+              state: 'working' as const,
+            },
+          ]
+        },
+        async logs() {
+          return ''
+        },
+        async stop() {},
+        async attach() {},
+      },
+    }
+
+    await expect(
+      run(['-p', '--continue', 'first'], captureIO().io, managed),
+    ).resolves.toBe(0)
+    livenessFails = true
+    await expect(
+      run(['-p', '--continue', 'second'], captureIO().io, managed),
+    ).resolves.toBe(0)
+    expect(selected).toEqual([older, newest])
+  })
+
   it('rejects ambiguous titles and missing non-interactive selectors', async () => {
     const base = dependencies()
     const duplicateTitles: CliDependencies = {

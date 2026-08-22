@@ -334,6 +334,55 @@ describe('ClaudeTranscriptStore', () => {
     ).toBe(true)
   })
 
+  it('appends a durable metadata snapshot from a bounded lease index', async () => {
+    const { sessionFile, store } = await createStore()
+    const before = await readFile(sessionFile, 'utf8')
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+
+    const leaseResult = await store.withLease(async (lease) => {
+      const index = await lease.loadIndex?.()
+      if (!index) throw new Error('Bounded lease index is unavailable')
+      return lease.appendMetadataSnapshot(index.tail, [
+        { type: 'custom-title', customTitle: 'Current title', sessionId },
+        { type: 'tag', tag: 'current-tag', sessionId },
+      ])
+    })
+
+    expect(leaseResult).toMatchObject({
+      status: 'completed',
+      value: { status: 'appended' },
+    })
+    const after = await readFile(sessionFile, 'utf8')
+    expect(after.startsWith(before)).toBe(true)
+    expect((await store.load()).entries.slice(-2)).toEqual([
+      { type: 'custom-title', customTitle: 'Current title', sessionId },
+      { type: 'tag', tag: 'current-tag', sessionId },
+    ])
+  })
+
+  it('refuses a bounded metadata snapshot after a foreign tail append', async () => {
+    const { sessionFile, store } = await createStore()
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+
+    const leaseResult = await store.withLease(async (lease) => {
+      const index = await lease.loadIndex?.()
+      if (!index) throw new Error('Bounded lease index is unavailable')
+      await appendFile(
+        sessionFile,
+        `${JSON.stringify({ type: 'tag', tag: 'foreign', sessionId })}\n`,
+      )
+      return lease.appendMetadataSnapshot(index.tail, [
+        { type: 'tag', tag: 'stale', sessionId },
+      ])
+    })
+
+    expect(leaseResult).toEqual({
+      status: 'completed',
+      value: { status: 'conflict', reason: 'tail-changed' },
+    })
+    expect(await readFile(sessionFile, 'utf8')).not.toContain('"tag":"stale"')
+  })
+
   it('appends native last-prompt metadata without advancing the logical tail', async () => {
     const { sessionFile, store } = await createStore()
     const snapshot = await store.load()

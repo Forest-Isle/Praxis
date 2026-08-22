@@ -7,19 +7,25 @@ import type {
   ClaudeSchemaAdapter,
   ClaudeTranscriptEntry,
 } from '../compatibility/claude/schema.js'
+import { isClaudeDurableLastPromptSnapshot } from '../compatibility/claude/history.js'
+import { isClaudeDurableMetadataType } from '../compatibility/claude/session-metadata.js'
 import {
   getClaudeContentBlocks,
   indexClaudeToolLinks,
   recoverClaudeToolResultLinks,
 } from '../compatibility/claude/tool-links.js'
 import { ExclusiveFileLease } from '../platform/exclusive-file-lease.js'
+import {
+  readClaudeSessionIndex,
+  type ClaudeSessionIndex,
+} from './claude-session-index.js'
 
 export interface TranscriptTail {
   byteLength: number
   lastLineHash: string | null
   lastUuid: string | null
   newlineTerminated: boolean
-  branchParentUuid?: string
+  branchParentUuid?: string | null
 }
 
 export interface TranscriptSnapshot {
@@ -28,7 +34,7 @@ export interface TranscriptSnapshot {
 }
 
 export interface TranscriptParseIssue {
-  lineNumber: number
+  lineNumber: number | null
   byteOffset: number
   message: string
 }
@@ -68,11 +74,16 @@ export type TranscriptReserveResult =
 
 export interface ClaudeTranscriptLease {
   load(): Promise<TranscriptSnapshot>
+  loadIndex?(): Promise<ClaudeSessionIndex>
   append(
     expectedTail: TranscriptTail,
     entry: ClaudeTranscriptEntry,
   ): Promise<TranscriptAppendResult>
   appendMany(
+    expectedTail: TranscriptTail,
+    entries: readonly ClaudeTranscriptEntry[],
+  ): Promise<TranscriptAppendResult>
+  appendMetadataSnapshot(
     expectedTail: TranscriptTail,
     entries: readonly ClaudeTranscriptEntry[],
   ): Promise<TranscriptAppendResult>
@@ -93,6 +104,7 @@ const NON_TAIL_ENTRY_TYPES = new Set([
   'agent-color',
   'agent-name',
   'agent-setting',
+  'ai-title',
   'custom-title',
   'file-history-delta',
   'file-history-snapshot',
@@ -100,6 +112,8 @@ const NON_TAIL_ENTRY_TYPES = new Set([
   'pr-link',
   'queue-operation',
   'relocated',
+  'mode',
+  'tag',
   'worktree-state',
 ])
 
@@ -149,7 +163,9 @@ function tailsMatch(left: TranscriptTail, right: TranscriptTail): boolean {
 }
 
 function tailLogicalUuid(tail: TranscriptTail): string | null {
-  return tail.branchParentUuid ?? tail.lastUuid
+  return 'branchParentUuid' in tail
+    ? (tail.branchParentUuid ?? null)
+    : tail.lastUuid
 }
 
 function getEntryUuid(entry: ClaudeTranscriptEntry): string | null {
@@ -164,6 +180,12 @@ function findLogicalTailUuid(
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]
     if (!entry) continue
+    if (
+      entry.type === 'last-prompt' &&
+      isClaudeDurableLastPromptSnapshot(entries, index)
+    ) {
+      continue
+    }
     const uuid = getEntryUuid(entry)
     if (uuid) return uuid
   }
@@ -281,11 +303,9 @@ export class ClaudeTranscriptStore {
           message: error instanceof Error ? error.message : String(error),
         }
         if (!recover) {
-          throw new ClaudeTranscriptParseError(
-            issue.lineNumber,
-            issue.byteOffset,
-            { cause: error },
-          )
+          throw new ClaudeTranscriptParseError(index + 1, byteOffset, {
+            cause: error,
+          })
         }
         break
       }
@@ -388,10 +408,13 @@ export class ClaudeTranscriptStore {
     try {
       const value = await operation({
         load: () => this.load(),
+        loadIndex: () => readClaudeSessionIndex(this.sessionFile, this.schema),
         append: (expectedTail, entry) =>
           this.appendUnderLease(expectedTail, entry),
         appendMany: (expectedTail, entries) =>
           this.appendManyUnderLease(expectedTail, entries),
+        appendMetadataSnapshot: (expectedTail, entries) =>
+          this.appendMetadataSnapshotUnderLease(expectedTail, entries),
       })
       return { status: 'completed', value }
     } finally {
@@ -453,7 +476,14 @@ export class ClaudeTranscriptStore {
           throw new Error('Sidechain entry identity does not match history')
         }
       } else if (entry.type === 'last-prompt') {
-        if (entry.leafUuid !== logicalTailUuid) {
+        const isDurableSnapshot = history.some(
+          (candidate) =>
+            candidate.type === 'last-prompt' &&
+            candidate.sessionId === entry.sessionId &&
+            candidate.leafUuid === entry.leafUuid &&
+            candidate.lastPrompt === entry.lastPrompt,
+        )
+        if (entry.leafUuid !== logicalTailUuid && !isDurableSnapshot) {
           staleLastPromptLeaf = true
           continue
         }
@@ -536,6 +566,73 @@ export class ClaudeTranscriptStore {
         branchParentUuid === undefined || advancedLogicalTail
           ? tail
           : { ...tail, branchParentUuid },
+    }
+  }
+
+  private async appendMetadataSnapshotUnderLease(
+    expectedTail: TranscriptTail,
+    entries: readonly ClaudeTranscriptEntry[],
+  ): Promise<TranscriptAppendResult> {
+    if (entries.length === 0) {
+      throw new Error('Cannot append an empty Claude metadata snapshot')
+    }
+    if (entries.some((entry) => !isClaudeDurableMetadataType(entry.type))) {
+      throw new Error('Claude metadata snapshot contains a structural entry')
+    }
+    if (
+      new Set(entries.map((entry) => entry.type)).size !== entries.length ||
+      new Set(entries.map((entry) => entry.sessionId)).size !== 1 ||
+      typeof entries[0]?.sessionId !== 'string'
+    ) {
+      throw new Error(
+        'Claude metadata snapshot must contain one session record per type',
+      )
+    }
+    const current = await readClaudeSessionIndex(this.sessionFile, this.schema)
+    if (current.issue !== null) {
+      throw new Error('Cannot append metadata to a corrupt Claude transcript')
+    }
+    if (
+      current.byteLength !== expectedTail.byteLength ||
+      current.tail.lastLineHash !== expectedTail.lastLineHash ||
+      current.newlineTerminated !== expectedTail.newlineTerminated
+    ) {
+      return { status: 'conflict', reason: 'tail-changed' }
+    }
+    if (!current.newlineTerminated) {
+      throw new Error('Claude transcript is not newline-terminated')
+    }
+
+    const lines = entries.map((entry) => this.schema.serializeForAppend(entry))
+    const encoded = Buffer.from(`${lines.join('\n')}\n`)
+    const sessionHandle = await open(this.sessionFile, 'a')
+    try {
+      const before = await sessionHandle.stat()
+      if (before.size !== expectedTail.byteLength) {
+        return { status: 'conflict', reason: 'tail-changed' }
+      }
+      await sessionHandle.writeFile(encoded)
+      await sessionHandle.sync()
+      const after = await sessionHandle.stat()
+      if (after.size !== expectedTail.byteLength + encoded.length) {
+        return { status: 'conflict', reason: 'interleaved-write' }
+      }
+    } finally {
+      await sessionHandle.close()
+    }
+
+    const last = entries.at(-1)
+    return {
+      status: 'appended',
+      tail: {
+        byteLength: expectedTail.byteLength + encoded.length,
+        lastLineHash: hashLine(Buffer.from(lines.at(-1) ?? '')),
+        lastUuid:
+          typeof last?.leafUuid === 'string'
+            ? last.leafUuid
+            : expectedTail.lastUuid,
+        newlineTerminated: true,
+      },
     }
   }
 

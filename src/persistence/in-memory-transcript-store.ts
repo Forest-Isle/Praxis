@@ -67,6 +67,8 @@ export class InMemoryTranscriptStore {
         append: (expectedTail, entry) => this.appendMany(expectedTail, [entry]),
         appendMany: (expectedTail, entries) =>
           this.appendMany(expectedTail, entries),
+        appendMetadataSnapshot: (expectedTail, entries) =>
+          this.appendMany(expectedTail, entries),
       })
       return { status: 'completed', value }
     } finally {

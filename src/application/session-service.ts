@@ -13,6 +13,7 @@ import {
 import { homedir } from 'node:os'
 import {
   basename,
+  dirname,
   extname,
   isAbsolute,
   join,
@@ -56,13 +57,12 @@ import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
 import {
   selectClaudeActiveTranscript,
   selectClaudeTranscriptAtMessage,
+  selectClaudeTranscriptFromNewestLeaf,
 } from '../compatibility/claude/history.js'
 import { ClaudeFileHistory } from '../compatibility/claude/file-history.js'
-import { getClaudePrLink } from '../compatibility/claude/pr-links.js'
 import {
   type ClaudeDisplayTranscriptItem,
   getClaudeAgentSetting,
-  getClaudeLastPrompt,
   projectClaudeDisplayTranscript,
   projectClaudeModelMessages,
 } from '../compatibility/claude/projection.js'
@@ -70,6 +70,17 @@ import {
   type ClaudeTranscriptEntry,
   selectClaudeSchemaAdapter,
 } from '../compatibility/claude/schema.js'
+import {
+  createClaudeDurableMetadataSnapshot,
+  createClaudeTagEntry,
+  mergeClaudeDurableMetadataSnapshot,
+  reduceClaudeSessionMetadata,
+  type ClaudeSessionMetadata,
+} from '../compatibility/claude/session-metadata.js'
+import {
+  classifyClaudeInterruption,
+  type ClaudeInterruptionClassification,
+} from '../compatibility/claude/interruption.js'
 import {
   findUnresolvedClaudeToolCalls,
   getClaudeContentBlocks,
@@ -142,6 +153,10 @@ import {
   type TranscriptSnapshot,
   type TranscriptTail,
 } from '../persistence/claude-transcript-store.js'
+import {
+  ClaudeSessionIndexCandidateError,
+  readClaudeSessionIndexes,
+} from '../persistence/claude-session-index.js'
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
 import type { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
 import { ModelCompactor } from './model-compactor.js'
@@ -231,6 +246,8 @@ export interface ClaudeSessionServiceOptions {
     decision?: PermissionDecision,
   ) => PermissionApproval | Promise<PermissionApproval>
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
+  /** Explicit Claude-compatible opt-in for replaying an interrupted turn. */
+  resumeInterruptedTurn?: boolean
   contextAssembler?: ContextAssembler
   conditionalRuleResolver?: Pick<ClaudeConditionalRuleResolver, 'resolve'>
   extensions?: ClaudeExtensionCatalog
@@ -352,6 +369,12 @@ export interface SideQuestionForkResult {
 export interface SessionSummary {
   sessionId: string
   name?: string
+  tag?: string
+  agentName?: string
+  agentColor?: string
+  agentSetting?: string
+  permissionMode?: string
+  mode?: string
   lastPrompt: string | null
   updatedAt: string
   status: SessionStatus
@@ -1178,6 +1201,8 @@ export class ClaudeSessionService {
   private readonly worktreeManager: SessionWorktreeManager | null
   private readonly sessionCwds = new Map<string, string>()
   private readonly discoveredProjectRoots = new Map<string, string>()
+  private readonly explicitSessionFiles = new Map<string, string>()
+  private readonly explicitResumeLeafUuids = new Map<string, string>()
   private readonly sessionPermissionUpdates = new Map<
     string,
     PermissionUpdate[]
@@ -1201,6 +1226,12 @@ export class ClaudeSessionService {
   >()
   private activeCostSessionId: string | undefined
   private closeCostSavePromise: Promise<void> | undefined
+  private closeMetadataSavePromise: Promise<void> | undefined
+  private readonly durableMetadataSessions = new Set<string>()
+  private readonly durableMetadataSnapshots = new Map<
+    string,
+    ClaudeTranscriptEntry[]
+  >()
   private readonly sessionMemoryControllers = new Map<
     string,
     SessionMemoryController
@@ -1427,6 +1458,12 @@ export class ClaudeSessionService {
     )
     this.sessionMemoryControllers.clear()
     await this.workflowManager?.close()
+    this.closeMetadataSavePromise ??= Promise.all(
+      [...this.durableMetadataSessions].map((sessionId) =>
+        this.reappendDurableMetadata(sessionId),
+      ),
+    ).then(() => undefined)
+    await this.closeMetadataSavePromise
     this.closeCostSavePromise ??= this.persistActiveSessionCost()
     await this.closeCostSavePromise
     this.mcpClosePromise ??= this.options.mcp?.close?.() ?? Promise.resolve()
@@ -2219,10 +2256,13 @@ export class ClaudeSessionService {
   }
 
   async sessions(): Promise<SessionSummary[]> {
-    const discoveredRoot = await discoverClaudeProjectRoot({
-      configRoot: this.options.configRoot,
-      cwd: this.activeCwd(),
-    })
+    const discoveredRoot =
+      this.options.dataPlane === 'native'
+        ? undefined
+        : await discoverClaudeProjectRoot({
+            configRoot: this.options.configRoot,
+            cwd: this.activeCwd(),
+          })
     const projectRoot = discoveredRoot ?? this.paths(randomUUID()).projectRoot
     let names: string[]
     try {
@@ -2232,52 +2272,86 @@ export class ClaudeSessionService {
       throw error
     }
 
-    const sessionIds = names
+    const discoveredSessionIds = names
       .filter((name) => extname(name) === '.jsonl')
       .map((name) => basename(name, '.jsonl'))
       .filter((sessionId) => isClaudeSessionId(sessionId))
+    const sessionIds = [
+      ...new Set([
+        ...discoveredSessionIds,
+        ...this.explicitSessionFiles.keys(),
+      ]),
+    ]
     if (discoveredRoot !== undefined) {
-      for (const sessionId of sessionIds) {
+      for (const sessionId of discoveredSessionIds) {
         this.discoveredProjectRoots.set(sessionId, projectRoot)
       }
     }
 
-    const summaries = await Promise.all(
-      sessionIds.map(async (sessionId) => {
-        const sessionFile = join(projectRoot, `${sessionId}.jsonl`)
-        try {
-          const metadata = await lstat(sessionFile)
-          if (!metadata.isFile()) return null
-          const recovery = await this.store(sessionId).loadReadOnly()
-          if (!(await lstat(sessionFile)).isFile()) return null
-          const name = this.sessionName(recovery.entries)
-          const prLink = getClaudePrLink(recovery.entries, sessionId)
-          return {
-            sessionId,
-            ...(name === null ? {} : { name }),
-            lastPrompt: getClaudeLastPrompt(recovery.entries),
-            updatedAt: metadata.mtime.toISOString(),
-            status: this.sessionStatus(recovery.issue, recovery.entries.length),
-            issue: recovery.issue,
-            ...(prLink
-              ? {
-                  prNumber: prLink.prNumber,
-                  prUrl: prLink.prUrl,
-                  prRepository: prLink.prRepository,
-                }
-              : {}),
-          }
-        } catch (error) {
-          if (typeof (error as NodeJS.ErrnoException).code === 'string') {
-            return null
-          }
-          throw error
-        }
-      }),
+    const indexResults = await readClaudeSessionIndexes(
+      sessionIds.map((sessionId) => ({
+        sessionId,
+        path:
+          this.explicitSessionFiles.get(sessionId) ??
+          join(projectRoot, `${sessionId}.jsonl`),
+      })),
+      this.schema,
     )
+    const summaries = indexResults.map((result) => {
+      try {
+        if ('error' in result) throw result.error
+        const { sessionId, index } = result
+        const metadata = reduceClaudeSessionMetadata(index.entries, sessionId)
+        const name = metadata.title ?? metadata.agentName
+        const prLink = metadata.prLink
+        return {
+          sessionId,
+          ...(name === undefined ? {} : { name }),
+          ...(metadata.tag === undefined ? {} : { tag: metadata.tag }),
+          ...(metadata.agentName === undefined
+            ? {}
+            : { agentName: metadata.agentName }),
+          ...(metadata.agentColor === undefined
+            ? {}
+            : { agentColor: metadata.agentColor }),
+          ...(metadata.agentSetting === undefined
+            ? {}
+            : { agentSetting: metadata.agentSetting }),
+          ...(metadata.permissionMode === undefined
+            ? {}
+            : { permissionMode: metadata.permissionMode }),
+          ...(metadata.mode === undefined ? {} : { mode: metadata.mode }),
+          lastPrompt: metadata.lastPrompt ?? null,
+          updatedAt: index.updatedAt,
+          status: this.sessionStatus(index.issue, index.entries.length),
+          issue: index.issue,
+          ...(prLink
+            ? {
+                prNumber: prLink.prNumber,
+                prUrl: prLink.prUrl,
+                prRepository: prLink.prRepository,
+              }
+            : {}),
+        }
+      } catch (error) {
+        if (error instanceof ClaudeSessionIndexCandidateError) return null
+        if (
+          ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(
+            (error as NodeJS.ErrnoException).code ?? '',
+          )
+        ) {
+          return null
+        }
+        throw error
+      }
+    })
     return summaries
       .filter((summary): summary is SessionSummary => summary !== null)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .sort(
+        (left, right) =>
+          right.updatedAt.localeCompare(left.updatedAt) ||
+          left.sessionId.localeCompare(right.sessionId),
+      )
   }
 
   async inspect(sessionId: string): Promise<SessionInspection> {
@@ -2294,10 +2368,35 @@ export class ClaudeSessionService {
       throw error
     }
     const recovery = await this.store(sessionId).loadReadOnly()
-    const prLink = getClaudePrLink(recovery.entries, sessionId)
+    const sessionMetadata = reduceClaudeSessionMetadata(
+      recovery.entries,
+      sessionId,
+    )
+    const prLink = sessionMetadata.prLink
     return {
       sessionId,
-      lastPrompt: getClaudeLastPrompt(recovery.entries),
+      ...(sessionMetadata.title === undefined
+        ? {}
+        : { name: sessionMetadata.title }),
+      ...(sessionMetadata.tag === undefined
+        ? {}
+        : { tag: sessionMetadata.tag }),
+      ...(sessionMetadata.agentName === undefined
+        ? {}
+        : { agentName: sessionMetadata.agentName }),
+      ...(sessionMetadata.agentColor === undefined
+        ? {}
+        : { agentColor: sessionMetadata.agentColor }),
+      ...(sessionMetadata.agentSetting === undefined
+        ? {}
+        : { agentSetting: sessionMetadata.agentSetting }),
+      ...(sessionMetadata.permissionMode === undefined
+        ? {}
+        : { permissionMode: sessionMetadata.permissionMode }),
+      ...(sessionMetadata.mode === undefined
+        ? {}
+        : { mode: sessionMetadata.mode }),
+      lastPrompt: sessionMetadata.lastPrompt ?? null,
       updatedAt: metadata.mtime.toISOString(),
       status: this.sessionStatus(recovery.issue, recovery.entries.length),
       issue: recovery.issue,
@@ -2337,6 +2436,92 @@ export class ClaudeSessionService {
     }
   }
 
+  async registerResumePath(requestedPath: string): Promise<SessionSummary> {
+    this.assertSessionPersistence()
+    const path = resolve(requestedPath)
+    const pathMetadata = await lstat(path)
+    if (!pathMetadata.isFile()) {
+      throw new Error(
+        `Claude resume path must be a regular JSONL file: ${path}`,
+      )
+    }
+    if (extname(path).toLowerCase() !== '.jsonl') {
+      throw new Error(`Claude resume path must end in .jsonl: ${path}`)
+    }
+    const sessionId = basename(path, '.jsonl')
+    if (!isClaudeSessionId(sessionId)) {
+      throw new Error(
+        `Claude resume path filename must be a session UUID: ${path}`,
+      )
+    }
+    const canonicalPath = await realpath(path)
+    const exact = this.pathsForCwd(sessionId, this.activeCwd())
+    const candidate = new ClaudeTranscriptStore({
+      sessionFile: canonicalPath,
+      lockFile: join(exact.praxisRoot, 'locks', `${sessionId}.lock`),
+      schema: this.schema,
+    })
+    const snapshot = await candidate.load()
+    if (!snapshot.tail.newlineTerminated) {
+      throw new Error('Claude resume transcript must be newline-terminated')
+    }
+    if (snapshot.entries.length === 0) {
+      throw new Error('Claude resume transcript must not be empty')
+    }
+    let matchingSessionIdentity = false
+    for (const entry of snapshot.entries) {
+      if (entry.sessionId === sessionId) matchingSessionIdentity = true
+      if (
+        typeof entry.sessionId === 'string' &&
+        entry.sessionId !== sessionId
+      ) {
+        throw new Error(
+          `Claude resume transcript contains a different sessionId: ${String(entry.sessionId)}`,
+        )
+      }
+    }
+    if (!matchingSessionIdentity) {
+      throw new Error('Claude resume transcript is missing its sessionId')
+    }
+    const selected = selectClaudeTranscriptFromNewestLeaf(snapshot.entries)
+    this.explicitSessionFiles.set(sessionId, canonicalPath)
+    this.explicitResumeLeafUuids.set(sessionId, selected.leafUuid)
+    this.discoveredProjectRoots.set(sessionId, dirname(canonicalPath))
+    const metadata = reduceClaudeSessionMetadata(snapshot.entries, sessionId)
+    const prLink = metadata.prLink
+    return {
+      sessionId,
+      ...(metadata.title === undefined ? {} : { name: metadata.title }),
+      ...(metadata.tag === undefined ? {} : { tag: metadata.tag }),
+      ...(metadata.agentName === undefined
+        ? {}
+        : { agentName: metadata.agentName }),
+      ...(metadata.agentColor === undefined
+        ? {}
+        : { agentColor: metadata.agentColor }),
+      ...(metadata.agentSetting === undefined
+        ? {}
+        : { agentSetting: metadata.agentSetting }),
+      ...(metadata.permissionMode === undefined
+        ? {}
+        : { permissionMode: metadata.permissionMode }),
+      ...(metadata.mode === undefined ? {} : { mode: metadata.mode }),
+      lastPrompt: metadata.lastPrompt ?? null,
+      updatedAt: pathMetadata.mtime.toISOString(),
+      status: this.sessionStatus(null, snapshot.entries.length),
+      issue: null,
+      ...(prLink === undefined
+        ? {}
+        : {
+            prNumber: prLink.prNumber,
+            ...(prLink.prUrl === undefined ? {} : { prUrl: prLink.prUrl }),
+            ...(prLink.prRepository === undefined
+              ? {}
+              : { prRepository: prLink.prRepository }),
+          }),
+    }
+  }
+
   async transcript(
     sessionId: string,
     resumeSessionAt?: string,
@@ -2360,6 +2545,28 @@ export class ClaudeSessionService {
     }
   }
 
+  async interruption(
+    sessionId: string,
+  ): Promise<ClaudeInterruptionClassification> {
+    this.assertSessionPersistence()
+    await this.discoverProjectRoot(sessionId)
+    const snapshot = await this.store(sessionId).loadReadOnly()
+    if (snapshot.entries.length === 0) {
+      throw new Error(`Claude session not found: ${sessionId}`)
+    }
+    return classifyClaudeInterruption(snapshot.entries)
+  }
+
+  async metadata(sessionId: string): Promise<ClaudeSessionMetadata> {
+    this.assertSessionPersistence()
+    await this.discoverProjectRoot(sessionId)
+    const snapshot = await this.store(sessionId).loadReadOnly()
+    if (snapshot.entries.length === 0) {
+      throw new Error(`Claude session not found: ${sessionId}`)
+    }
+    return reduceClaudeSessionMetadata(snapshot.entries, sessionId)
+  }
+
   async rename(sessionId: string, name: string): Promise<void> {
     this.assertWritable()
     const normalized = name.trim()
@@ -2369,20 +2576,47 @@ export class ClaudeSessionService {
       if (snapshot.entries.length === 0) {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
+      this.rememberDurableMetadata(sessionId, snapshot.entries)
       if (this.hasSessionName(snapshot.entries, normalized)) return
-      const appendResult = await lease.appendMany(
-        snapshot.tail,
-        this.sessionNameEntries(sessionId, normalized),
-      )
+      const entries = this.sessionNameEntries(sessionId, normalized)
+      const appendResult = await lease.appendMany(snapshot.tail, entries)
       if (appendResult.status === 'conflict') {
         throw new Error(
           `Claude transcript rename conflict: ${appendResult.reason}`,
         )
       }
+      this.rememberDurableMetadata(sessionId, [...snapshot.entries, ...entries])
     })
     if (result.status === 'conflict') {
       throw new Error(`Claude transcript rename conflict: ${result.reason}`)
     }
+    this.durableMetadataSessions.add(sessionId)
+  }
+
+  async tag(sessionId: string, tag: string): Promise<void> {
+    this.assertWritable()
+    const normalized = tag.trim()
+    const entry = createClaudeTagEntry(sessionId, normalized)
+    const result = await this.turnStore(sessionId).withLease(async (lease) => {
+      const snapshot = await lease.load()
+      if (snapshot.entries.length === 0) {
+        throw new Error(`Claude session not found: ${sessionId}`)
+      }
+      this.rememberDurableMetadata(sessionId, snapshot.entries)
+      const current = reduceClaudeSessionMetadata(snapshot.entries, sessionId)
+      if (current.tag === normalized) return
+      const appendResult = await lease.append(snapshot.tail, entry)
+      if (appendResult.status === 'conflict') {
+        throw new Error(
+          `Claude transcript tag conflict: ${appendResult.reason}`,
+        )
+      }
+      this.rememberDurableMetadata(sessionId, [...snapshot.entries, entry])
+    })
+    if (result.status === 'conflict') {
+      throw new Error(`Claude transcript tag conflict: ${result.reason}`)
+    }
+    this.durableMetadataSessions.add(sessionId)
   }
 
   async changeCwd(
@@ -2996,6 +3230,26 @@ export class ClaudeSessionService {
           `Claude transcript append conflict: ${appendResult.reason}`,
         )
       }
+      const metadataEntries = createClaudeDurableMetadataSnapshot(
+        [...snapshot.entries, ...entries],
+        sessionId,
+      )
+      if (metadataEntries.length > 0) {
+        const metadataAppend = await lease.appendMany(
+          appendResult.tail,
+          metadataEntries,
+        )
+        if (metadataAppend.status === 'conflict') {
+          throw new Error(
+            `Claude metadata snapshot conflict: ${metadataAppend.reason}`,
+          )
+        }
+      }
+      this.rememberDurableMetadata(sessionId, [
+        ...snapshot.entries,
+        ...entries,
+        ...metadataEntries,
+      ])
       this.options.projectMemoryRecall?.recordCompact(sessionId)
       this.options.eventSink?.({
         type: 'compact-boundary',
@@ -3371,6 +3625,9 @@ export class ClaudeSessionService {
     }
 
     await this.activateSessionCostTracker(sessionId)
+    if (this.options.sessionPersistence !== false) {
+      this.durableMetadataSessions.add(sessionId)
+    }
 
     await this.ensureFileResources(sessionId, signal)
 
@@ -3407,6 +3664,7 @@ export class ClaudeSessionService {
         }
       }
       let snapshot = await lease.load()
+      let automaticReplayPrompt: string | undefined
       if (
         requireExisting &&
         this.options.sessionPersistence === false &&
@@ -3421,6 +3679,7 @@ export class ClaudeSessionService {
       if (requireExisting && snapshot.entries.length === 0) {
         throw new Error(`Claude session not found: ${sessionId}`)
       }
+      this.rememberDurableMetadata(sessionId, snapshot.entries)
       if (resumeSessionAt !== undefined) {
         snapshot = {
           entries: selectClaudeTranscriptAtMessage(
@@ -3428,6 +3687,41 @@ export class ClaudeSessionService {
             resumeSessionAt,
           ),
           tail: { ...snapshot.tail, branchParentUuid: resumeSessionAt },
+        }
+      } else if (this.explicitResumeLeafUuids.has(sessionId)) {
+        const selected = selectClaudeTranscriptFromNewestLeaf(snapshot.entries)
+        this.explicitResumeLeafUuids.set(sessionId, selected.leafUuid)
+        snapshot = {
+          entries: selected.entries,
+          tail: { ...snapshot.tail, branchParentUuid: selected.leafUuid },
+        }
+      }
+      if (
+        requireExisting &&
+        resumeSessionAt === undefined &&
+        this.options.resumeInterruptedTurn === true &&
+        shellCommand === undefined &&
+        !skipUserPrompt &&
+        !(
+          this.options.approveRecovery !== undefined &&
+          findUnresolvedClaudeToolCalls(snapshot.entries).length > 0
+        )
+      ) {
+        const interruption = classifyClaudeInterruption(snapshot.entries)
+        if (
+          (interruption.kind === 'interrupted-prompt' ||
+            interruption.kind === 'interrupted-turn') &&
+          interruption.prompt !== undefined &&
+          interruption.replayEntries !== undefined
+        ) {
+          automaticReplayPrompt = interruption.prompt
+          snapshot = {
+            entries: interruption.replayEntries,
+            tail: {
+              ...snapshot.tail,
+              branchParentUuid: interruption.replayParentUuid ?? null,
+            },
+          }
         }
       }
       const initialTransition =
@@ -3443,6 +3737,7 @@ export class ClaudeSessionService {
           entries: [...snapshot.entries, stateEntry],
           tail: stateTail,
         }
+        this.rememberDurableMetadata(sessionId, snapshot.entries)
       }
       this.restoreWorktree(snapshot.entries)
       this.options.interactiveTools?.restore(sessionId, snapshot.entries)
@@ -3462,6 +3757,7 @@ export class ClaudeSessionService {
           entries: [...snapshot.entries, ...entries],
           tail: appendResult.tail,
         }
+        this.rememberDurableMetadata(sessionId, snapshot.entries)
       }
       const agentName =
         this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
@@ -3469,13 +3765,14 @@ export class ClaudeSessionService {
       const provider = this.providerForAgent(agent)
       this.activeProvider = provider
       const effectivePrompt =
-        !requireExisting &&
+        automaticReplayPrompt ??
+        (!requireExisting &&
         !skipUserPrompt &&
         !this.options.agentInitialPromptHandledExternally &&
         shellCommand === undefined &&
         agent?.initialPrompt
           ? `${agent.initialPrompt}\n\n${prompt}`
-          : prompt
+          : prompt)
       const projectMemoryRecallTurn =
         !skipUserPrompt && shellCommand === undefined
           ? this.options.projectMemoryRecall?.prefetch({
@@ -4734,6 +5031,26 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, ...entries],
             tail: appendResult.tail,
           }
+          const metadataEntries = createClaudeDurableMetadataSnapshot(
+            snapshot.entries,
+            sessionId,
+          )
+          if (metadataEntries.length > 0) {
+            const metadataAppend = await lease.appendMany(
+              snapshot.tail,
+              metadataEntries,
+            )
+            if (metadataAppend.status === 'conflict') {
+              throw new Error(
+                `Claude metadata snapshot conflict: ${metadataAppend.reason}`,
+              )
+            }
+            snapshot = {
+              entries: [...snapshot.entries, ...metadataEntries],
+              tail: metadataAppend.tail,
+            }
+          }
+          this.rememberDurableMetadata(sessionId, snapshot.entries)
           await this.runAdvisoryHook(
             sessionId,
             'PostCompact',
@@ -5257,16 +5574,18 @@ export class ClaudeSessionService {
           throw new Error('Could not locate final assistant response')
         }
         if (!skipUserPrompt) {
-          await this.append(
-            lease,
-            snapshot.tail,
-            createClaudeLastPromptEntry({
-              sessionId,
-              lastPrompt: effectivePrompt,
-              leafUuid: finalLeafUuid,
-            }),
-          )
+          const lastPrompt = createClaudeLastPromptEntry({
+            sessionId,
+            lastPrompt: effectivePrompt,
+            leafUuid: finalLeafUuid,
+          })
+          const tail = await this.append(lease, snapshot.tail, lastPrompt)
+          snapshot = {
+            entries: [...snapshot.entries, lastPrompt],
+            tail,
+          }
         }
+        this.rememberDurableMetadata(sessionId, snapshot.entries)
         const totalUsage = mergeUsage(
           mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
           result.usage,
@@ -5740,6 +6059,14 @@ export class ClaudeSessionService {
       sessionId,
       this.sessionCwds.get(sessionId) ?? this.activeCwd(),
     )
+    const explicitSessionFile = this.explicitSessionFiles.get(sessionId)
+    if (explicitSessionFile !== undefined) {
+      return {
+        ...exact,
+        projectRoot: dirname(explicitSessionFile),
+        sessionFile: explicitSessionFile,
+      }
+    }
     if (this.options.dataPlane === 'native') return exact
     const discovered = this.discoveredProjectRoots.get(sessionId)
     if (discovered === undefined) return exact
@@ -6252,6 +6579,45 @@ export class ClaudeSessionService {
     })
   }
 
+  /**
+   * Refreshes metadata under the transcript lease before writing a compact
+   * tail snapshot. This prevents a long-lived process from overwriting a
+   * newer title or tag appended by another writer.
+   */
+  private async reappendDurableMetadata(sessionId: string): Promise<void> {
+    if (this.options.sessionPersistence === false) return
+    await this.discoverProjectRoot(sessionId)
+    let result
+    try {
+      result = await this.store(sessionId).withLease(async (lease) => {
+        const snapshot = await lease.loadIndex?.()
+        if (snapshot === undefined) return
+        if (snapshot.entries.length === 0) return
+        const entries = mergeClaudeDurableMetadataSnapshot(
+          this.durableMetadataSnapshots.get(sessionId) ?? [],
+          snapshot.tailEntries,
+          sessionId,
+        )
+        if (entries.length === 0) return
+        const appended = await lease.appendMetadataSnapshot(
+          snapshot.tail,
+          entries,
+        )
+        if (appended.status === 'conflict') {
+          throw new Error(
+            `Claude metadata snapshot conflict: ${appended.reason}`,
+          )
+        }
+      })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    if (result.status === 'conflict') {
+      throw new Error(`Claude metadata snapshot conflict: ${result.reason}`)
+    }
+  }
+
   private turnStore(
     sessionId: string,
   ): ClaudeTranscriptStore | InMemoryTranscriptStore {
@@ -6262,6 +6628,20 @@ export class ClaudeSessionService {
       this.inMemoryStores.set(sessionId, store)
     }
     return store
+  }
+
+  private rememberDurableMetadata(
+    sessionId: string,
+    observed: readonly ClaudeTranscriptEntry[],
+  ): void {
+    const snapshot = mergeClaudeDurableMetadataSnapshot(
+      this.durableMetadataSnapshots.get(sessionId) ?? [],
+      observed,
+      sessionId,
+    )
+    if (snapshot.length > 0) {
+      this.durableMetadataSnapshots.set(sessionId, snapshot)
+    }
   }
 
   private assertSessionPersistence(): void {
@@ -6588,6 +6968,8 @@ export class ClaudeSessionService {
   }
 
   private logicalTailUuid(tail: TranscriptTail): string | null {
-    return tail.branchParentUuid ?? tail.lastUuid
+    return 'branchParentUuid' in tail
+      ? (tail.branchParentUuid ?? null)
+      : tail.lastUuid
   }
 }

@@ -145,4 +145,36 @@ describe('Claude active transcript selection', () => {
       ]),
     ).toEqual([root, firstAnswer, compactBoundary, compactSummary])
   })
+
+  it('does not let a repeated durable last-prompt snapshot roll back a compact leaf', () => {
+    const lastPrompt: ClaudeTranscriptEntry = {
+      type: 'last-prompt',
+      lastPrompt: 'root',
+      leafUuid: 'first-answer',
+      sessionId: root.sessionId,
+    }
+    const compactBoundary: ClaudeTranscriptEntry = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'snapshot-boundary',
+      parentUuid: null,
+      logicalParentUuid: 'first-answer',
+      sessionId: root.sessionId,
+    }
+    const compactSummary = {
+      ...message('user', 'snapshot-summary', 'snapshot-boundary'),
+      isCompactSummary: true,
+    }
+
+    expect(
+      selectClaudeActiveTranscript([
+        root,
+        firstAnswer,
+        lastPrompt,
+        compactBoundary,
+        compactSummary,
+        { ...lastPrompt },
+      ]),
+    ).toEqual([root, firstAnswer, compactBoundary, compactSummary])
+  })
 })

@@ -93,6 +93,15 @@ Stage 45 adds real runtime-backed stream records for `status` and
 and foreground/background Agent and Bash `task_*` records. Subscription-only
 `auth_status` and `rate_limit_event` remain intentionally excluded.
 
+Session discovery and recovery parity is complete for the scoped local CLI:
+64 KiB head/128 KiB tail discovery uses a 32-reader pool and a 500-session
+acceptance fixture; malformed/truncated candidates are isolated; durable
+metadata uses typed last-wins reduction and compact/close snapshots; continue
+skips live background sessions with deterministic fallback; explicit regular
+JSONL paths resume at their newest main-chain leaf; and opt-in interrupted-turn
+recovery retains completed tool/context state. Claude Code 2.1.237 resumes the
+Praxis-written metadata profile in a pinned black-box gate.
+
 ## Shared Claude data plane
 
 | Capability                                 | Status                                                | Evidence / remaining work                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
