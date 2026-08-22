@@ -30,6 +30,7 @@ const base: ToolRegistry = {
   ],
   prepare: async (call) => call,
   execute: async () => ({ content: 'base', isError: false }),
+  schedulingPolicy: () => ({ concurrency: 'concurrent' }),
 }
 
 async function fixture(
@@ -95,6 +96,16 @@ describe('ClaudeInteractiveToolManager', () => {
       'EnterPlanMode',
       'ExitPlanMode',
     ])
+    expect(
+      registry.schedulingPolicy?.({
+        id: 'ask-policy',
+        name: 'AskUserQuestion',
+        input: {},
+      }),
+    ).toMatchObject({ concurrency: 'exclusive' })
+    expect(
+      registry.schedulingPolicy?.({ id: 'read', name: 'Read', input: {} }),
+    ).toEqual({ concurrency: 'concurrent' })
     expect(
       registry.definitions().find(({ name }) => name === 'AskUserQuestion')
         ?.inputSchema,

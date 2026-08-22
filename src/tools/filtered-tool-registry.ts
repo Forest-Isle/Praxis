@@ -5,6 +5,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 
 export interface FilteredToolRegistryOptions {
   tools?: readonly string[]
@@ -54,6 +55,11 @@ export class FilteredToolRegistry implements ToolRegistry {
       if (!definition) throw new Error(`Unknown enabled tool: ${name}`)
       return definition
     })
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    this.assertEnabled(call.name)
+    return resolveToolSchedulingPolicy(this.base, call)
   }
 
   async prepare(

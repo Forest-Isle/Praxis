@@ -8,6 +8,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 
 export interface UserMessage {
   message: string
@@ -66,6 +67,13 @@ export class ClaudeUserMessageToolRegistry implements ToolRegistry {
 
   definitions(): readonly ModelToolDefinition[] {
     return [...this.base.definitions(), DEFINITION]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (call.name === DEFINITION.name) {
+      return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    return resolveToolSchedulingPolicy(this.base, call)
   }
 
   prepare(

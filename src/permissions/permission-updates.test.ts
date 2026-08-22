@@ -4,6 +4,7 @@ import {
   parsePermissionUpdates,
   permissionRuleValueFromString,
   permissionRuleValueToString,
+  shellInputIsReadOnly,
 } from './permission-updates.js'
 
 describe('Claude permission updates', () => {
@@ -49,6 +50,23 @@ describe('Claude permission updates', () => {
           { type: 'setMode', mode, destination: 'session' },
         ]),
       ).toBeUndefined()
+    }
+  })
+
+  it('classifies only parser-proven non-expanding shell reads as read-only', () => {
+    expect(shellInputIsReadOnly('pwd')).toBe(true)
+    expect(shellInputIsReadOnly('ls -la')).toBe(true)
+    expect(shellInputIsReadOnly('pwd && ls')).toBe(true)
+    for (const command of [
+      'ls > files.txt',
+      'ls $HOME',
+      'ls $(pwd)',
+      'ls *.ts',
+      'ls &',
+      "ls '",
+      'rm file',
+    ]) {
+      expect(shellInputIsReadOnly(command), command).toBe(false)
     }
   })
 })

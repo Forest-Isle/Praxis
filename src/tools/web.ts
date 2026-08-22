@@ -17,6 +17,7 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 
 interface ResolvedAddress {
   address: string
@@ -365,6 +366,29 @@ function parseWebSearchInput(input: Record<string, unknown>): {
   }
 }
 
+function webSchedulingInputIsValid(call: ModelToolCall): boolean {
+  try {
+    if (call.name === 'WebFetch') {
+      parseWebFetchInput(call.input)
+      return Object.keys(call.input).every(
+        (name) => name === 'url' || name === 'prompt',
+      )
+    }
+    if (call.name === 'WebSearch') {
+      parseWebSearchInput(call.input)
+      return Object.keys(call.input).every(
+        (name) =>
+          name === 'query' ||
+          name === 'allowed_domains' ||
+          name === 'blocked_domains',
+      )
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 function normalizedAddress(value: string) {
   const parsed = ipaddr.parse(value)
   return parsed instanceof ipaddr.IPv6 && parsed.isIPv4MappedAddress()
@@ -610,6 +634,15 @@ export class WebToolRegistry implements ToolRegistry {
         ? [searchDefinition]
         : []),
     ]
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (call.name === 'WebFetch' || call.name === 'WebSearch') {
+      return webSchedulingInputIsValid(call)
+        ? { concurrency: 'concurrent' as const, cancelOnInterrupt: true }
+        : { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    return resolveToolSchedulingPolicy(this.options.base, call)
   }
 
   async prepare(

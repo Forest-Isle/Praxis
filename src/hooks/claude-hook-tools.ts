@@ -45,6 +45,13 @@ export class ClaudeHookToolCoordinator
     return this.options.tools.definitions()
   }
 
+  schedulingPolicy() {
+    return {
+      concurrency: 'exclusive' as const,
+      startAfterAssistant: true,
+    }
+  }
+
   async prepare(
     call: ModelToolCall,
     context: ToolExecutionContext,

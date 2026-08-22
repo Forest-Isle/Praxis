@@ -10921,6 +10921,14 @@ describe('ClaudeSessionService', () => {
       cwd,
       sessionId: summary.sessionId,
     })
+    const terminalizedSource = await readFile(paths.sessionFile, 'utf8')
+    await writeFile(
+      paths.sessionFile,
+      terminalizedSource
+        .split('\n')
+        .filter((line) => !line.includes('"tool_use_id":"call_interrupted"'))
+        .join('\n'),
+    )
     const beforeMissingApproval = await readFile(paths.sessionFile, 'utf8')
     const requiresApproval = new ClaudeSessionService({
       configRoot,
@@ -11118,6 +11126,22 @@ describe('ClaudeSessionService', () => {
     ).rejects.toBeInstanceOf(AgentRunCancelledError)
     const [summary] = await interrupted.sessions()
     if (!summary) throw new Error('Interrupted session was not persisted')
+    const interruptedPaths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: summary.sessionId,
+    })
+    const terminalizedSource = await readFile(
+      interruptedPaths.sessionFile,
+      'utf8',
+    )
+    await writeFile(
+      interruptedPaths.sessionFile,
+      terminalizedSource
+        .split('\n')
+        .filter((line) => !line.includes('"tool_use_id":"call_interrupted"'))
+        .join('\n'),
+    )
 
     const denied = new ClaudeSessionService({
       configRoot,

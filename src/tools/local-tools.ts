@@ -46,7 +46,10 @@ import { editNotebook, formatNotebookForRead } from './notebook.js'
 import { openPdf } from './pdf.js'
 import { validateBashPathSafety } from '../permissions/bash-path-safety.js'
 import { protectedWritePathReason } from '../permissions/bypass-immune-paths.js'
-import { effectiveAdditionalDirectories } from '../permissions/permission-updates.js'
+import {
+  effectiveAdditionalDirectories,
+  shellInputIsReadOnly,
+} from '../permissions/permission-updates.js'
 import type { DataPlane } from '../persistence/data-plane.js'
 
 export interface LocalToolRegistryOptions {
@@ -381,6 +384,68 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function hasOnlyInputKeys(
+  input: Record<string, unknown>,
+  allowed: readonly string[],
+): boolean {
+  const names = new Set(allowed)
+  return Object.keys(input).every((name) => names.has(name))
+}
+
+function localSchedulingInputIsValid(call: ModelToolCall): boolean {
+  try {
+    if (call.name === 'Read') {
+      stringInput(call.input, 'file_path')
+      optionalNonNegativeInteger(call.input, 'offset')
+      optionalPositiveInteger(call.input, 'limit')
+      optionalString(call.input, 'pages')
+      return hasOnlyInputKeys(call.input, [
+        'file_path',
+        'offset',
+        'limit',
+        'pages',
+      ])
+    }
+    if (call.name === 'Glob') {
+      stringInput(call.input, 'pattern', true)
+      optionalString(call.input, 'path')
+      return hasOnlyInputKeys(call.input, ['pattern', 'path'])
+    }
+    if (call.name === 'Grep') {
+      stringInput(call.input, 'pattern')
+      optionalString(call.input, 'path')
+      optionalString(call.input, 'glob')
+      return hasOnlyInputKeys(call.input, ['pattern', 'path', 'glob'])
+    }
+    if (call.name === 'Bash') {
+      stringInput(call.input, 'command')
+      optionalPositiveInteger(call.input, 'timeout')
+      const description = call.input.description
+      const background = call.input.run_in_background
+      const disableSandbox = call.input.dangerouslyDisableSandbox
+      if (description !== undefined && typeof description !== 'string') {
+        return false
+      }
+      if (background !== undefined && typeof background !== 'boolean') {
+        return false
+      }
+      if (disableSandbox !== undefined && typeof disableSandbox !== 'boolean') {
+        return false
+      }
+      return hasOnlyInputKeys(call.input, [
+        'command',
+        'timeout',
+        'description',
+        'run_in_background',
+        'dangerouslyDisableSandbox',
+      ])
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 const REPORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const REPORT_VERDICTS = ['CONFIRMED', 'PLAUSIBLE'] as const
 const REPORT_OUTCOMES = ['fixed', 'skipped', 'no_change_needed'] as const
@@ -704,6 +769,38 @@ export class LocalToolRegistry implements ToolRegistry {
           }
         : definition,
     )
+  }
+
+  schedulingPolicy(call: ModelToolCall) {
+    if (
+      ['Read', 'Glob', 'Grep'].includes(call.name) &&
+      localSchedulingInputIsValid(call)
+    ) {
+      return { concurrency: 'concurrent' as const, cancelOnInterrupt: true }
+    }
+    if (
+      call.name === 'Bash' &&
+      localSchedulingInputIsValid(call) &&
+      call.input.run_in_background !== true &&
+      typeof call.input.command === 'string' &&
+      shellInputIsReadOnly(call.input.command)
+    ) {
+      return {
+        concurrency: 'concurrent' as const,
+        cancelOnInterrupt: true,
+        abortGroupOnError: true,
+      }
+    }
+    if (TOOL_DEFINITIONS.some(({ name }) => name === call.name)) {
+      return {
+        concurrency: 'exclusive' as const,
+        cancelOnInterrupt: true,
+        ...(call.name === 'Bash' ? { abortGroupOnError: true } : {}),
+      }
+    }
+    return {
+      concurrency: 'exclusive' as const,
+    }
   }
 
   async prepare(

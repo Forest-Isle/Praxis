@@ -26,6 +26,7 @@ afterEach(async () => {
 function base(): ToolRegistry {
   return {
     definitions: () => [],
+    schedulingPolicy: () => ({ concurrency: 'concurrent' }),
     prepare: async (call) => call,
     execute: async () => ({ content: 'base', isError: false }),
   }
@@ -88,6 +89,12 @@ describe('ClaudeWorkflowToolRegistry', () => {
     expect(workflow?.description).toContain('explicitly requested')
     expect(workflow?.description).toContain('pipeline(items, ...stages)')
     expect(workflow?.description).toContain('resumeFromRunId')
+    expect(registry.schedulingPolicy(call({}))).toMatchObject({
+      concurrency: 'exclusive',
+    })
+    expect(
+      registry.schedulingPolicy({ id: 'read', name: 'Read', input: {} }),
+    ).toEqual({ concurrency: 'concurrent' })
   })
 
   it('validates before launch, preserves public input, and routes task output', async () => {

@@ -9,6 +9,7 @@ import { ClaudeWorktreeToolRegistry } from './claude-worktree-tools.js'
 
 const base: ToolRegistry = {
   definitions: () => [],
+  schedulingPolicy: () => ({ concurrency: 'concurrent' }),
   prepare: async (call) => call,
   execute: async () => ({ content: 'base', isError: false }),
 }
@@ -33,6 +34,16 @@ describe('ClaudeWorktreeToolRegistry', () => {
       type: 'object',
       properties: { name: { type: 'string' }, path: { type: 'string' } },
     })
+    expect(
+      registry.schedulingPolicy({
+        id: 'enter',
+        name: 'EnterWorktree',
+        input: {},
+      }),
+    ).toMatchObject({ concurrency: 'exclusive' })
+    expect(
+      registry.schedulingPolicy({ id: 'read', name: 'Read', input: {} }),
+    ).toEqual({ concurrency: 'concurrent' })
     await expect(
       registry.prepare(
         { id: 'base', name: 'Read', input: { file_path: 'x' } },

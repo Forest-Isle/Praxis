@@ -192,9 +192,13 @@ describe('ClaudeCapabilityToolRegistry', () => {
         })),
       prepare: async (call) => call,
       execute: async () => ({ content: 'ok', isError: false }),
+      schedulingPolicy: () => ({ concurrency: 'concurrent' }),
     }
     const registry = new ClaudeCapabilityToolRegistry(base, new Set())
     expect(registry.definitions().map(({ name }) => name)).toEqual(['Read'])
+    expect(
+      registry.schedulingPolicy({ id: 'read', name: 'Read', input: {} }),
+    ).toEqual({ concurrency: 'concurrent' })
     await expect(
       registry.prepare(
         { id: 'task', name: 'TaskCreate', input: {} },

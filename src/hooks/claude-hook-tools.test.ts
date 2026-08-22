@@ -110,6 +110,10 @@ describe('ClaudeHookToolCoordinator', () => {
         durationMs: 1,
       })
     const { coordinator, outcomes } = fixture(executeCommand, tools)
+    expect(coordinator.schedulingPolicy()).toEqual({
+      concurrency: 'exclusive',
+      startAfterAssistant: true,
+    })
 
     const prepared = await coordinator.prepare(call, { cwd: '/workspace' })
     expect(prepared.input).toEqual({ command: 'printf updated' })

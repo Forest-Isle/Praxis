@@ -345,9 +345,28 @@ function commandName(command: string): string {
   return command.trim().split(/\s+/u)[0] ?? ''
 }
 
+const AMBIGUOUS_SHELL_SYNTAX = /[<>`$*?[\]{}~]/u
+
 export function shellCommandIsReadOnly(command: string): boolean {
-  if (/[<>`]|$\(|\|\||&&|[;|\n\r]/u.test(command)) return false
+  if (AMBIGUOUS_SHELL_SYNTAX.test(command) || /[&;|\n\r]/u.test(command)) {
+    return false
+  }
   return READ_ONLY_SHELL_COMMANDS.has(commandName(command))
+}
+
+export function shellInputIsReadOnly(command: string): boolean {
+  if (
+    AMBIGUOUS_SHELL_SYNTAX.test(command) ||
+    /(^|[^&])&($|[^&])/u.test(command)
+  ) {
+    return false
+  }
+  const analysis = analyzeBashCommands(command)
+  return (
+    analysis.parsed &&
+    analysis.commands.length > 0 &&
+    analysis.commands.every(shellCommandIsReadOnly)
+  )
 }
 
 export function shellPermissionSuggestions(

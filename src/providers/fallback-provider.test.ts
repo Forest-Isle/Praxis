@@ -139,6 +139,64 @@ describe('FallbackModelProvider', () => {
     expect(committed).toEqual([{ role: 'assistant', content: 'attempt-2' }])
   })
 
+  it('does not execute a tool call from a discarded partial attempt', async () => {
+    let attempts = 0
+    const underlying: ModelProvider = {
+      model: 'strict',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        terminalReasons: true,
+      },
+      async *complete() {
+        attempts += 1
+        if (attempts === 1) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'discarded-call',
+              name: 'Read',
+              input: { file_path: '/tmp/discarded' },
+            },
+          }
+          throw new ModelProviderError('disconnected', {
+            kind: 'transport_error',
+            retryable: true,
+          })
+        }
+        yield text('recovered')
+        yield { type: 'terminal', reason: 'end_turn' }
+      },
+    }
+    const routed = new FallbackModelProvider({
+      providers: [underlying],
+      retryDelayMs: 0,
+    })
+    const execute = vi.fn(async () => ({
+      content: 'should not execute',
+      isError: false,
+    }))
+    const events: Array<{ type: string }> = []
+    const runtime = new AgentRuntime(routed, (event) => events.push(event), {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute,
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'answer' }],
+    })
+
+    expect(result.text).toBe('recovered')
+    expect(execute).not.toHaveBeenCalled()
+    expect(events.some((event) => event.type === 'tool-call')).toBe(false)
+    expect(events.some((event) => event.type === 'tool-result')).toBe(false)
+  })
+
   it('retries each model three times before moving to next fallback', async () => {
     const primary = vi.fn(async function* () {
       throw new ModelProviderError('overloaded', {

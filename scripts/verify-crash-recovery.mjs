@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -76,6 +83,17 @@ try {
     cwd,
     sessionId: session.sessionId,
   }).sessionFile
+  const terminalizedSource = await readFile(sessionFile, 'utf8')
+  await writeFile(
+    sessionFile,
+    terminalizedSource
+      .split('\n')
+      .filter(
+        (line) =>
+          !line.includes('"tool_use_id":"call_interrupted_recovery_probe"'),
+      )
+      .join('\n'),
+  )
   const beforeDecline = await readFile(sessionFile, 'utf8')
   const recoveryHooks = new ClaudeHookRunner({
     cwd,

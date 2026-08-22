@@ -17,6 +17,7 @@ import type {
   ElicitRequest,
   ElicitResult,
 } from '@modelcontextprotocol/sdk/types.js'
+import { Ajv2020 } from 'ajv/dist/2020.js'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import type {
@@ -31,6 +32,7 @@ import type {
   ToolRegistry,
   RuntimeEventSink,
 } from '../core/runtime.js'
+import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import {
   redactSensitiveError,
   redactSensitiveText,
@@ -71,6 +73,8 @@ interface ConnectedTool {
   serverName: string
   toolName: string
   definition: ModelToolDefinition
+  readOnly: boolean
+  schedulingInputIsValid?: (input: Record<string, unknown>) => boolean
   sensitiveValues: readonly string[]
 }
 
@@ -260,6 +264,36 @@ const MCP_RESOURCE_TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
     },
   },
 ]
+
+const schedulingAjv = new Ajv2020({ strict: false, validateFormats: false })
+
+function schedulingInputValidator(
+  schema: Record<string, unknown>,
+): ((input: Record<string, unknown>) => boolean) | undefined {
+  try {
+    const validate = schedulingAjv.compile(schema)
+    return (input) => validate(input) === true
+  } catch {
+    return undefined
+  }
+}
+
+function mcpResourceSchedulingInputIsValid(call: ModelToolCall): boolean {
+  const keys = Object.keys(call.input)
+  if (call.name === 'ListMcpResourcesTool') {
+    return (
+      keys.every((name) => name === 'server') &&
+      (call.input.server === undefined || typeof call.input.server === 'string')
+    )
+  }
+  return (
+    (call.name === 'ReadMcpResourceDirTool' ||
+      call.name === 'ReadMcpResourceTool') &&
+    keys.every((name) => name === 'server' || name === 'uri') &&
+    typeof call.input.server === 'string' &&
+    typeof call.input.uri === 'string'
+  )
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -1057,6 +1091,26 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     ]
   }
 
+  schedulingPolicy(call: ModelToolCall) {
+    if (
+      MCP_RESOURCE_TOOL_DEFINITIONS.some(
+        (definition) => definition.name === call.name,
+      )
+    ) {
+      return mcpResourceSchedulingInputIsValid(call)
+        ? { concurrency: 'concurrent' as const, cancelOnInterrupt: true }
+        : { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    const connected = this.connectedTools.get(call.name)
+    if (connected) {
+      return connected.readOnly &&
+        connected.schedulingInputIsValid?.(call.input)
+        ? { concurrency: 'concurrent' as const, cancelOnInterrupt: true }
+        : { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    return resolveToolSchedulingPolicy(this.options.base, call)
+  }
+
   serverStatuses(): readonly ClaudeMcpServerStatus[] {
     return [...this.statuses.values()].map(({ name, status }) => ({
       name,
@@ -1541,10 +1595,13 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
         if (this.connectedTools.has(name) || connectedTools.has(name)) {
           throw new Error(`Duplicate MCP tool ${name}`)
         }
+        const inputIsValid = schedulingInputValidator(tool.inputSchema)
         connectedTools.set(name, {
           client,
           serverName,
           toolName: tool.name,
+          readOnly: tool.annotations?.readOnlyHint === true,
+          ...(inputIsValid ? { schedulingInputIsValid: inputIsValid } : {}),
           sensitiveValues,
           definition: {
             name,

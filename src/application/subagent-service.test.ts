@@ -3039,7 +3039,7 @@ describe('foreground Claude Agent execution', () => {
     expect(sidechainSource).toContain('Tool Agent is unavailable to this agent')
   })
 
-  it('propagates cancellation into the active subagent without a fake result', async () => {
+  it('propagates cancellation into the active subagent with one terminal result', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-cancel-test-'))
     roots.push(root)
     const configRoot = join(root, 'config')
@@ -3105,7 +3105,10 @@ describe('foreground Claude Agent execution', () => {
       await readFile(join(projectRoot, mainFile), 'utf8'),
     )
     expect(JSON.stringify(mainEntries)).toContain('call_cancel_agent')
-    expect(JSON.stringify(mainEntries)).not.toContain('tool_use_id')
+    expect(JSON.stringify(mainEntries)).toContain(
+      '"tool_use_id":"call_cancel_agent"',
+    )
+    expect(JSON.stringify(mainEntries)).toContain('Agent cancelled:')
     const sessionId = mainFile.slice(0, -'.jsonl'.length)
     const sidechainDirectory = join(projectRoot, sessionId, 'subagents')
     const sidechainFile = (await readdir(sidechainDirectory)).find((name) =>
@@ -3172,10 +3175,11 @@ describe('foreground Claude Agent execution', () => {
     expect(interruptedSource).toContain('"promptSource":"interactive"')
     await writeFile(
       mainPath,
-      interruptedSource.replace(
-        '"promptSource":"interactive"',
-        '"promptSource":"sdk"',
-      ),
+      interruptedSource
+        .split('\n')
+        .filter((line) => !line.includes('"tool_use_id":"call_recover_agent"'))
+        .join('\n')
+        .replace('"promptSource":"interactive"', '"promptSource":"sdk"'),
     )
     const approvals: string[] = []
     const recovered = new ClaudeSessionService({

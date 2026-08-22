@@ -12,6 +12,15 @@ input -> context -> model stream -> tool call -> permission -> execution
       -> tool result -> continue, compact, or finish
 ```
 
+The core tool scheduler can start completed calls during the model stream, but
+only registry-verified read/search calls participate in overlap. Consecutive
+safe calls overlap; exclusive calls form FIFO barriers, and stateful
+transcript/hook wrappers may defer their execution until assistant persistence.
+Result events follow completion order, while append-only transcripts always
+retain assistant-tool-use before tool-result ordering. Registry decorators
+either delegate the synchronous policy or explicitly remain exclusive, so
+unknown or classifier-failing tools never become concurrent by composition.
+
 ## Intended modules
 
 ```text

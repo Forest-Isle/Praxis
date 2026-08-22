@@ -15,6 +15,7 @@ const base: ToolRegistry = {
   definitions: () => [
     { name: 'Read', description: 'read', inputSchema: { type: 'object' } },
   ],
+  schedulingPolicy: () => ({ concurrency: 'concurrent' }),
   prepare: async (call) => call,
   execute: async () => ({ content: 'base', isError: false }),
 }
@@ -53,6 +54,19 @@ describe('WebToolRegistry', () => {
       provider: provider([], 'unused'),
       now: () => Date.UTC(2026, 7, 5),
     })
+    expect(
+      capable.schedulingPolicy({
+        id: 'web',
+        name: 'WebFetch',
+        input: { url: 'https://example.com', prompt: 'summarize' },
+      }),
+    ).toMatchObject({ concurrency: 'concurrent' })
+    expect(
+      capable.schedulingPolicy({ id: 'read', name: 'Read', input: {} }),
+    ).toEqual({ concurrency: 'concurrent' })
+    expect(
+      capable.schedulingPolicy({ id: 'bad-web', name: 'WebFetch', input: {} }),
+    ).toMatchObject({ concurrency: 'exclusive' })
     const definitions = capable.definitions()
 
     expect(definitions.map(({ name }) => name)).toEqual([

@@ -11,6 +11,9 @@ function registry(): ToolRegistry {
         description: name,
         inputSchema: { type: 'object' },
       })),
+    schedulingPolicy: (call) => ({
+      concurrency: call.name === 'Read' ? 'concurrent' : 'exclusive',
+    }),
     prepare: async (call) => call,
     execute: async () => ({ content: 'ok', isError: false }),
   }
@@ -48,5 +51,21 @@ describe('FilteredToolRegistry', () => {
     await expect(filtered.execute(call, { cwd: '/workspace' })).rejects.toThrow(
       'disabled',
     )
+  })
+
+  it('delegates enabled policies and keeps absent base classifiers exclusive', () => {
+    const filtered = new FilteredToolRegistry(registry(), { tools: ['Read'] })
+    expect(
+      filtered.schedulingPolicy({ id: 'read', name: 'Read', input: {} }),
+    ).toEqual({ concurrency: 'concurrent' })
+    const withoutClassifier = registry()
+    delete withoutClassifier.schedulingPolicy
+    expect(
+      new FilteredToolRegistry(withoutClassifier).schedulingPolicy({
+        id: 'write',
+        name: 'Write',
+        input: {},
+      }),
+    ).toEqual({ concurrency: 'exclusive' })
   })
 })
