@@ -10,7 +10,11 @@ const MAX_ATTEMPTS_PER_MODEL = 3
 const RETRY_DELAYS_MS = [500, 1_000] as const
 
 function retryable(error: unknown): boolean {
-  return error instanceof ModelProviderError && error.retryable
+  return (
+    error instanceof ModelProviderError &&
+    error.retryable &&
+    modelProviderErrorKind(error) !== 'prompt_too_long'
+  )
 }
 
 export interface FallbackModelProviderOptions {

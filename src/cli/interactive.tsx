@@ -1377,6 +1377,7 @@ export function InteractiveApp({
     display.contextWindowTokens,
   )
   const [history, setHistory] = useState<TranscriptItem[]>([...initialHistory])
+  const activeAttemptThinkingItemsRef = useRef<TranscriptItem[]>([])
   const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0)
   // The pure TUI view model classifies the session identity (fresh/resumed/
   // started) and projects the rendered transcript. Startup diagnostics are
@@ -2264,28 +2265,47 @@ export function InteractiveApp({
         // Signatures authenticate a thinking block for provider replay; they are
         // intentionally not part of the user-visible reasoning summary.
         break
-      case 'thinking-stop':
+      case 'thinking-stop': {
         // append flushes pending thinking deltas before the retained boundary
         // item, keeping streaming order correct; the effective thinking getter
         // already includes any deltas not yet published.
-        append({
+        const thinkingItem: TranscriptItem = {
           kind: 'thinking',
           text:
             event.block.type === 'thinking'
               ? redactSensitiveText(event.block.thinking, sensitiveValues)
               : (streamingFrameRef.current?.thinking ?? ''),
-        })
+        }
+        activeAttemptThinkingItemsRef.current.push(thinkingItem)
+        append(thinkingItem)
         streamingFrameRef.current?.resetThinking()
         streamingFrameRef.current?.flush()
         break
+      }
       case 'user-message':
         append({ kind: 'assistant', text: event.message })
         break
       case 'state':
+        if (event.state === 'awaiting-model') {
+          activeAttemptThinkingItemsRef.current = []
+        }
         setStatus(event.state)
         break
       case 'usage':
         setUsage(event.usage)
+        break
+      case 'model-attempt-discarded':
+        streamingFrameRef.current?.resetText()
+        streamingFrameRef.current?.resetThinking()
+        streamingFrameRef.current?.flush()
+        setUsage({ inputTokens: 0, outputTokens: 0 })
+        if (activeAttemptThinkingItemsRef.current.length > 0) {
+          const discarded = new Set(activeAttemptThinkingItemsRef.current)
+          setHistory((current) =>
+            current.filter((item) => !discarded.has(item)),
+          )
+          activeAttemptThinkingItemsRef.current = []
+        }
         break
       case 'tool-call':
         if (['Edit', 'Write', 'NotebookEdit'].includes(event.call.name))

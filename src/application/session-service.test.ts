@@ -2668,26 +2668,42 @@ describe('ClaudeSessionService', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     let completions = 0
+    const events: RuntimeEvent[] = []
+    const requests: ModelRequest[] = []
     const provider: ModelProvider = {
       model: 'reactive-model',
       capabilities: {
         streaming: true,
         usage: true,
         tools: false,
+        terminalReasons: true,
         contextWindowTokens: 200_000,
       },
-      async *complete() {
+      async *complete(request) {
+        requests.push(request)
         completions += 1
         if (completions === 1) {
-          throw new ModelProviderError('prompt is too long for the context', {
-            retryable: true,
-          })
+          yield {
+            type: 'text-delta',
+            delta: `old context ${'discarded '.repeat(600)}`,
+          }
+          yield { type: 'terminal', reason: 'end_turn' }
+          return
+        }
+        if (completions === 2) {
+          yield { type: 'text-delta', delta: 'discarded partial answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 90, outputTokens: 9 },
+          }
+          yield { type: 'terminal', reason: 'prompt_too_long' }
+          return
         }
         yield { type: 'text-delta', delta: 'recovered answer' }
         yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
+        yield { type: 'terminal', reason: 'end_turn' }
       },
     }
-    const events: RuntimeEvent[] = []
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
@@ -2706,11 +2722,47 @@ describe('ClaudeSessionService', () => {
       },
     })
 
-    const result = await service.run('start')
+    const first = await service.run('seed old context')
+    const result = await service.resume(first.sessionId, 'continue')
 
     expect(result.text).toBe('recovered answer')
+    expect(result.usage).toEqual({ inputTokens: 4, outputTokens: 2 })
+    expect(
+      (await service.costSnapshot(result.sessionId)).modelUsage[
+        'reactive-model'
+      ],
+    ).toMatchObject({ inputTokens: 4, outputTokens: 2 })
+    expect(
+      (await service.export(result.sessionId))
+        .toString('utf8')
+        .match(/recovered answer/gu),
+    ).toHaveLength(1)
     // One reactive compaction retry, then a clean second attempt.
-    expect(completions).toBe(2)
+    expect(completions).toBe(3)
+    expect(JSON.stringify(requests[2])).not.toContain('old context')
+    expect(events.filter((event) => event.type === 'failed')).toEqual([])
+    const discardedIndex = events.findIndex(
+      (event) => event.type === 'model-attempt-discarded',
+    )
+    expect(discardedIndex).toBeGreaterThan(
+      events.findIndex(
+        (event) =>
+          event.type === 'text-delta' &&
+          event.delta === 'discarded partial answer',
+      ),
+    )
+    expect(discardedIndex).toBeGreaterThan(
+      events.findIndex(
+        (event) =>
+          event.type === 'terminal' && event.reason === 'prompt_too_long',
+      ),
+    )
+    expect(
+      events.findIndex(
+        (event) =>
+          event.type === 'text-delta' && event.delta === 'recovered answer',
+      ),
+    ).toBeGreaterThan(discardedIndex)
     expect(events).toContainEqual({ type: 'state', state: 'compacting' })
     expect(
       events.some(
@@ -2726,22 +2778,27 @@ describe('ClaudeSessionService', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     let completions = 0
+    const events: RuntimeEvent[] = []
     const provider: ModelProvider = {
       model: 'reactive-model',
       capabilities: {
         streaming: true,
         usage: true,
         tools: false,
+        terminalReasons: true,
         contextWindowTokens: 200_000,
       },
       async *complete() {
         completions += 1
-        // Delegating to an empty iterable satisfies `require-yield` without
-        // emitting a value before the intentional failure.
-        yield* []
-        throw new ModelProviderError('prompt is too long for the context', {
-          retryable: true,
-        })
+        if (completions === 1) {
+          yield {
+            type: 'text-delta',
+            delta: `old context ${'discarded '.repeat(600)}`,
+          }
+          yield { type: 'terminal', reason: 'end_turn' }
+          return
+        }
+        yield { type: 'terminal', reason: 'prompt_too_long' }
       },
     }
     const service = new ClaudeSessionService({
@@ -2749,6 +2806,7 @@ describe('ClaudeSessionService', () => {
       cwd,
       claudeVersion: '2.1.208',
       provider,
+      eventSink: (event) => events.push(event),
       compactor: {
         async compact() {
           return {
@@ -2761,12 +2819,220 @@ describe('ClaudeSessionService', () => {
       },
     })
 
-    await expect(service.run('start')).rejects.toThrow(
-      'prompt is too long for the context',
+    const first = await service.run('seed old context')
+    await expect(service.resume(first.sessionId, 'continue')).rejects.toThrow(
+      'active prompt exceeds its context window',
     )
     // The retry is attempted exactly once before the original error surfaces.
-    expect(completions).toBe(2)
+    expect(completions).toBe(3)
+    expect(events.filter((event) => event.type === 'failed')).toEqual([
+      expect.objectContaining({
+        type: 'failed',
+        message: expect.stringContaining('active prompt exceeds'),
+      }),
+    ])
   })
+
+  it('keeps retry provider failures private and surfaces the original prompt-too-long once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-reactive-retry-error-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let completions = 0
+    const events: RuntimeEvent[] = []
+    const provider: ModelProvider = {
+      model: 'reactive-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        terminalReasons: true,
+        contextWindowTokens: 200_000,
+      },
+      async *complete() {
+        completions += 1
+        if (completions === 1) {
+          yield {
+            type: 'text-delta',
+            delta: `old context ${'discarded '.repeat(600)}`,
+          }
+          yield { type: 'terminal', reason: 'end_turn' }
+          return
+        }
+        if (completions === 2) {
+          yield { type: 'terminal', reason: 'prompt_too_long' }
+          return
+        }
+        yield { type: 'text-delta', delta: 'discarded retry partial' }
+        yield { type: 'usage', usage: { inputTokens: 70, outputTokens: 7 } }
+        throw new ModelProviderError('retry provider overloaded', {
+          kind: 'overloaded',
+          retryable: true,
+        })
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      eventSink: (event) => events.push(event),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'REACTIVE_RETRY_SUMMARY',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 1,
+            model: 'reactive-model',
+          }
+        },
+      },
+    })
+
+    const first = await service.run('seed old context')
+    await expect(service.resume(first.sessionId, 'continue')).rejects.toThrow(
+      'active prompt exceeds its context window',
+    )
+    expect(completions).toBe(3)
+    expect(events).toContainEqual({
+      type: 'model-attempt-discarded',
+      reason: 'overloaded',
+    })
+    expect(events.filter((event) => event.type === 'failed')).toEqual([
+      expect.objectContaining({
+        type: 'failed',
+        message: expect.stringContaining('active prompt exceeds'),
+      }),
+    ])
+  })
+
+  it('does not retry when reactive compaction makes no occupancy progress', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-reactive-no-progress-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let completions = 0
+    const events: RuntimeEvent[] = []
+    const provider: ModelProvider = {
+      model: 'reactive-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        terminalReasons: true,
+        contextWindowTokens: 200_000,
+      },
+      async *complete() {
+        completions += 1
+        if (completions === 1) {
+          yield {
+            type: 'text-delta',
+            delta: `old context ${'discarded '.repeat(100)}`,
+          }
+          yield { type: 'terminal', reason: 'end_turn' }
+          return
+        }
+        yield { type: 'terminal', reason: 'prompt_too_long' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      eventSink: (event) => events.push(event),
+      compactor: {
+        async compact() {
+          return {
+            summary: `no progress ${'expanded '.repeat(1_000)}`,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 1,
+            model: 'reactive-model',
+          }
+        },
+      },
+    })
+
+    const first = await service.run('seed old context')
+    await expect(service.resume(first.sessionId, 'continue')).rejects.toThrow(
+      'active prompt exceeds its context window',
+    )
+    expect(completions).toBe(2)
+    const exported = (await service.export(first.sessionId)).toString('utf8')
+    expect(exported).not.toContain('no progress')
+    expect(exported).not.toContain('compact_boundary')
+    expect(events.filter((event) => event.type === 'failed')).toEqual([
+      expect.objectContaining({
+        type: 'failed',
+        message: expect.stringContaining('active prompt exceeds'),
+      }),
+    ])
+  })
+
+  it.each(['compaction', 'retry'] as const)(
+    'surfaces cancellation during reactive %s without further work',
+    async (cancelStage) => {
+      const root = await mkdtemp(join(tmpdir(), 'praxis-reactive-cancel-'))
+      roots.push(root)
+      const configRoot = join(root, 'config')
+      const cwd = join(root, 'project')
+      const controller = new AbortController()
+      let completions = 0
+      const events: RuntimeEvent[] = []
+      const provider: ModelProvider = {
+        model: 'reactive-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          terminalReasons: true,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          completions += 1
+          if (completions === 1) {
+            yield {
+              type: 'text-delta',
+              delta: `old context ${'discarded '.repeat(600)}`,
+            }
+            yield { type: 'terminal', reason: 'end_turn' }
+            return
+          }
+          if (completions === 2) {
+            yield { type: 'terminal', reason: 'prompt_too_long' }
+            return
+          }
+          controller.abort()
+          throw new AgentRunCancelledError()
+        },
+      }
+      const service = new ClaudeSessionService({
+        configRoot,
+        cwd,
+        claudeVersion: '2.1.208',
+        provider,
+        eventSink: (event) => events.push(event),
+        compactor: {
+          async compact() {
+            if (cancelStage === 'compaction') controller.abort()
+            return {
+              summary: 'CANCELLED_REACTIVE_SUMMARY',
+              usage: { inputTokens: 0, outputTokens: 0 },
+              durationMs: 1,
+              model: 'reactive-model',
+            }
+          },
+        },
+      })
+
+      const first = await service.run('seed old context')
+      await expect(
+        service.resume(first.sessionId, 'continue', controller.signal),
+      ).rejects.toBeInstanceOf(AgentRunCancelledError)
+      expect(completions).toBe(cancelStage === 'compaction' ? 2 : 3)
+      expect(events.filter((event) => event.type === 'failed')).toEqual([])
+    },
+  )
 
   it('injects the last committed session memory artifact on resume', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-'))

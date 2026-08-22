@@ -302,37 +302,38 @@ export type ContextRecoveryStage =
 export interface ContextRecoveryPlannerOptions {
   /** Number of reactive retries allowed before the planner reports `blocked`. */
   maxReactiveRetries?: number
-  /** Consecutive failures that trip the circuit breaker to `blocked`. */
-  consecutiveFailureThreshold?: number
 }
 
 const DEFAULT_MAX_REACTIVE_RETRIES = 1
-const DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD = 3
+
+export interface ContextRecoveryProgress {
+  beforeOccupancyTokens: number
+  afterOccupancyTokens: number
+}
+
+export function contextRecoveryMadeProgress(
+  progress: ContextRecoveryProgress,
+): boolean {
+  for (const [name, value] of Object.entries(progress)) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`${name} must be a nonnegative safe integer`)
+    }
+  }
+  return progress.afterOccupancyTokens < progress.beforeOccupancyTokens
+}
 
 export class ContextRecoveryPlanner {
   private readonly maxReactiveRetries: number
-  private readonly consecutiveFailureThreshold: number
   private currentStage: ContextRecoveryStage = 'preflight'
   private reactiveRetriesUsed = 0
-  private consecutiveFailures = 0
 
   constructor(options: ContextRecoveryPlannerOptions = {}) {
     const maxReactiveRetries =
       options.maxReactiveRetries ?? DEFAULT_MAX_REACTIVE_RETRIES
-    const consecutiveFailureThreshold =
-      options.consecutiveFailureThreshold ??
-      DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD
     if (!Number.isInteger(maxReactiveRetries) || maxReactiveRetries < 0) {
       throw new Error('maxReactiveRetries must be a nonnegative integer')
     }
-    if (
-      !Number.isInteger(consecutiveFailureThreshold) ||
-      consecutiveFailureThreshold < 1
-    ) {
-      throw new Error('consecutiveFailureThreshold must be a positive integer')
-    }
     this.maxReactiveRetries = maxReactiveRetries
-    this.consecutiveFailureThreshold = consecutiveFailureThreshold
   }
 
   get stage(): ContextRecoveryStage {
@@ -367,7 +368,13 @@ export class ContextRecoveryPlanner {
 
   /** Consume one reactive retry decision; reports `blocked` once the maximum
    *  reactive retries have been consumed. */
-  consumeReactiveRetry(): ContextRecoveryStage {
+  consumeReactiveRetry(
+    progress: ContextRecoveryProgress,
+  ): ContextRecoveryStage {
+    if (!contextRecoveryMadeProgress(progress)) {
+      this.currentStage = 'blocked'
+      return this.currentStage
+    }
     this.reactiveRetriesUsed += 1
     this.currentStage =
       this.reactiveRetriesUsed <= this.maxReactiveRetries
@@ -376,33 +383,24 @@ export class ContextRecoveryPlanner {
     return this.currentStage
   }
 
-  /** Record a failed recovery attempt; trips the circuit breaker to `blocked`
-   *  after `consecutiveFailureThreshold` consecutive failures. */
+  /** A failed reactive attempt exhausts the only selected context transition. */
   recordFailure(): ContextRecoveryStage {
-    this.consecutiveFailures += 1
-    if (this.consecutiveFailures >= this.consecutiveFailureThreshold) {
-      this.currentStage = 'blocked'
-    }
+    this.currentStage = 'blocked'
     return this.currentStage
   }
 
   /** Record a successful recovery/model attempt; resets the planner. */
   recordSuccess(): ContextRecoveryStage {
-    this.consecutiveFailures = 0
     this.reactiveRetriesUsed = 0
     this.currentStage = 'preflight'
     return this.currentStage
   }
 }
 
-const PROMPT_TOO_LONG_PATTERN =
-  /context(?:[_\s-]?length|[_\s-]?window)|prompt(?:[_\s-]?is)?[_\s-]?too[_\s-]?long|too[_\s-]?many[_\s-]?tokens|maximum[_\s-]?context/iu
-
 /** True when a provider error signals that the request exceeded the model's
  *  context window and a reactive compaction retry is the relevant recovery. */
-export function isPromptTooLongError(error: unknown): boolean {
-  return (
-    error instanceof ModelProviderError &&
-    PROMPT_TOO_LONG_PATTERN.test(error.message)
-  )
+export function isPromptTooLongError(
+  error: unknown,
+): error is ModelProviderError {
+  return error instanceof ModelProviderError && error.kind === 'prompt_too_long'
 }

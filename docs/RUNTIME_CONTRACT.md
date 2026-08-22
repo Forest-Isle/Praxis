@@ -140,6 +140,19 @@ error objects, and stream stop fields remain inside adapters. Retry/fallback
 buffers an attempt until its terminal event so a discarded partial attempt
 cannot replay content or usage.
 
+A typed `prompt_too_long` failure bypasses ordinary retry and provider fallback.
+The runtime settles any scheduled tool calls but commits no assistant output and
+runs no Stop hook for the rejected attempt. When a context budget is available,
+the session boundary may compact committed history and retry exactly once, only
+when the committed projection has lower occupancy. Intermediate provider errors
+remain private to that recovery boundary. Streamed output stays live; if the
+terminal signal rejects that attempt, a typed discard event instructs
+presentation/protocol consumers to reset its uncommitted assistant, thinking,
+usage, and terminal projection before recovery. Cancellation wins during
+compaction or retry; otherwise an exhausted recovery emits the original typed
+failure exactly once. A failed or non-shrinking compaction leaves the
+append-only history unchanged.
+
 ## Turn persistence
 
 Praxis translates provider-completed events into Claude-native entries:

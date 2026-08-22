@@ -346,48 +346,52 @@ describe('ContextRecoveryPlanner', () => {
   it('allows a single reactive retry before reporting blocked', () => {
     const planner = new ContextRecoveryPlanner()
     expect(planner.reactiveRetriesRemaining).toBe(1)
-    expect(planner.consumeReactiveRetry()).toBe('reactive-retry')
+    expect(
+      planner.consumeReactiveRetry({
+        beforeOccupancyTokens: 100,
+        afterOccupancyTokens: 60,
+      }),
+    ).toBe('reactive-retry')
     expect(planner.reactiveRetriesRemaining).toBe(0)
-    expect(planner.consumeReactiveRetry()).toBe('blocked')
-    expect(planner.consumeReactiveRetry()).toBe('blocked')
+    expect(
+      planner.consumeReactiveRetry({
+        beforeOccupancyTokens: 60,
+        afterOccupancyTokens: 40,
+      }),
+    ).toBe('blocked')
   })
 
-  it('trips a consecutive-failure circuit breaker of three', () => {
+  it('blocks a reactive retry when compaction makes no occupancy progress', () => {
     const planner = new ContextRecoveryPlanner()
-    planner.recordFailure()
-    expect(planner.stage).toBe('preflight')
-    planner.recordFailure()
-    expect(planner.stage).toBe('preflight')
-    planner.recordFailure()
-    expect(planner.stage).toBe('blocked')
-    planner.recordSuccess()
-    expect(planner.stage).toBe('preflight')
-    expect(planner.reactiveRetriesRemaining).toBe(1)
+
+    expect(
+      planner.consumeReactiveRetry({
+        beforeOccupancyTokens: 100,
+        afterOccupancyTokens: 100,
+      }),
+    ).toBe('blocked')
   })
 
   it('validates planner bounds', () => {
     expect(
       () => new ContextRecoveryPlanner({ maxReactiveRetries: -1 }),
     ).toThrow('maxReactiveRetries must be a nonnegative integer')
-    expect(
-      () => new ContextRecoveryPlanner({ consecutiveFailureThreshold: 0 }),
-    ).toThrow('consecutiveFailureThreshold must be a positive integer')
   })
 })
 
 describe('isPromptTooLongError', () => {
-  it('recognizes provider context-overflow messages', () => {
-    const tooLong = new ModelProviderError(
+  it('recognizes only the provider-neutral prompt-too-long kind', () => {
+    const typed = new ModelProviderError('opaque provider failure', {
+      retryable: false,
+      kind: 'prompt_too_long',
+    })
+    expect(isPromptTooLongError(typed)).toBe(true)
+
+    const matchingTextWithoutKind = new ModelProviderError(
       'The prompt is too long for the model context window',
       { retryable: false },
     )
-    expect(isPromptTooLongError(tooLong)).toBe(true)
-
-    const contextLength = new ModelProviderError(
-      "This model's maximum context length is 200000 tokens",
-      { retryable: false },
-    )
-    expect(isPromptTooLongError(contextLength)).toBe(true)
+    expect(isPromptTooLongError(matchingTextWithoutKind)).toBe(false)
 
     const unrelated = new ModelProviderError('Rate limit exceeded', {
       retryable: true,

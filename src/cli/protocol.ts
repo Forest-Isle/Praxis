@@ -5,6 +5,7 @@ import type {
   ModelDocumentMediaType,
   ModelImage,
   ModelImageMediaType,
+  ProviderErrorKind,
   ModelTerminalReason,
   ModelThinkingBlock,
   ModelToolCall,
@@ -2249,6 +2250,10 @@ export class StreamJsonOutput {
   }
 
   private onEvent(event: RuntimeEvent): void {
+    if (event.type === 'model-attempt-discarded') {
+      this.discardTurn(event.reason)
+      return
+    }
     if (event.type === 'state') {
       if (this.compacting && event.state !== 'compacting') {
         this.compacting = false
@@ -2609,6 +2614,27 @@ export class StreamJsonOutput {
 
   private ensureTurn(): void {
     if (!this.turnActive) this.startTurn()
+  }
+
+  private discardTurn(reason: ProviderErrorKind): void {
+    this.write({
+      type: 'system',
+      subtype: 'model_attempt_discarded',
+      reason,
+      uuid: randomUUID(),
+      session_id: this.sessionId,
+    })
+    this.turnText = ''
+    this.turnThinking = []
+    this.turnCalls = []
+    this.turnUsage = emptyUsage()
+    this.turnTerminalReason = undefined
+    this.turnActive = false
+    this.assistantFlushed = true
+    this.contentStarted = false
+    this.textContentIndex = undefined
+    this.activeThinkingIndex = undefined
+    this.nextContentIndex = 0
   }
 
   private startTurn(): void {

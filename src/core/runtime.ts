@@ -184,6 +184,7 @@ export type RuntimeEvent =
     }
   | { type: 'usage'; usage: ModelUsage }
   | { type: 'terminal'; reason: ModelTerminalReason }
+  | { type: 'model-attempt-discarded'; reason: ProviderErrorKind }
   | { type: 'tool-call'; call: ModelToolCall }
   | {
       type: 'permission-decision'
@@ -556,6 +557,9 @@ export interface AgentRunRequest {
   effort?: string
   thinking?: ModelThinkingConfig
   collectMetrics?: boolean
+  /** Provider failures whose presentation is owned by a caller recovery
+   *  boundary. `true` defers every typed provider failure for an owned retry. */
+  deferFailureKinds?: true | readonly ProviderErrorKind[]
   maxModelTurns?: number
   betas?: readonly string[]
 }
@@ -940,6 +944,9 @@ export class AgentRuntime {
   ) {}
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
+    const failurePresentationDeferred = (kind: ProviderErrorKind): boolean =>
+      request.deferFailureKinds === true ||
+      request.deferFailureKinds?.includes(kind) === true
     if (this.options.emitInitialContextState !== false) {
       this.emit({ type: 'state', state: 'assembling-context' })
     }
@@ -958,6 +965,8 @@ export class AgentRuntime {
     let durationToolMs = 0
     let linesAdded = 0
     let linesRemoved = 0
+    let activeAttemptHasPresentation = false
+    let activeAttemptDiscarded = false
     const definitions = this.provider.capabilities.tools
       ? (this.options.tools?.definitions() ?? [])
       : []
@@ -981,6 +990,8 @@ export class AgentRuntime {
     try {
       let modelTurns = 0
       while (true) {
+        activeAttemptHasPresentation = false
+        activeAttemptDiscarded = false
         if (request.signal?.aborted) return this.cancel()
         if (maxModelTurns !== undefined && modelTurns >= maxModelTurns) {
           throw new Error(`Maximum model turns of ${maxModelTurns} exceeded`)
@@ -1103,9 +1114,13 @@ export class AgentRuntime {
           resultCompleted: (call, result) =>
             this.presentToolResult(call, result),
         })
-        const failScheduledTurn = async (error: unknown): Promise<never> => {
+        const failScheduledTurn = async (
+          error: unknown,
+          afterSettled?: () => void,
+        ): Promise<never> => {
           toolScheduler.abort(error)
           await toolScheduler.settle().catch(() => undefined)
+          afterSettled?.()
           throw error
         }
 
@@ -1151,6 +1166,7 @@ export class AgentRuntime {
               this.emit({ type: 'state', state: 'streaming' })
             }
             if (event.type === 'text-delta') {
+              activeAttemptHasPresentation = true
               textBytes += Buffer.byteLength(event.delta)
               if (textBytes > maxModelOutputBytes) {
                 throw new Error(
@@ -1163,6 +1179,7 @@ export class AgentRuntime {
               event.type === 'thinking-delta' ||
               event.type === 'thinking-signature-delta'
             ) {
+              activeAttemptHasPresentation = true
               textBytes += Buffer.byteLength(event.delta)
               if (textBytes > maxModelOutputBytes) {
                 throw new Error(
@@ -1171,9 +1188,11 @@ export class AgentRuntime {
               }
               this.emit(event)
             } else if (event.type === 'thinking-stop') {
+              activeAttemptHasPresentation = true
               thinkingBlocks.push(event.block)
               this.emit(event)
             } else if (event.type === 'thinking-start') {
+              activeAttemptHasPresentation = true
               const initialThinking =
                 event.block.type === 'redacted_thinking'
                   ? event.block.data
@@ -1208,9 +1227,11 @@ export class AgentRuntime {
                 resolveToolSchedulingPolicy(this.options.tools, event.call),
               )
             } else if (event.type === 'terminal') {
+              activeAttemptHasPresentation = true
               terminalReason = event.reason
               this.emit(event)
             } else {
+              activeAttemptHasPresentation = true
               turnUsage = event.usage
               this.emit(event)
             }
@@ -1252,6 +1273,24 @@ export class AgentRuntime {
               'Provider stream ended without a terminal reason',
               { retryable: true },
             ),
+          )
+        }
+        if (terminalReason === 'prompt_too_long') {
+          const discardAttempt = failurePresentationDeferred('prompt_too_long')
+            ? () => {
+                this.emit({
+                  type: 'model-attempt-discarded' as const,
+                  reason: 'prompt_too_long' as const,
+                })
+                activeAttemptDiscarded = true
+              }
+            : undefined
+          await failScheduledTurn(
+            new ModelProviderError(
+              'Provider reported that the active prompt exceeds its context window',
+              { kind: 'prompt_too_long', retryable: false },
+            ),
+            discardAttempt,
           )
         }
         if (terminalReason === 'tool_use' && toolCalls.length === 0) {
@@ -1535,7 +1574,22 @@ export class AgentRuntime {
       const message = error instanceof Error ? error.message : String(error)
       const retryable =
         error instanceof ModelProviderError ? error.retryable : false
-      this.emit({ type: 'failed', message, retryable })
+      const kind =
+        error instanceof ModelProviderError
+          ? modelProviderErrorKind(error)
+          : undefined
+      const failureDeferred =
+        kind !== undefined && failurePresentationDeferred(kind)
+      if (
+        failureDeferred &&
+        activeAttemptHasPresentation &&
+        !activeAttemptDiscarded
+      ) {
+        this.emit({ type: 'model-attempt-discarded', reason: kind })
+      }
+      if (!failureDeferred) {
+        this.emit({ type: 'failed', message, retryable })
+      }
       throw error
     }
   }

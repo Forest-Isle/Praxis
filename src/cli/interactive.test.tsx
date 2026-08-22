@@ -1982,6 +1982,75 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).not.toContain('✳')
   })
 
+  it('removes live text and completed thinking from a discarded model attempt', async () => {
+    let discard: (() => void) | undefined
+    const discardGate = new Promise<void>((resolve) => {
+      discard = resolve
+    })
+    const factory: InteractiveServiceFactory = {
+      async createService({ eventSink }) {
+        return {
+          async run() {
+            eventSink({ type: 'state', state: 'awaiting-model' })
+            eventSink({
+              type: 'thinking-start',
+              block: { type: 'thinking', thinking: '' },
+            })
+            eventSink({ type: 'thinking-delta', delta: 'discarded reasoning' })
+            eventSink({
+              type: 'thinking-stop',
+              block: {
+                type: 'thinking',
+                thinking: 'discarded reasoning',
+                signature: 'sig',
+              },
+            })
+            eventSink({ type: 'text-delta', delta: 'discarded answer' })
+            await discardGate
+            eventSink({ type: 'terminal', reason: 'prompt_too_long' })
+            eventSink({
+              type: 'model-attempt-discarded',
+              reason: 'prompt_too_long',
+            })
+            eventSink({ type: 'state', state: 'awaiting-model' })
+            eventSink({ type: 'text-delta', delta: 'recovered answer' })
+            eventSink({ type: 'terminal', reason: 'end_turn' })
+            eventSink({ type: 'state', state: 'completed' })
+            return {
+              sessionId: 'session-1',
+              text: 'recovered answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+    app.stdin.write('recover')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('discarded answer') ? true : undefined,
+    )
+
+    discard?.()
+    await waitFor(() =>
+      app.lastFrame()?.includes('recovered answer') ? true : undefined,
+    )
+    expect(app.lastFrame()).not.toContain('discarded answer')
+    expect(app.lastFrame()).not.toContain('discarded reasoning')
+  })
+
   it('never renders the active stream and its committed final item in the same frame', async () => {
     const finalText = 'stream-commit-no-duplicate-final'
     let releaseRun: (() => void) | undefined
