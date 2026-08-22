@@ -12,6 +12,7 @@ const root = await mkdtemp(join(tmpdir(), 'praxis-background-compat-'))
 const configRoot = join(root, 'config')
 const cwd = join(root, 'work')
 const sessionId = '77777777-7777-4777-8777-777777777777'
+const expectedClaudeVersion = '2.1.237'
 const toolNames = ['Agent', 'SendMessage', 'TaskOutput', 'TaskStop']
 let mode = 'schema'
 let outerTurn = 0
@@ -206,7 +207,11 @@ function closeProvider() {
 }
 
 try {
-  await detectClaudeVersion('Background agent probe')
+  const version = await detectClaudeVersion('Background agent probe')
+  assert(
+    version === expectedClaudeVersion,
+    `Background agent compatibility requires Claude ${expectedClaudeVersion}; received ${version}`,
+  )
   await Promise.all([
     mkdir(configRoot, { recursive: true }),
     mkdir(cwd, { recursive: true }),
@@ -266,6 +271,7 @@ try {
       env: {
         ...process.env,
         CLAUDE_CONFIG_DIR: configRoot,
+        PRAXIS_DATA_PLANE: 'claude',
         PRAXIS_PROVIDER: 'anthropic',
         PRAXIS_API_KEY: 'fixture-key',
         PRAXIS_MODEL: 'fixture-model',
@@ -360,7 +366,7 @@ try {
   )
 
   console.log(
-    `Claude background agent compatibility passed: schemas, async launch, output polling, same-ID messaging, completion notification, sidechain persistence, and Claude resume`,
+    `Claude ${version} background agent compatibility passed: schemas, async launch, output polling, same-ID messaging, completion notification, sidechain persistence, and Claude resume`,
   )
 } finally {
   await closeProvider().catch(() => undefined)

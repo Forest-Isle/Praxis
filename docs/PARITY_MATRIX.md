@@ -2,10 +2,14 @@
 
 ## Scope
 
-Target: observable single-user CLI behavior and shared local data compatibility
-with Claude Code 2.1.208. Praxis remains a clean-room, provider-neutral
-implementation: Claude's observable behavior, architecture, design boundaries,
-and state flows are authoritative, while source code is not copied verbatim.
+The core-design target is Claude Code 2.1.237. The broader command/TUI inventory
+retains its explicitly named 2.1.208 black-box baseline, with 2.1.233 retained
+for historical cross-version fixtures. See the
+[Core Design Drift Audit](CORE_DESIGN_DRIFT_AUDIT.md) for the version-pinned
+runtime, context, memory, scheduling, prompt/cache, hooks, transcript/session,
+and subagent evidence matrix. Praxis remains a clean-room, provider-neutral
+implementation: observable behavior, design boundaries, and state flows are
+authoritative, while source code is not copied verbatim.
 
 Permanent exclusions are limited to organization, tenant, RBAC, subscription
 authentication and billing, enterprise gateway, IDE/Desktop/mobile clients,
@@ -184,10 +188,13 @@ routing.
 
 ## Final audit status
 
-The credential-free supported command and shared-data surface is closed against
-Claude Code 2.1.208. Interactive TTY parity remains partial, as stated in the
-matrix above. The latest executable surface audit recursively walks the installed
-Claude command tree,
+The supported core-design scope is closed against Claude Code 2.1.237 by the
+contract-level fixture and black-box evidence in the
+[Core Design Drift Audit](CORE_DESIGN_DRIFT_AUDIT.md). The credential-free
+supported command and shared-data surface remains closed against its historical
+Claude Code 2.1.208 baseline. Interactive TTY parity remains partial, as stated
+in the matrix above. The latest executable surface audit recursively walks the
+installed Claude command tree,
 checks 40 included routes, 243 route-local options, and 46 commands/aliases
 against Praxis, verifies exact option and positional required/optional/variadic
 signatures plus command-specific help and alias dispatch, and prevents wrapped
@@ -212,14 +219,15 @@ fail closed rather than being treated as an implicitly compatible data plane.
 Enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.
 
-The required GitHub `CI` status installs Claude Code 2.1.208 at a fixed path and
-passes that exact executable to the credential-free recursive CLI signature,
-interactive `/background`, and live memory-import provider-request gates,
-alongside interactive PTY, installed-package, performance, and production-audit
-lanes. The full 61-gate suite includes real model calls and remains an explicit
-maintainer qualification gate rather than requiring subscription state or
-billable credentials in public/fork CI. The latest qualification attempt stopped
-at gate 1 when the upstream Claude request returned `402 Insufficient Balance`;
-that external condition does not establish a Praxis behavior failure or a full
-live-model pass.
+The required GitHub `CI` status installs both baselines at fixed paths. Claude
+Code 2.1.208 drives the credential-free recursive CLI signature, interactive
+`/background`, memory-import, and TUI gates. Claude Code 2.1.237 independently
+drives the executable core evidence audit plus provider-free session-metadata
+and background-Agent black-box gates. Installed-package, performance, security,
+CodeQL, and dependency-review lanes remain mandatory. The aggregate compatibility
+suite includes real model calls and remains an explicit maintainer qualification
+gate rather than requiring subscription state or billable credentials in public
+or fork CI. The latest qualification attempt stopped at gate 1 when the upstream
+Claude request returned `402 Insufficient Balance`; that external condition does
+not establish a Praxis behavior failure or a full live-model pass.
 Release automation does not expand or alter product parity scope.

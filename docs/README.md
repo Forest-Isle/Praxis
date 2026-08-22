@@ -19,6 +19,9 @@ authoritative CLI surface.
   versioned write profiles, provider translation, and exclusions.
 - [Single-User CLI Parity Matrix](PARITY_MATRIX.md) — feature-by-feature status
   and executable evidence.
+- [Claude Code 2.1.237 Core Design Drift Audit](CORE_DESIGN_DRIFT_AUDIT.md) —
+  version-pinned runtime, context, memory, scheduling, prompt/cache, hooks,
+  transcript/session, and subagent evidence.
 - [Claude-style TUI Parity](TUI_PARITY.md) — black-box visual rules,
   presentation components, interactions, and verification gates.
 - [Agent Runtime Contract](RUNTIME_CONTRACT.md) — runtime states, ports,
