@@ -45,6 +45,7 @@ import { LocalToolRegistry } from '../tools/local-tools.js'
 import { CLAUDE_CODE_DISABLE_CRON } from '../tools/claude-capabilities.js'
 import type { ClaudeSessionCostState } from '../persistence/claude-cost-state-store.js'
 import { ClaudeSessionService } from './session-service.js'
+import type { SessionMemoryController } from './session-memory.js'
 import { WorkspaceContext } from './session-worktree.js'
 
 const roots: string[] = []
@@ -80,6 +81,32 @@ async function createService() {
       provider,
     }),
   }
+}
+
+/** The service keeps per-session memory controllers private; reach the handle
+ *  so a test can deterministically await extraction idle instead of sleeping. */
+function sessionMemoryController(
+  service: ClaudeSessionService,
+  sessionId: string,
+): SessionMemoryController {
+  const controllers = (
+    service as unknown as {
+      sessionMemoryControllers: Map<string, SessionMemoryController>
+    }
+  ).sessionMemoryControllers
+  const controller = controllers.get(sessionId)
+  if (!controller) {
+    throw new Error(`No session memory controller for session ${sessionId}`)
+  }
+  return controller
+}
+
+/** Resolves when the session's scheduled memory extraction has drained. */
+async function waitForSessionMemoryIdle(
+  service: ClaudeSessionService,
+  sessionId: string,
+): Promise<void> {
+  await sessionMemoryController(service, sessionId).waitForIdle()
 }
 
 function trackedTotals(snapshot: {
@@ -166,6 +193,9 @@ describe('ClaudeSessionService', () => {
           'summary.md',
         )
 
+      // Normal turns schedule extraction without awaiting it, so wait for the
+      // controller to drain before reading the sidecar.
+      await waitForSessionMemoryIdle(service, run.sessionId)
       await expect(readFile(memoryPath(selectedRoot), 'utf8')).resolves.toBe(
         'durable memory',
       )
@@ -1438,13 +1468,16 @@ describe('ClaudeSessionService', () => {
     const run = await service.run('first task')
     expect(run.text.startsWith('initial')).toBe(true)
 
+    // Normal turns schedule extraction without awaiting it, so wait for the
+    // controller to drain before reading the sidecar.
+    await waitForSessionMemoryIdle(service, run.sessionId)
+
     const memoryDir = join(
       configRoot,
       'praxis',
       'session-memory',
       run.sessionId,
     )
-    // Extraction completed before the turn result returned.
     const summary = await readFile(join(memoryDir, 'summary.md'), 'utf8')
     expect(summary).toContain('Durable intent: initial task.')
     // Extraction is a no-tool provider call, not a shared transcript entry.
@@ -1528,6 +1561,11 @@ describe('ClaudeSessionService', () => {
     })
     const failedRun = await failureService.run('failing task')
     expect(failedRun.text).toBe('failing turn answer')
+    // The extraction failure is surfaced asynchronously; drain the controller
+    // (rejection expected) so the warning and sidecar error are observable.
+    await waitForSessionMemoryIdle(failureService, failedRun.sessionId).catch(
+      () => undefined,
+    )
     expect(
       failureEvents.some(
         (event) =>
@@ -1677,7 +1715,10 @@ describe('ClaudeSessionService', () => {
     const run = await service.run('first task')
     expect(run.text.startsWith('initial')).toBe(true)
 
-    // The oversized first turn triggers durable session memory extraction.
+    // The oversized first turn triggers durable session memory extraction;
+    // normal turns do not await it, so wait for the controller to drain
+    // before reading the sidecar.
+    await waitForSessionMemoryIdle(service, run.sessionId)
     const memoryDir = join(
       configRoot,
       'praxis',

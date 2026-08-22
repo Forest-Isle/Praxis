@@ -4439,6 +4439,13 @@ export class ClaudeSessionService {
         }
         if (sessionMemory && finalLeafUuid) {
           const turnInputTokens = result.usage?.inputTokens ?? 0
+          const warn = (error: unknown) =>
+            this.options.eventSink?.({
+              type: 'warning',
+              message: `Session memory extraction failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            })
           try {
             await sessionMemory.observeDelta(
               turnInputTokens,
@@ -4446,16 +4453,13 @@ export class ClaudeSessionService {
               finalLeafUuid,
               projectClaudeModelMessages(snapshot.entries),
             )
-            await sessionMemory.waitForIdle()
+            // Normal turns schedule extraction without awaiting it; failures
+            // surface as a warning while the sidecar stays retryable.
+            sessionMemory.waitForIdle().catch(warn)
           } catch (error) {
-            // A failed extraction must not fail the user turn; the sidecar
+            // A failed observation must not fail the user turn; the sidecar
             // retains a retryable error for the next observation.
-            this.options.eventSink?.({
-              type: 'warning',
-              message: `Session memory extraction failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            })
+            warn(error)
           }
         }
         turnCompleted = true

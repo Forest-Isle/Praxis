@@ -5,6 +5,9 @@ import type { ModelMessage } from '../core/runtime.js'
 import { isClaudeSessionId } from '../compatibility/claude/paths.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 
+/** A persisted extraction this old is recovered as stale and safely re-extracted. */
+const STALE_EXTRACTION_THRESHOLD_MS = 60_000
+
 /** Versioned, explicit progress state for one session's extracted memory. */
 export interface SessionMemoryState {
   schemaVersion: 1
@@ -265,8 +268,8 @@ export class SessionMemoryController {
   constructor(private readonly options: SessionMemoryControllerOptions) {
     this.initTokens = options.initTokens ?? 10_000
     this.updateTokens = options.updateTokens ?? 5_000
-    this.updateToolCalls = options.updateToolCalls ?? 20
-    this.waitTimeoutMs = options.waitTimeoutMs ?? 30_000
+    this.updateToolCalls = options.updateToolCalls ?? 3
+    this.waitTimeoutMs = options.waitTimeoutMs ?? 15_000
     for (const [name, value] of [
       ['initTokens', this.initTokens],
       ['updateTokens', this.updateTokens],
@@ -321,26 +324,16 @@ export class SessionMemoryController {
         `Session memory observed counters regressed (tokens ${tokens} < ${state.lastObservedTokens}, toolCalls ${toolCalls} < ${state.lastObservedToolCalls})`,
       )
     }
-    this.observedTokens = Math.max(this.observedTokens, tokens)
-    this.observedToolCalls = Math.max(this.observedToolCalls, toolCalls)
-    if (!this.isExtractionDue(this.observedTokens, this.observedToolCalls)) {
-      return false
-    }
-    if (this.inFlight === null) {
-      const extraction = this.runExtraction(
-        this.observedTokens,
-        this.observedToolCalls,
-        messageId,
-        messages,
-      )
-      this.inFlight = extraction
-      extraction
-        .catch(() => undefined)
-        .finally(() => {
-          if (this.inFlight === extraction) this.inFlight = null
-        })
-    }
-    return true
+    // A direct absolute observation reports a natural break when no tool calls
+    // have accumulated since the last successful extraction.
+    const naturalBreak = toolCalls === state.lastObservedToolCalls
+    return this.scheduleExtraction(
+      tokens,
+      toolCalls,
+      messageId,
+      messages,
+      naturalBreak,
+    )
   }
 
   /**
@@ -374,12 +367,55 @@ export class SessionMemoryController {
     }
     this.observedTokens += inputTokens
     this.observedToolCalls += toolCalls
-    return this.observe(
+    // A zero-tool-call turn is a natural break: the last assistant turn made
+    // no tool calls.
+    return this.scheduleExtraction(
       this.observedTokens,
       this.observedToolCalls,
       messageId,
       messages,
+      toolCalls === 0,
     )
+  }
+
+  /**
+   * Records the observed totals and starts an extraction when the fixed
+   * eligibility contract is met. Returns true when an extraction is running or
+   * was just scheduled; callers on normal turns never await the extraction.
+   */
+  private scheduleExtraction(
+    tokens: number,
+    toolCalls: number,
+    messageId: string,
+    messages: readonly ModelMessage[] | undefined,
+    naturalBreak: boolean,
+  ): boolean {
+    this.observedTokens = Math.max(this.observedTokens, tokens)
+    this.observedToolCalls = Math.max(this.observedToolCalls, toolCalls)
+    if (
+      !this.isExtractionDue(
+        this.observedTokens,
+        this.observedToolCalls,
+        naturalBreak,
+      )
+    ) {
+      return false
+    }
+    if (this.inFlight === null) {
+      const extraction = this.runExtraction(
+        this.observedTokens,
+        this.observedToolCalls,
+        messageId,
+        messages,
+      )
+      this.inFlight = extraction
+      extraction
+        .catch(() => undefined)
+        .finally(() => {
+          if (this.inFlight === extraction) this.inFlight = null
+        })
+    }
+    return true
   }
 
   /** Safe snapshot of the loaded durable summary; empty when none exists. */
@@ -397,22 +433,18 @@ export class SessionMemoryController {
     return { ...this.stateValue }
   }
 
-  /** Resolves when no extraction is running; rejects on failure or timeout. */
+  /**
+   * Resolves when no extraction is running; rejects on extraction failure.
+   * Compact callers wait softly: if extraction outlives the bounded
+   * `waitTimeoutMs`, this resolves so compaction can proceed anyway.
+   */
   async waitForIdle(): Promise<void> {
     await this.ensureLoaded()
     const extraction = this.inFlight
     if (extraction === null) return
     let timer: ReturnType<typeof setTimeout> | undefined
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () =>
-          reject(
-            new SessionMemoryTimeoutError(
-              `Session memory extraction did not complete within ${this.waitTimeoutMs}ms`,
-            ),
-          ),
-        this.waitTimeoutMs,
-      )
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.waitTimeoutMs)
     })
     try {
       await Promise.race([extraction, timeout])
@@ -460,7 +492,7 @@ export class SessionMemoryController {
         extractionStartedAt: null,
         extractionCompletedAt: null,
         extractionError:
-          elapsed >= this.waitTimeoutMs
+          elapsed >= STALE_EXTRACTION_THRESHOLD_MS
             ? `Session memory extraction is stale after ${elapsed}ms`
             : 'Session memory extraction was interrupted',
       }
@@ -474,13 +506,20 @@ export class SessionMemoryController {
     this.summaryValue = summary
   }
 
-  private isExtractionDue(tokens: number, toolCalls: number): boolean {
+  private isExtractionDue(
+    tokens: number,
+    toolCalls: number,
+    naturalBreak: boolean,
+  ): boolean {
     const state = this.stateValue
     if (state === null) return false
     if (!state.initialized) return tokens >= this.initTokens
+    // Unchanged context must not retrigger; tool-call growth alone is never
+    // enough without at least the update-token growth.
+    if (tokens - state.lastObservedTokens < this.updateTokens) return false
     return (
-      tokens - state.lastObservedTokens >= this.updateTokens ||
-      toolCalls - state.lastObservedToolCalls >= this.updateToolCalls
+      toolCalls - state.lastObservedToolCalls >= this.updateToolCalls ||
+      naturalBreak
     )
   }
 

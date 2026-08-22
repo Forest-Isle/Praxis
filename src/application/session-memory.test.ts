@@ -152,7 +152,7 @@ describe('SessionMemoryController', () => {
     )
   })
 
-  it('triggers on update token and tool-call thresholds after initialization', async () => {
+  it('triggers on update-token growth plus a tool-call threshold or a natural break', async () => {
     const configRoot = await tempConfigRoot()
     const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
     const { extractor } = summaryExtractor()
@@ -161,26 +161,29 @@ describe('SessionMemoryController', () => {
       extractor,
       initTokens: 10_000,
       updateTokens: 5_000,
-      updateToolCalls: 20,
+      updateToolCalls: 3,
     })
     expect(await controller.observe(12_000, 5, 'm-init')).toBe(true)
     await controller.waitForIdle()
     // +3000 tokens is below the update threshold.
     expect(await controller.observe(15_000, 5, 'm3')).toBe(false)
-    // Exactly +5000 tokens crosses the token threshold.
+    // Exactly +5000 tokens with no tool calls since the watermark is a
+    // natural break.
     expect(await controller.observe(17_000, 5, 'm4')).toBe(true)
     await controller.waitForIdle()
-    // +20 tool calls crosses the tool-call threshold.
-    expect(await controller.observe(17_000, 25, 'm5')).toBe(true)
+    // Tool-call growth alone does not trigger without token growth.
+    expect(await controller.observe(17_000, 8, 'm5')).toBe(false)
+    // +5000 tokens plus +3 tool calls since the watermark triggers.
+    expect(await controller.observe(22_000, 8, 'm6')).toBe(true)
     await controller.waitForIdle()
     // Observed counters are monotonic; a regression fails closed.
     await expect(controller.observe(10_000, 5, 'm-backwards')).rejects.toThrow(
       SessionMemoryStateError,
     )
     const state = await store.load()
-    expect(state.lastObservedTokens).toBe(17_000)
-    expect(state.lastObservedToolCalls).toBe(25)
-    expect(state.lastSummarizedMessageId).toBe('m5')
+    expect(state.lastObservedTokens).toBe(22_000)
+    expect(state.lastObservedToolCalls).toBe(8)
+    expect(state.lastSummarizedMessageId).toBe('m6')
   })
 
   it('observeDelta accumulates deltas and extracts once at the update threshold', async () => {
@@ -267,7 +270,7 @@ describe('SessionMemoryController', () => {
       store,
       initTokens: 10_000,
       updateTokens: 1_000,
-      updateToolCalls: 20,
+      updateToolCalls: 3,
       waitTimeoutMs: 1_000,
       extractor: async ({ summary, tokens }) => {
         receivedSummary = summary
@@ -333,5 +336,42 @@ describe('SessionMemoryController', () => {
     expect(state.lastObservedTokens).toBe(150)
     expect(state.lastObservedToolCalls).toBe(2)
     expect(state.lastSummarizedMessageId).toBe('m3')
+  })
+
+  it('returns from observeDelta before a slow extraction and lets a later compact wait', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    let calls = 0
+    let release: (() => void) | undefined
+    const controller = new SessionMemoryController({
+      store,
+      initTokens: 100,
+      extractor: async () => {
+        calls += 1
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+        return 'slow summary'
+      },
+    })
+    // A normal turn schedules extraction and returns before it finishes.
+    expect(await controller.observeDelta(200, 0, 'm1')).toBe(true)
+    await vi.waitFor(() => expect(calls).toBe(1))
+    // The turn already resolved while the slow extractor is still running.
+    let idleResolved = false
+    const idle = controller.waitForIdle().then(() => {
+      idleResolved = true
+    })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(idleResolved).toBe(false)
+    release?.()
+    await idle
+    expect(idleResolved).toBe(true)
+    expect(calls).toBe(1)
+    const state = await store.load()
+    expect(state.initialized).toBe(true)
+    expect(state.lastObservedTokens).toBe(200)
+    expect(state.lastObservedToolCalls).toBe(0)
+    expect(state.lastSummarizedMessageId).toBe('m1')
   })
 })
