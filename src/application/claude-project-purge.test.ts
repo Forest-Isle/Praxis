@@ -386,6 +386,10 @@ describe('Claude project purge', () => {
     await Promise.all([
       writeFixture(join(projectRoot, `${SESSION_A}.jsonl`)),
       writeFixture(join(configRoot, 'memory', projectKey, 'MEMORY.md')),
+      writeFixture(
+        join(configRoot, 'state', 'project-memory', projectKey, 'cursor.json'),
+        '{}',
+      ),
       writeFixture(join(configRoot, 'scheduled', `${projectKey}.json`), '{}'),
       writeFixture(join(configRoot, 'memory', otherKey, 'MEMORY.md'), 'keep'),
       writeFixture(join(configRoot, 'scheduled', `${otherKey}.json`), '{}'),
@@ -400,6 +404,7 @@ describe('Claude project purge', () => {
     })
     expect(plan.items.map((item) => item.kind)).toEqual([
       'memory',
+      'memory',
       'scheduled',
       'project',
     ])
@@ -412,11 +417,56 @@ describe('Claude project purge', () => {
         true,
       ),
       expect(
+        missing(join(configRoot, 'state', 'project-memory', projectKey)),
+      ).resolves.toBe(true),
+      expect(
         missing(join(configRoot, 'scheduled', `${projectKey}.json`)),
       ).resolves.toBe(true),
       access(join(configRoot, 'memory', otherKey, 'MEMORY.md')),
       access(join(configRoot, 'scheduled', `${otherKey}.json`)),
     ])
+  })
+
+  it('purges the canonical native Project memory when invoked from a linked worktree', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-project-purge-')),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const statePath = join(configRoot, 'state.json')
+    const mainRepository = join(root, 'main')
+    const worktree = join(root, 'worktree')
+    const gitDirectory = join(
+      mainRepository,
+      '.git',
+      'worktrees',
+      'purge-memory',
+    )
+    const mainKey = sanitizeClaudeProjectPath(mainRepository)
+    await Promise.all([
+      writeFixture(join(worktree, '.git'), `gitdir: ${gitDirectory}\n`),
+      writeFixture(join(gitDirectory, 'commondir'), '../..\n'),
+      writeFixture(join(configRoot, 'memory', mainKey, 'MEMORY.md')),
+      writeFixture(statePath, JSON.stringify({ projects: {} })),
+    ])
+
+    const plan = await planClaudeProjectPurge({
+      dataPlane: 'native',
+      cwd: worktree,
+      configRoot,
+      statePath,
+    })
+
+    expect(plan.items).toContainEqual(
+      expect.objectContaining({
+        kind: 'memory',
+        path: join(configRoot, 'memory', mainKey),
+      }),
+    )
+    await executeClaudeProjectPurge(plan)
+    await expect(missing(join(configRoot, 'memory', mainKey))).resolves.toBe(
+      true,
+    )
   })
 
   it('purges all native memory and scheduled prompt roots with --all', async () => {

@@ -1,10 +1,14 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { loadNativeSharedResources } from './native-resources.js'
+import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
+import {
+  loadNativeContextResources,
+  loadNativeSharedResources,
+} from './native-resources.js'
 
 const roots: string[] = []
 
@@ -49,5 +53,85 @@ describe('native resource discovery', () => {
       'local',
     ])
     expect(resources.mcp).toHaveLength(1)
+  })
+
+  it('loads one Project-memory index across linked worktrees', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-native-resources-')),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const mainRepository = join(root, 'main')
+    const worktree = join(root, 'worktree')
+    const gitDirectory = join(
+      mainRepository,
+      '.git',
+      'worktrees',
+      'native-memory',
+    )
+    await Promise.all([
+      mkdir(join(mainRepository, '.git'), { recursive: true }),
+      mkdir(worktree, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(join(worktree, '.git'), `gitdir: ${gitDirectory}\n`),
+      mkdir(gitDirectory, { recursive: true }).then(() =>
+        writeFile(join(gitDirectory, 'commondir'), '../..\n'),
+      ),
+    ])
+    const directory = join(
+      configRoot,
+      'memory',
+      sanitizeClaudeProjectPath(mainRepository),
+    )
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'MEMORY.md'), 'SHARED_NATIVE_MEMORY')
+
+    const resources = await loadNativeSharedResources({
+      root: configRoot,
+      cwd: worktree,
+    })
+
+    expect(resources.memory.map((resource) => resource.content)).toEqual([
+      'SHARED_NATIVE_MEMORY',
+    ])
+  })
+
+  it('does not read or inject native Project memory when disabled', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-native-resources-')),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'workspace')
+    const memoryDirectory = join(
+      configRoot,
+      'memory',
+      sanitizeClaudeProjectPath(cwd),
+    )
+    await Promise.all([
+      mkdir(memoryDirectory, { recursive: true }),
+      mkdir(cwd, { recursive: true }),
+      mkdir(configRoot, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(join(memoryDirectory, 'MEMORY.md'), 'MUST_NOT_LOAD'),
+      writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({ autoMemoryEnabled: false }),
+      ),
+    ])
+
+    const resources = await loadNativeSharedResources({
+      root: configRoot,
+      cwd,
+    })
+    const context = await loadNativeContextResources({
+      root: configRoot,
+      cwd,
+    })
+
+    expect(resources.memory).toEqual([])
+    expect(context.memoryIndex).toBeNull()
   })
 })

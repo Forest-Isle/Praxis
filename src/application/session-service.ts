@@ -20,6 +20,8 @@ import {
   resolve,
 } from 'node:path'
 
+import { isPathWithin } from '../platform/path-containment.js'
+
 import {
   AGENT_COLOR_DEFAULT,
   agentColorMessage,
@@ -177,6 +179,11 @@ import {
   SessionMemoryStore,
   type SessionMemoryExtractorInput,
 } from './session-memory.js'
+import type {
+  ProjectMemoryExtractionRuntime,
+  ProjectMemoryMessage,
+  ProjectMemoryRecallRuntime,
+} from './project-memory.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import {
   ClaudeCapabilityToolRegistry,
@@ -275,6 +282,10 @@ export interface ClaudeSessionServiceOptions {
   fileCheckpointing?: boolean
   /** Disable only automatic context compaction; manual /compact remains available. */
   autoCompact?: boolean
+  /** Explicit Project-memory capabilities. Disabled callers omit these ports. */
+  projectMemoryDirectory?: string
+  projectMemoryRecall?: ProjectMemoryRecallRuntime
+  projectMemoryExtraction?: ProjectMemoryExtractionRuntime
   fileRewindRoots?: readonly string[]
   interactiveTools?: ClaudeInteractiveToolManager
   mcp?: ClaudeMcpRuntime
@@ -943,6 +954,26 @@ function validSessionName(value: string): string | null {
     : null
 }
 
+function projectMemoryMessages(
+  entries: readonly ClaudeTranscriptEntry[],
+): ProjectMemoryMessage[] {
+  return selectClaudeActiveTranscript(entries).flatMap((entry) => {
+    if (typeof entry.uuid !== 'string') return []
+    return projectClaudeModelMessages([entry]).flatMap((message) =>
+      (message.role === 'user' || message.role === 'assistant') &&
+      message.content.trim().length > 0
+        ? [
+            {
+              id: entry.uuid as string,
+              role: message.role,
+              content: message.content,
+            },
+          ]
+        : [],
+    )
+  })
+}
+
 type HookSessionInput = Pick<
   ClaudeHookInput,
   'session_id' | 'transcript_path' | 'cwd' | 'permission_mode'
@@ -1312,6 +1343,7 @@ export class ClaudeSessionService {
   async close(): Promise<void> {
     await this.hookLifecycle.close()
     this.scheduledPrompts?.close()
+    await this.options.projectMemoryExtraction?.close(5_000)
     await Promise.all(
       [...this.hostedSubagents].map((executor) => executor.close()),
     )
@@ -1337,6 +1369,9 @@ export class ClaudeSessionService {
     reason: Exclude<HookSessionEndReason, 'other'>,
   ): Promise<void> {
     await this.hookLifecycle.transition(sessionId, reason)
+    if (reason === 'clear') {
+      this.options.projectMemoryRecall?.clearSession?.(sessionId)
+    }
     this.options.contextAssembler?.invalidate?.({
       lifecycleId: sessionId,
       reason: reason === 'resume' ? 'restore' : 'clear',
@@ -2683,6 +2718,7 @@ export class ClaudeSessionService {
           `Claude transcript append conflict: ${appendResult.reason}`,
         )
       }
+      this.options.projectMemoryRecall?.recordCompact(sessionId)
       this.options.eventSink?.({
         type: 'compact-boundary',
         trigger: 'manual',
@@ -3155,6 +3191,15 @@ export class ClaudeSessionService {
         agent?.initialPrompt
           ? `${agent.initialPrompt}\n\n${prompt}`
           : prompt
+      const projectMemoryRecallTurn =
+        !skipUserPrompt && shellCommand === undefined
+          ? this.options.projectMemoryRecall?.prefetch({
+              sessionId,
+              turnId: randomUUID(),
+              prompt: effectivePrompt,
+              ...(signal ? { signal } : {}),
+            })
+          : undefined
       const initialPricing = this.options.pricing?.resolve(
         provider.model ?? 'praxis/provider',
       )
@@ -3550,6 +3595,8 @@ export class ClaudeSessionService {
       })
       let currentTurnUserMessages: string[] | null = null
       let currentTurnToolCalls = 0
+      let projectMemoryMaintained = false
+      let projectMemoryRecallMessages: ModelMessage[] = []
       const observer = {
         assistantCompleted: async (message: {
           content: string
@@ -3574,6 +3621,7 @@ export class ClaudeSessionService {
           if (!entry) throw new Error('Could not translate assistant response')
           const tail = await this.append(lease, snapshot.tail, entry)
           snapshot = { entries: [...snapshot.entries, entry], tail }
+
           lastAssistantUuid =
             typeof entry.uuid === 'string' ? entry.uuid : lastAssistantUuid
         },
@@ -3654,6 +3702,43 @@ export class ClaudeSessionService {
           if (!entry) throw new Error('Could not translate tool result')
           const tail = await this.append(lease, snapshot.tail, entry)
           snapshot = { entries: [...snapshot.entries, entry], tail }
+
+          if (!toolResult.isError && this.options.projectMemoryDirectory) {
+            const pathValue = call.input.file_path
+            const path =
+              typeof pathValue === 'string'
+                ? resolve(this.activeCwd(), pathValue)
+                : null
+            if (
+              path &&
+              isPathWithin(this.options.projectMemoryDirectory, path)
+            ) {
+              if (call.name === 'Read') {
+                this.options.projectMemoryRecall?.recordRead(sessionId, path)
+              } else if (call.name === 'Write' || call.name === 'Edit') {
+                projectMemoryMaintained = true
+              }
+            }
+            if (call.name === 'Read') {
+              for (const accessedPath of toolResult.accessedPaths ?? []) {
+                const resolvedAccessedPath = resolve(
+                  this.activeCwd(),
+                  accessedPath,
+                )
+                if (
+                  isPathWithin(
+                    this.options.projectMemoryDirectory,
+                    resolvedAccessedPath,
+                  )
+                ) {
+                  this.options.projectMemoryRecall?.recordRead(
+                    sessionId,
+                    resolvedAccessedPath,
+                  )
+                }
+              }
+            }
+          }
 
           if (
             toolResult.isError ||
@@ -4010,7 +4095,10 @@ export class ClaudeSessionService {
           options: { promptTooLong?: boolean } = {},
         ) => {
           if (!budget || this.options.autoCompact === false) return
-          const historyMessages = projectClaudeModelMessages(snapshot.entries)
+          const historyMessages = [
+            ...projectClaudeModelMessages(snapshot.entries),
+            ...projectMemoryRecallMessages,
+          ]
           const predicted = budget.evaluate(
             [
               ...contextMessages,
@@ -4169,11 +4257,14 @@ export class ClaudeSessionService {
               now: () => timestamp,
             },
           )
-          const compactedHistory = projectClaudeModelMessages([
-            ...snapshot.entries,
-            ...provisionalEntries,
-            ...replayEntries,
-          ])
+          const compactedHistory = [
+            ...projectClaudeModelMessages([
+              ...snapshot.entries,
+              ...provisionalEntries,
+              ...replayEntries,
+            ]),
+            ...projectMemoryRecallMessages,
+          ]
           const afterHistory = budget.evaluate(
             [...contextMessages, ...injectTurnContext(compactedHistory)],
             definitions,
@@ -4291,6 +4382,7 @@ export class ClaudeSessionService {
             lifecycleId: sessionId,
             reason: 'compact',
           })
+          this.options.projectMemoryRecall?.recordCompact(sessionId)
           await refreshRuntimeContext()
           this.options.eventSink?.({
             type: 'compact-boundary',
@@ -4520,6 +4612,12 @@ export class ClaudeSessionService {
             ? { deferFailureKinds: ['prompt_too_long'] as const }
             : {}),
           reloadMessages: async () => {
+            const recalled = projectMemoryRecallTurn?.consumeIfSettled()
+            if (recalled) {
+              projectMemoryRecallMessages = [
+                { role: 'user', content: recalled.content },
+              ]
+            }
             await compactIfNeeded([], currentTurnUserMessages ?? [])
             if (stableSystemMessageCount === undefined) {
               delete runtimeRequest.stableSystemMessageCount
@@ -4528,9 +4626,10 @@ export class ClaudeSessionService {
             }
             return [
               ...contextMessages,
-              ...injectTurnContext(
-                projectClaudeModelMessages(snapshot.entries),
-              ),
+              ...injectTurnContext([
+                ...projectClaudeModelMessages(snapshot.entries),
+                ...projectMemoryRecallMessages,
+              ]),
             ]
           },
           ...(this.options.hooks ||
@@ -4688,7 +4787,10 @@ export class ClaudeSessionService {
           // the stale request copy captured before the compact boundary.
           runtimeRequest.messages = [
             ...contextMessages,
-            ...injectTurnContext(projectClaudeModelMessages(snapshot.entries)),
+            ...injectTurnContext([
+              ...projectClaudeModelMessages(snapshot.entries),
+              ...projectMemoryRecallMessages,
+            ]),
           ]
           if (stableSystemMessageCount === undefined) {
             delete runtimeRequest.stableSystemMessageCount
@@ -4895,6 +4997,11 @@ export class ClaudeSessionService {
             })
           }
         }
+        this.options.projectMemoryExtraction?.observe({
+          sessionId,
+          directMaintenance: projectMemoryMaintained,
+          messages: projectMemoryMessages(snapshot.entries),
+        })
         turnCompleted = true
         return {
           sessionId,

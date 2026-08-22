@@ -52,6 +52,7 @@ import {
   type DoctorUpdateDiagnostic,
   type PraxisDistTagLoader,
 } from './doctor-diagnostic.js'
+import { resolveProjectMemoryPolicy } from '../core/project-memory.js'
 
 export interface DoctorCheck {
   id:
@@ -261,24 +262,37 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let settings: readonly ClaudeJsonResource[] | undefined
   let nativeResources:
     Awaited<ReturnType<typeof loadNativeSharedResources>> | undefined
+  const settingsResources = async () => {
+    settings ??=
+      dataPlane === 'claude'
+        ? await loadClaudeSettings({ configRoot, cwd })
+        : await loadNativeSettings({ root: configRoot, cwd })
+    return settings
+  }
+  const projectMemoryEnabled = async () =>
+    resolveProjectMemoryPolicy({
+      dataPlane,
+      settings: await settingsResources(),
+      environment: options.environment,
+    }).enabled
   const sharedResources = async () => {
+    const includeProjectMemory = await projectMemoryEnabled()
     if (dataPlane === 'claude') {
       return loadClaudeSharedResources({
         configRoot,
         cwd,
         claudeStatePath: options.claudeStatePath,
+        includeProjectMemory,
       })
     }
     nativeResources ??= await loadNativeSharedResources({
       root: configRoot,
       cwd,
+      environment: options.environment,
+      includeProjectMemory,
     })
     return nativeResources
   }
-  const settingsResources = async () =>
-    dataPlane === 'claude'
-      ? loadClaudeSettings({ configRoot, cwd })
-      : loadNativeSettings({ root: configRoot, cwd })
   const checks: DoctorCheck[] = []
 
   checks.push(
@@ -492,10 +506,20 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   checks.push(
     await capture('resources', async () => {
       const resources = await sharedResources()
+      const includeProjectMemory = await projectMemoryEnabled()
       if (dataPlane === 'native') {
-        await loadNativeContextResources({ root: configRoot, cwd })
+        await loadNativeContextResources({
+          root: configRoot,
+          cwd,
+          environment: options.environment,
+          includeProjectMemory,
+        })
       } else {
-        await loadClaudeContextResources({ configRoot, cwd })
+        await loadClaudeContextResources({
+          configRoot,
+          cwd,
+          includeProjectMemory,
+        })
       }
       validateClaudeExtensions([
         ...resources.commands,

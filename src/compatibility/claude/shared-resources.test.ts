@@ -404,6 +404,11 @@ describe('Claude shared resource discovery', () => {
     ])
 
     const resources = await loadClaudeContextResources({ configRoot, cwd })
+    const withoutMemory = await loadClaudeContextResources({
+      configRoot,
+      cwd,
+      includeProjectMemory: false,
+    })
 
     expect(resources.instructions.map((item) => item.content)).toEqual([
       'GLOBAL_CONTEXT',
@@ -422,6 +427,7 @@ describe('Claude shared resource discovery', () => {
       },
     ])
     expect(resources.memoryIndex?.content).toBe('MEMORY_CONTEXT')
+    expect(withoutMemory.memoryIndex).toBeNull()
   })
 
   it('does not swallow filesystem errors other than missing resources', async () => {

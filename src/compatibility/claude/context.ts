@@ -10,6 +10,7 @@ import {
   PromptComposer,
   type PromptSection,
 } from '../../core/prompt-composer.js'
+import { boundProjectMemoryIndex } from '../../core/project-memory.js'
 import {
   renderClaudeDynamicSystemContext,
   renderClaudeDynamicUserContext,
@@ -39,7 +40,7 @@ function renderResources(
 function limitMemoryIndex(resource: ClaudeTextResource): ClaudeTextResource {
   return {
     ...resource,
-    content: resource.content.split('\n').slice(0, 200).join('\n'),
+    content: boundProjectMemoryIndex(resource.content),
   }
 }
 

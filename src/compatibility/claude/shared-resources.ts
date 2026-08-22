@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import { parse as parseYaml } from 'yaml'
 
+import { resolveProjectIdentity } from '../../platform/project-identity.js'
 import { sanitizeClaudeProjectPath } from './paths.js'
 
 export type ClaudeResourceScope = 'local' | 'project' | 'user'
@@ -56,6 +57,7 @@ export interface LoadClaudeSharedResourcesOptions {
   homeDirectory?: string
   claudeStatePath?: string
   settingSources?: readonly ClaudeResourceScope[]
+  includeProjectMemory?: boolean
 }
 
 function selectedScope(
@@ -368,32 +370,6 @@ async function findGitRoot(cwd: string): Promise<string | null> {
   return current
 }
 
-async function readOptionalRaw(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw error
-  }
-}
-
-async function findMemoryIdentityRoot(gitRoot: string): Promise<string> {
-  const gitMarker = join(gitRoot, '.git')
-  const marker = await stat(gitMarker)
-  if (!marker.isFile()) return gitRoot
-
-  const gitFile = await readFile(gitMarker, 'utf8')
-  const match = /^gitdir:\s*(.+)\s*$/m.exec(gitFile)
-  if (!match?.[1]) return gitRoot
-  const gitDirectory = resolve(gitRoot, match[1])
-  const commonDirectory = await readOptionalRaw(join(gitDirectory, 'commondir'))
-  if (!commonDirectory) return gitRoot
-  const commonGitDirectory = await canonicalPath(
-    resolve(gitDirectory, commonDirectory.trim()),
-  )
-  return dirname(commonGitDirectory)
-}
-
 async function resolveProjectContext(
   cwd: string,
   homeDirectory: string,
@@ -410,7 +386,7 @@ async function resolveProjectContext(
       directories: directoriesFromRoot(gitRoot, canonicalCwd),
       extensionDirectories: directoriesFromRoot(gitRoot, canonicalCwd),
       homeBoundary: null,
-      memoryIdentityRoot: await findMemoryIdentityRoot(gitRoot),
+      memoryIdentityRoot: await resolveProjectIdentity(gitRoot),
     }
   }
 
@@ -429,12 +405,10 @@ async function resolveProjectContext(
 
 export async function resolveClaudeProjectIdentity({
   cwd,
-  homeDirectory = homedir(),
 }: {
   cwd: string
-  homeDirectory?: string
 }): Promise<string> {
-  return (await resolveProjectContext(cwd, homeDirectory)).memoryIdentityRoot
+  return resolveProjectIdentity(cwd)
 }
 
 async function loadProjectSettings(
@@ -631,6 +605,7 @@ async function loadResolvedClaudeContext(
   projectDirectories: readonly string[],
   homeBoundary: string | null,
   memoryIdentityRoot: string,
+  includeProjectMemory: boolean,
 ): Promise<ClaudeContextResources> {
   const projectMemoryDirectory = join(
     configRoot,
@@ -647,7 +622,9 @@ async function loadResolvedClaudeContext(
         projectDirectories.at(-1) ?? memoryIdentityRoot,
       ),
       loadProjectContextResources(projectDirectories, homeBoundary),
-      readOptionalText(join(projectMemoryDirectory, 'MEMORY.md'), 'project'),
+      includeProjectMemory
+        ? readOptionalText(join(projectMemoryDirectory, 'MEMORY.md'), 'project')
+        : Promise.resolve(null),
     ])
   return {
     instructions: [
@@ -668,6 +645,7 @@ export async function loadClaudeContextResources({
   cwd,
   homeDirectory = homedir(),
   settingSources,
+  includeProjectMemory = true,
 }: LoadClaudeSharedResourcesOptions): Promise<ClaudeContextResources> {
   const { directories, homeBoundary, memoryIdentityRoot } =
     await resolveProjectContext(cwd, homeDirectory)
@@ -676,6 +654,7 @@ export async function loadClaudeContextResources({
     directories,
     homeBoundary,
     memoryIdentityRoot,
+    includeProjectMemory,
   )
   const instructions = resources.instructions.filter((resource) =>
     selectedScope(resource.scope, settingSources),
@@ -701,6 +680,7 @@ export async function loadClaudeSharedResources({
   homeDirectory = homedir(),
   claudeStatePath = join(configRoot, '.claude.json'),
   settingSources,
+  includeProjectMemory = true,
 }: LoadClaudeSharedResourcesOptions): Promise<ClaudeSharedResources> {
   const {
     directories: projectDirectories,
@@ -728,9 +708,11 @@ export async function loadClaudeSharedResources({
     readOptionalText(join(configRoot, 'CLAUDE.md'), 'user'),
     loadAllRules(join(configRoot, 'rules'), 'user'),
     loadProjectInstructions(projectDirectories, homeBoundary),
-    findFiles(projectMemoryDirectory, (name) => name.endsWith('.md')).then(
-      (paths) => loadFiles(paths, 'project'),
-    ),
+    includeProjectMemory
+      ? findFiles(projectMemoryDirectory, (name) => name.endsWith('.md')).then(
+          (paths) => loadFiles(paths, 'project'),
+        )
+      : Promise.resolve([]),
     loadScopedFiles(
       join(configRoot, 'skills'),
       extensionDirectories.map((path) => join(path, '.claude', 'skills')),

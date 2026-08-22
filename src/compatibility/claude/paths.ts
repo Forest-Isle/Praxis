@@ -2,6 +2,7 @@ import { lstat, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { extname, resolve } from 'node:path'
 
+import { sanitizeProjectPath } from '../../platform/project-path-key.js'
 import { getDataOwnership } from './ownership.js'
 
 const MAX_SANITIZED_LENGTH = 200
@@ -26,24 +27,8 @@ export interface ClaudePaths {
   praxisRoot: string
 }
 
-function stablePathHash(value: string): number {
-  let hash = 0
-
-  for (let index = 0; index < value.length; index += 1) {
-    hash = Math.imul(hash, 31) + value.charCodeAt(index)
-    hash |= 0
-  }
-
-  return Math.abs(hash)
-}
-
 export function sanitizeClaudeProjectPath(path: string): string {
-  const sanitized = path.replace(/[^a-zA-Z0-9]/g, '-')
-  if (sanitized.length <= MAX_SANITIZED_LENGTH) {
-    return sanitized
-  }
-
-  return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${stablePathHash(path).toString(36)}`
+  return sanitizeProjectPath(path)
 }
 
 export interface DiscoverClaudeProjectRootOptions {

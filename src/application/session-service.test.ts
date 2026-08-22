@@ -52,6 +52,10 @@ import {
   SessionMemoryStore,
   type SessionMemoryState,
 } from './session-memory.js'
+import {
+  ProjectMemoryExtractionController,
+  type ProjectMemoryExtractorInput,
+} from './project-memory.js'
 import { WorkspaceContext } from './session-worktree.js'
 
 const roots: string[] = []
@@ -144,6 +148,195 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('prefetches Project memory without blocking and consumes it only after tools', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-project-memory-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const memoryDirectory = join(configRoot, 'memory', 'project')
+    const memoryPath = join(memoryDirectory, 'topic.md')
+    let recallConsumed = false
+    const recall = {
+      prefetch: vi.fn(() => ({
+        consumeIfSettled: () => {
+          if (recallConsumed) return null
+          recallConsumed = true
+          return {
+            attachmentCount: 1,
+            content: `<system-reminder>\n<project-memory path=${JSON.stringify(memoryPath)}>\nPROJECT_MEMORY_DETAIL\n</project-memory>\n</system-reminder>`,
+          }
+        },
+      })),
+      recordRead: vi.fn(),
+      recordCompact: vi.fn(),
+    }
+    const extraction = {
+      observe: vi.fn(),
+      close: vi.fn(async () => undefined),
+    }
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        if (requests.length === 1) {
+          expect(JSON.stringify(request.messages)).not.toContain(
+            'PROJECT_MEMORY_DETAIL',
+          )
+          yield {
+            type: 'tool-call',
+            call: { id: 'read-1', name: 'Read', input: { file_path: 'a.ts' } },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'done' }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () => [
+        { name: 'Read', description: 'Read', inputSchema: { type: 'object' } },
+      ],
+      prepare: async (call) => call,
+      execute: async () => ({ content: 'file', isError: false }),
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.237',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      projectMemoryDirectory: memoryDirectory,
+      projectMemoryRecall: recall,
+      projectMemoryExtraction: extraction,
+    })
+
+    const result = await service.run('Use the durable project context')
+
+    expect(result.text).toBe('done')
+    expect(recall.prefetch).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'PROJECT_MEMORY_DETAIL',
+    )
+    expect(extraction.observe).toHaveBeenCalledTimes(1)
+    expect(extraction.observe.mock.calls[0]?.[0]).toMatchObject({
+      sessionId: result.sessionId,
+      directMaintenance: false,
+      messages: [
+        expect.objectContaining({ role: 'user' }),
+        expect.objectContaining({ role: 'assistant' }),
+      ],
+    })
+    await service.close()
+    expect(extraction.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks successful direct Project-memory maintenance so extraction skips that range', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-project-memory-test-'))
+    roots.push(root)
+    const memoryDirectory = join(root, 'memory')
+    const memoryPath = join(memoryDirectory, 'topic.md')
+    let request = 0
+    const extraction = {
+      observe: vi.fn(),
+      close: vi.fn(async () => undefined),
+    }
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.237',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          request += 1
+          if (request === 1) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'write-memory',
+                name: 'Write',
+                input: { file_path: memoryPath, content: 'durable' },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'maintained' }
+        },
+      },
+      tools: {
+        definitions: () => [
+          {
+            name: 'Write',
+            description: 'Write',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'written', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      projectMemoryDirectory: memoryDirectory,
+      projectMemoryExtraction: extraction,
+    })
+
+    await service.run('Remember this for the project')
+
+    expect(extraction.observe).toHaveBeenCalledWith(
+      expect.objectContaining({ directMaintenance: true }),
+    )
+  })
+
+  it('returns the main result before extraction and drains it during close', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-project-memory-test-'))
+    roots.push(root)
+    let release!: () => void
+    let started!: (input: ProjectMemoryExtractorInput) => void
+    const extractionStarted = new Promise<ProjectMemoryExtractorInput>(
+      (resolveStarted) => {
+        started = resolveStarted
+      },
+    )
+    const extractionRelease = new Promise<void>((resolveRelease) => {
+      release = resolveRelease
+    })
+    const extraction = new ProjectMemoryExtractionController({
+      directory: join(root, 'memory'),
+      cursorPath: join(root, 'state', 'cursor.json'),
+      extractor: {
+        extract: async (input) => {
+          started(input)
+          await extractionRelease
+        },
+      },
+    })
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.237',
+      provider: queuedProvider(['response delivered']),
+      projectMemoryExtraction: extraction,
+    })
+
+    await expect(
+      service.run('remember durable context'),
+    ).resolves.toMatchObject({ text: 'response delivered' })
+    await expect(extractionStarted).resolves.toMatchObject({
+      messages: [
+        expect.objectContaining({ role: 'user' }),
+        expect.objectContaining({ role: 'assistant' }),
+      ],
+    })
+    let closed = false
+    const closing = service.close().then(() => {
+      closed = true
+    })
+    await Promise.resolve()
+    expect(closed).toBe(false)
+    release()
+    await closing
+    expect(closed).toBe(true)
+  })
+
   it('runs the main session beyond the former implicit model turn limit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-unbounded-turns-test-'))
     roots.push(root)

@@ -252,6 +252,20 @@ standard `Read`, `Write`, and `Edit` may access that root in addition to the
 workspace. Canonical-path and no-follow checks reject siblings and symlink
 escapes, while `Grep` remains workspace-scoped.
 
+`ProjectMemoryRecallController` and `ProjectMemoryExtractionController` are
+deep application modules behind narrow runtime interfaces rather than branches
+inside the Agent loop. A shared platform project-identity module canonicalizes
+git roots and linked worktrees for both native and compatibility callers. The
+default context path injects only the bounded `MEMORY.md` index. Capability-
+gated recall prefetches bounded topic metadata concurrently and contributes an
+ephemeral user-role background attachment only when already settled after
+tools. Capability-gated extraction receives the active model-visible
+user/assistant closure, persists its success-only cursor in the native private
+state root, and delegates maintenance to an isolated four-turn runtime with
+only memory-local `Read`, `Write`, and `Edit`. Neither capability writes private
+fields to a shared transcript. Direct main-agent memory edits advance the same
+cursor and suppress duplicate extraction for that range.
+
 `ClaudeHookRunner` parses layered settings without rewriting them, executes
 bounded command hooks, and interprets Claude-compatible JSON/exit semantics.
 It parses raw JSON before redaction so `updatedInput` and permission behavior

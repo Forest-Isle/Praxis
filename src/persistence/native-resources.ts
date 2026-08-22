@@ -1,7 +1,8 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
-import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
+import { resolveProjectMemoryPolicy } from '../core/project-memory.js'
+import { resolveProjectMemoryDirectory } from '../platform/project-memory-paths.js'
 import type {
   ClaudeContextResources,
   ClaudeJsonResource,
@@ -70,6 +71,8 @@ async function files(
 export interface LoadNativeResourcesOptions {
   root: string
   cwd: string
+  environment?: Readonly<Record<string, string | undefined>>
+  includeProjectMemory?: boolean
 }
 
 export async function loadNativeSettings({
@@ -90,9 +93,23 @@ export async function loadNativeSettings({
 export async function loadNativeSharedResources({
   root,
   cwd,
+  environment = process.env,
+  includeProjectMemory = true,
 }: LoadNativeResourcesOptions): Promise<ClaudeSharedResources> {
   const project = resolve(cwd, '.praxis')
-  const memoryRoot = resolve(root, 'memory', sanitizeClaudeProjectPath(cwd))
+  const memoryRoot = await resolveProjectMemoryDirectory({
+    dataPlane: 'native',
+    configRoot: root,
+    cwd,
+  })
+  const settings = await loadNativeSettings({ root, cwd })
+  const memoryEnabled =
+    includeProjectMemory &&
+    resolveProjectMemoryPolicy({
+      dataPlane: 'native',
+      settings,
+      environment,
+    }).enabled
   const [
     userInstruction,
     projectInstruction,
@@ -100,14 +117,15 @@ export async function loadNativeSharedResources({
     skills,
     commands,
     agents,
-    settings,
     userMcp,
     projectMcp,
     localMcp,
   ] = await Promise.all([
     text(join(root, 'PRAXIS.md'), 'user'),
     text(join(project, 'PRAXIS.md'), 'project'),
-    files(memoryRoot, 'project', (name) => name.endsWith('.md')),
+    memoryEnabled
+      ? files(memoryRoot, 'project', (name) => name.endsWith('.md'))
+      : Promise.resolve([]),
     Promise.all([
       files(join(root, 'skills'), 'user', (name) => name === 'SKILL.md'),
       files(join(project, 'skills'), 'project', (name) => name === 'SKILL.md'),
@@ -122,7 +140,6 @@ export async function loadNativeSharedResources({
       files(join(root, 'agents'), 'user', (name) => name.endsWith('.md')),
       files(join(project, 'agents'), 'project', (name) => name.endsWith('.md')),
     ]).then(([user, local]) => [...user, ...local]),
-    loadNativeSettings({ root, cwd }),
     json(join(root, 'mcp.json'), 'user'),
     json(join(project, 'mcp.json'), 'project'),
     json(join(project, 'mcp.local.json'), 'local'),
