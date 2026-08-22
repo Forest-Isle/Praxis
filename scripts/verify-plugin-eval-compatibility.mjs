@@ -17,7 +17,11 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
-const claudeCli = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
+const expectedClaudeVersion = '2.1.237'
+const claudeCli =
+  process.env.PRAXIS_CLAUDE_2_1_237 ??
+  process.env.PRAXIS_CLAUDE_BINARY ??
+  'claude'
 const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-eval-'))
 const installRoot = join(root, 'install')
 const workspace = join(root, 'workspace')
@@ -267,31 +271,49 @@ try {
   ])
     assert(help.stdout.includes(option), `Praxis help missing ${option}`)
   const initHelp = await run(['plugin', 'eval', 'init', '--help'])
-  assert(initHelp.stdout.includes('--bare'), 'init help missing --bare')
-  assert(
-    !initHelp.stdout.includes('--interactive'),
-    'init leaked private option',
-  )
+  const initOptions = ['--bare', '--eval-dir', '--interactive']
+  for (const option of initOptions)
+    assert(
+      initHelp.stdout.includes(option),
+      `Praxis init help missing ${option}`,
+    )
 
   const claudeVersion = spawnSync(claudeCli, ['--version'], {
     encoding: 'utf8',
     env: environment,
   })
-  if (!claudeVersion.error) {
+  assert(
+    !claudeVersion.error,
+    `Claude ${expectedClaudeVersion} binary failed to execute: ${claudeVersion.error?.message}`,
+  )
+  assert(
+    claudeVersion.status === 0,
+    `Claude ${expectedClaudeVersion} version check failed: ${claudeVersion.stderr}`,
+  )
+  assert(
+    claudeVersion.stdout.startsWith(`${expectedClaudeVersion} `),
+    `Unsupported Claude version: ${claudeVersion.stdout}`,
+  )
+  const claudeHelp = spawnSync(claudeCli, ['plugin', 'eval', '--help'], {
+    encoding: 'utf8',
+    env: environment,
+  })
+  assert(claudeHelp.status === 0, 'Claude plugin eval help failed')
+  assert(
+    claudeHelp.stdout.includes('--ablation'),
+    'Claude help surface changed',
+  )
+  const claudeInitHelp = spawnSync(
+    claudeCli,
+    ['plugin', 'eval', 'init', '--help'],
+    { encoding: 'utf8', env: environment },
+  )
+  assert(claudeInitHelp.status === 0, 'Claude plugin eval init help failed')
+  for (const option of initOptions)
     assert(
-      claudeVersion.stdout.startsWith('2.1.208 '),
-      `Unsupported Claude version: ${claudeVersion.stdout}`,
+      claudeInitHelp.stdout.includes(option),
+      `Claude init help missing ${option}`,
     )
-    const claudeHelp = spawnSync(claudeCli, ['plugin', 'eval', '--help'], {
-      encoding: 'utf8',
-      env: environment,
-    })
-    assert(claudeHelp.status === 0, 'Claude plugin eval help failed')
-    assert(
-      claudeHelp.stdout.includes('--ablation'),
-      'Claude help surface changed',
-    )
-  }
 
   const plugin = join(workspace, 'fixture-plugin')
   await write(

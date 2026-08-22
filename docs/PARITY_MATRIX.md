@@ -219,15 +219,17 @@ fail closed rather than being treated as an implicitly compatible data plane.
 Enterprise, desktop, remote-control, and subscription-auth surfaces remain
 excluded by scope.
 
-The required GitHub `CI` status installs both baselines at fixed paths. Claude
+The required GitHub `CI` status installs all baselines at fixed paths. Claude
 Code 2.1.208 drives the credential-free recursive CLI signature, interactive
-`/background`, memory-import, and TUI gates. Claude Code 2.1.237 independently
-drives the executable core evidence audit plus provider-free session-metadata
-and background-Agent black-box gates. Installed-package, performance, security,
-CodeQL, and dependency-review lanes remain mandatory. The aggregate compatibility
-suite includes real model calls and remains an explicit maintainer qualification
-gate rather than requiring subscription state or billable credentials in public
-or fork CI. The latest qualification attempt stopped at gate 1 when the upstream
+`/background`, memory-import, and TUI gates. Exact 2.1.208 and
+2.1.233 binaries drive bidirectional session, resume-at, fork, sidechain, and
+compaction gates. Claude Code 2.1.237 independently drives the executable core
+evidence audit plus provider-free session-metadata, background-Agent, and
+plugin-eval black-box gates. Installed-package, performance, security, CodeQL, and
+dependency-review lanes remain mandatory. The aggregate compatibility suite
+includes real model calls and remains an explicit maintainer qualification gate
+rather than requiring subscription state or billable credentials in public or
+fork CI. The latest qualification attempt stopped at gate 1 when the upstream
 Claude request returned `402 Insufficient Balance`; that external condition does
 not establish a Praxis behavior failure or a full live-model pass.
 Release automation does not expand or alter product parity scope.

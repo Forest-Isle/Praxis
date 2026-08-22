@@ -236,17 +236,23 @@ Required integrated qualification remains:
 1. `npm run check` — formatting, lint, docs, boundaries, typecheck, all focused
    fixtures, and build.
 2. `npm run test:core-design-drift` — this report/evidence matrix.
-3. `npm run test:compat:all` — every runnable isolated compatibility gate;
-   fixed historical-binary lanes may skip only when their explicit binaries are
-   unavailable.
+3. `npm run test:compat:all` — every runnable isolated compatibility gate.
+   Local historical lanes require their explicit binaries; required CI
+   provisions exact 2.1.208 and 2.1.233 binaries, so those lanes cannot skip
+   there.
 4. `npm run test:package`, `npm run test:performance`, and
    `npm audit --omit=dev`.
 5. Required GitHub CI, including the credential-free pinned Claude 2.1.237 core
-   lane and the historical 2.1.208 CLI/TUI compatibility lane.
+   lane and plugin-eval contract, the historical 2.1.208 CLI/TUI contracts, plus
+   bidirectional 2.1.208/2.1.233 session, resume-at, fork, sidechain, and
+   compaction contracts.
 
-The latest pre-audit local full compatibility attempt built successfully but
-stopped at its first credentialed live-model gate with HTTP 402 `Insufficient
-Balance`; seven explicit historical cross-version lanes lacked their pinned
-binaries. That result proves neither a product failure nor a full live-model
-pass. Provider-free 2.1.237 black-box gates and all fixtures remain mandatory
+The historical qualification repair in
+[#381](https://github.com/Forest-Isle/Praxis/issues/381) ran all seven formerly
+environment-skipped lanes directly with exact 2.1.208, 2.1.233, and 2.1.237
+binaries; TUI, plugin-eval, session, resume-at, fork, sidechain, and compaction
+all passed. The aggregate local suite still stops at its first credentialed
+live-model gate when the upstream account returns HTTP 402 `Insufficient
+Balance`. That external result proves neither a product failure nor a full
+live-model pass. Provider-free black-box gates and all fixtures remain required
 and run independently of subscription balance.

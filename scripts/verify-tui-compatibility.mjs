@@ -2102,7 +2102,7 @@ expect -re {Praxis Code has been suspended.*Run .*fg.*bring Praxis Code back}
 expect -re {ctrl.*z now suspends Praxis Code.*ctrl.*_ undoes input}
 expect -re {PRAXIS_SHELL> }
 send "jobs -l\r"
-expect -re {suspended.*dangerously-skip-permissions}
+expect -re {\[[0-9]+\].*suspended.*node}
 after 200
 set phase "foreground resume"
 send "fg\r"

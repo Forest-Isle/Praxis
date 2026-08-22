@@ -305,6 +305,10 @@ assert(
   report.includes('issues/342'),
   'Core drift report is missing the canonical vocabulary issue #342',
 )
+assert(
+  report.includes('issues/381'),
+  'Core drift report is missing the historical qualification repair #381',
+)
 for (const term of [
   '**Transcript**',
   '**Session memory**',
@@ -453,10 +457,21 @@ assert(
 )
 for (const requiredCiFragment of [
   'name: Claude 2.1.237 core drift',
+  '@anthropic-ai/claude-code@2.1.208',
   '@anthropic-ai/claude-code@2.1.237',
+  '@anthropic-ai/claude-code@2.1.233',
   'run: npm run test:core-design-drift',
   'run: npm run test:session-metadata-compat',
   'run: npm run test:background-agent-compat',
+  'npm run test:cross-version-session-compat',
+  'npm run test:cross-version-resume-at-compat',
+  'npm run test:cross-version-fork-compat',
+  'npm run test:cross-version-sidechain-compat',
+  'npm run test:cross-version-compaction-compat',
+  'run: npm run test:plugin-eval-compat',
+  'PRAXIS_CLAUDE_2_1_237: /tmp/praxis-claude-pin-21237/node_modules/.bin/claude',
+  'PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude',
+  'PRAXIS_CLAUDE_CROSS_VERSION_BINARY: /tmp/praxis-claude-pin-21233/node_modules/.bin/claude',
   'CORE_DRIFT_RESULT: ${{ needs.core-design-drift.result }}',
   'test "$CORE_DRIFT_RESULT" = success',
 ]) {

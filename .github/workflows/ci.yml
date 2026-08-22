@@ -103,13 +103,16 @@ jobs:
               -o Acquire::https::Timeout=30 &&
             timeout 180s sudo apt-get install -y ripgrep
           )
-      - name: Install dependencies and compatibility baseline
+      - name: Install dependencies and compatibility baselines
         run: |
           npm ci
           npm install --prefix /tmp/praxis-claude-pin-21208 @anthropic-ai/claude-code@2.1.208
+          npm install --prefix /tmp/praxis-claude-pin-21233 @anthropic-ai/claude-code@2.1.233
           echo "/tmp/praxis-claude-pin-21208/node_modules/.bin" >> "$GITHUB_PATH"
-      - name: Verify pinned Claude baseline
-        run: test "$(/tmp/praxis-claude-pin-21208/node_modules/.bin/claude --version | awk '{print $1}')" = "2.1.208"
+      - name: Verify pinned Claude baselines
+        run: |
+          test "$(/tmp/praxis-claude-pin-21208/node_modules/.bin/claude --version | awk '{print $1}')" = "2.1.208"
+          test "$(/tmp/praxis-claude-pin-21233/node_modules/.bin/claude --version | awk '{print $1}')" = "2.1.233"
       - name: Verify credential-free Claude CLI contract
         env:
           PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
@@ -122,7 +125,16 @@ jobs:
         env:
           PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
         run: npm run test:memory-import-compat
-
+      - name: Verify historical cross-version contracts
+        env:
+          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
+          PRAXIS_CLAUDE_CROSS_VERSION_BINARY: /tmp/praxis-claude-pin-21233/node_modules/.bin/claude
+        run: |
+          npm run test:cross-version-session-compat
+          npm run test:cross-version-resume-at-compat
+          npm run test:cross-version-fork-compat
+          npm run test:cross-version-sidechain-compat
+          npm run test:cross-version-compaction-compat
   core-design-drift:
     name: Claude 2.1.237 core drift
     runs-on: ubuntu-latest
@@ -152,6 +164,10 @@ jobs:
         env:
           PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21237/node_modules/.bin/claude
         run: npm run test:background-agent-compat
+      - name: Verify pinned plugin eval contract
+        env:
+          PRAXIS_CLAUDE_2_1_237: /tmp/praxis-claude-pin-21237/node_modules/.bin/claude
+        run: npm run test:plugin-eval-compat
 
   release-regression:
     name: Release regression (${{ matrix.os }}, Node ${{ matrix.node }})

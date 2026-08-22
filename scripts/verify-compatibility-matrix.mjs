@@ -52,7 +52,7 @@ const requiredEnvironment = new Map([
     'scripts/verify-cross-version-compaction-compatibility.mjs',
     ['PRAXIS_CLAUDE_BINARY', 'PRAXIS_CLAUDE_CROSS_VERSION_BINARY'],
   ],
-  ['scripts/verify-plugin-eval-compatibility.mjs', ['PRAXIS_CLAUDE_BINARY']],
+  ['scripts/verify-plugin-eval-compatibility.mjs', ['PRAXIS_CLAUDE_2_1_237']],
   ['scripts/verify-tui-compatibility.mjs', ['PRAXIS_CLAUDE_2_1_208']],
 ])
 const retryableTransientGates = new Set([
