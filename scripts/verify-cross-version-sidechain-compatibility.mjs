@@ -216,8 +216,7 @@ const server = createServer(async (request, response) => {
       'Praxis child request exposed Agent tool schema',
     )
     assert(
-      typeof body.system === 'string' &&
-        body.system.includes('general-purpose subagent'),
+      JSON.stringify(body.system).includes('general-purpose subagent'),
       'Praxis child request omitted native subagent context',
     )
     assert(

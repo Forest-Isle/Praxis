@@ -615,6 +615,19 @@ function hasAnthropicToolSchema(tools, name, property, required = true) {
   )
 }
 
+function normalizeAnthropicSystem(system) {
+  if (typeof system === 'string') return system
+  if (
+    Array.isArray(system) &&
+    system.every(
+      (block) => block?.type === 'text' && typeof block.text === 'string',
+    )
+  ) {
+    return system.map((block) => block.text).join('')
+  }
+  throw new Error('Installed CLI sent invalid Anthropic system blocks')
+}
+
 function normalizeAnthropicMessages(messages) {
   const normalized = []
   let expectedRole = 'user'
@@ -715,7 +728,7 @@ async function startProviderProbe(provider, memoryDirectory) {
       if (requests.length === 1) {
         const systemContext =
           provider === 'anthropic'
-            ? body.system
+            ? normalizeAnthropicSystem(body.system)
             : messages
                 .filter((message) => message?.role === 'system')
                 .map((message) => message.content)
@@ -1368,7 +1381,7 @@ async function startSubagentProviderProbe(provider) {
       if (requests.length === 2) {
         const system =
           provider === 'anthropic'
-            ? body.system
+            ? normalizeAnthropicSystem(body.system)
             : messages
                 .filter((message) => message?.role === 'system')
                 .map((message) => message.content)

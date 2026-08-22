@@ -886,8 +886,8 @@ process.stdin.on('data', chunk => {
       )
       expect(registry.definitions().map((tool) => tool.name)).toEqual([
         'Read',
-        'mcp__stdio__marker',
         'mcp__http__marker',
+        'mcp__stdio__marker',
       ])
       expect(
         registry.schedulingPolicy({
@@ -1047,6 +1047,13 @@ process.stdin.on('data', chunk => {
       ],
     })
     try {
+      expect(registry.definitions().map(({ name }) => name)).toEqual([
+        'Read',
+        'mcp__fixture__invalid_base64',
+        'mcp__fixture__media',
+        'mcp__fixture__missing_directory',
+        'mcp__fixture__rollback',
+      ])
       const result = await registry.execute(
         { id: 'media', name: 'mcp__fixture__media', input: {} },
         { cwd: root, toolResultDirectory: resultDirectory },

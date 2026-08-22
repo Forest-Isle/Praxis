@@ -55,6 +55,14 @@ export PRAXIS_MODEL="claude-sonnet-4-20250514"
 The default endpoint is `https://api.anthropic.com/v1`. Set
 `PRAXIS_BASE_URL` only when using a compatible gateway.
 
+Prompt caching uses Anthropic's five-minute cache on the official endpoint.
+Compatible gateways default to caching off because support varies. Set
+`PRAXIS_ANTHROPIC_PROMPT_CACHING=true` to opt a gateway in, optionally with
+`PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL=1h` when every selected model and the gateway
+support that TTL. This is an explicit capability declaration; Praxis does not
+probe compatible gateways. Set the caching variable to `false` to disable it
+explicitly.
+
 Do not commit provider credentials to a repository, settings file, transcript,
 or shell script. Prefer your shell's private environment or a local secret
 manager.

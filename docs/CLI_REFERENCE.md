@@ -80,24 +80,36 @@ they are documentation notation, not literal arguments.
 
 ## Provider environment
 
-| Variable                        | Required           | Meaning                                                                     |
-| ------------------------------- | ------------------ | --------------------------------------------------------------------------- |
-| `PRAXIS_API_KEY`                | Yes for model runs | Provider or compatible-gateway credential.                                  |
-| `PRAXIS_MODEL`                  | Yes for model runs | Provider model identifier.                                                  |
-| `PRAXIS_PROVIDER`               | No                 | `openai` (default) or `anthropic`.                                          |
-| `PRAXIS_BASE_URL`               | No                 | Provider base URL; defaults by selected provider.                           |
-| `PRAXIS_MAX_OUTPUT_TOKENS`      | No                 | Positive Anthropic-only output-token limit.                                 |
-| `PRAXIS_ANTHROPIC_VERSION`      | No                 | Non-empty Anthropic API version override.                                   |
-| `PRAXIS_ANTHROPIC_WEB_SEARCH`   | No                 | `true` or `false`; enables provider-native Anthropic WebSearch capability.  |
-| `PRAXIS_CONTEXT_WINDOW_TOKENS`  | No                 | Positive explicit provider context window.                                  |
-| `PRAXIS_CONTEXT_RESERVE_TOKENS` | No                 | Positive reserve; requires an explicit context window.                      |
-| `PRAXIS_PRICING_JSON`           | No                 | JSON model-pricing overrides used for measured cost and budget enforcement. |
-| `PRAXIS_HOME`                   | No                 | Native Praxis root; defaults to `~/.praxis`.                                |
-| `PRAXIS_DATA_PLANE`             | No                 | `native` (default) or explicit `claude` compatibility mode.                 |
-| `CLAUDE_CONFIG_DIR`             | Claude mode only   | Claude compatibility root; defaults to `~/.claude`.                         |
+| Variable                            | Required           | Meaning                                                                     |
+| ----------------------------------- | ------------------ | --------------------------------------------------------------------------- |
+| `PRAXIS_API_KEY`                    | Yes for model runs | Provider or compatible-gateway credential.                                  |
+| `PRAXIS_MODEL`                      | Yes for model runs | Provider model identifier.                                                  |
+| `PRAXIS_PROVIDER`                   | No                 | `openai` (default) or `anthropic`.                                          |
+| `PRAXIS_BASE_URL`                   | No                 | Provider base URL; defaults by selected provider.                           |
+| `PRAXIS_MAX_OUTPUT_TOKENS`          | No                 | Positive Anthropic-only output-token limit.                                 |
+| `PRAXIS_ANTHROPIC_VERSION`          | No                 | Non-empty Anthropic API version override.                                   |
+| `PRAXIS_ANTHROPIC_WEB_SEARCH`       | No                 | `true` or `false`; enables provider-native Anthropic WebSearch capability.  |
+| `PRAXIS_ANTHROPIC_PROMPT_CACHING`   | No                 | `true` or `false`; explicitly enables or disables Anthropic prompt caching. |
+| `PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL` | No                 | `5m` or `1h`; declares endpoint/model support and enables that cache TTL.   |
+| `PRAXIS_CONTEXT_WINDOW_TOKENS`      | No                 | Positive explicit provider context window.                                  |
+| `PRAXIS_CONTEXT_RESERVE_TOKENS`     | No                 | Positive reserve; requires an explicit context window.                      |
+| `PRAXIS_PRICING_JSON`               | No                 | JSON model-pricing overrides used for measured cost and budget enforcement. |
+| `PRAXIS_HOME`                       | No                 | Native Praxis root; defaults to `~/.praxis`.                                |
+| `PRAXIS_DATA_PLANE`                 | No                 | `native` (default) or explicit `claude` compatibility mode.                 |
+| `CLAUDE_CONFIG_DIR`                 | Claude mode only   | Claude compatibility root; defaults to `~/.claude`.                         |
 
 The default base URLs are `https://api.openai.com/v1` for `openai` and
 `https://api.anthropic.com/v1` for `anthropic`.
+
+Prompt caching defaults to five minutes on the official Anthropic endpoint and
+to disabled on compatible gateways. In Claude data-plane mode, Praxis also
+honors `DISABLE_PROMPT_CACHING`, the model-family-specific
+`DISABLE_PROMPT_CACHING_HAIKU`, `DISABLE_PROMPT_CACHING_SONNET`, and
+`DISABLE_PROMPT_CACHING_OPUS` controls, plus `ENABLE_PROMPT_CACHING_1H` and
+`FORCE_PROMPT_CACHING_5M`. Cache policy is captured when a session runtime is
+created; changing these variables affects only newly created runtimes. Setting
+the one-hour TTL is an explicit operator capability declaration for every model
+that runtime may select; Praxis does not probe compatible gateways for it.
 
 Startup file downloads also support `PRAXIS_FILES_BASE_URL`,
 `PRAXIS_FILES_BEARER_TOKEN`, and `PRAXIS_FILES_API_KEY`. A bearer token wins;

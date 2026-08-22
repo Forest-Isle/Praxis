@@ -1,12 +1,386 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { ModelProviderError } from '../core/runtime.js'
+import {
+  ModelProviderError,
+  type ModelToolDefinition,
+} from '../core/runtime.js'
 import { AnthropicCompatibleProvider } from './anthropic-compatible.js'
 
 const withoutTerminal = <T extends { type: string }>(events: readonly T[]) =>
   events.filter((event) => event.type !== 'terminal')
 
+const withoutCacheMetadata = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(withoutCacheMetadata)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'cache_control')
+      .map(([key, item]) => [key, withoutCacheMetadata(item)]),
+  )
+}
+
 describe('AnthropicCompatibleProvider', () => {
+  it('renders official Anthropic cache breakpoints at stable prompt boundaries', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+        )
+      },
+    })
+
+    for await (const event of provider.complete({
+      messages: [
+        { role: 'system', content: 'stable base' },
+        { role: 'system', content: 'stable project' },
+        { role: 'system', content: 'dynamic tail' },
+        { role: 'user', content: 'earlier prompt' },
+        { role: 'assistant', content: 'earlier answer' },
+        { role: 'user', content: 'latest prompt' },
+      ],
+      stableSystemMessageCount: 2,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read a file',
+          inputSchema: { type: 'object' },
+        },
+        {
+          name: 'Edit',
+          description: 'Edit a file',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    })) {
+      void event
+    }
+
+    expect(body?.system).toEqual([
+      { type: 'text', text: 'stable base' },
+      {
+        type: 'text',
+        text: '\n\nstable project',
+        cache_control: { type: 'ephemeral' },
+      },
+      { type: 'text', text: '\n\ndynamic tail' },
+    ])
+    expect(body?.tools).toEqual([
+      {
+        name: 'Read',
+        description: 'Read a file',
+        input_schema: { type: 'object' },
+      },
+      {
+        name: 'Edit',
+        description: 'Edit a file',
+        input_schema: { type: 'object' },
+        cache_control: { type: 'ephemeral' },
+      },
+    ])
+    expect(body?.messages).toEqual([
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'earlier prompt' }],
+      },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'earlier answer' }],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'latest prompt',
+            cache_control: { type: 'ephemeral' },
+          },
+        ],
+      },
+    ])
+  })
+
+  it('bounds the latest conversation breakpoint search to twenty blocks', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+        )
+      },
+    })
+
+    for await (const event of provider.complete({
+      messages: [
+        { role: 'user', content: 'outside the lookback window' },
+        {
+          role: 'assistant',
+          content: '',
+          thinkingBlocks: Array.from({ length: 20 }, (_, index) => ({
+            type: 'thinking' as const,
+            thinking: `thought ${index}`,
+            signature: `signature ${index}`,
+          })),
+        },
+      ],
+    })) {
+      void event
+    }
+
+    expect(JSON.stringify(body)).not.toContain('cache_control')
+  })
+
+  it('gates cache metadata by endpoint capability and preserves request semantics', async () => {
+    const capture = async (
+      baseUrl: string,
+      promptCaching?: false | { ttl: '5m' | '1h' },
+    ) => {
+      let body: Record<string, unknown> | undefined
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl,
+        apiKey: 'secret',
+        model: 'claude-sonnet-4-20250514',
+        ...(promptCaching === undefined ? {} : { promptCaching }),
+        fetchImplementation: async (_input, init) => {
+          body = JSON.parse(String(init?.body))
+          return new Response(
+            'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+          )
+        },
+      })
+      for await (const event of provider.complete({
+        messages: [
+          { role: 'system', content: 'stable' },
+          { role: 'user', content: 'prompt' },
+        ],
+        stableSystemMessageCount: 1,
+        tools: [
+          {
+            name: 'Read',
+            description: 'Read a file',
+            inputSchema: { type: 'object' },
+          },
+        ],
+      })) {
+        void event
+      }
+      return body
+    }
+    const generic = await capture('https://relay.example/v1')
+    const officialDisabled = await capture(
+      'https://api.anthropic.com/v1',
+      false,
+    )
+    const genericOneHour = await capture('https://relay.example/v1', {
+      ttl: '1h',
+    })
+
+    expect(JSON.stringify(generic)).not.toContain('cache_control')
+    expect(JSON.stringify(officialDisabled)).not.toContain('cache_control')
+    expect(withoutCacheMetadata(genericOneHour)).toEqual(officialDisabled)
+    expect(
+      JSON.stringify(genericOneHour).match(/cache_control/gu),
+    ).toHaveLength(3)
+    expect(JSON.stringify(genericOneHour).match(/"ttl":"1h"/gu)).toHaveLength(3)
+  })
+
+  it('keeps stable prompt prefixes byte-identical as the conversation grows', async () => {
+    const bodies: Record<string, unknown>[] = []
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      fetchImplementation: async (_input, init) => {
+        bodies.push(JSON.parse(String(init?.body)))
+        return new Response(
+          'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+        )
+      },
+    })
+    const tools: ModelToolDefinition[] = [
+      {
+        name: 'Read',
+        description: 'Read a file',
+        inputSchema: { type: 'object' },
+      },
+    ]
+    const readTool = tools[0]
+    if (!readTool) throw new Error('missing Read tool fixture')
+    const send = async (
+      messages: Parameters<typeof provider.complete>[0]['messages'],
+      requestTools = tools,
+    ) => {
+      for await (const event of provider.complete({
+        messages,
+        stableSystemMessageCount: 1,
+        tools: requestTools,
+      })) {
+        void event
+      }
+    }
+    await send([
+      { role: 'system', content: 'stable' },
+      { role: 'system', content: 'dynamic' },
+      { role: 'user', content: 'first prompt' },
+    ])
+    await send([
+      { role: 'system', content: 'stable' },
+      { role: 'system', content: 'dynamic' },
+      { role: 'user', content: 'first prompt' },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'second prompt' },
+    ])
+    await send([
+      { role: 'system', content: 'stable' },
+      { role: 'system', content: 'changed dynamic tail' },
+      { role: 'user', content: 'third prompt' },
+    ])
+    await send(
+      [
+        { role: 'system', content: 'stable' },
+        { role: 'system', content: 'changed dynamic tail' },
+        { role: 'user', content: 'third prompt' },
+      ],
+      [
+        {
+          ...readTool,
+          inputSchema: {
+            type: 'object',
+            properties: { file_path: { type: 'string' } },
+          },
+        },
+      ],
+    )
+
+    const [first, second, changedTail, changedTool] = bodies
+    expect(second?.tools).toEqual(first?.tools)
+    expect(second?.system).toEqual(first?.system)
+    expect(
+      withoutCacheMetadata((second?.messages as unknown[]).slice(0, 1)),
+    ).toEqual(withoutCacheMetadata(first?.messages))
+    expect(JSON.stringify(first).match(/cache_control/gu)).toHaveLength(3)
+    expect(JSON.stringify(second).match(/cache_control/gu)).toHaveLength(3)
+    expect((changedTail?.system as unknown[])[0]).toEqual(
+      (first?.system as unknown[])[0],
+    )
+    expect(changedTail?.system).not.toEqual(first?.system)
+    expect(changedTool?.tools).not.toEqual(changedTail?.tools)
+    expect(
+      JSON.stringify({
+        tools: changedTool?.tools,
+        system: changedTool?.system,
+        messages: changedTool?.messages,
+      }),
+    ).not.toBe(
+      JSON.stringify({
+        tools: changedTail?.tools,
+        system: changedTail?.system,
+        messages: changedTail?.messages,
+      }),
+    )
+  })
+
+  it('surfaces configured cache-control rejection without mutating or retrying', async () => {
+    const fetchImplementation = vi.fn(async () =>
+      Response.json(
+        {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'cache_control is not supported by this gateway',
+          },
+        },
+        { status: 400 },
+      ),
+    )
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://relay.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      promptCaching: { ttl: '5m' },
+      fetchImplementation,
+    })
+
+    const completion = provider.complete({
+      messages: [{ role: 'user', content: 'prompt' }],
+    })
+    const iterator = completion[Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toMatchObject({
+      message: 'cache_control is not supported by this gateway',
+      kind: 'invalid_request',
+      retryable: false,
+      status: 400,
+    })
+    expect(fetchImplementation).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    {
+      name: 'creation only',
+      cacheCreation: 2,
+      cacheRead: 0,
+      expected: {
+        inputTokens: 9,
+        outputTokens: 0,
+        cacheCreationInputTokens: 2,
+      },
+    },
+    {
+      name: 'read only',
+      cacheCreation: 0,
+      cacheRead: 3,
+      expected: {
+        inputTokens: 10,
+        outputTokens: 0,
+        cacheReadInputTokens: 3,
+      },
+    },
+    {
+      name: 'zero cache counters',
+      cacheCreation: 0,
+      cacheRead: 0,
+      expected: { inputTokens: 7, outputTokens: 0 },
+    },
+  ])(
+    'normalizes $name without double-counting regular input',
+    async (fixture) => {
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://relay.example/v1',
+        apiKey: 'secret',
+        model: 'fixture-model',
+        fetchImplementation: async () =>
+          new Response(
+            `data: ${JSON.stringify({
+              type: 'message_start',
+              message: {
+                usage: {
+                  input_tokens: 7,
+                  cache_creation_input_tokens: fixture.cacheCreation,
+                  cache_read_input_tokens: fixture.cacheRead,
+                },
+              },
+            })}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\ndata: {"type":"message_stop"}\n\n`,
+          ),
+      })
+      const events = []
+      for await (const event of provider.complete({ messages: [] })) {
+        events.push(event)
+      }
+
+      expect(withoutTerminal(events)).toEqual([
+        { type: 'usage', usage: fixture.expected },
+      ])
+    },
+  )
+
   it('consumes and validates the provider-neutral stable system prefix hint', async () => {
     const provider = new AnthropicCompatibleProvider({
       baseUrl: 'https://api.anthropic.example/v1',
@@ -821,7 +1195,10 @@ describe('AnthropicCompatibleProvider', () => {
     expect(JSON.parse(String(capturedInit?.body))).toEqual({
       model: 'fixture-model',
       max_tokens: 4096,
-      system: 'system one\n\nsystem two',
+      system: [
+        { type: 'text', text: 'system one' },
+        { type: 'text', text: '\n\nsystem two' },
+      ],
       stream: true,
       output_config: { effort: 'low' },
       messages: [
@@ -955,7 +1332,7 @@ describe('AnthropicCompatibleProvider', () => {
         },
       ],
       stream: true,
-      system: 'search system',
+      system: [{ type: 'text', text: 'search system' }],
       tools: [
         {
           type: 'web_search_20250305',

@@ -11,6 +11,10 @@ import {
   type ProviderErrorKind,
 } from '../core/runtime.js'
 import { transportFailureKind } from './provider-errors.js'
+import {
+  createAnthropicPromptCachePolicyResolver,
+  type AnthropicPromptCachePolicy,
+} from './anthropic-prompt-cache.js'
 
 export interface AnthropicCompatibleProviderOptions {
   baseUrl: string
@@ -19,6 +23,7 @@ export interface AnthropicCompatibleProviderOptions {
   maxOutputTokens?: number
   anthropicVersion?: string
   webSearch?: boolean
+  promptCaching?: AnthropicPromptCachePolicy
   contextWindowTokens?: number
   thinking?: ModelThinkingConfig
   maxStreamBufferBytes?: number
@@ -669,6 +674,49 @@ type AnthropicMessage = {
   content: Record<string, unknown>[]
 }
 
+type AnthropicCacheControl = {
+  type: 'ephemeral'
+  ttl?: '1h'
+}
+
+const ANTHROPIC_CACHE_LOOKBACK_BLOCKS = 20
+
+function cacheControl(ttl: '5m' | '1h'): AnthropicCacheControl {
+  return {
+    type: 'ephemeral',
+    ...(ttl === '1h' ? { ttl } : {}),
+  }
+}
+
+function markLatestCacheableMessageBlock(
+  messages: AnthropicMessage[],
+  control: AnthropicCacheControl,
+): void {
+  let inspectedBlocks = 0
+  for (
+    let messageIndex = messages.length - 1;
+    messageIndex >= 0;
+    messageIndex--
+  ) {
+    const content = messages[messageIndex]?.content
+    if (!content) continue
+    for (let blockIndex = content.length - 1; blockIndex >= 0; blockIndex--) {
+      if (inspectedBlocks >= ANTHROPIC_CACHE_LOOKBACK_BLOCKS) return
+      inspectedBlocks += 1
+      const block = content[blockIndex]
+      if (
+        !block ||
+        block.type === 'thinking' ||
+        block.type === 'redacted_thinking'
+      ) {
+        continue
+      }
+      content[blockIndex] = { ...block, cache_control: control }
+      return
+    }
+  }
+}
+
 function serializeMediaContent(
   message: Extract<ModelMessage, { role: 'user' | 'tool' }>,
 ): Record<string, unknown>[] {
@@ -705,12 +753,17 @@ function serializeMediaContent(
   )
 }
 
-function serializeMessages(messages: readonly ModelMessage[]): {
-  system: string
+function serializeMessages(
+  messages: readonly ModelMessage[],
+  stableSystemMessageCount: number | undefined,
+  promptCaching: AnthropicCacheControl | undefined,
+): {
+  system: Record<string, unknown>[]
   messages: AnthropicMessage[]
 } {
-  const system: string[] = []
+  const system: Record<string, unknown>[] = []
   const serialized: AnthropicMessage[] = []
+  let systemIndex = 0
   const append = (
     role: AnthropicMessage['role'],
     content: Record<string, unknown>[],
@@ -723,7 +776,15 @@ function serializeMessages(messages: readonly ModelMessage[]): {
 
   for (const message of messages) {
     if (message.role === 'system') {
-      system.push(message.content)
+      const block = {
+        type: 'text',
+        text: `${systemIndex === 0 ? '' : '\n\n'}${message.content}`,
+        ...(promptCaching && systemIndex + 1 === stableSystemMessageCount
+          ? { cache_control: promptCaching }
+          : {}),
+      }
+      system.push(block)
+      systemIndex += 1
       continue
     }
     if (message.role === 'user') {
@@ -786,7 +847,10 @@ function serializeMessages(messages: readonly ModelMessage[]): {
     append('assistant', content)
   }
 
-  return { system: system.join('\n\n'), messages: serialized }
+  if (promptCaching) {
+    markLatestCacheableMessageBlock(serialized, promptCaching)
+  }
+  return { system, messages: serialized }
 }
 
 function validateStableSystemPrefix(request: ModelRequest): void {
@@ -824,6 +888,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
   private readonly maxToolMetadataBytes: number
   private readonly maxErrorBodyBytes: number
   private readonly thinking: ModelThinkingConfig | undefined
+  private readonly promptCaching: AnthropicCacheControl | undefined
 
   constructor(private readonly options: AnthropicCompatibleProviderOptions) {
     if (options.contextWindowTokens !== undefined) {
@@ -859,6 +924,20 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       terminalReasons: true,
     }
     this.thinking = validateThinking(options.thinking)
+    const promptCaching =
+      options.promptCaching === false
+        ? undefined
+        : (options.promptCaching ??
+          createAnthropicPromptCachePolicyResolver(
+            {},
+            'native',
+          )({
+            baseUrl: options.baseUrl,
+            model: options.model,
+          }))
+    this.promptCaching = promptCaching
+      ? cacheControl(promptCaching.ttl)
+      : undefined
     this.anthropicVersion = options.anthropicVersion ?? '2023-06-01'
     this.maxStreamBufferBytes = options.maxStreamBufferBytes ?? 1024 * 1024
     this.maxToolArgumentsBytes = options.maxToolArgumentsBytes ?? 1024 * 1024
@@ -895,7 +974,12 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         ? ['interleaved-thinking-2025-05-14']
         : []),
     ].filter((beta, index, all) => all.indexOf(beta) === index)
-    const serialized = serializeMessages(request.messages)
+    const serialized = serializeMessages(
+      request.messages,
+      request.stableSystemMessageCount,
+      this.promptCaching,
+    )
+    const requestTools = request.tools
     const requestInit: RequestInit = {
       method: 'POST',
       headers: {
@@ -913,7 +997,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         ...(request.effort
           ? { output_config: { effort: request.effort } }
           : {}),
-        ...(serialized.system ? { system: serialized.system } : {}),
+        ...(serialized.system.length ? { system: serialized.system } : {}),
         ...(request.webSearch
           ? {
               tools: [
@@ -934,12 +1018,15 @@ export class AnthropicCompatibleProvider implements ModelProvider {
               ],
               tool_choice: { type: 'tool', name: 'web_search' },
             }
-          : request.tools?.length
+          : requestTools?.length
             ? {
-                tools: request.tools.map((tool) => ({
+                tools: requestTools.map((tool, index) => ({
                   name: tool.name,
                   description: tool.description,
                   input_schema: tool.inputSchema,
+                  ...(this.promptCaching && index === requestTools.length - 1
+                    ? { cache_control: this.promptCaching }
+                    : {}),
                 })),
               }
             : {}),
