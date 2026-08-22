@@ -142,6 +142,7 @@ import {
   sensitiveEnvironmentValues,
 } from './platform/sensitive-data.js'
 import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
+import { createAnthropicPromptCachePolicyResolver } from './providers/anthropic-prompt-cache.js'
 import { FallbackModelProvider } from './providers/fallback-provider.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import {
@@ -284,40 +285,58 @@ function fileResourceHeaders(
   }
 }
 
-function createProviderForModel(
-  apiKey: string,
-  providerEnvironment: ReturnType<typeof parseProviderEnvironment>,
-  context: ReturnType<typeof parseContextEnvironment>,
-  controls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>,
-  explicitThinkingControls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>,
-): (selectedModel: string) => ModelProvider {
+interface ProviderFactoryOptions {
+  apiKey: string
+  environment: NodeJS.ProcessEnv
+  dataPlane: DataPlane
+  provider: ReturnType<typeof parseProviderEnvironment>
+  context: ReturnType<typeof parseContextEnvironment>
+  controls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>
+  explicitThinkingControls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>
+}
+
+function createProviderForModel({
+  apiKey,
+  environment,
+  dataPlane,
+  provider,
+  context,
+  controls,
+  explicitThinkingControls,
+}: ProviderFactoryOptions): (selectedModel: string) => ModelProvider {
+  const resolvePromptCachePolicy = createAnthropicPromptCachePolicyResolver(
+    environment,
+    dataPlane,
+  )
   return (selectedModel) => {
     const providerOptions = {
       apiKey,
       model: selectedModel,
-      baseUrl: providerEnvironment.baseUrl,
+      baseUrl: provider.baseUrl,
       ...('contextWindowTokens' in context
         ? { contextWindowTokens: context.contextWindowTokens }
         : {}),
     }
-    return providerEnvironment.provider === 'anthropic'
+    return provider.provider === 'anthropic'
       ? new AnthropicCompatibleProvider({
           ...providerOptions,
+          promptCaching: resolvePromptCachePolicy({
+            baseUrl: provider.baseUrl,
+            model: selectedModel,
+          }),
           thinking: {
             mode: controls.thinking ?? 'enabled',
             ...(controls.maxThinkingTokens === undefined
               ? {}
               : { maxTokens: controls.maxThinkingTokens }),
           },
-          ...('maxOutputTokens' in providerEnvironment
-            ? { maxOutputTokens: providerEnvironment.maxOutputTokens }
+          ...('maxOutputTokens' in provider
+            ? { maxOutputTokens: provider.maxOutputTokens }
             : {}),
-          ...('anthropicVersion' in providerEnvironment
-            ? { anthropicVersion: providerEnvironment.anthropicVersion }
+          ...('anthropicVersion' in provider
+            ? { anthropicVersion: provider.anthropicVersion }
             : {}),
-          ...('webSearch' in providerEnvironment
-            ? { webSearch: providerEnvironment.webSearch }
-            : {}),
+          ...('webSearch' in provider ? { webSearch: provider.webSearch } : {}),
         })
       : new OpenAICompatibleProvider({
           ...providerOptions,
@@ -447,6 +466,8 @@ Provider environment:
   PRAXIS_PROVIDER=openai|anthropic, PRAXIS_API_KEY, PRAXIS_MODEL
   PRAXIS_BASE_URL, PRAXIS_MAX_OUTPUT_TOKENS, PRAXIS_ANTHROPIC_VERSION
   PRAXIS_ANTHROPIC_WEB_SEARCH=true|false
+  PRAXIS_ANTHROPIC_PROMPT_CACHING=true|false
+  PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL=5m|1h
   PRAXIS_CONTEXT_WINDOW_TOKENS, PRAXIS_CONTEXT_RESERVE_TOKENS
 `
 
@@ -1370,13 +1391,15 @@ const createDefaultService: CliDependencies['createService'] = async ({
     if (!providerEnvironment) {
       throw new Error('Provider environment is unavailable')
     }
-    providerForModel = createProviderForModel(
+    providerForModel = createProviderForModel({
       apiKey,
-      providerEnvironment,
+      environment: runtimeEnvironment,
+      dataPlane,
+      provider: providerEnvironment,
       context,
-      cli,
-      controls,
-    )
+      controls: cli,
+      explicitThinkingControls: controls,
+    })
     const createProvider = providerForModel
     providerForMainModel = (primaryModel: string) => {
       const models = [primaryModel, ...(cli.fallbackModels ?? [])].filter(
@@ -2411,13 +2434,16 @@ const createDefaultAutoModeCritic: NonNullable<
       'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
     )
   }
-  return createProviderForModel(
+  const providerEnvironment = parseProviderEnvironment(process.env)
+  return createProviderForModel({
     apiKey,
-    parseProviderEnvironment(process.env),
-    parseContextEnvironment(process.env),
-    {},
-    {},
-  )(selectedModel)
+    environment: process.env,
+    dataPlane: resolvedDataPlane,
+    provider: providerEnvironment,
+    context: parseContextEnvironment(process.env),
+    controls: {},
+    explicitThinkingControls: {},
+  })(selectedModel)
 }
 
 const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] =
@@ -2529,13 +2555,16 @@ const defaultPluginEvalJudge: NonNullable<PluginEvalDependencies['judge']> = {
     const apiKey = environment.PRAXIS_API_KEY
     if (!apiKey)
       throw new Error('PRAXIS_API_KEY is required for paid eval graders')
-    const provider = createProviderForModel(
+    const providerEnvironment = parseProviderEnvironment(environment)
+    const provider = createProviderForModel({
       apiKey,
-      parseProviderEnvironment(environment),
-      parseContextEnvironment(environment),
-      {},
-      {},
-    )(model)
+      environment,
+      dataPlane: resolveDataPlane(environment),
+      provider: providerEnvironment,
+      context: parseContextEnvironment(environment),
+      controls: {},
+      explicitThinkingControls: {},
+    })(model)
     const prompt = `You are an eval judge. Return only JSON matching {"passed":boolean,"explanation":string}.
 
 Criteria:

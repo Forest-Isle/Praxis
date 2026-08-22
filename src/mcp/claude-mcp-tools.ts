@@ -1094,10 +1094,11 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
   definitions(): readonly ModelToolDefinition[] {
     return [
       ...this.options.base.definitions(),
+      ...(this.resourceServers.size > 0 ? MCP_RESOURCE_TOOL_DEFINITIONS : []),
       ...[...this.connectedTools.entries()]
         .filter(([name]) => !this.reservedTools.has(name))
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([, tool]) => tool.definition),
-      ...(this.resourceServers.size > 0 ? MCP_RESOURCE_TOOL_DEFINITIONS : []),
     ]
   }
 

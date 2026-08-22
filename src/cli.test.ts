@@ -1670,6 +1670,35 @@ describe('Praxis CLI', () => {
     expect(() =>
       parseProviderEnvironment({ PRAXIS_ANTHROPIC_WEB_SEARCH: 'true' }),
     ).toThrow('requires PRAXIS_PROVIDER=anthropic')
+    expect(() =>
+      parseProviderEnvironment({
+        PRAXIS_ANTHROPIC_PROMPT_CACHING: 'true',
+      }),
+    ).toThrow('requires PRAXIS_PROVIDER=anthropic')
+    expect(() =>
+      parseProviderEnvironment({
+        PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
+      }),
+    ).toThrow('requires PRAXIS_PROVIDER=anthropic')
+    expect(() =>
+      parseProviderEnvironment({
+        PRAXIS_PROVIDER: 'anthropic',
+        PRAXIS_ANTHROPIC_PROMPT_CACHING: 'sometimes',
+      }),
+    ).toThrow('must be true or false')
+    expect(() =>
+      parseProviderEnvironment({
+        PRAXIS_PROVIDER: 'anthropic',
+        PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: 'forever',
+      }),
+    ).toThrow('must be 5m or 1h')
+    expect(() =>
+      parseProviderEnvironment({
+        PRAXIS_PROVIDER: 'anthropic',
+        PRAXIS_ANTHROPIC_PROMPT_CACHING: 'false',
+        PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
+      }),
+    ).toThrow('cannot be set when prompt caching is false')
   })
 
   it('validates explicit context budget environment', () => {
@@ -1710,6 +1739,12 @@ describe('Praxis CLI', () => {
     expect(capture.stdout.join('')).toContain('--environment <environment_id>')
     expect(capture.stdout.join('')).toContain('--forward-subagent-text')
     expect(capture.stdout.join('')).toContain('--teleport [session]')
+    expect(capture.stdout.join('')).toContain(
+      'PRAXIS_ANTHROPIC_PROMPT_CACHING=true|false',
+    )
+    expect(capture.stdout.join('')).toContain(
+      'PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL=5m|1h',
+    )
     expect(capture.stdout).toContain(`${PACKAGE_VERSION}\n`)
     expect(capture.stderr).toEqual([])
   })

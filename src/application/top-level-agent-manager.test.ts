@@ -863,6 +863,10 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
         PATH: process.env.PATH ?? '',
         PRAXIS_API_KEY: 'worker-provider-secret',
         PRAXIS_MODEL: 'worker-model',
+        PRAXIS_ANTHROPIC_PROMPT_CACHING: 'true',
+        PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
+        DISABLE_PROMPT_CACHING_SONNET: '1',
+        FORCE_PROMPT_CACHING_5M: '1',
         AWS_SECRET_ACCESS_KEY: 'ambient-secret',
         BASH_ENV: '/tmp/untrusted-startup',
         PRAXIS_TEST_SECRET: 'unrelated-secret',
@@ -888,6 +892,10 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
     >
     expect(environment.PRAXIS_API_KEY).toBe('worker-provider-secret')
     expect(environment.PRAXIS_MODEL).toBe('worker-model')
+    expect(environment.PRAXIS_ANTHROPIC_PROMPT_CACHING).toBe('true')
+    expect(environment.PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL).toBe('1h')
+    expect(environment.DISABLE_PROMPT_CACHING_SONNET).toBe('1')
+    expect(environment.FORCE_PROMPT_CACHING_5M).toBe('1')
     expect(environment.PATH).toBe(process.env.PATH ?? '')
     expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined()
     expect(environment.BASH_ENV).toBeUndefined()

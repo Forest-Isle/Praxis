@@ -1,3 +1,5 @@
+import { createAnthropicPromptCachePolicyResolver } from './anthropic-prompt-cache.js'
+
 export interface ProviderEnvironment {
   provider: 'openai' | 'anthropic'
   baseUrl: string
@@ -53,6 +55,17 @@ export function parseProviderEnvironment(
     throw new Error(
       'PRAXIS_ANTHROPIC_WEB_SEARCH requires PRAXIS_PROVIDER=anthropic',
     )
+  }
+  for (const name of [
+    'PRAXIS_ANTHROPIC_PROMPT_CACHING',
+    'PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL',
+  ] as const) {
+    if (provider === 'openai' && environment[name] !== undefined) {
+      throw new Error(`${name} requires PRAXIS_PROVIDER=anthropic`)
+    }
+  }
+  if (provider === 'anthropic') {
+    createAnthropicPromptCachePolicyResolver(environment, 'native')
   }
   return {
     provider,

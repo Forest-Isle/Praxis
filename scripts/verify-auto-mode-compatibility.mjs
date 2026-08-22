@@ -48,19 +48,17 @@ function textEvents(text) {
 }
 
 function isAutoModeCritiqueRequest(body) {
-  return (
-    body.system?.includes('Praxis auto-mode critique') ||
-    JSON.stringify(body.messages).includes('Praxis auto-mode critique')
-  )
+  return JSON.stringify({
+    system: body.system,
+    messages: body.messages,
+  }).includes('Praxis auto-mode critique')
 }
 
 function isAutoModeClassifierRequest(body) {
-  return (
-    body.system?.includes('Praxis permission auto-mode classifier') ||
-    body.messages?.[0]?.content?.includes(
-      'Praxis permission auto-mode classifier',
-    )
-  )
+  return JSON.stringify({
+    system: body.system,
+    messages: body.messages,
+  }).includes('Praxis permission auto-mode classifier')
 }
 
 function toolEvents() {
