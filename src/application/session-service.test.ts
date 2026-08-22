@@ -1033,6 +1033,360 @@ describe('ClaudeSessionService', () => {
     expect(transcript).toContain('durable manual summary')
   })
 
+  it('anchors manual compact on the session memory watermark and preserves a recent suffix', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-memory-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const summarizedRequests: string[] = []
+    let calls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          const call = calls++
+          if (call === 0) {
+            yield { type: 'text-delta', delta: 'first answer' }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 12_000, outputTokens: 50 },
+            }
+            return
+          }
+          if (call === 1) {
+            yield { type: 'text-delta', delta: 'DURABLE_MEMORY_ARTIFACT' }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 10, outputTokens: 5 },
+            }
+            return
+          }
+          if (call === 2) {
+            yield { type: 'text-delta', delta: 'second answer' }
+          } else if (call === 3) {
+            yield { type: 'text-delta', delta: 'third answer' }
+          } else if (call === 4) {
+            yield {
+              type: 'text-delta',
+              delta: `fourth answer ${'x'.repeat(20_000)}`,
+            }
+          } else if (call === 5) {
+            yield {
+              type: 'text-delta',
+              delta: `fifth answer ${'x'.repeat(20_000)}`,
+            }
+          } else {
+            yield {
+              type: 'text-delta',
+              delta: `sixth answer ${'x'.repeat(20_000)}`,
+            }
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 200, outputTokens: 20 },
+          }
+        },
+      },
+      compactor: {
+        async compact(request) {
+          summarizedRequests.push(JSON.stringify(request.messages))
+          return {
+            summary: 'MEMORY_COMPACT_SUMMARY',
+            usage: { inputTokens: 5, outputTokens: 3 },
+            durationMs: 7,
+            model: 'memory-compact-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('first task')
+    await waitForSessionMemoryIdle(service, run.sessionId)
+    await service.resume(run.sessionId, 'second task')
+    await service.resume(run.sessionId, 'third task')
+    await service.resume(run.sessionId, 'fourth task')
+    await service.resume(run.sessionId, 'fifth task')
+    await service.resume(run.sessionId, 'sixth task')
+
+    await service.compact(run.sessionId)
+
+    // The compactor input leads with the durable memory artifact and folds the
+    // post-watermark branch up to the preserved suffix; it never reaches back
+    // before the watermark or into the retained suffix.
+    const input = summarizedRequests[0]
+    expect(input).toContain('DURABLE_MEMORY_ARTIFACT')
+    expect(input).toContain('second task')
+    expect(input).toContain('third task')
+    expect(input).toContain('fourth task')
+    expect(input).not.toContain('first task')
+    expect(input).not.toContain('fifth task')
+
+    // The recent suffix stays visible verbatim after the compact boundary.
+    const display = await service.transcript(run.sessionId)
+    expect(display).toEqual(
+      expect.arrayContaining([
+        { kind: 'compact', summary: 'MEMORY_COMPACT_SUMMARY' },
+        { kind: 'user', text: 'fifth task' },
+        { kind: 'user', text: 'sixth task' },
+      ]),
+    )
+    expect(JSON.stringify(display)).not.toContain('first task')
+    expect(JSON.stringify(display)).not.toContain('second task')
+
+    // The boundary records the preserved suffix so the active transcript can
+    // expand it back on the next selection.
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    const boundary = transcript
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .find(
+        (entry) =>
+          entry.type === 'system' && entry.subtype === 'compact_boundary',
+      )
+    const preservedUuids = boundary?.compactMetadata?.preservedMessages?.uuids
+    expect(preservedUuids).toBeDefined()
+    expect((preservedUuids as unknown[]).length).toBeGreaterThanOrEqual(5)
+  })
+
+  it('falls back to full manual compaction when the memory watermark is stale', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-memory-stale-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '66666666-6666-4666-8666-666666666666'
+    // Pre-seed a stale watermark before the controller loads state so the
+    // sidecar is authoritative when the session memory controller first reads.
+    const memoryDir = join(configRoot, 'praxis', 'session-memory', sessionId)
+    await mkdir(memoryDir, { recursive: true })
+    await writeFile(
+      join(memoryDir, 'state.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          initialized: true,
+          lastObservedTokens: 0,
+          lastObservedToolCalls: 0,
+          lastSummarizedMessageId: 'stale-message-uuid',
+          extractionStartedAt: null,
+          extractionCompletedAt: 1_234_567,
+          extractionError: null,
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    await writeFile(join(memoryDir, 'summary.md'), 'STALE_MEMORY_ARTIFACT')
+    const summarizedRequests: string[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'plain answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 5 },
+          }
+        },
+      },
+      compactor: {
+        async compact(request) {
+          summarizedRequests.push(JSON.stringify(request.messages))
+          return {
+            summary: 'FULL_COMPACT_SUMMARY',
+            usage: { inputTokens: 6, outputTokens: 4 },
+            durationMs: 8,
+            model: 'memory-compact-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('first task', undefined, sessionId)
+    await service.resume(run.sessionId, 'second task')
+    await service.resume(run.sessionId, 'third task')
+
+    await service.compact(run.sessionId)
+
+    // No watermark matches any active entry, so compaction keeps the existing
+    // full-transcript behavior: every message folds in and nothing leads with
+    // the stale memory artifact.
+    expect(summarizedRequests[0]).toContain('first task')
+    expect(summarizedRequests[0]).toContain('second task')
+    expect(summarizedRequests[0]).not.toContain('STALE_MEMORY_ARTIFACT')
+    expect(await service.transcript(run.sessionId)).toEqual([
+      { kind: 'compact', summary: 'FULL_COMPACT_SUMMARY' },
+    ])
+  })
+
+  it('keeps a preserved tool_use/tool_result pair adjacent at the memory-compact boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-memory-tool-pair-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const summarizedRequests: string[] = []
+    let calls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: true,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          const call = calls++
+          if (call === 0) {
+            yield { type: 'text-delta', delta: 'first answer' }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 12_000, outputTokens: 50 },
+            }
+            return
+          }
+          if (call === 1) {
+            yield { type: 'text-delta', delta: 'DURABLE_MEMORY_ARTIFACT' }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 10, outputTokens: 5 },
+            }
+            return
+          }
+          if (call === 2) {
+            yield {
+              type: 'tool-call',
+              call: { id: 'call_test_tool', name: 'test_tool', input: {} },
+            }
+            return
+          }
+          if (call === 3) {
+            yield { type: 'text-delta', delta: 'tool call answer' }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 100, outputTokens: 20 },
+            }
+            return
+          }
+          if (call === 4) {
+            yield {
+              type: 'text-delta',
+              delta: `third answer ${'x'.repeat(7_532)}`,
+            }
+          } else if (call === 5) {
+            yield {
+              type: 'text-delta',
+              delta: `fourth answer ${'x'.repeat(10_000)}`,
+            }
+          } else if (call === 6) {
+            yield {
+              type: 'text-delta',
+              delta: `fifth answer ${'x'.repeat(10_000)}`,
+            }
+          } else {
+            yield {
+              type: 'text-delta',
+              delta: `sixth answer ${'x'.repeat(12_000)}`,
+            }
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 100, outputTokens: 20 },
+          }
+        },
+      },
+      tools: {
+        definitions: () => [
+          {
+            name: 'test_tool',
+            description: 'Test tool',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return { content: 'tool result text', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' as const }) },
+      compactor: {
+        async compact(request) {
+          summarizedRequests.push(JSON.stringify(request.messages))
+          return {
+            summary: 'MEMORY_COMPACT_SUMMARY',
+            usage: { inputTokens: 5, outputTokens: 3 },
+            durationMs: 7,
+            model: 'memory-compact-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('first task')
+    await waitForSessionMemoryIdle(service, run.sessionId)
+    await service.resume(run.sessionId, 'second task')
+    await service.resume(run.sessionId, 'third task')
+    await service.resume(run.sessionId, 'fourth task')
+    await service.resume(run.sessionId, 'fifth task')
+    await service.resume(run.sessionId, 'sixth task')
+
+    await service.compact(run.sessionId)
+
+    // The suffix boundary walked back onto the tool_result user entry, so the
+    // boundary extends to the matching tool_use assistant instead of leaving an
+    // orphaned pair: neither half reaches the compactor input.
+    const input = summarizedRequests[0]
+    expect(input).toContain('DURABLE_MEMORY_ARTIFACT')
+    expect(input).toContain('second task')
+    expect(input).not.toContain('first task')
+    expect(input).not.toContain('call_test_tool')
+    expect(input).not.toContain('tool result text')
+
+    // The preserved suffix replays the tool_use and its tool_result as adjacent
+    // display items immediately after the compact boundary.
+    const display = await service.transcript(run.sessionId)
+    const toolIndex = display.findIndex(
+      (item) =>
+        item.kind === 'tool' &&
+        item.call.id === 'call_test_tool' &&
+        item.call.name === 'test_tool',
+    )
+    expect(toolIndex).toBeGreaterThanOrEqual(0)
+    expect(display[toolIndex + 1]).toEqual({
+      kind: 'tool-result',
+      callId: 'call_test_tool',
+      text: 'tool result text',
+      isError: false,
+    })
+  })
+
   it('attributes manual compact usage, web search, cost, and API duration to the session cost tracker', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-cost-'))
     roots.push(root)

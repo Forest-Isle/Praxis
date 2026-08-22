@@ -68,7 +68,10 @@ import {
   type ClaudeTranscriptEntry,
   selectClaudeSchemaAdapter,
 } from '../compatibility/claude/schema.js'
-import { findUnresolvedClaudeToolCalls } from '../compatibility/claude/tool-links.js'
+import {
+  findUnresolvedClaudeToolCalls,
+  getClaudeContentBlocks,
+} from '../compatibility/claude/tool-links.js'
 import {
   createClaudeAgentSettingEntry,
   createClaudeHookAttachmentEntries,
@@ -720,6 +723,146 @@ Update the durable session memory from the conversation so far. Preserve:
 Omit transient chatter, credentials, secrets, or personal data.
 
 Return ONLY an updated Markdown document that becomes the session's durable memory. Do not call tools. Do not include any prose outside the Markdown document.`
+
+/** Memory-anchored manual compact keeps a recent suffix of at least five
+ *  text-bearing messages and approximately ten thousand tokens when the active
+ *  branch can provide them. Larger suffixes stay conservative. */
+const MEMORY_COMPACT_MIN_SUFFIX_MESSAGES = 5
+const MEMORY_COMPACT_MIN_SUFFIX_TOKENS = 10_000
+/** Above this estimated compactor projection the selective path falls back to
+ *  the existing full-compaction behavior instead of building an oversized
+ *  projection. */
+const MEMORY_COMPACT_MAX_PROJECTION_TOKENS = 40_000
+
+/** Conservative selective-preservation plan for a manual compact anchored on
+ *  the durable session memory watermark. */
+interface MemoryPreservedCompactSelection {
+  /** Active entries after the watermark that are folded into the summary. */
+  readonly compactedEntries: readonly ClaudeTranscriptEntry[]
+  /** Recent suffix retained verbatim after the compact boundary. */
+  readonly preservedEntries: readonly ClaudeTranscriptEntry[]
+  /** Last good memory artifact leading the compactor input. */
+  readonly memoryMessage: ModelMessage
+  /** Message the compact boundary links to, just before the preserved suffix. */
+  readonly logicalParentUuid: string
+}
+
+function isTextBearingClaudeEntry(entry: ClaudeTranscriptEntry): boolean {
+  if (
+    typeof entry.message !== 'object' ||
+    entry.message === null ||
+    Array.isArray(entry.message)
+  ) {
+    return false
+  }
+  const message = entry.message as Record<string, unknown>
+  const content = message.content
+  if (message.role === 'user') {
+    if (typeof content === 'string') return content.trim().length > 0
+    if (!Array.isArray(content)) return false
+    return content.some(
+      (block) =>
+        typeof block === 'object' &&
+        block !== null &&
+        ((block as Record<string, unknown>).type === 'text' ||
+          (block as Record<string, unknown>).type === 'tool_result' ||
+          (block as Record<string, unknown>).type === 'image' ||
+          (block as Record<string, unknown>).type === 'document'),
+    )
+  }
+  if (message.role === 'assistant') {
+    if (!Array.isArray(content)) return false
+    return content.some(
+      (block) =>
+        typeof block === 'object' &&
+        block !== null &&
+        ((block as Record<string, unknown>).type === 'text' ||
+          (block as Record<string, unknown>).type === 'tool_use' ||
+          (block as Record<string, unknown>).type === 'thinking'),
+    )
+  }
+  return false
+}
+
+function claudeToolResultIds(entry: ClaudeTranscriptEntry): Set<string> {
+  const ids = new Set<string>()
+  if (entry.type !== 'user') return ids
+  for (const block of getClaudeContentBlocks(entry)) {
+    if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+      ids.add(block.tool_use_id)
+    }
+  }
+  return ids
+}
+
+function claudeAssistantHasToolUse(
+  entry: ClaudeTranscriptEntry,
+  ids: ReadonlySet<string>,
+): boolean {
+  if (entry.type !== 'assistant') return false
+  return getClaudeContentBlocks(entry).some(
+    (block) =>
+      block.type === 'tool_use' &&
+      typeof block.id === 'string' &&
+      ids.has(block.id),
+  )
+}
+
+/** Pulls the preserved-suffix boundary backward so a tool_use assistant entry
+ *  and its tool_result user entry stay siblings: the suffix never opens with an
+ *  orphaned tool_result and the compacted input never ends with a dangling
+ *  tool_use. Same-response thinking/tool blocks live in one assistant entry,
+ *  so entry-level cutting never splits them. */
+function completeClaudeToolPairBoundary(
+  activeEntries: readonly ClaudeTranscriptEntry[],
+  startIndex: number,
+): number {
+  let boundary = startIndex
+  while (boundary < activeEntries.length) {
+    const entry = activeEntries[boundary]
+    if (!entry) break
+    const ids = claudeToolResultIds(entry)
+    if (ids.size === 0) break
+    let extended = false
+    for (let index = boundary - 1; index >= 0; index -= 1) {
+      const candidate = activeEntries[index]
+      if (candidate && claudeAssistantHasToolUse(candidate, ids)) {
+        boundary = index
+        extended = true
+        break
+      }
+    }
+    if (!extended) break
+  }
+  return boundary
+}
+
+/** Walks back from the active tail to the inclusive start of the recent suffix
+ *  retained verbatim, then completes sibling adjacency at the boundary. */
+function memoryPreservedSuffixStart(
+  activeEntries: readonly ClaudeTranscriptEntry[],
+): number {
+  let start = activeEntries.length
+  let textBearing = 0
+  let estimatedTokens = 0
+  for (let index = activeEntries.length - 1; index >= 0; index -= 1) {
+    const entry = activeEntries[index]
+    if (!entry) continue
+    start = index
+    if (!isTextBearingClaudeEntry(entry)) continue
+    textBearing += 1
+    estimatedTokens += estimateModelRequestTokens(
+      projectClaudeModelMessages([entry]),
+    )
+    if (
+      textBearing >= MEMORY_COMPACT_MIN_SUFFIX_MESSAGES &&
+      (estimatedTokens >= MEMORY_COMPACT_MIN_SUFFIX_TOKENS || index === 0)
+    ) {
+      break
+    }
+  }
+  return completeClaudeToolPairBoundary(activeEntries, start)
+}
 
 function validPromptSuggestion(value: string): string | null {
   const suggestion = value.trim()
@@ -2263,6 +2406,7 @@ export class ClaudeSessionService {
       let selectedEntries = activeEntries
       let logicalParentUuid = this.lastMessageUuid(activeEntries)
       let preservedEntries: ClaudeTranscriptEntry[] = []
+      let memoryMessage: ModelMessage | undefined
       if (selection) {
         const targetIndex = activeEntries.findIndex(
           (entry) => entry.uuid === selection.messageId,
@@ -2286,9 +2430,21 @@ export class ClaudeSessionService {
               ? target.parentUuid
               : this.lastMessageUuid(selectedEntries)
         }
+      } else {
+        const memorySelection = await this.selectMemoryPreservedCompact(
+          sessionId,
+          activeEntries,
+        )
+        if (memorySelection) {
+          selectedEntries = [...memorySelection.compactedEntries]
+          preservedEntries = [...memorySelection.preservedEntries]
+          logicalParentUuid = memorySelection.logicalParentUuid
+          memoryMessage = memorySelection.memoryMessage
+        }
       }
       const selectedMessages = projectClaudeModelMessages(selectedEntries)
       const messages: ModelMessage[] = [
+        ...(memoryMessage === undefined ? [] : [memoryMessage]),
         ...selectedMessages,
         ...(selection?.context
           ? [
@@ -2414,7 +2570,13 @@ export class ClaudeSessionService {
                 typeof entry.uuid === 'string' ? [entry.uuid] : [],
               ),
             }
-          : {}),
+          : memoryMessage
+            ? {
+                preservedUuids: preservedEntries.flatMap((entry) =>
+                  typeof entry.uuid === 'string' ? [entry.uuid] : [],
+                ),
+              }
+            : {}),
         createUuid: () => uuids.shift() ?? randomUUID(),
       })
       const appendResult = await lease.appendMany(snapshot.tail, entries)
@@ -4597,6 +4759,68 @@ export class ClaudeSessionService {
     if (typeof customTitle === 'string') return customTitle
     if (typeof agentName === 'string') return agentName
     return null
+  }
+
+  /** Conservative selective-preservation seam for manual compact: when the
+   *  durable session memory watermark matches an active entry, summarize the
+   *  last good memory artifact plus the post-watermark branch and retain a
+   *  recent suffix. Returns null to fall back to the existing full-compaction
+   *  behavior (missing/invalid watermark, empty projection, or oversized
+   *  projection). */
+  private async selectMemoryPreservedCompact(
+    sessionId: string,
+    activeEntries: readonly ClaudeTranscriptEntry[],
+  ): Promise<MemoryPreservedCompactSelection | null> {
+    const controller = this.sessionMemoryController(sessionId)
+    if (controller === null) return null
+    let watermark: string | null = null
+    let memorySummary = ''
+    try {
+      const [state, summary] = await Promise.all([
+        controller.state(),
+        controller.summary(),
+      ])
+      watermark = state.lastSummarizedMessageId
+      memorySummary = summary
+    } catch {
+      return null
+    }
+    if (watermark === null || watermark.length === 0) return null
+    if (memorySummary.trim().length === 0) return null
+    const watermarkIndex = activeEntries.findIndex(
+      (entry) => entry.uuid === watermark,
+    )
+    if (watermarkIndex < 0) return null
+
+    const suffixStart = memoryPreservedSuffixStart(activeEntries)
+    if (suffixStart <= 0 || suffixStart <= watermarkIndex + 1) return null
+
+    const compactedEntries = activeEntries.slice(
+      watermarkIndex + 1,
+      suffixStart,
+    )
+    const preservedEntries = activeEntries.slice(suffixStart)
+    const selectedMessages = projectClaudeModelMessages(compactedEntries)
+    if (selectedMessages.length === 0) return null
+
+    const memoryMessage: ModelMessage = { role: 'user', content: memorySummary }
+    if (
+      estimateModelRequestTokens([memoryMessage, ...selectedMessages]) >
+      MEMORY_COMPACT_MAX_PROJECTION_TOKENS
+    ) {
+      return null
+    }
+
+    const logicalParentUuid = this.lastMessageUuid(
+      activeEntries.slice(0, suffixStart),
+    )
+    if (logicalParentUuid === null) return null
+    return {
+      compactedEntries,
+      preservedEntries,
+      memoryMessage,
+      logicalParentUuid,
+    }
   }
 
   private lastMessageUuid(
