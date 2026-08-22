@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  ModelMessage,
   ModelProvider,
   ModelRequest,
   RuntimeEvent,
@@ -35,7 +36,10 @@ import {
 import { resolveDataPlanePaths } from '../persistence/data-plane.js'
 import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
-import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
+import {
+  ClaudeHookRunner,
+  type ClaudeHookInput,
+} from '../hooks/claude-hooks.js'
 import {
   ClaudeInteractiveToolManager,
   type ClaudeQuestion,
@@ -1779,6 +1783,7 @@ describe('ClaudeSessionService', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const events: RuntimeEvent[] = []
+    const compactHookInputs: ClaudeHookInput[] = []
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
@@ -1797,6 +1802,9 @@ describe('ClaudeSessionService', () => {
       compactor: {
         async compact(request) {
           expect(JSON.stringify(request.messages)).toContain('original answer')
+          expect(JSON.stringify(request.messages)).toContain(
+            'MANUAL_COMPACT_FOCUS',
+          )
           return {
             summary: 'durable manual summary',
             usage: { inputTokens: 12, outputTokens: 4 },
@@ -1805,6 +1813,40 @@ describe('ClaudeSessionService', () => {
           }
         },
       },
+      hooks: new ClaudeHookRunner({
+        cwd,
+        settings: [
+          {
+            path: join(configRoot, 'settings.json'),
+            scope: 'user',
+            value: {
+              hooks: Object.fromEntries(
+                ['PreCompact', 'PostCompact'].map((event) => [
+                  event,
+                  [
+                    {
+                      matcher: 'manual',
+                      hooks: [{ type: 'command', command: event }],
+                    },
+                  ],
+                ]),
+              ),
+            },
+          },
+        ],
+        executeCommand: async (_command, input) => {
+          compactHookInputs.push(input)
+          return {
+            stdout:
+              input.hook_event_name === 'PreCompact'
+                ? 'MANUAL_COMPACT_FOCUS'
+                : 'MANUAL_COMPACT_DONE',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        },
+      }),
       eventSink: (event) => events.push(event),
     })
 
@@ -1826,6 +1868,18 @@ describe('ClaudeSessionService', () => {
     expect(await service.transcript(run.sessionId)).toEqual([
       { kind: 'compact', summary: 'durable manual summary' },
     ])
+    expect(compactHookInputs).toEqual([
+      expect.objectContaining({
+        hook_event_name: 'PreCompact',
+        trigger: 'manual',
+        custom_instructions: null,
+      }),
+      expect.objectContaining({
+        hook_event_name: 'PostCompact',
+        trigger: 'manual',
+        compact_summary: 'durable manual summary',
+      }),
+    ])
 
     const transcript = await readFile(
       resolveClaudePaths({
@@ -1835,6 +1889,7 @@ describe('ClaudeSessionService', () => {
       }).sessionFile,
       'utf8',
     )
+    expect(transcript).not.toContain('MANUAL_COMPACT')
     expect(transcript).toContain('"trigger":"manual"')
     expect(transcript).toContain('"isCompactSummary":true')
     expect(transcript).toContain('durable manual summary')
@@ -3460,6 +3515,8 @@ describe('ClaudeSessionService', () => {
     const contextInvalidations: string[] = []
     let compactHookCalls = 0
     const hookEvents: string[] = []
+    const compactHookInputs: Array<Record<string, unknown>> = []
+    let compactorMessages: readonly ModelMessage[] = []
     const hooks = new ClaudeHookRunner({
       cwd,
       settings: [
@@ -3473,12 +3530,39 @@ describe('ClaudeSessionService', () => {
                   hooks: [{ type: 'command', command: 'SessionStart' }],
                 },
               ],
+              PreCompact: [
+                {
+                  matcher: 'auto',
+                  hooks: [{ type: 'command', command: 'PreCompact' }],
+                },
+              ],
+              PostCompact: [
+                {
+                  matcher: 'auto',
+                  hooks: [{ type: 'command', command: 'PostCompact' }],
+                },
+              ],
             },
           },
         },
       ],
       executeCommand: async (_command, input) => {
         hookEvents.push(input.hook_event_name)
+        if (
+          input.hook_event_name === 'PreCompact' ||
+          input.hook_event_name === 'PostCompact'
+        ) {
+          compactHookInputs.push(input)
+          return {
+            stdout:
+              input.hook_event_name === 'PreCompact'
+                ? 'PRE_COMPACT_FOCUS\n'
+                : 'POST_COMPACT_DISPLAY\n',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        }
         if (input.source === 'compact') {
           compactHookCalls += 1
           return {
@@ -3535,7 +3619,8 @@ describe('ClaudeSessionService', () => {
         },
       },
       compactor: {
-        async compact() {
+        async compact(request) {
+          compactorMessages = request.messages
           return {
             summary: 'COMPACTED_SUMMARY',
             usage: { inputTokens: 3, outputTokens: 2 },
@@ -3568,7 +3653,25 @@ describe('ClaudeSessionService', () => {
     // One successful automatic compact produces exactly one compact-source
     // SessionStart invocation after the single session startup.
     expect(compactHookCalls).toBe(1)
-    expect(hookEvents).toEqual(['SessionStart', 'SessionStart'])
+    expect(hookEvents).toEqual([
+      'SessionStart',
+      'PreCompact',
+      'PostCompact',
+      'SessionStart',
+    ])
+    expect(JSON.stringify(compactorMessages)).toContain('PRE_COMPACT_FOCUS')
+    expect(compactHookInputs).toEqual([
+      expect.objectContaining({
+        hook_event_name: 'PreCompact',
+        trigger: 'auto',
+        custom_instructions: null,
+      }),
+      expect.objectContaining({
+        hook_event_name: 'PostCompact',
+        trigger: 'auto',
+        compact_summary: 'COMPACTED_SUMMARY',
+      }),
+    ])
 
     // The context assembler runs once for the startup turn, once for the
     // resume, and once more after the compact boundary refresh.
@@ -3622,6 +3725,8 @@ describe('ClaudeSessionService', () => {
     )
     expect(transcript).toContain('COMPACT_HOOK_CONTEXT')
     expect(transcript).toContain('STARTUP_HOOK_CONTEXT')
+    expect(transcript).not.toContain('PRE_COMPACT_FOCUS')
+    expect(transcript).not.toContain('POST_COMPACT_DISPLAY')
     expect(transcript).not.toContain('# Session Memory')
     expect(transcript).not.toContain('SYSTEM_CONTEXT')
     expect(transcript).not.toContain('DYNAMIC_CONTEXT')
@@ -4384,6 +4489,9 @@ describe('ClaudeSessionService', () => {
     const canonicalRelocatedCwd = await realpath(relocatedCwd)
     const serviceWorkspace = new WorkspaceContext(originalCwd)
     const contextInvalidations: string[] = []
+    const cwdHookInputs: ClaudeHookInput[] = []
+    const hookNotices: string[] = []
+    const dynamicWatchPath = join(canonicalRelocatedCwd, 'dynamic.env')
     const service = new ClaudeSessionService({
       configRoot,
       cwd: originalCwd,
@@ -4395,6 +4503,54 @@ describe('ClaudeSessionService', () => {
         cwdProvider: () => serviceWorkspace.cwd(),
       }),
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      hooks: new ClaudeHookRunner({
+        cwd: originalCwd,
+        settings: [
+          {
+            path: join(configRoot, 'settings.json'),
+            scope: 'user',
+            value: {
+              hooks: {
+                CwdChanged: [
+                  { hooks: [{ type: 'command', command: 'cwd-changed' }] },
+                ],
+                FileChanged: [
+                  {
+                    matcher: 'watched.env',
+                    hooks: [{ type: 'command', command: 'file-changed' }],
+                  },
+                  {
+                    hooks: [
+                      { type: 'command', command: 'file-changed-dynamic' },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        executeCommand: async (_command, input) => {
+          cwdHookInputs.push(input)
+          return {
+            stdout:
+              input.hook_event_name === 'CwdChanged'
+                ? JSON.stringify({
+                    systemMessage: 'cwd environment refreshed',
+                    hookSpecificOutput: {
+                      hookEventName: 'CwdChanged',
+                      watchPaths: [dynamicWatchPath],
+                    },
+                  })
+                : '',
+            stderr: '',
+            exitCode: 0,
+            durationMs: 1,
+          }
+        },
+      }),
+      eventSink: (event) => {
+        if (event.type === 'user-message') hookNotices.push(event.message)
+      },
       contextAssembler: {
         async assemble() {
           return { systemMessages: [] }
@@ -4420,6 +4576,25 @@ describe('ClaudeSessionService', () => {
       canonicalRelocatedCwd,
     )
     expect(contextInvalidations).toEqual(['cwd'])
+    expect(cwdHookInputs).toEqual([
+      expect.objectContaining({
+        hook_event_name: 'CwdChanged',
+        old_cwd: originalCwd,
+        new_cwd: canonicalRelocatedCwd,
+        cwd: canonicalRelocatedCwd,
+      }),
+    ])
+    expect(hookNotices).toContain('cwd environment refreshed')
+    await writeFile(dynamicWatchPath, 'TOKEN=one\n')
+    await vi.waitFor(() =>
+      expect(cwdHookInputs).toContainEqual(
+        expect.objectContaining({
+          hook_event_name: 'FileChanged',
+          file_path: dynamicWatchPath,
+          event: 'add',
+        }),
+      ),
+    )
     await expect(readFile(original)).rejects.toMatchObject({ code: 'ENOENT' })
     const moved = await readFile(relocated, 'utf8')
     expect(moved).toContain(
@@ -4447,6 +4622,7 @@ describe('ClaudeSessionService', () => {
     expect(await service.sessions()).toEqual([
       expect.objectContaining({ sessionId: run.sessionId }),
     ])
+    await service.close()
   })
 
   it('changes cwd without a session and resolves relative symlink paths', async () => {
@@ -10617,6 +10793,7 @@ describe('ClaudeSessionService', () => {
   it('keeps a completed user entry when the provider fails', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-test-'))
     roots.push(root)
+    const hookInputs: ClaudeHookInput[] = []
     const service = new ClaudeSessionService({
       configRoot: join(root, 'config'),
       cwd: join(root, 'project'),
@@ -10627,9 +10804,33 @@ describe('ClaudeSessionService', () => {
           yield* []
           throw new ModelProviderError('temporary failure', {
             retryable: true,
+            kind: 'overloaded',
           })
         },
       },
+      hooks: new ClaudeHookRunner({
+        cwd: join(root, 'project'),
+        settings: [
+          {
+            path: join(root, 'config', 'settings.json'),
+            scope: 'user',
+            value: {
+              hooks: {
+                StopFailure: [
+                  {
+                    matcher: 'server_error',
+                    hooks: [{ type: 'command', command: 'stop-failure' }],
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        executeCommand: async (_command, input) => {
+          hookInputs.push(input)
+          return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+        },
+      }),
     })
 
     await expect(service.run('durable prompt')).rejects.toThrow(
@@ -10638,6 +10839,59 @@ describe('ClaudeSessionService', () => {
     await expect(service.sessions()).resolves.toEqual([
       expect.objectContaining({ lastPrompt: null }),
     ])
+    expect(hookInputs).toEqual([
+      expect.objectContaining({
+        hook_event_name: 'StopFailure',
+        error: 'server_error',
+        error_details: 'temporary failure',
+      }),
+    ])
+  })
+
+  it('does not fire StopFailure for a provider cancellation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-test-'))
+    roots.push(root)
+    const hookInputs: ClaudeHookInput[] = []
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield* []
+          throw new ModelProviderError('cancelled', {
+            retryable: false,
+            kind: 'cancelled',
+          })
+        },
+      },
+      hooks: new ClaudeHookRunner({
+        cwd: join(root, 'project'),
+        settings: [
+          {
+            path: join(root, 'config', 'settings.json'),
+            scope: 'user',
+            value: {
+              hooks: {
+                StopFailure: [
+                  {
+                    hooks: [{ type: 'command', command: 'stop-failure' }],
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        executeCommand: async (_command, input) => {
+          hookInputs.push(input)
+          return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+        },
+      }),
+    })
+
+    await expect(service.run('cancelled prompt')).rejects.toThrow('cancelled')
+    expect(hookInputs).toEqual([])
   })
 
   it('holds one session lease for the complete model turn', async () => {
@@ -11076,12 +11330,16 @@ describe('ClaudeSessionService', () => {
             scope: 'user',
             value: {
               hooks: Object.fromEntries(
-                ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'].map(
-                  (event) => [
-                    event,
-                    [{ hooks: [{ type: 'command', command: event }] }],
-                  ],
-                ),
+                [
+                  'SessionStart',
+                  'UserPromptSubmit',
+                  'Notification',
+                  'Stop',
+                  'SessionEnd',
+                ].map((event) => [
+                  event,
+                  [{ hooks: [{ type: 'command', command: event }] }],
+                ]),
               ),
             },
           },
@@ -11098,6 +11356,12 @@ describe('ClaudeSessionService', () => {
     })
 
     const first = await service.run('first prompt')
+    await service.notify(
+      first.sessionId,
+      'Turn complete',
+      'permission_prompt',
+      'Praxis',
+    )
     await service.resume(first.sessionId, 'second prompt')
     await service.transitionHookSession(first.sessionId, 'resume')
     await service.transitionHookSession(first.sessionId, 'resume')
@@ -11111,6 +11375,7 @@ describe('ClaudeSessionService', () => {
       { event: 'SessionStart', source: 'startup' },
       { event: 'UserPromptSubmit' },
       { event: 'Stop' },
+      { event: 'Notification' },
       { event: 'UserPromptSubmit' },
       { event: 'Stop' },
       { event: 'SessionEnd', reason: 'resume' },
@@ -11124,6 +11389,61 @@ describe('ClaudeSessionService', () => {
       { event: 'SessionEnd', reason: 'other' },
     ])
     expect(contextInvalidations).toEqual(['restore', 'restore', 'clear'])
+  })
+
+  it('tracks detached Notification hooks until service shutdown', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-notification-close-'))
+    roots.push(root)
+    let release!: () => void
+    const completion = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let notificationSignal: AbortSignal | undefined
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['done']),
+      hooks: new ClaudeHookRunner({
+        cwd: join(root, 'project'),
+        settings: [
+          {
+            path: join(root, 'config', 'settings.json'),
+            scope: 'user',
+            value: {
+              hooks: {
+                Notification: [
+                  { hooks: [{ type: 'command', command: 'notification' }] },
+                ],
+              },
+            },
+          },
+        ],
+        executeCommand: async (_command, _input, _timeout, signal) => {
+          notificationSignal = signal
+          await completion
+          return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+        },
+      }),
+    })
+    const result = await service.run('start')
+    service.notifyDetached(
+      result.sessionId,
+      'Approval required',
+      'permission_prompt',
+      'Praxis',
+    )
+    let closed = false
+    const closing = service.close().then(() => {
+      closed = true
+    })
+    await Promise.resolve()
+
+    expect(closed).toBe(false)
+    expect(notificationSignal?.aborted).toBe(false)
+    release()
+    await closing
+    expect(closed).toBe(true)
   })
 
   it('reports SessionEnd failure without replacing a completed result', async () => {

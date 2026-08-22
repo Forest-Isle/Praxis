@@ -148,9 +148,24 @@ const TUI_HOOK_EVENT_DEFINITIONS: readonly TuiHookEventDefinition[] = [
   },
 ]
 
+const OBSERVED_TUI_EVENTS_2_1_208 = new Set([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'UserPromptSubmit',
+  'SessionStart',
+  'Stop',
+  'SubagentStart',
+  'SubagentStop',
+  'SessionEnd',
+  'PermissionRequest',
+])
+
 export const TUI_HOOK_EVENTS: readonly TuiHookEventDefinition[] =
-  TUI_HOOK_EVENT_DEFINITIONS.filter((definition) =>
-    HOOK_EVENTS.includes(definition.name as ClaudeHookEventName),
+  TUI_HOOK_EVENT_DEFINITIONS.filter(
+    (definition) =>
+      OBSERVED_TUI_EVENTS_2_1_208.has(definition.name) &&
+      HOOK_EVENTS.includes(definition.name as ClaudeHookEventName),
   )
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -93,12 +93,13 @@ import {
   type ModelThinkingBlock,
   type ModelToolCall,
   type ModelProvider,
-  type ModelProviderError,
+  ModelProviderError,
   type ModelUsage,
   type PermissionApproval,
   type PermissionDecision,
   type PermissionResolver,
   type PermissionUpdate,
+  type ProviderErrorKind,
   type RuntimeEventSink,
   type ToolRegistry,
 } from '../core/runtime.js'
@@ -128,6 +129,7 @@ import type {
   ClaudePromptExpansionMessage,
 } from '../extensions/claude-extensions.js'
 import { ClaudeHookToolCoordinator } from '../hooks/claude-hook-tools.js'
+import { ClaudeFileChangeWatcher } from '../hooks/claude-file-change-watcher.js'
 import type {
   ClaudeHookInput,
   ClaudeHookOutcome,
@@ -974,6 +976,49 @@ function projectMemoryMessages(
   })
 }
 
+function successfulHookOutput(
+  outcome: ClaudeHookOutcome | undefined,
+): string[] {
+  return (outcome?.executions ?? []).flatMap((execution) => {
+    const output = execution.stdout.trim()
+    return execution.exitCode === 0 && output.length > 0 ? [output] : []
+  })
+}
+
+type ClaudeStopFailureError =
+  | 'authentication_failed'
+  | 'billing_error'
+  | 'rate_limit'
+  | 'invalid_request'
+  | 'server_error'
+  | 'unknown'
+  | 'max_output_tokens'
+
+function claudeStopFailureError(
+  kind: ProviderErrorKind | undefined,
+): ClaudeStopFailureError {
+  switch (kind) {
+    case 'authentication_failed':
+    case 'billing_error':
+    case 'rate_limit':
+    case 'invalid_request':
+    case 'server_error':
+    case 'max_output_tokens':
+      return kind
+    case 'prompt_too_long':
+      return 'invalid_request'
+    case 'timeout':
+    case 'overloaded':
+    case 'api_error':
+    case 'transport_error':
+      return 'server_error'
+    case 'cancelled':
+    case 'unknown':
+    case undefined:
+      return 'unknown'
+  }
+}
+
 type HookSessionInput = Pick<
   ClaudeHookInput,
   'session_id' | 'transcript_path' | 'cwd' | 'permission_mode'
@@ -1147,6 +1192,7 @@ export class ClaudeSessionService {
     Promise<void>
   >()
   private readonly downloadedFileResourceSessions = new Set<string>()
+  private readonly detachedHookRuns = new Map<Promise<void>, AbortController>()
   private activeProvider: ModelProvider | undefined
   private mcpClosePromise: Promise<void> | undefined
   private readonly sessionCostTrackers = new Map<
@@ -1161,11 +1207,31 @@ export class ClaudeSessionService {
   >()
   private resolvedSessionMemoryProvider: ModelProvider | null | undefined
   private readonly hookLifecycle: HookLifecycle
+  private readonly fileChangeWatcher: ClaudeFileChangeWatcher | null
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
     this.hookLifecycle = new HookLifecycle(options.hooks, options.eventSink)
     this.runtimeCwd = options.workspace?.cwd() ?? options.cwd
+    this.fileChangeWatcher = options.hooks
+      ? new ClaudeFileChangeWatcher({
+          cwd: this.runtimeCwd,
+          staticPaths: options.hooks.fileChangedWatchPaths(this.runtimeCwd),
+          onFileChanged: async (filePath, event, signal) => {
+            const sessionId = this.activeCostSessionId
+            if (!sessionId) return undefined
+            const outcome = await this.runAdvisoryHook(
+              sessionId,
+              'FileChanged',
+              { file_path: filePath, event },
+              undefined,
+              signal,
+            )
+            return outcome?.watchPaths
+          },
+          warn: (message) => options.eventSink?.({ type: 'warning', message }),
+        })
+      : null
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
     this.scheduledPrompts =
       options.tools && (options.scheduledToolNames?.length ?? 0) > 0
@@ -1341,7 +1407,10 @@ export class ClaudeSessionService {
   }
 
   async close(): Promise<void> {
+    await this.fileChangeWatcher?.close(5_000)
     await this.hookLifecycle.close()
+    await this.drainDetachedHookRuns(5_000)
+    await this.options.hooks?.drainAsync(5_000)
     this.scheduledPrompts?.close()
     await this.options.projectMemoryExtraction?.close(5_000)
     await Promise.all(
@@ -1383,6 +1452,197 @@ export class ClaudeSessionService {
       lifecycleId: sessionId,
       reason: 'resource-reload',
     })
+  }
+
+  async notify(
+    sessionId: string | undefined,
+    message: string,
+    notificationType: string,
+    title?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const targetSessionId = sessionId ?? this.activeCostSessionId
+    if (!targetSessionId) return
+    await this.runAdvisoryHook(
+      targetSessionId,
+      'Notification',
+      {
+        message,
+        notification_type: notificationType,
+        ...(title === undefined ? {} : { title }),
+      },
+      notificationType,
+      signal,
+    )
+  }
+
+  notifyDetached(
+    sessionId: string | undefined,
+    message: string,
+    notificationType: string,
+    title?: string,
+  ): void {
+    const controller = new AbortController()
+    const pending = this.notify(
+      sessionId,
+      message,
+      notificationType,
+      title,
+      controller.signal,
+    )
+    this.detachedHookRuns.set(pending, controller)
+    void pending.finally(() => this.detachedHookRuns.delete(pending))
+  }
+
+  private async drainDetachedHookRuns(timeoutMs: number): Promise<void> {
+    const pending = [...this.detachedHookRuns.keys()]
+    if (pending.length === 0) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      if (
+        (await Promise.race([
+          Promise.allSettled(pending).then(() => 'settled' as const),
+          new Promise<'timeout'>((resolve) => {
+            timer = setTimeout(() => resolve('timeout'), timeoutMs)
+          }),
+        ])) === 'timeout'
+      ) {
+        for (const controller of this.detachedHookRuns.values()) {
+          controller.abort()
+        }
+        this.detachedHookRuns.clear()
+        await Promise.resolve()
+      }
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  async instructionsLoaded(
+    sessionId: string,
+    resources: readonly {
+      path: string
+      scope: 'local' | 'project' | 'user'
+      importedFrom?: string
+    }[],
+    reason: 'session_start' | 'compact' | 'resource_reload',
+  ): Promise<void> {
+    if (reason === 'resource_reload') return
+    for (const resource of resources) {
+      const loadReason = resource.importedFrom
+        ? 'include'
+        : reason === 'compact'
+          ? 'compact'
+          : 'session_start'
+      await this.instructionLoaded(
+        sessionId,
+        {
+          path: resource.path,
+          memoryType:
+            resource.scope === 'user'
+              ? 'User'
+              : resource.scope === 'local'
+                ? 'Local'
+                : 'Project',
+          ...(resource.importedFrom === undefined
+            ? {}
+            : { parentFilePath: resource.importedFrom }),
+        },
+        loadReason,
+      )
+    }
+  }
+
+  async instructionLoaded(
+    sessionId: string,
+    resource: {
+      path: string
+      memoryType: 'User' | 'Project' | 'Local' | 'Managed'
+      globs?: readonly string[]
+      triggerFilePath?: string
+      parentFilePath?: string
+    },
+    loadReason:
+      | 'session_start'
+      | 'nested_traversal'
+      | 'path_glob_match'
+      | 'include'
+      | 'compact',
+  ): Promise<void> {
+    await this.runAdvisoryHook(
+      sessionId,
+      'InstructionsLoaded',
+      {
+        file_path: resource.path,
+        memory_type: resource.memoryType,
+        load_reason: loadReason,
+        ...(resource.globs === undefined ? {} : { globs: resource.globs }),
+        ...(resource.triggerFilePath === undefined
+          ? {}
+          : { trigger_file_path: resource.triggerFilePath }),
+        ...(resource.parentFilePath === undefined
+          ? {}
+          : { parent_file_path: resource.parentFilePath }),
+      },
+      loadReason,
+    )
+  }
+
+  private async runAdvisoryHook(
+    sessionId: string,
+    event: ClaudeHookInput['hook_event_name'],
+    fields: Readonly<Record<string, unknown>>,
+    matcher?: string,
+    signal?: AbortSignal,
+  ): Promise<ClaudeHookOutcome | undefined> {
+    if (!this.options.hooks) return undefined
+    try {
+      const outcome = await this.options.hooks.run(
+        {
+          session_id: sessionId,
+          transcript_path: this.paths(sessionId).sessionFile,
+          cwd: this.activeCwd(),
+          permission_mode: 'default',
+          hook_event_name: event,
+          ...fields,
+        },
+        matcher,
+        signal,
+      )
+      for (const message of outcome.systemMessages ?? []) {
+        this.options.eventSink?.({
+          type: 'user-message',
+          message,
+          status: 'proactive',
+        })
+      }
+      return outcome
+    } catch (error) {
+      this.options.eventSink?.({
+        type: 'warning',
+        message: `${event} hook failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      })
+      return undefined
+    }
+  }
+
+  private async cwdChanged(
+    sessionId: string,
+    previousCwd: string,
+    cwd: string,
+  ): Promise<void> {
+    await this.options.hooks?.clearCwdEnvironment(sessionId)
+    const outcome = await this.runAdvisoryHook(sessionId, 'CwdChanged', {
+      old_cwd: previousCwd,
+      new_cwd: cwd,
+    })
+    this.fileChangeWatcher?.updateForCwd(
+      cwd,
+      this.options.hooks?.fileChangedWatchPaths(cwd) ?? [],
+      outcome?.watchPaths ?? [],
+    )
   }
 
   createHostedToolRegistry(sessionId: string): ToolRegistry {
@@ -2248,6 +2508,7 @@ export class ClaudeSessionService {
         lifecycleId: sessionId,
         reason: 'cwd',
       })
+      await this.cwdChanged(sessionId, previousCwd, cwd)
       return cwd
     }
     this.runtimeCwd = cwd
@@ -2258,6 +2519,7 @@ export class ClaudeSessionService {
         lifecycleId: sessionId,
         reason: 'cwd',
       })
+      await this.cwdChanged(sessionId, previousCwd, cwd)
     }
     return cwd
   }
@@ -2596,6 +2858,22 @@ export class ClaudeSessionService {
           'Cannot compact a Claude session with unresolved tool calls',
         )
       }
+      const preCompact = await this.runAdvisoryHook(
+        sessionId,
+        'PreCompact',
+        {
+          trigger: 'manual',
+          custom_instructions: selection?.context ?? null,
+        },
+        'manual',
+        signal,
+      )
+      messages.push(
+        ...successfulHookOutput(preCompact).map((content) => ({
+          role: 'user' as const,
+          content: `Additional summarization context: ${content}`,
+        })),
+      )
       this.options.eventSink?.({ type: 'state', state: 'compacting' })
       const contextWindowTokens =
         this.contextBudget(provider)?.contextWindowTokens ??
@@ -2725,6 +3003,13 @@ export class ClaudeSessionService {
         preTokens,
         uuid: boundaryUuid,
       })
+      await this.runAdvisoryHook(
+        sessionId,
+        'PostCompact',
+        { trigger: 'manual', compact_summary: summary },
+        'manual',
+        signal,
+      )
       if (meteringTurnInput !== undefined) {
         const tracker = this.sessionCostTrackers.get(sessionId)
         if (!tracker) {
@@ -3304,6 +3589,52 @@ export class ClaudeSessionService {
                 ? { eventSink: this.options.eventSink }
                 : {}),
               enabledTools: taskToolNames,
+              ...(this.options.hooks
+                ? {
+                    taskHooks: {
+                      created: async (task, taskSignal) => {
+                        const outcome = await this.options.hooks?.run(
+                          {
+                            ...hookSession,
+                            hook_event_name: 'TaskCreated',
+                            task_id: task.id,
+                            task_subject: task.subject,
+                            task_description: task.description,
+                          },
+                          undefined,
+                          taskSignal,
+                        )
+                        if (!outcome) return
+                        await recordHookOutcome(outcome)
+                        if (outcome.blockedReason) {
+                          throw new Error(
+                            `TaskCreated hook error: ${outcome.blockedReason}`,
+                          )
+                        }
+                      },
+                      completed: async (task, taskSignal) => {
+                        const outcome = await this.options.hooks?.run(
+                          {
+                            ...hookSession,
+                            hook_event_name: 'TaskCompleted',
+                            task_id: task.id,
+                            task_subject: task.subject,
+                            task_description: task.description,
+                          },
+                          undefined,
+                          taskSignal,
+                        )
+                        if (!outcome) return
+                        await recordHookOutcome(outcome)
+                        if (outcome.blockedReason) {
+                          throw new Error(
+                            `TaskCompleted hook error: ${outcome.blockedReason}`,
+                          )
+                        }
+                      },
+                    },
+                  }
+                : {}),
             })
           : null
       const scheduledTools =
@@ -3555,6 +3886,12 @@ export class ClaudeSessionService {
               hooks: this.options.hooks,
               session: hookSession,
               recordOutcome: recordHookOutcome,
+              ...(this.options.eventSink
+                ? {
+                    warn: (message: string) =>
+                      this.options.eventSink?.({ type: 'warning', message }),
+                  }
+                : {}),
               deferPreToolUseOutcome: (call) =>
                 pendingRecoveryToolCallIds.has(call.id),
             })
@@ -3770,6 +4107,24 @@ export class ClaudeSessionService {
                 tail: attachmentTail,
               }
               attachedRulePaths.add(rule.path)
+              await this.instructionLoaded(
+                sessionId,
+                {
+                  path: rule.path,
+                  memoryType:
+                    rule.scope === 'user'
+                      ? 'User'
+                      : rule.scope === 'local'
+                        ? 'Local'
+                        : 'Project',
+                  globs: rule.globs,
+                  triggerFilePath: filePath,
+                  ...(rule.importedFrom === undefined
+                    ? {}
+                    : { parentFilePath: rule.importedFrom }),
+                },
+                'path_glob_match',
+              )
             }
           }
         },
@@ -4130,18 +4485,31 @@ export class ClaudeSessionService {
               'Cannot compact a Claude session with unresolved tool calls',
             )
           }
+          const preCompact = await this.runAdvisoryHook(
+            sessionId,
+            'PreCompact',
+            { trigger: 'auto', custom_instructions: null },
+            'auto',
+            signal,
+          )
           const memorySelection = sessionMemory
             ? await this.selectMemoryPreservedCompact(
                 sessionId,
                 selectClaudeActiveTranscript(snapshot.entries),
               )
             : null
-          const compactorMessages = memorySelection
+          const compactorMessages: ModelMessage[] = memorySelection
             ? [
                 memorySelection.memoryMessage,
                 ...projectClaudeModelMessages(memorySelection.compactedEntries),
               ]
             : historyMessages
+          compactorMessages.push(
+            ...successfulHookOutput(preCompact).map((content) => ({
+              role: 'user' as const,
+              content: `Additional summarization context: ${content}`,
+            })),
+          )
           if (memorySelection) {
             logicalParentUuid = memorySelection.logicalParentUuid
           }
@@ -4366,6 +4734,13 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, ...entries],
             tail: appendResult.tail,
           }
+          await this.runAdvisoryHook(
+            sessionId,
+            'PostCompact',
+            { trigger: 'auto', compact_summary: compacted.summary },
+            'auto',
+            signal,
+          )
           // The boundary is durable: mirror Claude's full-compact behavior by
           // rerunning SessionStart with source compact and refreshing the
           // runtime-only context so the next request retains current
@@ -4500,6 +4875,7 @@ export class ClaudeSessionService {
           try {
             shellResult = await runtime.executeDirectToolCall(call, {
               cwd: this.activeCwd(),
+              sessionId,
               toolResultDirectory,
               messages: projectClaudeModelMessages(snapshot.entries),
               observer: {
@@ -4590,6 +4966,7 @@ export class ClaudeSessionService {
 
         let stopHookActive = false
         const runtimeRequest: AgentRunRequest = {
+          sessionId,
           messages: [
             ...contextMessages,
             ...injectTurnContext(projectClaudeModelMessages(snapshot.entries)),
@@ -4755,77 +5132,102 @@ export class ClaudeSessionService {
         }
         let result: AgentRunResult
         try {
-          result = await attemptMainTurn()
-        } catch (error) {
-          if (!budget || !isPromptTooLongError(error)) throw error
-          if (recoveryPlanner.reactiveRetriesRemaining === 0) {
-            surfaceExhaustedRecovery(error)
-            throw error
-          }
-          const beforeRecovery = budget.evaluate(
-            runtimeRequest.messages,
-            definitions,
-          )
-          try {
-            await compactIfNeeded([], currentTurnUserMessages ?? [], {
-              promptTooLong: true,
-            })
-          } catch (compactionError) {
-            if (
-              signal?.aborted ||
-              compactionError instanceof AgentRunCancelledError
-            ) {
-              throw new AgentRunCancelledError()
-            }
-            // Compaction could not free the provider-bounded context; surface
-            // the original prompt-too-long error rather than the compaction
-            // failure.
-            surfaceExhaustedRecovery(error)
-            throw error
-          }
-          // The single reactive retry must use the compacted transcript, not
-          // the stale request copy captured before the compact boundary.
-          runtimeRequest.messages = [
-            ...contextMessages,
-            ...injectTurnContext([
-              ...projectClaudeModelMessages(snapshot.entries),
-              ...projectMemoryRecallMessages,
-            ]),
-          ]
-          if (stableSystemMessageCount === undefined) {
-            delete runtimeRequest.stableSystemMessageCount
-          } else {
-            runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
-          }
-          const afterRecovery = budget.evaluate(
-            runtimeRequest.messages,
-            definitions,
-          )
-          if (
-            recoveryPlanner.consumeReactiveRetry({
-              beforeOccupancyTokens: beforeRecovery.occupancyTokens,
-              afterOccupancyTokens: afterRecovery.occupancyTokens,
-            }) !== 'reactive-retry'
-          ) {
-            surfaceExhaustedRecovery(error)
-            throw error
-          }
-          runtimeRequest.deferFailureKinds = true
           try {
             result = await attemptMainTurn()
-          } catch (retryError) {
-            // Exactly one reactive retry is consumed; fail deterministically
-            // and surface the original prompt-too-long error.
-            recoveryPlanner.recordFailure()
-            if (
-              signal?.aborted ||
-              retryError instanceof AgentRunCancelledError
-            ) {
-              throw new AgentRunCancelledError()
+          } catch (error) {
+            if (!budget || !isPromptTooLongError(error)) throw error
+            if (recoveryPlanner.reactiveRetriesRemaining === 0) {
+              surfaceExhaustedRecovery(error)
+              throw error
             }
-            surfaceExhaustedRecovery(error)
-            throw error
+            const beforeRecovery = budget.evaluate(
+              runtimeRequest.messages,
+              definitions,
+            )
+            try {
+              await compactIfNeeded([], currentTurnUserMessages ?? [], {
+                promptTooLong: true,
+              })
+            } catch (compactionError) {
+              if (
+                signal?.aborted ||
+                compactionError instanceof AgentRunCancelledError
+              ) {
+                throw new AgentRunCancelledError()
+              }
+              // Compaction could not free the provider-bounded context; surface
+              // the original prompt-too-long error rather than the compaction
+              // failure.
+              surfaceExhaustedRecovery(error)
+              throw error
+            }
+            // The single reactive retry must use the compacted transcript, not
+            // the stale request copy captured before the compact boundary.
+            runtimeRequest.messages = [
+              ...contextMessages,
+              ...injectTurnContext([
+                ...projectClaudeModelMessages(snapshot.entries),
+                ...projectMemoryRecallMessages,
+              ]),
+            ]
+            if (stableSystemMessageCount === undefined) {
+              delete runtimeRequest.stableSystemMessageCount
+            } else {
+              runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
+            }
+            const afterRecovery = budget.evaluate(
+              runtimeRequest.messages,
+              definitions,
+            )
+            if (
+              recoveryPlanner.consumeReactiveRetry({
+                beforeOccupancyTokens: beforeRecovery.occupancyTokens,
+                afterOccupancyTokens: afterRecovery.occupancyTokens,
+              }) !== 'reactive-retry'
+            ) {
+              surfaceExhaustedRecovery(error)
+              throw error
+            }
+            runtimeRequest.deferFailureKinds = true
+            try {
+              result = await attemptMainTurn()
+            } catch (retryError) {
+              // Exactly one reactive retry is consumed; fail deterministically
+              // and surface the original prompt-too-long error.
+              recoveryPlanner.recordFailure()
+              if (
+                signal?.aborted ||
+                retryError instanceof AgentRunCancelledError
+              ) {
+                throw new AgentRunCancelledError()
+              }
+              surfaceExhaustedRecovery(error)
+              throw error
+            }
           }
+        } catch (error) {
+          if (
+            !signal?.aborted &&
+            !(error instanceof AgentRunCancelledError) &&
+            !(error instanceof ModelProviderError && error.kind === 'cancelled')
+          ) {
+            const failureKind =
+              error instanceof ModelProviderError
+                ? claudeStopFailureError(error.kind)
+                : 'unknown'
+            await this.runAdvisoryHook(
+              sessionId,
+              'StopFailure',
+              {
+                error: failureKind,
+                error_details:
+                  error instanceof Error ? error.message : String(error),
+              },
+              failureKind,
+              signal,
+            )
+          }
+          throw error
         }
         recoveryPlanner.recordSuccess()
         const mainModel =

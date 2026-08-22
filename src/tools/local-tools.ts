@@ -63,6 +63,9 @@ export interface LocalToolRegistryOptions {
   maxShellTimeoutMs?: number
   enableReportFindings?: boolean
   environment?: Readonly<Record<string, string>>
+  sessionEnvironment?: (
+    sessionId: string,
+  ) => Promise<Readonly<Record<string, string>> | undefined>
   sandbox?: BashSandboxRuntime
   homeDirectory?: string
   configRoot?: string
@@ -659,6 +662,11 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly processRunner: BoundedProcessRunner
   private readonly enableReportFindings: boolean
   private readonly environment: Readonly<Record<string, string>> | undefined
+  private readonly sessionEnvironment:
+    | ((
+        sessionId: string,
+      ) => Promise<Readonly<Record<string, string>> | undefined>)
+    | undefined
   private readonly sandbox: BashSandboxRuntime | undefined
   private readonly homeDirectory: string
   private readonly configRoot: string
@@ -683,6 +691,7 @@ export class LocalToolRegistry implements ToolRegistry {
     this.maxShellTimeoutMs = options.maxShellTimeoutMs ?? 120_000
     this.enableReportFindings = options.enableReportFindings ?? false
     this.environment = options.environment
+    this.sessionEnvironment = options.sessionEnvironment
     this.sandbox = options.sandbox
     this.homeDirectory = options.homeDirectory
       ? resolve(options.homeDirectory)
@@ -1583,18 +1592,22 @@ export class LocalToolRegistry implements ToolRegistry {
       throw new Error('Prepared Bash call has no timeout')
     const rawCommand = stringInput(call.input, 'command')
     this.assertProtectedBashCommand(rawCommand, context)
-    const sandboxInput = {
+    const sandboxPolicyInput = {
       command: rawCommand,
       ...(call.input.dangerouslyDisableSandbox === true
         ? { dangerouslyDisableSandbox: true }
         : {}),
     }
-    const sandboxed = this.sandbox?.shouldUseSandbox(sandboxInput) ?? false
+    const sandboxed =
+      this.sandbox?.shouldUseSandbox(sandboxPolicyInput) ?? false
     const shell = commandShell()
     let result: ProcessResult
     try {
+      const sessionEnvironment = context.sessionId
+        ? await this.sessionEnvironment?.(context.sessionId)
+        : undefined
       const command = sandboxed
-        ? await this.sandbox?.wrapCommand(sandboxInput, {
+        ? await this.sandbox?.wrapCommand(sandboxPolicyInput, {
             shell,
             ...(context.signal ? { signal: context.signal } : {}),
             commandId: call.id,
@@ -1605,7 +1618,9 @@ export class LocalToolRegistry implements ToolRegistry {
         args: commandShellArguments(command ?? rawCommand),
         timeoutMs: timeout,
         cwd: this.currentCwd(context),
-        ...(this.environment ? { env: this.environment } : {}),
+        ...(this.environment || sessionEnvironment
+          ? { env: { ...this.environment, ...sessionEnvironment } }
+          : {}),
         ...(context.signal ? { signal: context.signal } : {}),
       })
     } finally {

@@ -314,6 +314,7 @@ export interface ToolExecutionResult {
 
 export interface ToolExecutionContext {
   cwd: string
+  sessionId?: string
   messages?: readonly ModelMessage[]
   signal?: AbortSignal
   toolResultDirectory?: string
@@ -438,6 +439,7 @@ export type PermissionDecision =
   | {
       behavior: 'deny'
       reason: string
+      followUpUserMessages?: readonly string[]
       source?: PermissionDecisionSource
     }
 
@@ -528,6 +530,7 @@ export interface AgentRuntimeOptions {
 
 export interface AgentRunRequest {
   messages: readonly ModelMessage[]
+  sessionId?: string
   /** Number of leading system messages that form the stable prompt prefix. */
   stableSystemMessageCount?: number
   cwd?: string
@@ -572,6 +575,7 @@ export interface AgentToolRecoveryRequest extends Pick<
   | 'onPermissionUpdates'
   | 'permissionUpdates'
   | 'signal'
+  | 'sessionId'
   | 'toolResultDirectory'
 > {
   approveRecovery?: (call: ModelToolCall) => boolean | Promise<boolean>
@@ -1783,6 +1787,7 @@ export class AgentRuntime {
       permissionPhase: 'request',
       permissionUpdates: request.permissionUpdates ?? [],
     }
+    if (request.sessionId) context.sessionId = request.sessionId
     if (request.signal) context.signal = request.signal
     if (request.toolResultDirectory) {
       context.toolResultDirectory = request.toolResultDirectory
@@ -1865,7 +1870,13 @@ export class AgentRuntime {
           : decision.behavior === 'ask'
             ? (decision.reason ?? 'Permission approval was not provided')
             : 'Permission approval was not provided')
-      return { content: reason, isError: true }
+      return {
+        content: reason,
+        isError: true,
+        ...(decision.behavior === 'deny' && decision.followUpUserMessages
+          ? { followUpUserMessages: decision.followUpUserMessages }
+          : {}),
+      }
     }
     if (request.signal?.aborted) {
       throw request.signal.reason ?? new AgentRunCancelledError()

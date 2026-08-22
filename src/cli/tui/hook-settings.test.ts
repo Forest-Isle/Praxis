@@ -169,7 +169,9 @@ describe('TUI hook settings projection', () => {
         label: 'https://example.test/hook',
       }),
     ])
-    expect(projected.events[4]?.matchers[0]).toMatchObject({
+    expect(
+      projected.events.find(({ name }) => name === 'SessionStart')?.matchers[0],
+    ).toMatchObject({
       matcher: 'startup|resume',
       scope: 'Local',
       scopeLabel: 'Local Settings',

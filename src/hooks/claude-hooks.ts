@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process'
+import { basename, isAbsolute, resolve } from 'node:path'
 
 import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
 import type { PermissionBehavior } from '../core/runtime.js'
+import type { ClaudeSessionEnvironment } from './claude-session-environment.js'
 import {
   commandShell,
   commandShellArguments,
@@ -19,10 +21,23 @@ export type ClaudeHookEventName =
   | 'UserPromptSubmit'
   | 'PreToolUse'
   | 'PermissionRequest'
+  | 'PermissionDenied'
   | 'PostToolUse'
   | 'PostToolUseFailure'
+  | 'Notification'
   | 'Stop'
+  | 'StopFailure'
   | 'SubagentStop'
+  | 'PreCompact'
+  | 'PostCompact'
+  | 'TaskCreated'
+  | 'TaskCompleted'
+  | 'ConfigChange'
+  | 'InstructionsLoaded'
+  | 'WorktreeCreate'
+  | 'WorktreeRemove'
+  | 'CwdChanged'
+  | 'FileChanged'
   | 'SessionEnd'
 
 export interface ClaudeHookInput extends Record<string, unknown> {
@@ -84,12 +99,17 @@ export interface ClaudeHookOutcome {
   updatedInput?: Record<string, unknown>
   permissionDecision?: PermissionBehavior
   permissionDecisionReason?: string
+  retry?: boolean
+  watchPaths?: readonly string[]
+  systemMessages?: readonly string[]
   blockedReason?: string
 }
 
 interface CommandHook {
   command: string
   timeoutMs: number
+  asynchronous: boolean
+  hookIndex: number
   environment?: Readonly<Record<string, string>>
   sensitiveValues?: readonly string[]
 }
@@ -124,6 +144,7 @@ export interface ClaudeHookRunnerOptions {
   maxTimeoutMs?: number
   executeCommand?: ClaudeHookCommandExecutor
   onEvent?: (event: ClaudeHookStreamEvent) => void
+  sessionEnvironment?: ClaudeSessionEnvironment
 }
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
@@ -137,12 +158,24 @@ export const HOOK_EVENTS: readonly ClaudeHookEventName[] = [
   'UserPromptSubmit',
   'PreToolUse',
   'PermissionRequest',
+  'PermissionDenied',
   'PostToolUse',
   'PostToolUseFailure',
+  'Notification',
   'Stop',
+  'StopFailure',
   'SubagentStop',
+  'PreCompact',
+  'PostCompact',
+  'TaskCreated',
+  'TaskCompleted',
+  'InstructionsLoaded',
+  'CwdChanged',
+  'FileChanged',
   'SessionEnd',
 ]
+
+const EXECUTABLE_HOOK_EVENTS = new Set<string>(HOOK_EVENTS)
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -169,6 +202,7 @@ function eventSettings(
   maxTimeoutMs: number,
 ): HookMatcher[] {
   const matchers: HookMatcher[] = []
+  let hookIndex = 0
   for (const resource of settings) {
     if (!isRecord(resource.value) || !isRecord(resource.value.hooks)) continue
     const groups = resource.value.hooks[event]
@@ -200,6 +234,8 @@ function eventSettings(
         }
       }
       const hooks = group.hooks.flatMap((hook): CommandHook[] => {
+        const currentHookIndex = hookIndex
+        hookIndex += 1
         if (!isRecord(hook) || hook.type !== 'command') return []
         const command = nonEmptyString(
           hook.command,
@@ -215,10 +251,17 @@ function eventSettings(
             `Invalid Claude ${event} hook timeout: ${resource.path}`,
           )
         }
+        if (hook.async !== undefined && typeof hook.async !== 'boolean') {
+          throw new Error(
+            `Invalid Claude ${event} hook async: ${resource.path}`,
+          )
+        }
         return [
           {
             command,
             timeoutMs: Math.min(timeoutSeconds * 1000, maxTimeoutMs),
+            asynchronous: hook.async === true,
+            hookIndex: currentHookIndex,
             ...(resource.environment === undefined
               ? {}
               : { environment: resource.environment }),
@@ -234,6 +277,33 @@ function eventSettings(
     }
   }
   return matchers
+}
+
+function fileChangedMatcherPaths(
+  settings: readonly ClaudeJsonResource[],
+  cwd: string,
+): readonly string[] {
+  const paths: string[] = []
+  for (const resource of settings) {
+    if (!isRecord(resource.value) || !isRecord(resource.value.hooks)) continue
+    const groups = resource.value.hooks.FileChanged
+    if (!Array.isArray(groups)) continue
+    for (const group of groups) {
+      if (!isRecord(group) || !Array.isArray(group.hooks)) continue
+      if (
+        !group.hooks.some((hook) => isRecord(hook) && hook.type === 'command')
+      ) {
+        continue
+      }
+      if (typeof group.matcher !== 'string') continue
+      for (const candidate of group.matcher.split('|')) {
+        const path = candidate.trim()
+        if (!path) continue
+        paths.push(isAbsolute(path) ? path : resolve(cwd, path))
+      }
+    }
+  }
+  return [...new Set(paths)]
 }
 
 export function validateClaudeHooks(
@@ -283,6 +353,39 @@ function permissionBehavior(value: unknown): PermissionBehavior | undefined {
     : undefined
 }
 
+function hookMatcherValue(input: ClaudeHookInput): string {
+  switch (input.hook_event_name) {
+    case 'Setup':
+      return optionalString(input.trigger) ?? ''
+    case 'SessionStart':
+      return optionalString(input.source) ?? ''
+    case 'SubagentStart':
+    case 'SubagentStop':
+      return optionalString(input.agent_type) ?? ''
+    case 'PreToolUse':
+    case 'PermissionRequest':
+    case 'PermissionDenied':
+    case 'PostToolUse':
+    case 'PostToolUseFailure':
+      return optionalString(input.tool_name) ?? ''
+    case 'Notification':
+      return optionalString(input.notification_type) ?? ''
+    case 'StopFailure':
+      return optionalString(input.error) ?? ''
+    case 'PreCompact':
+    case 'PostCompact':
+      return optionalString(input.trigger) ?? ''
+    case 'InstructionsLoaded':
+      return optionalString(input.load_reason) ?? ''
+    case 'FileChanged':
+      return basename(optionalString(input.file_path) ?? '')
+    case 'SessionEnd':
+      return optionalString(input.reason) ?? ''
+    default:
+      return ''
+  }
+}
+
 function abortError(): DOMException {
   return new DOMException('Hook execution aborted', 'AbortError')
 }
@@ -294,27 +397,44 @@ export class ClaudeHookRunner {
   private readonly executeCommand: ClaudeHookCommandExecutor
   private readonly onEvent: ((event: ClaudeHookStreamEvent) => void) | undefined
   private readonly cwd: string
+  private readonly sessionEnvironment: ClaudeSessionEnvironment | undefined
+  private readonly asynchronousHooks: Map<Promise<void>, AbortController>
 
-  constructor(options: ClaudeHookRunnerOptions) {
+  constructor(
+    options: ClaudeHookRunnerOptions,
+    asynchronousHooks = new Map<Promise<void>, AbortController>(),
+  ) {
     this.settings = options.settings
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
     this.maxTimeoutMs = options.maxTimeoutMs ?? DEFAULT_TIMEOUT_MS
     this.executeCommand = options.executeCommand ?? this.runCommand.bind(this)
     this.onEvent = options.onEvent
     this.cwd = options.cwd
+    this.sessionEnvironment = options.sessionEnvironment
+    this.asynchronousHooks = asynchronousHooks
   }
 
   withAdditionalSettings(
     settings: readonly ClaudeJsonResource[],
   ): ClaudeHookRunner {
-    return new ClaudeHookRunner({
-      settings: [...this.settings, ...settings],
-      maxOutputBytes: this.maxOutputBytes,
-      maxTimeoutMs: this.maxTimeoutMs,
-      executeCommand: this.executeCommand,
-      ...(this.onEvent ? { onEvent: this.onEvent } : {}),
-      cwd: this.cwd,
-    })
+    return new ClaudeHookRunner(
+      {
+        settings: [...this.settings, ...settings],
+        maxOutputBytes: this.maxOutputBytes,
+        maxTimeoutMs: this.maxTimeoutMs,
+        executeCommand: this.executeCommand,
+        ...(this.onEvent ? { onEvent: this.onEvent } : {}),
+        ...(this.sessionEnvironment
+          ? { sessionEnvironment: this.sessionEnvironment }
+          : {}),
+        cwd: this.cwd,
+      },
+      this.asynchronousHooks,
+    )
+  }
+
+  fileChangedWatchPaths(cwd = this.cwd): readonly string[] {
+    return fileChangedMatcherPaths(this.settings, cwd)
   }
 
   async run(
@@ -323,19 +443,29 @@ export class ClaudeHookRunner {
     signal?: AbortSignal,
   ): Promise<ClaudeHookOutcome> {
     if (signal?.aborted) throw abortError()
+    if (!EXECUTABLE_HOOK_EVENTS.has(input.hook_event_name)) {
+      return { executions: [], additionalContext: [] }
+    }
+    const matchQuery = matcherValue ?? hookMatcherValue(input)
     const ambientSensitiveValues = sensitiveEnvironmentValues(process.env)
     const groups = eventSettings(
       this.settings,
       input.hook_event_name,
       this.maxTimeoutMs,
     ).filter(
-      (group) => !group.matcher || group.matcher.test(matcherValue ?? ''),
+      (group) =>
+        input.hook_event_name === 'CwdChanged' ||
+        !group.matcher ||
+        group.matcher.test(matchQuery),
     )
     const executions: ClaudeHookExecution[] = []
     const additionalContext: string[] = []
     let updatedInput: Record<string, unknown> | undefined
     let permissionDecision: PermissionBehavior | undefined
     let permissionDecisionReason: string | undefined
+    let retry = false
+    const watchPaths: string[] = []
+    const systemMessages: string[] = []
     let blockedReason: string | undefined
 
     for (const group of groups) {
@@ -345,7 +475,7 @@ export class ClaudeHookRunner {
           hook.sensitiveValues,
         )
         const hookId = crypto.randomUUID()
-        const hookName = `${input.hook_event_name}${matcherValue ? `:${matcherValue}` : ''}`
+        const hookName = `${input.hook_event_name}${matchQuery ? `:${matchQuery}` : ''}`
         this.onEvent?.({
           type: 'started',
           hookId,
@@ -376,6 +506,73 @@ export class ClaudeHookRunner {
             output,
           })
         }
+        const executionEnvironment = await this.executionEnvironment(
+          input,
+          hook,
+        )
+        if (hook.asynchronous) {
+          const controller = new AbortController()
+          const pending = this.executeCommand(
+            hook.command,
+            input,
+            hook.timeoutMs,
+            controller.signal,
+            reportProgress,
+            executionEnvironment,
+          )
+            .finally(() => this.invalidateSessionEnvironment(input))
+            .then((result) => {
+              const stdout = redactSensitiveText(result.stdout, sensitiveValues)
+              const stderr = redactSensitiveText(result.stderr, sensitiveValues)
+              const output = redactSensitiveText(
+                result.output ?? `${result.stdout}${result.stderr}`,
+                sensitiveValues,
+              )
+              const outputExceeded =
+                Buffer.byteLength(stdout) + Buffer.byteLength(stderr) >
+                this.maxOutputBytes
+              this.onEvent?.({
+                type: 'response',
+                hookId,
+                hookName,
+                hookEvent: input.hook_event_name,
+                stdout: outputExceeded ? '' : stdout,
+                stderr: outputExceeded
+                  ? 'Hook output exceeded byte limit'
+                  : stderr,
+                output: outputExceeded
+                  ? 'Hook output exceeded byte limit'
+                  : output,
+                exitCode: outputExceeded ? 1 : result.exitCode,
+                outcome:
+                  outputExceeded || result.exitCode !== 0 ? 'error' : 'success',
+              })
+            })
+            .catch((error: unknown) => {
+              const message = redactSensitiveText(
+                hookErrorMessage(error),
+                sensitiveValues,
+              )
+              this.onEvent?.({
+                type: 'response',
+                hookId,
+                hookName,
+                hookEvent: input.hook_event_name,
+                output: message,
+                stdout: '',
+                stderr: message,
+                ...(hookWasCancelled(error, controller.signal)
+                  ? {}
+                  : { exitCode: 1 }),
+                outcome: hookWasCancelled(error, controller.signal)
+                  ? 'cancelled'
+                  : 'error',
+              })
+            })
+          this.asynchronousHooks.set(pending, controller)
+          void pending.finally(() => this.asynchronousHooks.delete(pending))
+          continue
+        }
         try {
           result = await this.executeCommand(
             hook.command,
@@ -383,7 +580,7 @@ export class ClaudeHookRunner {
             hook.timeoutMs,
             signal,
             reportProgress,
-            hook.environment,
+            executionEnvironment,
           )
         } catch (error) {
           const message = redactSensitiveText(
@@ -403,6 +600,8 @@ export class ClaudeHookRunner {
             outcome: cancelled ? 'cancelled' : 'error',
           })
           throw error
+        } finally {
+          this.invalidateSessionEnvironment(input)
         }
         const toolUseId =
           optionalString(input.tool_use_id) ?? crypto.randomUUID()
@@ -486,6 +685,28 @@ export class ClaudeHookRunner {
           ? redactSensitiveText(nextPermissionReason, sensitiveValues)
           : permissionDecisionReason
         if (
+          input.hook_event_name === 'PermissionDenied' &&
+          specific?.hookEventName === 'PermissionDenied' &&
+          specific.retry === true
+        ) {
+          retry = true
+        }
+        if (
+          (input.hook_event_name === 'CwdChanged' ||
+            input.hook_event_name === 'FileChanged') &&
+          specific?.hookEventName === input.hook_event_name &&
+          Array.isArray(specific.watchPaths) &&
+          specific.watchPaths.every((path) => typeof path === 'string')
+        ) {
+          watchPaths.push(...specific.watchPaths)
+        }
+        const systemMessage = optionalString(parsedOutput?.systemMessage)
+        if (systemMessage) {
+          systemMessages.push(
+            redactSensitiveText(systemMessage, sensitiveValues),
+          )
+        }
+        if (
           parsedOutput?.continue === false ||
           parsedOutput?.decision === 'block'
         ) {
@@ -507,7 +728,86 @@ export class ClaudeHookRunner {
       ...(updatedInput ? { updatedInput } : {}),
       ...(permissionDecision ? { permissionDecision } : {}),
       ...(permissionDecisionReason ? { permissionDecisionReason } : {}),
+      ...(retry ? { retry } : {}),
+      ...(watchPaths.length > 0 ? { watchPaths } : {}),
+      ...(systemMessages.length > 0 ? { systemMessages } : {}),
       ...(blockedReason ? { blockedReason } : {}),
+    }
+  }
+
+  async drainAsync(timeoutMs: number): Promise<void> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+      throw new Error('Hook async drain timeout must be non-negative')
+    }
+    const pending = [...this.asynchronousHooks.keys()]
+    if (pending.length === 0) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs)
+    })
+    try {
+      if (
+        (await Promise.race([
+          Promise.allSettled(pending).then(() => 'settled' as const),
+          timeout,
+        ])) === 'timeout'
+      ) {
+        for (const controller of this.asynchronousHooks.values()) {
+          controller.abort()
+        }
+        // Give cooperative executors one event-loop turn to publish their
+        // cancelled response. Keep the wait bounded because custom executors
+        // are allowed to ignore AbortSignal entirely.
+        await Promise.race([
+          Promise.allSettled(pending),
+          new Promise<void>((resolve) => setTimeout(resolve, 0)),
+        ])
+        // Executors normally terminate their child process on abort. A custom
+        // executor may ignore cancellation, so shutdown abandons tracking
+        // after the deadline instead of turning a bounded drain into an
+        // unbounded wait.
+        this.asynchronousHooks.clear()
+      }
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  async clearCwdEnvironment(sessionId: string): Promise<void> {
+    await this.sessionEnvironment?.clearCwdFiles(sessionId)
+  }
+
+  private async executionEnvironment(
+    input: ClaudeHookInput,
+    hook: CommandHook,
+  ): Promise<Readonly<Record<string, string>> | undefined> {
+    if (
+      !this.sessionEnvironment ||
+      !['Setup', 'SessionStart', 'CwdChanged', 'FileChanged'].includes(
+        input.hook_event_name,
+      )
+    ) {
+      return hook.environment
+    }
+    const environmentFile = await this.sessionEnvironment.hookFile(
+      input.session_id,
+      input.hook_event_name as
+        'Setup' | 'SessionStart' | 'CwdChanged' | 'FileChanged',
+      hook.hookIndex,
+    )
+    return {
+      ...hook.environment,
+      ...(environmentFile ? { CLAUDE_ENV_FILE: environmentFile } : {}),
+    }
+  }
+
+  private invalidateSessionEnvironment(input: ClaudeHookInput): void {
+    if (
+      ['Setup', 'SessionStart', 'CwdChanged', 'FileChanged'].includes(
+        input.hook_event_name,
+      )
+    ) {
+      this.sessionEnvironment?.invalidate(input.session_id)
     }
   }
 

@@ -46,6 +46,14 @@ function limitMemoryIndex(resource: ClaudeTextResource): ClaudeTextResource {
 
 export interface ClaudeContextAssemblerOptions {
   loadResources(cwd?: string): Promise<ClaudeContextResources>
+  onInstructionsLoaded?(
+    resources: readonly ClaudeTextResource[],
+    context: {
+      lifecycleId?: string
+      cwd?: string
+      reason: 'session_start' | 'compact' | 'resource_reload'
+    },
+  ): Promise<void>
   loadDynamicContext?(cwd?: string): Promise<ClaudeDynamicContextSections>
   loadMcpInstructions?(): Promise<readonly ClaudeMcpInstruction[]>
   loadSessionGuidance?(): Promise<string | undefined>
@@ -69,6 +77,7 @@ interface ContextSnapshot {
   mcpInstructions?: Promise<readonly ClaudeMcpInstruction[]>
   sessionGuidance?: Promise<string | undefined>
   currentDate?: string
+  resourceLoadReason?: 'compact' | 'resource_reload'
 }
 
 export type ClaudeConditionalRuleResolverOptions = ClaudeContextAssemblerOptions
@@ -246,6 +255,8 @@ ${sections.join('\n\n')}`,
         options.reason === 'compact'
       ) {
         delete snapshot.resources
+        snapshot.resourceLoadReason =
+          options.reason === 'compact' ? 'compact' : 'resource_reload'
         continue
       }
       if (options.reason === 'tool-pool') {
@@ -279,7 +290,18 @@ ${sections.join('\n\n')}`,
   ): Promise<ClaudeContextResources> {
     if (!snapshot) return this.options.loadResources(cwd)
     if (!snapshot.resources) {
-      const pending = this.options.loadResources(cwd)
+      const reason = snapshot.resourceLoadReason ?? 'session_start'
+      delete snapshot.resourceLoadReason
+      const pending = this.options
+        .loadResources(cwd)
+        .then(async (resources) => {
+          await this.options.onInstructionsLoaded?.(resources.instructions, {
+            lifecycleId: snapshot.lifecycleId,
+            ...(cwd === undefined ? {} : { cwd }),
+            reason,
+          })
+          return resources
+        })
       snapshot.resources = pending
       void pending.catch(() => {
         if (snapshot.resources === pending) delete snapshot.resources

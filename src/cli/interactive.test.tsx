@@ -6805,6 +6805,7 @@ describe('InteractiveApp', () => {
   })
 
   it('renders permission, MCP, and hook lifecycle feedback', async () => {
+    const notifications: unknown[][] = []
     const factory: InteractiveServiceFactory = {
       async createService({ eventSink }) {
         return {
@@ -6853,6 +6854,9 @@ describe('InteractiveApp', () => {
           async sessions() {
             return []
           },
+          async notify(...args) {
+            notifications.push(args)
+          },
         }
       },
     }
@@ -6864,6 +6868,14 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Permission allowed · call-1')
     expect(app.lastFrame()).toContain('MCP elicitation completed · fixture')
+    expect(notifications).toEqual([
+      [
+        expect.any(String),
+        'MCP elicitation completed · fixture',
+        'elicitation_complete',
+        'Praxis',
+      ],
+    ])
     expect(app.lastFrame()).toContain('Hook started · PreToolUse:Bash')
     expect(app.lastFrame()).toContain('Hook response · PreToolUse:Bash · error')
   })
@@ -7291,6 +7303,7 @@ describe('InteractiveApp', () => {
 
   it('asks before an ask-permission tool and forwards the decision', async () => {
     let approval: PermissionApproval | undefined
+    const notifications: unknown[][] = []
     const suspendProcess = vi.fn()
     const call: ModelToolCall = {
       id: 'call-1',
@@ -7320,6 +7333,9 @@ describe('InteractiveApp', () => {
           async sessions() {
             return []
           },
+          async notify(...args) {
+            notifications.push(args)
+          },
         }
       },
     }
@@ -7328,6 +7344,7 @@ describe('InteractiveApp', () => {
         factory={factory}
         initialSessions={[]}
         suspendProcess={suspendProcess}
+        notificationDelayMs={1}
         axScreenReader
       />,
     )
@@ -7345,6 +7362,16 @@ describe('InteractiveApp', () => {
       'Yes, and don’t ask again for: npm test:*',
     )
     expect(app.lastFrame()).not.toContain('❯')
+    await delay(10)
+    await flush()
+    expect(notifications).toEqual([
+      [
+        expect.any(String),
+        'Approval required for Bash',
+        'permission_prompt',
+        'Praxis',
+      ],
+    ])
 
     app.stdin.write('\u001a')
     await new Promise((resolve) => setTimeout(resolve, 75))

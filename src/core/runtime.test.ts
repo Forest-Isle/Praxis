@@ -2219,6 +2219,42 @@ describe('AgentRuntime', () => {
     ])
   })
 
+  it('passes the explicit session identity through tool preparation and execution', async () => {
+    let turn = 0
+    const provider = providerFrom(async function* () {
+      if (turn++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: { id: 'session-tool', name: 'Bash', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const sessions: Array<string | undefined> = []
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        async prepare(call, context) {
+          sessions.push(context.sessionId)
+          return call
+        },
+        async execute(_call, context) {
+          sessions.push(context.sessionId)
+          return { content: 'done', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await runtime.run({
+      sessionId: 'session-a',
+      messages: [{ role: 'user', content: 'run tool' }],
+    })
+
+    expect(sessions).toEqual(['session-a', 'session-a'])
+  })
+
   it('forwards image tool results only to image-capable providers', async () => {
     const requests: ModelRequest[] = []
     let turn = 0
@@ -2465,7 +2501,9 @@ describe('AgentRuntime', () => {
   it('returns denied tools as error results without executing them', async () => {
     let turn = 0
     let executed = false
-    const provider = providerFrom(async function* () {
+    const requests: ModelRequest[] = []
+    const provider = providerFrom(async function* (request) {
+      requests.push(request)
       if (turn++ === 0) {
         yield {
           type: 'tool-call',
@@ -2496,6 +2534,7 @@ describe('AgentRuntime', () => {
         resolve: () => ({
           behavior: 'deny',
           reason: 'Denied by local policy',
+          followUpUserMessages: ['Permission hook says retry is available'],
         }),
       },
     })
@@ -2513,8 +2552,16 @@ describe('AgentRuntime', () => {
     expect(result.text).toBe('I could not remove it.')
     expect(executed).toBe(false)
     expect(results).toEqual([
-      { content: 'Denied by local policy', isError: true },
+      {
+        content: 'Denied by local policy',
+        isError: true,
+        followUpUserMessages: ['Permission hook says retry is available'],
+      },
     ])
+    expect(requests[1]?.messages.at(-1)).toEqual({
+      role: 'user',
+      content: 'Permission hook says retry is available',
+    })
   })
 
   it('fails closed when model output or tool calls exceed run bounds', async () => {
