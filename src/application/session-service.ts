@@ -239,6 +239,9 @@ export interface ClaudeSessionServiceOptions {
   enableWorkflows?: boolean
   providerForModel?: (model: string) => ModelProvider
   providerForMainModel?: (model: string) => ModelProvider
+  /** Creates a provider adapter dedicated to Session memory requests so
+   *  adapter-local cache and retry state are not shared with the foreground. */
+  sessionMemoryProviderFactory?: () => ModelProvider
   explicitModel?: boolean
   explicitSystemPrompt?: boolean
   agentInitialPromptHandledExternally?: boolean
@@ -253,9 +256,8 @@ export interface ClaudeSessionServiceOptions {
   brief?: boolean
   collectMetrics?: boolean
   sessionPersistence?: boolean
-  /** Enable durable per-session memory extraction and injection. Defaults to
-   *  enabled whenever session persistence is enabled; ignored when
-   *  `sessionPersistence === false`. */
+  /** Enable durable per-session memory extraction and injection. It runs only
+   *  when persistence and an isolated provider factory are available. */
   enableSessionMemory?: boolean
   sessionKind?: 'bg'
   workspace?: WorkspaceContext
@@ -729,10 +731,10 @@ Return ONLY an updated Markdown document that becomes the session's durable memo
  *  branch can provide them. Larger suffixes stay conservative. */
 const MEMORY_COMPACT_MIN_SUFFIX_MESSAGES = 5
 const MEMORY_COMPACT_MIN_SUFFIX_TOKENS = 10_000
-/** Above this estimated compactor projection the selective path falls back to
- *  the existing full-compaction behavior instead of building an oversized
- *  projection. */
+/** Above this estimated post-compact envelope the selective path falls back to
+ *  full compaction instead of retaining an oversized active projection. */
 const MEMORY_COMPACT_MAX_PROJECTION_TOKENS = 40_000
+const MEMORY_COMPACT_MAX_SUMMARY_TOKENS = 8_192
 
 /** Conservative selective-preservation plan for a manual compact anchored on
  *  the durable session memory watermark. */
@@ -808,6 +810,40 @@ function claudeAssistantHasToolUse(
   )
 }
 
+function claudeAssistantResponseId(
+  entry: ClaudeTranscriptEntry | undefined,
+): string | null {
+  if (
+    entry?.type !== 'assistant' ||
+    typeof entry.message !== 'object' ||
+    entry.message === null ||
+    Array.isArray(entry.message)
+  ) {
+    return null
+  }
+  const id = (entry.message as Record<string, unknown>).id
+  return typeof id === 'string' && id.length > 0 ? id : null
+}
+
+/** Claude transcripts may normalize one provider response into consecutive
+ *  assistant records with the same message.id. Keep the whole response on one
+ *  side of the compact boundary so thinking and tool siblings stay together. */
+function completeClaudeAssistantResponseBoundary(
+  activeEntries: readonly ClaudeTranscriptEntry[],
+  startIndex: number,
+  lowerBound: number,
+): number {
+  const responseId = claudeAssistantResponseId(activeEntries[startIndex])
+  if (responseId === null) return startIndex
+  let boundary = startIndex
+  for (let index = startIndex - 1; index >= lowerBound; index -= 1) {
+    const candidate = activeEntries[index]
+    if (claudeAssistantResponseId(candidate) !== responseId) break
+    boundary = index
+  }
+  return boundary
+}
+
 /** Pulls the preserved-suffix boundary backward so a tool_use assistant entry
  *  and its tool_result user entry stay siblings: the suffix never opens with an
  *  orphaned tool_result and the compacted input never ends with a dangling
@@ -816,6 +852,7 @@ function claudeAssistantHasToolUse(
 function completeClaudeToolPairBoundary(
   activeEntries: readonly ClaudeTranscriptEntry[],
   startIndex: number,
+  lowerBound: number,
 ): number {
   let boundary = startIndex
   while (boundary < activeEntries.length) {
@@ -824,7 +861,7 @@ function completeClaudeToolPairBoundary(
     const ids = claudeToolResultIds(entry)
     if (ids.size === 0) break
     let extended = false
-    for (let index = boundary - 1; index >= 0; index -= 1) {
+    for (let index = boundary - 1; index >= lowerBound; index -= 1) {
       const candidate = activeEntries[index]
       if (candidate && claudeAssistantHasToolUse(candidate, ids)) {
         boundary = index
@@ -839,13 +876,24 @@ function completeClaudeToolPairBoundary(
 
 /** Walks back from the active tail to the inclusive start of the recent suffix
  *  retained verbatim, then completes sibling adjacency at the boundary. */
-function memoryPreservedSuffixStart(
+export function memoryPreservedSuffixStart(
   activeEntries: readonly ClaudeTranscriptEntry[],
 ): number {
+  let latestCompactBoundary = 0
+  for (let index = activeEntries.length - 1; index >= 0; index -= 1) {
+    if (activeEntries[index]?.isCompactSummary === true) {
+      latestCompactBoundary = index
+      break
+    }
+  }
   let start = activeEntries.length
   let textBearing = 0
   let estimatedTokens = 0
-  for (let index = activeEntries.length - 1; index >= 0; index -= 1) {
+  for (
+    let index = activeEntries.length - 1;
+    index >= latestCompactBoundary;
+    index -= 1
+  ) {
     const entry = activeEntries[index]
     if (!entry) continue
     start = index
@@ -856,12 +904,22 @@ function memoryPreservedSuffixStart(
     )
     if (
       textBearing >= MEMORY_COMPACT_MIN_SUFFIX_MESSAGES &&
-      (estimatedTokens >= MEMORY_COMPACT_MIN_SUFFIX_TOKENS || index === 0)
+      (estimatedTokens >= MEMORY_COMPACT_MIN_SUFFIX_TOKENS ||
+        index === latestCompactBoundary)
     ) {
       break
     }
   }
-  return completeClaudeToolPairBoundary(activeEntries, start)
+  const toolSafeStart = completeClaudeToolPairBoundary(
+    activeEntries,
+    start,
+    latestCompactBoundary,
+  )
+  return completeClaudeAssistantResponseBoundary(
+    activeEntries,
+    toolSafeStart,
+    latestCompactBoundary,
+  )
 }
 
 function validPromptSuggestion(value: string): string | null {
@@ -1065,6 +1123,7 @@ export class ClaudeSessionService {
     string,
     SessionMemoryController
   >()
+  private resolvedSessionMemoryProvider: ModelProvider | null | undefined
   private readonly hookLifecycle: HookLifecycle
   private runtimeCwd: string
 
@@ -1255,6 +1314,11 @@ export class ClaudeSessionService {
     await Promise.all([...this.backgroundNotificationWrites.values()])
     this.hostedSubagents.clear()
     this.backgroundTasks.clear()
+    await Promise.all(
+      [...this.sessionMemoryControllers.values()].map((controller) =>
+        controller.close(),
+      ),
+    )
     this.sessionMemoryControllers.clear()
     await this.workflowManager?.close()
     this.closeCostSavePromise ??= this.persistActiveSessionCost()
@@ -3856,7 +3920,7 @@ export class ClaudeSessionService {
           ]
           const irreducible = budget.evaluate(irreducibleMessages, definitions)
           budget.assertFits(irreducible)
-          const logicalParentUuid = compactionAnchorUuid
+          let logicalParentUuid = compactionAnchorUuid
           if (!logicalParentUuid || historyMessages.length === 0) {
             budget.assertFits(predicted)
             throw new Error('Cannot compact an empty Claude transcript')
@@ -3866,8 +3930,20 @@ export class ClaudeSessionService {
               'Cannot compact a Claude session with unresolved tool calls',
             )
           }
-          if (sessionMemory) {
-            await sessionMemory.waitForIdle()
+          const memorySelection = sessionMemory
+            ? await this.selectMemoryPreservedCompact(
+                sessionId,
+                selectClaudeActiveTranscript(snapshot.entries),
+              )
+            : null
+          const compactorMessages = memorySelection
+            ? [
+                memorySelection.memoryMessage,
+                ...projectClaudeModelMessages(memorySelection.compactedEntries),
+              ]
+            : historyMessages
+          if (memorySelection) {
+            logicalParentUuid = memorySelection.logicalParentUuid
           }
           this.options.eventSink?.({ type: 'state', state: 'compacting' })
           const compactEnvelope = budget.evaluate(
@@ -3902,7 +3978,7 @@ export class ClaudeSessionService {
           const compacted = await (
             this.options.compactor ?? new ModelCompactor(provider)
           ).compact({
-            messages: historyMessages,
+            messages: compactorMessages,
             targetTokens,
             contextWindowTokens: budget.contextWindowTokens,
             ...(signal ? { signal } : {}),
@@ -3946,6 +4022,14 @@ export class ClaudeSessionService {
               cwd: this.activeCwd(),
               claudeVersion: this.options.claudeVersion,
               gitBranch: null,
+              ...(memorySelection
+                ? {
+                    preservedUuids: memorySelection.preservedEntries.flatMap(
+                      (entry) =>
+                        typeof entry.uuid === 'string' ? [entry.uuid] : [],
+                    ),
+                  }
+                : {}),
               createUuid: () => uuids.shift() ?? randomUUID(),
               now: () => timestamp,
             })
@@ -4600,28 +4684,31 @@ export class ClaudeSessionService {
           })
         }
         if (sessionMemory && finalLeafUuid) {
-          const turnInputTokens = result.usage?.inputTokens ?? 0
-          const warn = (error: unknown) =>
-            this.options.eventSink?.({
-              type: 'warning',
-              message: `Session memory extraction failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            })
+          const memorySnapshot = projectClaudeModelMessages(snapshot.entries)
+          const providerVisibleMessages = [
+            ...contextMessages,
+            ...injectTurnContext(memorySnapshot),
+          ]
+          const currentContextTokens = budget
+            ? budget.evaluate(providerVisibleMessages, definitions)
+                .occupancyTokens
+            : estimateModelRequestTokens(providerVisibleMessages, definitions)
           try {
-            await sessionMemory.observeDelta(
-              turnInputTokens,
+            await sessionMemory.observeContext(
+              currentContextTokens,
               currentTurnToolCalls,
               finalLeafUuid,
-              projectClaudeModelMessages(snapshot.entries),
+              memorySnapshot,
             )
-            // Normal turns schedule extraction without awaiting it; failures
-            // surface as a warning while the sidecar stays retryable.
-            sessionMemory.waitForIdle().catch(warn)
           } catch (error) {
             // A failed observation must not fail the user turn; the sidecar
             // retains a retryable error for the next observation.
-            warn(error)
+            this.options.eventSink?.({
+              type: 'warning',
+              message: `Session memory observation failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            })
           }
         }
         turnCompleted = true
@@ -4761,7 +4848,7 @@ export class ClaudeSessionService {
     return null
   }
 
-  /** Conservative selective-preservation seam for manual compact: when the
+  /** Conservative selective-preservation seam for full compact: when the
    *  durable session memory watermark matches an active entry, summarize the
    *  last good memory artifact plus the post-watermark branch and retain a
    *  recent suffix. Returns null to fall back to the existing full-compaction
@@ -4773,6 +4860,7 @@ export class ClaudeSessionService {
   ): Promise<MemoryPreservedCompactSelection | null> {
     const controller = this.sessionMemoryController(sessionId)
     if (controller === null) return null
+    await controller.waitForCompact()
     let watermark: string | null = null
     let memorySummary = ''
     try {
@@ -4800,12 +4888,19 @@ export class ClaudeSessionService {
       suffixStart,
     )
     const preservedEntries = activeEntries.slice(suffixStart)
-    const selectedMessages = projectClaudeModelMessages(compactedEntries)
-    if (selectedMessages.length === 0) return null
+    const preservedMessages = projectClaudeModelMessages(preservedEntries)
+    if (projectClaudeModelMessages(compactedEntries).length === 0) return null
 
     const memoryMessage: ModelMessage = { role: 'user', content: memorySummary }
     if (
-      estimateModelRequestTokens([memoryMessage, ...selectedMessages]) >
+      estimateModelRequestTokens([
+        {
+          role: 'user',
+          content: formatClaudeCompactSummary(''),
+        },
+        ...preservedMessages,
+      ]) +
+        MEMORY_COMPACT_MAX_SUMMARY_TOKENS >
       MEMORY_COMPACT_MAX_PROJECTION_TOKENS
     ) {
       return null
@@ -5585,7 +5680,8 @@ export class ClaudeSessionService {
   private sessionMemoryEnabled(): boolean {
     if (this.options.enableSessionMemory === false) return false
     if (this.options.sessionPersistence === false) return false
-    return true
+    if (this.options.sessionKind === 'bg') return false
+    return this.sessionMemoryProviderFactory() !== null
   }
 
   private sessionMemoryController(
@@ -5602,7 +5698,14 @@ export class ClaudeSessionService {
           sessionId,
           sidecarRoot: this.paths(sessionId).praxisRoot,
         }),
-        extractor: (input) => this.extractSessionMemory(sessionId, input),
+        extractor: (input) => this.extractSessionMemory(input),
+        onExtractionError: (error) =>
+          this.options.eventSink?.({
+            type: 'warning',
+            message: `Session memory extraction failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          }),
       })
       this.sessionMemoryControllers.set(sessionId, controller)
     }
@@ -5659,14 +5762,21 @@ export class ClaudeSessionService {
         parts.push(`Tool result: ${message.content}`)
       }
     }
-    return this.boundSessionMemorySummary(parts.join('\n\n'))
+    // The successful watermark names the newest message in this snapshot, so
+    // extraction must receive every message in full. Summary injection remains
+    // bounded separately; provider refusal leaves the old watermark retryable.
+    return parts.join('\n\n')
   }
 
   private async extractSessionMemory(
-    sessionId: string,
     input: SessionMemoryExtractorInput,
   ): Promise<string> {
-    const provider = this.provider()
+    const provider = this.sessionMemoryProvider()
+    if (provider === null) {
+      throw new SessionMemoryStateError(
+        'Session memory requires an isolated provider factory',
+      )
+    }
     const messages: ModelMessage[] = [
       { role: 'system', content: SESSION_MEMORY_EXTRACTION_PROMPT },
       ...(input.summary.trim().length === 0
@@ -5686,14 +5796,12 @@ export class ClaudeSessionService {
             },
           ]),
     ]
-    const metrics = await completeMeteredModelRequest(
-      provider,
-      { messages },
-      {
-        onMetrics: (recorded) =>
-          this.recordAuxiliaryMetrics(sessionId, recorded),
-      },
-    )
+    // Session memory is operational side work: it never contributes to the
+    // foreground result or the persisted session cost/usage tracker.
+    const metrics = await completeMeteredModelRequest(provider, {
+      messages,
+      signal: input.signal,
+    })
     if (metrics.toolCalls.length > 0) {
       throw new SessionMemoryStateError(
         'Session memory extraction must not call tools',
@@ -5706,6 +5814,27 @@ export class ClaudeSessionService {
       )
     }
     return summary
+  }
+
+  private sessionMemoryProvider(): ModelProvider | null {
+    if (this.resolvedSessionMemoryProvider !== undefined) {
+      return this.resolvedSessionMemoryProvider
+    }
+    const factory = this.sessionMemoryProviderFactory()
+    this.resolvedSessionMemoryProvider = factory?.() ?? null
+    return this.resolvedSessionMemoryProvider
+  }
+
+  private sessionMemoryProviderFactory(): (() => ModelProvider) | null {
+    if (this.options.sessionMemoryProviderFactory) {
+      return this.options.sessionMemoryProviderFactory
+    }
+    const selectProvider =
+      this.options.providerForMainModel ?? this.options.providerForModel
+    const foregroundModel = this.options.provider?.model
+    return foregroundModel && selectProvider
+      ? () => selectProvider(foregroundModel)
+      : null
   }
 
   private toolCapabilities(): ReadonlySet<string> {

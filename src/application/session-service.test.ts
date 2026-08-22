@@ -44,8 +44,14 @@ import {
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { CLAUDE_CODE_DISABLE_CRON } from '../tools/claude-capabilities.js'
 import type { ClaudeSessionCostState } from '../persistence/claude-cost-state-store.js'
-import { ClaudeSessionService } from './session-service.js'
-import type { SessionMemoryController } from './session-memory.js'
+import {
+  ClaudeSessionService,
+  memoryPreservedSuffixStart,
+} from './session-service.js'
+import {
+  SessionMemoryStore,
+  type SessionMemoryState,
+} from './session-memory.js'
 import { WorkspaceContext } from './session-worktree.js'
 
 const roots: string[] = []
@@ -83,30 +89,27 @@ async function createService() {
   }
 }
 
-/** The service keeps per-session memory controllers private; reach the handle
- *  so a test can deterministically await extraction idle instead of sleeping. */
-function sessionMemoryController(
-  service: ClaudeSessionService,
+/** Waits on the observable sidecar commit instead of reaching into the
+ * service's private controller lifecycle. */
+async function waitForSessionMemoryCommit(
+  configRoot: string,
+  planeRoot: string,
   sessionId: string,
-): SessionMemoryController {
-  const controllers = (
-    service as unknown as {
-      sessionMemoryControllers: Map<string, SessionMemoryController>
-    }
-  ).sessionMemoryControllers
-  const controller = controllers.get(sessionId)
-  if (!controller) {
-    throw new Error(`No session memory controller for session ${sessionId}`)
-  }
-  return controller
-}
-
-/** Resolves when the session's scheduled memory extraction has drained. */
-async function waitForSessionMemoryIdle(
-  service: ClaudeSessionService,
-  sessionId: string,
-): Promise<void> {
-  await sessionMemoryController(service, sessionId).waitForIdle()
+  predicate: (state: SessionMemoryState) => boolean = (state) =>
+    state.initialized && state.extractionStartedAt === null,
+): Promise<SessionMemoryState> {
+  const store = new SessionMemoryStore({
+    configRoot,
+    sessionId,
+    sidecarRoot: join(configRoot, planeRoot),
+  })
+  let state: SessionMemoryState | undefined
+  await vi.waitFor(async () => {
+    state = await store.load()
+    expect(predicate(state), JSON.stringify(state)).toBe(true)
+  })
+  if (!state) throw new Error('Session memory state was not committed')
+  return state
 }
 
 function trackedTotals(snapshot: {
@@ -138,6 +141,58 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('keeps consecutive assistant records from one provider response together at the suffix boundary', () => {
+    const responseId = 'msg_split_response'
+    const entries = [
+      { type: 'user', message: { role: 'user', content: 'older' } },
+      {
+        type: 'assistant',
+        message: {
+          id: responseId,
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'reason', signature: 'signed' },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          id: responseId,
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'call-split', name: 'Read', input: {} },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call-split',
+              content: 'result',
+            },
+          ],
+        },
+      },
+      { type: 'user', message: { role: 'user', content: 'x'.repeat(20_000) } },
+      {
+        type: 'assistant',
+        message: {
+          id: 'msg_tail',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'tail' }],
+        },
+      },
+      { type: 'user', message: { role: 'user', content: 'x'.repeat(20_000) } },
+    ]
+
+    expect(memoryPreservedSuffixStart(entries)).toBe(1)
+  })
+
   it.each([
     {
       dataPlane: 'native' as const,
@@ -156,18 +211,24 @@ describe('ClaudeSessionService', () => {
       roots.push(root)
       const configRoot = join(root, 'config')
       const cwd = join(root, 'project')
-      let calls = 0
       const provider: ModelProvider = {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'foreground answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 12_000, outputTokens: 50 },
+          }
+        },
+      }
+      const memoryProvider: ModelProvider = {
         capabilities: { streaming: true, usage: true, tools: false },
         async *complete() {
-          if (calls++ === 0) {
-            yield { type: 'text-delta', delta: 'foreground answer' }
-            yield {
-              type: 'usage',
-              usage: { inputTokens: 12_000, outputTokens: 50 },
-            }
-            return
-          }
           yield { type: 'text-delta', delta: 'durable memory' }
           yield {
             type: 'usage',
@@ -181,6 +242,7 @@ describe('ClaudeSessionService', () => {
         cwd,
         claudeVersion: '2.1.208',
         provider,
+        sessionMemoryProviderFactory: () => memoryProvider,
       })
 
       const run = await service.run('remember this')
@@ -195,7 +257,7 @@ describe('ClaudeSessionService', () => {
 
       // Normal turns schedule extraction without awaiting it, so wait for the
       // controller to drain before reading the sidecar.
-      await waitForSessionMemoryIdle(service, run.sessionId)
+      await waitForSessionMemoryCommit(configRoot, selectedRoot, run.sessionId)
       await expect(readFile(memoryPath(selectedRoot), 'utf8')).resolves.toBe(
         'durable memory',
       )
@@ -205,6 +267,375 @@ describe('ClaudeSessionService', () => {
       await service.close()
     },
   )
+
+  it('cancels asynchronous session memory extraction during service close', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-close-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let extractionStarted: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      extractionStarted = resolve
+    })
+    let extractionAborted = false
+    const provider: ModelProvider = {
+      model: 'session-memory-close-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 200_000,
+      },
+      async *complete() {
+        yield { type: 'text-delta', delta: 'foreground answer' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 12_000, outputTokens: 50 },
+        }
+      },
+    }
+    const memoryProvider: ModelProvider = {
+      model: 'session-memory-close-model',
+      capabilities: { streaming: true, usage: true, tools: false },
+      complete(request) {
+        const iterator = {
+          async next() {
+            extractionStarted?.()
+            await new Promise<void>((resolve) => {
+              request.signal?.addEventListener(
+                'abort',
+                () => {
+                  extractionAborted = true
+                  resolve()
+                },
+                { once: true },
+              )
+            })
+            throw new AgentRunCancelledError()
+          },
+          [Symbol.asyncIterator]() {
+            return iterator
+          },
+        }
+        return iterator
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      sessionMemoryProviderFactory: () => memoryProvider,
+    })
+
+    const run = await service.run('remember this')
+    expect(run.usage).toEqual({ inputTokens: 12_000, outputTokens: 50 })
+    await started
+    await service.close()
+
+    expect(extractionAborted).toBe(true)
+    const state = JSON.parse(
+      await readFile(
+        join(
+          configRoot,
+          'praxis',
+          'session-memory',
+          run.sessionId,
+          'state.json',
+        ),
+        'utf8',
+      ),
+    ) as {
+      lastObservedTokens: number
+      lastSummarizedMessageId: string | null
+      extractionError: string | null
+    }
+    expect(state.lastObservedTokens).toBe(0)
+    expect(state.lastSummarizedMessageId).toBeNull()
+    expect(state.extractionError).toContain('Agent run cancelled')
+
+    const transcript = await readFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).toContain('foreground answer')
+    expect(transcript).not.toContain('# Session Memory')
+  })
+
+  it('uses current ContextEngine occupancy instead of accumulating provider input usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-context-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const observedInputs = [6_000, 6_000, 11_000]
+    let foregroundCalls = 0
+    let memoryCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        model: 'foreground-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          const inputTokens = observedInputs[foregroundCalls++]
+          if (inputTokens === undefined) throw new Error('fixture exhausted')
+          yield { type: 'text-delta', delta: `answer ${foregroundCalls}` }
+          yield {
+            type: 'usage',
+            usage: { inputTokens, outputTokens: 1 },
+          }
+        },
+      },
+      sessionMemoryProviderFactory: () => ({
+        model: 'memory-model',
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          memoryCalls += 1
+          yield { type: 'text-delta', delta: 'isolated memory' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 50_000, outputTokens: 500 },
+          }
+        },
+      }),
+      collectMetrics: true,
+    })
+
+    const run = await service.run('first')
+    await service.resume(run.sessionId, 'second')
+    expect(memoryCalls).toBe(0)
+    await service.resume(run.sessionId, 'third')
+    const state = await waitForSessionMemoryCommit(
+      configRoot,
+      'praxis',
+      run.sessionId,
+    )
+
+    expect(foregroundCalls).toBe(3)
+    expect(memoryCalls).toBe(1)
+    expect(state.lastObservedTokens).toBeGreaterThanOrEqual(11_000)
+    expect(state.lastObservedTokens).toBeLessThan(12_000)
+    const cost = await service.costSnapshot(run.sessionId)
+    expect(cost.modelUsage['memory-model']).toBeUndefined()
+    expect(cost.modelUsage['foreground-model']?.inputTokens).toBe(23_000)
+    await service.close()
+  })
+
+  it('constructs the isolated memory provider lazily at extraction time', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-lazy-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    let providerSelections = 0
+    let foregroundCalls = 0
+    const observedInputs = [6_000, 6_000, 11_000]
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: {
+        model: 'foreground-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          const inputTokens = observedInputs[foregroundCalls++]
+          if (inputTokens === undefined) throw new Error('fixture exhausted')
+          yield { type: 'text-delta', delta: 'small answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens, outputTokens: 2 },
+          }
+        },
+      },
+      providerForMainModel: () => {
+        providerSelections += 1
+        return queuedProvider(['memory'])
+      },
+      collectMetrics: true,
+    })
+
+    const run = await service.run('small prompt')
+    expect(providerSelections).toBe(0)
+    await service.resume(run.sessionId, 'still below threshold')
+    expect(providerSelections).toBe(0)
+    await service.resume(run.sessionId, 'cross threshold')
+    await waitForSessionMemoryCommit(configRoot, 'praxis', run.sessionId)
+    expect(providerSelections).toBe(1)
+    await service.close()
+  })
+
+  it('includes a complete oversized latest message before advancing its watermark', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-tail-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const memoryRequests: ModelRequest[] = []
+    let writerCalls = 0
+    const writer = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      enableSessionMemory: false,
+      autoCompact: false,
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          const call = writerCalls++
+          yield {
+            type: 'text-delta',
+            delta:
+              call === 0
+                ? 'older answer'
+                : `LATEST_MEMORY_PREFIX ${'x'.repeat(34_000)} LATEST_MEMORY_TAIL`,
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 100, outputTokens: 2 },
+          }
+        },
+      },
+    })
+    const run = await writer.run('first')
+    await writer.resume(run.sessionId, 'second')
+    await writer.close()
+
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        model: 'foreground-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'final answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 11_000, outputTokens: 2 },
+          }
+        },
+      },
+      sessionMemoryProviderFactory: () => ({
+        model: 'memory-model',
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          memoryRequests.push(request)
+          yield { type: 'text-delta', delta: 'bounded memory' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 2 },
+          }
+        },
+      }),
+      collectMetrics: true,
+    })
+
+    await service.resume(run.sessionId, 'third')
+    const state = await waitForSessionMemoryCommit(
+      configRoot,
+      'praxis',
+      run.sessionId,
+    )
+    const extractionInput = JSON.stringify(memoryRequests[0]?.messages)
+    expect(extractionInput).toContain('LATEST_MEMORY_PREFIX')
+    expect(extractionInput).toContain('LATEST_MEMORY_TAIL')
+    const transcriptEntries = (
+      await readFile(
+        resolveClaudePaths({
+          configDir: configRoot,
+          cwd,
+          sessionId: run.sessionId,
+        }).sessionFile,
+        'utf8',
+      )
+    )
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const latestAssistant = transcriptEntries
+      .filter(
+        (entry) => entry.type === 'assistant' && typeof entry.uuid === 'string',
+      )
+      .at(-1)
+    expect(state.lastSummarizedMessageId).toBe(latestAssistant?.uuid)
+    await service.close()
+  })
+
+  it('does not run Session memory on background session threads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-bg-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let memoryCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      sessionKind: 'bg',
+      provider: {
+        model: 'foreground-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'background answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 12_000, outputTokens: 10 },
+          }
+        },
+      },
+      sessionMemoryProviderFactory: () => ({
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          memoryCalls += 1
+          yield { type: 'text-delta', delta: 'must not run' }
+        },
+      }),
+      collectMetrics: true,
+    })
+
+    const run = await service.run('background task')
+    expect(memoryCalls).toBe(0)
+    await expect(
+      readFile(
+        join(
+          configRoot,
+          'praxis',
+          'session-memory',
+          run.sessionId,
+          'state.json',
+        ),
+        'utf8',
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await service.close()
+  })
 
   it('stores a native session outside the Claude project layout', async () => {
     const { configRoot, cwd, service } = await createService()
@@ -289,7 +720,12 @@ describe('ClaudeSessionService', () => {
     const cwd = join(root, 'project')
     let turn = 0
     const provider: ModelProvider = {
-      capabilities: { streaming: true, usage: true, tools: false },
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 200_000,
+      },
       async *complete(request) {
         requests.push(request)
         yield {
@@ -524,7 +960,10 @@ describe('ClaudeSessionService', () => {
       async *complete(request) {
         requests.push(request)
         yield { type: 'text-delta', delta: `answer-${requests.length}` }
-        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 2, outputTokens: 1 },
+        }
       },
     }
     const hooks = new ClaudeHookRunner({
@@ -1062,31 +1501,29 @@ describe('ClaudeSessionService', () => {
             return
           }
           if (call === 1) {
-            yield { type: 'text-delta', delta: 'DURABLE_MEMORY_ARTIFACT' }
             yield {
-              type: 'usage',
-              usage: { inputTokens: 10, outputTokens: 5 },
+              type: 'text-delta',
+              delta: `second answer ${'x'.repeat(16_000)}`,
             }
-            return
-          }
-          if (call === 2) {
-            yield { type: 'text-delta', delta: 'second answer' }
+          } else if (call === 2) {
+            yield {
+              type: 'text-delta',
+              delta: `third answer ${'x'.repeat(16_000)}`,
+            }
           } else if (call === 3) {
-            yield { type: 'text-delta', delta: 'third answer' }
+            yield {
+              type: 'text-delta',
+              delta: `fourth answer ${'x'.repeat(16_000)}`,
+            }
           } else if (call === 4) {
             yield {
               type: 'text-delta',
-              delta: `fourth answer ${'x'.repeat(20_000)}`,
-            }
-          } else if (call === 5) {
-            yield {
-              type: 'text-delta',
-              delta: `fifth answer ${'x'.repeat(20_000)}`,
+              delta: `fifth answer ${'x'.repeat(16_000)}`,
             }
           } else {
             yield {
               type: 'text-delta',
-              delta: `sixth answer ${'x'.repeat(20_000)}`,
+              delta: `sixth answer ${'x'.repeat(16_000)}`,
             }
           }
           yield {
@@ -1095,6 +1532,16 @@ describe('ClaudeSessionService', () => {
           }
         },
       },
+      sessionMemoryProviderFactory: () => ({
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'DURABLE_MEMORY_ARTIFACT' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 5 },
+          }
+        },
+      }),
       compactor: {
         async compact(request) {
           summarizedRequests.push(JSON.stringify(request.messages))
@@ -1109,7 +1556,26 @@ describe('ClaudeSessionService', () => {
     })
 
     const run = await service.run('first task')
-    await waitForSessionMemoryIdle(service, run.sessionId)
+    await waitForSessionMemoryCommit(configRoot, 'praxis', run.sessionId)
+    const contentReplacement = {
+      type: 'content-replacement',
+      sessionId: run.sessionId,
+      replacements: [
+        {
+          kind: 'tool-result',
+          toolUseId: 'replacement-tool-use',
+          replacement: '[persisted replacement text]',
+        },
+      ],
+    }
+    await appendFile(
+      resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: run.sessionId,
+      }).sessionFile,
+      `${JSON.stringify(contentReplacement)}\n`,
+    )
     await service.resume(run.sessionId, 'second task')
     await service.resume(run.sessionId, 'third task')
     await service.resume(run.sessionId, 'fourth task')
@@ -1162,6 +1628,144 @@ describe('ClaudeSessionService', () => {
     const preservedUuids = boundary?.compactMetadata?.preservedMessages?.uuids
     expect(preservedUuids).toBeDefined()
     expect((preservedUuids as unknown[]).length).toBeGreaterThanOrEqual(5)
+    expect(
+      transcript
+        .trimEnd()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+        .find((entry) => entry.type === 'content-replacement'),
+    ).toEqual(contentReplacement)
+  })
+
+  it('uses the memory watermark and preserves a recent suffix during automatic compact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-memory-auto-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let turn = 0
+    const writer = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      enableSessionMemory: false,
+      autoCompact: false,
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          turn += 1
+          yield {
+            type: 'text-delta',
+            delta: `answer ${turn} ${'x'.repeat(16_000)}`,
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 100, outputTokens: 10 },
+          }
+        },
+      },
+    })
+    const run = await writer.run('first task')
+    for (const prompt of [
+      'second task',
+      'third task',
+      'fourth task',
+      'fifth task',
+      'sixth task',
+    ]) {
+      await writer.resume(run.sessionId, prompt)
+    }
+    await writer.close()
+
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const transcriptEntries = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const watermark = transcriptEntries.find(
+      (entry) => entry.type === 'assistant' && typeof entry.uuid === 'string',
+    )?.uuid as string | undefined
+    if (!watermark) throw new Error('fixture assistant watermark missing')
+    const memoryDir = join(
+      configRoot,
+      'praxis',
+      'session-memory',
+      run.sessionId,
+    )
+    await mkdir(memoryDir, { recursive: true })
+    await writeFile(
+      join(memoryDir, 'state.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        initialized: true,
+        lastObservedTokens: 12_000,
+        lastObservedToolCalls: 0,
+        lastSummarizedMessageId: watermark,
+        extractionStartedAt: null,
+        extractionCompletedAt: 1,
+        extractionError: null,
+      })}\n`,
+    )
+    await writeFile(join(memoryDir, 'summary.md'), 'AUTO_MEMORY_MARKER')
+
+    const compactInputs: string[] = []
+    const reader = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      contextReserveTokens: 2_000,
+      provider: {
+        model: 'foreground-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: false,
+          contextWindowTokens: 18_000,
+        },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'seventh answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 100, outputTokens: 10 },
+          }
+        },
+      },
+      sessionMemoryProviderFactory: () => queuedProvider(['updated memory']),
+      compactor: {
+        async compact(request) {
+          compactInputs.push(JSON.stringify(request.messages))
+          return {
+            summary: 'AUTO_MEMORY_COMPACT_SUMMARY',
+            usage: { inputTokens: 5, outputTokens: 3 },
+            durationMs: 1,
+            model: 'compact-model',
+          }
+        },
+      },
+    })
+
+    await reader.resume(run.sessionId, 'seventh task')
+    expect(compactInputs).toHaveLength(1)
+    expect(compactInputs[0]).toContain('AUTO_MEMORY_MARKER')
+    expect(compactInputs[0]).toContain('second task')
+    expect(compactInputs[0]).not.toContain('first task')
+    expect(compactInputs[0]).not.toContain('sixth task')
+    expect(await reader.transcript(run.sessionId)).toEqual(
+      expect.arrayContaining([
+        { kind: 'compact', summary: 'AUTO_MEMORY_COMPACT_SUMMARY' },
+        { kind: 'user', text: 'sixth task' },
+        { kind: 'user', text: 'seventh task' },
+      ]),
+    )
+    await reader.close()
   })
 
   it('falls back to full manual compaction when the memory watermark is stale', async () => {
@@ -1212,6 +1816,7 @@ describe('ClaudeSessionService', () => {
           }
         },
       },
+      sessionMemoryProviderFactory: () => queuedProvider([]),
       compactor: {
         async compact(request) {
           summarizedRequests.push(JSON.stringify(request.messages))
@@ -1240,6 +1845,221 @@ describe('ClaudeSessionService', () => {
     expect(await service.transcript(run.sessionId)).toEqual([
       { kind: 'compact', summary: 'FULL_COMPACT_SUMMARY' },
     ])
+  })
+
+  it('falls back to full compact when the complete memory projection exceeds 40K tokens', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-memory-oversized-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let turns = 0
+    const writer = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      enableSessionMemory: false,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          turns += 1
+          yield {
+            type: 'text-delta',
+            delta: `answer ${turns} ${'x'.repeat(60_000)}`,
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 100, outputTokens: 10 },
+          }
+        },
+      },
+    })
+    const run = await writer.run('first task')
+    for (const prompt of [
+      'second task',
+      'third task',
+      'fourth task',
+      'fifth task',
+      'sixth task',
+    ]) {
+      await writer.resume(run.sessionId, prompt)
+    }
+    await writer.close()
+
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const entries = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const watermark = entries.find(
+      (entry) => entry.type === 'assistant' && typeof entry.uuid === 'string',
+    )?.uuid as string | undefined
+    if (!watermark) throw new Error('fixture assistant watermark missing')
+    const memoryDir = join(
+      configRoot,
+      'praxis',
+      'session-memory',
+      run.sessionId,
+    )
+    await mkdir(memoryDir, { recursive: true })
+    await writeFile(
+      join(memoryDir, 'state.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        initialized: true,
+        lastObservedTokens: 12_000,
+        lastObservedToolCalls: 0,
+        lastSummarizedMessageId: watermark,
+        extractionStartedAt: null,
+        extractionCompletedAt: 1,
+        extractionError: null,
+      })}\n`,
+    )
+    await writeFile(join(memoryDir, 'summary.md'), 'MEMORY_ONLY_MARKER')
+
+    const compactInputs: string[] = []
+    const reader = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([]),
+      sessionMemoryProviderFactory: () => queuedProvider([]),
+      compactor: {
+        async compact(request) {
+          compactInputs.push(JSON.stringify(request.messages))
+          return {
+            summary: 'FULL_OVERSIZED_SUMMARY',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+            model: 'compact-model',
+          }
+        },
+      },
+    })
+
+    await reader.compact(run.sessionId)
+    expect(compactInputs[0]).toContain('first task')
+    expect(compactInputs[0]).not.toContain('MEMORY_ONLY_MARKER')
+    await reader.close()
+  })
+
+  it('does not reach behind the latest prior compact boundary during memory selection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-memory-prior-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let turn = 0
+    const writer = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      enableSessionMemory: false,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          turn += 1
+          yield {
+            type: 'text-delta',
+            delta:
+              turn <= 2
+                ? `pre-compact answer ${turn}`
+                : `post-compact answer ${turn} ${'x'.repeat(16_000)}`,
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 100, outputTokens: 10 },
+          }
+        },
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'PRIOR_COMPACT_MARKER',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+            model: 'compact-model',
+          }
+        },
+      },
+    })
+    const run = await writer.run('first task')
+    await writer.resume(run.sessionId, 'second task')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    await writer.compact(run.sessionId)
+    const compactEntries = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const compactWatermark = compactEntries.find(
+      (entry) =>
+        entry.isCompactSummary === true && typeof entry.uuid === 'string',
+    )?.uuid as string | undefined
+    if (!compactWatermark) throw new Error('fixture compact watermark missing')
+    for (const prompt of [
+      'third task',
+      'fourth task',
+      'fifth task',
+      'sixth task',
+    ]) {
+      await writer.resume(run.sessionId, prompt)
+    }
+    await writer.close()
+
+    const memoryDir = join(
+      configRoot,
+      'praxis',
+      'session-memory',
+      run.sessionId,
+    )
+    await mkdir(memoryDir, { recursive: true })
+    await writeFile(
+      join(memoryDir, 'state.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        initialized: true,
+        lastObservedTokens: 12_000,
+        lastObservedToolCalls: 0,
+        lastSummarizedMessageId: compactWatermark,
+        extractionStartedAt: null,
+        extractionCompletedAt: 1,
+        extractionError: null,
+      })}\n`,
+    )
+    await writeFile(join(memoryDir, 'summary.md'), 'MEMORY_BEFORE_COMPACT')
+
+    const compactInputs: string[] = []
+    const reader = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([]),
+      sessionMemoryProviderFactory: () => queuedProvider([]),
+      compactor: {
+        async compact(request) {
+          compactInputs.push(JSON.stringify(request.messages))
+          return {
+            summary: 'SECOND_COMPACT',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+            model: 'compact-model',
+          }
+        },
+      },
+    })
+
+    await reader.compact(run.sessionId)
+    expect(compactInputs[0]).toContain('MEMORY_BEFORE_COMPACT')
+    expect(compactInputs[0]).not.toContain('PRIOR_COMPACT_MARKER')
+    expect(compactInputs[0]).not.toContain('first task')
+    expect(compactInputs[0]).not.toContain('pre-compact answer')
+    await reader.close()
   })
 
   it('keeps a preserved tool_use/tool_result pair adjacent at the memory-compact boundary', async () => {
@@ -1271,21 +2091,27 @@ describe('ClaudeSessionService', () => {
             return
           }
           if (call === 1) {
-            yield { type: 'text-delta', delta: 'DURABLE_MEMORY_ARTIFACT' }
             yield {
-              type: 'usage',
-              usage: { inputTokens: 10, outputTokens: 5 },
+              type: 'thinking-start',
+              block: { type: 'thinking', thinking: '' },
             }
-            return
-          }
-          if (call === 2) {
+            yield { type: 'thinking-delta', delta: 'PAIR_THINKING_MARKER' }
+            yield { type: 'thinking-signature-delta', delta: 'signed-pair' }
+            yield {
+              type: 'thinking-stop',
+              block: {
+                type: 'thinking',
+                thinking: 'PAIR_THINKING_MARKER',
+                signature: 'signed-pair',
+              },
+            }
             yield {
               type: 'tool-call',
               call: { id: 'call_test_tool', name: 'test_tool', input: {} },
             }
             return
           }
-          if (call === 3) {
+          if (call === 2) {
             yield { type: 'text-delta', delta: 'tool call answer' }
             yield {
               type: 'usage',
@@ -1293,17 +2119,17 @@ describe('ClaudeSessionService', () => {
             }
             return
           }
-          if (call === 4) {
+          if (call === 3) {
             yield {
               type: 'text-delta',
               delta: `third answer ${'x'.repeat(7_532)}`,
             }
-          } else if (call === 5) {
+          } else if (call === 4) {
             yield {
               type: 'text-delta',
               delta: `fourth answer ${'x'.repeat(10_000)}`,
             }
-          } else if (call === 6) {
+          } else if (call === 5) {
             yield {
               type: 'text-delta',
               delta: `fifth answer ${'x'.repeat(10_000)}`,
@@ -1320,6 +2146,16 @@ describe('ClaudeSessionService', () => {
           }
         },
       },
+      sessionMemoryProviderFactory: () => ({
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'DURABLE_MEMORY_ARTIFACT' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 5 },
+          }
+        },
+      }),
       tools: {
         definitions: () => [
           {
@@ -1350,7 +2186,7 @@ describe('ClaudeSessionService', () => {
     })
 
     const run = await service.run('first task')
-    await waitForSessionMemoryIdle(service, run.sessionId)
+    await waitForSessionMemoryCommit(configRoot, 'praxis', run.sessionId)
     await service.resume(run.sessionId, 'second task')
     await service.resume(run.sessionId, 'third task')
     await service.resume(run.sessionId, 'fourth task')
@@ -1368,6 +2204,7 @@ describe('ClaudeSessionService', () => {
     expect(input).not.toContain('first task')
     expect(input).not.toContain('call_test_tool')
     expect(input).not.toContain('tool result text')
+    expect(input).not.toContain('PAIR_THINKING_MARKER')
 
     // The preserved suffix replays the tool_use and its tool_result as adjacent
     // display items immediately after the compact boundary.
@@ -1379,6 +2216,10 @@ describe('ClaudeSessionService', () => {
         item.call.name === 'test_tool',
     )
     expect(toolIndex).toBeGreaterThanOrEqual(0)
+    expect(display[toolIndex - 1]).toEqual({
+      kind: 'thinking',
+      text: 'PAIR_THINKING_MARKER',
+    })
     expect(display[toolIndex + 1]).toEqual({
       kind: 'tool-result',
       callId: 'call_test_tool',
@@ -1752,51 +2593,42 @@ describe('ClaudeSessionService', () => {
     expect(completions).toBe(2)
   })
 
-  it('extracts durable session memory, injects it on resume, and coordinates with auto compact', async () => {
+  it('injects the last committed session memory artifact on resume', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-'))
     roots.push(root)
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const requests: ModelRequest[] = []
-    const events: RuntimeEvent[] = []
     let calls = 0
-    let compactions = 0
     const provider: ModelProvider = {
-      model: 'session-memory-model',
+      model: 'foreground-model',
       capabilities: {
         streaming: true,
         usage: true,
         tools: false,
-        contextWindowTokens: 2_500,
+        contextWindowTokens: 200_000,
       },
       async *complete(request) {
         requests.push(request)
         const call = calls++
         if (call === 0) {
-          // Turn 1: large transcript plus usage that crosses the extraction
-          // threshold so extraction runs before the turn result returns.
+          // Initial foreground turn before the committed sidecar is present.
           yield {
             type: 'text-delta',
-            delta: `initial ${'discarded '.repeat(600)}`,
+            delta: 'initial answer',
           }
           yield {
             type: 'usage',
-            usage: { inputTokens: 12_000, outputTokens: 50 },
+            usage: { inputTokens: 100, outputTokens: 50 },
           }
           return
         }
-        if (call === 1) {
-          // Session memory extraction: provider-backed, no tools.
-          yield { type: 'text-delta', delta: 'Durable intent: initial task.' }
-          yield {
-            type: 'usage',
-            usage: { inputTokens: 10, outputTokens: 20 },
-          }
-          return
-        }
-        // Resume turn 2.
+        // Resume after reopening the service with committed memory.
         yield { type: 'text-delta', delta: 'resumed answer' }
-        yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 100, outputTokens: 1 },
+        }
       },
     }
     const service = new ClaudeSessionService({
@@ -1804,52 +2636,59 @@ describe('ClaudeSessionService', () => {
       cwd,
       claudeVersion: '2.1.208',
       provider,
-      contextReserveTokens: 1_500,
-      eventSink: (event) => events.push(event),
-      compactor: {
-        async compact() {
-          compactions += 1
-          return {
-            summary: 'COMPACTED_SESSION_MEMORY',
-            usage: { inputTokens: 3, outputTokens: 2 },
-            durationMs: 1,
-            model: 'session-memory-model',
-          }
-        },
-      },
+      sessionMemoryProviderFactory: () => queuedProvider([]),
+      collectMetrics: true,
     })
 
     const run = await service.run('first task')
     expect(run.text.startsWith('initial')).toBe(true)
-
-    // Normal turns schedule extraction without awaiting it, so wait for the
-    // controller to drain before reading the sidecar.
-    await waitForSessionMemoryIdle(service, run.sessionId)
-
-    const memoryDir = join(
-      configRoot,
-      'praxis',
-      'session-memory',
-      run.sessionId,
-    )
-    const summary = await readFile(join(memoryDir, 'summary.md'), 'utf8')
-    expect(summary).toContain('Durable intent: initial task.')
-    // Extraction is a no-tool provider call, not a shared transcript entry.
-    expect(requests[1]?.tools).toBeUndefined()
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
-      'utf8',
-    )
+    const transcriptPath = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const transcript = await readFile(transcriptPath, 'utf8')
     expect(transcript).not.toContain('# Session Memory')
+    const watermark = transcript
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .find(
+        (entry) => entry.type === 'assistant' && typeof entry.uuid === 'string',
+      )?.uuid as string | undefined
+    if (!watermark) throw new Error('fixture assistant watermark missing')
+    const store = new SessionMemoryStore({
+      configRoot,
+      sessionId: run.sessionId,
+      sidecarRoot: join(configRoot, 'praxis'),
+    })
+    await store.commitExtraction(
+      {
+        schemaVersion: 1,
+        initialized: true,
+        lastObservedTokens: 100,
+        lastObservedToolCalls: 0,
+        lastSummarizedMessageId: watermark,
+        extractionStartedAt: null,
+        extractionCompletedAt: 1,
+        extractionError: null,
+      },
+      'Durable intent: initial task.',
+    )
+    await service.close()
+    const reader = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      sessionMemoryProviderFactory: () => queuedProvider([]),
+      collectMetrics: true,
+    })
 
-    const resumed = await service.resume(run.sessionId, 'Continue the task.')
+    const resumed = await reader.resume(run.sessionId, 'Continue the task.')
     expect(resumed.text).toBe('resumed answer')
 
-    const resumedRequest = requests[2]
+    const resumedRequest = requests[1]
     const memorySystemMessage = resumedRequest?.messages.find(
       (message): message is { role: 'system'; content: string } =>
         message.role === 'system' &&
@@ -1860,24 +2699,7 @@ describe('ClaudeSessionService', () => {
       'Durable intent: initial task.',
     )
 
-    // The oversized transcript is compacted automatically while session memory
-    // stays enabled; the compact wait runs without racing an extraction.
-    expect(
-      events.some(
-        (event) =>
-          event.type === 'compact-boundary' && event.trigger === 'auto',
-      ),
-    ).toBe(true)
-    expect(compactions).toBeGreaterThanOrEqual(1)
-    expect(
-      events.some(
-        (event) =>
-          event.type === 'warning' &&
-          String(event.message).includes('Session memory'),
-      ),
-    ).toBe(false)
-
-    await service.close()
+    await reader.close()
 
     // A failed extraction leaves the foreground turn successful and records a
     // retryable sidecar error for the next observation.
@@ -1888,22 +2710,19 @@ describe('ClaudeSessionService', () => {
     const failureConfigRoot = join(failureRoot, 'config')
     const failureCwd = join(failureRoot, 'project')
     const failureEvents: RuntimeEvent[] = []
-    let failureCalls = 0
     const failingProvider: ModelProvider = {
-      capabilities: { streaming: true, usage: true, tools: false },
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: false,
+        contextWindowTokens: 200_000,
+      },
       async *complete() {
-        const call = failureCalls++
-        if (call === 0) {
-          yield { type: 'text-delta', delta: 'failing turn answer' }
-          yield {
-            type: 'usage',
-            usage: { inputTokens: 12_000, outputTokens: 50 },
-          }
-          return
+        yield { type: 'text-delta', delta: 'failing turn answer' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 12_000, outputTokens: 50 },
         }
-        throw new ModelProviderError('session-memory provider failed', {
-          retryable: true,
-        })
       },
     }
     const failureService = new ClaudeSessionService({
@@ -1911,14 +2730,35 @@ describe('ClaudeSessionService', () => {
       cwd: failureCwd,
       claudeVersion: '2.1.208',
       provider: failingProvider,
+      sessionMemoryProviderFactory: () => ({
+        capabilities: { streaming: true, usage: true, tools: false },
+        complete() {
+          const iterator = {
+            async next() {
+              throw new ModelProviderError('session-memory provider failed', {
+                retryable: true,
+              })
+            },
+            [Symbol.asyncIterator]() {
+              return iterator
+            },
+          }
+          return iterator
+        },
+      }),
       eventSink: (event) => failureEvents.push(event),
     })
     const failedRun = await failureService.run('failing task')
     expect(failedRun.text).toBe('failing turn answer')
-    // The extraction failure is surfaced asynchronously; drain the controller
-    // (rejection expected) so the warning and sidecar error are observable.
-    await waitForSessionMemoryIdle(failureService, failedRun.sessionId).catch(
-      () => undefined,
+    await failureService.resume(failedRun.sessionId, 'second failing task')
+    await failureService.resume(failedRun.sessionId, 'third failing task')
+    // The extraction failure is surfaced asynchronously through its warning
+    // callback and retryable sidecar state.
+    await waitForSessionMemoryCommit(
+      failureConfigRoot,
+      'praxis',
+      failedRun.sessionId,
+      (state) => state.extractionError !== null,
     )
     expect(
       failureEvents.some(
@@ -1971,15 +2811,6 @@ describe('ClaudeSessionService', () => {
           yield {
             type: 'usage',
             usage: { inputTokens: 12_000, outputTokens: 50 },
-          }
-          return
-        }
-        if (call === 1) {
-          // Session memory extraction: provider-backed, no tools.
-          yield { type: 'text-delta', delta: 'Durable intent: initial task.' }
-          yield {
-            type: 'usage',
-            usage: { inputTokens: 10, outputTokens: 20 },
           }
           return
         }
@@ -2038,6 +2869,17 @@ describe('ClaudeSessionService', () => {
       cwd,
       claudeVersion: '2.1.208',
       provider,
+      sessionMemoryProviderFactory: () => ({
+        model: 'compact-hook-model',
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'Durable intent: initial task.' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 20 },
+          }
+        },
+      }),
       hooks,
       contextReserveTokens: 1_500,
       contextAssembler: {
@@ -2072,7 +2914,7 @@ describe('ClaudeSessionService', () => {
     // The oversized first turn triggers durable session memory extraction;
     // normal turns do not await it, so wait for the controller to drain
     // before reading the sidecar.
-    await waitForSessionMemoryIdle(service, run.sessionId)
+    await waitForSessionMemoryCommit(configRoot, 'praxis', run.sessionId)
     const memoryDir = join(
       configRoot,
       'praxis',
@@ -2093,7 +2935,7 @@ describe('ClaudeSessionService', () => {
     // The context assembler runs once for the startup turn, once for the
     // resume, and once more after the compact boundary refresh.
     expect(contextVersion).toBe(3)
-    const postCompactRequest = requests[2]
+    const postCompactRequest = requests[1]
     expect(
       postCompactRequest?.messages.find(
         (message) =>

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { AgentRunCancelledError, type ModelMessage } from '../core/runtime.js'
 import {
   SessionMemoryController,
   SessionMemoryStateError,
@@ -50,6 +51,70 @@ async function seedState(configRoot: string, state: unknown): Promise<void> {
 }
 
 describe('SessionMemoryStore', () => {
+  it('loads state and its referenced immutable summary as one snapshot', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    const state = {
+      schemaVersion: 1 as const,
+      initialized: true,
+      lastObservedTokens: 100,
+      lastObservedToolCalls: 1,
+      lastSummarizedMessageId: 'm1',
+      extractionStartedAt: null,
+      extractionCompletedAt: 1,
+      extractionError: null,
+    }
+    await store.commitExtraction(state, 'snapshot summary')
+
+    await expect(store.loadSnapshot()).resolves.toEqual({
+      state,
+      summary: 'snapshot summary',
+    })
+  })
+
+  it('retains superseded immutable artifacts for readers holding an old pointer', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    const base = {
+      schemaVersion: 1 as const,
+      initialized: true,
+      extractionStartedAt: null,
+      extractionError: null,
+    }
+    await store.commitExtraction(
+      {
+        ...base,
+        lastObservedTokens: 100,
+        lastObservedToolCalls: 1,
+        lastSummarizedMessageId: 'm1',
+        extractionCompletedAt: 1,
+      },
+      'first summary',
+    )
+    const firstRecord = JSON.parse(
+      await readFile(join(sessionDirectory(configRoot), 'state.json'), 'utf8'),
+    ) as { summaryFile: string }
+
+    await store.commitExtraction(
+      {
+        ...base,
+        lastObservedTokens: 200,
+        lastObservedToolCalls: 2,
+        lastSummarizedMessageId: 'm2',
+        extractionCompletedAt: 2,
+      },
+      'second summary',
+    )
+
+    await expect(
+      readFile(
+        join(sessionDirectory(configRoot), firstRecord.summaryFile),
+        'utf8',
+      ),
+    ).resolves.toBe('first summary')
+    await expect(store.loadSummary()).resolves.toBe('second summary')
+  })
+
   it('uses an explicit selected data-plane root instead of the Claude compatibility fallback', async () => {
     const configRoot = await tempConfigRoot()
     const sidecarRoot = join(configRoot, 'state')
@@ -121,9 +186,48 @@ describe('SessionMemoryStore', () => {
     })
     expect((await store.load()).schemaVersion).toBe(1)
   })
+
+  it('keeps selected data-plane summaries isolated for reads and clears', async () => {
+    const configRoot = await tempConfigRoot()
+    const native = new SessionMemoryStore({
+      configRoot,
+      sessionId: SESSION_ID,
+      sidecarRoot: join(configRoot, 'state'),
+    })
+    const claude = new SessionMemoryStore({
+      configRoot,
+      sessionId: SESSION_ID,
+    })
+
+    await native.writeSummary('native summary')
+    await claude.writeSummary('claude summary')
+
+    await expect(native.loadSummary()).resolves.toBe('native summary')
+    await expect(claude.loadSummary()).resolves.toBe('claude summary')
+
+    await native.clear()
+    await expect(native.loadSummary()).resolves.toBe('')
+    await expect(claude.loadSummary()).resolves.toBe('claude summary')
+  })
 })
 
 describe('SessionMemoryController', () => {
+  it('loads through the store snapshot seam instead of pairing separate reads', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    await store.writeSummary('legacy summary')
+    vi.spyOn(store, 'load').mockRejectedValue(new Error('separate state read'))
+    vi.spyOn(store, 'loadSummary').mockRejectedValue(
+      new Error('separate summary read'),
+    )
+    const controller = new SessionMemoryController({
+      store,
+      extractor: summaryExtractor().extractor,
+    })
+
+    await expect(controller.summary()).resolves.toBe('legacy summary')
+  })
+
   it('initializes on first threshold crossing and persists summary and state', async () => {
     const configRoot = await tempConfigRoot()
     const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
@@ -176,7 +280,8 @@ describe('SessionMemoryController', () => {
     // +5000 tokens plus +3 tool calls since the watermark triggers.
     expect(await controller.observe(22_000, 8, 'm6')).toBe(true)
     await controller.waitForIdle()
-    // Observed counters are monotonic; a regression fails closed.
+    // The durable tool-call counter is monotonic even though context occupancy
+    // may legitimately shrink after compaction.
     await expect(controller.observe(10_000, 5, 'm-backwards')).rejects.toThrow(
       SessionMemoryStateError,
     )
@@ -184,37 +289,6 @@ describe('SessionMemoryController', () => {
     expect(state.lastObservedTokens).toBe(22_000)
     expect(state.lastObservedToolCalls).toBe(8)
     expect(state.lastSummarizedMessageId).toBe('m6')
-  })
-
-  it('observeDelta accumulates deltas and extracts once at the update threshold', async () => {
-    const configRoot = await tempConfigRoot()
-    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
-    const received: Array<{ tokens: number; toolCalls: number }> = []
-    const controller = new SessionMemoryController({
-      store,
-      initTokens: 10_000,
-      updateTokens: 5_000,
-      updateToolCalls: 20,
-      extractor: async ({ tokens, toolCalls }) => {
-        received.push({ tokens, toolCalls })
-        return `extracted ${tokens} tokens / ${toolCalls} tool calls`
-      },
-    })
-    // Initialize with the absolute-total observe API.
-    expect(await controller.observe(12_000, 5, 'm-init')).toBe(true)
-    await controller.waitForIdle()
-    expect(received).toHaveLength(1)
-    // A delta below the update threshold is retained for the next call.
-    expect(await controller.observeDelta(3_000, 0, 'm-below')).toBe(false)
-    // The next delta reaches exactly +5000 accumulated tokens and extracts once.
-    expect(await controller.observeDelta(2_000, 0, 'm-cross')).toBe(true)
-    await controller.waitForIdle()
-    expect(received).toHaveLength(2)
-    expect(received[1]).toEqual({ tokens: 17_000, toolCalls: 5 })
-    const state = await store.load()
-    expect(state.lastObservedTokens).toBe(17_000)
-    expect(state.lastObservedToolCalls).toBe(5)
-    expect(state.lastSummarizedMessageId).toBe('m-cross')
   })
 
   it('serializes concurrent observations onto one extraction', async () => {
@@ -313,6 +387,145 @@ describe('SessionMemoryController', () => {
     expect(state.extractionError).toContain('empty summary')
   })
 
+  it('retains the last good summary and watermark when the atomic commit fails', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    let extraction = 0
+    const controller = new SessionMemoryController({
+      store,
+      initTokens: 100,
+      updateTokens: 50,
+      updateToolCalls: 1,
+      extractor: async () =>
+        extraction++ === 0 ? 'last good summary' : 'uncommitted summary',
+    })
+
+    expect(await controller.observe(100, 1, 'm-good')).toBe(true)
+    await controller.waitForIdle()
+
+    const writeState = store.writeState.bind(store)
+    let writes = 0
+    vi.spyOn(store, 'writeState').mockImplementation(async (...args) => {
+      writes += 1
+      if (writes === 2) throw new Error('state commit failed')
+      await writeState(...args)
+    })
+
+    expect(await controller.observe(150, 2, 'm-uncommitted')).toBe(true)
+    await expect(controller.waitForIdle()).rejects.toThrow(
+      'state commit failed',
+    )
+
+    const state = await store.load()
+    expect(state.lastSummarizedMessageId).toBe('m-good')
+    expect(state.lastObservedTokens).toBe(100)
+    expect(state.lastObservedToolCalls).toBe(1)
+    expect(state.extractionError).toContain('state commit failed')
+    await expect(store.loadSummary()).resolves.toBe('last good summary')
+    await expect(
+      readFile(join(sessionDirectory(configRoot), 'summary.md'), 'utf8'),
+    ).resolves.toBe('last good summary')
+  })
+
+  it('passes an isolated immutable snapshot to asynchronous extraction', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    let release: (() => void) | undefined
+    let extractionStarted: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      extractionStarted = resolve
+    })
+    let seen = ''
+    const controller = new SessionMemoryController({
+      store,
+      initTokens: 100,
+      extractor: async ({ messages }) => {
+        extractionStarted?.()
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+        seen = JSON.stringify(messages)
+        const assistant = messages?.find(
+          (message) => message.role === 'assistant',
+        )
+        const nested = assistant?.toolCalls?.[0]?.input.nested as
+          { value: string } | undefined
+        if (nested) nested.value = 'extractor mutation'
+        return 'isolated summary'
+      },
+    })
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'original prompt' },
+      {
+        role: 'assistant',
+        content: 'original answer',
+        toolCalls: [
+          {
+            id: 'tool-1',
+            name: 'Read',
+            input: { nested: { value: 'original input' } },
+          },
+        ],
+      },
+    ]
+
+    expect(await controller.observe(100, 1, 'm1', messages)).toBe(true)
+    await started
+    messages[0] = { role: 'user', content: 'foreground mutation' }
+    const foregroundNested =
+      messages[1]?.role === 'assistant'
+        ? (messages[1].toolCalls?.[0]?.input.nested as { value: string })
+        : undefined
+    if (foregroundNested) foregroundNested.value = 'foreground mutation'
+    release?.()
+    await controller.waitForIdle()
+
+    expect(seen).toContain('original prompt')
+    expect(seen).toContain('original input')
+    expect(seen).not.toContain('foreground mutation')
+    expect(foregroundNested?.value).toBe('foreground mutation')
+  })
+
+  it('cancels an in-flight extraction on close without advancing memory', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    let extraction = 0
+    let slowStarted: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      slowStarted = resolve
+    })
+    const controller = new SessionMemoryController({
+      store,
+      initTokens: 100,
+      updateTokens: 50,
+      updateToolCalls: 1,
+      extractor: async ({ signal }) => {
+        if (extraction++ === 0) return 'last good summary'
+        slowStarted?.()
+        return new Promise<string>((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => reject(new AgentRunCancelledError()),
+            { once: true },
+          )
+        })
+      },
+    })
+
+    expect(await controller.observe(100, 1, 'm-good')).toBe(true)
+    await controller.waitForIdle()
+    expect(await controller.observe(150, 2, 'm-cancelled')).toBe(true)
+    await started
+    await controller.close()
+
+    const state = await store.load()
+    expect(state.lastSummarizedMessageId).toBe('m-good')
+    expect(state.lastObservedTokens).toBe(100)
+    expect(state.lastObservedToolCalls).toBe(1)
+    expect(state.extractionError).toContain('Agent run cancelled')
+    await expect(store.loadSummary()).resolves.toBe('last good summary')
+  })
+
   it('clears state and resumes like first initialization', async () => {
     const configRoot = await tempConfigRoot()
     const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
@@ -338,7 +551,7 @@ describe('SessionMemoryController', () => {
     expect(state.lastSummarizedMessageId).toBe('m3')
   })
 
-  it('returns from observeDelta before a slow extraction and lets a later compact wait', async () => {
+  it('returns from a context observation before a slow extraction and lets compact wait', async () => {
     const configRoot = await tempConfigRoot()
     const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
     let calls = 0
@@ -355,7 +568,7 @@ describe('SessionMemoryController', () => {
       },
     })
     // A normal turn schedules extraction and returns before it finishes.
-    expect(await controller.observeDelta(200, 0, 'm1')).toBe(true)
+    expect(await controller.observeContext(200, 0, 'm1')).toBe(true)
     await vi.waitFor(() => expect(calls).toBe(1))
     // The turn already resolved while the slow extractor is still running.
     let idleResolved = false
@@ -373,5 +586,237 @@ describe('SessionMemoryController', () => {
     expect(state.lastObservedTokens).toBe(200)
     expect(state.lastObservedToolCalls).toBe(0)
     expect(state.lastSummarizedMessageId).toBe('m1')
+  })
+
+  it('waits softly for compact when extraction fails', async () => {
+    const configRoot = await tempConfigRoot()
+    const controller = new SessionMemoryController({
+      store: new SessionMemoryStore({ configRoot, sessionId: SESSION_ID }),
+      initTokens: 100,
+      extractor: async () => {
+        throw new Error('retry later')
+      },
+    })
+
+    expect(await controller.observeContext(100, 0, 'm1')).toBe(true)
+    await expect(controller.waitForCompact()).resolves.toBeUndefined()
+    expect((await controller.state()).extractionError).toContain('retry later')
+  })
+
+  it('retries a failed extraction only after context growth', async () => {
+    const configRoot = await tempConfigRoot()
+    let calls = 0
+    const controller = new SessionMemoryController({
+      store: new SessionMemoryStore({ configRoot, sessionId: SESSION_ID }),
+      initTokens: 100,
+      extractor: async () => {
+        calls += 1
+        if (calls === 1) throw new Error('retry later')
+        return 'recovered summary'
+      },
+    })
+
+    expect(await controller.observeContext(100, 0, 'm-failed')).toBe(true)
+    await controller.waitForIdle().catch(() => undefined)
+    expect(await controller.observeContext(100, 0, 'm-same')).toBe(false)
+    expect(calls).toBe(1)
+    expect(await controller.observeContext(101, 0, 'm-grown')).toBe(true)
+    await controller.waitForIdle()
+    expect(calls).toBe(2)
+  })
+
+  it('retains the failed-attempt growth watermark across reopen', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    const failed = new SessionMemoryController({
+      store,
+      initTokens: 100,
+      extractor: async () => {
+        throw new Error('retry after growth')
+      },
+    })
+    expect(await failed.observeContext(100, 0, 'm-failed')).toBe(true)
+    await failed.waitForIdle().catch(() => undefined)
+
+    let reopenedCalls = 0
+    const reopened = new SessionMemoryController({
+      store,
+      initTokens: 100,
+      extractor: async () => {
+        reopenedCalls += 1
+        return 'recovered summary'
+      },
+    })
+    expect(await reopened.observeContext(100, 0, 'm-same')).toBe(false)
+    expect(reopenedCalls).toBe(0)
+    expect(await reopened.observeContext(101, 0, 'm-grown')).toBe(true)
+    await reopened.waitForIdle()
+    expect(reopenedCalls).toBe(1)
+  })
+
+  it('records and warns when the extraction progress write fails', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    const writeState = store.writeState.bind(store)
+    let writes = 0
+    vi.spyOn(store, 'writeState').mockImplementation(async (...args) => {
+      writes += 1
+      if (writes === 1) throw new Error('progress write failed')
+      await writeState(...args)
+    })
+    const errors: unknown[] = []
+    let extractorCalls = 0
+    const controller = new SessionMemoryController({
+      store,
+      initTokens: 100,
+      onExtractionError: (error) => errors.push(error),
+      extractor: async () => {
+        extractorCalls += 1
+        return 'must not run'
+      },
+    })
+
+    expect(await controller.observeContext(100, 0, 'm1')).toBe(true)
+    await expect(controller.waitForIdle()).rejects.toThrow(
+      'progress write failed',
+    )
+    expect(extractorCalls).toBe(0)
+    expect(errors).toHaveLength(1)
+    expect((await store.load()).extractionError).toContain(
+      'progress write failed',
+    )
+  })
+
+  it('aborts an extraction that exceeds the compact wait without advancing memory', async () => {
+    const configRoot = await tempConfigRoot()
+    let extraction = 0
+    let aborted = false
+    let slowStarted: (() => void) | undefined
+    const extractionStarted = new Promise<void>((resolve) => {
+      slowStarted = resolve
+    })
+    const controller = new SessionMemoryController({
+      store: new SessionMemoryStore({ configRoot, sessionId: SESSION_ID }),
+      initTokens: 100,
+      updateTokens: 50,
+      updateToolCalls: 1,
+      waitTimeoutMs: 5,
+      extractor: async ({ signal }) => {
+        if (extraction++ === 0) return 'last committed summary'
+        return new Promise<string>((_resolve, reject) => {
+          slowStarted?.()
+          signal.addEventListener(
+            'abort',
+            () => {
+              aborted = true
+              reject(new AgentRunCancelledError())
+            },
+            { once: true },
+          )
+        })
+      },
+    })
+
+    expect(await controller.observeContext(100, 1, 'm-good')).toBe(true)
+    await controller.waitForIdle()
+    expect(await controller.observeContext(150, 1, 'm-slow')).toBe(true)
+    await extractionStarted
+    await controller.waitForCompact()
+    await vi.waitFor(() => expect(aborted).toBe(true))
+    await controller.waitForIdle().catch(() => undefined)
+
+    const state = await controller.state()
+    expect(state.lastSummarizedMessageId).toBe('m-good')
+    expect(await controller.summary()).toBe('last committed summary')
+  })
+
+  it('aborts extraction older than the compact staleness threshold', async () => {
+    const configRoot = await tempConfigRoot()
+    let aborted = false
+    let started: (() => void) | undefined
+    const extractionStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const controller = new SessionMemoryController({
+      store: new SessionMemoryStore({ configRoot, sessionId: SESSION_ID }),
+      initTokens: 100,
+      staleExtractionMs: 1,
+      waitTimeoutMs: 100,
+      extractor: async ({ signal }) => {
+        started?.()
+        return new Promise<string>(() => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              aborted = true
+            },
+            { once: true },
+          )
+        })
+      },
+    })
+
+    expect(await controller.observeContext(100, 0, 'm1')).toBe(true)
+    await extractionStarted
+    await new Promise((resolve) => setTimeout(resolve, 2))
+    const before = performance.now()
+    await expect(controller.waitForCompact()).resolves.toBeUndefined()
+    expect(performance.now() - before).toBeLessThan(50)
+    await vi.waitFor(() => expect(aborted).toBe(true))
+    expect((await controller.state()).lastSummarizedMessageId).toBeNull()
+    await controller.close()
+  })
+
+  it('rebases current-context growth after compaction reduces occupancy', async () => {
+    const configRoot = await tempConfigRoot()
+    const received: number[] = []
+    const controller = new SessionMemoryController({
+      store: new SessionMemoryStore({ configRoot, sessionId: SESSION_ID }),
+      initTokens: 100,
+      updateTokens: 50,
+      updateToolCalls: 3,
+      extractor: async ({ tokens }) => {
+        received.push(tokens)
+        return `summary at ${tokens}`
+      },
+    })
+
+    expect(await controller.observeContext(120, 0, 'm1')).toBe(true)
+    await controller.waitForIdle()
+    expect(await controller.observeContext(40, 0, 'm2')).toBe(false)
+    expect(await controller.observeContext(89, 0, 'm3')).toBe(false)
+    expect(await controller.observeContext(90, 0, 'm4')).toBe(true)
+    await controller.waitForIdle()
+
+    expect(received).toEqual([120, 90])
+    expect((await controller.state()).lastObservedTokens).toBe(90)
+  })
+
+  it('retains the reduced context baseline across reopen', async () => {
+    const configRoot = await tempConfigRoot()
+    const store = new SessionMemoryStore({ configRoot, sessionId: SESSION_ID })
+    const initial = new SessionMemoryController({
+      store,
+      initTokens: 100,
+      updateTokens: 50,
+      extractor: async () => 'initial summary',
+    })
+    expect(await initial.observeContext(120, 0, 'm-initial')).toBe(true)
+    await initial.waitForIdle()
+    expect(await initial.observeContext(40, 0, 'm-compact')).toBe(false)
+
+    let reopenedCalls = 0
+    const reopened = new SessionMemoryController({
+      store,
+      initTokens: 100,
+      updateTokens: 50,
+      extractor: async () => {
+        reopenedCalls += 1
+        return 'post-compact summary'
+      },
+    })
+    expect(await reopened.observeContext(90, 0, 'm-grown')).toBe(true)
+    await reopened.waitForIdle()
+    expect(reopenedCalls).toBe(1)
   })
 })

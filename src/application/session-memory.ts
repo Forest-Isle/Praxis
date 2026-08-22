@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto'
 import { readFile, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
-import type { ModelMessage } from '../core/runtime.js'
+import { AgentRunCancelledError, type ModelMessage } from '../core/runtime.js'
 import { isClaudeSessionId } from '../compatibility/claude/paths.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 
@@ -13,6 +14,11 @@ export interface SessionMemoryState {
   schemaVersion: 1
   initialized: boolean
   lastObservedTokens: number
+  /** Current-context growth baseline after a durable compaction reduction. */
+  growthBaselineTokens?: number
+  /** Latest extraction attempt occupancy, successful or failed. Older
+   * sidecars omit it and fall back to the successful watermark. */
+  lastAttemptedTokens?: number
   lastObservedToolCalls: number
   lastSummarizedMessageId: string | null
   extractionStartedAt: number | null
@@ -41,6 +47,8 @@ export function createFreshSessionMemoryState(): SessionMemoryState {
     schemaVersion: 1,
     initialized: false,
     lastObservedTokens: 0,
+    growthBaselineTokens: 0,
+    lastAttemptedTokens: 0,
     lastObservedToolCalls: 0,
     lastSummarizedMessageId: null,
     extractionStartedAt: null,
@@ -82,6 +90,22 @@ function assertValidSessionMemoryState(
       'Session memory state lastObservedTokens must be a non-negative safe integer',
     )
   }
+  if (
+    record.growthBaselineTokens !== undefined &&
+    !isNonNegativeSafeInteger(record.growthBaselineTokens)
+  ) {
+    throw new SessionMemoryStateError(
+      'Session memory state growthBaselineTokens must be a non-negative safe integer when present',
+    )
+  }
+  if (
+    record.lastAttemptedTokens !== undefined &&
+    !isNonNegativeSafeInteger(record.lastAttemptedTokens)
+  ) {
+    throw new SessionMemoryStateError(
+      'Session memory state lastAttemptedTokens must be a non-negative safe integer when present',
+    )
+  }
   if (!isNonNegativeSafeInteger(record.lastObservedToolCalls)) {
     throw new SessionMemoryStateError(
       'Session memory state lastObservedToolCalls must be a non-negative safe integer',
@@ -115,7 +139,21 @@ function assertValidSessionMemoryState(
   }
 }
 
-function parseSessionMemoryState(source: string): SessionMemoryState {
+interface SessionMemoryRecord {
+  state: SessionMemoryState
+  /** The state pointer and watermark commit in one atomic rename. Older
+   *  sidecars without a pointer fall back to summary.md. */
+  summaryFile?: string
+}
+
+export interface SessionMemorySnapshot {
+  state: SessionMemoryState
+  summary: string
+}
+
+const SESSION_MEMORY_ARTIFACT_PATTERN = /^artifacts\/[a-f0-9]{64}\.md$/u
+
+function parseSessionMemoryState(source: string): SessionMemoryRecord {
   let value: unknown
   try {
     value = JSON.parse(source)
@@ -123,7 +161,38 @@ function parseSessionMemoryState(source: string): SessionMemoryState {
     throw new SessionMemoryStateError('Session memory state is not valid JSON')
   }
   assertValidSessionMemoryState(value)
-  return value
+  const record = value as SessionMemoryState & { summaryFile?: unknown }
+  if (
+    record.summaryFile !== undefined &&
+    (typeof record.summaryFile !== 'string' ||
+      !SESSION_MEMORY_ARTIFACT_PATTERN.test(record.summaryFile))
+  ) {
+    throw new SessionMemoryStateError(
+      'Session memory state summaryFile must be a safe artifact path when present',
+    )
+  }
+  const state: SessionMemoryState = {
+    schemaVersion: record.schemaVersion,
+    initialized: record.initialized,
+    lastObservedTokens: record.lastObservedTokens,
+    ...(record.growthBaselineTokens === undefined
+      ? {}
+      : { growthBaselineTokens: record.growthBaselineTokens }),
+    ...(record.lastAttemptedTokens === undefined
+      ? {}
+      : { lastAttemptedTokens: record.lastAttemptedTokens }),
+    lastObservedToolCalls: record.lastObservedToolCalls,
+    lastSummarizedMessageId: record.lastSummarizedMessageId,
+    extractionStartedAt: record.extractionStartedAt,
+    extractionCompletedAt: record.extractionCompletedAt,
+    extractionError: record.extractionError,
+  }
+  return {
+    state,
+    ...(typeof record.summaryFile === 'string'
+      ? { summaryFile: record.summaryFile }
+      : {}),
+  }
 }
 
 export interface SessionMemoryStoreOptions {
@@ -143,6 +212,7 @@ export interface SessionMemoryStoreOptions {
  */
 export class SessionMemoryStore {
   private readonly directory: string
+  private readonly artifactsDirectory: string
   private readonly stateFile: string
   private readonly summaryFile: string
 
@@ -167,15 +237,31 @@ export class SessionMemoryStore {
     )
     this.stateFile = join(this.directory, 'state.json')
     this.summaryFile = join(this.directory, 'summary.md')
+    this.artifactsDirectory = join(this.directory, 'artifacts')
   }
 
   async load(): Promise<SessionMemoryState> {
+    return (await this.loadRecord()).state
+  }
+
+  /** Reads the pointer record once, then resolves exactly the artifact named
+   *  by that record. Concurrent commits cannot pair an old watermark with a
+   *  newer summary. */
+  async loadSnapshot(): Promise<SessionMemorySnapshot> {
+    const record = await this.loadRecord()
+    return {
+      state: record.state,
+      summary: await this.loadSummaryForRecord(record),
+    }
+  }
+
+  private async loadRecord(): Promise<SessionMemoryRecord> {
     let source: string
     try {
       source = await readFile(this.stateFile, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return createFreshSessionMemoryState()
+        return { state: createFreshSessionMemoryState() }
       }
       throw error
     }
@@ -183,6 +269,25 @@ export class SessionMemoryStore {
   }
 
   async loadSummary(): Promise<string> {
+    const record = await this.loadRecord()
+    return this.loadSummaryForRecord(record)
+  }
+
+  private async loadSummaryForRecord(
+    record: SessionMemoryRecord,
+  ): Promise<string> {
+    if (record.summaryFile !== undefined) {
+      try {
+        return await readFile(join(this.directory, record.summaryFile), 'utf8')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new SessionMemoryStateError(
+            `Session memory summary artifact is missing: ${record.summaryFile}`,
+          )
+        }
+        throw error
+      }
+    }
     let source: string
     try {
       source = await readFile(this.summaryFile, 'utf8')
@@ -202,27 +307,81 @@ export class SessionMemoryStore {
     await writeFileAtomically(this.summaryFile, summary)
   }
 
-  async writeState(state: SessionMemoryState): Promise<void> {
+  async writeState(
+    state: SessionMemoryState,
+    summaryFile?: string,
+  ): Promise<void> {
     assertValidSessionMemoryState(state)
-    const existing = await this.load()
     if (
-      state.lastObservedTokens < existing.lastObservedTokens ||
-      state.lastObservedToolCalls < existing.lastObservedToolCalls
+      summaryFile !== undefined &&
+      !SESSION_MEMORY_ARTIFACT_PATTERN.test(summaryFile)
     ) {
       throw new SessionMemoryStateError(
-        'Session memory observed counters must be monotonic',
+        'Session memory summaryFile must be a safe artifact path',
+      )
+    }
+    const existing = await this.loadRecord()
+    if (state.lastObservedToolCalls < existing.state.lastObservedToolCalls) {
+      throw new SessionMemoryStateError(
+        'Session memory observed tool-call counter must be monotonic',
       )
     }
     await writeFileAtomically(
       this.stateFile,
-      `${JSON.stringify(state, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          ...state,
+          ...(summaryFile !== undefined
+            ? { summaryFile }
+            : existing.summaryFile !== undefined
+              ? { summaryFile: existing.summaryFile }
+              : {}),
+        },
+        null,
+        2,
+      )}\n`,
     )
+  }
+
+  /** Writes an immutable summary artifact, then atomically commits its pointer
+   *  with the progress watermark. summary.md is a best-effort readable mirror. */
+  async commitExtraction(
+    state: SessionMemoryState,
+    summary: string,
+  ): Promise<void> {
+    if (typeof summary !== 'string' || summary.trim().length === 0) {
+      throw new SessionMemoryStateError(
+        'Session memory summary must be a non-empty string',
+      )
+    }
+    const existing = await this.loadRecord()
+    const digest = createHash('sha256')
+      .update(state.lastSummarizedMessageId ?? '')
+      .update('\0')
+      .update(summary)
+      .digest('hex')
+    const summaryFile = `artifacts/${digest}.md`
+    const artifact = join(this.directory, summaryFile)
+    await writeFileAtomically(artifact, summary)
+    try {
+      await this.writeState(state, summaryFile)
+    } catch (error) {
+      if (existing.summaryFile !== summaryFile) {
+        await rm(artifact, { force: true }).catch(() => undefined)
+      }
+      throw error
+    }
+    await this.writeSummary(summary).catch(() => undefined)
+    // Superseded artifacts remain immutable and readable for any concurrent
+    // reader that loaded their pointer before this commit. clear() performs
+    // lifecycle-safe reclamation after the controller is idle.
   }
 
   async clear(): Promise<void> {
     await Promise.all([
       rm(this.stateFile, { force: true }),
       rm(this.summaryFile, { force: true }),
+      rm(this.artifactsDirectory, { recursive: true, force: true }),
     ])
   }
 }
@@ -232,6 +391,7 @@ export interface SessionMemoryExtractorInput {
   tokens: number
   toolCalls: number
   messages?: readonly ModelMessage[]
+  signal: AbortSignal
 }
 
 export type SessionMemoryExtractor = (
@@ -241,10 +401,12 @@ export type SessionMemoryExtractor = (
 export interface SessionMemoryControllerOptions {
   store: SessionMemoryStore
   extractor: SessionMemoryExtractor
+  onExtractionError?: (error: unknown) => void
   initTokens?: number
   updateTokens?: number
   updateToolCalls?: number
   waitTimeoutMs?: number
+  staleExtractionMs?: number
 }
 
 /**
@@ -258,18 +420,25 @@ export class SessionMemoryController {
   private readonly updateTokens: number
   private readonly updateToolCalls: number
   private readonly waitTimeoutMs: number
+  private readonly staleExtractionMs: number
   private stateValue: SessionMemoryState | null = null
   private summaryValue = ''
   private inFlight: Promise<void> | null = null
+  private extractionController: AbortController | null = null
   private loading: Promise<void> | null = null
   private observedTokens = 0
+  private tokenBaseline = 0
+  private attemptTokenBaseline = 0
   private observedToolCalls = 0
+  private closed = false
 
   constructor(private readonly options: SessionMemoryControllerOptions) {
     this.initTokens = options.initTokens ?? 10_000
     this.updateTokens = options.updateTokens ?? 5_000
     this.updateToolCalls = options.updateToolCalls ?? 3
     this.waitTimeoutMs = options.waitTimeoutMs ?? 15_000
+    this.staleExtractionMs =
+      options.staleExtractionMs ?? STALE_EXTRACTION_THRESHOLD_MS
     for (const [name, value] of [
       ['initTokens', this.initTokens],
       ['updateTokens', this.updateTokens],
@@ -290,6 +459,15 @@ export class SessionMemoryController {
         'Session memory waitTimeoutMs must be a positive number',
       )
     }
+    if (
+      typeof this.staleExtractionMs !== 'number' ||
+      !Number.isFinite(this.staleExtractionMs) ||
+      this.staleExtractionMs <= 0
+    ) {
+      throw new SessionMemoryStateError(
+        'Session memory staleExtractionMs must be a positive number',
+      )
+    }
   }
 
   async observe(
@@ -298,7 +476,9 @@ export class SessionMemoryController {
     messageId: string,
     messages?: readonly ModelMessage[],
   ): Promise<boolean> {
+    const messageSnapshot = cloneMessages(messages)
     await this.ensureLoaded()
+    this.assertOpen()
     const state = this.stateValue
     if (state === null) {
       throw new SessionMemoryStateError('Session memory state is unavailable')
@@ -316,14 +496,12 @@ export class SessionMemoryController {
         'Session memory message ID must be a non-empty string',
       )
     }
-    if (
-      tokens < state.lastObservedTokens ||
-      toolCalls < state.lastObservedToolCalls
-    ) {
+    if (toolCalls < state.lastObservedToolCalls) {
       throw new SessionMemoryStateError(
-        `Session memory observed counters regressed (tokens ${tokens} < ${state.lastObservedTokens}, toolCalls ${toolCalls} < ${state.lastObservedToolCalls})`,
+        `Session memory observed tool-call counter regressed (${toolCalls} < ${state.lastObservedToolCalls})`,
       )
     }
+    await this.rebaseAfterContextReduction(tokens)
     // A direct absolute observation reports a natural break when no tool calls
     // have accumulated since the last successful extraction.
     const naturalBreak = toolCalls === state.lastObservedToolCalls
@@ -331,33 +509,29 @@ export class SessionMemoryController {
       tokens,
       toolCalls,
       messageId,
-      messages,
+      messageSnapshot,
       naturalBreak,
     )
   }
 
-  /**
-   * Adds non-negative deltas to the current cumulative observed totals and
-   * delegates to the serialized extraction path with those cumulative totals.
-   * The persisted counters only advance once an extraction succeeds.
-   */
-  async observeDelta(
-    inputTokens: number,
-    toolCalls: number,
+  /** Observes the current provider-visible context occupancy and a per-turn
+   *  tool-call delta. Unlike provider input-token deltas, occupancy may shrink
+   *  after compaction; that establishes a new growth baseline. */
+  async observeContext(
+    currentTokens: number,
+    turnToolCalls: number,
     messageId: string,
     messages?: readonly ModelMessage[],
   ): Promise<boolean> {
+    const messageSnapshot = cloneMessages(messages)
     await this.ensureLoaded()
-    const state = this.stateValue
-    if (state === null) {
-      throw new SessionMemoryStateError('Session memory state is unavailable')
-    }
+    this.assertOpen()
     if (
-      !isNonNegativeSafeInteger(inputTokens) ||
-      !isNonNegativeSafeInteger(toolCalls)
+      !isNonNegativeSafeInteger(currentTokens) ||
+      !isNonNegativeSafeInteger(turnToolCalls)
     ) {
       throw new SessionMemoryStateError(
-        'Session memory observed deltas must be non-negative safe integers',
+        'Session memory context occupancy and tool-call delta must be non-negative safe integers',
       )
     }
     if (typeof messageId !== 'string' || messageId.length === 0) {
@@ -365,16 +539,14 @@ export class SessionMemoryController {
         'Session memory message ID must be a non-empty string',
       )
     }
-    this.observedTokens += inputTokens
-    this.observedToolCalls += toolCalls
-    // A zero-tool-call turn is a natural break: the last assistant turn made
-    // no tool calls.
+    await this.rebaseAfterContextReduction(currentTokens)
+    this.observedToolCalls += turnToolCalls
     return this.scheduleExtraction(
-      this.observedTokens,
+      currentTokens,
       this.observedToolCalls,
       messageId,
-      messages,
-      toolCalls === 0,
+      messageSnapshot,
+      turnToolCalls === 0,
     )
   }
 
@@ -390,7 +562,7 @@ export class SessionMemoryController {
     messages: readonly ModelMessage[] | undefined,
     naturalBreak: boolean,
   ): boolean {
-    this.observedTokens = Math.max(this.observedTokens, tokens)
+    this.observedTokens = tokens
     this.observedToolCalls = Math.max(this.observedToolCalls, toolCalls)
     if (
       !this.isExtractionDue(
@@ -402,17 +574,23 @@ export class SessionMemoryController {
       return false
     }
     if (this.inFlight === null) {
+      const controller = new AbortController()
+      this.extractionController = controller
       const extraction = this.runExtraction(
         this.observedTokens,
         this.observedToolCalls,
         messageId,
         messages,
+        controller.signal,
       )
       this.inFlight = extraction
       extraction
         .catch(() => undefined)
         .finally(() => {
-          if (this.inFlight === extraction) this.inFlight = null
+          if (this.inFlight === extraction) {
+            this.inFlight = null
+            this.extractionController = null
+          }
         })
     }
     return true
@@ -435,22 +613,45 @@ export class SessionMemoryController {
 
   /**
    * Resolves when no extraction is running; rejects on extraction failure.
-   * Compact callers wait softly: if extraction outlives the bounded
-   * `waitTimeoutMs`, this resolves so compaction can proceed anyway.
+   * Normal turns do not await this diagnostic seam.
    */
   async waitForIdle(): Promise<void> {
     await this.ensureLoaded()
     const extraction = this.inFlight
     if (extraction === null) return
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, this.waitTimeoutMs)
-    })
-    try {
-      await Promise.race([extraction, timeout])
-    } finally {
-      if (timer !== undefined) clearTimeout(timer)
+    await extraction
+  }
+
+  /** Compact consumes only the last committed artifact. It waits softly for a
+   *  useful extraction, swallows retryable failures, and cancels stale work. */
+  async waitForCompact(): Promise<void> {
+    await this.ensureLoaded()
+    const extraction = this.inFlight
+    if (extraction === null) return
+    const startedAt = this.stateValue?.extractionStartedAt
+    if (
+      startedAt !== null &&
+      startedAt !== undefined &&
+      Date.now() - startedAt >= this.staleExtractionMs
+    ) {
+      this.extractionController?.abort()
+      // Stale work is no longer useful to compact. The extraction owns its
+      // eventual retryable error commit and cannot commit a summary after the
+      // aborted signal is observed.
+      return
     }
+    const completed = await this.waitBoundedly(extraction, true)
+    if (!completed) this.extractionController?.abort()
+  }
+
+  /** Cancels owned extraction work and waits only for the configured bounded
+   *  interval. A provider that ignores AbortSignal cannot hold service close. */
+  async close(): Promise<void> {
+    this.closed = true
+    const extraction = this.inFlight
+    this.extractionController?.abort()
+    if (extraction === null) return
+    await this.waitBoundedly(extraction, true)
   }
 
   async clear(): Promise<void> {
@@ -464,6 +665,8 @@ export class SessionMemoryController {
     const fresh = createFreshSessionMemoryState()
     this.stateValue = fresh
     this.observedTokens = fresh.lastObservedTokens
+    this.tokenBaseline = fresh.lastObservedTokens
+    this.attemptTokenBaseline = fresh.lastObservedTokens
     this.observedToolCalls = fresh.lastObservedToolCalls
     this.summaryValue = ''
   }
@@ -478,10 +681,7 @@ export class SessionMemoryController {
   }
 
   private async loadState(): Promise<void> {
-    const [state, summary] = await Promise.all([
-      this.options.store.load(),
-      this.options.store.loadSummary(),
-    ])
+    const { state, summary } = await this.options.store.loadSnapshot()
     if (
       state.extractionStartedAt !== null &&
       state.extractionCompletedAt === null
@@ -492,7 +692,7 @@ export class SessionMemoryController {
         extractionStartedAt: null,
         extractionCompletedAt: null,
         extractionError:
-          elapsed >= STALE_EXTRACTION_THRESHOLD_MS
+          elapsed >= this.staleExtractionMs
             ? `Session memory extraction is stale after ${elapsed}ms`
             : 'Session memory extraction was interrupted',
       }
@@ -502,6 +702,10 @@ export class SessionMemoryController {
       this.stateValue = state
     }
     this.observedTokens = this.stateValue.lastObservedTokens
+    this.tokenBaseline =
+      this.stateValue.growthBaselineTokens ?? this.stateValue.lastObservedTokens
+    this.attemptTokenBaseline =
+      this.stateValue.lastAttemptedTokens ?? this.stateValue.lastObservedTokens
     this.observedToolCalls = this.stateValue.lastObservedToolCalls
     this.summaryValue = summary
   }
@@ -513,10 +717,17 @@ export class SessionMemoryController {
   ): boolean {
     const state = this.stateValue
     if (state === null) return false
-    if (!state.initialized) return tokens >= this.initTokens
+    if (!state.initialized) {
+      return tokens >= this.initTokens && tokens > this.attemptTokenBaseline
+    }
     // Unchanged context must not retrigger; tool-call growth alone is never
     // enough without at least the update-token growth.
-    if (tokens - state.lastObservedTokens < this.updateTokens) return false
+    if (
+      tokens - this.tokenBaseline < this.updateTokens ||
+      tokens <= this.attemptTokenBaseline
+    ) {
+      return false
+    }
     return (
       toolCalls - state.lastObservedToolCalls >= this.updateToolCalls ||
       naturalBreak
@@ -528,49 +739,56 @@ export class SessionMemoryController {
     toolCalls: number,
     messageId: string,
     messages?: readonly ModelMessage[],
+    signal?: AbortSignal,
   ): Promise<void> {
     const state = this.stateValue
     if (state === null) {
       throw new SessionMemoryStateError('Session memory state is unavailable')
     }
-    this.stateValue = {
+    const started: SessionMemoryState = {
       ...state,
+      lastAttemptedTokens: tokens,
       extractionStartedAt: Date.now(),
       extractionCompletedAt: null,
       extractionError: null,
     }
-    await this.options.store.writeState(this.stateValue)
+    this.attemptTokenBaseline = tokens
     try {
+      await this.options.store.writeState(started)
+      this.stateValue = started
+      if (signal?.aborted || this.closed) throw new AgentRunCancelledError()
       const summary = await this.options.extractor({
         summary: this.summaryValue,
         tokens,
         toolCalls,
         ...(messages?.length ? { messages } : {}),
+        signal: signal ?? new AbortController().signal,
       })
+      if (signal?.aborted || this.closed) throw new AgentRunCancelledError()
       if (typeof summary !== 'string' || summary.trim().length === 0) {
         throw new SessionMemoryStateError(
           'Session memory extractor returned an empty summary',
         )
       }
-      // Persist the summary before the completed state so a crash in between
-      // is recovered as a stale extraction and safely re-extracted.
-      await this.options.store.writeSummary(summary)
-      this.stateValue = {
+      const completed: SessionMemoryState = {
         ...this.stateValue,
         initialized: true,
         lastObservedTokens: tokens,
+        growthBaselineTokens: tokens,
         lastObservedToolCalls: toolCalls,
         lastSummarizedMessageId: messageId,
         extractionStartedAt: null,
         extractionCompletedAt: Date.now(),
         extractionError: null,
       }
-      await this.options.store.writeState(this.stateValue)
+      await this.options.store.commitExtraction(completed, summary)
+      this.stateValue = completed
+      this.tokenBaseline = tokens
       this.summaryValue = summary
     } catch (error) {
       const failure = error instanceof Error ? error.message : String(error)
       this.stateValue = {
-        ...this.stateValue,
+        ...started,
         extractionStartedAt: null,
         extractionCompletedAt: null,
         extractionError: failure,
@@ -578,7 +796,59 @@ export class SessionMemoryController {
       await this.options.store
         .writeState(this.stateValue)
         .catch(() => undefined)
+      try {
+        this.options.onExtractionError?.(error)
+      } catch {
+        // Operational warning sinks cannot change extraction lifecycle state.
+      }
       throw error
     }
   }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new SessionMemoryStateError('Session memory controller is closed')
+    }
+  }
+
+  private async rebaseAfterContextReduction(tokens: number): Promise<void> {
+    if (tokens >= this.tokenBaseline && tokens >= this.attemptTokenBaseline) {
+      return
+    }
+    this.tokenBaseline = Math.min(this.tokenBaseline, tokens)
+    this.attemptTokenBaseline = Math.min(this.attemptTokenBaseline, tokens)
+    if (this.stateValue === null) return
+    this.stateValue = {
+      ...this.stateValue,
+      growthBaselineTokens: this.tokenBaseline,
+      lastAttemptedTokens: this.attemptTokenBaseline,
+    }
+    await this.options.store.writeState(this.stateValue)
+  }
+
+  private async waitBoundedly(
+    extraction: Promise<void>,
+    ignoreFailure: boolean,
+  ): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), this.waitTimeoutMs)
+    })
+    try {
+      return await Promise.race([
+        (ignoreFailure ? extraction.catch(() => undefined) : extraction).then(
+          () => true as const,
+        ),
+        timeout,
+      ])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+}
+
+function cloneMessages(
+  messages: readonly ModelMessage[] | undefined,
+): readonly ModelMessage[] | undefined {
+  return messages === undefined ? undefined : structuredClone(messages)
 }
