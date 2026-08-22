@@ -96,7 +96,10 @@ async function waitForSessionMemoryCommit(
   planeRoot: string,
   sessionId: string,
   predicate: (state: SessionMemoryState) => boolean = (state) =>
-    state.initialized && state.extractionStartedAt === null,
+    state.initialized &&
+    state.lastSummarizedMessageId !== null &&
+    state.extractionStartedAt === null &&
+    state.extractionCompletedAt !== null,
 ): Promise<SessionMemoryState> {
   const store = new SessionMemoryStore({
     configRoot,
@@ -410,7 +413,7 @@ describe('ClaudeSessionService', () => {
       })
 
       const run = await service.run('remember this')
-      const memoryPath = (planeRoot: string) =>
+      const summaryMirrorPath = (planeRoot: string) =>
         join(
           configRoot,
           planeRoot,
@@ -420,15 +423,23 @@ describe('ClaudeSessionService', () => {
         )
 
       // Normal turns schedule extraction without awaiting it, so wait for the
-      // controller to drain before reading the sidecar.
+      // durable pointer commit before reading through the store. summary.md is
+      // only a best-effort readable mirror and may lag that atomic commit.
       await waitForSessionMemoryCommit(configRoot, selectedRoot, run.sessionId)
-      await expect(readFile(memoryPath(selectedRoot), 'utf8')).resolves.toBe(
-        'durable memory',
-      )
-      await expect(
-        readFile(memoryPath(unselectedRoot), 'utf8'),
-      ).rejects.toMatchObject({ code: 'ENOENT' })
       await service.close()
+      await rm(summaryMirrorPath(selectedRoot), { force: true })
+      await expect(
+        readFile(summaryMirrorPath(selectedRoot), 'utf8'),
+      ).rejects.toMatchObject({ code: 'ENOENT' })
+      const selectedStore = new SessionMemoryStore({
+        configRoot,
+        sessionId: run.sessionId,
+        sidecarRoot: join(configRoot, selectedRoot),
+      })
+      await expect(selectedStore.loadSummary()).resolves.toBe('durable memory')
+      await expect(
+        readFile(summaryMirrorPath(unselectedRoot), 'utf8'),
+      ).rejects.toMatchObject({ code: 'ENOENT' })
     },
   )
 
