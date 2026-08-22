@@ -86,6 +86,32 @@ describe('FallbackModelProvider', () => {
     expect(complete).toHaveBeenCalledTimes(3)
   })
 
+  it('routes typed prompt-too-long directly to context recovery without retry or fallback', async () => {
+    const primary = vi.fn(async function* () {
+      throw new ModelProviderError('opaque context failure', {
+        kind: 'prompt_too_long',
+        retryable: true,
+      })
+      yield text('unreachable')
+    })
+    const fallback = vi.fn(async function* () {
+      yield text('must not run')
+    })
+    const routed = new FallbackModelProvider({
+      providers: [provider('primary', primary), provider('fallback', fallback)],
+      retryDelayMs: 0,
+    })
+
+    const consume = async () => {
+      for await (const event of routed.complete({ messages: [] })) void event
+    }
+    await expect(consume()).rejects.toMatchObject({
+      kind: 'prompt_too_long',
+    })
+    expect(primary).toHaveBeenCalledTimes(1)
+    expect(fallback).not.toHaveBeenCalled()
+  })
+
   it('commits successful content and usage once after discarding a partial attempt', async () => {
     let attempts = 0
     const underlying: ModelProvider = {

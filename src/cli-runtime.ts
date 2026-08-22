@@ -4661,8 +4661,38 @@ function eventSink(
     }
   }
   if (outputFormat !== 'text') return () => undefined
+  let turnBuffered = false
+  let bufferedText = ''
+  const flushBufferedText = () => {
+    if (bufferedText.length > 0) io.stdout(bufferedText)
+    bufferedText = ''
+  }
   return (event) => {
-    if (event.type === 'text-delta') io.stdout(event.delta)
+    if (event.type === 'state' && event.state === 'awaiting-model') {
+      turnBuffered = true
+      bufferedText = ''
+    }
+    if (event.type === 'text-delta') {
+      if (turnBuffered) bufferedText += event.delta
+      else io.stdout(event.delta)
+    }
+    if (event.type === 'model-attempt-discarded') bufferedText = ''
+    if (
+      event.type === 'terminal' &&
+      event.reason !== 'prompt_too_long' &&
+      turnBuffered
+    ) {
+      flushBufferedText()
+      turnBuffered = false
+    }
+    if (event.type === 'state' && event.state === 'completed' && turnBuffered) {
+      flushBufferedText()
+      turnBuffered = false
+    }
+    if (event.type === 'failed') {
+      bufferedText = ''
+      turnBuffered = false
+    }
     if (event.type === 'user-message') io.stdout(`\n${event.message}\n`)
     if (event.type === 'warning') {
       io.stderr(

@@ -91,6 +91,7 @@ import {
   type ModelThinkingBlock,
   type ModelToolCall,
   type ModelProvider,
+  type ModelProviderError,
   type ModelUsage,
   type PermissionApproval,
   type PermissionDecision,
@@ -110,6 +111,7 @@ import type { CompactionResult, Compactor } from '../core/compaction.js'
 import {
   ContextBudget,
   ContextRecoveryPlanner,
+  contextRecoveryMadeProgress,
   estimateModelRequestTokens,
   isPromptTooLongError,
 } from '../core/context-budget.js'
@@ -4184,6 +4186,17 @@ export class ClaudeSessionService {
             definitions,
           )
           budget.assertFits(afterPending)
+          if (
+            options.promptTooLong === true &&
+            !contextRecoveryMadeProgress({
+              beforeOccupancyTokens: predicted.occupancyTokens,
+              afterOccupancyTokens: afterPending.occupancyTokens,
+            })
+          ) {
+            throw new Error(
+              'Reactive context compaction made no occupancy progress',
+            )
+          }
           const entries = [
             ...compactEntries(afterHistory.estimatedTokens),
             ...replayEntries,
@@ -4503,6 +4516,9 @@ export class ClaudeSessionService {
           ...(this.options.collectMetrics || this.options.costStateStore
             ? { collectMetrics: true }
             : {}),
+          ...(budget
+            ? { deferFailureKinds: ['prompt_too_long'] as const }
+            : {}),
           reloadMessages: async () => {
             await compactIfNeeded([], currentTurnUserMessages ?? [])
             if (stableSystemMessageCount === undefined) {
@@ -4631,21 +4647,41 @@ export class ClaudeSessionService {
           signal
             ? runtime.run({ ...runtimeRequest, signal })
             : runtime.run(runtimeRequest)
+        const surfaceExhaustedRecovery = (error: ModelProviderError) => {
+          this.options.eventSink?.({
+            type: 'failed',
+            message: error.message,
+            retryable: false,
+          })
+        }
         let result: AgentRunResult
         try {
           result = await attemptMainTurn()
         } catch (error) {
           if (!budget || !isPromptTooLongError(error)) throw error
-          if (recoveryPlanner.consumeReactiveRetry() !== 'reactive-retry')
+          if (recoveryPlanner.reactiveRetriesRemaining === 0) {
+            surfaceExhaustedRecovery(error)
             throw error
+          }
+          const beforeRecovery = budget.evaluate(
+            runtimeRequest.messages,
+            definitions,
+          )
           try {
             await compactIfNeeded([], currentTurnUserMessages ?? [], {
               promptTooLong: true,
             })
-          } catch {
+          } catch (compactionError) {
+            if (
+              signal?.aborted ||
+              compactionError instanceof AgentRunCancelledError
+            ) {
+              throw new AgentRunCancelledError()
+            }
             // Compaction could not free the provider-bounded context; surface
             // the original prompt-too-long error rather than the compaction
             // failure.
+            surfaceExhaustedRecovery(error)
             throw error
           }
           // The single reactive retry must use the compacted transcript, not
@@ -4659,12 +4695,33 @@ export class ClaudeSessionService {
           } else {
             runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
           }
+          const afterRecovery = budget.evaluate(
+            runtimeRequest.messages,
+            definitions,
+          )
+          if (
+            recoveryPlanner.consumeReactiveRetry({
+              beforeOccupancyTokens: beforeRecovery.occupancyTokens,
+              afterOccupancyTokens: afterRecovery.occupancyTokens,
+            }) !== 'reactive-retry'
+          ) {
+            surfaceExhaustedRecovery(error)
+            throw error
+          }
+          runtimeRequest.deferFailureKinds = true
           try {
             result = await attemptMainTurn()
-          } catch {
+          } catch (retryError) {
             // Exactly one reactive retry is consumed; fail deterministically
             // and surface the original prompt-too-long error.
             recoveryPlanner.recordFailure()
+            if (
+              signal?.aborted ||
+              retryError instanceof AgentRunCancelledError
+            ) {
+              throw new AgentRunCancelledError()
+            }
+            surfaceExhaustedRecovery(error)
             throw error
           }
         }

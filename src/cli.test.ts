@@ -2404,6 +2404,44 @@ describe('Praxis CLI', () => {
     expect(capture.stdout.join('')).toBe('answer:hello world\n')
   })
 
+  it('prints only the recovered attempt in append-only text output', async () => {
+    const capture = captureIO()
+    const base = dependencies()
+    const recovered: CliDependencies = {
+      async createService(options) {
+        const service = await base.createService(options)
+        const { eventSink } = options
+        return {
+          ...service,
+          async run() {
+            eventSink({ type: 'state', state: 'awaiting-model' })
+            eventSink({ type: 'text-delta', delta: 'discarded partial' })
+            eventSink({ type: 'terminal', reason: 'prompt_too_long' })
+            eventSink({
+              type: 'model-attempt-discarded',
+              reason: 'prompt_too_long',
+            })
+            eventSink({ type: 'state', state: 'compacting' })
+            eventSink({ type: 'state', state: 'awaiting-model' })
+            eventSink({ type: 'text-delta', delta: 'recovered answer' })
+            eventSink({ type: 'terminal', reason: 'end_turn' })
+            eventSink({ type: 'state', state: 'completed' })
+            return {
+              sessionId: '11111111-1111-4111-8111-111111111111',
+              text: 'recovered answer',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+        }
+      },
+    }
+
+    await expect(run(['run', 'recover'], capture.io, recovered)).resolves.toBe(
+      0,
+    )
+    expect(capture.stdout.join('')).toBe('recovered answer\n')
+  })
+
   it('accepts prefill without changing prompt or runtime output', async () => {
     const capture = captureIO()
     const base = dependencies()

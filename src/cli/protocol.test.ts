@@ -1683,6 +1683,93 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('marks and resets a discarded model attempt before the recovered turn', () => {
+    const records: Record<string, unknown>[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      true,
+    )
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({ type: 'text-delta', delta: 'discarded partial' })
+    output.sink({ type: 'terminal', reason: 'prompt_too_long' })
+    output.sink({
+      type: 'model-attempt-discarded',
+      reason: 'prompt_too_long',
+    })
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({ type: 'text-delta', delta: 'recovered' })
+    output.sink({ type: 'terminal', reason: 'end_turn' })
+    output.sink({ type: 'state', state: 'completed' })
+
+    const discardIndex = records.findIndex(
+      (record) => record.subtype === 'model_attempt_discarded',
+    )
+    expect(records[discardIndex]).toMatchObject({
+      type: 'system',
+      reason: 'prompt_too_long',
+      session_id: sessionId,
+    })
+    const recoveredMessage = records
+      .slice(discardIndex + 1)
+      .find(
+        (record) =>
+          record.type === 'assistant' ||
+          (record.type === 'stream_event' &&
+            (record.event as { type?: string }).type === 'message_delta'),
+      )
+    expect(recoveredMessage).toBeDefined()
+    expect(JSON.stringify(records.slice(discardIndex + 1))).toContain(
+      'recovered',
+    )
+    expect(JSON.stringify(records.slice(discardIndex + 1))).not.toContain(
+      'discarded partial',
+    )
+  })
+
+  it('projects a pending tool pair before discarding an overflow attempt', () => {
+    const records: Record<string, unknown>[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      false,
+    )
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({
+      type: 'tool-call',
+      call: { id: 'pending-read', name: 'Read', input: {} },
+    })
+    output.sink({ type: 'terminal', reason: 'prompt_too_long' })
+    output.sink({
+      type: 'tool-result',
+      callId: 'pending-read',
+      content: 'Read cancelled: prompt too long',
+      isError: true,
+    })
+    output.sink({
+      type: 'model-attempt-discarded',
+      reason: 'prompt_too_long',
+    })
+
+    const serialized = records.map((record) => JSON.stringify(record))
+    const toolUseIndex = serialized.findIndex(
+      (record) =>
+        record.includes('pending-read') && record.includes('tool_use'),
+    )
+    const toolResultIndex = serialized.findIndex(
+      (record) =>
+        record.includes('pending-read') && record.includes('tool_result'),
+    )
+    const discardIndex = records.findIndex(
+      (record) => record.subtype === 'model_attempt_discarded',
+    )
+    expect(toolUseIndex).toBeGreaterThanOrEqual(0)
+    expect(toolResultIndex).toBeGreaterThan(toolUseIndex)
+    expect(discardIndex).toBeGreaterThan(toolResultIndex)
+  })
+
   it('keeps thinking out of result text while preserving partial and final blocks', () => {
     const records: Record<string, unknown>[] = []
     const output = new StreamJsonOutput(

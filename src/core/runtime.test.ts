@@ -87,6 +87,142 @@ describe('AgentRuntime', () => {
     expect(events).toContainEqual({ type: 'terminal', reason: 'max_tokens' })
   })
 
+  it('surfaces prompt-too-long terminal state without committing an assistant or running Stop hooks', async () => {
+    let assistantCompletions = 0
+    let stopHooks = 0
+    const runtime = new AgentRuntime(
+      terminalProvider(async function* () {
+        yield { type: 'usage', usage: { inputTokens: 5, outputTokens: 0 } }
+        yield { type: 'terminal', reason: 'prompt_too_long' }
+      }),
+    )
+
+    await expect(
+      runtime.run({
+        messages: [{ role: 'user', content: 'oversized' }],
+        observer: {
+          async assistantCompleted() {
+            assistantCompletions += 1
+          },
+          async toolCompleted() {},
+        },
+        async onStop() {
+          stopHooks += 1
+          return []
+        },
+      }),
+    ).rejects.toMatchObject({
+      kind: 'prompt_too_long',
+      retryable: false,
+    })
+    expect(assistantCompletions).toBe(0)
+    expect(stopHooks).toBe(0)
+  })
+
+  it('keeps healthy output live while deferring prompt-too-long failure presentation', async () => {
+    let releaseProvider: () => void = () => undefined
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve
+    })
+    let sawText: () => void = () => undefined
+    const textObserved = new Promise<void>((resolve) => {
+      sawText = resolve
+    })
+    let completed = false
+    const runtime = new AgentRuntime(
+      terminalProvider(async function* () {
+        yield { type: 'text-delta', delta: 'live' }
+        await providerReleased
+        yield { type: 'terminal', reason: 'end_turn' }
+      }),
+      (event) => {
+        if (event.type === 'text-delta') sawText()
+      },
+    )
+
+    const run = runtime
+      .run({
+        messages: [{ role: 'user', content: 'stream' }],
+        deferFailureKinds: ['prompt_too_long'],
+      })
+      .then((result) => {
+        completed = true
+        return result
+      })
+    await textObserved
+    expect(completed).toBe(false)
+    releaseProvider()
+    await expect(run).resolves.toMatchObject({ text: 'live' })
+  })
+
+  it('pairs a pending tool call once before surfacing prompt-too-long', async () => {
+    const events: RuntimeEvent[] = []
+    const persisted: string[] = []
+    let executions = 0
+    const runtime = new AgentRuntime(
+      terminalProvider(async function* () {
+        yield {
+          type: 'tool-call',
+          call: { id: 'pending-read', name: 'Read', input: {} },
+        }
+        yield { type: 'terminal', reason: 'prompt_too_long' }
+      }),
+      (event) => events.push(event),
+      {
+        tools: {
+          definitions: () => [
+            {
+              name: 'Read',
+              description: 'Read a file',
+              inputSchema: { type: 'object' },
+            },
+          ],
+          schedulingPolicy: () => ({
+            concurrency: 'exclusive',
+            startAfterAssistant: true,
+          }),
+          async prepare(call) {
+            return call
+          },
+          async execute() {
+            executions += 1
+            return { content: 'must not execute', isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+
+    await expect(
+      runtime.run({
+        messages: [{ role: 'user', content: 'oversized' }],
+        observer: {
+          async assistantCompleted() {
+            persisted.push('assistant')
+          },
+          async toolCompleted() {
+            persisted.push('tool')
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ kind: 'prompt_too_long' })
+
+    expect(executions).toBe(0)
+    expect(persisted).toEqual([])
+    expect(
+      events.filter(
+        (event) =>
+          event.type === 'tool-result' && event.callId === 'pending-read',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'tool-result',
+        callId: 'pending-read',
+        isError: true,
+      }),
+    ])
+  })
+
   it('fails deterministically when a terminal-capable provider omits its reason', async () => {
     const runtime = new AgentRuntime(
       terminalProvider(async function* () {
