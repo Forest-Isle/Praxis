@@ -255,7 +255,9 @@ if (event.hook_event_name === 'SessionEnd') console.log('${markers.sessionEnd}')
   const praxisEnvironment = {
     ...process.env,
     CLAUDE_CONFIG_DIR: configRoot,
+    PRAXIS_DATA_PLANE: 'claude',
     PRAXIS_API_KEY: 'fixture-key',
+    PRAXIS_PROVIDER: 'openai',
     PRAXIS_MODEL: 'fixture-model',
     PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
   }
@@ -363,7 +365,14 @@ if (event.hook_event_name === 'SessionEnd') console.log('${markers.sessionEnd}')
   ).length
   await runPraxisStreamInput(
     cli,
-    ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json'],
+    [
+      '-p',
+      '--verbose',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+    ],
     [
       {
         type: 'user',
