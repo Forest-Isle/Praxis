@@ -80,6 +80,10 @@ Rules:
 17. Dynamic wakeups are independent process-local one-shots. They clamp delay,
     enter the same idle queue, and are removed before delivery. Stop and close
     cancel pending or queued dynamic work without modifying fixed Cron jobs.
+18. Model turns have no implicit runtime limit. A caller may opt into a finite
+    positive-integer limit; it counts provider model calls only and fails once
+    at the exact boundary without replacing the independent tool-call, retry,
+    cancellation, context, or cost bounds.
 
 ## Core ports
 
@@ -163,6 +167,9 @@ state.
 - Write interleaving detected after fsync: mark session read-only and require
   reload/fork; never truncate either writer's entries.
 - Provider failure: persist only native events already completed.
+- Explicit model-turn exhaustion: emit one `error_max_turns` result after the
+  configured number of provider calls; keep already completed transcript
+  entries append-only.
 - Tool failure: append an error `tool_result`, then let model decide.
 - Corrupt/truncated JSONL: preserve file, report line and offset, read-only
   inspect/export; never auto-truncate or hide other sessions.

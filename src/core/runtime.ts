@@ -946,8 +946,13 @@ export class AgentRuntime {
     const definitions = this.provider.capabilities.tools
       ? (this.options.tools?.definitions() ?? [])
       : []
-    const maxModelTurns =
-      request.maxModelTurns ?? this.options.maxModelTurns ?? 16
+    const maxModelTurns = request.maxModelTurns ?? this.options.maxModelTurns
+    if (
+      maxModelTurns !== undefined &&
+      (!Number.isSafeInteger(maxModelTurns) || maxModelTurns <= 0)
+    ) {
+      throw new TypeError('maxModelTurns must be a positive integer')
+    }
     const maxModelOutputBytes = this.options.maxModelOutputBytes ?? 1024 * 1024
     const maxToolCallsPerTurn = this.options.maxToolCallsPerTurn ?? 32
     const maxToolInputBytes = this.options.maxToolInputBytes ?? 1024 * 1024
@@ -959,7 +964,11 @@ export class AgentRuntime {
       | undefined
 
     try {
-      for (let turn = 0; turn < maxModelTurns; turn += 1) {
+      let modelTurns = 0
+      while (true) {
+        if (maxModelTurns !== undefined && modelTurns >= maxModelTurns) {
+          throw new Error(`Maximum model turns of ${maxModelTurns} exceeded`)
+        }
         if (pendingToolUseSummary) {
           const summaryRequest = pendingToolUseSummary
           pendingToolUseSummary = undefined
@@ -1031,6 +1040,7 @@ export class AgentRuntime {
             `Maximum budget of $${this.options.maxBudgetUsd.toFixed(6)} exceeded`,
           )
         }
+        modelTurns += 1
         this.emit({ type: 'state', state: 'awaiting-model' })
         const providerRequest: ModelRequest = {
           messages: prepareProviderMessages(
@@ -1442,8 +1452,6 @@ export class AgentRuntime {
           messages.splice(0, messages.length, ...reloadedMessages)
         }
       }
-
-      throw new Error(`Agent exceeded ${maxModelTurns} model turns`)
     } catch (error) {
       if (request.signal?.aborted) return this.cancel()
       const message = error instanceof Error ? error.message : String(error)

@@ -518,6 +518,39 @@ describe('AgentRuntime', () => {
     expect(calls).toBe(1)
   })
 
+  it('continues beyond the former default model turn limit', async () => {
+    let calls = 0
+    let toolExecutions = 0
+    const provider = providerFrom(async function* () {
+      calls += 1
+      if (calls <= 17) {
+        yield {
+          type: 'tool-call',
+          call: { id: `call_${calls}`, name: 'Read', input: {} },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'done' }
+    })
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [],
+        prepare: async (call) => call,
+        execute: async () => {
+          toolExecutions += 1
+          return { content: 'read', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(
+      runtime.run({ messages: [{ role: 'user', content: 'continue' }] }),
+    ).resolves.toMatchObject({ text: 'done' })
+    expect(calls).toBe(18)
+    expect(toolExecutions).toBe(17)
+  })
+
   it('honors a per-run maximum model turn limit', async () => {
     let calls = 0
     const provider = providerFrom(async function* () {
@@ -531,9 +564,43 @@ describe('AgentRuntime', () => {
         maxModelTurns: 1,
         onStop: async () => ['continue'],
       }),
-    ).rejects.toThrow('Agent exceeded 1 model turns')
+    ).rejects.toThrow('Maximum model turns of 1 exceeded')
     expect(calls).toBe(1)
   })
+
+  it('honors a runtime-level maximum model turn limit', async () => {
+    let calls = 0
+    const provider = providerFrom(async function* () {
+      calls += 1
+      yield { type: 'text-delta', delta: `turn-${calls}` }
+    })
+
+    await expect(
+      new AgentRuntime(provider, undefined, { maxModelTurns: 2 }).run({
+        messages: [{ role: 'user', content: 'limit' }],
+        onStop: async () => ['continue'],
+      }),
+    ).rejects.toThrow('Maximum model turns of 2 exceeded')
+    expect(calls).toBe(2)
+  })
+
+  it.each([0, -1, 1.5, Number.POSITIVE_INFINITY])(
+    'rejects an invalid explicit model turn limit of %s',
+    async (maxModelTurns) => {
+      const runtime = new AgentRuntime(
+        providerFrom(async function* () {
+          yield { type: 'text-delta', delta: 'unused' }
+        }),
+      )
+
+      await expect(
+        runtime.run({
+          messages: [{ role: 'user', content: 'limit' }],
+          maxModelTurns,
+        }),
+      ).rejects.toThrow('maxModelTurns must be a positive integer')
+    },
+  )
 
   it('emits typed state, text, usage, and completion events', async () => {
     const provider = providerFrom(async function* () {

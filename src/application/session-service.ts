@@ -4379,7 +4379,7 @@ export class ClaudeSessionService {
           toolResultDirectory,
           observer,
           ...(this.options.effort ? { effort: this.options.effort } : {}),
-          ...(this.options.maxModelTurns
+          ...(this.options.maxModelTurns !== undefined
             ? { maxModelTurns: this.options.maxModelTurns }
             : {}),
           ...(this.options.betas?.length ? { betas: this.options.betas } : {}),

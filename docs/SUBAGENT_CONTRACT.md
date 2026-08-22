@@ -65,11 +65,11 @@ use the same precedence as other Claude-compatible tool permissions.
     `<task-notification>` follow-up and its usage is added to main run totals.
 
 Bounds are explicit: maximum spawn depth 4, 16 subagent calls per main turn,
-16 model turns per subagent unless its definition supplies `maxTurns`, 32 tool
-calls per model turn, 1 MiB model output,
+32 tool calls per model turn, 1 MiB model output,
 1 MiB tool input, and 1 MiB final returned text. Cancellation aborts active
 provider and child-tool work and produces an interrupted main run, not a fake
-successful Agent result.
+successful Agent result. A child loop has no implicit model-turn cap; a custom
+agent definition may opt into an exact positive-integer `maxTurns` policy.
 
 ## Native persistence
 

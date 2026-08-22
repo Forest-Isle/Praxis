@@ -9,6 +9,7 @@ import type { ModelProvider, ModelToolCall } from './core/runtime.js'
 import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
 import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
 import type { ClaudeSessionCostSnapshot } from './application/session-cost-tracker.js'
+import { ClaudeSessionService } from './application/session-service.js'
 import { resolveDataPlanePaths } from './persistence/data-plane.js'
 import {
   createBackgroundWorkerRuntime,
@@ -3700,6 +3701,74 @@ describe('Praxis CLI', () => {
       { type: 'text-delta', delta: 'answer:hello' },
       expect.objectContaining({ type: 'result', text: 'answer:hello' }),
     ])
+  })
+
+  it('emits one typed JSON result at the explicit print model turn limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cli-turn-limit-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let providerCalls = 0
+    const capture = captureIO()
+    const bounded: CliDependencies = {
+      async createService(options) {
+        return new ClaudeSessionService({
+          configRoot,
+          dataPlane: 'native',
+          cwd,
+          claudeVersion: '2.1.208',
+          eventSink: options.eventSink,
+          ...(options.controls?.maxTurns === undefined
+            ? {}
+            : { maxModelTurns: options.controls.maxTurns }),
+          provider: {
+            capabilities: { streaming: true, usage: true, tools: true },
+            async *complete() {
+              providerCalls += 1
+              yield {
+                type: 'tool-call',
+                call: {
+                  id: `read_${providerCalls}`,
+                  name: 'Read',
+                  input: {},
+                },
+              }
+            },
+          },
+          tools: {
+            definitions: () => [
+              {
+                name: 'Read',
+                description: 'Read',
+                inputSchema: { type: 'object' },
+              },
+            ],
+            prepare: async (call) => call,
+            execute: async () => ({ content: 'READ', isError: false }),
+          },
+          permissions: { resolve: () => ({ behavior: 'allow' }) },
+        })
+      },
+    }
+
+    try {
+      await expect(
+        run(
+          ['-p', '--max-turns', '2', '--output-format', 'json', 'continue'],
+          capture.io,
+          bounded,
+        ),
+      ).resolves.toBe(1)
+      expect(providerCalls).toBe(2)
+      expect(capture.stdout).toHaveLength(1)
+      expect(JSON.parse(capture.stdout[0] as string)).toMatchObject({
+        type: 'result',
+        subtype: 'error_max_turns',
+        is_error: true,
+        num_turns: 2,
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('emits prompt suggestions after stream-json result', async () => {

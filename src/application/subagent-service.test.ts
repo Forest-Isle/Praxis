@@ -1017,9 +1017,77 @@ describe('foreground Claude Agent execution', () => {
     )
 
     await expect(registry.execute(prepared, { cwd })).rejects.toThrow(
-      'exceeded 2 model turns',
+      'Maximum model turns of 2 exceeded',
     )
     expect(requests).toBe(2)
+  })
+
+  it('does not invent a model turn limit for a default child loop', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-unbounded-test-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    let requests = 0
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async () => ({ content: 'READ', isError: false }),
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          requests += 1
+          if (requests <= 17) {
+            yield {
+              type: 'tool-call',
+              call: { id: `read_${requests}`, name: 'Read', input: {} },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'CHILD_DONE' }
+        },
+      },
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      extensions: new ClaudeExtensionCatalog({
+        commands: [],
+        skills: [],
+        agents: [],
+      }),
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const prepared = await registry.prepare(
+      {
+        id: 'call_unbounded',
+        name: 'Agent',
+        input: {
+          description: 'Unbounded child',
+          prompt: 'Keep reading until done',
+          subagent_type: 'general-purpose',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+
+    await expect(registry.execute(prepared, { cwd })).resolves.toMatchObject({
+      isError: false,
+    })
+    expect(requests).toBe(18)
   })
 
   it('applies custom agent launch controls and preserves protected parent permission modes', async () => {
