@@ -9,6 +9,7 @@ import { parseClaudeVersionOutput } from '../dist/compatibility/claude/schema.js
 import { execFileAsync } from './lib/claude-probe.mjs'
 
 const REFERENCE_VERSION = '2.1.208'
+const CROSS_VERSION = '2.1.233'
 const referenceBinary = process.env.PRAXIS_CLAUDE_BINARY
 const crossBinary = process.env.PRAXIS_CLAUDE_CROSS_VERSION_BINARY
 const DROPPED = 'CROSS_COMPACT_DROPPED'
@@ -42,7 +43,7 @@ if (!referenceBinary) {
 }
 if (!crossBinary) {
   throw new Error(
-    'PRAXIS_CLAUDE_CROSS_VERSION_BINARY must point to a second Claude Code executable',
+    `PRAXIS_CLAUDE_CROSS_VERSION_BINARY must point to the Claude Code ${CROSS_VERSION} executable`,
   )
 }
 if (referenceBinary === crossBinary) {
@@ -124,6 +125,7 @@ function textEvents(text, inputTokens = 1) {
 const requests = []
 const malformed = []
 let mode = 'setup'
+let reverseTriggerRequestCount = 0
 const server = createServer(async (request, response) => {
   if (request.method === 'HEAD') {
     response.writeHead(200).end()
@@ -146,9 +148,11 @@ const server = createServer(async (request, response) => {
   }
   requests.push({ mode, body })
   const serialized = bodyText(body)
+  const reverseTriggerRequestOrdinal =
+    mode === 'cross-version-trigger' ? ++reverseTriggerRequestCount : undefined
   const compacting =
     serialized.includes('You are compacting an agent conversation') ||
-    (mode === 'cross-version-trigger' && serialized.includes(REVERSE_DROPPED))
+    reverseTriggerRequestOrdinal === 1
   const answer = compacting
     ? serialized.includes(REVERSE_DROPPED)
       ? REVERSE_KEEP
@@ -264,8 +268,8 @@ try {
     `Reference Claude CLI must be ${REFERENCE_VERSION}, got ${referenceVersion}`,
   )
   assert(
-    crossVersion !== REFERENCE_VERSION,
-    `Cross-version Claude CLI must differ from ${REFERENCE_VERSION}, got ${crossVersion}`,
+    crossVersion === CROSS_VERSION,
+    `Cross-version Claude CLI must be ${CROSS_VERSION}, got ${crossVersion}`,
   )
 
   await listen()
@@ -286,6 +290,7 @@ try {
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '60',
   }
   const providerEnv = {
+    PRAXIS_DATA_PLANE: 'claude',
     PRAXIS_PROVIDER: 'anthropic',
     PRAXIS_API_KEY: 'fixture-key',
     PRAXIS_MODEL: 'fixture-model',
@@ -302,6 +307,9 @@ try {
     '--output-format',
     'json',
   ]
+  // --autocompact is invocation-scoped, so every cross-version resume that
+  // participates in the threshold sequence must repeat the pinned setting.
+  const reverseClaudeCommon = [...claudeCommon, '--autocompact', '100k']
 
   mode = 'praxis-origin'
   const origin = await runPraxis(
@@ -537,12 +545,7 @@ try {
   mode = 'cross-version-origin'
   const reverseOrigin = await runClaude(
     crossBinary,
-    [
-      ...claudeCommon,
-      '--autocompact',
-      '100k',
-      `${REVERSE_ORIGIN_PROMPT} ${REVERSE_DROPPED}`,
-    ],
+    [...reverseClaudeCommon, `${REVERSE_ORIGIN_PROMPT} ${REVERSE_DROPPED}`],
     reverseCanonicalCwd,
     reverseConfigRoot,
     reverseClaudeEnv,
@@ -559,7 +562,12 @@ try {
   mode = 'cross-version-compaction'
   const reverseContinued = await runClaude(
     crossBinary,
-    [...claudeCommon, '--resume', reverseSessionId, REVERSE_CONTINUE_PROMPT],
+    [
+      ...reverseClaudeCommon,
+      '--resume',
+      reverseSessionId,
+      REVERSE_CONTINUE_PROMPT,
+    ],
     reverseCanonicalCwd,
     reverseConfigRoot,
     reverseClaudeEnv,
@@ -575,7 +583,12 @@ try {
   mode = 'cross-version-trigger'
   const reverseTriggered = await runClaude(
     crossBinary,
-    [...claudeCommon, '--resume', reverseSessionId, REVERSE_TRIGGER_PROMPT],
+    [
+      ...reverseClaudeCommon,
+      '--resume',
+      reverseSessionId,
+      REVERSE_TRIGGER_PROMPT,
+    ],
     reverseCanonicalCwd,
     reverseConfigRoot,
     reverseClaudeEnv,
@@ -618,15 +631,14 @@ try {
     reverseTranscript.some((entry) => entry.version === crossVersion),
     'Cross-version transcript omitted the cross-version producer identity',
   )
-  const reverseCompactRequest = requests.find(
-    (request) =>
-      request.mode === 'cross-version-trigger' &&
-      bodyText(request.body).includes(REVERSE_DROPPED),
+  const reverseTriggerRequests = requests.filter(
+    (request) => request.mode === 'cross-version-trigger',
   )
   assert(
-    reverseCompactRequest,
-    'Cross-version compacting provider request was not observed',
+    reverseTriggerRequests.length === 2,
+    `Cross-version trigger must issue compactor then main requests, got ${reverseTriggerRequests.length}`,
   )
+  const [reverseCompactRequest, reverseMainRequest] = reverseTriggerRequests
   const reverseOriginRequest = requests.find(
     (request) => request.mode === 'cross-version-origin',
   )
@@ -637,8 +649,16 @@ try {
   )
   const reverseCompactText = bodyText(reverseCompactRequest.body)
   assert(
-    reverseCompactText.includes(REVERSE_DROPPED),
-    'Cross-version compactor request omitted reverse dropped context',
+    reverseCompactText.includes(REVERSE_DROPPED) &&
+      !reverseCompactText.includes(REVERSE_TRIGGER_PROMPT),
+    'First cross-version trigger request was not the compactor request',
+  )
+  const reverseMainText = bodyText(reverseMainRequest.body)
+  assert(
+    reverseMainText.includes(REVERSE_TRIGGER_PROMPT) &&
+      reverseMainText.includes(REVERSE_KEEP) &&
+      !reverseMainText.includes(REVERSE_DROPPED),
+    'Second cross-version trigger request was not the compacted main request',
   )
 
   mode = 'reference-after-cross-compaction'

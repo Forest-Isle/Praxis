@@ -16,6 +16,7 @@ import { parseClaudeVersionOutput } from '../dist/compatibility/claude/schema.js
 import { execFileAsync } from './lib/claude-probe.mjs'
 
 const REFERENCE_VERSION = '2.1.208'
+const CROSS_VERSION = '2.1.233'
 const referenceBinary = process.env.PRAXIS_CLAUDE_BINARY
 const crossBinary = process.env.PRAXIS_CLAUDE_CROSS_VERSION_BINARY
 const ROOT_PROMPT = 'CROSS_SIDECHAIN_ROOT_PROMPT'
@@ -44,7 +45,7 @@ if (!referenceBinary) {
 }
 if (!crossBinary) {
   throw new Error(
-    'PRAXIS_CLAUDE_CROSS_VERSION_BINARY must point to a second Claude Code executable',
+    `PRAXIS_CLAUDE_CROSS_VERSION_BINARY must point to the Claude Code ${CROSS_VERSION} executable`,
   )
 }
 
@@ -370,8 +371,8 @@ try {
     `Reference Claude CLI must be ${REFERENCE_VERSION}, got ${referenceVersion}`,
   )
   assert(
-    crossVersion !== REFERENCE_VERSION,
-    `Cross-version Claude CLI must differ from ${REFERENCE_VERSION}, got ${crossVersion}`,
+    crossVersion === CROSS_VERSION,
+    `Cross-version Claude CLI must be ${CROSS_VERSION}, got ${crossVersion}`,
   )
 
   await listen()
@@ -387,6 +388,7 @@ try {
     DISABLE_AUTOUPDATER: '1',
   }
   const praxisEnvironment = {
+    PRAXIS_DATA_PLANE: 'claude',
     PRAXIS_PROVIDER: 'anthropic',
     PRAXIS_API_KEY: 'fixture-key',
     PRAXIS_MODEL: 'fixture-model',
