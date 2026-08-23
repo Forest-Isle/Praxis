@@ -39,7 +39,6 @@ import {
 } from '../compatibility/claude/compaction.js'
 import {
   discoverClaudeProjectRoot,
-  isClaudeSessionId,
   resolveClaudePaths,
   resolveClaudeScheduledTaskFile,
 } from '../compatibility/claude/paths.js'
@@ -62,11 +61,11 @@ import {
 } from '../compatibility/claude/history.js'
 import { ClaudeFileHistory } from '../compatibility/claude/file-history.js'
 import {
-  type ClaudeDisplayTranscriptItem,
   getClaudeAgentSetting,
   projectClaudeDisplayTranscript,
   projectClaudeModelMessages,
 } from '../compatibility/claude/projection.js'
+import type { TranscriptDisplayItem } from './transcript-projection.js'
 import {
   type ClaudeTranscriptEntry,
   selectClaudeSchemaAdapter,
@@ -127,6 +126,7 @@ import {
 } from './background-agent-manager.js'
 import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
+import { isSessionId } from '../core/session.js'
 import type { CompactionResult, Compactor } from '../core/compaction.js'
 import {
   ContextBudget,
@@ -164,7 +164,19 @@ import {
 import {
   ClaudeSessionIndexCandidateError,
   readClaudeSessionIndexes,
+  type ClaudeSessionIndex,
 } from '../persistence/claude-session-index.js'
+import {
+  readNativeTranscript,
+  readNativeTranscriptIndexes,
+  exportNativeTranscript,
+  NativeTranscriptIndexCandidateError,
+} from '../persistence/native-transcript-reader.js'
+import {
+  lastUserPrompt,
+  projectTranscriptDisplay,
+} from './transcript-projection.js'
+import type { TranscriptCodecDiagnostic } from '../core/transcript-codec.js'
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
 import type { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
 import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
@@ -399,7 +411,7 @@ export interface SessionSummary {
   lastPrompt: string | null
   updatedAt: string
   status: SessionStatus
-  issue: TranscriptParseIssue | null
+  issue: (TranscriptParseIssue | TranscriptCodecDiagnostic) | null
   prNumber?: number
   prUrl?: string
   prRepository?: string
@@ -408,11 +420,69 @@ export interface SessionSummary {
 export type SessionStatus = 'ready' | 'read-only' | 'corrupt'
 
 export interface SessionInspection extends SessionSummary {
-  claudeVersion: string
+  claudeVersion?: string
   writeMode: 'read-only' | 'read-write'
   entryCount: number
   byteLength: number
   newlineTerminated: boolean
+}
+
+function sessionMetadataFields(
+  metadata: ClaudeSessionMetadata,
+  options: { agentNameFallback: boolean },
+): Pick<
+  SessionSummary,
+  | 'name'
+  | 'tag'
+  | 'agentName'
+  | 'agentColor'
+  | 'agentSetting'
+  | 'permissionMode'
+  | 'mode'
+  | 'prNumber'
+  | 'prUrl'
+  | 'prRepository'
+> {
+  const name =
+    metadata.title ??
+    (options.agentNameFallback ? metadata.agentName : undefined)
+  const prLink = metadata.prLink
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(metadata.tag === undefined ? {} : { tag: metadata.tag }),
+    ...(metadata.agentName === undefined
+      ? {}
+      : { agentName: metadata.agentName }),
+    ...(metadata.agentColor === undefined
+      ? {}
+      : { agentColor: metadata.agentColor }),
+    ...(metadata.agentSetting === undefined
+      ? {}
+      : { agentSetting: metadata.agentSetting }),
+    ...(metadata.permissionMode === undefined
+      ? {}
+      : { permissionMode: metadata.permissionMode }),
+    ...(metadata.mode === undefined ? {} : { mode: metadata.mode }),
+    ...(prLink === undefined
+      ? {}
+      : {
+          prNumber: prLink.prNumber,
+          ...(prLink.prUrl === undefined ? {} : { prUrl: prLink.prUrl }),
+          ...(prLink.prRepository === undefined
+            ? {}
+            : { prRepository: prLink.prRepository }),
+        }),
+  }
+}
+
+function isSessionCandidateError(error: unknown): boolean {
+  return (
+    error instanceof ClaudeSessionIndexCandidateError ||
+    error instanceof NativeTranscriptIndexCandidateError ||
+    ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(
+      (error as NodeJS.ErrnoException).code ?? '',
+    )
+  )
 }
 
 export interface ForkResult {
@@ -2498,20 +2568,75 @@ export class ClaudeSessionService {
     try {
       names = await readdir(projectRoot)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw error
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') names = []
+      else throw error
     }
 
     const discoveredSessionIds = names
       .filter((name) => extname(name) === '.jsonl')
       .map((name) => basename(name, '.jsonl'))
-      .filter((sessionId) => isClaudeSessionId(sessionId))
+      .filter((sessionId) => isSessionId(sessionId))
     const sessionIds = [
       ...new Set([
         ...discoveredSessionIds,
         ...this.explicitSessionFiles.keys(),
       ]),
     ]
+    if (this.options.dataPlane === 'native') {
+      const nativeResults = await readNativeTranscriptIndexes(
+        sessionIds.map((sessionId) => ({
+          sessionId,
+          path:
+            this.explicitSessionFiles.get(sessionId) ??
+            join(projectRoot, `${sessionId}.jsonl`),
+        })),
+      )
+      const legacyResults = await readClaudeSessionIndexes(
+        nativeResults.flatMap((result) =>
+          'result' in result && result.result.format === 'legacy'
+            ? [{ sessionId: result.sessionId, path: result.path }]
+            : [],
+        ),
+        this.schema,
+      )
+      const legacyBySessionId = new Map(
+        legacyResults.map((result) => [result.sessionId, result]),
+      )
+      const nativeSummaries = nativeResults.map((result) => {
+        try {
+          if ('error' in result) throw result.error
+          const file = result.result
+          if (file.format === 'legacy') {
+            const legacy = legacyBySessionId.get(result.sessionId)
+            if (!legacy)
+              throw new Error(
+                `Missing legacy transcript index for ${result.sessionId}`,
+              )
+            if ('error' in legacy) throw legacy.error
+            return this.claudeSessionSummary(result.sessionId, legacy.index)
+          }
+          return {
+            sessionId: result.sessionId,
+            lastPrompt: lastUserPrompt(
+              file.records.map((record) => record.event),
+            ),
+            updatedAt: file.updatedAt,
+            status: this.nativeSessionStatus(file.issue, file.records.length),
+            issue: file.issue,
+          }
+        } catch (error) {
+          if (isSessionCandidateError(error)) return null
+          throw error
+        }
+      })
+      return nativeSummaries
+        .filter((summary): summary is SessionSummary => summary !== null)
+        .sort(
+          (left, right) =>
+            right.updatedAt.localeCompare(left.updatedAt) ||
+            left.sessionId.localeCompare(right.sessionId),
+        )
+    }
     if (discoveredRoot !== undefined) {
       for (const sessionId of discoveredSessionIds) {
         this.discoveredProjectRoots.set(sessionId, projectRoot)
@@ -2530,48 +2655,9 @@ export class ClaudeSessionService {
     const summaries = indexResults.map((result) => {
       try {
         if ('error' in result) throw result.error
-        const { sessionId, index } = result
-        const metadata = reduceClaudeSessionMetadata(index.entries, sessionId)
-        const name = metadata.title ?? metadata.agentName
-        const prLink = metadata.prLink
-        return {
-          sessionId,
-          ...(name === undefined ? {} : { name }),
-          ...(metadata.tag === undefined ? {} : { tag: metadata.tag }),
-          ...(metadata.agentName === undefined
-            ? {}
-            : { agentName: metadata.agentName }),
-          ...(metadata.agentColor === undefined
-            ? {}
-            : { agentColor: metadata.agentColor }),
-          ...(metadata.agentSetting === undefined
-            ? {}
-            : { agentSetting: metadata.agentSetting }),
-          ...(metadata.permissionMode === undefined
-            ? {}
-            : { permissionMode: metadata.permissionMode }),
-          ...(metadata.mode === undefined ? {} : { mode: metadata.mode }),
-          lastPrompt: metadata.lastPrompt ?? null,
-          updatedAt: index.updatedAt,
-          status: this.sessionStatus(index.issue, index.entries.length),
-          issue: index.issue,
-          ...(prLink
-            ? {
-                prNumber: prLink.prNumber,
-                prUrl: prLink.prUrl,
-                prRepository: prLink.prRepository,
-              }
-            : {}),
-        }
+        return this.claudeSessionSummary(result.sessionId, result.index)
       } catch (error) {
-        if (error instanceof ClaudeSessionIndexCandidateError) return null
-        if (
-          ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(
-            (error as NodeJS.ErrnoException).code ?? '',
-          )
-        ) {
-          return null
-        }
+        if (isSessionCandidateError(error)) return null
         throw error
       }
     })
@@ -2586,6 +2672,40 @@ export class ClaudeSessionService {
 
   async inspect(sessionId: string): Promise<SessionInspection> {
     this.assertSessionPersistence()
+    if (this.options.dataPlane === 'native') {
+      const paths = this.paths(sessionId)
+      const file = await readNativeTranscript(paths.sessionFile)
+      if (file.format === 'legacy') {
+        const recovery = await this.store(sessionId).loadReadOnly()
+        const metadata = reduceClaudeSessionMetadata(
+          recovery.entries,
+          sessionId,
+        )
+        return {
+          sessionId,
+          ...sessionMetadataFields(metadata, { agentNameFallback: false }),
+          lastPrompt: metadata.lastPrompt ?? null,
+          updatedAt: file.updatedAt,
+          status: this.sessionStatus(recovery.issue, recovery.entries.length),
+          issue: recovery.issue,
+          writeMode: this.schema.writeMode,
+          entryCount: recovery.entries.length,
+          byteLength: file.byteLength,
+          newlineTerminated: file.newlineTerminated,
+        }
+      }
+      return {
+        sessionId,
+        lastPrompt: lastUserPrompt(file.records.map((record) => record.event)),
+        updatedAt: file.updatedAt,
+        status: this.nativeSessionStatus(file.issue, file.records.length),
+        issue: file.issue,
+        writeMode: file.writeMode,
+        entryCount: file.records.length,
+        byteLength: file.byteLength,
+        newlineTerminated: file.newlineTerminated,
+      }
+    }
     await this.discoverProjectRoot(sessionId)
     const paths = this.paths(sessionId)
     let metadata
@@ -2602,30 +2722,9 @@ export class ClaudeSessionService {
       recovery.entries,
       sessionId,
     )
-    const prLink = sessionMetadata.prLink
     return {
       sessionId,
-      ...(sessionMetadata.title === undefined
-        ? {}
-        : { name: sessionMetadata.title }),
-      ...(sessionMetadata.tag === undefined
-        ? {}
-        : { tag: sessionMetadata.tag }),
-      ...(sessionMetadata.agentName === undefined
-        ? {}
-        : { agentName: sessionMetadata.agentName }),
-      ...(sessionMetadata.agentColor === undefined
-        ? {}
-        : { agentColor: sessionMetadata.agentColor }),
-      ...(sessionMetadata.agentSetting === undefined
-        ? {}
-        : { agentSetting: sessionMetadata.agentSetting }),
-      ...(sessionMetadata.permissionMode === undefined
-        ? {}
-        : { permissionMode: sessionMetadata.permissionMode }),
-      ...(sessionMetadata.mode === undefined
-        ? {}
-        : { mode: sessionMetadata.mode }),
+      ...sessionMetadataFields(sessionMetadata, { agentNameFallback: false }),
       lastPrompt: sessionMetadata.lastPrompt ?? null,
       updatedAt: metadata.mtime.toISOString(),
       status: this.sessionStatus(recovery.issue, recovery.entries.length),
@@ -2635,13 +2734,6 @@ export class ClaudeSessionService {
       entryCount: recovery.entries.length,
       byteLength: recovery.tail.byteLength,
       newlineTerminated: recovery.tail.newlineTerminated,
-      ...(prLink
-        ? {
-            prNumber: prLink.prNumber,
-            prUrl: prLink.prUrl,
-            prRepository: prLink.prRepository,
-          }
-        : {}),
     }
   }
 
@@ -2655,6 +2747,8 @@ export class ClaudeSessionService {
 
   async export(sessionId: string): Promise<Buffer> {
     this.assertSessionPersistence()
+    if (this.options.dataPlane === 'native')
+      return exportNativeTranscript(this.paths(sessionId).sessionFile)
     await this.discoverProjectRoot(sessionId)
     try {
       return await this.store(sessionId).exportReadOnly()
@@ -2670,21 +2764,59 @@ export class ClaudeSessionService {
     this.assertSessionPersistence()
     const path = resolve(requestedPath)
     const pathMetadata = await lstat(path)
+    const dataPlaneName =
+      this.options.dataPlane === 'native' ? 'Native' : 'Claude'
     if (!pathMetadata.isFile()) {
       throw new Error(
-        `Claude resume path must be a regular JSONL file: ${path}`,
+        `${dataPlaneName} resume path must be a regular JSONL file: ${path}`,
       )
     }
     if (extname(path).toLowerCase() !== '.jsonl') {
-      throw new Error(`Claude resume path must end in .jsonl: ${path}`)
+      throw new Error(
+        `${dataPlaneName} resume path must end in .jsonl: ${path}`,
+      )
     }
     const sessionId = basename(path, '.jsonl')
-    if (!isClaudeSessionId(sessionId)) {
+    if (!isSessionId(sessionId)) {
       throw new Error(
-        `Claude resume path filename must be a session UUID: ${path}`,
+        `${dataPlaneName} resume path filename must be a session UUID: ${path}`,
       )
     }
     const canonicalPath = await realpath(path)
+    if (this.options.dataPlane === 'native') {
+      const detected = await readNativeTranscript(canonicalPath)
+      if (detected.format === 'native') {
+        if (detected.issue?.kind === 'unsupported-version')
+          throw new Error('Native resume transcript version is unsupported')
+        if (
+          detected.issue ||
+          !detected.newlineTerminated ||
+          detected.records.length === 0
+        )
+          throw new Error(
+            'Native resume transcript must be a complete non-empty newline-terminated file',
+          )
+        if (
+          detected.records.some(
+            (record) => record.event.sessionId !== sessionId,
+          )
+        )
+          throw new Error(
+            'Native resume transcript contains a different sessionId',
+          )
+        this.explicitSessionFiles.set(sessionId, canonicalPath)
+        this.discoveredProjectRoots.set(sessionId, dirname(canonicalPath))
+        return {
+          sessionId,
+          lastPrompt: lastUserPrompt(
+            detected.records.map((record) => record.event),
+          ),
+          updatedAt: detected.updatedAt,
+          status: 'read-only',
+          issue: detected.issue,
+        }
+      }
+    }
     const exact = this.pathsForCwd(sessionId, this.activeCwd())
     const candidate = new ClaudeTranscriptStore({
       sessionFile: canonicalPath,
@@ -2697,6 +2829,12 @@ export class ClaudeSessionService {
     }
     if (snapshot.entries.length === 0) {
       throw new Error('Claude resume transcript must not be empty')
+    }
+    if (
+      this.options.dataPlane === 'native' &&
+      this.schema.writeMode !== 'read-write'
+    ) {
+      throw new Error('Native legacy resume transcript is read-only')
     }
     let matchingSessionIdentity = false
     for (const entry of snapshot.entries) {
@@ -2718,44 +2856,28 @@ export class ClaudeSessionService {
     this.explicitResumeLeafUuids.set(sessionId, selected.leafUuid)
     this.discoveredProjectRoots.set(sessionId, dirname(canonicalPath))
     const metadata = reduceClaudeSessionMetadata(snapshot.entries, sessionId)
-    const prLink = metadata.prLink
     return {
       sessionId,
-      ...(metadata.title === undefined ? {} : { name: metadata.title }),
-      ...(metadata.tag === undefined ? {} : { tag: metadata.tag }),
-      ...(metadata.agentName === undefined
-        ? {}
-        : { agentName: metadata.agentName }),
-      ...(metadata.agentColor === undefined
-        ? {}
-        : { agentColor: metadata.agentColor }),
-      ...(metadata.agentSetting === undefined
-        ? {}
-        : { agentSetting: metadata.agentSetting }),
-      ...(metadata.permissionMode === undefined
-        ? {}
-        : { permissionMode: metadata.permissionMode }),
-      ...(metadata.mode === undefined ? {} : { mode: metadata.mode }),
+      ...sessionMetadataFields(metadata, { agentNameFallback: false }),
       lastPrompt: metadata.lastPrompt ?? null,
       updatedAt: pathMetadata.mtime.toISOString(),
       status: this.sessionStatus(null, snapshot.entries.length),
       issue: null,
-      ...(prLink === undefined
-        ? {}
-        : {
-            prNumber: prLink.prNumber,
-            ...(prLink.prUrl === undefined ? {} : { prUrl: prLink.prUrl }),
-            ...(prLink.prRepository === undefined
-              ? {}
-              : { prRepository: prLink.prRepository }),
-          }),
     }
   }
 
   async transcript(
     sessionId: string,
     resumeSessionAt?: string,
-  ): Promise<ClaudeDisplayTranscriptItem[]> {
+  ): Promise<TranscriptDisplayItem[]> {
+    if (this.options.dataPlane === 'native') {
+      const file = await readNativeTranscript(this.paths(sessionId).sessionFile)
+      if (file.format === 'native')
+        return projectTranscriptDisplay(
+          file.records.map((record) => record.event),
+          resumeSessionAt,
+        )
+    }
     await this.discoverProjectRoot(sessionId)
     try {
       const recovery = await this.store(sessionId).loadReadOnly()
@@ -3515,6 +3637,7 @@ export class ClaudeSessionService {
     resumeSessionAt?: string,
   ): Promise<ForkResult> {
     this.assertSessionPersistence()
+    await this.assertNativeWriteTargetIsLegacy(parentSessionId)
     this.assertWritable()
     const entries = await this.nativeForkEntries(
       parentSessionId,
@@ -3936,6 +4059,7 @@ export class ClaudeSessionService {
       this.options.eventSink ?? (() => undefined),
     )
     try {
+      if (requireExisting) await this.assertNativeWriteTargetIsLegacy(sessionId)
       this.assertWritable()
       if (prompt.length === 0 && images.length === 0 && documents.length === 0)
         throw new Error('Prompt must not be empty')
@@ -7049,11 +7173,48 @@ export class ClaudeSessionService {
     return this.schema.writeMode === 'read-write' ? 'ready' : 'read-only'
   }
 
+  private nativeSessionStatus(
+    issue: TranscriptCodecDiagnostic | null,
+    entryCount: number,
+  ): SessionStatus {
+    if (issue?.kind === 'unsupported-version') return 'read-only'
+    if (entryCount === 0 || issue) return 'corrupt'
+    return 'read-only'
+  }
+
+  private claudeSessionSummary(
+    sessionId: string,
+    index: ClaudeSessionIndex,
+  ): SessionSummary {
+    const metadata = reduceClaudeSessionMetadata(index.entries, sessionId)
+    return {
+      sessionId,
+      ...sessionMetadataFields(metadata, { agentNameFallback: true }),
+      lastPrompt: metadata.lastPrompt ?? null,
+      updatedAt: index.updatedAt,
+      status: this.sessionStatus(index.issue, index.entries.length),
+      issue: index.issue,
+    }
+  }
+
   private provider(): ModelProvider {
     if (!this.options.provider) {
       throw new Error('A model provider is required for run and resume')
     }
     return this.options.provider
+  }
+
+  private async assertNativeWriteTargetIsLegacy(
+    sessionId: string,
+  ): Promise<void> {
+    if (this.options.dataPlane !== 'native') return
+    const existing = await readNativeTranscript(
+      this.paths(sessionId).sessionFile,
+    )
+    if (existing.format === 'native')
+      throw new Error(
+        'native transcript is read-only until native writes are enabled',
+      )
   }
 
   model(): string | undefined {
@@ -7132,7 +7293,7 @@ export class ClaudeSessionService {
   private sessionMemoryController(
     sessionId: string,
   ): SessionMemoryController | null {
-    if (!this.sessionMemoryEnabled() || !isClaudeSessionId(sessionId)) {
+    if (!this.sessionMemoryEnabled() || !isSessionId(sessionId)) {
       return null
     }
     let controller = this.sessionMemoryControllers.get(sessionId)

@@ -1152,6 +1152,97 @@ async function startProviderProbe(provider, memoryDirectory) {
   }
 }
 
+async function startNativeLegacyResumeProbe() {
+  const requests = []
+  let failure
+  const server = createServer(async (request, response) => {
+    try {
+      if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
+        response.writeHead(404).end()
+        return
+      }
+      if (request.headers.authorization !== 'Bearer release-probe-key') {
+        throw new Error(
+          'Installed native resume sent unexpected provider authorization',
+        )
+      }
+      const body = await readProviderRequest(request)
+      if (
+        body?.model !== 'release-probe-model' ||
+        body?.stream !== true ||
+        !Array.isArray(body?.messages)
+      ) {
+        throw new Error('Installed native resume sent an invalid request')
+      }
+      requests.push(body)
+      const conversational = body.messages.filter(
+        (message) => message?.role !== 'system',
+      )
+      if (
+        !conversational.some(
+          (message) =>
+            message?.role === 'user' &&
+            message.content === 'installed legacy native prompt',
+        ) ||
+        !conversational.some(
+          (message) =>
+            message?.role === 'assistant' &&
+            message.content === 'installed legacy native answer',
+        ) ||
+        conversational.at(-1)?.role !== 'user' ||
+        conversational.at(-1)?.content !== 'continue installed legacy'
+      ) {
+        throw new Error(
+          'Installed native resume did not preserve legacy history and selection',
+        )
+      }
+      sendOpenAIEvents(response, [
+        {
+          choices: [
+            {
+              delta: { content: 'installed native legacy resume' },
+              finish_reason: 'stop',
+            },
+          ],
+        },
+        {
+          choices: [],
+          usage: { prompt_tokens: 6, completion_tokens: 3 },
+        },
+      ])
+    } catch (error) {
+      failure ??= error
+      if (!response.headersSent) {
+        response.writeHead(500, { 'content-type': 'application/json' })
+      }
+      response.end(JSON.stringify({ error: { message: String(error) } }))
+    }
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('Native legacy resume probe has no TCP address')
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    assertComplete() {
+      if (failure) throw failure
+      if (requests.length !== 1) {
+        throw new Error(
+          `Native legacy resume probe received ${requests.length} requests`,
+        )
+      }
+    },
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()))
+      }),
+  }
+}
+
 async function startProtocolProviderProbe(provider) {
   const requests = []
   let failure
@@ -1721,23 +1812,162 @@ try {
     )
   }
 
-  const sessions = await run(praxis, ['sessions', '--json'], {
-    cwd: workDirectory,
-    env: {
-      ...process.env,
-      CLAUDE_CONFIG_DIR: configRoot,
-      PRAXIS_DATA_PLANE: 'native',
-      PRAXIS_HOME: configRoot,
-      PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+  const sessionModule = await import(
+    pathToFileURL(
+      join(installedPackage, 'dist', 'application', 'session-service.js'),
+    ).href
+  )
+  const dataPlaneModule = await import(
+    pathToFileURL(
+      join(installedPackage, 'dist', 'persistence', 'data-plane.js'),
+    ).href
+  )
+  const nativeWorkDirectory = await realpath(workDirectory)
+  const nativeLegacySessionId = '45454545-4545-4545-8545-454545454545'
+  const nativeCanonicalSessionId = '46464646-4646-4646-8646-464646464646'
+  const nativeLegacyWriter = new sessionModule.ClaudeSessionService({
+    configRoot,
+    dataPlane: 'native',
+    cwd: nativeWorkDirectory,
+    claudeVersion: '2.1.208',
+    provider: {
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        yield {
+          type: 'text-delta',
+          delta: 'installed legacy native answer',
+        }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 3, outputTokens: 2 },
+        }
+      },
     },
   })
+  await nativeLegacyWriter.run(
+    'installed legacy native prompt',
+    undefined,
+    nativeLegacySessionId,
+    'installed legacy native',
+  )
+  await nativeLegacyWriter.close()
+  const nativeCanonicalPaths = dataPlaneModule.resolveDataPlanePaths({
+    dataPlane: 'native',
+    root: configRoot,
+    cwd: nativeWorkDirectory,
+    sessionId: nativeCanonicalSessionId,
+  })
+  const nativeCanonicalSource = Buffer.from(
+    `${JSON.stringify({
+      schema: 'praxis.transcript',
+      version: 1,
+      event: {
+        kind: 'messages',
+        id: '47474747-4747-4747-8747-474747474747',
+        parentId: null,
+        sessionId: nativeCanonicalSessionId,
+        timestamp: '2026-08-23T00:00:00.000Z',
+        messages: [{ role: 'user', content: 'installed native prompt' }],
+      },
+    })}\n`,
+  )
+  await mkdir(nativeCanonicalPaths.projectRoot, { recursive: true })
+  await writeFile(nativeCanonicalPaths.sessionFile, nativeCanonicalSource)
+  const nativeFailBin = join(probeRoot, 'native-bin')
+  await mkdir(nativeFailBin, { recursive: true })
+  await writeFile(
+    join(nativeFailBin, 'claude'),
+    "#!/bin/sh\nprintf 'native package smoke must not invoke Claude Code\\n' >&2\nexit 97\n",
+    { mode: 0o755 },
+  )
+  const nativeEnvironment = {
+    ...process.env,
+    CLAUDE_CONFIG_DIR: configRoot,
+    PRAXIS_DATA_PLANE: 'native',
+    PRAXIS_HOME: configRoot,
+    PATH: `${nativeFailBin}${delimiter}${process.env.PATH ?? ''}`,
+  }
+  for (const name of [
+    'PRAXIS_PROVIDER',
+    'PRAXIS_API_KEY',
+    'PRAXIS_MODEL',
+    'PRAXIS_BASE_URL',
+  ]) {
+    delete nativeEnvironment[name]
+  }
+  const sessions = await run(praxis, ['sessions', '--json'], {
+    cwd: workDirectory,
+    env: nativeEnvironment,
+  })
   const sessionResult = JSON.parse(sessions.stdout)
+  const nativeCanonicalSummary = sessionResult.sessions?.find(
+    (summary) => summary.sessionId === nativeCanonicalSessionId,
+  )
+  const nativeLegacySummary = sessionResult.sessions?.find(
+    (summary) => summary.sessionId === nativeLegacySessionId,
+  )
+  const nativeInspection = JSON.parse(
+    (
+      await run(praxis, ['inspect', '--json', nativeCanonicalSessionId], {
+        cwd: workDirectory,
+        env: nativeEnvironment,
+      })
+    ).stdout,
+  )
+  const nativeExport = await run(praxis, ['export', nativeCanonicalSessionId], {
+    cwd: workDirectory,
+    env: nativeEnvironment,
+  })
   if (
     sessionResult.type !== 'sessions' ||
     !Array.isArray(sessionResult.sessions) ||
-    sessionResult.sessions.length !== 0
+    sessionResult.sessions.length !== 2 ||
+    nativeCanonicalSummary?.status !== 'read-only' ||
+    nativeCanonicalSummary?.lastPrompt !== 'installed native prompt' ||
+    nativeLegacySummary?.status !== 'ready' ||
+    nativeLegacySummary?.name !== 'installed legacy native' ||
+    nativeInspection.session?.status !== 'read-only' ||
+    nativeInspection.session?.writeMode !== 'read-only' ||
+    !nativeExport.stdoutBytes.equals(nativeCanonicalSource)
   ) {
-    throw new Error(`Installed CLI session smoke failed: ${sessions.stdout}`)
+    throw new Error(
+      `Installed native CLI read smoke failed: ${sessions.stdout} ${JSON.stringify(nativeInspection)}`,
+    )
+  }
+  providerProbe = await startNativeLegacyResumeProbe()
+  const nativeResume = await run(
+    praxis,
+    [
+      '-p',
+      '--resume=installed legacy native',
+      '--',
+      'continue installed legacy',
+    ],
+    {
+      cwd: workDirectory,
+      env: {
+        ...nativeEnvironment,
+        PRAXIS_PROVIDER: 'openai',
+        PRAXIS_API_KEY: 'release-probe-key',
+        PRAXIS_MODEL: 'release-probe-model',
+        PRAXIS_BASE_URL: providerProbe.baseUrl,
+      },
+    },
+  )
+  if (nativeResume.stdout !== 'installed native legacy resume\n') {
+    throw new Error(
+      `Installed native legacy resume returned ${JSON.stringify(nativeResume.stdout)}`,
+    )
+  }
+  providerProbe.assertComplete()
+  await providerProbe.close()
+  providerProbe = undefined
+  if (
+    !(await readFile(nativeCanonicalPaths.sessionFile)).equals(
+      nativeCanonicalSource,
+    )
+  ) {
+    throw new Error('Installed native CLI changed canonical read-only source')
   }
 
   const sharedResourcesModule = await import(
@@ -2121,11 +2351,6 @@ try {
     providerProbe = undefined
   }
 
-  const sessionModule = await import(
-    pathToFileURL(
-      join(installedPackage, 'dist', 'application', 'session-service.js'),
-    ).href
-  )
   const versionMatrix = [
     ['2.1.208', 'read-write'],
     ['2.1.207', 'read-write'],
@@ -2321,7 +2546,7 @@ try {
   }
 
   console.log(
-    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install with zero high-risk production advisories, installed provider-free /cost text/JSON/stream-json gates with zero artifacts, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 semver read/write matrix with installed ordinary CLI schema-independence proof and malformed-version fail-closed read-only check`,
+    `Praxis ${manifest.version} release package passed: ${packed.files.length} files, ${packed.size} compressed bytes, clean tarball install with zero high-risk production advisories, installed provider-free /cost text/JSON/stream-json gates with zero artifacts, installed nonempty native list/inspect/export/legacy-resume reads without a Claude binary dependency, installed OpenAI/Anthropic CLI provider/tool/resume/native-fork/subagent loops and two-turn stream protocol, and Claude 2.1.207/2.1.208/2.1.209/3.0.0 semver read/write matrix with installed ordinary CLI schema-independence proof and malformed-version fail-closed read-only check`,
   )
 } finally {
   try {

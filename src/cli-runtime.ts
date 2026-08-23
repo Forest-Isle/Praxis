@@ -40,7 +40,7 @@ import {
   type AgentColorName,
   type AgentColorSelection,
 } from './compatibility/claude/agent-color.js'
-import type { ClaudeDisplayTranscriptItem } from './compatibility/claude/projection.js'
+import type { TranscriptDisplayItem } from './application/transcript-projection.js'
 import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
@@ -1110,7 +1110,7 @@ interface SessionCommands {
   registerResumePath?(path: string): Promise<SessionSummary>
   inspect(sessionId: string): Promise<SessionInspection>
   export(sessionId: string): Promise<Buffer>
-  transcript?(sessionId: string): Promise<ClaudeDisplayTranscriptItem[]>
+  transcript?(sessionId: string): Promise<TranscriptDisplayItem[]>
   costSnapshot?(sessionId: string): Promise<ClaudeSessionCostSnapshot>
   compact?(
     sessionId: string,
