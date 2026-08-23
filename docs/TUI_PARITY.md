@@ -112,7 +112,8 @@ components under `src/cli/tui` render that state:
 
 ```text
 RuntimeEvent -> interactive state -> transcript/dialog/composer components
-shared JSONL -> active-chain display projection -> restored transcript state
+shared JSONL -> active-chain projection -> TranscriptItem[]
+TranscriptItem[] -> presentation pairing/grouping -> tail/window viewport -> Transcript
 shared extensions -> slash catalog -> command palette -> existing session service
 runtime controls -> service retirement/recreation -> existing session service
 permission decision -> ordered PermissionUpdate[] -> current session context
@@ -150,11 +151,14 @@ is passed from the CLI composition root and never written to shared JSONL.
   hidden compatibility alias).
 - `Transcript`: user/assistant/tool/shell/result/notice/warning and operational
   lifecycle presentation, with grouped results, compact long output, inline
-  edit replacements, and global detailed expansion. In fullscreen the history
-  is pre-projected through a pure suffix viewport
-  (`transcript-viewport.ts`) so the newest user/assistant tail and the active
-  stream stay visible; ordering and item identity are preserved and history is
-  never mutated.
+  edit replacements, and global detailed expansion. `projectTuiView` first
+  projects raw history into renderer-ready presentation entries, pairing tool
+  and shell results and grouping successful Reads before the fullscreen
+  tail/window viewport selects visible entries. Stable source-derived keys
+  survive append, resize, and scroll movement; oversized visible entries are
+  cloned and bounded without mutating authoritative history. `Transcript`
+  consumes only those projected entries and never repeats presentation or
+  viewport work.
 - `DiffDashboard`: current and file-mutating-turn snapshot tabs, file selection,
   and bounded patch scrolling. `git-diff` loads worktree state with path-safe
   argument arrays and never writes repository state.
@@ -435,6 +439,10 @@ is passed from the CLI composition root and never written to shared JSONL.
 
 ## Verification
 
+- public `projectTuiView` and transcript viewport fixtures proving atomic
+  tool/shell pairs and Read groups, stable keys across append/resize/scroll,
+  complete classic and screen-reader history, normal/audit disclosure, oldest
+  window reachability, and bounded oversized content without source mutation;
 - focused Ink render fixtures at wide and narrow widths, including exact
   built-in syntax/diff preview palettes, persisted normal-render syntax state,
   and explicit focused-selection announcements in the decoration-free
@@ -471,7 +479,8 @@ is passed from the CLI composition root and never written to shared JSONL.
   and captured 2.1.208 JSONL records; `/background` empty/success/failure Ink
   coverage plus a live Claude/Praxis PTY handoff, blocked-state, lazy-fork,
   unchanged-source, provider-context, and cross-resume gate;
-- full `npm run check`, package regression, and performance budgets;
+- full `npm run check`, package regression, and performance budgets, including
+  long-transcript presentation plus visible-region syntax rendering;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
 

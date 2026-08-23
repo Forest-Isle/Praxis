@@ -1,10 +1,4 @@
-import {
-  cloneElement,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactElement,
-} from 'react'
+import { cloneElement, useEffect, useState, type ReactElement } from 'react'
 
 import { Box, Text, useStdout } from 'ink'
 
@@ -21,10 +15,9 @@ import type { TuiPermissionRule } from './permission-settings.js'
 import type { RecentlyDeniedAction } from './recently-denied.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
 import type { TuiSlashCommand } from './slash-commands.js'
-import {
-  projectTranscriptPresentation,
-  type TranscriptItem,
-  type TranscriptPresentationEntry,
+import type {
+  TranscriptItem,
+  TranscriptPresentationEntry,
 } from './transcript-presentation.js'
 import {
   tuiPalette,
@@ -1052,7 +1045,7 @@ function ActiveStreamText({ text }: { text: string }) {
 }
 
 export function Transcript({
-  items,
+  entries,
   activeText,
   activeThinking = '',
   activeStreamVisible = true,
@@ -1060,7 +1053,7 @@ export function Transcript({
   detailedTranscript = false,
   screenReader,
 }: {
-  items: readonly TranscriptItem[]
+  entries: readonly TranscriptPresentationEntry[]
   activeText: string
   activeThinking?: string
   activeStreamVisible?: boolean
@@ -1070,11 +1063,6 @@ export function Transcript({
 }) {
   const palette = useTuiPalette()
   const detailed = thinkingExpanded || detailedTranscript
-  const mode = screenReader ? 'screen-reader' : detailed ? 'audit' : 'normal'
-  const entries: readonly TranscriptPresentationEntry[] = useMemo(
-    () => projectTranscriptPresentation(items, mode),
-    [items, mode],
-  )
   return (
     <Box flexDirection="column">
       {entries.map((entry, index) => {

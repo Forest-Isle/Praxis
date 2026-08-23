@@ -41,13 +41,13 @@ describe('projectTranscriptPresentation', () => {
       { kind: 'item', key: 'item-0', item: items[0] },
       {
         kind: 'tool',
-        key: 'tool-tool-1',
+        key: 'tool-1-tool-1',
         item: items[1],
         result: items[2],
       },
       {
         kind: 'shell',
-        key: 'shell-shell-1',
+        key: 'shell-3-shell-1',
         item: items[3],
         result: items[5],
       },
@@ -91,8 +91,8 @@ describe('projectTranscriptPresentation', () => {
     expect(projectTranscriptPresentation(items, 'normal')).toEqual([
       { kind: 'read-summary', key: 'read-summary-0', count: 2 },
       { kind: 'item', key: 'item-4', item: items[4] },
-      { kind: 'tool', key: 'tool-three', item: items[5], result: items[6] },
-      { kind: 'tool', key: 'tool-four', item: items[7], result: items[9] },
+      { kind: 'tool', key: 'tool-5-three', item: items[5], result: items[6] },
+      { kind: 'tool', key: 'tool-7-four', item: items[7], result: items[9] },
       { kind: 'item', key: 'item-8', item: items[8] },
     ])
   })
@@ -109,7 +109,7 @@ describe('projectTranscriptPresentation', () => {
 
     for (const mode of ['audit', 'screen-reader'] as const) {
       expect(projectTranscriptPresentation(items, mode)).toEqual([
-        { kind: 'tool', key: 'tool-read', item: items[0], result: items[1] },
+        { kind: 'tool', key: 'tool-0-read', item: items[0], result: items[1] },
       ])
     }
   })
@@ -137,7 +137,7 @@ describe('projectTranscriptPresentation', () => {
         key: 'tool-result-0',
         item: items[0],
       },
-      { kind: 'tool', key: 'tool-tool', item: items[1], result: items[2] },
+      { kind: 'tool', key: 'tool-1-tool', item: items[1], result: items[2] },
       {
         kind: 'orphan-tool-result',
         key: 'tool-result-3',
@@ -166,11 +166,61 @@ describe('projectTranscriptPresentation', () => {
       (entry) => entry.key,
     )
     expect(keys).toEqual([
-      'tool-duplicate',
-      'tool-duplicate-duplicate-2',
-      'shell-duplicate',
-      'shell-duplicate-duplicate-2',
+      'tool-0-duplicate',
+      'tool-1-duplicate',
+      'shell-2-duplicate',
+      'shell-3-duplicate',
     ])
     expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('keeps call keys globally unique and stable across append-only growth', () => {
+    const items: TranscriptItem[] = [
+      {
+        kind: 'tool',
+        call: { id: 'alpha', name: 'Bash', input: {} },
+        detail: '',
+      },
+      {
+        kind: 'tool',
+        call: { id: 'alpha-duplicate-2', name: 'Bash', input: {} },
+        detail: '',
+      },
+      {
+        kind: 'tool',
+        call: { id: 'alpha', name: 'Bash', input: {} },
+        detail: '',
+      },
+      {
+        kind: 'tool-result',
+        callId: 'missing',
+        text: 'orphan',
+        isError: false,
+      },
+      {
+        kind: 'tool',
+        call: { id: 'result-3', name: 'Bash', input: {} },
+        detail: '',
+      },
+    ]
+
+    const initial = projectTranscriptPresentation(items, 'normal')
+    const keys = initial.map((entry) => entry.key)
+    expect(keys).toEqual([
+      'tool-0-alpha',
+      'tool-1-alpha-duplicate-2',
+      'tool-2-alpha',
+      'tool-result-3',
+      'tool-4-result-3',
+    ])
+    expect(new Set(keys).size).toBe(keys.length)
+
+    const appended = projectTranscriptPresentation(
+      [...items, { kind: 'assistant', text: 'done' }],
+      'normal',
+    )
+    expect(appended.slice(0, initial.length).map((entry) => entry.key)).toEqual(
+      keys,
+    )
   })
 })

@@ -96,10 +96,6 @@ import { loadClaudeReleaseNotes } from './tui/release-notes.js'
 import { fullscreenInkRenderOptions } from './tui/fullscreen-renderer.js'
 import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
-import {
-  FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
-  transcriptLineCount,
-} from './tui/transcript-viewport.js'
 import { projectTuiView, resolveTuiRenderer } from './tui/tui-view-model.js'
 import {
   loadGitDiff,
@@ -1403,17 +1399,39 @@ export function InteractiveApp({
   // composer/status chrome intact and keeping the active stream visible.
   // Classic and screen-reader modes always render the full history exactly as
   // before.
-  const { projectedHistory, resumed, freshSession, hasConversationHistory } =
-    projectTuiView({
+  const {
+    transcriptEntries,
+    transcriptPageRows,
+    maxTranscriptScrollOffset,
+    resumed,
+    freshSession,
+    hasConversationHistory,
+  } = useMemo(
+    () =>
+      projectTuiView({
+        initialHistory,
+        history,
+        resume: resume !== undefined,
+        fixedViewport,
+        screenReader: axScreenReader,
+        rows,
+        width,
+        scrollOffset: transcriptScrollOffset,
+        detailedTranscript: thinkingExpanded || runtimeSettings.verbose,
+      }),
+    [
       initialHistory,
       history,
-      resume: resume !== undefined,
+      resume,
       fixedViewport,
-      screenReader: axScreenReader,
+      axScreenReader,
       rows,
       width,
-      scrollOffset: transcriptScrollOffset,
-    })
+      transcriptScrollOffset,
+      thinkingExpanded,
+      runtimeSettings.verbose,
+    ],
+  )
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -4315,10 +4333,7 @@ export function InteractiveApp({
       !elicitation &&
       !selectingSession
     ) {
-      const page = Math.max(
-        1,
-        (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
-      )
+      const page = transcriptPageRows
       const scrollDelta = key.pageUp
         ? page
         : key.pageDown
@@ -4335,11 +4350,7 @@ export function InteractiveApp({
       if (scrollDelta !== 0) {
         setTranscriptScrollOffset((current) =>
           Math.min(
-            Math.max(
-              0,
-              transcriptLineCount(history, width) -
-                Math.max(1, (rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS),
-            ),
+            Math.max(0, maxTranscriptScrollOffset),
             Math.max(0, current + Math.trunc(scrollDelta)),
           ),
         )
@@ -7408,7 +7419,7 @@ export function InteractiveApp({
                 : {})}
             >
               <Transcript
-                items={projectedHistory}
+                entries={transcriptEntries}
                 activeText={activeText}
                 activeThinking={activeThinking}
                 activeStreamVisible={transcriptScrollOffset === 0}
