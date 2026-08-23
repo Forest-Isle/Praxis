@@ -1,5 +1,5 @@
 import { cleanup, render } from 'ink-testing-library'
-import { Text } from 'ink'
+import { Box, Text } from 'ink'
 import type { ComponentProps } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -29,8 +29,22 @@ import {
   activeStreamWindow,
 } from './claude-style.js'
 import { projectTuiHooks } from './hook-settings.js'
+import {
+  projectTranscriptPresentation,
+  type TranscriptItem,
+  type TranscriptPresentationMode,
+} from './transcript-presentation.js'
+import {
+  estimateTranscriptEntryLines,
+  projectTranscriptPresentationTail,
+} from './transcript-viewport.js'
 
 afterEach(() => cleanup())
+
+const transcriptEntries = (
+  items: readonly TranscriptItem[],
+  mode: TranscriptPresentationMode,
+) => projectTranscriptPresentation(items, mode)
 
 const display = {
   version: '0.1.2',
@@ -199,27 +213,30 @@ describe('Claude-style TUI components', () => {
         <Transcript
           screenReader={false}
           activeText=""
-          items={[
-            {
-              kind: 'assistant',
-              text: '```ts\nfunction greet() { return "hello" }\n```',
-            },
-            {
-              kind: 'tool',
-              call: {
-                id: 'diff',
-                name: 'Bash',
-                input: { command: 'git diff' },
+          entries={transcriptEntries(
+            [
+              {
+                kind: 'assistant',
+                text: '```ts\nfunction greet() { return "hello" }\n```',
               },
-              detail: 'Bash {"command":"git diff"}',
-            },
-            {
-              kind: 'tool-result',
-              callId: 'diff',
-              text: '@@ fixture\n-function oldName() {}\n+function newName() {}',
-              isError: false,
-            },
-          ]}
+              {
+                kind: 'tool',
+                call: {
+                  id: 'diff',
+                  name: 'Bash',
+                  input: { command: 'git diff' },
+                },
+                detail: 'Bash {"command":"git diff"}',
+              },
+              {
+                kind: 'tool-result',
+                callId: 'diff',
+                text: '@@ fixture\n-function oldName() {}\n+function newName() {}',
+                isError: false,
+              },
+            ],
+            'normal',
+          )}
         />
         <DiffDashboard
           snapshots={[
@@ -281,28 +298,31 @@ describe('Claude-style TUI components', () => {
         <Transcript
           screenReader={false}
           activeText=""
-          items={[
-            { kind: 'user', text: 'inspect the fixture' },
-            {
-              kind: 'assistant',
-              text: '# Result\n- first item\n> quoted note\ninline `code` and **bold** and [link](https://example.com)\n```ts\nconst ok = true\nfunction greet() { return "hello" }\n```\nDone.',
-            },
-            {
-              kind: 'tool',
-              call: {
-                id: 'diff',
-                name: 'Bash',
-                input: { command: 'git diff' },
+          entries={transcriptEntries(
+            [
+              { kind: 'user', text: 'inspect the fixture' },
+              {
+                kind: 'assistant',
+                text: '# Result\n- first item\n> quoted note\ninline `code` and **bold** and [link](https://example.com)\n```ts\nconst ok = true\nfunction greet() { return "hello" }\n```\nDone.',
               },
-              detail: 'Bash {"command":"git diff"}',
-            },
-            {
-              kind: 'tool-result',
-              callId: 'diff',
-              text: '@@ fixture\n-function oldName() {}\n+function newName() {}',
-              isError: false,
-            },
-          ]}
+              {
+                kind: 'tool',
+                call: {
+                  id: 'diff',
+                  name: 'Bash',
+                  input: { command: 'git diff' },
+                },
+                detail: 'Bash {"command":"git diff"}',
+              },
+              {
+                kind: 'tool-result',
+                callId: 'diff',
+                text: '@@ fixture\n-function oldName() {}\n+function newName() {}',
+                isError: false,
+              },
+            ],
+            'normal',
+          )}
         />
       </TuiThemeProvider>
     )
@@ -341,7 +361,10 @@ describe('Claude-style TUI components', () => {
         <Transcript
           screenReader={screenReader}
           activeText={activeText}
-          items={items}
+          entries={transcriptEntries(
+            items,
+            screenReader ? 'screen-reader' : 'normal',
+          )}
         />
       </TuiThemeProvider>
     )
@@ -390,7 +413,7 @@ describe('Claude-style TUI components', () => {
       <Transcript
         screenReader={false}
         activeText="# Unfinished\n```ts\nconst partial = "
-        items={[]}
+        entries={[]}
       />,
     )
     const frame = app.lastFrame() ?? ''
@@ -413,7 +436,7 @@ describe('Claude-style TUI components', () => {
       <Transcript
         screenReader={false}
         activeText={`${lines.join('\n')}\npending tail`}
-        items={[]}
+        entries={[]}
       />,
     )
     const frame = app.lastFrame() ?? ''
@@ -430,7 +453,10 @@ describe('Claude-style TUI components', () => {
       <Transcript
         screenReader={false}
         activeText=""
-        items={[{ kind: 'assistant', text: lines.join('\n') }]}
+        entries={transcriptEntries(
+          [{ kind: 'assistant', text: lines.join('\n') }],
+          'normal',
+        )}
       />,
     )
     expect(completed.lastFrame()).toContain('stream line 0')
@@ -443,7 +469,7 @@ describe('Claude-style TUI components', () => {
       (_, index) => `stream line ${index}`,
     )
     const app = render(
-      <Transcript screenReader activeText={lines.join('\n')} items={[]} />,
+      <Transcript screenReader activeText={lines.join('\n')} entries={[]} />,
     )
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('Praxis:')
@@ -458,11 +484,307 @@ describe('Claude-style TUI components', () => {
         screenReader={false}
         activeText="live output below"
         activeStreamVisible={false}
-        items={[{ kind: 'assistant', text: 'older reply' }]}
+        entries={transcriptEntries(
+          [{ kind: 'assistant', text: 'older reply' }],
+          'normal',
+        )}
       />,
     )
     expect(app.lastFrame()).toContain('older reply')
     expect(app.lastFrame()).not.toContain('live output below')
+  })
+
+  it('renders only the presentation entries supplied by the viewport', () => {
+    const entries = projectTranscriptPresentation(
+      [
+        { kind: 'assistant', text: 'excluded older answer' },
+        { kind: 'assistant', text: 'retained visible answer' },
+      ],
+      'normal',
+    )
+    const retained = entries.at(-1)
+    if (!retained) throw new Error('expected retained presentation entry')
+
+    const app = render(
+      <Transcript screenReader={false} activeText="" entries={[retained]} />,
+    )
+    expect(app.lastFrame()).toContain('retained visible answer')
+    expect(app.lastFrame()).not.toContain('excluded older answer')
+  })
+
+  it('keeps projected Markdown within the fullscreen viewport rows', () => {
+    const entries = projectTranscriptPresentation(
+      [{ kind: 'assistant', text: '```ts\n123456789012345678\n```' }],
+      'normal',
+    )
+    const source = JSON.stringify(entries)
+    const projected = projectTranscriptPresentationTail(
+      entries,
+      4,
+      20,
+      'normal',
+    )
+    const retained = projected[0]
+    if (retained?.kind !== 'item' || retained.item.kind !== 'assistant') {
+      throw new Error('expected a projected assistant entry')
+    }
+
+    const app = render(
+      <Box width={20}>
+        <Transcript screenReader={false} activeText="" entries={projected} />
+      </Box>,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame.split('\n')).toHaveLength(4)
+    expect(retained.item.text).toContain('…')
+    expect(retained.item.text).toContain('678')
+    expect(JSON.stringify(entries)).toBe(source)
+  })
+
+  it.each([
+    ['compact normal', 'normal', 2, [{ kind: 'compact', summary: '' }]],
+    [
+      'Edit audit result summary',
+      'audit',
+      5,
+      [
+        {
+          kind: 'tool',
+          call: {
+            id: 'edit',
+            name: 'Edit',
+            input: {
+              file_path: '/tmp/x',
+              old_string: 'x'.repeat(40),
+              new_string: '',
+            },
+          },
+          detail: '',
+        },
+        {
+          kind: 'tool-result',
+          callId: 'edit',
+          text: 'ok',
+          isError: false,
+        },
+      ],
+    ],
+    [
+      'long context normal',
+      'normal',
+      16,
+      [
+        {
+          kind: 'context',
+          usedTokens: 123_456,
+          contextWindowTokens: 200_000,
+          model: 'claude-opus-4-5-superlong-model',
+          skills: [
+            {
+              name: 'a-very-long-skill-name-that-wraps',
+              tokens: 1_000,
+            },
+          ],
+          memoryFiles: [
+            {
+              path: '/a/very/long/memory/path/that-wraps.md',
+              tokens: 2_000,
+            },
+          ],
+        },
+      ],
+    ],
+  ] satisfies readonly [
+    string,
+    TranscriptPresentationMode,
+    number,
+    readonly TranscriptItem[],
+  ][])(
+    'keeps narrow %s within its row budget',
+    (_name, mode, budget, items) => {
+      const entries = projectTranscriptPresentation(items, mode)
+      const source = JSON.stringify(entries)
+      const projected = projectTranscriptPresentationTail(
+        entries,
+        budget,
+        32,
+        mode,
+      )
+      const app = render(
+        <Box width={32}>
+          <Transcript screenReader={false} activeText="" entries={projected} />
+        </Box>,
+      )
+      const frame = app.lastFrame() ?? ''
+      const rows = frame ? frame.split('\n') : []
+      expect(rows.length).toBeLessThanOrEqual(budget)
+      expect(rows.every((line) => line.length <= 32)).toBe(true)
+      expect(JSON.stringify(entries)).toBe(source)
+    },
+  )
+
+  it('keeps Ink rows within estimates for wide and nested transcript families', () => {
+    const cases: readonly {
+      name: string
+      mode: TranscriptPresentationMode
+      widths: readonly number[]
+      items: readonly TranscriptItem[]
+    }[] = [
+      {
+        name: 'wide user',
+        mode: 'normal',
+        widths: [32, 40, 80],
+        items: [{ kind: 'user', text: '中文界面'.repeat(30) }],
+      },
+      {
+        name: 'wide assistant',
+        mode: 'normal',
+        widths: [32, 40, 80],
+        items: [{ kind: 'assistant', text: '终端输出与性能稳定'.repeat(24) }],
+      },
+      {
+        name: 'warning',
+        mode: 'normal',
+        widths: [32, 40],
+        items: [{ kind: 'warning', text: '警告信息'.repeat(30) }],
+      },
+      {
+        name: 'thinking',
+        mode: 'normal',
+        widths: [32, 40, 80],
+        items: [{ kind: 'thinking', text: 'reasoning detail '.repeat(40) }],
+      },
+      {
+        name: 'screen-reader context',
+        mode: 'screen-reader',
+        widths: [32, 40, 80],
+        items: [
+          {
+            kind: 'context',
+            usedTokens: 123_456,
+            contextWindowTokens: 200_000,
+            model: 'claude-opus-super-long-model-name',
+            skills: [
+              { name: 'very-long-skill-name-that-wraps', tokens: 1_234 },
+              { name: '中文技能名称需要换行', tokens: 2_345 },
+            ],
+            memoryFiles: [],
+          },
+        ],
+      },
+      {
+        name: 'local result',
+        mode: 'normal',
+        widths: [32, 40, 80],
+        items: [{ kind: 'local-result', text: 'local result '.repeat(40) }],
+      },
+      {
+        name: 'tool error',
+        mode: 'audit',
+        widths: [32, 40, 80],
+        items: [
+          {
+            kind: 'tool',
+            call: { id: 'error', name: 'Fetch', input: {} },
+            detail: 'detail',
+          },
+          {
+            kind: 'tool-result',
+            callId: 'error',
+            text: '错误输出'.repeat(80),
+            isError: true,
+          },
+        ],
+      },
+      {
+        name: 'Bash detail and output',
+        mode: 'normal',
+        widths: [32, 40, 80],
+        items: [
+          {
+            kind: 'tool',
+            call: {
+              id: 'bash',
+              name: 'Bash',
+              input: { command: 'echo '.repeat(30) },
+            },
+            detail: '',
+          },
+          {
+            kind: 'tool-result',
+            callId: 'bash',
+            text: 'line '.repeat(30) + '\nsecond\nthird\nfourth',
+            isError: false,
+          },
+        ],
+      },
+      {
+        name: 'screen-reader shell',
+        mode: 'screen-reader',
+        widths: [32, 40, 80],
+        items: [
+          { kind: 'shell', callId: 'shell', command: 'printf '.repeat(30) },
+          {
+            kind: 'shell-result',
+            callId: 'shell',
+            stdout: '标准输出'.repeat(40) + '\nsecond\nthird\nfourth',
+            stderr: '标准错误'.repeat(30),
+            isError: true,
+          },
+        ],
+      },
+      {
+        name: 'orphan results',
+        mode: 'normal',
+        widths: [32, 40, 80],
+        items: [
+          {
+            kind: 'tool-result',
+            callId: 'missing',
+            text: 'orphan result '.repeat(50),
+            isError: false,
+          },
+          {
+            kind: 'shell-result',
+            callId: 'missing-shell',
+            stdout: '孤立输出'.repeat(40),
+            stderr: '孤立错误'.repeat(30),
+            isError: true,
+          },
+        ],
+      },
+    ]
+
+    for (const testCase of cases) {
+      const entries = projectTranscriptPresentation(
+        testCase.items,
+        testCase.mode,
+      )
+      for (const width of testCase.widths) {
+        for (const entry of entries) {
+          const app = render(
+            <Box width={width}>
+              <Transcript
+                entries={[entry]}
+                activeText=""
+                screenReader={testCase.mode === 'screen-reader'}
+                detailedTranscript={testCase.mode === 'audit'}
+              />
+            </Box>,
+          )
+          const frame = app.lastFrame() ?? ''
+          const actualRows = frame ? frame.split('\n').length : 0
+          expect(
+            estimateTranscriptEntryLines(entry, width, testCase.mode),
+            `${testCase.name}/${testCase.mode}/${width}/${entry.kind}`,
+          ).toBeGreaterThanOrEqual(actualRows)
+          expect(frame.split('\n').every((line) => line.length <= width)).toBe(
+            true,
+          )
+          app.unmount()
+        }
+      }
+    }
   })
 
   it('splits active streaming text into a bounded stable window and plain tail', () => {
@@ -498,26 +820,29 @@ describe('Claude-style TUI components', () => {
       <Transcript
         screenReader={false}
         activeText="streaming"
-        items={[
-          { kind: 'user', text: 'inspect' },
-          { kind: 'assistant', text: 'Working' },
-          {
-            kind: 'tool',
-            call: {
-              id: 'call-1',
-              name: 'Bash',
-              input: { command: 'npm test' },
+        entries={transcriptEntries(
+          [
+            { kind: 'user', text: 'inspect' },
+            { kind: 'assistant', text: 'Working' },
+            {
+              kind: 'tool',
+              call: {
+                id: 'call-1',
+                name: 'Bash',
+                input: { command: 'npm test' },
+              },
+              detail: 'Bash {"command":"npm test"}',
             },
-            detail: 'Bash {"command":"npm test"}',
-          },
-          {
-            kind: 'tool-result',
-            callId: 'call-1',
-            text: '@@ file\n-old\n+new',
-            isError: false,
-          },
-          { kind: 'warning', text: 'careful' },
-        ]}
+            {
+              kind: 'tool-result',
+              callId: 'call-1',
+              text: '@@ file\n-old\n+new',
+              isError: false,
+            },
+            { kind: 'warning', text: 'careful' },
+          ],
+          'normal',
+        )}
       />,
     )
     const frame = app.lastFrame() ?? ''
@@ -569,7 +894,11 @@ describe('Claude-style TUI components', () => {
       },
     ]
     const collapsed = render(
-      <Transcript screenReader={false} activeText="" items={items} />,
+      <Transcript
+        screenReader={false}
+        activeText=""
+        entries={transcriptEntries(items, 'normal')}
+      />,
     )
     expect(collapsed.lastFrame()).toContain('… +2 lines (ctrl+o to expand)')
     expect(collapsed.lastFrame()).not.toContain('five')
@@ -583,7 +912,7 @@ describe('Claude-style TUI components', () => {
         screenReader={false}
         activeText=""
         detailedTranscript
-        items={items}
+        entries={transcriptEntries(items, 'audit')}
       />,
     )
     expect(detailed.lastFrame()).toContain('five')
@@ -642,7 +971,11 @@ describe('Claude-style TUI components', () => {
       },
     ]
     const collapsed = render(
-      <Transcript screenReader={false} activeText="" items={items} />,
+      <Transcript
+        screenReader={false}
+        activeText=""
+        entries={transcriptEntries(items, 'normal')}
+      />,
     )
     expect(collapsed.lastFrame()).toContain('Read 2 files (ctrl+o to expand)')
     expect(collapsed.lastFrame()).toContain('Read 1 file (ctrl+o to expand)')
@@ -653,7 +986,7 @@ describe('Claude-style TUI components', () => {
         screenReader={false}
         activeText=""
         detailedTranscript
-        items={items}
+        entries={transcriptEntries(items, 'audit')}
       />,
     )
     expect(expanded.lastFrame()).toContain('Read(/tmp/one.ts)')
@@ -960,7 +1293,10 @@ describe('Claude-style TUI components', () => {
       <Transcript
         screenReader={false}
         activeText=""
-        items={[{ kind: 'thinking', text: reasoning }]}
+        entries={transcriptEntries(
+          [{ kind: 'thinking', text: reasoning }],
+          'normal',
+        )}
       />,
     )
     expect(collapsed.lastFrame()).toContain('Thought for a moment')
@@ -971,7 +1307,10 @@ describe('Claude-style TUI components', () => {
         screenReader={false}
         activeText=""
         thinkingExpanded
-        items={[{ kind: 'thinking', text: reasoning }]}
+        entries={transcriptEntries(
+          [{ kind: 'thinking', text: reasoning }],
+          'audit',
+        )}
       />,
     )
     expect(expanded.lastFrame()).toContain('reasoning tail stays visible')
@@ -981,7 +1320,7 @@ describe('Claude-style TUI components', () => {
         screenReader={false}
         activeText=""
         activeThinking={reasoning}
-        items={[]}
+        entries={[]}
       />,
     )
     expect(active.lastFrame()).toContain('Thinking…')
@@ -993,15 +1332,18 @@ describe('Claude-style TUI components', () => {
       <Transcript
         screenReader={false}
         activeText=""
-        items={[
-          {
-            kind: 'context',
-            usedTokens: 1_500,
-            contextWindowTokens: 200_000,
-            skills: [{ name: 'review', tokens: 290 }],
-            memoryFiles: [],
-          },
-        ]}
+        entries={transcriptEntries(
+          [
+            {
+              kind: 'context',
+              usedTokens: 1_500,
+              contextWindowTokens: 200_000,
+              skills: [{ name: 'review', tokens: 290 }],
+              memoryFiles: [],
+            },
+          ],
+          'normal',
+        )}
       />,
     )
     expect(context.lastFrame()).toContain('Free space: 165.5k (82.8%)')
@@ -1017,15 +1359,18 @@ describe('Claude-style TUI components', () => {
       <Transcript
         screenReader
         activeText=""
-        items={[
-          {
-            kind: 'context',
-            usedTokens: 1_500,
-            contextWindowTokens: 200_000,
-            skills: [{ name: 'review', tokens: 290 }],
-            memoryFiles: [],
-          },
-        ]}
+        entries={transcriptEntries(
+          [
+            {
+              kind: 'context',
+              usedTokens: 1_500,
+              contextWindowTokens: 200_000,
+              skills: [{ name: 'review', tokens: 290 }],
+              memoryFiles: [],
+            },
+          ],
+          'screen-reader',
+        )}
       />,
     )
     expect(accessibleContext.lastFrame()).toContain(
@@ -1419,16 +1764,19 @@ describe('Claude-style TUI components', () => {
       <Transcript
         screenReader={false}
         activeText=""
-        items={[
-          { kind: 'shell', callId: 'shell-1', command: 'pwd' },
-          {
-            kind: 'shell-result',
-            callId: 'shell-1',
-            stdout: '/tmp/project\n',
-            stderr: '',
-            isError: false,
-          },
-        ]}
+        entries={transcriptEntries(
+          [
+            { kind: 'shell', callId: 'shell-1', command: 'pwd' },
+            {
+              kind: 'shell-result',
+              callId: 'shell-1',
+              stdout: '/tmp/project\n',
+              stderr: '',
+              isError: false,
+            },
+          ],
+          'normal',
+        )}
       />,
     )
     expect(shellTranscript.lastFrame()).toContain('! pwd')
@@ -1721,7 +2069,10 @@ describe('Claude-style TUI components', () => {
       <Transcript
         screenReader
         activeText=""
-        items={[{ kind: 'assistant', text: 'answer' }]}
+        entries={transcriptEntries(
+          [{ kind: 'assistant', text: 'answer' }],
+          'screen-reader',
+        )}
       />,
     )
     expect(transcript.lastFrame()).toContain('Praxis:')

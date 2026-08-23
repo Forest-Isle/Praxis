@@ -63,17 +63,6 @@ type Pairing = {
 
 type ReadSummary = { count: number; end: number }
 
-function entryKey(
-  prefix: 'shell' | 'tool',
-  id: string,
-  occurrences: Map<string, number>,
-): string {
-  const identity = `${prefix}-${id}`
-  const occurrence = (occurrences.get(identity) ?? 0) + 1
-  occurrences.set(identity, occurrence)
-  return occurrence === 1 ? identity : `${identity}-duplicate-${occurrence}`
-}
-
 function pairResults(items: readonly TranscriptItem[]): Pairing {
   const toolResults = new Map<number, ToolResultItem>()
   const toolResultIndexes = new Map<number, number>()
@@ -191,7 +180,6 @@ export function projectTranscriptPresentation(
   const pairing = pairResults(items)
   const entries: TranscriptPresentationEntry[] = []
   const readSummaryCache = new Map<number, ReadSummary | undefined>()
-  const keyOccurrences = new Map<string, number>()
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
     if (!item) continue
@@ -217,7 +205,7 @@ export function projectTranscriptPresentation(
       const result = pairing.toolResults.get(index)
       entries.push({
         kind: 'tool',
-        key: entryKey('tool', item.call.id, keyOccurrences),
+        key: `tool-${index}-${item.call.id}`,
         item,
         ...(result ? { result } : {}),
       })
@@ -236,7 +224,7 @@ export function projectTranscriptPresentation(
       const result = pairing.shellResults.get(index)
       entries.push({
         kind: 'shell',
-        key: entryKey('shell', item.callId, keyOccurrences),
+        key: `shell-${index}-${item.callId}`,
         item,
         ...(result ? { result } : {}),
       })

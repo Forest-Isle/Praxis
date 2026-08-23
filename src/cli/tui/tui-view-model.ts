@@ -1,8 +1,14 @@
-import type { TranscriptItem } from './claude-style.js'
+import type { TranscriptItem } from './transcript-presentation.js'
+import {
+  projectTranscriptPresentation,
+  type TranscriptPresentationEntry,
+  type TranscriptPresentationMode,
+} from './transcript-presentation.js'
 import {
   FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
-  projectTranscriptTail,
-  projectTranscriptWindow,
+  projectTranscriptPresentationTail,
+  projectTranscriptPresentationWindow,
+  transcriptPresentationLineCount,
 } from './transcript-viewport.js'
 
 export type TuiRendererMode = 'default' | 'fullscreen'
@@ -22,10 +28,13 @@ export interface TuiViewInput {
   rows: number | undefined
   width: number
   scrollOffset: number
+  detailedTranscript: boolean
 }
 
 export interface TuiViewModel {
-  projectedHistory: readonly TranscriptItem[]
+  transcriptEntries: readonly TranscriptPresentationEntry[]
+  transcriptPageRows: number
+  maxTranscriptScrollOffset: number
   resumed: boolean
   freshSession: boolean
   hasConversationHistory: boolean
@@ -60,28 +69,46 @@ export function projectTuiView(input: TuiViewInput): TuiViewModel {
   // viewport, leaving the composer/status chrome intact and keeping the active
   // stream visible. Classic and screen-reader modes always render the full
   // history exactly as before.
-  const projectedHistory =
+  const mode: TranscriptPresentationMode = input.screenReader
+    ? 'screen-reader'
+    : input.detailedTranscript
+      ? 'audit'
+      : 'normal'
+  const fullEntries = projectTranscriptPresentation(input.history, mode)
+  const transcriptPageRows = Math.max(
+    2,
+    (input.rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
+  )
+  const maxTranscriptScrollOffset = Math.max(
+    0,
+    transcriptPresentationLineCount(fullEntries, input.width, mode) -
+      transcriptPageRows,
+  )
+  const transcriptEntries =
     input.fixedViewport && !input.screenReader
       ? input.scrollOffset > 0
-        ? projectTranscriptWindow(
-            input.history,
-            Math.max(
-              1,
-              (input.rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
-            ),
+        ? projectTranscriptPresentationWindow(
+            fullEntries,
+            transcriptPageRows,
             input.width,
             input.scrollOffset,
+            mode,
           )
-        : projectTranscriptTail(
-            input.history,
-            Math.max(
-              1,
-              (input.rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
-            ),
+        : projectTranscriptPresentationTail(
+            fullEntries,
+            transcriptPageRows,
             input.width,
+            mode,
           )
-      : input.history
-  return { projectedHistory, resumed, freshSession, hasConversationHistory }
+      : fullEntries
+  return {
+    transcriptEntries,
+    transcriptPageRows,
+    maxTranscriptScrollOffset,
+    resumed,
+    freshSession,
+    hasConversationHistory,
+  }
 }
 
 export interface TuiRendererInput {

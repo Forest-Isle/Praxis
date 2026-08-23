@@ -24,6 +24,8 @@ import {
 import { ClaudeSessionService } from '../dist/application/session-service.js'
 import { Transcript } from '../dist/cli/tui/claude-style.js'
 import { TuiThemeProvider } from '../dist/cli/tui/theme.js'
+import { projectTuiView } from '../dist/cli/tui/tui-view-model.js'
+import { transcriptPresentationLineCount } from '../dist/cli/tui/transcript-viewport.js'
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
 import { selectClaudeSchemaAdapter } from '../dist/compatibility/claude/schema.js'
 import {
@@ -328,6 +330,17 @@ try {
   }))
   const transcriptSyntaxRenderP95Ms = percentile(
     await samples(transcriptSyntaxRenderSampleCount, async () => {
+      const { transcriptEntries } = projectTuiView({
+        initialHistory: syntaxItems,
+        history: syntaxItems,
+        resume: true,
+        fixedViewport: true,
+        screenReader: false,
+        rows: 36,
+        width: 100,
+        scrollOffset: 0,
+        detailedTranscript: false,
+      })
       const app = renderInk(
         createElement(
           TuiThemeProvider,
@@ -338,7 +351,7 @@ try {
             },
           },
           createElement(Transcript, {
-            items: syntaxItems,
+            entries: transcriptEntries,
             activeText: '',
             screenReader: false,
           }),
@@ -357,6 +370,71 @@ try {
     budgets.transcriptSyntaxRenderP95Ms,
   )
 
+  const projectionSizes = [30_000, 60_000, 120_000]
+  const projectionFixtures = projectionSizes.map((size) =>
+    Array.from({ length: size }, (_, index) => ({
+      kind: 'assistant',
+      text: `projection marker ${index}`,
+    })),
+  )
+  const projectionMedians = []
+  for (
+    let fixtureIndex = 0;
+    fixtureIndex < projectionFixtures.length;
+    fixtureIndex += 1
+  ) {
+    const history = projectionFixtures[fixtureIndex]
+    const size = projectionSizes[fixtureIndex]
+    const newestMarker = `projection marker ${size - 1}`
+    const project = () => {
+      const result = projectTuiView({
+        initialHistory: history,
+        history,
+        resume: true,
+        fixedViewport: true,
+        screenReader: false,
+        rows: 36,
+        width: 100,
+        scrollOffset: 0,
+        detailedTranscript: false,
+      })
+      const visibleRows = transcriptPresentationLineCount(
+        result.transcriptEntries,
+        100,
+        'normal',
+      )
+      if (visibleRows <= 0 || visibleRows > result.transcriptPageRows) {
+        throw new Error(
+          `Projection row bounds failed for ${size}: ${visibleRows}/${result.transcriptPageRows}`,
+        )
+      }
+      if (
+        !result.transcriptEntries.some(
+          (entry) =>
+            entry.kind === 'item' &&
+            JSON.stringify(entry).includes(newestMarker),
+        )
+      ) {
+        throw new Error(`Projection lost newest marker for ${size}`)
+      }
+    }
+    const durations = await samples(5, project)
+    projectionMedians.push(percentile(durations, 50))
+  }
+  const projectionRatio60k = projectionMedians[1] / projectionMedians[0]
+  const projectionRatio120k = projectionMedians[2] / projectionMedians[1]
+  if (
+    !Number.isFinite(projectionRatio60k) ||
+    !Number.isFinite(projectionRatio120k) ||
+    projectionRatio60k > 3.25 ||
+    projectionRatio120k > 3.25
+  ) {
+    throw new Error(
+      `Projection scaling exceeded doubling budget: ${projectionRatio60k.toFixed(2)}x/${projectionRatio120k.toFixed(2)}x`,
+    )
+  }
+  assertBudget('120k projection median', projectionMedians[2], 1_000)
+
   console.log(
     [
       'Praxis performance budgets passed',
@@ -366,6 +444,7 @@ try {
       `heap +${transcriptLoadHeapMiB.toFixed(1)} MiB/${budgets.transcriptLoadHeapMiB}MiB`,
       `append p95 ${formatMs(transcriptAppendP95Ms)}/${budgets.transcriptAppendP95Ms}ms`,
       `syntax render p95 ${formatMs(transcriptSyntaxRenderP95Ms)}/${budgets.transcriptSyntaxRenderP95Ms}ms`,
+      `projection medians ${formatMs(projectionMedians[0])}/${formatMs(projectionMedians[1])}/${formatMs(projectionMedians[2])} (ratios ${projectionRatio60k.toFixed(2)}x/${projectionRatio120k.toFixed(2)}x)`,
     ].join('; '),
   )
 } finally {
