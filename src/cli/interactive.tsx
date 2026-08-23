@@ -143,19 +143,18 @@ import {
   createComposerEditor,
   deleteComposerBackward,
   deleteComposerForward,
-  deleteComposerToEnd,
-  deleteComposerToStart,
-  deleteComposerWordBackward,
   insertComposerText,
   moveComposerCursor,
-  moveComposerCursorByWord,
 } from './tui/composer-editor.js'
 import {
   routeComposerKey,
-  type ComposerKeyTransition,
+  type ComposerKeyProjection,
 } from './tui/composer-key-router.js'
 import {
   routeTuiInteraction,
+  type TuiInteractionEffect,
+  type TuiInteractionLayer,
+  type TuiInteractionSnapshot,
   type TuiScrollIntent,
 } from './tui/tui-interaction-router.js'
 import {
@@ -181,10 +180,7 @@ import {
 } from './tui/clipboard.js'
 import {
   composerImageIds,
-  deleteComposerImageBackward,
-  deleteComposerImageForward,
   insertComposerImageMarker,
-  moveComposerCursorAcrossImages,
 } from './tui/composer-images.js'
 import {
   defaultTuiKeybindings,
@@ -2277,26 +2273,6 @@ export function InteractiveApp({
     setExitConfirmation(false)
   }
 
-  const armExitConfirmation = () => {
-    if (exitConfirmation) {
-      permissionRef.current?.resolve(false)
-      elicitationRef.current?.resolve({ action: 'cancel' })
-      questionRef.current?.resolve(null)
-      planApprovalRef.current?.resolve({ behavior: 'deny' })
-      onCancel?.()
-      exit()
-      return
-    }
-    clearComposerInput()
-    setExitConfirmation(true)
-    if (exitConfirmationTimerRef.current)
-      clearTimeout(exitConfirmationTimerRef.current)
-    exitConfirmationTimerRef.current = setTimeout(() => {
-      exitConfirmationTimerRef.current = null
-      setExitConfirmation(false)
-    }, 1_500)
-  }
-
   useEffect(() => {
     setCommandSelection((current) =>
       Math.min(current, Math.max(0, matchingSlashCommands.length - 1)),
@@ -4233,78 +4209,128 @@ export function InteractiveApp({
       const codePoint = character.codePointAt(0) ?? 0
       return codePoint >= 32 && codePoint !== 127
     })
+    const composerKey: ComposerKeyProjection = {
+      value,
+      left: key.leftArrow,
+      right: key.rightArrow,
+      backspace: key.backspace,
+      delete: key.delete,
+      ctrl: key.ctrl,
+      meta: key.meta,
+      escape: key.escape || value === '\u001B',
+    }
     const editor = () =>
       createComposerEditor(inputRef.current, inputCursorRef.current)
     const editComposer = () => {
-      if (key.leftArrow) {
-        updateComposerEditor(
-          key.meta
-            ? moveComposerCursorByWord(editor(), 'backward')
-            : moveComposerCursorAcrossImages(editor(), -1),
-        )
+      const transition = routeComposerKey(editor(), composerKey)
+      if (transition.kind === 'edit') {
+        updateComposerEditor(transition.editor)
         return true
       }
-      if (key.rightArrow) {
-        updateComposerEditor(
-          key.meta
-            ? moveComposerCursorByWord(editor(), 'forward')
-            : moveComposerCursorAcrossImages(editor(), 1),
-        )
-        return true
+      if (transition.kind === 'cancel') clearComposerInput()
+      return transition.kind === 'cancel'
+    }
+    const interactionComposer = (): TuiInteractionSnapshot['composer'] => ({
+      mode:
+        runtimeSettingsRef.current.editor === 'vim'
+          ? vimInsertMode
+            ? 'vim-insert'
+            : 'vim-normal'
+          : 'readline',
+      editor: editor(),
+      lastCancelAtMs: lastEscapeAtRef.current,
+    })
+
+    const applyInteractionEffects = (
+      effects: readonly TuiInteractionEffect[],
+    ) => {
+      for (const effect of effects) {
+        if (effect.kind === 'request-process-suspension') {
+          processSuspendRequestedRef.current = true
+          setProcessSuspendRequested(true)
+        } else if (effect.kind === 'set-transcript-scroll-offset') {
+          setTranscriptScrollOffset(effect.offset)
+        } else if (effect.kind === 'interrupt-turn') {
+          turnControllerRef.current?.abort()
+        } else if (effect.kind === 'arm-exit-confirmation') {
+          setExitConfirmation(true)
+          if (exitConfirmationTimerRef.current)
+            clearTimeout(exitConfirmationTimerRef.current)
+          exitConfirmationTimerRef.current = setTimeout(() => {
+            exitConfirmationTimerRef.current = null
+            setExitConfirmation(false)
+          }, 1_500)
+        } else if (effect.kind === 'dismiss-exit-confirmation') {
+          dismissExitConfirmation()
+        } else if (effect.kind === 'exit-application') {
+          permissionRef.current?.resolve(false)
+          elicitationRef.current?.resolve({ action: 'cancel' })
+          questionRef.current?.resolve(null)
+          planApprovalRef.current?.resolve({ behavior: 'deny' })
+          onCancel?.()
+          exit()
+        } else if (effect.kind === 'set-vim-insert-mode') {
+          setVimInsertMode(effect.insert)
+        } else if (effect.kind === 'set-composer-editor') {
+          updateComposerEditor(effect.editor)
+        } else if (effect.kind === 'clear-composer') {
+          clearComposerInput()
+        } else if (effect.kind === 'record-composer-cancel') {
+          lastEscapeAtRef.current = effect.timestamp
+        } else if (effect.kind === 'cancel-tui-layer') {
+          switch (effect.target) {
+            case 'permission':
+              permissionRef.current?.resolve(false)
+              break
+            case 'plan-approval':
+              planApprovalRef.current?.resolve({ behavior: 'deny' })
+              break
+            case 'question':
+              questionRef.current?.resolve(null)
+              break
+            case 'elicitation-url-waiting':
+              if (elicitationUrlWaitingRef.current) {
+                elicitationUrlWaitingRef.current = null
+                setElicitationUrlWaiting(false)
+                setElicitation(null)
+                setElicitationForm(null)
+                clearComposerInput()
+              }
+              break
+            case 'elicitation-options':
+              setElicitationForm((current) =>
+                current?.expandedField
+                  ? { ...current, expandedField: undefined }
+                  : current,
+              )
+              break
+            case 'elicitation':
+              elicitationRef.current?.resolve({ action: 'cancel' })
+              break
+            case 'file-picker':
+              setFilePickerOpen(false)
+              break
+            case 'command-palette':
+              setCommandPaletteOpen(false)
+              break
+            default: {
+              const unhandledTarget: never = effect.target
+              return unhandledTarget
+            }
+          }
+        } else {
+          const unhandledEffect: never = effect
+          return unhandledEffect
+        }
       }
-      if (controlKey('a')) {
-        updateComposerEditor(createComposerEditor(inputRef.current, 0))
-        return true
-      }
-      if (controlKey('e')) {
-        updateComposerEditor(createComposerEditor(inputRef.current))
-        return true
-      }
-      if (controlKey('b')) {
-        updateComposerEditor(moveComposerCursorAcrossImages(editor(), -1))
-        return true
-      }
-      if (controlKey('f')) {
-        updateComposerEditor(moveComposerCursorAcrossImages(editor(), 1))
-        return true
-      }
-      if (controlKey('w')) {
-        updateComposerEditor(deleteComposerWordBackward(editor()))
-        return true
-      }
-      if (controlKey('u')) {
-        updateComposerEditor(deleteComposerToStart(editor()))
-        return true
-      }
-      if (controlKey('k')) {
-        updateComposerEditor(deleteComposerToEnd(editor()))
-        return true
-      }
-      if (key.backspace) {
-        updateComposerEditor(deleteComposerImageBackward(editor()))
-        return true
-      }
-      if (key.delete) {
-        updateComposerEditor(deleteComposerImageForward(editor()))
-        return true
-      }
-      if (!key.ctrl && !key.meta && value && printable) {
-        updateComposerEditor(insertComposerText(editor(), value))
-        return true
-      }
-      return false
     }
 
-    if (controlKey('c')) {
-      armExitConfirmation()
-      return
-    }
-    const suspendIntent = controlKey('z')
-    if (suspendIntent) {
-      const interaction = routeTuiInteraction(
+    if (controlKey('c') || controlKey('z')) {
+      const globalInteraction = routeTuiInteraction(
         {
           suspensionPending: processSuspendRequestedRef.current,
-          blockingLayerActive: false,
+          exitConfirmationArmed: exitConfirmation,
+          layer: { kind: 'none' },
           busy,
           viewport: {
             enabled: false,
@@ -4312,18 +4338,20 @@ export function InteractiveApp({
             maxOffset: 0,
             pageRows: 0,
           },
+          composer: interactionComposer(),
         },
-        { suspend: true, scrollIntent: 'none', action: undefined },
+        {
+          globalIntent: controlKey('c') ? 'exit' : 'suspend',
+          scrollIntent: 'none',
+          action: undefined,
+          composerKey,
+          timestamp: Date.now(),
+          callerIntent: 'none',
+        },
       )
-      for (const effect of interaction.effects) {
-        if (effect.kind === 'request-process-suspension') {
-          processSuspendRequestedRef.current = true
-          setProcessSuspendRequested(true)
-        }
-      }
+      applyInteractionEffects(globalInteraction.effects)
       return
     }
-    dismissExitConfirmation()
 
     const keybindingContexts = menuRef.current
       ? menuRef.current.kind === 'diff'
@@ -4390,17 +4418,50 @@ export function InteractiveApp({
     if (hasPendingPrefix) {
       keySequenceRef.current = { chord: inputChord, at: Date.now() }
     }
+    const layer: TuiInteractionLayer = hasPendingPrefix
+      ? { kind: 'pending-prefix' }
+      : permission
+        ? { kind: 'cancelable', target: 'permission' }
+        : planApproval
+          ? { kind: 'cancelable', target: 'plan-approval' }
+          : question
+            ? { kind: 'cancelable', target: 'question' }
+            : elicitation
+              ? {
+                  kind: 'cancelable',
+                  target: elicitationUrlWaiting
+                    ? 'elicitation-url-waiting'
+                    : elicitationForm?.expandedField
+                      ? 'elicitation-options'
+                      : 'elicitation',
+                }
+              : selectingSession
+                ? { kind: 'delegated', target: 'session-picker' }
+                : menuRef.current
+                  ? { kind: 'delegated', target: 'menu' }
+                  : filePickerVisible
+                    ? { kind: 'cancelable', target: 'file-picker' }
+                    : commandPaletteVisible
+                      ? { kind: 'cancelable', target: 'command-palette' }
+                      : { kind: 'none' }
+    const callerIntent =
+      !busy && value === '?' && inputRef.current.length === 0
+        ? 'toggle-shortcuts'
+        : runtimeSettingsRef.current.leftArrowOpensAgents &&
+            key.leftArrow &&
+            inputRef.current.length === 0 &&
+            availableAgents.length > 0
+          ? 'open-agents'
+          : key.return &&
+              (key.shift || key.meta) &&
+              keybindingAction === undefined
+            ? 'implicit-newline'
+            : 'none'
     const interaction = routeTuiInteraction(
       {
         suspensionPending: processSuspendRequestedRef.current,
-        blockingLayerActive:
-          hasPendingPrefix ||
-          menuRef.current !== null ||
-          permission !== null ||
-          planApproval !== null ||
-          question !== null ||
-          elicitation !== null ||
-          selectingSession,
+        exitConfirmationArmed: exitConfirmation,
+        layer,
         busy,
         viewport: {
           enabled: fixedViewport,
@@ -4408,43 +4469,23 @@ export function InteractiveApp({
           maxOffset: maxTranscriptScrollOffset,
           pageRows: transcriptPageRows,
         },
+        composer: interactionComposer(),
       },
-      { suspend: suspendIntent, scrollIntent, action: keybindingAction },
+      {
+        globalIntent: 'none',
+        scrollIntent,
+        action: keybindingAction,
+        composerKey,
+        timestamp: Date.now(),
+        callerIntent,
+      },
     )
+    applyInteractionEffects(interaction.effects)
     if (interaction.disposition === 'handled') {
-      for (const effect of interaction.effects) {
-        if (effect.kind === 'request-process-suspension') {
-          processSuspendRequestedRef.current = true
-          setProcessSuspendRequested(true)
-        } else if (effect.kind === 'set-transcript-scroll-offset') {
-          setTranscriptScrollOffset(effect.offset)
-        } else if (effect.kind === 'interrupt-turn') {
-          turnControllerRef.current?.abort()
-        }
-      }
       return
     }
     const isKeybinding = (action: string) => keybindingAction === action
     if (hasPendingPrefix) return
-
-    if (
-      runtimeSettingsRef.current.editor === 'vim' &&
-      !permission &&
-      !planApproval &&
-      !question &&
-      !elicitation &&
-      menuRef.current === null
-    ) {
-      if (!vimInsertMode) {
-        if (value === 'i' || value === 'a') setVimInsertMode(true)
-        else if (key.leftArrow || key.rightArrow) editComposer()
-        return
-      }
-      if (key.escape || value === '\u001B') {
-        setVimInsertMode(false)
-        return
-      }
-    }
 
     if (permission) {
       const options =
@@ -4604,9 +4645,7 @@ export function InteractiveApp({
           feedback ? { behavior: 'deny', message: feedback } : false,
         )
       }
-      if (key.escape) {
-        permission.resolve(false)
-      } else if (permissionFeedbackMode) {
+      if (permissionFeedbackMode) {
         if (key.tab) {
           clearComposerInput()
           setPermissionFeedbackMode(false)
@@ -4687,9 +4726,7 @@ export function InteractiveApp({
           ...(feedback ? { feedback } : {}),
         })
       }
-      if (key.escape) {
-        planApproval.resolve({ behavior: 'deny' })
-      } else if (planApprovalFeedbackMode) {
+      if (planApprovalFeedbackMode) {
         if (key.tab) {
           clearComposerInput()
           setPlanApprovalFeedbackMode(false)
@@ -4718,9 +4755,7 @@ export function InteractiveApp({
     }
 
     if (question) {
-      if (key.escape) {
-        question.resolve(null)
-      } else if (key.return) {
+      if (key.return) {
         try {
           const current = question.questions[question.index]
           if (!current) throw new Error('Question state is invalid.')
@@ -4776,10 +4811,7 @@ export function InteractiveApp({
           setElicitationForm(null)
           clearComposerInput()
         }
-        if (key.escape) {
-          if (elicitationUrlWaiting) dismissUrlDialog()
-          else elicitation.resolve({ action: 'cancel' })
-        } else if (key.leftArrow || key.rightArrow) {
+        if (key.leftArrow || key.rightArrow) {
           setElicitationForm({
             ...form,
             focusIndex: form.focusIndex === 0 ? 1 : 0,
@@ -4801,7 +4833,7 @@ export function InteractiveApp({
       }
 
       if (form.expandedField && currentField) {
-        if (key.escape || key.leftArrow) {
+        if (key.leftArrow) {
           setElicitationForm({ ...form, expandedField: undefined })
         } else if (key.upArrow) {
           showForm(moveElicitationOption(form, -1))
@@ -4818,8 +4850,6 @@ export function InteractiveApp({
         } else if (printable && value) {
           setElicitationForm(typeaheadElicitationOption(form, value))
         }
-      } else if (key.escape) {
-        elicitation.resolve({ action: 'cancel' })
       } else if (key.upArrow) {
         move(-1)
       } else if (key.downArrow) {
@@ -6779,10 +6809,6 @@ export function InteractiveApp({
       return
     }
     if (filePickerVisible) {
-      if (key.escape || value === '\u001B') {
-        setFilePickerOpen(false)
-        return
-      }
       if (key.upArrow) {
         setFileSelection((current) => Math.max(0, current - 1))
         return
@@ -6817,12 +6843,6 @@ export function InteractiveApp({
       updateMenu({ kind: 'agents', agents: availableAgents, selectedIndex: 0 })
       return
     }
-    if (isKeybinding('chat:cancel')) {
-      const now = Date.now()
-      if (now - lastEscapeAtRef.current <= 500) clearComposerInput()
-      lastEscapeAtRef.current = now
-      return
-    }
     if (isKeybinding('chat:cycleMode')) {
       const currentIndex = permissionOptions.findIndex(
         (option) => option.mode === runtimePreferences.permissionMode,
@@ -6833,10 +6853,6 @@ export function InteractiveApp({
       return
     }
     if (commandPaletteVisible) {
-      if (key.escape) {
-        setCommandPaletteOpen(false)
-        return
-      }
       if (key.upArrow) {
         if (matchingSlashCommands.length > 0) {
           setCommandSelection((current) => Math.max(0, current - 1))
@@ -7429,20 +7445,9 @@ export function InteractiveApp({
       clearComposerInput()
       return
     }
-    const transition: ComposerKeyTransition = routeComposerKey(editor(), {
-      value,
-      left: key.leftArrow,
-      right: key.rightArrow,
-      backspace: key.backspace,
-      delete: key.delete,
-      ctrl: key.ctrl,
-      meta: key.meta,
-      escape: key.escape || value === '\u001B',
-    })
-    if (transition.kind === 'cancel') {
-      clearComposerInput()
-    } else if (transition.kind === 'edit') {
-      updateComposerEditor(transition.editor)
+    if (filePickerVisible || commandPaletteVisible) {
+      editComposer()
+      return
     }
   })
 
