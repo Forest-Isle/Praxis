@@ -1,18 +1,67 @@
 import { render } from 'ink-testing-library'
 import { Text } from 'ink'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   TUI_THEMES,
   TuiThemeProvider,
+  resolveTuiTheme,
   terminalColorCapability,
   tuiPalette,
   tuiSyntaxStyle,
   useTuiPalette,
+  useTuiTheme,
 } from './theme.js'
 
+const ENVIRONMENT_KEYS = [
+  'COLORFGBG',
+  'FORCE_COLOR',
+  'COLORTERM',
+  'TERM',
+  'TERM_PROGRAM',
+  'NO_COLOR',
+] as const
+const TRUECOLOR_ENV = {
+  TERM: 'xterm-truecolor',
+  COLORTERM: 'truecolor',
+  NO_COLOR: undefined,
+}
+const ANSI256_ENV = { TERM: 'xterm-256color', NO_COLOR: undefined }
+const ANSI16_ENV = { TERM: 'xterm', NO_COLOR: undefined }
+const AGENT_COLOR_NAMES = [
+  'red',
+  'blue',
+  'green',
+  'yellow',
+  'purple',
+  'orange',
+  'pink',
+  'cyan',
+] as const
+let environmentBeforeTest: Record<string, string | undefined>
+
+function setProcessEnvironment(
+  environment: Record<string, string | undefined>,
+): void {
+  for (const key of ENVIRONMENT_KEYS) delete process.env[key]
+  for (const [key, value] of Object.entries(environment)) {
+    if (value !== undefined) process.env[key] = value
+  }
+}
+
+beforeEach(() => {
+  environmentBeforeTest = Object.fromEntries(
+    ENVIRONMENT_KEYS.map((key) => [key, process.env[key]]),
+  )
+})
+
 afterEach(() => {
-  delete process.env.COLORFGBG
+  vi.unstubAllEnvs()
+  for (const key of ENVIRONMENT_KEYS) {
+    const value = environmentBeforeTest[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
 })
 
 function PaletteProbe() {
@@ -25,10 +74,196 @@ function PaletteProbe() {
   )
 }
 
+let previousTheme: ReturnType<typeof useTuiTheme> | undefined
+let previousPalette: ReturnType<typeof useTuiPalette> | undefined
+function ThemeIdentityProbe() {
+  const theme = useTuiTheme()
+  const palette = useTuiPalette()
+  const same = previousTheme === theme
+  const samePalette = previousPalette === palette
+  previousTheme = theme
+  previousPalette = palette
+  return (
+    <Text>{`${same}|${samePalette}|${theme.noColor}|${theme.screenReader}`}</Text>
+  )
+}
+
 describe('TUI semantic theme palettes', () => {
+  it('resolves a complete immutable semantic role table for every profile', () => {
+    for (const profile of TUI_THEMES) {
+      const theme = resolveTuiTheme(
+        { theme: profile, syntaxHighlightingDisabled: false },
+        { environment: TRUECOLOR_ENV },
+      )
+      expect(Object.keys(theme.text)).toHaveLength(20)
+      expect(Object.keys(theme.surface)).toHaveLength(7)
+      expect(Object.isFrozen(theme.text)).toBe(true)
+      expect(Object.isFrozen(theme.surface)).toBe(true)
+      expect(theme.syntax('keyword').color).toBeTruthy()
+      expect(theme.session('blue')).toBeTruthy()
+    }
+  })
+
+  it('suppresses semantic decoration for NO_COLOR and screen-reader presentation', () => {
+    const noColor = resolveTuiTheme(
+      { theme: 'dark', syntaxHighlightingDisabled: false },
+      { environment: { TERM: 'xterm-truecolor', NO_COLOR: '1' } },
+    )
+    expect(noColor.noColor).toBe(true)
+    expect(noColor.text.productIdentity.color).toBeUndefined()
+    expect(noColor.surface.decision.borderColor).toBeUndefined()
+    expect(noColor.syntax('keyword')).toEqual({})
+    expect(noColor.session('red')).toBeUndefined()
+
+    const screenReader = resolveTuiTheme(
+      { theme: 'light', syntaxHighlightingDisabled: false },
+      { environment: { TERM: 'xterm-truecolor' }, screenReader: true },
+    )
+    expect(screenReader.screenReader).toBe(true)
+    expect(screenReader.noColor).toBe(false)
+    expect(screenReader.text.heading.bold).toBe(true)
+    expect(screenReader.text.selectedRow.backgroundColor).toBeUndefined()
+    expect(screenReader.surface.neutralBorder).toEqual({})
+  })
+
+  it('maps legacy custom tokens into the same semantic roles', () => {
+    const theme = resolveTuiTheme(
+      {
+        theme: 'custom:quiet',
+        syntaxHighlightingDisabled: false,
+        customTheme: {
+          name: 'Quiet',
+          slug: 'quiet',
+          base: 'dark',
+          overrides: {
+            claude: '#010203',
+            suggestion: '#040506',
+            professionalBlue: '#070809',
+            warning: '#0a0b0c',
+            diffAdded: '#0d0e0f',
+          },
+        },
+      },
+      {
+        environment: TRUECOLOR_ENV,
+      },
+    )
+    expect(theme.text.productIdentity.color).toBe('#010203')
+    expect(theme.text.selectedRow.backgroundColor).toBe('#040506')
+    expect(theme.text.info.color).toBe('#070809')
+    expect(theme.text.permission.color).toBe('#0a0b0c')
+    expect(theme.text.diffAdded.color).toBe('#0d0e0f')
+  })
+
+  it('keeps body default, coral focus, distinct flags, and ANSI16 custom safety', () => {
+    const theme = resolveTuiTheme(
+      { theme: 'dark', syntaxHighlightingDisabled: false },
+      {
+        environment: TRUECOLOR_ENV,
+      },
+    )
+    expect(theme.text.body).toEqual({})
+    expect(theme.text.productIdentity.color).toBe('#D97757')
+    expect(theme.text.focusMarker.color).toBe('#D97757')
+    expect(theme.text.inputCursor).toEqual({ inverse: true })
+    const ansiTheme = resolveTuiTheme(
+      {
+        theme: 'custom:ansi-safe',
+        syntaxHighlightingDisabled: false,
+        customTheme: {
+          name: 'Ansi Safe',
+          slug: 'ansi-safe',
+          base: 'dark',
+          overrides: {
+            claude: '#123456',
+            suggestion: 'rgb(1,2,3)',
+            diffAddedWord: 'ansi256(200)',
+          },
+        },
+      },
+      { environment: ANSI16_ENV },
+    )
+    const allColors = [
+      ansiTheme.text.productIdentity.color,
+      ansiTheme.text.focusMarker.color,
+      ansiTheme.surface.input.borderColor,
+      ansiTheme.syntax('text').color,
+      ansiTheme.syntax('addedHighlight').backgroundColor,
+      ansiTheme.session('red'),
+    ]
+    expect(
+      allColors.every(
+        (value) => value === undefined || !/[#]|rgb\(|ansi256\(/u.test(value),
+      ),
+    ).toBe(true)
+  })
+
+  it('memoizes provider theme and palette identities across unchanged rerenders', () => {
+    setProcessEnvironment(TRUECOLOR_ENV)
+    previousTheme = undefined
+    previousPalette = undefined
+    const settings = {
+      theme: 'dark' as const,
+      syntaxHighlightingDisabled: false,
+    }
+    const app = render(
+      <TuiThemeProvider settings={settings}>
+        <ThemeIdentityProbe />
+      </TuiThemeProvider>,
+    )
+    expect(app.lastFrame()).toBe('false|false|false|false')
+    app.rerender(
+      <TuiThemeProvider settings={settings}>
+        <ThemeIdentityProbe />
+      </TuiThemeProvider>,
+    )
+    expect(app.lastFrame()).toBe('true|true|false|false')
+  })
+
+  it('invalidates the shared bundle for presentation, environment, and settings changes', () => {
+    setProcessEnvironment(TRUECOLOR_ENV)
+    previousTheme = undefined
+    previousPalette = undefined
+    const settings = {
+      theme: 'dark' as const,
+      syntaxHighlightingDisabled: false,
+    }
+    const app = render(
+      <TuiThemeProvider settings={settings}>
+        <ThemeIdentityProbe />
+      </TuiThemeProvider>,
+    )
+    expect(app.lastFrame()).toBe('false|false|false|false')
+
+    app.rerender(
+      <TuiThemeProvider settings={settings} screenReader>
+        <ThemeIdentityProbe />
+      </TuiThemeProvider>,
+    )
+    expect(app.lastFrame()).toBe('false|false|false|true')
+
+    setProcessEnvironment(ANSI256_ENV)
+    app.rerender(
+      <TuiThemeProvider settings={settings} screenReader>
+        <ThemeIdentityProbe />
+      </TuiThemeProvider>,
+    )
+    expect(app.lastFrame()).toBe('false|false|false|true')
+
+    app.rerender(
+      <TuiThemeProvider
+        settings={{ ...settings, syntaxHighlightingDisabled: true }}
+        screenReader
+      >
+        <ThemeIdentityProbe />
+      </TuiThemeProvider>,
+    )
+    expect(app.lastFrame()).toBe('false|false|false|true')
+  })
+
   it('defines a complete syntax, diff, and semantic palette for every profile', () => {
     for (const profile of TUI_THEMES) {
-      const palette = tuiPalette(profile)
+      const palette = tuiPalette(profile, false, TRUECOLOR_ENV)
       expect(palette.profile).toBe(profile)
       expect(palette.brand).toBeTruthy()
       expect(palette.accent).toBeTruthy()
@@ -51,7 +286,7 @@ describe('TUI semantic theme palettes', () => {
   })
 
   it('matches the pinned syntax and diff palettes for profile families', () => {
-    expect(tuiPalette('dark').syntax).toEqual({
+    expect(tuiPalette('dark', false, TRUECOLOR_ENV).syntax).toEqual({
       text: '#ffffff',
       keyword: '#5fd7ff',
       identifier: '#afd700',
@@ -60,7 +295,7 @@ describe('TUI semantic theme palettes', () => {
       addedBackground: '#005f00',
       addedHighlight: '#008700',
     })
-    expect(tuiPalette('light').syntax).toEqual({
+    expect(tuiPalette('light', false, TRUECOLOR_ENV).syntax).toEqual({
       text: '#303030',
       keyword: '#af005f',
       identifier: '#875faf',
@@ -69,32 +304,47 @@ describe('TUI semantic theme palettes', () => {
       addedBackground: '#d7ffd7',
       addedHighlight: '#afffaf',
     })
-    expect(tuiPalette('dark-daltonized').syntax).toMatchObject({
+    expect(
+      tuiPalette('dark-daltonized', false, TRUECOLOR_ENV).syntax,
+    ).toMatchObject({
       addedBackground: '#00005f',
       addedHighlight: '#005f87',
     })
-    expect(tuiPalette('light-daltonized').syntax).toMatchObject({
+    expect(
+      tuiPalette('light-daltonized', false, TRUECOLOR_ENV).syntax,
+    ).toMatchObject({
       addedBackground: '#d7ffff',
       addedHighlight: '#afd7ff',
     })
   })
 
   it('disables every runtime syntax and diff decoration from persisted state', () => {
-    expect(tuiSyntaxStyle(tuiPalette('dark'), 'keyword', 'added')).toEqual({
+    expect(
+      tuiSyntaxStyle(
+        tuiPalette('dark', false, TRUECOLOR_ENV),
+        'keyword',
+        'added',
+      ),
+    ).toEqual({
       color: '#5fd7ff',
       backgroundColor: '#005f00',
     })
     expect(
-      tuiSyntaxStyle(tuiPalette('dark', true), 'keyword', 'added'),
+      tuiSyntaxStyle(
+        tuiPalette('dark', true, TRUECOLOR_ENV),
+        'keyword',
+        'added',
+      ),
     ).toEqual({})
   })
 
   it('resolves auto against the terminal background and provides palette context', () => {
-    process.env.COLORFGBG = '15;0'
-    expect(tuiPalette('auto').dark).toBe(true)
-    process.env.COLORFGBG = '0;15'
-    expect(tuiPalette('auto').dark).toBe(false)
+    const darkEnvironment = { ...TRUECOLOR_ENV, COLORFGBG: '15;0' }
+    const lightEnvironment = { ...TRUECOLOR_ENV, COLORFGBG: '0;15' }
+    expect(tuiPalette('auto', false, darkEnvironment).dark).toBe(true)
+    expect(tuiPalette('auto', false, lightEnvironment).dark).toBe(false)
 
+    setProcessEnvironment(lightEnvironment)
     const app = render(
       <TuiThemeProvider
         settings={{
@@ -106,10 +356,11 @@ describe('TUI semantic theme palettes', () => {
       </TuiThemeProvider>,
     )
     expect(app.lastFrame()).toBe(
-      'light-daltonized|#005f87|GitHub|#af005f|#d7ffff',
+      'light-daltonized|#D97757|GitHub|#af005f|#d7ffff',
     )
     expect(
-      tuiPalette('light-daltonized', true).syntaxHighlightingDisabled,
+      tuiPalette('light-daltonized', true, TRUECOLOR_ENV)
+        .syntaxHighlightingDisabled,
     ).toBe(true)
   })
 
@@ -136,7 +387,7 @@ describe('TUI semantic theme palettes', () => {
       ansiOnly: false,
       syntaxHighlightingDisabled: false,
       brand: 'redBright',
-      accent: 'whiteBright',
+      accent: 'redBright',
       info: 'cyanBright',
       link: 'cyanBright',
       error: 'redBright',
@@ -145,14 +396,14 @@ describe('TUI semantic theme palettes', () => {
       muted: 'white',
       selectionText: 'black',
       sessionColors: {
-        red: '#dc2626',
-        blue: '#2563eb',
-        green: '#16a34a',
-        yellow: '#ca8a04',
-        purple: '#9333ea',
-        orange: '#ea580c',
-        pink: '#db2777',
-        cyan: '#0891b2',
+        red: 'redBright',
+        blue: 'blueBright',
+        green: 'green',
+        yellow: 'yellow',
+        purple: 'magenta',
+        orange: 'redBright',
+        pink: 'magenta',
+        cyan: 'cyan',
       },
       syntaxTheme: 'Monokai Extended',
       syntax: {
@@ -176,8 +427,155 @@ describe('TUI semantic theme palettes', () => {
     }
   })
 
+  it('projects every custom palette, semantic, syntax, and session color safely', () => {
+    const customTheme = {
+      name: 'Projection Fixture',
+      slug: 'projection-fixture',
+      base: 'dark' as const,
+      overrides: {
+        claude: '#ff0000',
+        suggestion: '#00ff00',
+        professionalBlue: 'rgb(0,0,255)',
+        ide: 'ansi256(0)',
+        error: 'ansi256(1)',
+        success: 'ansi256(200)',
+        warning: 'ansi:yellowBright',
+        inactive: '#123456',
+        inverseText: 'rgb(255,255,255)',
+        text: '#abcdef',
+        claudeBlue_FOR_SYSTEM_SPINNER: '#ff00ff',
+        diffRemoved: 'ansi256(200)',
+        diffAdded: 'rgb(0,255,0)',
+        diffAddedWord: '#00ff00',
+      },
+    }
+    const ansi16Palette = tuiPalette('dark', false, ANSI16_ENV, customTheme)
+    const ansi16Theme = resolveTuiTheme(
+      {
+        theme: 'custom:projection-fixture',
+        syntaxHighlightingDisabled: false,
+        customTheme,
+      },
+      { environment: ANSI16_ENV },
+    )
+    const paletteColors = [
+      ansi16Palette.brand,
+      ansi16Palette.accent,
+      ansi16Palette.info,
+      ansi16Palette.link,
+      ansi16Palette.error,
+      ansi16Palette.success,
+      ansi16Palette.warning,
+      ansi16Palette.muted,
+      ansi16Palette.selectionText,
+      ...Object.values(ansi16Palette.sessionColors),
+      ...Object.values(ansi16Palette.syntax),
+    ]
+    const semanticColors = [
+      ...Object.values(ansi16Theme.text).flatMap((style) => [
+        style.color,
+        style.backgroundColor,
+      ]),
+      ...Object.values(ansi16Theme.surface).flatMap((style) => [
+        style.borderColor,
+        style.backgroundColor,
+      ]),
+      ...(
+        ['text', 'keyword', 'identifier', 'string', 'addedHighlight'] as const
+      ).flatMap((token) =>
+        ([undefined, 'added', 'removed'] as const).flatMap((change) => {
+          const style = ansi16Theme.syntax(token, change)
+          return [style.color, style.backgroundColor]
+        }),
+      ),
+      ...AGENT_COLOR_NAMES.map((name) => ansi16Theme.session(name)),
+    ]
+    const allAnsi16Colors = [...paletteColors, ...semanticColors].filter(
+      (value): value is string => value !== undefined,
+    )
+    expect(
+      allAnsi16Colors.every(
+        (value) =>
+          !value.includes('#') &&
+          !value.includes('rgb(') &&
+          !value.includes('ansi256('),
+      ),
+    ).toBe(true)
+    expect(ansi16Palette.brand).toBe('redBright')
+    expect(ansi16Palette.accent).toBe('greenBright')
+    expect(ansi16Palette.info).toBe('blueBright')
+    expect(ansi16Palette.error).toBe('red')
+    expect(ansi16Palette.syntax.addedHighlight).toBe('greenBright')
+    expect(ansi16Theme.text.diffAdded.color).toBe('greenBright')
+    expect(ansi16Theme.text.diffRemoved.color).toBe('magentaBright')
+    const ansi16Names = [
+      'black',
+      'red',
+      'green',
+      'yellow',
+      'blue',
+      'magenta',
+      'cyan',
+      'white',
+      'blackBright',
+      'redBright',
+      'greenBright',
+      'yellowBright',
+      'blueBright',
+      'magentaBright',
+      'cyanBright',
+      'whiteBright',
+    ]
+    for (const [index, name] of ansi16Names.entries()) {
+      const directAnsi = {
+        ...customTheme,
+        overrides: { ...customTheme.overrides, claude: `ansi256(${index})` },
+      }
+      expect(
+        resolveTuiTheme(
+          {
+            theme: 'custom:projection-fixture',
+            syntaxHighlightingDisabled: false,
+            customTheme: directAnsi,
+          },
+          { environment: ANSI16_ENV },
+        ).text.productIdentity.color,
+      ).toBe(name)
+    }
+
+    const ansi256Theme = resolveTuiTheme(
+      {
+        theme: 'custom:projection-fixture',
+        syntaxHighlightingDisabled: false,
+        customTheme,
+      },
+      { environment: ANSI256_ENV },
+    )
+    expect(ansi256Theme.terminalColorCapability).toBe('ansi256')
+    expect(ansi256Theme.text.productIdentity.color).toBe('ansi256(196)')
+    expect(ansi256Theme.text.selectedRow.backgroundColor).toBe('ansi256(46)')
+    expect(ansi256Theme.text.info.color).toBe('ansi256(21)')
+    expect(ansi256Theme.text.warning.color).toBe('yellowBright')
+    expect(ansi256Theme.text.error.color).toBe('ansi256(1)')
+    expect(ansi256Theme.text.link.color).toBe('ansi256(0)')
+
+    const truecolorTheme = resolveTuiTheme(
+      {
+        theme: 'custom:projection-fixture',
+        syntaxHighlightingDisabled: false,
+        customTheme,
+      },
+      { environment: TRUECOLOR_ENV },
+    )
+    expect(truecolorTheme.text.productIdentity.color).toBe('#ff0000')
+    expect(truecolorTheme.text.selectedRow.backgroundColor).toBe('#00ff00')
+    expect(truecolorTheme.text.info.color).toBe('rgb(0,0,255)')
+    expect(truecolorTheme.text.warning.color).toBe('yellowBright')
+    expect(truecolorTheme.text.link.color).toBe('ansi256(0)')
+  })
+
   it('pins the session color map for every profile', () => {
-    expect(tuiPalette('dark').sessionColors).toEqual({
+    expect(tuiPalette('dark', false, TRUECOLOR_ENV).sessionColors).toEqual({
       red: '#dc2626',
       blue: '#2563eb',
       green: '#16a34a',
@@ -187,20 +585,24 @@ describe('TUI semantic theme palettes', () => {
       pink: '#db2777',
       cyan: '#0891b2',
     })
-    expect(tuiPalette('light').sessionColors).toEqual(
-      tuiPalette('dark').sessionColors,
+    expect(tuiPalette('light', false, TRUECOLOR_ENV).sessionColors).toEqual(
+      tuiPalette('dark', false, TRUECOLOR_ENV).sessionColors,
     )
-    expect(tuiPalette('dark-ansi').sessionColors).toEqual({
-      red: 'redBright',
-      blue: 'blueBright',
-      green: 'greenBright',
-      yellow: 'yellowBright',
-      purple: 'magentaBright',
-      orange: 'redBright',
-      pink: 'magentaBright',
-      cyan: 'cyanBright',
-    })
-    expect(tuiPalette('light-ansi').sessionColors).toEqual({
+    expect(tuiPalette('dark-ansi', false, TRUECOLOR_ENV).sessionColors).toEqual(
+      {
+        red: 'redBright',
+        blue: 'blueBright',
+        green: 'greenBright',
+        yellow: 'yellowBright',
+        purple: 'magentaBright',
+        orange: 'redBright',
+        pink: 'magentaBright',
+        cyan: 'cyanBright',
+      },
+    )
+    expect(
+      tuiPalette('light-ansi', false, TRUECOLOR_ENV).sessionColors,
+    ).toEqual({
       red: 'red',
       blue: 'blue',
       green: 'green',
@@ -210,7 +612,9 @@ describe('TUI semantic theme palettes', () => {
       pink: 'magentaBright',
       cyan: 'cyan',
     })
-    expect(tuiPalette('dark-daltonized').sessionColors).toEqual({
+    expect(
+      tuiPalette('dark-daltonized', false, TRUECOLOR_ENV).sessionColors,
+    ).toEqual({
       red: '#ff6666',
       blue: '#66b2ff',
       green: '#66ff66',
@@ -220,7 +624,9 @@ describe('TUI semantic theme palettes', () => {
       pink: '#ff99cc',
       cyan: '#66cccc',
     })
-    expect(tuiPalette('light-daltonized').sessionColors).toEqual({
+    expect(
+      tuiPalette('light-daltonized', false, TRUECOLOR_ENV).sessionColors,
+    ).toEqual({
       red: '#cc0000',
       blue: '#0066cc',
       green: '#00cc00',

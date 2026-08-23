@@ -26,6 +26,7 @@ import { resolveClaudeProjectMemoryDirectory } from '../dist/compatibility/claud
 const execFileAsync = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-tui-compat-'))
 const configRoot = join(root, 'config')
+const dashboardConfigRoot = join(root, 'dashboard-config')
 const cwd = join(root, 'work')
 const movedCwd = join(root, 'moved-work')
 const sharedRoot = join(root, 'shared-access')
@@ -212,6 +213,25 @@ function assertThemeAnsiContext(output, ansi, token, label) {
   assert.fail(
     `${label} did not apply ${JSON.stringify(ansi)} to ${JSON.stringify(token)}: ${JSON.stringify(output.match(new RegExp(`.{0,40}${token}.{0,40}`, 'gu')))}`,
   )
+}
+
+function assertNoForegroundBackgroundColorSgr(output, label) {
+  const sgrPattern = new RegExp(String.raw`\u001B\[([0-9;]*)m`, 'gu')
+  for (const match of output.matchAll(sgrPattern)) {
+    const parameters = match[1] === '' ? [0] : match[1].split(';').map(Number)
+    assert.ok(
+      !parameters.some(
+        (parameter) =>
+          (parameter >= 30 && parameter <= 37) ||
+          (parameter >= 40 && parameter <= 47) ||
+          (parameter >= 90 && parameter <= 97) ||
+          (parameter >= 100 && parameter <= 107) ||
+          parameter === 38 ||
+          parameter === 48,
+      ),
+      `${label} emitted a foreground/background color SGR ${JSON.stringify(match[0])}`,
+    )
+  }
 }
 
 const LINUX_CI_ANSI_CONTEXT_FIXTURE =
@@ -479,9 +499,17 @@ const provider = createServer(async (request, response) => {
   const latestUserText = JSON.stringify(
     messages[latestUserIndex]?.content ?? '',
   )
+  const permissionProbe = payload?.model === 'semantic-permission-fixture'
   const toolResultCount = messages
     .slice(latestUserIndex + 1)
     .filter((message) => message?.role === 'tool').length
+  if (permissionProbe && toolResultCount === 0) {
+    response.writeHead(200, { 'content-type': 'text/event-stream' })
+    response.end(
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_semantic_permission', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command: 'printf SEMANTIC_PERMISSION_RESULT' }) } }] }, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`,
+    )
+    return
+  }
   const surfaceMode = latestUserText.includes('reply briefly')
     ? 'ENABLED'
     : latestUserText.includes('disabled surface probe')
@@ -550,6 +578,7 @@ try {
   assert.match(claudeVersion, /^2\.1\.208\b/u)
   await Promise.all([
     mkdir(configRoot, { recursive: true }),
+    mkdir(join(dashboardConfigRoot, 'sessions'), { recursive: true }),
     mkdir(join(configRoot, 'plans'), { recursive: true }),
     mkdir(join(configRoot, 'commands'), { recursive: true }),
     mkdir(join(configRoot, 'agents'), { recursive: true }),
@@ -564,6 +593,18 @@ try {
     mkdir(join(movedCwd, '.claude'), { recursive: true }),
   ])
   const canonicalCwd = await realpath(cwd)
+  await writeFile(
+    join(dashboardConfigRoot, 'sessions', '424242.json'),
+    `${JSON.stringify({
+      pid: 424242,
+      sessionId: 'semantic-dashboard-session',
+      cwd: canonicalCwd,
+      startedAt: 1,
+      kind: 'interactive',
+      name: 'semantic dashboard fixture',
+      status: 'idle',
+    })}\n`,
+  )
 
   const claudeThemeAnsi = {
     auto: [
@@ -1318,6 +1359,340 @@ exit 0
     'Praxis auto Linux-like ANSI-16 output emitted an extended color',
   )
   console.log('Praxis auto Linux-like ANSI-16 output used only basic colors')
+
+  for (const width of [100, 40]) {
+    const noColorProbe = linuxLikeAnsi16Probe
+      .replaceAll('COLUMNS=100', `COLUMNS=${width}`)
+      .replace('TERM=xterm ', 'TERM=xterm NO_COLOR=1 ')
+      .replace('send "\\033"', 'send "\\033"\nsend "a"')
+    const { stdout: noColorOutput } = await execFileAsync(
+      'expect',
+      ['-c', noColorProbe],
+      {
+        cwd,
+        env: {
+          ...linuxLikeAutoEnvironment,
+          TERM: 'xterm',
+          NO_COLOR: '1',
+          TUI_CLI: cli,
+          TUI_NODE: process.execPath,
+          TUI_PROFILE_CONFIG: join(root, 'praxis-themes', 'auto'),
+          TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+        },
+        timeout: 60_000,
+      },
+    )
+    assert.ok(noColorOutput.includes('Try "review this project"'))
+    assert.ok(
+      noColorOutput.includes('\u0332'),
+      `NO_COLOR cursor missing at width ${width}`,
+    )
+    assertNoForegroundBackgroundColorSgr(
+      noColorOutput,
+      `Praxis NO_COLOR width ${width}`,
+    )
+  }
+  console.log(
+    'Praxis NO_COLOR output retained text and cursor semantics at widths 100 and 40',
+  )
+
+  const semanticPermissionConfig = join(
+    root,
+    'praxis-themes',
+    'semantic-permission',
+  )
+  await mkdir(semanticPermissionConfig, { recursive: true })
+  await writeFile(
+    join(semanticPermissionConfig, 'settings.json'),
+    `${JSON.stringify({
+      theme: 'auto',
+      permissions: { ask: ['Bash(*)'] },
+    })}\n`,
+  )
+
+  const semanticSurfaceProbe = (width) => String.raw`
+set timeout 20
+log_user 1
+spawn -noecho env COLUMNS=${width} LINES=40 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI)
+stty rows 40 columns ${width} < $spawn_out(slave,name)
+set phase "startup identity"
+expect_before timeout {
+  puts stderr "TUI semantic $phase timed out"
+  exit 1
+}
+proc expect_phase {pattern} {
+  global phase
+  expect {
+    -re $pattern {}
+    eof {
+      puts stderr "TUI semantic $phase ended unexpectedly"
+      exit 1
+    }
+  }
+}
+expect_phase {Praxis.*Code.*v${expectedVersionPattern}}
+set phase "composer prompt"
+expect_phase {Try.*review this project}
+set phase "theme command"
+send "/theme"
+expect_phase {Change th}
+set phase "theme selection"
+send "\r"
+expect_phase {Choose the text style}
+after 500
+send "\033"
+after 100
+send "\033"
+after 1000
+set phase "theme close interrupt prompt"
+send "\003"
+expect_phase {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+  const permissionSurfaceProbe = (width) => String.raw`
+set timeout 20
+log_user 1
+spawn -noecho env COLUMNS=${width} LINES=40 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=semantic-permission-fixture PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI)
+stty rows 40 columns ${width} < $spawn_out(slave,name)
+set phase "permissions startup"
+expect_before timeout {
+  puts stderr "TUI permission semantic $phase timed out"
+  exit 1
+}
+proc expect_phase {pattern} {
+  global phase
+  expect {
+    -re $pattern {}
+    eof {
+      puts stderr "TUI permission semantic $phase ended unexpectedly"
+      exit 1
+    }
+  }
+}
+set phase "permissions startup"
+expect_phase {Praxis.*Code.*v${expectedVersionPattern}}
+set phase "permissions composer"
+expect_phase {Try.*review this project}
+set phase "permissions command"
+send "/permissions"
+expect_phase {Manage al}
+send "\r"
+expect_phase {Permissions}
+set phase "permissions tabs"
+expect_phase {Recently denied}
+send "\033"
+set phase "permission composer restore"
+expect_phase {Try.*review this project}
+set phase "permission decision request"
+send "semantic permission probe"
+expect_phase {semantic permission probe}
+after 100
+send "\r"
+expect_phase {Bash command}
+after 300
+send "\033"
+after 200
+set phase "interrupt prompt"
+send "\003"
+expect_phase {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+  for (const width of [100, 40]) {
+    const probeEnvironment = {
+      ...linuxLikeAutoEnvironment,
+      TERM: 'xterm-256color',
+      TUI_CLI: cli,
+      TUI_NODE: process.execPath,
+      TUI_PROFILE_CONFIG: join(root, 'praxis-themes', 'auto'),
+      TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+    }
+    const [{ stdout: themeOutput }, { stdout: permissionOutput }] =
+      await Promise.all([
+        execFileAsync('expect', ['-c', semanticSurfaceProbe(width)], {
+          cwd,
+          env: probeEnvironment,
+          timeout: 90_000,
+        }),
+        execFileAsync('expect', ['-c', permissionSurfaceProbe(width)], {
+          cwd,
+          env: {
+            ...probeEnvironment,
+            TUI_PROFILE_CONFIG: semanticPermissionConfig,
+          },
+          timeout: 90_000,
+        }),
+      ])
+    const semanticOutput = `${themeOutput}\n${permissionOutput}`
+    assertThemeAnsiContext(
+      semanticOutput,
+      '\u001B[38;5;173m',
+      'Praxis',
+      `Praxis product identity width ${width}`,
+    )
+    assertThemeAnsiContext(
+      semanticOutput,
+      '\u001B[38;5;173m',
+      '❯ ',
+      `Praxis composer marker width ${width}`,
+    )
+    assertThemeAnsiContext(
+      semanticOutput,
+      '\u001B[48;5;173m',
+      '1. Auto',
+      `Praxis selected theme row width ${width}`,
+    )
+    assertThemeAnsiContext(
+      semanticOutput,
+      '\u001B[48;5;173m',
+      'Allow',
+      `Praxis selected permissions tab width ${width}`,
+    )
+    assertThemeAnsiContext(
+      semanticOutput,
+      '\u001B[38;5;221m',
+      'Bash command',
+      `Praxis permission warning width ${width}`,
+    )
+    assertThemeAnsiContext(
+      semanticOutput,
+      '\u001B[48;5;173m',
+      '1. Yes',
+      `Praxis permission selected row width ${width}`,
+    )
+  }
+  console.log(
+    'Praxis semantic product, composer, tab, and permission surfaces passed at widths 100 and 40',
+  )
+
+  const dashboardProbe = (width) => String.raw`
+set timeout 15
+log_user 1
+spawn -noecho env COLUMNS=${width} LINES=32 TERM=xterm-256color CLAUDE_CONFIG_DIR=$env(TUI_DASHBOARD_CONFIG) PRAXIS_DATA_PLANE=claude $env(TUI_NODE) $env(TUI_CLI) agents
+stty rows 32 columns ${width} < $spawn_out(slave,name)
+set phase "dashboard startup"
+expect_before timeout {
+  puts stderr "TUI dashboard $phase timed out"
+  exit 1
+}
+proc expect_phase {pattern} {
+  global phase
+  expect {
+    -re $pattern {}
+    eof {
+      puts stderr "TUI dashboard $phase ended unexpectedly"
+      exit 1
+    }
+  }
+}
+set phase "dashboard identity"
+expect_phase {Praxis agents}
+set phase "dashboard fixture"
+expect_phase {semantic dashboard fixture}
+send "\003"
+expect eof
+exit 0
+`
+  for (const width of [100, 40]) {
+    const { stdout: dashboardOutput } = await execFileAsync(
+      'expect',
+      ['-c', dashboardProbe(width)],
+      {
+        cwd,
+        env: {
+          ...linuxLikeAutoEnvironment,
+          TERM: 'xterm-256color',
+          TUI_CLI: cli,
+          TUI_NODE: process.execPath,
+          TUI_DASHBOARD_CONFIG: dashboardConfigRoot,
+        },
+        timeout: 60_000,
+      },
+    )
+    assertThemeAnsiContext(
+      dashboardOutput,
+      '\u001B[38;5;173m',
+      'Praxis agents',
+      `Praxis dashboard product identity width ${width}`,
+    )
+    assertThemeAnsiContext(
+      dashboardOutput,
+      '\u001B[48;5;173m',
+      'semantic dashboard fixture',
+      `Praxis dashboard selected row width ${width}`,
+    )
+  }
+  console.log(
+    'Praxis standalone dashboard semantic surfaces passed at widths 100 and 40',
+  )
+
+  const screenReaderProbe = (width) => String.raw`
+set timeout 20
+log_user 1
+spawn -noecho env COLUMNS=${width} LINES=40 TERM=xterm-256color FORCE_COLOR=3 CLAUDE_CONFIG_DIR=$env(TUI_PROFILE_CONFIG) PRAXIS_DATA_PLANE=claude PRAXIS_PROVIDER=openai PRAXIS_API_KEY=fixture-key PRAXIS_MODEL=fixture-model PRAXIS_BASE_URL=$env(TUI_PROVIDER_URL) $env(TUI_NODE) $env(TUI_CLI) --ax-screen-reader --dangerously-skip-permissions
+stty rows 40 columns ${width} < $spawn_out(slave,name)
+set phase "screen-reader startup"
+expect_before timeout {
+  puts stderr "TUI screen-reader $phase timed out"
+  exit 1
+}
+proc expect_phase {pattern} {
+  global phase
+  expect {
+    -re $pattern {}
+    eof {
+      puts stderr "TUI screen-reader $phase ended unexpectedly"
+      exit 1
+    }
+  }
+}
+expect_phase {Prompt:}
+set phase "screen-reader response"
+after 200
+send "screen reader prompt"
+after 100
+send "\r"
+expect_phase {You:.*screen reader prompt}
+set phase "screen-reader provider response"
+expect_phase {TUI_FAKE_OK}
+set phase "screen-reader interrupt prompt"
+send "\003"
+expect_phase {Press Ctrl-C again to exit}
+send "\003"
+expect eof
+exit 0
+`
+  for (const width of [100, 40]) {
+    const { stdout: screenReaderOutput } = await execFileAsync(
+      'expect',
+      ['-c', screenReaderProbe(width)],
+      {
+        cwd,
+        env: {
+          ...linuxLikeAutoEnvironment,
+          TERM: 'xterm-256color',
+          FORCE_COLOR: '3',
+          TUI_CLI: cli,
+          TUI_NODE: process.execPath,
+          TUI_PROFILE_CONFIG: join(root, 'praxis-themes', 'auto'),
+          TUI_PROVIDER_URL: `http://127.0.0.1:${port}/v1`,
+        },
+        timeout: 90_000,
+      },
+    )
+    assert.ok(screenReaderOutput.includes('screen reader prompt'))
+    assert.ok(screenReaderOutput.includes('TUI_FAKE_OK'))
+    assertNoForegroundBackgroundColorSgr(
+      screenReaderOutput,
+      `Praxis screen-reader width ${width}`,
+    )
+  }
+  console.log(
+    'Praxis screen-reader provider propagation passed at widths 100 and 40',
+  )
 
   const cancelConfigRoot = join(root, 'cancel-config')
   const cancelCwd = join(root, 'cancel-work')

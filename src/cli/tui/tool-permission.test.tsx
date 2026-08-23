@@ -10,6 +10,7 @@ import {
   projectTuiToolPermission,
   ToolPermissionDialog,
 } from './tool-permission.js'
+import { TuiThemeProvider } from './theme.js'
 
 const call = (name: string, input: Record<string, unknown>): ModelToolCall => ({
   id: `${name}-fixture`,
@@ -18,6 +19,17 @@ const call = (name: string, input: Record<string, unknown>): ModelToolCall => ({
 })
 
 afterEach(cleanup)
+
+function renderWithColor(element: Parameters<typeof render>[0]) {
+  const previousNoColor = process.env.NO_COLOR
+  delete process.env.NO_COLOR
+  try {
+    return render(element)
+  } finally {
+    if (previousNoColor === undefined) delete process.env.NO_COLOR
+    else process.env.NO_COLOR = previousNoColor
+  }
+}
 
 describe('tool permission projection', () => {
   it('projects Bash commands and reusable prefix rules', () => {
@@ -342,5 +354,35 @@ describe('tool permission projection', () => {
     expect(app.lastFrame()).toContain('Bash command')
     expect(app.lastFrame()).toContain('❯ 1. Yes')
     expect(app.lastFrame()).toContain('Esc to cancel · Tab to amend')
+  })
+
+  it('applies semantic decision, permission, diff, and selection styles', () => {
+    const model = projectTuiToolPermission(
+      call('Edit', {
+        file_path: '/workspace/index.ts',
+        old_string: 'const oldValue = 1',
+        new_string: 'const newValue = 2',
+      }),
+      '/workspace',
+      [],
+    )
+    const app = renderWithColor(
+      <TuiThemeProvider
+        settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+      >
+        <ToolPermissionDialog
+          model={model}
+          selection={1}
+          feedbackMode={false}
+          feedback=""
+          screenReader={false}
+        />
+      </TuiThemeProvider>,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Edit file')
+    expect(frame).toContain('- const oldValue = 1')
+    expect(frame).toContain('+ const newValue = 2')
+    expect(frame).toContain('❯ 2. Yes, allow all edits')
   })
 })

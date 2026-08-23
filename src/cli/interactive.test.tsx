@@ -1,7 +1,8 @@
 import { Console as NodeConsole } from 'node:console'
+import { spawnSync } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -44,6 +45,25 @@ afterEach(() => {
 const flush = async () => {
   await setImmediate()
   await setImmediate()
+}
+
+function expectNoColorSgr(frame: string): void {
+  const sgr = new RegExp(String.raw`\u001b\[([0-9;]*)m`, 'gu')
+  for (const match of frame.matchAll(sgr)) {
+    const parameters =
+      (match[1] ?? '') === '' ? [0] : (match[1] ?? '').split(';').map(Number)
+    expect(
+      parameters.some(
+        (parameter) =>
+          (parameter >= 30 && parameter <= 37) ||
+          (parameter >= 40 && parameter <= 47) ||
+          (parameter >= 90 && parameter <= 97) ||
+          (parameter >= 100 && parameter <= 107) ||
+          parameter === 38 ||
+          parameter === 48,
+      ),
+    ).toBe(false)
+  }
 }
 
 async function waitFor<T>(read: () => T | undefined): Promise<T> {
@@ -295,6 +315,56 @@ describe('InteractiveApp', () => {
     expect(frame).not.toContain('Welcome to Praxis')
     expect(frame).not.toContain('Praxis Code v')
     app.unmount()
+  })
+
+  it('propagates screen-reader mode through the semantic theme provider', () => {
+    if (process.env.PRAXIS_AX_SCREEN_READER_CHILD === '1') {
+      const app = render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          axScreenReader
+          initialHistory={[
+            { kind: 'user', text: 'screen reader prompt' },
+            { kind: 'assistant', text: 'screen reader answer' },
+          ]}
+          display={{ version: '0.20.20', cwd: '/Users/test/dev-tools' }}
+        />,
+      )
+      const frame = app.lastFrame() ?? ''
+      expect(frame).toContain('screen reader prompt')
+      expect(frame).toContain('screen reader answer')
+      expectNoColorSgr(frame)
+      app.unmount()
+      return
+    }
+
+    const childEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      FORCE_COLOR: '3',
+      PRAXIS_AX_SCREEN_READER_CHILD: '1',
+    }
+    delete childEnvironment.NO_COLOR
+    const child = spawnSync(
+      process.execPath,
+      [
+        resolve('node_modules/vitest/vitest.mjs'),
+        'run',
+        'src/cli/interactive.test.tsx',
+        '-t',
+        'propagates screen-reader mode through the semantic theme provider',
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: childEnvironment,
+      },
+    )
+    expect(child.status, `${child.stdout}\n${child.stderr}`).toBe(0)
   })
 
   it('configures sandbox mode, overrides, and config through /sandbox', async () => {
@@ -4918,36 +4988,43 @@ describe('InteractiveApp', () => {
   })
 
   it('shows Pasting… and inserts clipboard text at the real cursor', async () => {
-    let finishPaste: ((text: string) => void) | undefined
-    const clipboardReader = vi.fn(
-      () =>
-        new Promise<{ kind: 'text'; text: string }>((resolve) => {
-          finishPaste = (text) => resolve({ kind: 'text', text })
-        }),
-    )
-    const app = render(
-      <InteractiveApp
-        factory={{
-          async createService() {
-            throw new Error('unused')
-          },
-        }}
-        initialSessions={[]}
-        clipboardReader={clipboardReader}
-      />,
-    )
+    const previousNoColor = process.env.NO_COLOR
+    delete process.env.NO_COLOR
+    try {
+      let finishPaste: ((text: string) => void) | undefined
+      const clipboardReader = vi.fn(
+        () =>
+          new Promise<{ kind: 'text'; text: string }>((resolve) => {
+            finishPaste = (text) => resolve({ kind: 'text', text })
+          }),
+      )
+      const app = render(
+        <InteractiveApp
+          factory={{
+            async createService() {
+              throw new Error('unused')
+            },
+          }}
+          initialSessions={[]}
+          clipboardReader={clipboardReader}
+        />,
+      )
 
-    app.stdin.write('abcd')
-    app.stdin.write('\u001B[D')
-    app.stdin.write('\u001B[D')
-    app.stdin.write('\u0016')
-    await flush()
-    expect(app.lastFrame()).toContain('Pasting…')
+      app.stdin.write('abcd')
+      app.stdin.write('\u001B[D')
+      app.stdin.write('\u001B[D')
+      app.stdin.write('\u0016')
+      await flush()
+      expect(app.lastFrame()).toContain('Pasting…')
 
-    finishPaste?.('clipboard')
-    await flush()
-    expect(app.lastFrame()).toContain('abclipboardcd')
-    expect(clipboardReader).toHaveBeenCalledOnce()
+      finishPaste?.('clipboard')
+      await flush()
+      expect(app.lastFrame()).toContain('abclipboardcd')
+      expect(clipboardReader).toHaveBeenCalledOnce()
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR
+      else process.env.NO_COLOR = previousNoColor
+    }
   })
 
   it('keeps composer input and reports clipboard read failures', async () => {
@@ -8047,6 +8124,69 @@ describe('InteractiveApp', () => {
     app.stdin.write('y')
     await flush()
     expect(approval).toEqual({ behavior: 'allow', permissionMode: 'auto' })
+  })
+
+  it('announces plan approval selection without color', async () => {
+    const previousNoColor = process.env.NO_COLOR
+    process.env.NO_COLOR = '1'
+    try {
+      const factory: InteractiveServiceFactory = {
+        async createService({ approvePlan }) {
+          return {
+            async run() {
+              await approvePlan?.({
+                action: 'exit',
+                planPath: '/tmp/plan.md',
+                plan: '# Plan\n\n1. Implement.',
+                previousMode: 'default',
+              })
+              return {
+                sessionId: 'session-no-color-plan',
+                text: 'done',
+                usage: { inputTokens: 1, outputTokens: 1 },
+              }
+            },
+            async resume() {
+              throw new Error('unused')
+            },
+            async fork() {
+              throw new Error('unused')
+            },
+            async sessions() {
+              return []
+            },
+          }
+        },
+      }
+      const app = render(
+        <InteractiveApp
+          factory={factory}
+          initialSessions={[]}
+          axScreenReader={false}
+        />,
+      )
+      await flush()
+      app.stdin.write('start')
+      app.stdin.write('\r')
+      await flush()
+      const first = app.lastFrame() ?? ''
+      const firstDecision = first.slice(first.indexOf('Ready to code?'))
+      expect(first).toContain('Selected: 1. Yes, and use auto mode')
+      expect(firstDecision).not.toContain('❯')
+      expectNoColorSgr(first)
+
+      app.stdin.write('\u001B[B')
+      await flush()
+      const second = app.lastFrame() ?? ''
+      const secondDecision = second.slice(second.indexOf('Ready to code?'))
+      expect(second).toContain('Selected: 2. Yes, manually approve edits')
+      expect(second).not.toContain('Selected: 1. Yes, and use auto mode')
+      expect(secondDecision).not.toContain('❯')
+      expectNoColorSgr(second)
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR
+      else process.env.NO_COLOR = previousNoColor
+    }
   })
 
   it('declines plan approval when the tool signal aborts', async () => {

@@ -14,7 +14,7 @@ import {
   DEFAULT_TUI_THEME_SETTINGS,
   TuiThemeProvider,
   type TuiThemeSettings,
-  useTuiPalette,
+  useTuiTheme,
 } from './tui/theme.js'
 
 export interface AgentsDashboardManager {
@@ -158,10 +158,11 @@ function AgentSection({
   agents: TopLevelAgentSummary[]
   selected?: TopLevelAgentSummary
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
+  const semanticSelection = theme.screenReader || theme.noColor
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text bold>
+      <Text {...theme.text.heading} bold>
         {title} ({agents.length})
       </Text>
       {agents.length === 0 ? (
@@ -170,10 +171,20 @@ function AgentSection({
         agents.map((agent) => (
           <Text
             key={agentKey(agent)}
-            {...(agent === selected ? { color: palette.accent } : {})}
+            {...(agent === selected ? theme.text.selectedRow : {})}
           >
-            {agent === selected ? '› ' : '  '}
-            {agent.name} · {agentStatus(agent)} · {agentKey(agent)}
+            {agent === selected
+              ? semanticSelection
+                ? 'Selected: '
+                : '› '
+              : '  '}
+            {agent.name} ·{' '}
+            <Text
+              {...(sectionFor(agent) === 'Working' ? theme.text.active : {})}
+            >
+              {agentStatus(agent)}
+            </Text>{' '}
+            · {agentKey(agent)}
           </Text>
         ))
       )}
@@ -189,7 +200,7 @@ export function AgentsDashboardApp({
   onCancel,
 }: AgentsDashboardAppProps) {
   const { exit } = useApp()
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const [agents, setAgents] = useState<TopLevelAgentSummary[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
   const selectedIndexRef = useRef(0)
@@ -523,7 +534,7 @@ export function AgentsDashboardApp({
   const selected = agents[selectedIndex]
   return (
     <Box flexDirection="column">
-      <Text bold color={palette.accent}>
+      <Text {...theme.text.heading} {...theme.text.productIdentity}>
         Praxis agents
       </Text>
       <Text dimColor>{agents.length} sessions · live refresh</Text>
@@ -566,7 +577,7 @@ export function AgentsDashboardApp({
         </Box>
       )}
       {busy ? <Text dimColor>Working…</Text> : null}
-      {notice ? <Text color={palette.warning}>{notice}</Text> : null}
+      {notice ? <Text {...theme.text.warning}>{notice}</Text> : null}
       {showHelp ? (
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Shortcuts</Text>
