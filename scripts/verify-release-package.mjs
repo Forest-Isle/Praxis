@@ -1215,7 +1215,11 @@ async function startNativeLegacyResumeProbe() {
       if (!response.headersSent) {
         response.writeHead(500, { 'content-type': 'application/json' })
       }
-      response.end(JSON.stringify({ error: { message: String(error) } }))
+      response.end(
+        JSON.stringify({
+          error: { message: 'Native legacy resume probe failed' },
+        }),
+      )
     }
   })
   await new Promise((resolve, reject) => {
