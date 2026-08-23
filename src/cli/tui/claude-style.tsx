@@ -161,6 +161,15 @@ function selectionPrefix(selected: boolean, screenReader: boolean): string {
   return screenReader ? '' : '    '
 }
 
+function dashboardSelectionPrefix(
+  selected: boolean,
+  screenReader: boolean,
+  noColor: boolean,
+): string {
+  if (selected) return screenReader || noColor ? 'Selected: ' : '❯ '
+  return screenReader || noColor ? '' : '  '
+}
+
 export function WelcomePanel({
   display,
   width,
@@ -698,11 +707,18 @@ function ToolTranscriptEntry({
       : displayResult
   const oldLines = contentLines(inputString(call, 'old_string'))
   const newLines = contentLines(inputString(call, 'new_string'))
+  const markerStyle = result
+    ? result.isError
+      ? theme.text.error
+      : theme.text.success
+    : theme.text.active
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text>
-        <Text {...theme.text.focusMarker}>⏺</Text>{' '}
-        <Text bold>{toolHeading(call)}</Text>
+        <Text {...markerStyle}>⏺</Text>{' '}
+        <Text {...theme.text.heading} bold>
+          {toolHeading(call)}
+        </Text>
       </Text>
       {!['Bash', 'Read', 'Edit'].includes(call.name) && detail ? (
         <Text dimColor> {detail}</Text>
@@ -777,7 +793,11 @@ function ThinkingBlock({
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text
-        {...(!screenReader ? theme.text.focusMarker : {})}
+        {...(active
+          ? theme.text.active
+          : !screenReader
+            ? theme.text.focusMarker
+            : {})}
         dimColor={!screenReader}
         italic={!screenReader}
       >
@@ -816,13 +836,14 @@ function ContextUsageBlock({
   memoryFiles,
   screenReader,
 }: Extract<TranscriptItem, { kind: 'context' }> & { screenReader: boolean }) {
+  const theme = useTuiTheme()
   const totalTokens = Math.max(1, contextWindowTokens)
   const compactBuffer = Math.round(totalTokens * 0.165)
   const usable = Math.max(1, totalTokens - compactBuffer)
   if (screenReader) {
     return (
       <Box flexDirection="column">
-        <Text>Context Usage</Text>
+        <Text {...theme.text.heading}>Context Usage</Text>
         <Text>
           {model ?? 'provider default'} · {usedTokens.toLocaleString()}/
           {totalTokens.toLocaleString()} tokens (
@@ -845,7 +866,9 @@ function ContextUsageBlock({
   )
   return (
     <Box flexDirection="column" marginTop={1} marginLeft={2}>
-      <Text bold>Context Usage</Text>
+      <Text {...theme.text.heading} bold>
+        Context Usage
+      </Text>
       <Box>
         <Box flexDirection="column" marginRight={2}>
           {Array.from({ length: 5 }, (_, row) => (
@@ -877,7 +900,9 @@ function ContextUsageBlock({
         </Box>
       </Box>
       <Text> </Text>
-      <Text bold>Memory files · /memory</Text>
+      <Text {...theme.text.heading} bold>
+        Memory files · /memory
+      </Text>
       {memoryFiles.length === 0 ? (
         <Text dimColor>└ No memory files</Text>
       ) : (
@@ -889,7 +914,9 @@ function ContextUsageBlock({
         ))
       )}
       <Text> </Text>
-      <Text bold>Skills · /skills</Text>
+      <Text {...theme.text.heading} bold>
+        Skills · /skills
+      </Text>
       <Text> </Text>
       <Text>Loaded</Text>
       {skills.length === 0 ? (
@@ -1102,7 +1129,9 @@ export function Transcript({
         if (item.kind === 'assistant') {
           return (
             <Box key={entry.key} marginTop={1}>
-              {screenReader ? <Text>Praxis:</Text> : null}
+              {screenReader ? (
+                <Text {...theme.text.heading}>Praxis:</Text>
+              ) : null}
               {!screenReader ? (
                 <Text {...theme.text.focusMarker}>⏺ </Text>
               ) : null}
@@ -1261,9 +1290,9 @@ export function Transcript({
       ) : activeStreamVisible && activeText ? (
         <Box marginTop={1}>
           {screenReader ? (
-            <Text>Praxis: </Text>
+            <Text {...theme.text.active}>Praxis: </Text>
           ) : (
-            <Text {...theme.text.focusMarker}>✳ </Text>
+            <Text {...theme.text.active}>✳ </Text>
           )}
           {screenReader ? (
             <MarkdownText text={activeText} />
@@ -1307,7 +1336,10 @@ export function DiffDashboard({
     return (
       <Box flexDirection="column">
         {!screenReader ? <Text dimColor>{line}</Text> : null}
-        <Text bold> Uncommitted changes (git diff HEAD)</Text>
+        <Text {...theme.text.heading} bold>
+          {' '}
+          Uncommitted changes (git diff HEAD)
+        </Text>
         <Text>
           {'  '}
           {snapshots.map((item, index) => (
@@ -1321,7 +1353,10 @@ export function DiffDashboard({
           ))}
         </Text>
         <Text> </Text>
-        <Text bold> {selected.path}</Text>
+        <Text {...theme.text.heading} bold>
+          {' '}
+          {selected.path}
+        </Text>
         {!screenReader ? (
           <Text dimColor> {'─'.repeat(Math.max(1, panelWidth - 4))}</Text>
         ) : null}
@@ -1354,7 +1389,10 @@ export function DiffDashboard({
   return (
     <Box flexDirection="column">
       {!screenReader ? <Text dimColor>{line}</Text> : null}
-      <Text bold> Uncommitted changes (git diff HEAD)</Text>
+      <Text {...theme.text.heading} bold>
+        {' '}
+        Uncommitted changes (git diff HEAD)
+      </Text>
       <Text> </Text>
       <Text>
         {'  '}
@@ -1461,7 +1499,10 @@ export function PermissionDashboard({
       {!screenReader ? (
         <Text dimColor>{'─'.repeat(Math.min(100, width))}</Text>
       ) : null}
-      <Text bold> Permissions</Text>
+      <Text {...theme.text.navigation} bold>
+        {' '}
+        Permissions
+      </Text>
       <Text>
         {'  '}
         {tabs.map((tab, index) => (
@@ -1629,7 +1670,10 @@ export function ThemePicker({
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       {!screenReader ? <Text>{'▔'.repeat(Math.min(100, width))}</Text> : null}
-      <Text bold> Theme</Text>
+      <Text {...theme.text.heading} bold>
+        {' '}
+        Theme
+      </Text>
       <Text> </Text>
       <Text> Choose the text style that looks best with your terminal</Text>
       <Text> </Text>
@@ -1731,7 +1775,9 @@ export function CustomThemeEditor({
   const semanticTheme = useTuiTheme()
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
-      <Text bold>{theme.name}</Text>
+      <Text {...semanticTheme.text.heading} bold>
+        {theme.name}
+      </Text>
       {token ? (
         <>
           <Text> </Text>
@@ -1754,7 +1800,12 @@ export function CustomThemeEditor({
                 key={entry}
                 {...(index === 0 ? semanticTheme.text.selectedRow : {})}
               >
-                {index === 0 ? '❯ ' : '  '}██ {entry}
+                {dashboardSelectionPrefix(
+                  index === 0,
+                  screenReader,
+                  semanticTheme.noColor,
+                )}
+                ██ {entry}
                 {theme.overrides[entry] === undefined ? '' : ' (custom)'}
               </Text>
             ))}
@@ -1789,7 +1840,10 @@ export function ListDashboard({
       {!screenReader ? (
         <Text dimColor>{'─'.repeat(Math.min(100, width))}</Text>
       ) : null}
-      <Text bold> {title}</Text>
+      <Text {...theme.text.heading} bold>
+        {' '}
+        {title}
+      </Text>
       <Text> </Text>
       {rows.length === 0 ? (
         <Text dimColor> {emptyText}</Text>
@@ -1797,7 +1851,11 @@ export function ListDashboard({
         rows.map((row, index) => (
           <Box key={`${index}-${row.label}`} flexDirection="column">
             <Text {...(index === selectedIndex ? theme.text.selectedRow : {})}>
-              {index === selectedIndex ? '❯ ' : '  '}
+              {dashboardSelectionPrefix(
+                index === selectedIndex,
+                screenReader,
+                theme.noColor,
+              )}
               {row.label}
             </Text>
             {row.description ? <Text dimColor> {row.description}</Text> : null}
@@ -1836,7 +1894,10 @@ export function MemoryDashboard({
       {!screenReader ? (
         <Text {...theme.text.focusMarker}>{'─'.repeat(panelWidth)}</Text>
       ) : null}
-      <Text bold> Memory</Text>
+      <Text {...theme.text.heading} bold>
+        {' '}
+        Memory
+      </Text>
       <Text> </Text>
       {loading ? (
         <Text dimColor> ✶ Loading memory files…</Text>
@@ -1850,7 +1911,11 @@ export function MemoryDashboard({
                 <Text
                   {...(index === selectedIndex ? theme.text.selectedRow : {})}
                 >
-                  {index === selectedIndex ? '❯ ' : '  '}
+                  {dashboardSelectionPrefix(
+                    index === selectedIndex,
+                    screenReader,
+                    theme.noColor,
+                  )}
                   {index + 1}. {entry.label}
                   {openedIndex === index ? ' ✔' : ''}
                 </Text>
@@ -1911,7 +1976,10 @@ export function HookDashboard({
         {!screenReader ? (
           <Text dimColor>{'─'.repeat(Math.max(12, Math.min(100, width)))}</Text>
         ) : null}
-        <Text bold> Hook details</Text>
+        <Text {...theme.text.heading} bold>
+          {' '}
+          Hook details
+        </Text>
         <Text> Event: {event?.name ?? 'Hooks'}</Text>
         <Text> Matcher: {matcher?.matcher ?? '(all)'}</Text>
         <Text> Type: {hook?.type ?? 'command'}</Text>
@@ -1943,7 +2011,7 @@ export function HookDashboard({
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       {!screenReader ? <Text dimColor>{line}</Text> : null}
-      <Text bold>
+      <Text {...theme.text.heading} bold>
         {' '}
         {depth === 'events'
           ? TUI_HOOK_MENU.title
@@ -2179,7 +2247,10 @@ export function SessionPicker({
   return (
     <Box flexDirection="column">
       {!screenReader ? <Text dimColor>{'─'.repeat(80)}</Text> : null}
-      <Text bold> Resume session</Text>
+      <Text {...theme.text.heading} bold>
+        {' '}
+        Resume session
+      </Text>
       <Box
         borderStyle={screenReader ? undefined : 'round'}
         {...theme.surface.neutralBorder}
@@ -2200,7 +2271,11 @@ export function SessionPicker({
               {...(index === selectedIndex ? theme.text.selectedRow : {})}
               bold={index === selectedIndex}
             >
-              {index === selectedIndex ? '❯ ' : '  '}
+              {dashboardSelectionPrefix(
+                index === selectedIndex,
+                screenReader,
+                theme.noColor,
+              )}
               {session
                 ? (session.name ?? session.lastPrompt ?? 'Untitled')
                 : 'Start a new session'}
@@ -2479,7 +2554,10 @@ export function HelpMenu({
     <Box flexDirection="column" width={Math.min(100, width)}>
       {!screenReader ? <Text dimColor>{line}</Text> : null}
       <Box>
-        <Text bold> Help </Text>
+        <Text {...theme.text.navigation} bold>
+          {' '}
+          Help{' '}
+        </Text>
         {tabs.map((tab, index) => (
           <Text
             key={tab}
@@ -2497,7 +2575,9 @@ export function HelpMenu({
               Praxis understands your codebase, makes edits with your
               permission, and executes commands from your terminal.
             </Text>
-            <Text bold>Shortcuts</Text>
+            <Text {...theme.text.heading} bold>
+              Shortcuts
+            </Text>
             <ShortcutHelp width={width} />
           </>
         ) : (
@@ -2582,7 +2662,9 @@ export function SelectionMenu({
       paddingX={screenReader ? 0 : 1}
       width={screenReader ? undefined : Math.min(80, width)}
     >
-      <Text bold>{title}</Text>
+      <Text {...theme.text.heading} bold>
+        {title}
+      </Text>
       {description ? <Text dimColor>{description}</Text> : null}
       {screenReader && current ? <Text>Current: {current.label}</Text> : null}
       {visible.map((option, visibleIndex) => {
@@ -2661,7 +2743,9 @@ export function ModelMenu({
       paddingX={screenReader ? 0 : 1}
       width={screenReader ? undefined : Math.min(80, width)}
     >
-      <Text bold>Select model</Text>
+      <Text {...theme.text.heading} bold>
+        Select model
+      </Text>
       <Text dimColor>
         {
           'Switch between models. Your pick applies to this and future Praxis Code sessions. For other model names, specify with --model.'
@@ -2880,7 +2964,8 @@ export function Composer({
               {reduceMotion ? '•' : SPINNER[spinnerIndex]}
             </Text>
           ) : null}{' '}
-          {status}… <Text dimColor>· esc to interrupt</Text>
+          <Text {...theme.text.active}>{status}…</Text>{' '}
+          <Text dimColor>· esc to interrupt</Text>
         </Text>
       ) : (
         <Text>
@@ -2984,7 +3069,7 @@ export function DialogFrame({
       paddingX={screenReader ? 0 : 1}
       marginTop={1}
     >
-      <Text {...theme.text.warning} bold>
+      <Text {...theme.text.heading} {...theme.text.warning} bold>
         {title}
       </Text>
       {children}

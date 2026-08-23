@@ -8,6 +8,7 @@ import {
   ACTIVE_STREAM_MAX_LINES,
   CommandPalette,
   Composer,
+  CustomThemeEditor,
   DiffDashboard,
   DialogFrame,
   ExternalEditorWait,
@@ -377,6 +378,67 @@ describe('Claude-style TUI components', () => {
     expect(second).toContain('⏺ Bash(git diff)')
     expect(second).toContain('-function oldName() {}')
     expect(second).toContain('+function newName() {}')
+  })
+
+  it('keeps active, successful, and failed tool states distinguishable', () => {
+    const call = {
+      kind: 'tool' as const,
+      call: {
+        id: 'tool-state',
+        name: 'Bash',
+        input: { command: 'printf ok' },
+      },
+      detail: '',
+    }
+    const active = renderNormal(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        entries={transcriptEntries([call], 'normal')}
+      />,
+    ).lastFrame()
+    const successful = renderNormal(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        entries={transcriptEntries(
+          [
+            call,
+            {
+              kind: 'tool-result',
+              callId: 'tool-state',
+              text: 'ok',
+              isError: false,
+            },
+          ],
+          'normal',
+        )}
+      />,
+    ).lastFrame()
+    const failed = renderNormal(
+      <Transcript
+        screenReader={false}
+        activeText=""
+        entries={transcriptEntries(
+          [
+            call,
+            {
+              kind: 'tool-result',
+              callId: 'tool-state',
+              text: 'permission denied',
+              isError: true,
+            },
+          ],
+          'normal',
+        )}
+      />,
+    ).lastFrame()
+
+    expect(active).toContain('⏺ Bash(printf ok)')
+    expect(successful).toContain('⏺ Bash(printf ok)')
+    expect(successful).toContain('⎿ ok')
+    expect(failed).toContain('⏺ Bash(printf ok)')
+    expect(failed).toContain('⎿ Error: permission denied')
   })
 
   it('keeps historical transcript items equivalent while active and palette/mode changes stay live', () => {
@@ -1431,7 +1493,7 @@ describe('Claude-style TUI components', () => {
     expect(empty.lastFrame()).toContain('No skills found')
     expect(empty.lastFrame()).toContain('.claude/skills/')
 
-    const populated = render(
+    const populated = renderNormal(
       <ListDashboard
         title="Background"
         rows={[{ label: 'w1 [running] Review repository' }]}
@@ -1442,6 +1504,133 @@ describe('Claude-style TUI components', () => {
       />,
     )
     expect(populated.lastFrame()).toContain('❯ w1 [running] Review repository')
+  })
+
+  it('announces selected rows across legacy screen-reader dashboards', () => {
+    const customTheme = render(
+      <CustomThemeEditor
+        theme={{
+          name: 'Review theme',
+          slug: 'review-theme',
+          base: 'dark',
+          overrides: {},
+        }}
+        value=""
+        tokens={['text', 'warning']}
+        selectedIndex={0}
+        query=""
+        width={80}
+        screenReader
+      />,
+    ).lastFrame()
+    const list = render(
+      <ListDashboard
+        title="Background"
+        rows={[{ label: 'w1 [running] Review repository' }, { label: 'w2' }]}
+        emptyText="No tasks currently running"
+        selectedIndex={0}
+        width={80}
+        screenReader
+      />,
+    ).lastFrame()
+    const memory = render(
+      <MemoryDashboard
+        autoMemoryEnabled
+        entries={[
+          {
+            kind: 'file',
+            label: 'User memory',
+            path: '/memory/CLAUDE.md',
+            displayPath: '/memory/CLAUDE.md',
+            scope: 'user',
+          },
+        ]}
+        selectedIndex={0}
+        openedIndex={null}
+        width={80}
+        screenReader
+      />,
+    ).lastFrame()
+    const sessions = render(
+      <SessionPicker
+        sessions={[{ sessionId: 'abc', name: 'Review', status: 'ready' }]}
+        selectedIndex={0}
+        screenReader
+      />,
+    ).lastFrame()
+
+    expect(customTheme).toContain('Selected: ██ text')
+    expect(list).toContain('Selected: w1 [running] Review repository')
+    expect(memory).toContain('Selected: 1. User memory')
+    expect(sessions).toContain('Selected: Review')
+    expect(`${customTheme}${list}${memory}${sessions}`).not.toContain('❯')
+  })
+
+  it('announces selected rows without color even outside screen-reader mode', () => {
+    const previousNoColor = process.env.NO_COLOR
+    process.env.NO_COLOR = '1'
+    try {
+      const app = render(
+        <TuiThemeProvider
+          settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+        >
+          <>
+            <CustomThemeEditor
+              theme={{
+                name: 'Review theme',
+                slug: 'review-theme',
+                base: 'dark',
+                overrides: {},
+              }}
+              value=""
+              tokens={['text', 'warning']}
+              selectedIndex={0}
+              width={80}
+              screenReader={false}
+            />
+            <ListDashboard
+              title="Background"
+              rows={[{ label: 'w1 [running] Review repository' }]}
+              emptyText="No tasks currently running"
+              selectedIndex={0}
+              width={80}
+              screenReader={false}
+            />
+            <MemoryDashboard
+              autoMemoryEnabled
+              entries={[
+                {
+                  kind: 'file',
+                  label: 'User memory',
+                  path: '/memory/CLAUDE.md',
+                  displayPath: '/memory/CLAUDE.md',
+                  scope: 'user',
+                },
+              ]}
+              selectedIndex={0}
+              openedIndex={null}
+              width={80}
+              screenReader={false}
+            />
+            <SessionPicker
+              sessions={[{ sessionId: 'abc', name: 'Review', status: 'ready' }]}
+              selectedIndex={0}
+              screenReader={false}
+            />
+          </>
+        </TuiThemeProvider>,
+      )
+      const frame = app.lastFrame() ?? ''
+      expect(frame).toContain('Selected: ██ text')
+      expect(frame).toContain('Selected: w1 [running] Review repository')
+      expect(frame).toContain('Selected: 1. User memory')
+      expect(frame).toContain('Selected: Review')
+      expect(frame).not.toContain('❯')
+      expectNoColorSgr(frame)
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR
+      else process.env.NO_COLOR = previousNoColor
+    }
   })
 
   it('renders hook events, matchers, details, and screen-reader selection', () => {
@@ -2033,7 +2222,7 @@ describe('Claude-style TUI components', () => {
   })
 
   it('keeps dialogs and session selection visually bounded', () => {
-    const picker = render(
+    const picker = renderNormal(
       <SessionPicker
         sessions={[
           null,
@@ -2060,7 +2249,7 @@ describe('Claude-style TUI components', () => {
       name: `Session ${index}`,
       status: 'ready',
     }))
-    const app = render(
+    const app = renderNormal(
       <SessionPicker
         sessions={sessions}
         selectedIndex={11}

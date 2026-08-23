@@ -208,6 +208,45 @@ describe('AgentsDashboardApp', () => {
     expect(frame).toContain('› review release · idle · abcd1234')
   })
 
+  it('announces the selected agent when semantic color is suppressed', async () => {
+    const manager: AgentsDashboardManager = {
+      async launch() {
+        throw new Error('unused')
+      },
+      async list() {
+        return [activeAgent]
+      },
+      async stop() {
+        throw new Error('unused')
+      },
+      async attach() {
+        throw new Error('unused')
+      },
+    }
+    const previousNoColor = process.env.NO_COLOR
+    process.env.NO_COLOR = '1'
+    try {
+      const app = render(
+        <TuiThemeProvider
+          settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+        >
+          <AgentsDashboardApp
+            manager={manager}
+            defaults={{ argv: [], cwd: '/workspace' }}
+            refreshIntervalMs={60_000}
+          />
+        </TuiThemeProvider>,
+      )
+      await flush()
+      const frame = app.lastFrame() ?? ''
+      expect(frame).toContain('Selected: review release · idle · abcd1234')
+      expect(frame).not.toContain('› review release')
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR
+      else process.env.NO_COLOR = previousNoColor
+    }
+  })
+
   it('dispatches defaults, attaches a selected agent, and stops it', async () => {
     const launches: unknown[] = []
     const prompts: string[] = []

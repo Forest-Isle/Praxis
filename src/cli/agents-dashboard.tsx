@@ -159,9 +159,10 @@ function AgentSection({
   selected?: TopLevelAgentSummary
 }) {
   const theme = useTuiTheme()
+  const semanticSelection = theme.screenReader || theme.noColor
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text bold>
+      <Text {...theme.text.heading} bold>
         {title} ({agents.length})
       </Text>
       {agents.length === 0 ? (
@@ -172,8 +173,18 @@ function AgentSection({
             key={agentKey(agent)}
             {...(agent === selected ? theme.text.selectedRow : {})}
           >
-            {agent === selected ? '› ' : '  '}
-            {agent.name} · {agentStatus(agent)} · {agentKey(agent)}
+            {agent === selected
+              ? semanticSelection
+                ? 'Selected: '
+                : '› '
+              : '  '}
+            {agent.name} ·{' '}
+            <Text
+              {...(sectionFor(agent) === 'Working' ? theme.text.active : {})}
+            >
+              {agentStatus(agent)}
+            </Text>{' '}
+            · {agentKey(agent)}
           </Text>
         ))
       )}
@@ -523,7 +534,9 @@ export function AgentsDashboardApp({
   const selected = agents[selectedIndex]
   return (
     <Box flexDirection="column">
-      <Text {...theme.text.productIdentity}>Praxis agents</Text>
+      <Text {...theme.text.heading} {...theme.text.productIdentity}>
+        Praxis agents
+      </Text>
       <Text dimColor>{agents.length} sessions · live refresh</Text>
       {DASHBOARD_SECTIONS.map((title) => (
         <AgentSection
