@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  projectContextSnapshot,
+  type ContextSnapshot,
+} from '../../core/context.js'
+import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
 } from './context.js'
+
+const project = (snapshot: ContextSnapshot) => projectContextSnapshot(snapshot)
 
 describe('ClaudeContextAssembler', () => {
   it('assembles ordered instructions and auto-memory as provider-neutral system context', async () => {
@@ -31,7 +37,9 @@ describe('ClaudeContextAssembler', () => {
     })
 
     const assembled = await assembler.assemble()
-    expect(assembled.systemMessages.map((message) => message.content)).toEqual([
+    expect(
+      project(assembled).systemMessages.map((message) => message.content),
+    ).toEqual([
       expect.stringContaining('You are Praxis'),
       `# Shared Claude context
 
@@ -51,7 +59,7 @@ PROJECT_INSTRUCTION
 MEMORY_CONTEXT`,
       expect.stringMatching(/^# Current date\n\d{4}-\d{2}-\d{2}$/u),
     ])
-    expect(assembled.stableSystemSectionCount).toBe(3)
+    expect(project(assembled).stableSystemSectionCount).toBe(3)
   })
 
   it('keeps only the default product policy when shared context is empty', async () => {
@@ -64,14 +72,14 @@ MEMORY_CONTEXT`,
     })
 
     const assembled = await assembler.assemble()
-    expect(assembled.systemMessages).toEqual([
+    expect(project(assembled).systemMessages).toEqual([
       { role: 'system', content: expect.stringContaining('Praxis') },
       {
         role: 'system',
         content: expect.stringMatching(/^# Current date\n\d{4}-\d{2}-\d{2}$/u),
       },
     ])
-    expect(assembled.promptSections?.map((section) => section.id)).toEqual([
+    expect(assembled.sections.map((section) => section.id)).toEqual([
       'product-policy',
       'current-date',
     ])
@@ -94,7 +102,7 @@ MEMORY_CONTEXT`,
       }),
     })
 
-    const { systemMessages: messages } = await assembler.assemble()
+    const { systemMessages: messages } = project(await assembler.assemble())
     expect(messages.map((message) => message.content)).toEqual([
       'CUSTOM_SYSTEM',
       expect.stringContaining('PROJECT_CONTEXT'),
@@ -125,20 +133,21 @@ MEMORY_CONTEXT`,
     })
 
     const assembled = await assembler.assemble()
-    expect(assembled.systemMessages).toHaveLength(4)
-    expect(JSON.stringify(assembled.systemMessages)).toContain(
+    const projection = project(assembled)
+    expect(projection.systemMessages).toHaveLength(4)
+    expect(JSON.stringify(projection.systemMessages)).toContain(
       'PROJECT_CONTEXT',
     )
-    expect(JSON.stringify(assembled.systemMessages)).toContain(
+    expect(JSON.stringify(projection.systemMessages)).toContain(
       'MEMORY_PATH_MARKER',
     )
-    expect(JSON.stringify(assembled.systemMessages)).not.toContain(
+    expect(JSON.stringify(projection.systemMessages)).not.toContain(
       'ENVIRONMENT_MARKER',
     )
-    expect(assembled.firstUserMessageContext).toMatch(
+    expect(projection.firstUserMessageContext).toMatch(
       /GIT_STATUS_MARKER[\s\S]*ENVIRONMENT_MARKER/,
     )
-    expect(assembled.firstUserMessageContext).not.toContain(
+    expect(projection.firstUserMessageContext).not.toContain(
       'MEMORY_PATH_MARKER',
     )
   })
@@ -156,12 +165,15 @@ MEMORY_CONTEXT`,
     })
 
     const assembled = await assembler.assemble()
-    expect(assembled.firstUserMessageContext).toBeUndefined()
-    expect(assembled.systemMessages.map((message) => message.content)).toEqual([
-      expect.stringContaining('You are Praxis'),
-      expect.stringMatching(/^# Current date\n\d{4}-\d{2}-\d{2}$/u),
-      '# Environment\nENVIRONMENT_MARKER',
-    ])
+    const projection = project(assembled)
+    expect(projection.firstUserMessageContext).toBeUndefined()
+    expect(projection.systemMessages.map((message) => message.content)).toEqual(
+      [
+        expect.stringContaining('You are Praxis'),
+        expect.stringMatching(/^# Current date\n\d{4}-\d{2}-\d{2}$/u),
+        '# Environment\nENVIRONMENT_MARKER',
+      ],
+    )
   })
 
   it('replaces only the base policy when using a custom system prompt', async () => {
@@ -180,7 +192,8 @@ MEMORY_CONTEXT`,
       }),
     })
 
-    await expect(assembler.assemble()).resolves.toMatchObject({
+    const projection = project(await assembler.assemble())
+    expect(projection).toMatchObject({
       systemMessages: [
         { role: 'system', content: 'CUSTOM_SYSTEM' },
         {
@@ -213,7 +226,7 @@ MEMORY_CONTEXT`,
     })
 
     const assembled = await assembler.assemble({ lifecycleId: 'bare' })
-    expect(assembled.promptSections).toEqual([
+    expect(assembled.sections).toEqual([
       {
         id: 'append-system',
         content: 'EXPLICIT_CONTEXT',
@@ -242,7 +255,7 @@ MEMORY_CONTEXT`,
       }),
     })
 
-    const { systemMessages } = await assembler.assemble()
+    const { systemMessages } = project(await assembler.assemble())
     const serialized = JSON.stringify(systemMessages)
     expect(serialized).toContain('MEMORY_LINE_200')
     expect(serialized).not.toContain('MEMORY_LINE_201')
@@ -260,9 +273,13 @@ MEMORY_CONTEXT`,
       }),
     })
 
-    const { systemMessages: firstMessages } = await assembler.assemble()
+    const { systemMessages: firstMessages } = project(
+      await assembler.assemble(),
+    )
     content = 'UPDATED_CONTEXT'
-    const { systemMessages: updatedMessages } = await assembler.assemble()
+    const { systemMessages: updatedMessages } = project(
+      await assembler.assemble(),
+    )
 
     expect(JSON.stringify(firstMessages)).toContain('FIRST_CONTEXT')
     expect(JSON.stringify(updatedMessages)).toContain('UPDATED_CONTEXT')
@@ -287,7 +304,7 @@ MEMORY_CONTEXT`,
 
     expect(resourceCwds).toEqual(['/isolated/worktree'])
     expect(dynamicCwds).toEqual(['/isolated/worktree'])
-    expect(JSON.stringify(assembled.systemMessages)).toContain(
+    expect(JSON.stringify(project(assembled).systemMessages)).toContain(
       '/isolated/worktree',
     )
   })
@@ -382,15 +399,17 @@ MEMORY_CONTEXT`,
     expect(JSON.stringify(toolsReloaded)).toContain('RESOURCE_2')
     expect(JSON.stringify(toolsReloaded)).toContain('ENVIRONMENT_1')
     expect(JSON.stringify(toolsReloaded)).toContain('MCP_2')
+    const toolsProjection = project(toolsReloaded)
+    const resourcesProjection = project(resourcesReloaded)
     expect(
-      toolsReloaded.systemMessages.slice(
+      toolsProjection.systemMessages.slice(
         0,
-        toolsReloaded.stableSystemSectionCount,
+        toolsProjection.stableSystemSectionCount,
       ),
     ).toEqual(
-      resourcesReloaded.systemMessages.slice(
+      resourcesProjection.systemMessages.slice(
         0,
-        resourcesReloaded.stableSystemSectionCount,
+        resourcesProjection.stableSystemSectionCount,
       ),
     )
     expect(resourceVersion).toBe(2)
@@ -461,14 +480,14 @@ MEMORY_CONTEXT`,
     })
 
     const assembled = await assembler.assemble({ lifecycleId: 'session-1' })
-    expect(assembled.promptSections?.map((section) => section.id)).toEqual([
+    expect(assembled.sections.map((section) => section.id)).toEqual([
       'product-policy',
       'current-date',
       'mcp-instructions:alpha',
       'mcp-instructions:zeta',
     ])
-    expect(assembled.stableSystemSectionCount).toBe(2)
-    expect(JSON.stringify(assembled.systemMessages)).toMatch(
+    expect(project(assembled).stableSystemSectionCount).toBe(2)
+    expect(JSON.stringify(project(assembled).systemMessages)).toMatch(
       /alpha[\s\S]*ALPHA[\s\S]*zeta[\s\S]*ZETA/,
     )
   })
@@ -488,7 +507,7 @@ MEMORY_CONTEXT`,
       'temporary resource failure',
     )
     const assembled = await assembler.assemble(options)
-    expect(assembled.promptSections).toEqual(
+    expect(assembled.sections).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: 'product-policy' }),
       ]),

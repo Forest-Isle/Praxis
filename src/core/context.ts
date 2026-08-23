@@ -1,21 +1,42 @@
 import type { ModelMessage } from './runtime.js'
-import type { PromptCompositionMode, PromptSection } from './prompt-composer.js'
 
 export type SystemContextMessage = Extract<ModelMessage, { role: 'system' }>
 
-export interface AssembledContext {
+export type ContextSectionStability = 'static' | 'session' | 'volatile'
+export type ContextSectionPlacement = 'system' | 'first-user'
+export type ContextCompositionMode =
+  'default' | 'custom' | 'bare' | 'agent' | 'subagent'
+
+export interface ContextSection {
+  id: string
+  content: string
+  placement: ContextSectionPlacement
+  stability: ContextSectionStability
+}
+
+export interface ContextSnapshot {
+  sections: readonly ContextSection[]
+}
+
+export interface ContextProjection {
   systemMessages: readonly SystemContextMessage[]
   firstUserMessageContext?: string
-  promptSections?: readonly PromptSection[]
-  stableSystemSectionCount?: number
+  stableSystemSectionCount: number
+}
+
+export interface TurnContextInputs {
+  planMode?: string
+  sessionMemory?: string
+  briefOutput?: boolean
+  structuredOutput?: boolean
 }
 
 export interface ContextAssemblyOptions {
   cwd?: string
   lifecycleId?: string
-  mode?: PromptCompositionMode
+  mode?: ContextCompositionMode
   baseSystemPrompt?: string
-  additionalSections?: readonly PromptSection[]
+  turn?: TurnContextInputs
 }
 
 export type ContextInvalidationReason =
@@ -34,8 +55,66 @@ export interface ContextInvalidationOptions {
 }
 
 export interface ContextAssembler {
-  assemble(options?: ContextAssemblyOptions): Promise<AssembledContext>
+  assemble(options?: ContextAssemblyOptions): Promise<ContextSnapshot>
   invalidate?(options: ContextInvalidationOptions): void
+}
+
+function validateContextSections(sections: readonly ContextSection[]): void {
+  const identities = new Set<string>()
+  let volatileSystemSeen = false
+  for (const section of sections) {
+    if (!section.id.trim()) throw new Error('Context section id is required')
+    if (!section.content.trim()) {
+      throw new Error(`Context section ${section.id} content is required`)
+    }
+    if (identities.has(section.id)) {
+      throw new Error(`Duplicate context section ${section.id}`)
+    }
+    identities.add(section.id)
+    if (section.placement === 'system') {
+      if (section.stability === 'volatile') volatileSystemSeen = true
+      else if (volatileSystemSeen) {
+        throw new Error(
+          'Non-volatile system sections cannot follow volatile sections',
+        )
+      }
+    }
+  }
+}
+
+export function createContextSnapshot(
+  sections: readonly ContextSection[],
+): ContextSnapshot {
+  validateContextSections(sections)
+  return { sections: sections.map((section) => ({ ...section })) }
+}
+
+export function projectContextSnapshot(
+  snapshot: ContextSnapshot,
+): ContextProjection {
+  const sections = snapshot.sections
+  validateContextSections(sections)
+  const systemSections = sections.filter(
+    (section) => section.placement === 'system',
+  )
+  const firstVolatileSystemIndex = systemSections.findIndex(
+    (section) => section.stability === 'volatile',
+  )
+  const firstUserMessageContext = sections
+    .filter((section) => section.placement === 'first-user')
+    .map((section) => section.content)
+    .join('\n\n')
+  return {
+    systemMessages: systemSections.map((section) => ({
+      role: 'system',
+      content: section.content,
+    })),
+    stableSystemSectionCount:
+      firstVolatileSystemIndex < 0
+        ? systemSections.length
+        : firstVolatileSystemIndex,
+    ...(firstUserMessageContext ? { firstUserMessageContext } : {}),
+  }
 }
 
 export function injectFirstUserMessageContext(

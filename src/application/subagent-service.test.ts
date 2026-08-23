@@ -15,6 +15,11 @@ import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import {
+  projectContextSnapshot,
+  type ContextSnapshot,
+} from '../core/context.js'
+import { assembleContextSnapshot } from '../core/prompt-composer.js'
 import type {
   ModelProvider,
   ModelRequest,
@@ -41,6 +46,17 @@ import {
 const roots: string[] = []
 const execFileAsync = promisify(execFile)
 const originalSubagentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL
+
+function contextSnapshot(system: readonly string[] = []): ContextSnapshot {
+  return {
+    sections: system.map((content, index) => ({
+      id: `test-system-${index}`,
+      content,
+      placement: 'system',
+      stability: 'session',
+    })),
+  }
+}
 
 const emptyTools: ToolRegistry = {
   definitions: () => [],
@@ -140,6 +156,84 @@ function entries(source: string): Record<string, unknown>[] {
 }
 
 describe('foreground Claude Agent execution', () => {
+  it('assembles one canonical structured-output section for workflow subagents', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-context-test-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    const snapshots: ContextSnapshot[] = []
+    const requests: ModelRequest[] = []
+    let turn = 0
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          requests.push(request)
+          if (turn++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'structured',
+                name: 'StructuredOutput',
+                input: { answer: 'ok' },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'done' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextAssembler: {
+        async assemble(options) {
+          const snapshot = await assembleContextSnapshot(undefined, options)
+          snapshots.push(snapshot)
+          return snapshot
+        },
+      },
+    })
+
+    const result = await executor.runWorkflowAgent({
+      sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      runId: 'structured-context-run',
+      agentId: 'a1234567890abcdef',
+      transcriptDirectory: join(root, 'workflow'),
+      prompt: 'Return an answer',
+      schema: {
+        type: 'object',
+        properties: { answer: { type: 'string' } },
+        required: ['answer'],
+        additionalProperties: false,
+      },
+    })
+
+    expect(result.result).toEqual({ answer: 'ok' })
+    expect(snapshots).toHaveLength(2)
+    for (const snapshot of snapshots) {
+      expect(
+        snapshot.sections.filter(
+          (section) => section.id === 'structured-output',
+        ),
+      ).toEqual([
+        {
+          id: 'structured-output',
+          content: expect.stringContaining('requested JSON Schema'),
+          placement: 'system',
+          stability: 'volatile',
+        },
+      ])
+      expect(projectContextSnapshot(snapshot).stableSystemSectionCount).toBe(1)
+    }
+    expect(
+      requests.every((request) => request.stableSystemMessageCount === 1),
+    ).toBe(true)
+  })
+
   it('keeps foreground Agent transcripts in memory without disk sidechains', async () => {
     const root = await mkdtemp(
       join(tmpdir(), 'praxis-subagent-ephemeral-test-'),
@@ -2656,7 +2750,7 @@ describe('foreground Claude Agent execution', () => {
       contextAssembler: {
         async assemble(context?: { cwd?: string }) {
           observedCwds.push(context?.cwd ?? '')
-          return { systemMessages: [] }
+          return contextSnapshot()
         },
       },
     }
@@ -3838,7 +3932,7 @@ describe('foreground Claude Agent execution', () => {
     )
     const toolCwds: string[] = []
     const contextCwds: string[] = []
-    const requestMessages: ModelRequest['messages'][] = []
+    const requests: ModelRequest[] = []
     let turn = 0
     const tools: ToolRegistry = {
       definitions: () => [
@@ -3857,7 +3951,7 @@ describe('foreground Claude Agent execution', () => {
     const provider: ModelProvider = {
       capabilities: { streaming: true, usage: true, tools: true },
       async *complete(request) {
-        requestMessages.push(request.messages)
+        requests.push(request)
         if (turn++ === 0) {
           yield {
             type: 'tool-call',
@@ -3880,11 +3974,7 @@ describe('foreground Claude Agent execution', () => {
         async assemble(options) {
           const contextCwd = options?.cwd ?? ''
           contextCwds.push(contextCwd)
-          return {
-            systemMessages: [
-              { role: 'system', content: `CONTEXT_CWD:${contextCwd}` },
-            ],
-          }
+          return contextSnapshot([`CONTEXT_CWD:${contextCwd}`])
         },
       },
     })
@@ -3913,11 +4003,16 @@ describe('foreground Claude Agent execution', () => {
     const worktreePath = String(result.nativeToolUseResult?.worktreePath)
     expect(toolCwds).toEqual([worktreePath])
     expect(contextCwds).toEqual([worktreePath, worktreePath])
-    expect(requestMessages).toHaveLength(2)
+    expect(requests).toHaveLength(2)
     expect(
-      requestMessages.every((messages) =>
-        JSON.stringify(messages).includes(`CONTEXT_CWD:${worktreePath}`),
+      requests.every((request) =>
+        JSON.stringify(request.messages).includes(
+          `CONTEXT_CWD:${worktreePath}`,
+        ),
       ),
+    ).toBe(true)
+    expect(
+      requests.every((request) => request.stableSystemMessageCount === 1),
     ).toBe(true)
     expect(result.nativeToolUseResult).toMatchObject({
       worktreePath,
@@ -3967,11 +4062,7 @@ describe('foreground Claude Agent execution', () => {
       contextReserveTokens: 20,
       contextAssembler: {
         async assemble() {
-          return {
-            systemMessages: [
-              { role: 'system', content: 'OVERSIZED_CONTEXT '.repeat(500) },
-            ],
-          }
+          return contextSnapshot(['OVERSIZED_CONTEXT '.repeat(500)])
         },
       },
     })
@@ -4087,7 +4178,7 @@ describe('foreground Claude Agent execution', () => {
       contextAssembler: {
         async assemble(options) {
           resumedCwds.push(options?.cwd ?? '')
-          return { systemMessages: [] }
+          return contextSnapshot()
         },
       },
     })

@@ -32,8 +32,10 @@ import {
 } from '../compatibility/claude/translation.js'
 import {
   injectFirstUserMessageContext,
+  projectContextSnapshot,
   type ContextAssembler,
 } from '../core/context.js'
+import { assembleContextSnapshot } from '../core/prompt-composer.js'
 import { ContextBudget } from '../core/context-budget.js'
 import {
   AgentRuntime,
@@ -2767,9 +2769,6 @@ export class ClaudeSubagentExecutor {
       const agentSystem = memoryPrompt
         ? `${baseSystem}\n\n${memoryPrompt}`
         : baseSystem
-      const system = options.outputSchema
-        ? `${agentSystem}\n\nYou MUST call StructuredOutput exactly once at the end with a value matching its schema.`
-        : agentSystem
       const preloadedSkills = agentSkillMessages(
         this.options.extensions,
         customAgent,
@@ -2793,26 +2792,33 @@ export class ClaudeSubagentExecutor {
         ? runtimeTools.definitions()
         : []
       let observedMessages: readonly ModelMessage[] | undefined
+      let stableSystemMessageCount = 0
       const assembleMessages = async () => {
-        const assembledContext = await this.options.contextAssembler?.assemble({
-          cwd,
-          lifecycleId: options.agentId,
-          mode: 'subagent',
-          baseSystemPrompt: system,
-        })
-        const composedSubagentPolicy = assembledContext?.promptSections?.some(
-          (section) => section.id === 'subagent-policy',
+        const assembledContext = await assembleContextSnapshot(
+          this.options.contextAssembler,
+          {
+            cwd,
+            lifecycleId: options.agentId,
+            mode: 'subagent',
+            baseSystemPrompt: agentSystem,
+            ...(options.outputSchema
+              ? {
+                  turn: {
+                    structuredOutput: true,
+                  },
+                }
+              : {}),
+          },
         )
+        const contextProjection = projectContextSnapshot(assembledContext)
+        stableSystemMessageCount = contextProjection.stableSystemSectionCount
         const messages = [
-          ...(assembledContext?.systemMessages ?? []),
-          ...(composedSubagentPolicy
-            ? []
-            : [{ role: 'system' as const, content: system }]),
+          ...contextProjection.systemMessages,
           ...injectFirstUserMessageContext(
             options.continuationMessage === undefined
               ? projectClaudeModelMessages(snapshot.entries)
               : projectClaudeSidechainContinuationMessages(snapshot.entries),
-            assembledContext?.firstUserMessageContext,
+            contextProjection.firstUserMessageContext,
           ),
           ...preloadedSkills,
         ]
@@ -2827,11 +2833,17 @@ export class ClaudeSubagentExecutor {
       const configuredEffort =
         typeof customAgent?.effort === 'string' ? customAgent.effort : undefined
       const effectiveEffort = options.effort ?? configuredEffort
-      const result = await runtime.run({
+      const initialMessages = await assembleMessages()
+      const runtimeRequest: Parameters<typeof runtime.run>[0] = {
         sessionId: String(options.root.sessionId),
-        messages: await assembleMessages(),
+        messages: initialMessages,
         collectMetrics: true,
-        reloadMessages: assembleMessages,
+        stableSystemMessageCount,
+        reloadMessages: async () => {
+          const messages = await assembleMessages()
+          runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
+          return messages
+        },
         cwd,
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
         toolResultDirectory: options.toolResultDirectory,
@@ -2924,7 +2936,8 @@ export class ClaudeSubagentExecutor {
             }
           : {}),
         ...(options.signal ? { signal: options.signal } : {}),
-      })
+      }
+      const result = await runtime.run(runtimeRequest)
       contextBudget?.observeUsage(
         result.usage,
         observedMessages ?? [],

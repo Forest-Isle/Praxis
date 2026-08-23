@@ -1,23 +1,19 @@
-import type { SystemContextMessage } from './context.js'
+import {
+  createContextSnapshot,
+  type ContextAssembler,
+  type ContextAssemblyOptions,
+  type ContextCompositionMode,
+  type ContextSection,
+  type ContextSnapshot,
+  type TurnContextInputs,
+} from './context.js'
 
-export type PromptSectionStability = 'static' | 'session' | 'volatile'
-export type PromptSectionPlacement = 'system' | 'first-user'
-export type PromptCompositionMode =
-  'default' | 'custom' | 'bare' | 'agent' | 'subagent'
+export type PromptSectionStability = ContextSection['stability']
+export type PromptSectionPlacement = ContextSection['placement']
+export type PromptCompositionMode = ContextCompositionMode
 
-export interface PromptSection {
-  id: string
-  content: string
-  stability: PromptSectionStability
-  placement: PromptSectionPlacement
-}
-
-export interface PromptComposition {
-  sections: readonly PromptSection[]
-  systemMessages: readonly SystemContextMessage[]
-  firstUserMessageContext?: string
-  stableSystemSectionCount: number
-}
+export type PromptSection = ContextSection
+export type PromptComposition = ContextSnapshot
 
 export interface PromptCompositionOptions {
   mode: PromptCompositionMode
@@ -25,6 +21,7 @@ export interface PromptCompositionOptions {
   appendSystemPrompt?: string
   sessionSections?: readonly PromptSection[]
   tailSections?: readonly PromptSection[]
+  turn?: TurnContextInputs
 }
 
 const PRODUCT_POLICY = `# Praxis
@@ -38,6 +35,12 @@ You are Praxis, a local CLI coding agent. Work until the user's request is genui
 - Summarize or clear bulky intermediate results once their useful facts have been retained.
 - Treat the context window as bounded: preserve decisions and evidence before reducing detail.
 - Keep responses concise and use the user's language unless they request otherwise.`
+
+const BRIEF_OUTPUT_POLICY =
+  'When brief mode is enabled, SendUserMessage is the primary user-visible reply channel. Use it for the answer, progress checkpoints, and blockers. Set status to normal for a direct reply and proactive for an unsolicited update.'
+
+const STRUCTURED_OUTPUT_POLICY =
+  'You MUST call StructuredOutput exactly once at the end with a value matching the requested JSON Schema.'
 
 function baseSection(
   mode: PromptCompositionMode,
@@ -94,6 +97,52 @@ function normalizedSections(
     })
 }
 
+function turnSections(turn: TurnContextInputs | undefined): PromptSection[] {
+  if (!turn) return []
+  return [
+    ...(turn.planMode?.trim()
+      ? [
+          {
+            id: 'plan-mode',
+            content: turn.planMode,
+            placement: 'system' as const,
+            stability: 'volatile' as const,
+          },
+        ]
+      : []),
+    ...(turn.sessionMemory?.trim()
+      ? [
+          {
+            id: 'session-memory',
+            content: turn.sessionMemory,
+            placement: 'system' as const,
+            stability: 'volatile' as const,
+          },
+        ]
+      : []),
+    ...(turn.briefOutput
+      ? [
+          {
+            id: 'brief-output',
+            content: BRIEF_OUTPUT_POLICY,
+            placement: 'system' as const,
+            stability: 'volatile' as const,
+          },
+        ]
+      : []),
+    ...(turn.structuredOutput
+      ? [
+          {
+            id: 'structured-output',
+            content: STRUCTURED_OUTPUT_POLICY,
+            placement: 'system' as const,
+            stability: 'volatile' as const,
+          },
+        ]
+      : []),
+  ]
+}
+
 export class PromptComposer {
   compose(options: PromptCompositionOptions): PromptComposition {
     const base = baseSection(options.mode, options.baseSystemPrompt)
@@ -110,7 +159,7 @@ export class PromptComposer {
         }
       : undefined
     const tailSections = normalizedSections(
-      options.tailSections ?? [],
+      [...(options.tailSections ?? []), ...turnSections(options.turn)],
       'tailSections',
     )
     const sections = [
@@ -119,34 +168,25 @@ export class PromptComposer {
       ...(append ? [append] : []),
       ...tailSections,
     ]
-    const identities = new Set<string>()
-    for (const section of sections) {
-      if (identities.has(section.id)) {
-        throw new Error(`Duplicate prompt section ${section.id}`)
-      }
-      identities.add(section.id)
-    }
-    const systemSections = sections.filter(
-      (section) => section.placement === 'system',
-    )
-    const firstVolatileSystemIndex = systemSections.findIndex(
-      (section) => section.stability === 'volatile',
-    )
-    const firstUserMessageContext = sections
-      .filter((section) => section.placement === 'first-user')
-      .map((section) => section.content)
-      .join('\n\n')
-    return {
-      sections,
-      systemMessages: systemSections.map((section) => ({
-        role: 'system',
-        content: section.content,
-      })),
-      stableSystemSectionCount:
-        firstVolatileSystemIndex < 0
-          ? systemSections.length
-          : firstVolatileSystemIndex,
-      ...(firstUserMessageContext ? { firstUserMessageContext } : {}),
-    }
+    return createContextSnapshot(sections)
   }
+}
+
+const defaultContextAssembler: ContextAssembler = {
+  async assemble(options: ContextAssemblyOptions = {}) {
+    return new PromptComposer().compose({
+      mode: options.mode ?? 'bare',
+      ...(options.baseSystemPrompt === undefined
+        ? {}
+        : { baseSystemPrompt: options.baseSystemPrompt }),
+      ...(options.turn === undefined ? {} : { turn: options.turn }),
+    })
+  },
+}
+
+export async function assembleContextSnapshot(
+  assembler: ContextAssembler | undefined,
+  options: ContextAssemblyOptions = {},
+): Promise<ContextSnapshot> {
+  return (assembler ?? defaultContextAssembler).assemble(options)
 }
