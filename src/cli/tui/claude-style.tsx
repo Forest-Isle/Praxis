@@ -1,4 +1,10 @@
-import { cloneElement, useEffect, useState, type ReactElement } from 'react'
+import {
+  cloneElement,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactElement,
+} from 'react'
 
 import { Box, Text, useStdout } from 'ink'
 
@@ -15,6 +21,11 @@ import type { TuiPermissionRule } from './permission-settings.js'
 import type { RecentlyDeniedAction } from './recently-denied.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
 import type { TuiSlashCommand } from './slash-commands.js'
+import {
+  projectTranscriptPresentation,
+  type TranscriptItem,
+  type TranscriptPresentationEntry,
+} from './transcript-presentation.js'
 import {
   tuiPalette,
   tuiSyntaxStyle,
@@ -33,34 +44,7 @@ export interface TuiDisplayMetadata {
   permissionMode?: string
   contextWindowTokens?: number
 }
-export type TranscriptItem =
-  | { kind: 'user' | 'assistant' | 'notice' | 'warning'; text: string }
-  | { kind: 'local-result'; text: string }
-  | { kind: 'thinking'; text: string }
-  | { kind: 'compact'; summary: string }
-  | {
-      kind: 'context'
-      usedTokens: number
-      contextWindowTokens: number
-      model?: string
-      skills: readonly { name: string; tokens: number }[]
-      memoryFiles: readonly { path: string; tokens: number }[]
-    }
-  | { kind: 'tool'; call: ModelToolCall; detail: string }
-  | {
-      kind: 'tool-result'
-      callId: string
-      text: string
-      isError: boolean
-    }
-  | { kind: 'shell'; callId: string; command: string }
-  | {
-      kind: 'shell-result'
-      callId: string
-      stdout: string
-      stderr: string
-      isError: boolean
-    }
+export type { TranscriptItem } from './transcript-presentation.js'
 
 export interface TuiBtwEntry {
   id: number
@@ -1086,90 +1070,26 @@ export function Transcript({
 }) {
   const palette = useTuiPalette()
   const detailed = thinkingExpanded || detailedTranscript
-  const results = new Map(
-    items
-      .filter(
-        (item): item is Extract<TranscriptItem, { kind: 'tool-result' }> =>
-          item.kind === 'tool-result',
-      )
-      .map((item) => [item.callId, item]),
+  const mode = screenReader ? 'screen-reader' : detailed ? 'audit' : 'normal'
+  const entries: readonly TranscriptPresentationEntry[] = useMemo(
+    () => projectTranscriptPresentation(items, mode),
+    [items, mode],
   )
-  const pairedResults = new Set(
-    items
-      .filter(
-        (item): item is Extract<TranscriptItem, { kind: 'tool' }> =>
-          item.kind === 'tool' && results.has(item.call.id),
-      )
-      .map((item) => item.call.id),
-  )
-  const shellResults = new Map(
-    items
-      .filter(
-        (item): item is Extract<TranscriptItem, { kind: 'shell-result' }> =>
-          item.kind === 'shell-result',
-      )
-      .map((item) => [item.callId, item]),
-  )
-  const pairedShellResults = new Set(
-    items
-      .filter(
-        (item): item is Extract<TranscriptItem, { kind: 'shell' }> =>
-          item.kind === 'shell' && shellResults.has(item.callId),
-      )
-      .map((item) => item.callId),
-  )
-  const readGroupStarts = new Map<number, number>()
-  const groupedReadTools = new Set<number>()
-  if (!detailed && !screenReader) {
-    for (let index = 0; index < items.length; index += 1) {
-      const first = items[index]
-      if (first?.kind !== 'tool' || first.call.name !== 'Read') continue
-      let cursor = index
-      const memberIndexes: number[] = []
-      const memberCallIds = new Set<string>()
-      while (cursor < items.length) {
-        const candidate = items[cursor]
-        if (candidate?.kind === 'tool' && candidate.call.name === 'Read') {
-          const result = results.get(candidate.call.id)
-          if (!result || result.isError) break
-          memberIndexes.push(cursor)
-          memberCallIds.add(candidate.call.id)
-          cursor += 1
-          continue
-        }
-        if (
-          candidate?.kind === 'tool-result' &&
-          memberCallIds.has(candidate.callId)
-        ) {
-          cursor += 1
-          continue
-        }
-        break
-      }
-      if (memberIndexes.length === 0) continue
-      readGroupStarts.set(index, memberIndexes.length)
-      for (const memberIndex of memberIndexes.slice(1)) {
-        groupedReadTools.add(memberIndex)
-      }
-      index = cursor - 1
-    }
-  }
   return (
     <Box flexDirection="column">
-      {items.map((item, index) => {
-        const readCount = readGroupStarts.get(index)
-        if (readCount !== undefined) {
+      {entries.map((entry, index) => {
+        if (entry.kind === 'read-summary') {
           return (
-            <Text key={index}>
-              {'  '}Read {readCount} file{readCount === 1 ? '' : 's'}{' '}
+            <Text key={entry.key}>
+              {'  '}Read {entry.count} file{entry.count === 1 ? '' : 's'}{' '}
               <Text dimColor>(ctrl+o to expand)</Text>
             </Text>
           )
         }
-        if (groupedReadTools.has(index)) return null
+        const item = entry.item
         if (item.kind === 'user') {
           return (
-            <Box key={index} marginTop={index === 0 ? 0 : 1}>
+            <Box key={entry.key} marginTop={index === 0 ? 0 : 1}>
               <Text color={palette.brand} bold>
                 {screenReader ? 'You: ' : '❯ '}
               </Text>
@@ -1179,7 +1099,7 @@ export function Transcript({
         }
         if (item.kind === 'assistant') {
           return (
-            <Box key={index} marginTop={1}>
+            <Box key={entry.key} marginTop={1}>
               {screenReader ? <Text>Praxis:</Text> : null}
               {!screenReader ? <Text color={palette.accent}>⏺ </Text> : null}
               <MarkdownText text={item.text} />
@@ -1189,7 +1109,7 @@ export function Transcript({
         if (item.kind === 'thinking') {
           return (
             <ThinkingBlock
-              key={index}
+              key={entry.key}
               text={item.text}
               active={false}
               expanded={detailed}
@@ -1199,7 +1119,7 @@ export function Transcript({
         }
         if (item.kind === 'compact') {
           return (
-            <Box key={index} flexDirection="column" marginTop={1}>
+            <Box key={entry.key} flexDirection="column" marginTop={1}>
               <Text color={palette.accent} italic>
                 {screenReader
                   ? 'Conversation compacted'
@@ -1216,30 +1136,30 @@ export function Transcript({
         if (item.kind === 'context') {
           return (
             <ContextUsageBlock
-              key={index}
+              key={entry.key}
               {...item}
               screenReader={screenReader}
             />
           )
         }
         if (item.kind === 'tool') {
-          const result = results.get(item.call.id)
           return (
             <ToolTranscriptEntry
-              key={index}
+              key={entry.key}
               call={item.call}
               detail={item.detail}
-              {...(result ? { result } : {})}
+              {...(entry.kind === 'tool' && entry.result
+                ? { result: entry.result }
+                : {})}
               detailed={detailed || screenReader}
             />
           )
         }
         if (item.kind === 'tool-result') {
-          if (pairedResults.has(item.callId)) return null
           const text =
             item.text.length > 500 ? `${item.text.slice(0, 497)}...` : item.text
           return (
-            <Box key={index} marginLeft={2} flexDirection="column">
+            <Box key={entry.key} marginLeft={2} flexDirection="column">
               <Text color={item.isError ? palette.error : palette.muted}>
                 {item.isError ? '└ Error' : '└ Result'}
               </Text>
@@ -1252,7 +1172,7 @@ export function Transcript({
           )
         }
         if (item.kind === 'shell') {
-          const result = shellResults.get(item.callId)
+          const result = entry.kind === 'shell' ? entry.result : undefined
           const output = result
             ? [result.stdout, result.stderr]
                 .filter(Boolean)
@@ -1268,7 +1188,7 @@ export function Transcript({
           const visible = detailed || screenReader ? lines : lines.slice(0, 3)
           const hidden = lines.length - visible.length
           return (
-            <Box key={index} flexDirection="column" marginTop={1}>
+            <Box key={entry.key} flexDirection="column" marginTop={1}>
               <Text>
                 <Text bold>
                   {screenReader ? 'Shell command: ' : '! '}
@@ -1302,11 +1222,10 @@ export function Transcript({
           )
         }
         if (item.kind === 'shell-result') {
-          if (pairedShellResults.has(item.callId)) return null
           const output = [item.stdout, item.stderr].filter(Boolean).join('\n')
           return (
             <Text
-              key={index}
+              key={entry.key}
               {...(item.isError ? { color: palette.error } : {})}
             >
               ⎿ {output}
@@ -1315,14 +1234,14 @@ export function Transcript({
         }
         if (item.kind === 'local-result') {
           return (
-            <Box key={index} marginLeft={2}>
+            <Box key={entry.key} marginLeft={2}>
               <Text dimColor>⎿ {item.text}</Text>
             </Box>
           )
         }
         return (
           <Text
-            key={index}
+            key={entry.key}
             {...(item.kind === 'warning' ? { color: palette.error } : {})}
             dimColor={item.kind === 'notice'}
           >
