@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist-native",
+    "rootDir": "src",
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true
+  },
+  "include": [
+    "src/core/**/*.ts",
+    "src/providers/**/*.ts",
+    "src/persistence/data-plane-adapter.ts",
+    "src/persistence/native-data-plane-adapter.ts",
+    "src/persistence/native-resources.ts"
+  ],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+}

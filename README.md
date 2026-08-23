@@ -236,6 +236,10 @@ npm ci
 npm run check
 ```
 
+`npm run build:native` compiles the current Praxis-owned core, provider
+adapters, and native data-plane slice without the Claude compatibility adapter.
+`npm run check` also enforces the corresponding source dependency direction.
+
 Contributions use Conventional Commit pull-request titles and the protected
 squash-merge workflow. Read
 [CONTRIBUTING.md](https://github.com/Forest-Isle/Praxis/blob/main/CONTRIBUTING.md)

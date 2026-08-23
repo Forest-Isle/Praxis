@@ -2,15 +2,14 @@ import { lstat, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { extname, resolve } from 'node:path'
 
+import { isSessionId } from '../../core/session.js'
 import { sanitizeProjectPath } from '../../platform/project-path-key.js'
 import { getDataOwnership } from './ownership.js'
 
 const MAX_SANITIZED_LENGTH = 200
-const SESSION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function isClaudeSessionId(value: string): boolean {
-  return SESSION_ID_PATTERN.test(value)
+  return isSessionId(value)
 }
 
 export interface ResolveClaudePathsOptions {

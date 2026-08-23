@@ -2,19 +2,19 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
 import { resolveProjectMemoryPolicy } from '../core/project-memory.js'
-import { resolveProjectMemoryDirectory } from '../platform/project-memory-paths.js'
 import type {
-  ClaudeContextResources,
-  ClaudeJsonResource,
-  ClaudeResourceScope,
-  ClaudeSharedResources,
-  ClaudeTextResource,
-} from '../compatibility/claude/shared-resources.js'
+  ContextResources,
+  JsonResource,
+  ResourceScope,
+  SharedResources,
+  TextResource,
+} from '../core/resources.js'
+import { resolveProjectMemoryDirectory } from '../platform/project-memory-paths.js'
 
 async function text(
   path: string,
-  scope: ClaudeResourceScope,
-): Promise<ClaudeTextResource | null> {
+  scope: ResourceScope,
+): Promise<TextResource | null> {
   try {
     return { path, scope, content: await readFile(path, 'utf8') }
   } catch (error) {
@@ -25,8 +25,8 @@ async function text(
 
 async function json(
   path: string,
-  scope: ClaudeResourceScope,
-): Promise<ClaudeJsonResource | null> {
+  scope: ResourceScope,
+): Promise<JsonResource | null> {
   const source = await text(path, scope)
   if (!source) return null
   let value: unknown
@@ -43,9 +43,9 @@ async function json(
 
 async function files(
   directory: string,
-  scope: ClaudeResourceScope,
+  scope: ResourceScope,
   name: (value: string) => boolean,
-): Promise<ClaudeTextResource[]> {
+): Promise<TextResource[]> {
   let entries
   try {
     entries = await readdir(directory, { withFileTypes: true })
@@ -64,7 +64,7 @@ async function files(
     .sort()
   const direct = (
     await Promise.all(paths.map((path) => text(path, scope)))
-  ).filter((resource): resource is ClaudeTextResource => resource !== null)
+  ).filter((resource): resource is TextResource => resource !== null)
   return [...direct, ...nested.flat()]
 }
 
@@ -78,7 +78,7 @@ export interface LoadNativeResourcesOptions {
 export async function loadNativeSettings({
   root,
   cwd,
-}: LoadNativeResourcesOptions): Promise<ClaudeJsonResource[]> {
+}: LoadNativeResourcesOptions): Promise<JsonResource[]> {
   const project = resolve(cwd, '.praxis')
   const resources = await Promise.all([
     json(join(root, 'settings.json'), 'user'),
@@ -86,7 +86,7 @@ export async function loadNativeSettings({
     json(join(project, 'settings.local.json'), 'local'),
   ])
   return resources.filter(
-    (resource): resource is ClaudeJsonResource => resource !== null,
+    (resource): resource is JsonResource => resource !== null,
   )
 }
 
@@ -95,7 +95,7 @@ export async function loadNativeSharedResources({
   cwd,
   environment = process.env,
   includeProjectMemory = true,
-}: LoadNativeResourcesOptions): Promise<ClaudeSharedResources> {
+}: LoadNativeResourcesOptions): Promise<SharedResources> {
   const project = resolve(cwd, '.praxis')
   const memoryRoot = await resolveProjectMemoryDirectory({
     dataPlane: 'native',
@@ -146,7 +146,7 @@ export async function loadNativeSharedResources({
   ])
   return {
     instructions: [userInstruction, projectInstruction].filter(
-      (resource): resource is ClaudeTextResource => resource !== null,
+      (resource): resource is TextResource => resource !== null,
     ),
     memory,
     skills,
@@ -154,14 +154,14 @@ export async function loadNativeSharedResources({
     agents,
     settings,
     mcp: [userMcp, projectMcp, localMcp].filter(
-      (resource): resource is ClaudeJsonResource => resource !== null,
+      (resource): resource is JsonResource => resource !== null,
     ),
   }
 }
 
 export async function loadNativeContextResources(
   options: LoadNativeResourcesOptions,
-): Promise<ClaudeContextResources> {
+): Promise<ContextResources> {
   const resources = await loadNativeSharedResources(options)
   const memoryIndex = resources.memory.find((resource) =>
     resource.path.endsWith('/MEMORY.md'),

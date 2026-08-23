@@ -2,6 +2,8 @@ import { readdir, readFile } from 'node:fs/promises'
 import { extname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { scanSourceBoundaries } from './lib/source-boundaries.mjs'
+
 const root = fileURLToPath(new URL('../', import.meta.url))
 const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
 const forbiddenProductDirectories = [
@@ -12,15 +14,6 @@ const forbiddenProductDirectories = [
   'telemetry',
   'tenants',
 ]
-const forbiddenCoreImports = [
-  /^node:/,
-  /(?:^|\/)persistence(?:\/|$)/,
-  /(?:^|\/)platform(?:\/|$)/,
-  /(?:^|\/)providers(?:\/|$)/,
-  /^ink$/,
-  /^react$/,
-]
-
 async function filesBelow(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
   const nested = await Promise.all(
@@ -33,8 +26,15 @@ async function filesBelow(directory) {
 }
 
 const failures = []
-const sourceFiles = (await filesBelow(sourceRoot)).filter(
-  (path) => extname(path) === '.ts',
+const sourceFiles = (await filesBelow(sourceRoot)).filter((path) =>
+  ['.ts', '.tsx'].includes(extname(path)),
+)
+
+const sourceEntries = await Promise.all(
+  sourceFiles.map(async (path) => ({
+    projectPath: relative(root, path).split(sep).join('/'),
+    source: await readFile(path, 'utf8'),
+  })),
 )
 
 for (const path of sourceFiles) {
@@ -46,20 +46,10 @@ for (const path of sourceFiles) {
   ) {
     failures.push(`${projectPath}: forbidden product domain`)
   }
+}
 
-  if (!projectPath.startsWith('src/core/')) continue
-
-  const source = await readFile(path, 'utf8')
-  const imports = source.matchAll(/from\s+['"]([^'"]+)['"]/g)
-  for (const match of imports) {
-    const specifier = match[1]
-    if (
-      specifier &&
-      forbiddenCoreImports.some((pattern) => pattern.test(specifier))
-    ) {
-      failures.push(`${projectPath}: core cannot import ${specifier}`)
-    }
-  }
+for (const failure of scanSourceBoundaries(sourceEntries)) {
+  failures.push(failure)
 }
 
 if (failures.length > 0) {

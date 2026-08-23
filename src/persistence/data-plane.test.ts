@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { ClaudeDataPlaneAdapter } from '../compatibility/claude/data-plane-adapter.js'
+import { NativeDataPlaneAdapter } from './native-data-plane-adapter.js'
 import {
   resolveDataPlane,
   resolveDataPlanePaths,
@@ -93,5 +95,43 @@ describe('data plane paths', () => {
     expect(() => resolveDataPlane({ PRAXIS_DATA_PLANE: 'both' })).toThrow(
       'PRAXIS_DATA_PLANE',
     )
+  })
+
+  it('keeps the adapter path meanings aligned for injected roots', () => {
+    const native = new NativeDataPlaneAdapter()
+    const claude = new ClaudeDataPlaneAdapter()
+    const nativePaths = native.resolvePaths({
+      cwd: '/work/example',
+      sessionId: SESSION_ID,
+      root: '/tmp/praxis',
+    })
+    const claudePaths = claude.resolvePaths({
+      cwd: '/work/example',
+      sessionId: SESSION_ID,
+      root: '/tmp/claude',
+    })
+
+    expect(nativePaths).toMatchObject({
+      dataPlane: 'native',
+      root: '/tmp/praxis',
+      taskRoot: '/tmp/praxis/tasks/11111111-1111-4111-8111-111111111111',
+    })
+    expect(claudePaths).toMatchObject({
+      dataPlane: 'claude',
+      root: '/tmp/claude',
+      taskRoot: '/tmp/claude/tasks/11111111-1111-4111-8111-111111111111',
+    })
+    expect(
+      native.resolveScheduledTaskFile({
+        cwd: '/work/example',
+        root: nativePaths.root,
+      }),
+    ).toBe('/tmp/praxis/scheduled/-work-example.json')
+    expect(
+      claude.resolveScheduledTaskFile({
+        cwd: '/work/example',
+        root: claudePaths.root,
+      }),
+    ).toBe('/work/example/.claude/scheduled_tasks.json')
   })
 })

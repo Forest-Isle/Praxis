@@ -27,14 +27,14 @@ unknown or classifier-failing tools never become concurrent by composition.
 src/
 ├── cli/           terminal UI and structured output
 ├── application/   run, resume, inspect, and configure use cases
-├── core/          agent loop and provider-neutral domain types
-├── compatibility/ versioned Claude local-protocol adapters
+├── core/          Praxis Core Contract and provider-neutral domain types
+├── compatibility/ optional versioned Claude local-protocol adapters
 ├── providers/     capability-aware model adapters
 ├── tools/         local executable capabilities
 ├── extensions/    skills, commands, and agents
 ├── hooks/         shared hook parsing, execution, and tool coordination
 ├── mcp/           shared Claude MCP config, clients, and tool adapter
-├── persistence/   Claude-compatible JSONL and local sidecar indexes
+├── persistence/   data-plane seam, native storage, compatibility stores, indexes
 ├── sandbox/       Claude settings conversion and OS sandbox runtime adapter
 └── platform/      filesystem, process, keychain, and OS adapters
 ```
@@ -42,6 +42,15 @@ src/
 ## Hard boundaries
 
 - `core` must not import React, Ink, model-vendor SDKs, filesystem, or storage.
+- Provider adapters depend inward on the Praxis Core Contract; core never
+  imports provider implementations or provider wire types.
+- Native modules depend on core, platform, and shared seams, never on the
+  Claude compatibility adapter. Claude compatibility modules implement the
+  same seams without becoming dependencies of native modules.
+- `npm run check:boundaries` rejects reverse source imports, and
+  `npm run build:native` emits the current core/provider/native slice without
+  Claude compatibility sources. This profile is the incremental foundation
+  for the final installed-native deletion proof; it is not yet that proof.
 - The CLI observes runtime events; it does not own agent state.
 - Claude Code-compatible JSONL transcripts remain authoritative and
   append-only.
@@ -138,6 +147,11 @@ selected provider to process it.
 ## Native and Claude-compatible data planes
 
 Praxis defaults to its independent local root, `PRAXIS_HOME` or `~/.praxis`.
+The public data-plane facade selects one `DataPlaneAdapter`: the native adapter
+owns Praxis root and path construction, while the optional Claude adapter owns
+Claude path rules. Both expose the same path meanings to the existing Session
+and Runtime implementations, so selecting a data plane never creates a second
+agent loop or synchronized transcript.
 Native sessions, memory, tasks, scheduled prompts, resources, and private state
 remain there and never require a Claude Code directory. Explicit
 `--data-plane claude` compatibility mode instead uses `CLAUDE_CONFIG_DIR` or

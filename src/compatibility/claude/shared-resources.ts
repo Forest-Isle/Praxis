@@ -7,49 +7,21 @@ import { parse as parseYaml } from 'yaml'
 import { resolveProjectIdentity } from '../../platform/project-identity.js'
 import { sanitizeClaudeProjectPath } from './paths.js'
 
-export type ClaudeResourceScope = 'local' | 'project' | 'user'
+import type {
+  ConditionalRule,
+  ContextResources,
+  JsonResource,
+  ResourceScope,
+  SharedResources,
+  TextResource,
+} from '../../core/resources.js'
 
-export interface ClaudeTextResource {
-  path: string
-  scope: ClaudeResourceScope
-  content: string
-  importedFrom?: string
-  importRoot?: string
-}
-
-export interface ClaudeJsonResource {
-  path: string
-  scope: ClaudeResourceScope
-  value: unknown
-  plugin?: true
-  pluginName?: string
-  pluginSource?: string
-  environment?: Readonly<Record<string, string>>
-  sensitiveValues?: readonly string[]
-}
-
-export interface ClaudeContextResources {
-  instructions: ClaudeTextResource[]
-  conditionalRules: ClaudeConditionalRule[]
-  memoryIndex: ClaudeTextResource | null
-}
-
-export interface ClaudeConditionalRule extends ClaudeTextResource {
-  baseDirectory: string
-  content: string
-  globs: string[]
-  rawContent: string
-}
-
-export interface ClaudeSharedResources {
-  instructions: ClaudeTextResource[]
-  memory: ClaudeTextResource[]
-  skills: ClaudeTextResource[]
-  commands: ClaudeTextResource[]
-  agents: ClaudeTextResource[]
-  settings: ClaudeJsonResource[]
-  mcp: ClaudeJsonResource[]
-}
+export type ClaudeResourceScope = ResourceScope
+export type ClaudeTextResource = TextResource
+export type ClaudeJsonResource = JsonResource
+export type ClaudeContextResources = ContextResources
+export type ClaudeConditionalRule = ConditionalRule
+export type ClaudeSharedResources = SharedResources
 
 export interface LoadClaudeSharedResourcesOptions {
   configRoot: string
