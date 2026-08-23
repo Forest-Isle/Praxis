@@ -272,6 +272,48 @@ describe('ClaudeSessionService', () => {
     expect(extraction.close).toHaveBeenCalledTimes(1)
   })
 
+  it('emits terminal state after Project-memory observation and for pre-runtime failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-turn-terminal-test-'))
+    roots.push(root)
+    const events: RuntimeEvent[] = []
+    const order: string[] = []
+    let providerCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.237',
+      eventSink: (event) => {
+        events.push(event)
+        if (event.type === 'state' && event.state === 'completed') {
+          order.push('completed')
+        }
+      },
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          providerCalls += 1
+          yield { type: 'text-delta', delta: 'ok' }
+        },
+      },
+      projectMemoryExtraction: {
+        observe: vi.fn(() => order.push('memory')),
+        close: vi.fn(async () => undefined),
+      },
+    })
+
+    await service.run('hello')
+    expect(order).toEqual(['memory', 'completed'])
+    const callsBeforeFailure = providerCalls
+    await expect(service.run('')).rejects.toThrow('Prompt must not be empty')
+    expect(providerCalls).toBe(callsBeforeFailure)
+    expect(
+      events.filter(
+        (event) => event.type === 'state' && event.state === 'failed',
+      ),
+    ).toHaveLength(1)
+    await service.close()
+  })
+
   it('marks successful direct Project-memory maintenance so extraction skips that range', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-project-memory-test-'))
     roots.push(root)
@@ -3676,13 +3718,11 @@ describe('ClaudeSessionService', () => {
     // normal turns do not await it, so wait for the controller to drain
     // before reading the sidecar.
     await waitForSessionMemoryCommit(configRoot, 'praxis', run.sessionId)
-    const memoryDir = join(
+    const summary = await new SessionMemoryStore({
       configRoot,
-      'praxis',
-      'session-memory',
-      run.sessionId,
-    )
-    const summary = await readFile(join(memoryDir, 'summary.md'), 'utf8')
+      sessionId: run.sessionId,
+      sidecarRoot: join(configRoot, 'praxis'),
+    }).loadSummary()
     expect(summary).toContain('Durable intent: initial task.')
 
     const resumed = await service.resume(run.sessionId, 'Continue the task.')
@@ -12486,7 +12526,22 @@ describe('ClaudeSessionService', () => {
     ).rejects.toBeInstanceOf(AgentRunCancelledError)
     expect(sessionEndSignals).toHaveLength(1)
     expect(sessionEndSignals[0]?.aborted).toBe(false)
+    const warningIndex = runtimeEvents.findIndex(
+      (event) =>
+        event.type === 'warning' &&
+        event.message === 'SessionEnd hook failed: session end fixture failed',
+    )
+    expect(warningIndex).toBeGreaterThanOrEqual(0)
+    const terminalStates = runtimeEvents.filter(
+      (event) => event.type === 'state' && event.state === 'cancelled',
+    )
+    expect(terminalStates).toHaveLength(1)
     expect(runtimeEvents.at(-1)).toEqual({
+      type: 'state',
+      state: 'cancelled',
+    })
+    expect(warningIndex).toBeLessThan(runtimeEvents.length - 1)
+    expect(runtimeEvents[warningIndex]).toEqual({
       type: 'warning',
       message: 'SessionEnd hook failed: session end fixture failed',
     })

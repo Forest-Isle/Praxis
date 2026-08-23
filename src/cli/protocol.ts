@@ -2285,12 +2285,17 @@ export class StreamJsonOutput {
         event.state === 'executing-tools' ||
         event.state === 'persisting-results' ||
         event.state === 'completed' ||
-        event.state === 'cancelled'
+        event.state === 'cancelled' ||
+        event.state === 'failed'
       ) {
         this.flushAssistant()
         if (event.state === 'awaiting-permission')
           this.writeSessionState('requires_action')
-        else if (event.state === 'completed' || event.state === 'cancelled') {
+        else if (
+          event.state === 'completed' ||
+          event.state === 'cancelled' ||
+          event.state === 'failed'
+        ) {
           this.writeSessionState('idle')
         }
       }

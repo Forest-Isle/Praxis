@@ -248,6 +248,14 @@ without teaching the composer any provider wire format.
 
 `ContextAssembler` loads the composer inputs and always returns the canonical
 lifecycle-scoped snapshot.
+
+The private turn execution module owns the complete per-submission order:
+transcript lease, hooks and recovery, context projection, AgentRuntime rounds,
+accounting, and Session/Project memory observation. It is the sole owner of a
+Turn's terminal transition, emitted only after that order completes or its
+cleanup finishes. Session lifecycle retains discovery, fork, rename, and
+resource reload operations, while `AgentRuntime` retains model and tool rounds.
+
 Ordinary turns and subagent model rounds reuse byte-identical session sections.
 Compact and explicit resource reload refresh shared resources; tool-pool
 changes refresh capability guidance and the volatile per-server MCP suffix;
