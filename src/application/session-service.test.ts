@@ -71,6 +71,31 @@ import { WorkspaceContext } from './session-worktree.js'
 
 const roots: string[] = []
 
+function nativeTranscriptLine(
+  event: Readonly<Record<string, unknown>>,
+  version: string | number = 1,
+): string {
+  return `${JSON.stringify({ schema: 'praxis.transcript', version, event })}\n`
+}
+
+function nativeMessageEvent(options: {
+  sessionId: string
+  id: string
+  parentId: string | null
+  role: 'user' | 'assistant'
+  content: string
+  timestamp?: string
+}): Record<string, unknown> {
+  return {
+    kind: 'messages',
+    id: options.id,
+    parentId: options.parentId,
+    sessionId: options.sessionId,
+    timestamp: options.timestamp ?? '2026-08-23T00:00:00.000Z',
+    messages: [{ role: options.role, content: options.content }],
+  }
+}
+
 function contextSnapshot({
   system = [],
   firstUser,
@@ -10290,6 +10315,404 @@ describe('ClaudeSessionService', () => {
       { kind: 'assistant', text: 'first answer' },
     ])
     expect(await readFile(sessionFile, 'utf8')).toBe(source)
+  })
+
+  it('reads mixed native and legacy sessions losslessly through the native data plane', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-reads-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const legacyId = '10101010-1010-4010-8010-101010101010'
+    const cleanId = '20202020-2020-4020-8020-202020202020'
+    const unknownId = '30303030-3030-4030-8030-303030303030'
+    const corruptId = '40404040-4040-4040-8040-404040404040'
+    const cleanUserId = '21212121-2121-4121-8121-212121212121'
+    const cleanAssistantId = '22222222-2222-4222-8222-222222222222'
+    const cleanShellId = '23232323-2323-4323-8323-232323232323'
+    const legacyWriter = new ClaudeSessionService({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['legacy answer']),
+    })
+    await legacyWriter.run('legacy prompt', undefined, legacyId, 'legacy title')
+    await legacyWriter.tag(legacyId, 'legacy-tag')
+    await legacyWriter.close()
+    const legacyPath = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: legacyId,
+    }).sessionFile
+    await appendFile(
+      legacyPath,
+      [
+        {
+          type: 'agent-name',
+          sessionId: legacyId,
+          agentName: 'reader',
+        },
+        {
+          type: 'agent-color',
+          sessionId: legacyId,
+          agentColor: 'blue',
+        },
+        {
+          type: 'agent-setting',
+          sessionId: legacyId,
+          agentSetting: 'careful',
+        },
+        {
+          type: 'permission-mode',
+          sessionId: legacyId,
+          permissionMode: 'dontAsk',
+        },
+        { type: 'mode', sessionId: legacyId, mode: 'plan' },
+        {
+          type: 'pr-link',
+          sessionId: legacyId,
+          prNumber: 42,
+          prUrl: 'https://github.com/owner/repo/pull/42',
+          prRepository: 'owner/repo',
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n') + '\n',
+    )
+    const projectRoot = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: cleanId,
+    }).projectRoot
+    await mkdir(projectRoot, { recursive: true })
+    const cleanSource = Buffer.from(
+      nativeTranscriptLine(
+        nativeMessageEvent({
+          sessionId: cleanId,
+          id: cleanUserId,
+          parentId: null,
+          role: 'user',
+          content: 'native prompt',
+        }),
+      ) +
+        nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId: cleanId,
+            id: cleanAssistantId,
+            parentId: cleanUserId,
+            role: 'assistant',
+            content: 'native answer',
+            timestamp: '2026-08-23T00:01:00.000Z',
+          }),
+        ) +
+        nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId: cleanId,
+            id: cleanShellId,
+            parentId: cleanAssistantId,
+            role: 'user',
+            content: '<bash-input>printf ok</bash-input>',
+            timestamp: '2026-08-23T00:02:00.000Z',
+          }),
+        ) +
+        nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId: cleanId,
+            id: '24242424-2424-4424-8424-242424242424',
+            parentId: cleanShellId,
+            role: 'user',
+            content: '<bash-stdout>ok</bash-stdout><bash-stderr></bash-stderr>',
+            timestamp: '2026-08-23T00:03:00.000Z',
+          }),
+        ),
+    )
+    const cleanPath = join(projectRoot, `${cleanId}.jsonl`)
+    const unknownSource = Buffer.from(
+      nativeTranscriptLine(
+        nativeMessageEvent({
+          sessionId: unknownId,
+          id: '31313131-3131-4131-8131-313131313131',
+          parentId: null,
+          role: 'user',
+          content: 'future prompt',
+        }),
+        9,
+      ),
+    )
+    const unknownPath = join(projectRoot, `${unknownId}.jsonl`)
+    const corruptPrefix = nativeTranscriptLine(
+      nativeMessageEvent({
+        sessionId: corruptId,
+        id: '41414141-4141-4141-8141-414141414141',
+        parentId: null,
+        role: 'user',
+        content: 'valid prefix',
+      }),
+    )
+    const corruptSource = Buffer.from(`${corruptPrefix}{bad\n`)
+    const corruptPath = join(projectRoot, `${corruptId}.jsonl`)
+    await Promise.all([
+      writeFile(cleanPath, cleanSource),
+      writeFile(unknownPath, unknownSource),
+      writeFile(corruptPath, corruptSource),
+    ])
+    const legacySource = await readFile(legacyPath)
+    const reader = new ClaudeSessionService({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+    })
+
+    const sessions = await reader.sessions()
+    expect(sessions).toHaveLength(4)
+    expect(sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: cleanId,
+          lastPrompt: 'native prompt',
+          status: 'read-only',
+          issue: null,
+        }),
+        expect.objectContaining({
+          sessionId: unknownId,
+          status: 'read-only',
+          issue: expect.objectContaining({
+            kind: 'unsupported-version',
+            schemaVersion: 9,
+          }),
+        }),
+        expect.objectContaining({
+          sessionId: corruptId,
+          lastPrompt: 'valid prefix',
+          status: 'corrupt',
+          issue: expect.objectContaining({
+            kind: 'corrupt-line',
+            byteOffset: Buffer.byteLength(corruptPrefix),
+          }),
+        }),
+        expect.objectContaining({
+          sessionId: legacyId,
+          name: 'legacy title',
+          tag: 'legacy-tag',
+          agentName: 'reader',
+          agentColor: 'blue',
+          agentSetting: 'careful',
+          permissionMode: 'dontAsk',
+          mode: 'plan',
+          lastPrompt: 'legacy prompt',
+          status: 'ready',
+          prNumber: 42,
+          prUrl: 'https://github.com/owner/repo/pull/42',
+          prRepository: 'owner/repo',
+        }),
+      ]),
+    )
+    const legacyInspection = await reader.inspect(legacyId)
+    expect(legacyInspection).toMatchObject({
+      name: 'legacy title',
+      tag: 'legacy-tag',
+      agentName: 'reader',
+      agentColor: 'blue',
+      agentSetting: 'careful',
+      permissionMode: 'dontAsk',
+      mode: 'plan',
+      writeMode: 'read-write',
+      prNumber: 42,
+      prRepository: 'owner/repo',
+    })
+    expect(legacyInspection).not.toHaveProperty('claudeVersion')
+    await expect(reader.inspect(unknownId)).resolves.toMatchObject({
+      status: 'read-only',
+      writeMode: 'read-only',
+      entryCount: 0,
+      issue: expect.objectContaining({ kind: 'unsupported-version' }),
+    })
+    await expect(reader.inspect(corruptId)).resolves.toMatchObject({
+      status: 'corrupt',
+      entryCount: 1,
+    })
+    await expect(reader.transcript(cleanId)).resolves.toEqual([
+      { kind: 'user', text: 'native prompt' },
+      { kind: 'assistant', text: 'native answer' },
+      { kind: 'shell', callId: cleanShellId, command: 'printf ok' },
+      {
+        kind: 'shell-result',
+        callId: cleanShellId,
+        stdout: 'ok',
+        stderr: '',
+        isError: false,
+      },
+    ])
+    await expect(reader.transcript(cleanId, cleanUserId)).resolves.toEqual([
+      { kind: 'user', text: 'native prompt' },
+    ])
+    await expect(reader.export(cleanId)).resolves.toEqual(cleanSource)
+    await expect(reader.export(unknownId)).resolves.toEqual(unknownSource)
+    await expect(reader.export(corruptId)).resolves.toEqual(corruptSource)
+    await expect(reader.export(legacyId)).resolves.toEqual(legacySource)
+    await expect(reader.resume(cleanId, 'must not append')).rejects.toThrow(
+      'native transcript is read-only until native writes are enabled',
+    )
+    await expect(reader.fork(cleanId)).rejects.toThrow(
+      'native transcript is read-only until native writes are enabled',
+    )
+    await expect(readFile(cleanPath)).resolves.toEqual(cleanSource)
+    await expect(readFile(unknownPath)).resolves.toEqual(unknownSource)
+    await expect(readFile(corruptPath)).resolves.toEqual(corruptSource)
+    await expect(readFile(legacyPath)).resolves.toEqual(legacySource)
+  })
+
+  it('registers only safe explicit native resume paths and fails closed for writes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-path-reads-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const externalRoot = join(root, 'external')
+    await mkdir(externalRoot, { recursive: true })
+    const cleanId = '50505050-5050-4050-8050-505050505050'
+    const corruptId = '60606060-6060-4060-8060-606060606060'
+    const unknownId = '70707070-7070-4070-8070-707070707070'
+    const mismatchedId = '80808080-8080-4080-8080-808080808080'
+    const cleanPath = join(externalRoot, `${cleanId}.jsonl`)
+    const corruptPath = join(externalRoot, `${corruptId}.jsonl`)
+    const unknownPath = join(externalRoot, `${unknownId}.jsonl`)
+    const mismatchedPath = join(externalRoot, `${mismatchedId}.jsonl`)
+    const cleanSource = Buffer.from(
+      nativeTranscriptLine(
+        nativeMessageEvent({
+          sessionId: cleanId,
+          id: '51515151-5151-4151-8151-515151515151',
+          parentId: null,
+          role: 'user',
+          content: 'external native prompt',
+        }),
+      ),
+    )
+    await Promise.all([
+      writeFile(cleanPath, cleanSource),
+      writeFile(
+        corruptPath,
+        Buffer.concat([cleanSource, Buffer.from('{bad\n')]),
+      ),
+      writeFile(
+        unknownPath,
+        nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId: unknownId,
+            id: '71717171-7171-4171-8171-717171717171',
+            parentId: null,
+            role: 'user',
+            content: 'future',
+          }),
+          2,
+        ),
+      ),
+      writeFile(
+        mismatchedPath,
+        nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId: cleanId,
+            id: '81818181-8181-4181-8181-818181818181',
+            parentId: null,
+            role: 'user',
+            content: 'wrong identity',
+          }),
+        ),
+      ),
+    ])
+    const service = new ClaudeSessionService({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: 'not-a-version',
+    })
+
+    await expect(service.registerResumePath(cleanPath)).resolves.toMatchObject({
+      sessionId: cleanId,
+      status: 'read-only',
+      lastPrompt: 'external native prompt',
+    })
+    await expect(service.inspect(cleanId)).resolves.toMatchObject({
+      status: 'read-only',
+      writeMode: 'read-only',
+    })
+    await expect(service.export(cleanId)).resolves.toEqual(cleanSource)
+    await expect(service.sessions()).resolves.toEqual([
+      expect.objectContaining({ sessionId: cleanId, status: 'read-only' }),
+    ])
+    await expect(service.resume(cleanId, 'no write')).rejects.toThrow(
+      'native transcript is read-only until native writes are enabled',
+    )
+    await expect(service.registerResumePath(corruptPath)).rejects.toThrow(
+      'complete non-empty newline-terminated file',
+    )
+    await expect(service.registerResumePath(unknownPath)).rejects.toThrow(
+      'version is unsupported',
+    )
+    await expect(service.registerResumePath(mismatchedPath)).rejects.toThrow(
+      'contains a different sessionId',
+    )
+    await expect(readFile(cleanPath)).resolves.toEqual(cleanSource)
+  })
+
+  it('lists 500 native sessions with bounded valid-prefix recovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-session-scale-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionIds = Array.from(
+      { length: 500 },
+      (_, index) =>
+        `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    )
+    const projectRoot = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: sessionIds[0] as string,
+    }).projectRoot
+    await mkdir(projectRoot, { recursive: true })
+    for (const [index, sessionId] of sessionIds.entries()) {
+      const source = nativeTranscriptLine(
+        nativeMessageEvent({
+          sessionId,
+          id: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+          parentId: null,
+          role: 'user',
+          content: `native session ${index}`,
+        }),
+      )
+      await writeFile(
+        join(projectRoot, `${sessionId}.jsonl`),
+        index === 499
+          ? `${source}{bad\n`
+          : index === 498
+            ? `${source}{`
+            : source,
+      )
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: 'not-a-version',
+    })
+
+    const sessions = await service.sessions()
+
+    expect(sessions).toHaveLength(500)
+    expect(
+      sessions.find((session) => session.sessionId === sessionIds[498]),
+    ).toMatchObject({ status: 'read-only', issue: null })
+    expect(
+      sessions.find((session) => session.sessionId === sessionIds[499]),
+    ).toMatchObject({
+      status: 'corrupt',
+      issue: expect.objectContaining({ kind: 'corrupt-line' }),
+    })
   })
 
   it('lists, inspects, and resumes a transcript in an alternate long-path project root', async () => {

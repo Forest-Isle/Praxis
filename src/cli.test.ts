@@ -4732,6 +4732,116 @@ describe('Praxis CLI', () => {
     expect(forked.stdout).toEqual(['22222222-2222-4222-8222-222222222222\n'])
   })
 
+  it('routes native list, inspect, export, and legacy resume selection through the real service', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cli-native-reads-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const nativeId = '91919191-9191-4191-8191-919191919191'
+    const legacyId = '92929292-9292-4292-8292-929292929292'
+    const textProvider = (text: string): ModelProvider => ({
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete() {
+        yield { type: 'text-delta', delta: text }
+        yield { type: 'usage', usage: { inputTokens: 3, outputTokens: 2 } }
+      },
+    })
+    try {
+      const writer = new ClaudeSessionService({
+        configRoot,
+        dataPlane: 'native',
+        cwd,
+        claudeVersion: '2.1.208',
+        provider: textProvider('legacy answer'),
+      })
+      await writer.run('legacy cli prompt', undefined, legacyId, 'legacy cli')
+      await writer.close()
+      const paths = resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: configRoot,
+        cwd,
+        sessionId: nativeId,
+      })
+      await mkdir(paths.projectRoot, { recursive: true })
+      const nativeSource = Buffer.from(
+        `${JSON.stringify({
+          schema: 'praxis.transcript',
+          version: 1,
+          event: {
+            kind: 'messages',
+            id: '93939393-9393-4393-8393-939393939393',
+            parentId: null,
+            sessionId: nativeId,
+            timestamp: '2026-08-23T00:00:00.000Z',
+            messages: [{ role: 'user', content: 'native cli prompt' }],
+          },
+        })}\n`,
+      )
+      await writeFile(paths.sessionFile, nativeSource)
+      const nativeDependencies: CliDependencies = {
+        async createService(options) {
+          return new ClaudeSessionService({
+            configRoot,
+            dataPlane: 'native',
+            cwd,
+            claudeVersion: '2.1.208',
+            eventSink: options.eventSink,
+            provider: textProvider('legacy resumed through cli'),
+          })
+        },
+      }
+      const listed = captureIO()
+      const inspected = captureIO()
+      const exported = captureIO()
+      const resumed = captureIO()
+
+      await expect(
+        run(['sessions', '--json'], listed.io, nativeDependencies),
+      ).resolves.toBe(0)
+      await expect(
+        run(['inspect', '--json', nativeId], inspected.io, nativeDependencies),
+      ).resolves.toBe(0)
+      await expect(
+        run(['export', nativeId], exported.io, nativeDependencies),
+      ).resolves.toBe(0)
+      await expect(
+        run(
+          ['-p', '--resume=legacy cli', '--', 'continue'],
+          resumed.io,
+          nativeDependencies,
+        ),
+      ).resolves.toBe(0)
+
+      const sessionResult = JSON.parse(listed.stdout.join(''))
+      expect(sessionResult.sessions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            sessionId: nativeId,
+            status: 'read-only',
+          }),
+          expect.objectContaining({
+            sessionId: legacyId,
+            name: 'legacy cli',
+            status: 'ready',
+          }),
+        ]),
+      )
+      expect(JSON.parse(inspected.stdout.join(''))).toMatchObject({
+        type: 'session',
+        session: {
+          sessionId: nativeId,
+          status: 'read-only',
+          writeMode: 'read-only',
+          lastPrompt: 'native cli prompt',
+        },
+      })
+      expect(Buffer.concat(exported.stdoutBytes)).toEqual(nativeSource)
+      expect(resumed.stdout.join('')).toBe('legacy resumed through cli\n')
+      expect(await readFile(paths.sessionFile)).toEqual(nativeSource)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('inspects and exports sessions without a provider', async () => {
     const inspected = captureIO()
     const inspectedText = captureIO()
