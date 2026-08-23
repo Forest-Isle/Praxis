@@ -15,12 +15,7 @@ const wrapper = fileURLToPath(new URL('../claude', import.meta.url))
 const AUTHENTICATION_ENV_KEYS = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
-  'ANTHROPIC_BASE_URL',
   'CLAUDE_CODE_OAUTH_TOKEN',
-  'ANTHROPIC_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL',
 ]
 
 afterEach(async () => {
@@ -103,6 +98,7 @@ describe('Claude compatibility auth seeding', () => {
         JSON.stringify({
           env: {
             ANTHROPIC_AUTH_TOKEN: 'secret',
+            ANTHROPIC_BASE_URL: 'https://host.example',
             ANTHROPIC_MODEL: 'custom-model',
             SHARED: 'source',
           },
@@ -133,7 +129,6 @@ describe('Claude compatibility auth seeding', () => {
     ).toEqual({
       env: {
         ANTHROPIC_AUTH_TOKEN: 'secret',
-        ANTHROPIC_MODEL: 'custom-model',
         SHARED: 'fixture',
       },
       hooks: { Stop: [] },

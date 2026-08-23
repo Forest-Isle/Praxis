@@ -1,36 +1,42 @@
-import { execFileSync, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { join } from 'node:path'
+
+import {
+  buildQualificationEnvironment,
+  canonicalizePrerequisiteBinaries,
+  classifyGateError,
+  classifyQualification,
+  discoverCompatibilityEntrypoints,
+  findMissingPrerequisites,
+  qualificationExitCode,
+  resolvePrimaryReferenceBinary,
+} from './lib/compatibility-qualification.mjs'
 
 const projectRoot = process.cwd()
-const compatibilityEnvironment = { ...process.env }
-compatibilityEnvironment.PRAXIS_PROVIDER = 'openai'
 const claudeBinary = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
 const wrapperPath = realpathSync(join(projectRoot, 'scripts', 'claude'))
-const candidates = execFileSync('which', ['-a', claudeBinary], {
-  encoding: 'utf8',
+const realClaudeBinary = resolvePrimaryReferenceBinary(claudeBinary, {
+  path: process.env.PATH,
+  wrapperPath,
 })
-  .trim()
-  .split(/\r?\n/u)
-  .map((path) => realpathSync(path))
-const realClaudeBinary = candidates.find((path) => path !== wrapperPath)
-if (!realClaudeBinary) throw new Error('Could not resolve real Claude binary')
-compatibilityEnvironment.PRAXIS_REAL_CLAUDE_BINARY = realClaudeBinary
-compatibilityEnvironment.PRAXIS_DATA_PLANE = 'claude'
-compatibilityEnvironment.PATH = `${join(projectRoot, 'scripts')}${delimiter}${dirname(realClaudeBinary)}${delimiter}${process.env.PATH ?? ''}`
+if (!realClaudeBinary) {
+  console.error(
+    `[qualification blocked] unable to resolve a non-wrapper Claude binary for PRAXIS_CLAUDE_BINARY`,
+  )
+  process.exit(2)
+}
+let compatibilityEnvironment = buildQualificationEnvironment(process.env, {
+  configRoot: undefined,
+  projectRoot,
+  realClaudeBinary,
+  referenceBinary: realClaudeBinary,
+})
 const packageDocument = JSON.parse(
   await readFile(join(projectRoot, 'package.json'), 'utf8'),
 )
-const excluded = new Set([
-  'test:compat:all',
-  'test:docs',
-  'test:package',
-  'test:performance',
-])
-const entrypoints = []
-const seen = new Set()
 const requiredEnvironment = new Map([
   [
     'scripts/verify-cross-version-session-compatibility.mjs',
@@ -55,6 +61,7 @@ const requiredEnvironment = new Map([
   ['scripts/verify-plugin-eval-compatibility.mjs', ['PRAXIS_CLAUDE_2_1_237']],
   ['scripts/verify-tui-compatibility.mjs', ['PRAXIS_CLAUDE_2_1_208']],
 ])
+const optionalEnvironment = new Map()
 const retryableTransientGates = new Set([
   'scripts/verify-claude-compatibility.mjs',
   'scripts/verify-claude-shared-resources.mjs',
@@ -81,40 +88,37 @@ const transientModelPatterns = [
   'Claude did not recover Praxis runtime',
 ]
 
-for (const [name, command] of Object.entries(packageDocument.scripts ?? {})) {
-  if (!name.startsWith('test:') || excluded.has(name)) continue
-  const parts = String(command).split(' && ')
-  if (parts.shift() !== 'npm run build' || parts.length === 0) {
-    throw new Error(`${name} does not follow compatibility gate command shape`)
+const entrypoints = discoverCompatibilityEntrypoints(packageDocument.scripts)
+
+const canonicalized = canonicalizePrerequisiteBinaries(compatibilityEnvironment)
+compatibilityEnvironment = canonicalized.environment
+const missingEntrypoints = findMissingPrerequisites(
+  entrypoints,
+  requiredEnvironment,
+  compatibilityEnvironment,
+  canonicalized.invalid,
+)
+if (missingEntrypoints.length > 0) {
+  for (const skipped of missingEntrypoints) {
+    console.warn(
+      `[qualification blocked] ${skipped.name}: ${skipped.file}; missing or invalid ${skipped.missing.join(', ')}`,
+    )
   }
-  for (const part of parts) {
-    const match = /^node (scripts\/[a-z0-9-]+\.mjs)$/u.exec(part)
-    if (!match) {
-      throw new Error(`${name} has unsupported compatibility command: ${part}`)
-    }
-    const file = match[1]
-    if (seen.has(file)) throw new Error(`Duplicate compatibility gate: ${file}`)
-    seen.add(file)
-    entrypoints.push({ name, file })
-  }
+  process.exit(2)
 }
-
-if (entrypoints.length === 0)
-  throw new Error('No compatibility gates discovered')
-
-const skippedEntrypoints = entrypoints.flatMap((entrypoint) => {
-  const missing = (requiredEnvironment.get(entrypoint.file) ?? []).filter(
-    (name) => !compatibilityEnvironment[name],
-  )
-  return missing.length > 0 ? [{ ...entrypoint, missing }] : []
-})
+const skippedEntrypoints = findMissingPrerequisites(
+  entrypoints,
+  optionalEnvironment,
+  compatibilityEnvironment,
+  canonicalized.invalid,
+)
+const skippedFiles = new Set(skippedEntrypoints.map(({ file }) => file))
 const runnableEntrypoints = entrypoints.filter(
-  (entrypoint) =>
-    !skippedEntrypoints.some((skipped) => skipped.file === entrypoint.file),
+  ({ file }) => !skippedFiles.has(file),
 )
 for (const skipped of skippedEntrypoints) {
   console.warn(
-    `[compatibility skipped ${skipped.name}: ${skipped.file}; missing ${skipped.missing.join(', ')}]`,
+    `[qualification skipped] ${skipped.name}: ${skipped.file}; missing ${skipped.missing.join(', ')}`,
   )
 }
 
@@ -165,7 +169,11 @@ compatibilityEnvironment.PRAXIS_COMPAT_SEED_CLAUDE_CONFIG = '1'
 compatibilityEnvironment.CLAUDE_CONFIG_DIR = fallbackConfigRoot
 try {
   const startedAt = Date.now()
+  const blocked = []
+  const failures = []
+  let attempted = 0
   for (const [index, entrypoint] of runnableEntrypoints.entries()) {
+    attempted += 1
     try {
       await run(entrypoint, index)
     } catch (error) {
@@ -173,20 +181,63 @@ try {
         !retryableTransientGates.has(entrypoint.file) ||
         !isTransientFailure(error)
       ) {
-        throw error
+        const outcome = classifyGateError(error)
+        if (outcome.verdict === 'blocked') {
+          blocked.push({ entrypoint, outcome })
+          break
+        }
+        failures.push({ entrypoint, error })
+      } else {
+        console.warn(
+          `\nRetrying transient compatibility gate: ${entrypoint.file}`,
+        )
+        try {
+          await run(entrypoint, index)
+        } catch (retryError) {
+          const outcome = classifyGateError(retryError)
+          if (outcome.verdict === 'blocked') {
+            blocked.push({ entrypoint, outcome })
+            break
+          }
+          failures.push({ entrypoint, error: retryError })
+        }
       }
-      console.warn(
-        `\nRetrying transient compatibility gate: ${entrypoint.file}`,
-      )
-      await run(entrypoint, index)
     }
   }
-  console.log(
-    `\nCompatibility matrix passed: ${runnableEntrypoints.length} isolated gates${skippedEntrypoints.length > 0 ? `; skipped ${skippedEntrypoints.length} environment-gated lanes` : ''} in ${(
-      (Date.now() - startedAt) /
-      1000
-    ).toFixed(1)}s.`,
-  )
+  const verdict = classifyQualification({
+    failures: failures.length,
+    blocked: blocked.length,
+    skipped: skippedEntrypoints.length,
+  })
+  const duration = ((Date.now() - startedAt) / 1000).toFixed(1)
+  for (const { entrypoint, outcome } of blocked) {
+    console.error(
+      `[qualification blocked] ${entrypoint.file}: ${outcome.prerequisite}`,
+    )
+  }
+  if (verdict === 'complete') {
+    console.log(
+      `\n[qualification complete] ${runnableEntrypoints.length} isolated gates in ${duration}s.`,
+    )
+  } else if (verdict === 'blocked') {
+    console.error(
+      `[qualification blocked] ${blocked.length} external prerequisite lane(s); ${attempted} gates attempted in ${duration}s.`,
+    )
+  } else if (verdict === 'skipped') {
+    console.error(
+      `[qualification skipped] ${skippedEntrypoints.length} lane(s); qualification did not complete in ${duration}s.`,
+    )
+  } else {
+    for (const { entrypoint, error } of failures) {
+      console.error(
+        `[qualification failed] ${entrypoint.file}: ${error.message}`,
+      )
+    }
+    console.error(
+      `[qualification failed] ${failures.length} gate(s) failed and ${blocked.length} blocked; ${attempted} gates attempted in ${duration}s.`,
+    )
+  }
+  process.exitCode = qualificationExitCode(verdict)
 } finally {
   await rm(fallbackConfigRoot, { recursive: true, force: true })
 }

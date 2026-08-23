@@ -270,6 +270,9 @@ const parityMatrix = await projectFile('docs/PARITY_MATRIX.md')
 const compatibilityMatrix = await projectFile(
   'scripts/verify-compatibility-matrix.mjs',
 )
+const compatibilityQualification = await projectFile(
+  'scripts/lib/compatibility-qualification.mjs',
+)
 const domainContext = await projectFile('CONTEXT.md')
 const ciWorkflow = await projectFile('.github/workflows/ci.yml')
 
@@ -451,8 +454,9 @@ assert(
   'test:core-design-drift is not wired to the executable audit',
 )
 assert(
-  compatibilityMatrix.includes("name.startsWith('test:')") &&
-    !compatibilityMatrix.includes("'test:core-design-drift',"),
+  compatibilityMatrix.includes('discoverCompatibilityEntrypoints') &&
+    compatibilityQualification.includes("name.startsWith('test:')") &&
+    !compatibilityQualification.includes("'test:core-design-drift',"),
   'The aggregate compatibility matrix does not discover the core drift gate',
 )
 for (const requiredCiFragment of [
